@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782175684402,
+  "lastUpdate": 1782261785995,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5388,6 +5388,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.6,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Andres Borja",
+            "username": "andborja",
+            "email": "76450334+andborja@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "64bc043e7f1c310cd42dc25946f248b1cd4da37f",
+          "message": "Add Workload Identity Federation auth support to Azure Monitor exporter (#3337)\n\n# Change Summary\n\nAdds a new workload_identity authentication method to the Azure Monitor\nexporter. It exchanges a projected federated ServiceAccount token with\nEntra ID for an access token, enabling Azure Monitor export from\nKubernetes workloads that do not have a managed identity (e.g.\nself-hosted or non-AKS clusters using Workload Identity Federation).\n\n## What issue does this PR close?\n\n\n* Closes #3336\n\n## How are these changes tested?\n\n- cargo test -p otap-df-contrib-nodes --features azure-monitor-exporter\n— 209 passed, 0 failed.\n- cargo fmt --check — clean.\n- cargo clippy --features azure-monitor-exporter — clean.\n\n## Are there any user-facing changes?\n\nYes. The users can now configure workload identity for the Azure Monitor\nexporter as\n\n```yaml\nauth:\n  method: workload_identity\n  # All optional; fall back to the standard AZURE_* env vars injected by the\n  # Azure Workload Identity webhook.\n  client_id: \"00000000-0000-0000-0000-000000000000\"\n  tenant_id: \"11111111-1111-1111-1111-111111111111\"\n  token_file_path: \"/var/run/secrets/azure/tokens/azure-identity-token\"\n```\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry, OR this PR is a `chore`\n(indicated in title).",
+          "timestamp": "2026-06-23T19:12:58Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/64bc043e7f1c310cd42dc25946f248b1cd4da37f"
+        },
+        "date": 1782261773790,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.91,
             "unit": "MB"
           }
         ]
