@@ -71,4 +71,18 @@ pub struct KafkaReceiverMetrics {
     /// Messages dropped because the topic ID space was exhausted (overflow guard)
     #[metric(unit = "{msg}")]
     pub topic_id_exhausted: Counter<u64>,
+
+    // ── Consumer-group Rebalances ───────────────────────────
+    /// Partitions assigned to this consumer across rebalances
+    #[metric(unit = "{partition}")]
+    pub partitions_assigned: Counter<u64>,
+    /// Partitions revoked from this consumer across rebalances
+    #[metric(unit = "{partition}")]
+    pub partitions_revoked: Counter<u64>,
+    /// Offset commit failures during pre-rebalance revoke
+    #[metric(unit = "{error}")]
+    pub rebalance_commit_errors: Counter<u64>,
+    /// Acks/nacks skipped because the partition was no longer assigned
+    #[metric(unit = "{ack}")]
+    pub acks_for_revoked_partition: Counter<u64>,
 }

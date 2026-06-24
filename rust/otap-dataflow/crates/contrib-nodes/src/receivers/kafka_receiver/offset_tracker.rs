@@ -113,7 +113,12 @@ impl PartitionTracker {
 /// Tracks offsets across all topic-partitions.
 ///
 /// Keyed by topic name, then by partition. Maintains a persistent
-/// [`TopicPartitionList`] that is updated in-place for efficient commits.
+/// [`TopicPartitionList`] (`tpl`) whose **partition membership mirrors the
+/// tracked partition set**: [`track`](Self::track) registers a partition the
+/// first time it is seen and [`revoke`](Self::revoke) rebuilds the list without
+/// it. [`committable_tpl`](Self::committable_tpl) then only has to update
+/// offsets in place each commit, avoiding per-commit reallocation and FFI
+/// reconstruction.
 ///
 /// The nested `HashMap` structure allows lookups via `&str` without
 /// allocating an owned `String` on every call.
@@ -121,9 +126,10 @@ impl PartitionTracker {
 /// Single-threaded — no internal synchronization required.
 pub struct OffsetTracker {
     partitions: HashMap<String, HashMap<i32, PartitionTracker>>,
-    /// Persistent TPL for efficient commits. Partitions are added once
-    /// when first seen via [`track`]; offsets are updated in-place by
-    /// [`committable_tpl`] before each commit.
+    /// Persistent TPL reused across commits. Its partition membership is kept
+    /// in sync with `partitions` by [`track`](Self::track) (adds) and
+    /// [`revoke`](Self::revoke) (rebuilds); [`committable_tpl`](Self::committable_tpl)
+    /// updates offsets in place.
     tpl: TopicPartitionList,
 }
 
@@ -139,8 +145,10 @@ impl OffsetTracker {
 
     /// Record a message offset as pending (in-flight).
     ///
-    /// On the first call for a given `(topic, partition)` pair the partition
-    /// is also registered in the internal [`TopicPartitionList`].
+    /// On the first sight of a `(topic, partition)` the partition is also
+    /// registered in the persistent [`TopicPartitionList`], keeping its
+    /// membership in sync with the tracked set so that
+    /// [`committable_tpl`](Self::committable_tpl) can update offsets in place.
     ///
     /// Only allocates a `String` when a topic is seen for the first time;
     /// subsequent calls for the same topic use `&str` lookups.
@@ -149,11 +157,12 @@ impl OffsetTracker {
             // Known topic — zero allocation.
             let entry = partitions.entry(partition);
             if matches!(&entry, std::collections::hash_map::Entry::Vacant(_)) {
+                // First sight of this partition — register it in the TPL.
                 let _ = self.tpl.add_partition(topic, partition);
             }
             entry.or_insert_with(PartitionTracker::new).track(offset);
         } else {
-            // New topic — allocate once.
+            // New topic — allocate once and register the partition in the TPL.
             let _ = self.tpl.add_partition(topic, partition);
             let mut tracker = PartitionTracker::new();
             tracker.track(offset);
@@ -161,6 +170,49 @@ impl OffsetTracker {
             let _ = partitions.insert(partition, tracker);
             let _ = self.partitions.insert(topic.to_string(), partitions);
         }
+    }
+
+    /// Stop tracking a topic-partition, dropping all of its pending offsets and
+    /// high-water-mark state.
+    ///
+    /// Called by the receive loop when a partition has been revoked during a
+    /// consumer-group rebalance, so that the tracker no longer retains state
+    /// (or attempts to commit offsets) for a partition this consumer no longer
+    /// owns. Revoking an unknown topic-partition is a no-op.
+    ///
+    /// [`TopicPartitionList`] has no per-partition removal API, so the
+    /// persistent `tpl` is rebuilt from the remaining tracked partitions. This
+    /// only happens on the (rare) revoke path; steady-state commits update
+    /// offsets in place.
+    pub fn revoke(&mut self, topic: &str, partition: i32) {
+        let Some(partitions) = self.partitions.get_mut(topic) else {
+            // Unknown topic — nothing tracked, TPL already excludes it.
+            return;
+        };
+        if partitions.remove(&partition).is_none() {
+            // Unknown partition — TPL already excludes it.
+            return;
+        }
+        if partitions.is_empty() {
+            let _ = self.partitions.remove(topic);
+        }
+        self.rebuild_tpl();
+    }
+
+    /// Rebuild the persistent [`TopicPartitionList`] so its partition
+    /// membership matches the currently tracked partitions.
+    ///
+    /// Offsets are materialized later by [`committable_tpl`](Self::committable_tpl);
+    /// here we only need the partition entries to exist.
+    fn rebuild_tpl(&mut self) {
+        let mut tpl =
+            TopicPartitionList::with_capacity(self.partitions.values().map(HashMap::len).sum());
+        for (topic, partitions) in &self.partitions {
+            for &partition in partitions.keys() {
+                let _ = tpl.add_partition(topic, partition);
+            }
+        }
+        self.tpl = tpl;
     }
 
     /// Acknowledge a message offset.
@@ -188,13 +240,18 @@ impl OffsetTracker {
             .unwrap_or(false)
     }
 
-    /// Update the internal [`TopicPartitionList`] with current committable
+    /// Update the persistent [`TopicPartitionList`] with current committable
     /// offsets and return a reference suitable for passing to
     /// `consumer.commit()`.
     ///
-    /// Partitions are registered in the TPL lazily by [`track`], and their
-    /// offsets are updated in-place here. If no partitions have been tracked
-    /// yet the returned TPL is empty, which is safe to commit.
+    /// Offsets are updated **in place**: the TPL's partition membership already
+    /// mirrors the tracked set (maintained by [`track`](Self::track) and
+    /// [`revoke`](Self::revoke)), so revoked partitions are never present and
+    /// no per-commit reallocation is needed. `set_partition_offset` targets the
+    /// existing entry for each tracked partition.
+    ///
+    /// If no partitions are tracked the returned TPL is empty, which is safe to
+    /// commit.
     pub fn committable_tpl(&mut self) -> &TopicPartitionList {
         for (topic, partitions) in &self.partitions {
             for (&partition, tracker) in partitions {
@@ -208,24 +265,24 @@ impl OffsetTracker {
         &self.tpl
     }
 
-    /// Compute the offsets that should be committed to Kafka.
+    /// Snapshot the committable offset for every tracked partition.
     ///
-    /// For each tracked partition returns `(topic, partition, offset)` where
-    /// `offset` is:
-    /// - The lowest pending offset (commit *up to but not including* this one), or
-    /// - `high_water_mark + 1` if no offsets are pending (all have been acked).
-    #[cfg(test)]
+    /// Returns a map keyed by `(topic, partition)` to the offset that would be
+    /// committed (lowest pending, or `high_water_mark + 1` once all offsets are
+    /// acknowledged). Used to feed the shared rebalance state so that the
+    /// pre-rebalance callback can commit owned partitions before they are
+    /// revoked.
     #[must_use]
-    pub fn committable_offsets(&self) -> Vec<(String, i32, i64)> {
-        let mut result = Vec::new();
+    pub fn committable_snapshot(&self) -> HashMap<(String, i32), i64> {
+        let mut snapshot = HashMap::new();
         for (topic, partitions) in &self.partitions {
             for (&partition, tracker) in partitions {
                 if let Some(offset) = tracker.committable_offset() {
-                    result.push((topic.clone(), partition, offset));
+                    let _ = snapshot.insert((topic.clone(), partition), offset);
                 }
             }
         }
-        result
+        snapshot
     }
 
     /// Number of pending offsets for a specific partition.
@@ -260,6 +317,19 @@ impl Default for OffsetTracker {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Committable offsets as a deterministic, sorted `Vec`, derived from the
+    /// production [`OffsetTracker::committable_snapshot`]. Sorting makes
+    /// single-entry indexed assertions (`offsets[0]`) order-independent.
+    fn committable_sorted(tracker: &OffsetTracker) -> Vec<(String, i32, i64)> {
+        let mut offsets: Vec<(String, i32, i64)> = tracker
+            .committable_snapshot()
+            .into_iter()
+            .map(|((topic, partition), offset)| (topic, partition, offset))
+            .collect();
+        offsets.sort();
+        offsets
+    }
 
     // ---- PartitionTracker tests ----
 
@@ -366,13 +436,13 @@ mod tests {
         assert_eq!(tracker.pending_count("traces", 0), 3);
 
         // Committable should be the lowest pending.
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets.len(), 1);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 100));
 
         // Ack lowest — should advance.
         assert!(tracker.acknowledge("traces", 0, 100));
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 101));
     }
 
@@ -386,17 +456,17 @@ mod tests {
 
         // Ack 102 first — should NOT advance (100 still pending).
         assert!(!tracker.acknowledge("traces", 0, 102));
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 100));
 
         // Ack 100 — advances to 101.
         assert!(tracker.acknowledge("traces", 0, 100));
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 101));
 
         // Ack 101 — all acked, commits hwm + 1.
         assert!(tracker.acknowledge("traces", 0, 101));
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 103)); // hwm=102, commit 103
     }
 
@@ -419,9 +489,7 @@ mod tests {
         assert!(tracker.acknowledge("traces", 0, 100));
         assert!(tracker.acknowledge("traces", 1, 200));
 
-        let offsets = tracker.committable_offsets();
-        let mut sorted: Vec<_> = offsets.into_iter().collect();
-        sorted.sort();
+        let sorted = committable_sorted(&tracker);
         assert_eq!(sorted.len(), 3);
         assert!(sorted.contains(&("metrics".to_string(), 0, 300)));
         assert!(sorted.contains(&("traces".to_string(), 0, 101)));
@@ -441,7 +509,7 @@ mod tests {
         assert_eq!(tracker.pending_count("traces", 0), 0);
 
         // Should commit hwm + 1 = 102.
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets.len(), 1);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 102));
     }
@@ -449,7 +517,7 @@ mod tests {
     #[test]
     fn tracker_empty_returns_no_committable() {
         let tracker = OffsetTracker::new();
-        assert!(tracker.committable_offsets().is_empty());
+        assert!(committable_sorted(&tracker).is_empty());
     }
 
     #[test]
@@ -480,7 +548,7 @@ mod tests {
 
         // 103 still pending.
         assert_eq!(tracker.pending_count("traces", 0), 1);
-        let offsets = tracker.committable_offsets();
+        let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 103));
     }
 
@@ -501,9 +569,7 @@ mod tests {
         // Ack all of metrics.
         assert!(tracker.acknowledge("metrics", 0, 200));
 
-        let offsets = tracker.committable_offsets();
-        let mut sorted: Vec<_> = offsets.into_iter().collect();
-        sorted.sort();
+        let sorted = committable_sorted(&tracker);
 
         assert_eq!(sorted.len(), 3);
         assert!(sorted.contains(&("logs".to_string(), 1, 300))); // lowest pending
@@ -558,6 +624,196 @@ mod tests {
         let tpl = tracker.committable_tpl();
         let map = tpl.to_topic_map();
         assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(102));
+    }
+
+    // ---- revoke tests ----
+
+    #[test]
+    fn revoke_removes_pending_state() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("traces", 0, 101);
+        tracker.track("traces", 1, 200);
+
+        assert_eq!(tracker.total_pending(), 3);
+
+        tracker.revoke("traces", 0);
+
+        // Partition 0 state is gone; partition 1 remains.
+        assert_eq!(tracker.pending_count("traces", 0), 0);
+        assert_eq!(tracker.pending_count("traces", 1), 1);
+        assert_eq!(tracker.total_pending(), 1);
+    }
+
+    #[test]
+    fn revoke_excludes_partition_from_committable_tpl() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("traces", 1, 200);
+
+        // Before revoke: both partitions are committable.
+        assert_eq!(tracker.committable_tpl().count(), 2);
+
+        tracker.revoke("traces", 0);
+
+        // After revoke: only partition 1 remains in the TPL.
+        let tpl = tracker.committable_tpl();
+        assert_eq!(tpl.count(), 1);
+        let map = tpl.to_topic_map();
+        assert!(!map.contains_key(&("traces".to_string(), 0)));
+        assert_eq!(map[&("traces".to_string(), 1)], Offset::Offset(200));
+    }
+
+    #[test]
+    fn revoke_excludes_partition_from_committable_offsets() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("metrics", 0, 300);
+
+        tracker.revoke("traces", 0);
+
+        let offsets = committable_sorted(&tracker);
+        assert_eq!(offsets.len(), 1);
+        assert_eq!(offsets[0], ("metrics".to_string(), 0, 300));
+    }
+
+    #[test]
+    fn revoke_unknown_partition_is_noop() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+
+        tracker.revoke("traces", 99);
+        tracker.revoke("unknown", 0);
+
+        assert_eq!(tracker.pending_count("traces", 0), 1);
+    }
+
+    #[test]
+    fn revoke_dropping_last_partition_clears_topic() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+
+        tracker.revoke("traces", 0);
+
+        assert!(committable_sorted(&tracker).is_empty());
+        assert_eq!(tracker.committable_tpl().count(), 0);
+    }
+
+    // ---- TPL membership invariant tests ----
+
+    /// Collect the `(topic, partition)` membership of the committable TPL.
+    fn tpl_membership(tracker: &mut OffsetTracker) -> BTreeSet<(String, i32)> {
+        tracker
+            .committable_tpl()
+            .to_topic_map()
+            .into_keys()
+            .collect()
+    }
+
+    /// Collect the tracked `(topic, partition)` set from committable offsets.
+    fn tracked_membership(tracker: &OffsetTracker) -> BTreeSet<(String, i32)> {
+        committable_sorted(tracker)
+            .into_iter()
+            .map(|(t, p, _)| (t, p))
+            .collect()
+    }
+
+    #[test]
+    fn tpl_membership_matches_tracked_after_track_and_revoke() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("traces", 1, 200);
+        tracker.track("metrics", 0, 300);
+
+        assert_eq!(tpl_membership(&mut tracker), tracked_membership(&tracker));
+
+        // Revoke one partition; membership must stay in sync.
+        tracker.revoke("traces", 0);
+        assert_eq!(tpl_membership(&mut tracker), tracked_membership(&tracker));
+
+        // Revoke the last partition of a topic.
+        tracker.revoke("metrics", 0);
+        assert_eq!(tpl_membership(&mut tracker), tracked_membership(&tracker));
+        let expected: BTreeSet<_> = [("traces".to_string(), 1)].into_iter().collect();
+        assert_eq!(tpl_membership(&mut tracker), expected);
+    }
+
+    #[test]
+    fn committable_tpl_updates_offsets_in_place_across_acks() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("traces", 0, 101);
+
+        // Initial committable offset is 100.
+        assert_eq!(
+            tracker.committable_tpl().to_topic_map()[&("traces".to_string(), 0)],
+            Offset::Offset(100)
+        );
+
+        // Ack 100 → committable advances to 101, same TPL updated in place.
+        let _ = tracker.acknowledge("traces", 0, 100);
+        let map = tracker.committable_tpl().to_topic_map();
+        assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(101));
+        // No stale entries.
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn revoked_partition_never_reappears_in_tpl() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("traces", 1, 200);
+        tracker.revoke("traces", 0);
+
+        // Tracking a *different* partition must not resurrect the revoked one.
+        tracker.track("traces", 1, 201);
+        let map = tracker.committable_tpl().to_topic_map();
+        assert!(!map.contains_key(&("traces".to_string(), 0)));
+        assert!(map.contains_key(&("traces".to_string(), 1)));
+    }
+
+    #[test]
+    fn retrack_revoked_partition_re_registers_in_tpl() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.revoke("traces", 0);
+        assert_eq!(tracker.committable_tpl().count(), 0);
+
+        // A partition can be reassigned later; re-tracking must re-register it.
+        tracker.track("traces", 0, 150);
+        let map = tracker.committable_tpl().to_topic_map();
+        assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(150));
+    }
+
+    // ---- committable_snapshot tests ----
+
+    #[test]
+    fn committable_snapshot_reflects_lowest_pending() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        tracker.track("traces", 0, 101);
+        tracker.track("metrics", 1, 200);
+
+        let snap = tracker.committable_snapshot();
+        assert_eq!(snap.get(&("traces".to_string(), 0)), Some(&100));
+        assert_eq!(snap.get(&("metrics".to_string(), 1)), Some(&200));
+    }
+
+    #[test]
+    fn committable_snapshot_uses_hwm_after_all_acked() {
+        let mut tracker = OffsetTracker::new();
+        tracker.track("traces", 0, 100);
+        let _ = tracker.acknowledge("traces", 0, 100);
+
+        let snap = tracker.committable_snapshot();
+        // hwm = 100, commit 101.
+        assert_eq!(snap.get(&("traces".to_string(), 0)), Some(&101));
+    }
+
+    #[test]
+    fn committable_snapshot_empty_when_no_partitions() {
+        let tracker = OffsetTracker::new();
+        assert!(tracker.committable_snapshot().is_empty());
     }
 
     // ---- is_known_offset tests ----

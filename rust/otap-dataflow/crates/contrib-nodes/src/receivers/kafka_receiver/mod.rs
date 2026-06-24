@@ -11,5 +11,7 @@ pub mod headers;
 pub mod metrics;
 /// Per-offset tracking for Kafka consumer offset management.
 pub mod offset_tracker;
+/// Consumer-group rebalance handling (partition assign/revoke callbacks).
+pub mod rebalance;
 /// Implementation of the main kafka receiver
 pub mod receiver;

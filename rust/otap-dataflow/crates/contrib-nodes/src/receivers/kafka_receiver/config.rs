@@ -804,11 +804,10 @@ impl KafkaReceiverConfigBuilder {
             if auto_commit { "true" } else { "false" },
         );
 
-        if !auto_commit {
-            _ = config.set("enable.auto.offset.store", "false");
-        } else {
-            _ = config.set("enable.auto.offset.store", "true");
-        }
+        _ = config.set(
+            "enable.auto.offset.store",
+            if auto_commit { "true" } else { "false" },
+        );
 
         // Offset management
         _ = config.set("auto.offset.reset", self.auto_offset_reset.to_kafka_value());
