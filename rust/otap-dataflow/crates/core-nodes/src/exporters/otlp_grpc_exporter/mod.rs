@@ -283,8 +283,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
             };
 
             match msg {
-                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
-                    otel_info!("otlp.exporter.grpc.shutdown");
+                Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
+                    // TODO: ideally the shutdown start time should be captured
+                    // when the shutdown command is issued (before channel send),
+                    // and passed through NodeControlMsg. Currently we measure
+                    // from message receipt, which excludes queue/scheduling delay.
+                    let shutdown_start = std::time::Instant::now();
                     debug_assert!(
                         pending_msg.is_none(),
                         "pending message should have been drained before shutdown"
@@ -300,6 +304,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             grpc_clients.release(client);
                         }
                     }
+                    let duration_secs = shutdown_start.elapsed().as_secs_f64();
+                    otel_info!(
+                        "df_engine.component.shutdown",
+                        reason = reason,
+                        "otel.component.type" = "otlp_grpc_exporter",
+                        "otel.component.shutdown.result" = "success",
+                        "otel.component.shutdown.duration" = duration_secs,
+                    );
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {

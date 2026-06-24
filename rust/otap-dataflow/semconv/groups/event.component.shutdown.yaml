@@ -1,0 +1,38 @@
+groups:
+  # TODO: `df_engine` prefix is provisional — the product name is not yet
+  # settled. Rename the event (and its registry group ID) once it is.
+  - id: event.otap_dataflow.df_engine.component.shutdown
+    type: event
+    name: df_engine.component.shutdown
+    stability: development
+    brief: >
+      Emitted when a pipeline component's shutdown attempt has ended, whether
+      by completing successfully, failing, or being abandoned on deadline.
+    note: >
+      This event SHOULD be emitted by each pipeline node (exporter, receiver,
+      processor) when it finishes processing its shutdown control message.
+      Modeled after the OpenTelemetry SDK `otel.sdk.component.shutdown` event
+      (open-telemetry/semantic-conventions#3723).
+    attributes:
+      - ref: otel.component.type
+        requirement_level: required
+        brief: >
+          The type of the pipeline component, e.g. `otlp_grpc_exporter`.
+      - ref: otel.component.name
+        requirement_level: recommended
+        brief: >
+          A name uniquely identifying this component instance within the engine.
+      - id: otel.component.shutdown.result
+        type: string
+        stability: development
+        requirement_level: required
+        brief: >
+          The result of the shutdown attempt.
+        examples: ["success", "failed", "timed_out"]
+      - id: otel.component.shutdown.duration
+        type: double
+        stability: development
+        requirement_level: recommended
+        brief: >
+          Wall-clock elapsed time of the shutdown attempt, in seconds.
+        examples: [0.015, 30.0]
