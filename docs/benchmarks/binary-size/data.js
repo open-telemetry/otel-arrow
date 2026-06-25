@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782261785995,
+  "lastUpdate": 1782348480578,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5420,6 +5420,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 98.91,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tim R",
+            "username": "timr-dev",
+            "email": "68666585+timr-dev@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "7070b742b4f6e08137daf1efeee30987df3fa0aa",
+          "message": "chore: bind test/dev servers to loopback to avoid Windows firewall prompts (#3353)\n\n## What\n\nOn Windows, running the Rust test suite — especially a full `cargo xtask\ncheck` —\nrepeatedly triggers the Windows Defender Firewall allow/deny prompt. A\nhandful of\n**test/dev** code paths bind listening sockets to `0.0.0.0` (all\ninterfaces);\nWindows exempts loopback (`127.0.0.1`) binds from the prompt. Because\ncargo names\ntest binaries by content hash, a granted \"Allow\" does not persist across\nrebuilds, so the prompt recurs on essentially every change.\n\nFixes #3351.\n\n## Changes\n\n- **`crates/telemetry/src/otel_sdk/meter_provider.rs`** (test): the\nPrometheus\n  pull-exporter test configured `host: \"0.0.0.0\", port: 9090`, which\n`MeterProvider::configure` → `start_async_prometheus_server` actually\nbinds.\nThis is the **only test that opens a non-loopback socket during `cargo\ntest`**.\n  Host → `127.0.0.1`.\n- **`crates/contrib-nodes/examples/mock_la_server.rs`** (dev example):\nmock Azure\nMonitor Logs Ingestion server, documented for `http://localhost:9999`,\nbound\n  `0.0.0.0:{port}`. Bind + banner → `127.0.0.1`.\n- **`CONTRIBUTING.md`**: documents the loopback test/example bind\nconvention so\n  this stays consistent.\n\n## Acceptance criterion\n\nA full `cargo xtask check` on Windows now completes with no Windows\nFirewall\nprompts — no test server binds a non-loopback interface. Verified\nlocally:\nstructure ✅, `cargo fmt` ✅, `cargo clippy --workspace --all-targets -D\nwarnings`\n✅, `cargo test --workspace` ✅. The example compiles under\n`--features azure-monitor-exporter`.\n\n## Scope / non-goals (deliberate)\n\n- **`GrpcServerSettings::default()` (`server_settings.rs:316`,\n`0.0.0.0:0`) is left\nunchanged.** It is a production default, and a full sweep confirms **no\ntest\nbinds via the bare default** — every gRPC/HTTP/UDP server test passes an\nexplicit `127.0.0.1` address. Per the issue's non-goals, production\ndefaults\nthat intentionally serve external traffic stay as-is (same for the\nPrometheus\n  pull `default_host()`).\n- **Other `0.0.0.0` occurrences in the Rust workspace are left as-is\nbecause they\ndo not bind a socket:** deserialize/`validate_config` tests that assert\nthe kept\nproduction default (`readers.rs`, `pull.rs`,\n`prometheus_exporter_provider.rs`),\nthe `otlp_receiver` test that specifically exercises the\nunspecified-address\n  conflict path, the clap arg-parse test, and doc/CIDR/CEF strings.\n- **Out of scope:** non-Rust demo/perf assets that intentionally bind\nall\ninterfaces (e.g. the Python `tools/pipeline_perf_test` Docker templates,\nand the\nbundled demo `configs/*.yaml`). These are not exercised by `cargo xtask\ncheck`\nand do not affect the acceptance criterion; a Windows dev who manually\nruns one\n  of those demos may still see a prompt.\n- The fixed port `9090` in the meter-provider test is kept (the issue\nasked only\nto change the host); the spawned bind result is ignored, so a port\ncollision\n  cannot fail the test.\n\n## Changelog\n\nTest/dev-example only — no shipped/production behavior change — so this\nis a\n`chore` with no `.chloggen` entry, per the repo convention.\n\n## On a regression guard\n\nAn automated lint that rejects new non-loopback binds in test/example\ncode was\nconsidered but **deferred**: it would need an allow-list for the several\nlegitimate non-binding `0.0.0.0` usages above, making it brittle. The\nconvention\nis documented in `CONTRIBUTING.md` instead.\n\nReply posted by [GS] @timr-dev Copilot AI Assistant.\n\n---------\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-06-24T22:51:01Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/7070b742b4f6e08137daf1efeee30987df3fa0aa"
+        },
+        "date": 1782348468132,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.85,
             "unit": "MB"
           }
         ]
