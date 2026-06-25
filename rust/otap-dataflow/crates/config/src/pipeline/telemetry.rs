@@ -67,6 +67,7 @@ const fn default_reporting_interval() -> Duration {
 
 /// Attribute value types for telemetry resource attributes.
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
+#[serde(untagged)]
 pub enum AttributeValue {
     /// String type attribute value.
     String(String),
@@ -229,6 +230,7 @@ impl<'de> Deserialize<'de> for AttributeValue {
 
 /// Array attribute value types for telemetry resource attributes.
 #[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[schemars(untagged)]
 pub enum AttributeValueArray {
     /// Array of bools
     Bool(Vec<bool>),
@@ -819,5 +821,64 @@ mod tests {
         let back: TelemetryConfig = serde_yaml::from_str(&yaml).expect("deserialize from YAML");
 
         assert_eq!(config.resource, back.resource);
+    }
+
+    #[test]
+    fn test_attribute_value_json_schema_is_untagged() {
+        // The JSON schema for AttributeValue should describe the actual
+        // serialized format (plain scalars and arrays), not an externally-tagged
+        // enum like {"String": "value"} or {"Bool": true}.
+        let schema = schemars::schema_for!(AttributeValue);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // An externally-tagged enum schema would contain variant names as
+        // property keys. The untagged schema should use oneOf with primitive types.
+        assert!(
+            !json.contains(r#""String""#),
+            "Schema should not contain externally-tagged 'String' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""Bool""#),
+            "Schema should not contain externally-tagged 'Bool' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""I64""#),
+            "Schema should not contain externally-tagged 'I64' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""F64""#),
+            "Schema should not contain externally-tagged 'F64' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""Array""#),
+            "Schema should not contain externally-tagged 'Array' variant.\nSchema:\n{json}"
+        );
+
+        // Should have anyOf/oneOf for the union of types
+        assert!(
+            json.contains("anyOf") || json.contains("oneOf"),
+            "Schema should use anyOf/oneOf for untagged union.\nSchema:\n{json}"
+        );
+    }
+
+    #[test]
+    fn test_attribute_value_array_json_schema_is_untagged() {
+        // Same check for AttributeValueArray — schema should describe bare
+        // arrays of primitives, not externally-tagged objects like {"Bool": [...]}.
+        let schema = schemars::schema_for!(AttributeValueArray);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // Externally-tagged schemas use "required": ["Bool"] etc. as object
+        // property wrappers. The untagged schema should have none of these.
+        assert!(
+            !json.contains(r#""required""#),
+            "Schema should not contain 'required' property keys from tagged variants.\nSchema:\n{json}"
+        );
+
+        // For an untagged array enum, we expect anyOf/oneOf with array types
+        assert!(
+            json.contains("anyOf") || json.contains("oneOf"),
+            "Schema should use anyOf/oneOf for untagged union.\nSchema:\n{json}"
+        );
     }
 }
