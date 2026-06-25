@@ -405,6 +405,10 @@ impl KafkaReceiver {
         if self.config.is_auto_commit() {
             return Ok(());
         }
+        // Drop any partitions revoked by the rebalance callback since the last
+        // reconcile *before* building the commit list, so we never commit an
+        // offset for a partition this consumer no longer owns.
+        self.purge_revoked_partitions();
         let tpl = self.offset_tracker.committable_tpl();
         if tpl.count() == 0 {
             return Ok(());
@@ -428,17 +432,19 @@ impl KafkaReceiver {
     }
 
     /// Drain partitions revoked by the rebalance callbacks and purge them from
-    /// the tracker, then fold rebalance counters accumulated on the callback
-    /// thread into the receiver's metric set.
+    /// the offset tracker.
     ///
-    /// Called once per receive-loop iteration. Both drains early-return when
-    /// nothing has happened, so the steady-state (no rebalance) cost is two
-    /// uncontended mutex lock/unlock cycles. No-op when auto-commit is enabled.
-    fn reconcile_rebalance_state(&mut self) {
+    /// Called both once per receive-loop iteration (via
+    /// [`reconcile_rebalance_state`](Self::reconcile_rebalance_state)) **and** at
+    /// the start of every commit (via [`commit_offsets`](Self::commit_offsets)),
+    /// so no commit path can ever persist an offset for a partition this
+    /// consumer no longer owns — even if the revocation was queued by the
+    /// callback after the last loop-top reconcile (e.g. just before a
+    /// `TimerTick`, shutdown commit, or poison-pill advance).
+    fn purge_revoked_partitions(&mut self) {
         if self.config.is_auto_commit() {
             return;
         }
-
         let revoked = self.rebalance_state.drain_revoked();
         if !revoked.is_empty() {
             for (topic, partition) in revoked {
@@ -447,6 +453,21 @@ impl KafkaReceiver {
             // Owned set changed; refresh the snapshot used by pre_rebalance.
             self.refresh_committable_snapshot();
         }
+    }
+
+    /// Drain revoked partitions (see [`purge_revoked_partitions`](Self::purge_revoked_partitions))
+    /// and fold rebalance counters accumulated on the callback thread into the
+    /// receiver's metric set.
+    ///
+    /// Called once per receive-loop iteration. Drains early-return when nothing
+    /// has happened, so the steady-state (no rebalance) cost is a couple of
+    /// uncontended mutex lock/unlock cycles. No-op when auto-commit is enabled.
+    fn reconcile_rebalance_state(&mut self) {
+        if self.config.is_auto_commit() {
+            return;
+        }
+
+        self.purge_revoked_partitions();
 
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
@@ -700,13 +721,6 @@ impl KafkaReceiver {
                                     continue;
                                 }
                             };
-
-                            // Throughput metrics: count every received
-                            // message and its payload size.
-                            self.metrics.messages_received.add(1);
-                            if let Some(payload) = data.payload() {
-                                self.metrics.bytes_received.add(payload.len() as u64);
-                            }
 
                             // Idempotency: skip duplicate messages when enabled.
                             if idempotent
@@ -1704,6 +1718,71 @@ mod tests {
         // Partition 0 purged; partition 1 retained.
         assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
         assert_eq!(receiver.offset_tracker.pending_count("traces", 1), 1);
+    }
+
+    #[test]
+    fn commit_path_purges_revoked_partitions_first() {
+        // Regression: every commit path drains revoked partitions before
+        // building the commit TPL, so a partition revoked by the rebalance
+        // callback (but not yet reconciled at the top of the loop) is never
+        // committed by `commit_offsets` / TimerTick / shutdown / poison-pill.
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // In-flight offsets on two partitions.
+        receiver.offset_tracker.track("traces", 0, 100);
+        receiver.offset_tracker.track("traces", 1, 200);
+
+        // The callback queues a revoke for partition 0, but the loop has not
+        // reconciled it yet (it is still tracked).
+        receiver.rebalance_state.push_revoked_for_test("traces", 0);
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 1);
+
+        // The drain-before-commit step that `commit_offsets` runs.
+        receiver.purge_revoked_partitions();
+
+        // Partition 0 is purged; the committable TPL a commit would use now
+        // excludes it and retains only partition 1.
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 1), 1);
+
+        let tpl = receiver.offset_tracker.committable_tpl();
+        let map = tpl.to_topic_map();
+        assert!(
+            !map.contains_key(&("traces".to_string(), 0)),
+            "revoked partition 0 must not appear in the commit TPL",
+        );
+        assert_eq!(
+            map.get(&("traces".to_string(), 1)),
+            Some(&Offset::Offset(200)),
+            "owned partition 1 must remain committable",
+        );
+    }
+
+    #[test]
+    fn purge_revoked_partitions_is_noop_under_auto_commit() {
+        let cfg = KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new("b:9092", "g", "c")
+                .with_traces(SignalConfig::new(vec!["traces".to_string()]))
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Auto,
+                    interval_ms: Some(1000),
+                })
+                .with_isolation_level(IsolationLevel::ReadUncommitted),
+        )
+        .expect("test config should be valid");
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        receiver.offset_tracker.track("traces", 0, 100);
+        receiver.rebalance_state.push_revoked_for_test("traces", 0);
+
+        // Under auto-commit, purge must not touch the tracker (librdkafka owns
+        // offsets and rebalance handling is disabled).
+        receiver.purge_revoked_partitions();
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 1);
     }
 
     #[test]

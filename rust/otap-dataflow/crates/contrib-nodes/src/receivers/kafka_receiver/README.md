@@ -192,6 +192,62 @@ exporter:
 See [At-Least-Once with the Retry Processor](#at-least-once-with-the-retry-processor)
 for a complete pipeline example.
 
+#### Comparison with the Go Kafka receiver
+
+The OpenTelemetry Collector's Go Kafka receiver bundles offset committing,
+message marking, and error backoff into a single component. This receiver splits
+those concerns across two pipeline nodes: the receiver handles offset commit and
+marking, while transient-failure retry is delegated to the
+[retry processor](../../../../core-nodes/src/processors/retry_processor/README.md).
+The table below maps the Go receiver's error-handling/offset options onto the
+equivalent configuration here.
+
+| Go Kafka receiver option | Equivalent here | Notes |
+| --- | --- | --- |
+| `autocommit.enable: true` | `commit.mode: auto` | At-most-once; offsets committed by the client regardless of downstream outcome. |
+| `autocommit.enable: false` | `commit.mode: manual` | At-least-once up to a terminal nack. |
+| `autocommit.interval` | `commit.interval_ms` | In `auto` mode forwarded to rdkafka as `auto.commit.interval.ms`; in `manual` mode it drives the safety-net commit timer. |
+| `initial_offset: latest` / `earliest` | `auto_offset_reset: latest` / `earliest` | Same semantics. |
+| `error_backoff.enabled` | Add a `processor:retry` node to the pipeline | Retry is a separate node, not a receiver field. Omit the node to disable. |
+| `error_backoff.initial_interval` | retry processor `initial_interval` | Default `5s`. |
+| `error_backoff.max_interval` | retry processor `max_interval` | Default `30s`. |
+| `error_backoff.multiplier` | retry processor `multiplier` | Default `1.5`. |
+| `error_backoff.max_elapsed_time` | retry processor `max_elapsed_time` | Default `300s` (5m). Set `0` is **not** supported here (must be > 0). |
+| `error_backoff.randomization_factor` | *(no equivalent)* | The retry processor backoff has no jitter -- see gaps below. |
+| `message_marking.after` | *(no exact equivalent)* | Offsets are tracked at receive time and committed on the downstream ack/nack; there is no "mark only after success" toggle. |
+| `message_marking.on_error` / `on_permanent_error` | *(no exact equivalent)* | The receiver commits on **any** terminal nack (it treats a nack as terminal); there is no per-error-kind marking toggle. |
+| `group_id`, `client_id`, `session_timeout`, `heartbeat_interval`, `group_rebalance_strategy`, fetch sizes, `tls`, `auth` | Direct receiver fields | See [Consumer Settings](#consumer-settings), [Authentication](#authentication), and [TLS Configuration](#tls-configuration). |
+
+##### Known gaps / behavioral differences
+
+Even with a retry processor in the pipeline, the following behaviors differ from
+the Go Kafka receiver:
+
+- **Commit-on-terminal-failure vs. replay from Kafka.** With
+  `message_marking.on_error: false`, the Go receiver leaves a failed message's
+  offset *unmarked*, so Kafka redelivers it (after a fetch rewind or on the next
+  rebalance). This receiver **commits the offset once a terminal nack is
+  received** (including after the retry processor exhausts its retries), so the
+  message is advanced past at the source rather than replayed from Kafka. The
+  retry processor protects against *transient* failures in-process, but it does
+  not cause the receiver to hold the offset past a terminal nack.
+- **No partition pause on error.** The Go receiver pauses a partition on a
+  permanent error (or when no backoff is configured) until the next rebalance.
+  This receiver keeps consuming subsequent offsets on the same partition.
+- **No backoff jitter.** The retry processor uses exponential backoff without a
+  `randomization_factor` (jitter) equivalent.
+- **Retry ordering.** The Go receiver retries inline per partition, preserving
+  per-partition order at the cost of head-of-line blocking. The retry processor
+  retries out-of-band, so a later message can be acked and committed before an
+  earlier message that is still being retried.
+- **Marking selectivity.** There is no equivalent to `message_marking.after`,
+  `on_error`, or `on_permanent_error`; nack handling is uniform.
+
+Out of scope for error handling, but worth noting as general differences: the Go
+receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
+`raw`, `text`, `json`) whereas this receiver supports `otlp_proto` and
+`otap_proto`; available authentication mechanisms may also differ.
+
 #### Auto Mode (`commit.mode: auto`)
 
 Offsets are committed automatically by the underlying rdkafka client. The `commit.interval_ms` value is forwarded to rdkafka as `auto.commit.interval.ms`. If `commit.interval_ms` is not set, it defaults to a 0 ms interval.
@@ -642,14 +698,46 @@ In this example, the Kafka receiver captures `X-Tenant-Id` and `X-Request-Id` he
 
 ### At-Least-Once with the Retry Processor
 
-To protect against transient downstream failures, place a
+These recipes show how to reproduce the Go Kafka receiver's offset/error-handling
+behavior using this receiver's `commit` configuration plus, where needed, the
 [retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
-(`processor:retry`) between the Kafka receiver (in `manual` commit mode) and the
-exporter. The retry processor retries transient nacks with exponential backoff;
-only a terminal failure (retries exhausted or a permanent error) reaches the
-receiver and advances the committed offset. While retries are in progress the
-offset stays in-flight and is not committed, so it remains eligible for
-redelivery if the process restarts.
+(`processor:retry`). See
+[Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)
+for the full option mapping and known gaps.
+
+#### Recipe A -- At-most-once (matches Go `autocommit.enable: true`)
+
+Offsets are committed by the client regardless of downstream outcome; no retry
+processor is needed. A message may be lost if the pipeline fails after the
+offset is committed.
+
+```yaml
+config:
+  brokers: "broker-1:9092"
+  group_id: "telemetry-consumers"
+  client_id: "gateway-instance-1"
+  traces:
+    topics:
+      - "otel-traces"
+  commit:
+    mode: auto
+    interval_ms: 5000   # equivalent to Go autocommit.interval
+```
+
+#### Recipe B -- At-least-once with transient retry (matches Go `autocommit: false` + `error_backoff`)
+
+Place a retry processor between the Kafka receiver (in `manual` commit mode) and
+the exporter. The retry processor retries transient nacks with exponential
+backoff; while retries are in progress the offset stays in-flight and is not
+committed, so it remains eligible for redelivery if the process restarts. Only a
+terminal failure (retries exhausted or a permanent error) reaches the receiver
+and advances the committed offset.
+
+The retry processor fields below map directly to Go's `error_backoff`.
+
+> **Differs from Go:** once retries are exhausted, this receiver **commits** the
+> offset (advances past the message) rather than leaving it unmarked for
+> redelivery. See [Known gaps](#known-gaps--behavioral-differences).
 
 ```yaml
 version: otel_dataflow/v1
@@ -673,10 +761,11 @@ groups:
           retry:
             type: processor:retry
             config:
-              initial_interval: 1s
-              max_interval: 30s
-              max_elapsed_time: 5m
-              multiplier: 2.0
+              initial_interval: 1s     # Go error_backoff.initial_interval
+              max_interval: 30s        # Go error_backoff.max_interval
+              max_elapsed_time: 5m     # Go error_backoff.max_elapsed_time
+              multiplier: 2.0          # Go error_backoff.multiplier
+              # Go error_backoff.randomization_factor has no equivalent (no jitter).
 
           otlp/export:
             type: exporter:otlp_grpc
@@ -745,6 +834,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   overridden by the built-in values.
 - Idempotent processing (`enable_idempotency`) only applies when commit mode
   is `manual`; the setting is ignored in `auto` mode.
+- Compared to the Go Kafka receiver, this receiver does not replay terminally
+  failed messages from Kafka (a terminal nack commits the offset), does not pause
+  partitions on error, has no backoff jitter, and does not preserve per-partition
+  order across retries. See
+  [Comparison with the Go Kafka receiver](#comparison-with-the-go-kafka-receiver)
+  for details.
 
 ## Related Docs
 
