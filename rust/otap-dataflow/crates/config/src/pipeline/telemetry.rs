@@ -66,7 +66,7 @@ const fn default_reporting_interval() -> Duration {
 }
 
 /// Attribute value types for telemetry resource attributes.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, JsonSchema)]
 pub enum AttributeValue {
     /// String type attribute value.
     String(String),
@@ -78,6 +78,21 @@ pub enum AttributeValue {
     F64(f64),
     /// Array type attribute value.
     Array(AttributeValueArray),
+}
+
+impl Serialize for AttributeValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AttributeValue::String(s) => serializer.serialize_str(s),
+            AttributeValue::Bool(b) => serializer.serialize_bool(*b),
+            AttributeValue::I64(i) => serializer.serialize_i64(*i),
+            AttributeValue::F64(f) => serializer.serialize_f64(*f),
+            AttributeValue::Array(arr) => arr.serialize(serializer),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for AttributeValue {
@@ -213,7 +228,7 @@ impl<'de> Deserialize<'de> for AttributeValue {
 }
 
 /// Array attribute value types for telemetry resource attributes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
 pub enum AttributeValueArray {
     /// Array of bools
     Bool(Vec<bool>),
@@ -223,6 +238,20 @@ pub enum AttributeValueArray {
     F64(Vec<f64>),
     /// Array of strings
     String(Vec<String>),
+}
+
+impl Serialize for AttributeValueArray {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AttributeValueArray::Bool(v) => v.serialize(serializer),
+            AttributeValueArray::I64(v) => v.serialize(serializer),
+            AttributeValueArray::F64(v) => v.serialize(serializer),
+            AttributeValueArray::String(v) => v.serialize(serializer),
+        }
+    }
 }
 
 impl AttributeValue {
@@ -671,8 +700,8 @@ mod tests {
     fn test_telemetry_attribute_serialize_bare() {
         let attr = TelemetryAttribute::new(AttributeValue::String("test".to_string()));
         let json = serde_json::to_string(&attr).unwrap();
-        // Without brief, serializes as just the value (with enum tagging)
-        assert_eq!(json, r#"{"String":"test"}"#);
+        // Without brief, serializes as just the plain value
+        assert_eq!(json, r#""test""#);
     }
 
     #[test]
@@ -682,7 +711,113 @@ mod tests {
             "A test attribute",
         );
         let json = serde_json::to_string(&attr).unwrap();
-        assert!(json.contains(r#""value":{"String":"test"}"#));
+        assert!(json.contains(r#""value":"test""#));
         assert!(json.contains(r#""brief":"A test attribute""#));
+    }
+
+    #[test]
+    fn test_attribute_value_yaml_roundtrip_scalars() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("s".into(), AttributeValue::String("hello".into())),
+            ("b".into(), AttributeValue::Bool(true)),
+            ("i".into(), AttributeValue::I64(-42)),
+            ("f".into(), AttributeValue::F64(1.5)),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        let back: HashMap<String, AttributeValue> =
+            serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_yaml_roundtrip_arrays() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            (
+                "strings".into(),
+                AttributeValue::Array(AttributeValueArray::String(vec!["a".into(), "b".into()])),
+            ),
+            (
+                "bools".into(),
+                AttributeValue::Array(AttributeValueArray::Bool(vec![true, false])),
+            ),
+            (
+                "ints".into(),
+                AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3])),
+            ),
+            (
+                "floats".into(),
+                AttributeValue::Array(AttributeValueArray::F64(vec![1.5, 2.5])),
+            ),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        let back: HashMap<String, AttributeValue> =
+            serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_json_roundtrip() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("s".into(), AttributeValue::String("hello".into())),
+            ("b".into(), AttributeValue::Bool(true)),
+            ("i".into(), AttributeValue::I64(-42)),
+            ("f".into(), AttributeValue::F64(1.5)),
+            (
+                "arr".into(),
+                AttributeValue::Array(AttributeValueArray::I64(vec![10, 20])),
+            ),
+        ]);
+
+        let json = serde_json::to_string(&attrs).expect("serialize to JSON");
+        let back: HashMap<String, AttributeValue> =
+            serde_json::from_str(&json).expect("deserialize from JSON");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_serializes_plain_scalars_yaml() {
+        // Verify that serialized YAML uses plain scalars, not
+        // externally-tagged enum wrappers like `!String`.
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("name".into(), AttributeValue::String("svc".into())),
+            ("count".into(), AttributeValue::I64(7)),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        assert!(
+            !yaml.contains("!String"),
+            "YAML should not contain enum tags, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("!I64"),
+            "YAML should not contain enum tags, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_telemetry_config_yaml_roundtrip() {
+        let resource = HashMap::from([
+            (
+                "service.name".to_string(),
+                AttributeValue::String("my-svc".to_string()),
+            ),
+            ("enabled".to_string(), AttributeValue::Bool(true)),
+            ("replica".to_string(), AttributeValue::I64(3)),
+        ]);
+
+        let config = TelemetryConfig {
+            resource,
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).expect("serialize to YAML");
+        let back: TelemetryConfig = serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(config.resource, back.resource);
     }
 }
