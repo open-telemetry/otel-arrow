@@ -44,20 +44,15 @@ jobs:
 
       - name: Check if documentation-only PR
         id: check_docs_only
+        if: ${{ env.SKIP != 'true' }}
         run: |
-          # Check if documentation label is present
-          if ! echo "${{ github.event.pull_request.labels.*.name }}" | grep -qw documentation; then
-            echo "is_doc_only=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           # Get all changed files
           all_changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD")
 
-          # Check if all files are .md files
-          non_md_files=$(echo "$all_changed" | grep -v -E '\.md$' || true)
+          # Treat PR as docs-only when all changed files are under docs paths.
+          non_doc_files=$(echo "$all_changed" | grep -v -E '^(docs/|rust/otap-dataflow/docs/)' || true)
 
-          if [ -z "$non_md_files" ]; then
+          if [ -z "$non_doc_files" ]; then
             echo "is_doc_only=true" >> "$GITHUB_OUTPUT"
           else
             echo "is_doc_only=false" >> "$GITHUB_OUTPUT"
