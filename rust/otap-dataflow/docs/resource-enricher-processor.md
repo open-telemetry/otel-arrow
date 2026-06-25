@@ -19,13 +19,13 @@ This design follows
 ## Summary
 
 The resource enricher processor enriches OTAP telemetry with resource
-attributes pulled from an external metadata source — a Kubernetes cluster,
+attributes pulled from an external metadata source -- a Kubernetes cluster,
 a cloud provider's resource-tag service, a database, etc.
 It associates each inbound resource with a metadata record using a small,
 ordered set of association rules, then writes selected attributes from
 that record onto the resource's attribute set.
 
-The processor is **provider-neutral** — it never names a Kubernetes pod,
+The processor is **provider-neutral** -- it never names a Kubernetes pod,
 an AWS task, or any other provider concept. All provider-specific
 knowledge (how metadata is discovered, cached, and flattened into
 records) lives below the capability boundary in a provider extension.
@@ -33,7 +33,7 @@ records) lives below the capability boundary in a provider extension.
 The responsibility is split into two pieces:
 
 1. **A metadata-provider extension** (first provider:
-   `k8s_metadata_extension`) — an active, shared extension that owns the
+   `k8s_metadata_extension`) -- an active, shared extension that owns the
    provider client, runs the discovery loop (watch / poll / load-once),
    maintains the in-memory metadata cache, flattens provider objects into
    provider-neutral `EnrichmentRecord` values, and exposes a
@@ -42,7 +42,7 @@ The responsibility is split into two pieces:
    process) or **pipeline-group scope** (one instance per named group),
    whichever fits the provider; see
    [Extension scope is a per-provider choice](#extension-scope-is-a-per-provider-choice).
-2. **`resource_enricher_processor`** — an inline single-route processor
+2. **`resource_enricher_processor`** -- an inline single-route processor
    that resolves each inbound `OtapPdata` resource to an `EnrichmentRecord`
    via the capability and writes the configured attributes onto Arrow
    resource attribute batches.
@@ -85,18 +85,18 @@ Framework work this design depends on (called out in
 [Extension System Architecture](extension-system-architecture.md) as
 future work):
 
-- **Broader extension scopes — pipeline-group scope and engine scope.**
+- **Broader extension scopes -- pipeline-group scope and engine scope.**
   Today the only available scope is *pipeline* scope, which the
   framework documents as per-core. Running the extension at pipeline
-  scope would mean one discovery loop and one cache *per core* — N
-  watches and N cache copies on an N-core collector — which violates the
+  scope would mean one discovery loop and one cache *per core* -- N
+  watches and N cache copies on an N-core collector -- which violates the
   "per-core duplication is unacceptable" constraint that motivates the
   extension split. The design therefore requires group-scoped or
   engine-scoped extensions so exactly one discovery loop and cache runs
   per group (or per process); pipeline scope is rejected at config
   validation (see [Config rules](#config-rules)), not offered as a
-  degraded mode. The processor itself does not name a scope — it just
-  binds a shared capability — so no processor change is needed once
+  degraded mode. The processor itself does not name a scope -- it just
+  binds a shared capability -- so no processor change is needed once
   group/engine scope ships.
 - **Runtime isolation for shared extensions.** Today `start()`,
   capability methods, and the data path all run on the same per-core
@@ -106,7 +106,7 @@ future work):
   Kubernetes provider extension will need to do that until the
   framework gains a dedicated extension runtime; the synchronous,
   non-blocking capability surface means the data-path contract does
-  not change when that lands — it just removes the manual offload
+  not change when that lands -- it just removes the manual offload
   burden inside the extension.
 
 ## Goals
@@ -144,7 +144,7 @@ The v1 capability does not include:
   attributes, not arbitrary expressions;
 - `wait_for_metadata`-style startup blocking. The architecture cannot
   guarantee "cache fully warm for this processor's shapes before
-  `process()` runs" — the processor's own `start()` is what tells the
+  `process()` runs" -- the processor's own `start()` is what tells the
   extension which index shapes and fields to populate, so gating on that
   deadlocks.
 - provider-specific watch-narrowing beyond what the first provider's
@@ -164,7 +164,7 @@ contract must say so.
 | Extension scope | Per-provider operator choice between **engine scope** (one instance per collector) and **pipeline-group scope** (one instance per named group). Per-pipeline scope is rejected because the framework's pipeline-scoped extensions are themselves per-core, so it would mean per-core duplication. See [Extension scope is a per-provider choice](#extension-scope-is-a-per-provider-choice). |
 | Sharing model | `Active + Shared` extension. Exactly one instance per scope unit. Per-pipeline processors bind via `require_shared` and hold a `Send + Clone` capability handle that exposes a cheap, non-blocking `snapshot()` returning an immutable view. How the provider backs that snapshot is private to the extension. |
 | Lookup key | Composite: an AND of `(resource_attribute_name, value)` pairs (`LookupKey<'_>`, a borrowed slice). |
-| Returned record | Provider-neutral flat `EnrichmentRecord` (dotted field name → `EnrichmentValue`). |
+| Returned record | Provider-neutral flat `EnrichmentRecord` (dotted field name -> `EnrichmentValue`). |
 | Hot-path contract | Capability lookups are constant-time, synchronous, and never block. |
 | Index spec | Processors declare `key_shapes` + `record_fields` via `set_index_spec(registrant, spec)`. The extension stores one spec per registrant (`(pipeline_group_id, pipeline_id, node_id)`) and uses the **union** as its effective spec; `clear_index_spec` happens automatically when the last per-core handle for a registrant is dropped. See [Index spec registration](#index-spec-registration). |
 | Connection peer | `OtapPdata::peer_addr()` from socket-backed receivers, expressed as a typed source (`{from: connection}`) . Looked up via the `ConnectionLookup` companion capability. IP-keyed providers (e.g. K8s pods by `status.podIP`) implement it; others leave it unimplemented and `validate_index_spec` rejects `{from: connection}` at config time (`IndexSpecError::ConnectionSourceUnsupported`). See [Connection-Peer Association](#connection-peer-association). |
@@ -210,7 +210,7 @@ Flow on the data path:
 2. Processor walks `associations` rules in order. The first rule whose
    sources are all present on the resource is used. Each rule's source
    values are joined into a `LookupKey`.
-3. On a hit, the processor reads the returned `EnrichmentRecord` and produces a new resource-attribute array with the enrichment merged in — see [Attribute writes](#attribute-writes) for the cost model.
+3. On a hit, the processor reads the returned `EnrichmentRecord` and produces a new resource-attribute array with the enrichment merged in -- see [Attribute writes](#attribute-writes) for the cost model.
 4. On a miss, the processor records `lookup.miss` and forwards the
    resource unchanged.
 5. The processor never awaits provider I/O on the hot path.
@@ -229,7 +229,7 @@ Flow on the control path:
 3. As pipelines start up, each per-core processor resolves the bound
    extension via `require_shared` and calls `set_index_spec()` (see
    [Index spec registration](#index-spec-registration)). Per-core
-   processors read by calling `snapshot()` once per `process()` call — a
+   processors read by calling `snapshot()` once per `process()` call -- a
    cheap, non-blocking handle load. The shared read crosses no core
    boundary, and the snapshot itself is `Send + Sync` immutable data.
 4. On shutdown the engine drains every consumer in the scope unit, then
@@ -249,7 +249,7 @@ Flow on the control path:
 | Capability surface (`MetadataLookup`) | extension |
 | Discovery self-observability (event counts, errors, cache sizes) | extension |
 | Association rule evaluation | processor |
-| Attribute writes (record field → resource attribute) | processor |
+| Attribute writes (record field -> resource attribute) | processor |
 | Attribute-write-plan compilation | processor (config-time) |
 | Conflict-policy application | processor |
 | Lookup hit/miss telemetry, attribute-write counts | processor |
@@ -266,7 +266,7 @@ The capability is intentionally narrow and provider-neutral: a generic
 composite-key lookup, a per-batch snapshot accessor that gives the
 processor one stable view across an entire `process()` call, and a
 config-time `set_index_spec()` / `clear_index_spec()` pair that
-processors use to declare — per registrant — what to index by and what
+processors use to declare -- per registrant -- what to index by and what
 fields to materialize (see [Index spec registration](#index-spec-registration)
 for why this lives on the capability surface rather than inside
 extension config, and why it is multi-registrant).
@@ -277,7 +277,7 @@ extension config, and why it is multi-registrant).
 // config, values from the Arrow batch.
 type LookupKey<'a> = &'a [(&'a str, &'a str)];
 
-// The field names a key is built from — names only, no values. Owned
+// The field names a key is built from -- names only, no values. Owned
 // because the extension stores it as config, off the hot path.
 enum KeyShape {
     /// AND of resource-attribute names; looked up via `lookup()`.
@@ -344,13 +344,13 @@ trait MetadataLookup {
     /// to index by and store on behalf of `registrant`, set-replacing
     /// per registrant. Returns immediately; back-fill runs on the
     /// extension's runtime. The spec must already have passed
-    /// `validate_index_spec` — it is not re-validated here. See
+    /// `validate_index_spec` -- it is not re-validated here. See
     /// [Index spec registration](#index-spec-registration) for the
     /// union/back-fill lifecycle.
     fn set_index_spec(&self, registrant: RegistrantId, spec: &IndexSpec);
 
     /// Explicit reset of a registrant's contribution. Idempotent and
-    /// normally unnecessary — the extension refcounts capability
+    /// normally unnecessary -- the extension refcounts capability
     /// handles per `RegistrantId` and clears automatically when the
     /// last one drops.
     fn clear_index_spec(&self, registrant: RegistrantId);
@@ -369,7 +369,7 @@ trait MetadataLookup {
 /// lookup. Implemented alongside `MetadataLookup` by providers whose
 /// data is keyed by IP (K8s pods by `status.podIP`; future
 /// cloud-instance providers). Providers without an IP-keyed index
-/// (file / CSV / DB / KV / DNS / HTTP lookup) do not implement it —
+/// (file / CSV / DB / KV / DNS / HTTP lookup) do not implement it --
 /// misuse is rejected at config time, not at runtime.
 trait ConnectionLookup {
     /// Single hot-path lookup keyed by the batch's peer IP (e.g. K8s:
@@ -422,7 +422,7 @@ struct IndexSpec {
     /// `validate_index_spec` require the provider to implement that
     /// companion trait.
     key_shapes: Vec<KeyShape>,
-    /// Catalog paths to materialize into each EnrichmentRecord — the
+    /// Catalog paths to materialize into each EnrichmentRecord -- the
     /// union of every `attributes:` entry (bare entries contribute
     /// their name; `{from, to}` entries their `from`). Exact strings,
     /// no globs. Also drives which provider discovery sources to start
@@ -455,11 +455,11 @@ struct MetadataTables {
     /// The only public-facing index. Stored with owned keys (one
     /// (String, String) pair per element of the key's KeyShape) so the
     /// HashMap owns its data, but the hot-path lookup looks the entry
-    /// up by a borrowed `LookupKey<'_>` — i.e. the processor does not
+    /// up by a borrowed `LookupKey<'_>` -- i.e. the processor does not
     /// have to allocate a new owned key just to perform the lookup.
     by_key: HashMap<OwnedLookupKey, Arc<EnrichmentRecord>>,
 
-    // Provider object caches stay private — used only by the writer to
+    // Provider object caches stay private -- used only by the writer to
     // build and refresh `by_key`.
 }
 
@@ -478,7 +478,7 @@ call and use that handle for every resource in the batch. This keeps the
 cache lookup lock-free and allocation-free on the hot path**: for each
 resource the processor builds a small `LookupKey<'_>` that just points
 at strings it already has (attribute names from its config, values from
-the Arrow batch) and performs one `HashMap` lookup with it — no new
+the Arrow batch) and performs one `HashMap` lookup with it -- no new
 `String` allocations, no cloning. The snapshot also gives each batch a
 consistent view even if the writer publishes a new snapshot mid-call.
 
@@ -507,7 +507,7 @@ related objects, pull exactly the `record_fields` from the active
 entry per `key_shape` that resolves on that object (all pointing at the
 same `Arc`). Two objects sharing the same record share storage; multiple
 key shapes for the same object share its single record (so
-`[pod.uid → X]` and `[pod.name, namespace.name → X]` point at the same
+`[pod.uid -> X]` and `[pod.name, namespace.name -> X]` point at the same
 `Arc`). Memory cost is one `EnrichmentRecord` per object plus one
 `HashMap` entry per object per key shape.
 
@@ -520,7 +520,7 @@ after a pod is deleted, and `hostNetwork` pods share their node's IP, so
 indexing pods by IP can produce collisions even though `k8s.pod.uid` is
 unique.
 
-Key uniqueness is a **provider/writer concern** — the generic processor
+Key uniqueness is a **provider/writer concern** -- the generic processor
 never sees the ambiguity, it just gets a hit or a miss. The contract the
 writer must honor:
 
@@ -560,11 +560,11 @@ the same group.
 
 The processor's config is provider-neutral. Three blocks:
 
-- `associations:` — which resource-attribute combinations identify the
+- `associations:` -- which resource-attribute combinations identify the
   record to look up (in priority order).
-- `attributes:` — which provider-published attributes to write onto the
+- `attributes:` -- which provider-published attributes to write onto the
   resource (and, optionally, under what destination names).
-- `conflict_policy:` — what to do when a destination attribute already
+- `conflict_policy:` -- what to do when a destination attribute already
   exists on the resource.
 
 The set of attribute names valid in `associations:` and `attributes:`
@@ -598,7 +598,7 @@ nodes:
       #       only source (cannot be composed with `resource_attribute`
       #       sources in the same rule) and is only valid against a
       #       provider that implements the `ConnectionLookup`
-      #       companion capability — misuse is a config-time error,
+      #       companion capability -- misuse is a config-time error,
       #       not a runtime miss. The Kubernetes provider implements
       #       it (mapping to the pod whose `status.podIP` matches).
       #       See Connection-Peer Association.
@@ -617,9 +617,9 @@ nodes:
 
       # ----- Attributes to write -----
       # Each entry is one of:
-      #   * a bare attribute name — the processor writes the
+      #   * a bare attribute name -- the processor writes the
       #     provider-published value under that exact name.
-      #   * { from, to } — the processor reads the catalog-declared
+      #   * { from, to } -- the processor reads the catalog-declared
       #     attribute named in `from` and writes it under the
       #     destination name `to`.
       # v1 has no wildcards or globs (see Open Questions).
@@ -644,9 +644,9 @@ reload). A `{from: connection}` rule compiles into
 `KeyShape::Connection` and is dispatched against the provider's
 `ConnectionLookup` rather than the composite `lookup()` (see
 [Connection-Peer Association](#connection-peer-association)); all other
-rules dispatch against `lookup()`. Spec lifecycle — union across
+rules dispatch against `lookup()`. Spec lifecycle -- union across
 registrants, back-fill, and automatic clear when the last per-core
-handle drops — is covered in
+handle drops -- is covered in
 [Index spec registration](#index-spec-registration).
 
 ### Extension config (Kubernetes provider)
@@ -655,8 +655,8 @@ Provider-specific. The Kubernetes provider recommends pipeline-group
 scope (see
 [Extension scope is a per-provider choice](#extension-scope-is-a-per-provider-choice));
 the example below shows that form. The extension config holds **only
-non-field knobs** — connection/auth, discovery tuning, filtering,
-exclusions — plus provider behavior toggles. It does **not** contain an
+non-field knobs** -- connection/auth, discovery tuning, filtering,
+exclusions -- plus provider behavior toggles. It does **not** contain an
 attribute list: which fields to store and which discovery sources to
 start are derived from the processor's `IndexSpec` (`record_fields` +
 `key_shapes`), so the extension config has no attribute list to keep in
@@ -701,9 +701,9 @@ A second group declares its own extension instance with its own config
 (e.g. different namespace narrowing or `ServiceAccount`); pipelines in
 that group bind by the local name and see a different cache.
 
-Because the Kubernetes provider has a **live writer** — the
+Because the Kubernetes provider has a **live writer** -- the
 watch/reflector streams apply/delete deltas concurrently with hot-path
-reads — it backs its `snapshot()` with an `Arc<ArcSwap<MetadataTables>>`:
+reads -- it backs its `snapshot()` with an `Arc<ArcSwap<MetadataTables>>`:
 the writer builds a new immutable `MetadataTables` and atomically swaps it
 in, and each `snapshot()` is a single lock-free atomic pointer load. This
 is the provider's implementation of the generic snapshot contract (see
@@ -711,14 +711,14 @@ is the provider's implementation of the generic snapshot contract (see
 would not need `ArcSwap` at all.
 
 The Kubernetes provider's catalog publishes the OpenTelemetry K8s
-semantic-convention attribute names — see
+semantic-convention attribute names -- see
 [semantic-conventions/docs/resource/k8s](https://github.com/open-telemetry/semantic-conventions/tree/main/docs/resource/k8s).
 So `k8s.pod.uid`, `k8s.pod.ip`, `k8s.pod.name`, `k8s.namespace.name`,
 `k8s.deployment.name`, `k8s.node.name`, `container.id`, etc. are the
 valid names that may appear in a processor's `associations:` and
 `attributes:` blocks when binding this provider. Per-key label and
 annotation paths are exposed as `k8s.pod.labels.<key>` and
-`k8s.pod.annotations.<key>` — one path per label or annotation key; v1
+`k8s.pod.annotations.<key>` -- one path per label or annotation key; v1
 has no wildcard or glob form (see
 [Open Questions](#open-questions)). Provider-internal value
 normalization (for example, stripping `docker://`, `containerd://`,
@@ -762,7 +762,7 @@ processor does not see it.
   recommends group scope (see
   [Extension scope is a per-provider choice](#extension-scope-is-a-per-provider-choice)).
 - A processor's `capabilities:` binding may reference any shared extension
-  visible to its pipeline — either an engine-scoped extension or a
+  visible to its pipeline -- either an engine-scoped extension or a
   group-scoped extension declared in the same group. Cross-group bindings
   to another group's group-scoped extension are rejected.
 - Within a scope unit, an extension `name:` is unique; two declarations
@@ -781,7 +781,7 @@ to an `EnrichmentRecord` in the extension's cache. The semantics are:
   fall through to later rules (first-match wins, even on miss).
 - **Empty `associations` is a config error.** v1 requires at least one
   explicit rule rather than picking a default chain on the user's behalf
-  — the right chain depends on whether the upstream source is
+  -- the right chain depends on whether the upstream source is
   socket-backed, file-based, or already-enriched gateway traffic.
 - **Selection is presence-only; predicates live in the provider.** A rule
   is selected purely on source presence (each `resource_attribute` source
@@ -803,8 +803,8 @@ rule-scan plan so the hot path performs at most one O(R) pass per resource
 ### Provider catalog
 
 The processor is provider-agnostic and never invents attribute names.
-Every name the operator writes in `associations:` or `attributes:` —
-including the `{from, to}` form's `from` — must appear in the bound
+Every name the operator writes in `associations:` or `attributes:` --
+including the `{from, to}` form's `from` -- must appear in the bound
 provider extension's catalog.
 
 Each provider extension publishes its catalog as part of its public
@@ -828,10 +828,10 @@ contract:
 - **The catalog has two kinds of entry: fixed paths and open
   namespaces.** Fixed paths are the closed set of well-known
   attribute names the provider always knows how to produce
-  (`k8s.pod.uid`, `k8s.namespace.name`, `k8s.node.name`, …); these
+  (`k8s.pod.uid`, `k8s.namespace.name`, `k8s.node.name`, ...); these
   validate by exact membership. Open namespaces cover attributes whose
   leaf key is created by the workload and is therefore *not* knowable
-  ahead of time — Kubernetes labels and annotations being the canonical
+  ahead of time -- Kubernetes labels and annotations being the canonical
   case. The provider publishes these as **prefixes**, not enumerated
   keys: e.g. `k8s.pod.labels.` and `k8s.pod.annotations.` (and the
   namespace/node equivalents). `validate_index_spec` accepts any path
@@ -839,7 +839,7 @@ contract:
   open-namespace prefix and has a non-empty leaf (`k8s.pod.labels.app`
   passes because it sits under `k8s.pod.labels.`). This is what lets a
   processor declare `k8s.pod.labels.app` without that key already
-  existing in any cached object — validation checks the *shape* of the
+  existing in any cached object -- validation checks the *shape* of the
   name against the catalog, never the live cache. If the workload turns
   out not to carry that label, the field is simply absent from the
   record and the write is skipped (a normal miss for that field), exactly
@@ -881,7 +881,7 @@ from the processor's config, declared through `set_index_spec()`.
 
 #### Framework constraint
 
-The extension does **not** see processor configs at its own `start()` —
+The extension does **not** see processor configs at its own `start()` --
 the extension system wires capabilities one-way (consumers pull through
 typed handles) and the engine builds the extension from its own
 `extensions:` block alone. The only architecture-legal channel for
@@ -890,7 +890,7 @@ index-spec declaration lives on the trait. The flow:
 
 1. At `start()`, the processor builds its `RegistrantId` from
    `PipelineContext` (`pipeline_group_id`, `pipeline_id`, `node_id`),
-   compiles `associations` → `key_shapes` and `attributes` →
+   compiles `associations` -> `key_shapes` and `attributes` ->
    `record_fields`, calls `validate_index_spec(spec)` against the
    bound provider, and on success calls
    `set_index_spec(registrant, spec)`. A validation error aborts
@@ -919,7 +919,7 @@ spec reaches the extension **after** its `start()` and after initial
 discovery has begun. Lookups using a newly-declared shape or field miss
 until the back-fill completes and are counted in `lookup.miss`;
 steady state is "all declared shapes hit." The processor cannot wait
-for extension start — the framework already guarantees that ordering —
+for extension start -- the framework already guarantees that ordering --
 and cannot wait for the cache to be warm without coupling pipeline
 readiness to provider-API latency (reported as telemetry instead).
 
@@ -929,11 +929,11 @@ The engine clones one pipeline definition per allocated core, so all N
 per-core replicas of a `(group, pipeline, node)` triple have
 byte-identical config and call `set_index_spec` with the same
 registrant and the same spec. The first call installs; the remaining
-N − 1 see no change and return immediately. One processor node, one
+N - 1 see no change and return immediately. One processor node, one
 registrant entry, no duplicate index work.
 
 Different processors stay independent because they have different
-registrants — a different `node_id` (two enrichers in the same
+registrants -- a different `node_id` (two enrichers in the same
 pipeline), `pipeline_id` (different pipelines in the same group, which
 the engine permits with independent configs), or `pipeline_group_id`.
 A spec change by one registrant only edits its own entry; the union
@@ -954,7 +954,7 @@ mutation. This is the dominant hot-path cost of the processor and the
 design optimizes around it:
 
 - **Batched, not per-row.** The processor computes, for the whole batch,
-  the set of `(resource_index, attribute_name → value)` edits implied by
+  the set of `(resource_index, attribute_name -> value)` edits implied by
   the matched records and the conflict policy, then materializes the
   updated resource-attribute array(s) once per `process()` call using the
   same
@@ -980,18 +980,18 @@ suggest.
   same name.
 - A **`{from, to}` entry** reads the record field named by `from` and
   writes it to the destination resource attribute named by `to`.
-- A field absent from the record is skipped silently — the destination
+- A field absent from the record is skipped silently -- the destination
   attribute is not written, and the resource is forwarded unchanged
   for that attribute.
-- v1 supports exact names only — no wildcards, globs, or templates.
+- v1 supports exact names only -- no wildcards, globs, or templates.
   See [Open Questions](#open-questions) for the v2 wildcard tradeoff.
 
 The set of record-field paths across every entry in `attributes:` is
 exactly the `record_fields` the processor declares in its `IndexSpec`,
-so the extension materializes precisely what some processor writes —
+so the extension materializes precisely what some processor writes --
 nothing more.
 
-The compiled attribute-write plan (resolved record-field path →
+The compiled attribute-write plan (resolved record-field path ->
 destination attribute name) is built at `start()` and rebuilt on
 `NodeControlMsg::Config` reload.
 
@@ -1000,15 +1000,15 @@ destination attribute name) is built at `start()` and rebuilt on
 When a destination resource attribute already exists on the resource, the
 configured `conflict_policy` decides:
 
-- `keep_existing` (default) — leave the existing value; skip the write.
-- `overwrite` — replace the existing value with the value from the
+- `keep_existing` (default) -- leave the existing value; skip the write.
+- `overwrite` -- replace the existing value with the value from the
   enrichment record.
 
 ## Connection-Peer Association
 
 Some receivers observe a connection peer address that is only available
-at the receiver — by the time a batch reaches a processor, the
-originating socket is gone — so it is propagated on `OtapPdata` itself
+at the receiver -- by the time a batch reaches a processor, the
+originating socket is gone -- so it is propagated on `OtapPdata` itself
 via `OtapPdata::peer_addr()`.
 
 The processor exposes the peer address as a **typed source kind**
@@ -1043,7 +1043,7 @@ return `Some(self)`:
   mapping the peer IP to a cached `(VM, tags)` record.
 
 Providers whose data is not naturally keyed by IP (file / CSV / YAML;
-database / KV; DNS / HTTP — the shape of Go's `lookupprocessor`) inherit
+database / KV; DNS / HTTP -- the shape of Go's `lookupprocessor`) inherit
 the default `None` and need no changes; support is additive and opt-in.
 
 The processor consults `as_connection_lookup()` at `start()`/reload to
@@ -1056,9 +1056,9 @@ handle on the per-rule dispatch table for hot-path use.
 
 A rule's compiled plan is one of:
 
-- `Composite(KeyShape)` — build a `LookupKey<'_>` from the named
+- `Composite(KeyShape)` -- build a `LookupKey<'_>` from the named
   resource attributes and call `MetadataLookup::lookup`.
-- `Connection` — read `OtapPdata::peer_addr()`, and call
+- `Connection` -- read `OtapPdata::peer_addr()`, and call
   `ConnectionLookup::lookup_by_connection`. Provider-internal
   normalization of the peer (IPv4-mapped-IPv6 collapsing, etc.)
   applies on the indexed and queried side just like other catalog
@@ -1082,7 +1082,7 @@ This keeps the first-match-wins semantics consistent.
   the workload that produced the telemetry. Because one forwarder fronts
   many sources, a single misattribution can mislabel a large fan-in of
   unrelated telemetry with confident-looking but incorrect enrichment
-  — strictly worse than leaving the resource unenriched. Operators should
+  -- strictly worse than leaving the resource unenriched. Operators should
   only enable `{from: connection}` on ingestion paths where the peer is
   the actual workload (direct socket-backed receivers), and should prefer higher-priority attribute-based rules (e.g. `k8s.pod.uid`) ahead of
   the connection rule so the IP path is a last resort.
@@ -1129,7 +1129,7 @@ supported scopes and recommendation.
 ### Pipeline-group scope
 
 Recommended when the provider's discovery loop is naturally scoped by
-something groups vary — filter / region / account / namespace, client
+something groups vary -- filter / region / account / namespace, client
 identity, or any case where restart and back-fill blast radius should
 be bounded to one group. The Kubernetes provider
 (`k8s_metadata_extension`) is the canonical case: agent-mode groups
@@ -1147,7 +1147,7 @@ is actually required.
 
 ### Engine scope
 
-Appropriate when the discovery is naturally one-per-collector — a
+Appropriate when the discovery is naturally one-per-collector -- a
 read-only file/DB load, or any provider whose client identity and scope are fixed
 at the process level. Avoids redundant discovery; the cost is a wider
 blast radius for reloads and back-fills (every binding pipeline sees
@@ -1160,7 +1160,7 @@ a transient miss window during a restart or a union-growing
   resolves the capability.
 - Exactly one instance per scope unit.
 - Pipelines in the scope unit drain before the extension shuts down.
-- A processor may bind any shared extension visible to its pipeline —
+- A processor may bind any shared extension visible to its pipeline --
   its group's own group-scoped extensions plus all engine-scoped
   extensions. Cross-group binding to another group's group-scoped
   extension is rejected.
@@ -1183,7 +1183,7 @@ The processor is a single concrete component, so its metrics are fixed.
 The capability does not mandate any extension metrics. Each provider
 extension defines and documents its own metrics under its own
 `extension.<provider>` set name, scoped to whatever its backend makes
-meaningful — cache size, discovery/watch/poll activity, API or I/O
+meaningful -- cache size, discovery/watch/poll activity, API or I/O
 counters, back-fill progress. These vary too much across backends
 (watch vs. poll vs. load-once; API vs. file vs. DB) to specify a common
 set here.
@@ -1238,7 +1238,7 @@ channel, per
 [Extension System Architecture](extension-system-architecture.md). The
 two reloads are independent (a processor `associations` / `attributes`
 change never touches the extension's discovery/auth/filter config, and
-vice versa); the only coupling is the capability surface — after either
+vice versa); the only coupling is the capability surface -- after either
 side reloads, the processor's next `set_index_spec()` or the extension's
 recomputed union brings the effective index back into agreement.
 
@@ -1299,12 +1299,12 @@ Additional scenario coverage:
 ## Open Questions
 
 1. **Lookup return type.** `Option<&EnrichmentRecord>` borrows from the
-   snapshot — the cleanest hot-path shape, but means the snapshot guard
+   snapshot -- the cleanest hot-path shape, but means the snapshot guard
    must outlive every lookup. The alternative `Option<Arc<EnrichmentRecord>>`
    always clones an `Arc` but is simpler ownership-wise. Worth picking one
    before the trait stabilizes.
 2. **Provider-default attribute set as a `{default: true}` entry.** v1
-   requires `attributes:` to be a non-empty explicit list — operators
+   requires `attributes:` to be a non-empty explicit list -- operators
    copy the recommended set from the provider's docs. An alternative
    is to let providers publish a "default attribute set" that the
    operator opts into with a `{default: true}` entry composable with
@@ -1313,7 +1313,7 @@ Additional scenario coverage:
    recommended set (K8s; likely Azure / GCP / AWS instance-metadata
    providers) and is nonsensical for providers whose schema is
    user-defined (file / CSV / YAML lookup; database / KV lookup;
-   DNS / HTTP lookup — the same model as Go's `lookupprocessor`).
+   DNS / HTTP lookup -- the same model as Go's `lookupprocessor`).
    Adopting it forces either (a) a per-provider capability flag plus
    processor logic to fall back when the provider has no default, or
    (b) "no default set" surfacing as a runtime miss instead of a
