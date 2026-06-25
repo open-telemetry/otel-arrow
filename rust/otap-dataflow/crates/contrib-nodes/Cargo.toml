@@ -40,9 +40,15 @@ humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
+futures-channel = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
+rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+aws-config = { workspace = true, optional = true }
+aws-msk-iam-sasl-signer = { workspace = true, optional = true }
+smallvec = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }
@@ -55,6 +61,9 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
+[target.'cfg(target_env = "musl")'.dependencies]
+rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
+
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
 
@@ -63,8 +72,25 @@ tracepoint_decode = { workspace = true, optional = true }
 
 [features]
 etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
+kafka-exporter = [
+    "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+]
+kafka-receiver = [
+    "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+    "dep:regex",
+    "dep:smallvec",
+]
+aws = [
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
+]
 contrib-receivers = [
     "etw-receiver",
+    "kafka-receiver",
     "user_events-receiver",
 ]
 user_events-receiver = [
@@ -80,6 +106,7 @@ user_events-eventheader = [
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
+    "kafka-exporter",
 ]
 geneva-exporter = [
     "dep:geneva-uploader",
@@ -131,9 +158,11 @@ opentelemetry-proto.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+portpicker.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+testcontainers.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 

@@ -1,0 +1,49 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: {{core_start}}
+          end: {{core_end}}
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:receiver:kafka
+            config:
+              brokers: "{{kafka_hostname}}:9092"
+              group_id: "dfe-kafka-consumer"
+              client_id: "dfe-kafka-consumer"
+              auto_offset_reset: earliest
+              logs:
+                topics:
+                  - "otel-logs"
+                encoding: otlp_proto
+              metrics:
+                topics:
+                  - "otel-metrics"
+                encoding: otlp_proto
+              traces:
+                topics:
+                  - "otel-spans"
+                encoding: otlp_proto
+          exporter:
+            type: urn:otel:exporter:otlp_grpc
+            config:
+              grpc_endpoint: http://{{backend_hostname}}:1235
+              compression_method: {% if compression_method == "none" %}null{% else %}{{compression_method}}{% endif %}
+        connections:
+          - from: receiver
+            to: exporter

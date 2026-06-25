@@ -1,0 +1,19 @@
+name: Rotel Kafka OTLP Baseline (Metrics)
+slug: rotel_metrics_otlp_none_baseline
+description: rotel-dev/rotel Kafka pipeline with OTLP protobuf encoding for metrics, no compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/rotel-kafka-single-core-multi-rate.yaml
+
+meta:
+  binary: rotel
+  protocols: []
+  signals: [metrics]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_metrics.yaml
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: metrics
+  loadgen_max_batch_size: 1000
+  compression_method: none

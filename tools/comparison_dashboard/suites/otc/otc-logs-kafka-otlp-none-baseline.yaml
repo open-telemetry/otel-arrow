@@ -1,0 +1,22 @@
+name: OTC Kafka OTLP Baseline (Logs)
+slug: otc_logs_otlp_none_baseline
+description: OpenTelemetry Collector Kafka pipeline with OTLP protobuf encoding for logs, no compression
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/otc-kafka-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: []
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  kafka_producer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/kafka-producer-otlp.yaml.j2
+  kafka_consumer_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/kafka-consumer-otlp.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  compression_method: none
+  otelcol_gomaxprocs: 1
