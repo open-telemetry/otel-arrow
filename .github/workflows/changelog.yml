@@ -28,29 +28,47 @@ jobs:
     if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
     env:
       PR_HEAD: ${{ github.event.pull_request.head.sha }}
-      # Reusable expression: true when any bypass condition is set
-      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name, 'chore') || contains(github.event.pull_request.labels.*.name, 'skipchangelog') || contains(github.event.pull_request.title, 'chore') }}
 
     steps:
+      - name: Detect changelog bypass conditions
+        id: detect_bypass
+        run: |
+          labels="${{ join(github.event.pull_request.labels.*.name, ' ') }}"
+          title="${{ github.event.pull_request.title }}"
+
+          skip=false
+          for label in dependencies chore skipchangelog; do
+            if echo "$labels" | grep -Eq "(^|[[:space:]])${label}($|[[:space:]])"; then
+              skip=true
+              break
+            fi
+          done
+
+          if echo "$title" | grep -qi 'chore'; then
+            skip=true
+          fi
+
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          fetch-depth: ${{ env.SKIP == 'true' && '1' || '0' }}
+          fetch-depth: ${{ steps.detect_bypass.outputs.skip == 'true' && '1' || '0' }}
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
-        if: ${{ env.SKIP != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' }}
         with:
           go-version: stable
           cache-dependency-path: "**/*.sum"
 
       - name: Check if documentation-only PR
         id: check_docs_only
-        if: ${{ env.SKIP != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' }}
         run: |
           # Get all changed files
           all_changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD")
 
-          # Treat PR as docs-only when all changed files are under docs paths.
-          non_doc_files=$(echo "$all_changed" | grep -v -E '^(docs/|rust/otap-dataflow/docs/)' || true)
+          # Treat PR as docs-only when all changed files are under any docs/ directory.
+          non_doc_files=$(printf '%s\n' "$all_changed" | grep -v '^$' | grep -v -E '(^|.*/)docs/' || true)
 
           if [ -z "$non_doc_files" ]; then
             echo "is_doc_only=true" >> "$GITHUB_OUTPUT"
@@ -59,7 +77,7 @@ jobs:
           fi
 
       - name: Ensure no direct edits to CHANGELOG files
-        if: ${{ env.SKIP != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
         run: |
           changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
             -- go/CHANGELOG.md rust/otap-dataflow/CHANGELOG.md)
@@ -75,7 +93,7 @@ jobs:
           fi
 
       - name: Ensure a .chloggen/*.yaml entry was added or edited
-        if: ${{ env.SKIP != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
         run: |
           touched=$(git diff --diff-filter=AM --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
             -- 'go/.chloggen/' 'rust/otap-dataflow/.chloggen/' \
@@ -103,7 +121,7 @@ jobs:
           echo "$touched"
 
       - name: Validate .chloggen/*.yaml entries
-        if: ${{ env.SKIP != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
         run: |
           make chlog-install
           make chlog-validate
