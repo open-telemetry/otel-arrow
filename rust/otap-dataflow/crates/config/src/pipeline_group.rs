@@ -41,6 +41,20 @@ impl PipelineGroupConfig {
         }
     }
 
+    /// Returns a clone of this pipeline group with every node's and
+    /// extension's credential header values redacted, for safe exposure
+    /// through the admin/config snapshot APIs. See
+    /// [`PipelineConfig::redacted_for_snapshot`](crate::pipeline::PipelineConfig::redacted_for_snapshot).
+    /// The stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> PipelineGroupConfig {
+        let mut redacted = self.clone();
+        for pipeline in redacted.pipelines.values_mut() {
+            *pipeline = pipeline.redacted_for_snapshot();
+        }
+        redacted
+    }
+
     /// Adds a pipeline to the pipeline group.
     pub fn add_pipeline(
         &mut self,
@@ -103,5 +117,57 @@ impl PipelineGroupConfig {
 impl Default for PipelineGroupConfig {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redacted_for_snapshot_masks_node_and_extension_headers() {
+        // A pipeline group whose pipeline carries credential headers on BOTH a
+        // node and an extension. `redacted_for_snapshot()` must scrub both
+        // before the config is exposed through the admin/config snapshot APIs.
+        // Deserialize directly (no validation) to keep the test focused on
+        // redaction.
+        let yaml = r#"
+            pipelines:
+              main:
+                nodes:
+                  exporter:
+                    type: "urn:otel:exporter:otlp"
+                    config:
+                      headers:
+                        authorization: "Bearer node-super-secret"
+                extensions:
+                  auth:
+                    type: "urn:otap:extension:headers_setter"
+                    config:
+                      headers:
+                        authorization: "Bearer ext-super-secret"
+        "#;
+        let group: PipelineGroupConfig =
+            serde_yaml::from_str(yaml).expect("pipeline group should deserialize");
+        let redacted = group.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("node-super-secret"),
+            "node credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("ext-super-secret"),
+            "extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction returns a copy; the original group keeps the cleartext.
+        let original_json = serde_json::to_string(&group).expect("original serializes");
+        assert!(original_json.contains("node-super-secret"));
+        assert!(original_json.contains("ext-super-secret"));
     }
 }
