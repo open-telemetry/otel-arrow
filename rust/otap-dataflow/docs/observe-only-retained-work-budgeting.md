@@ -185,11 +185,60 @@ A retained item can be carried as an envelope that holds the payload and its
 ownership together. Bundling them is a simple way to make sure the data and its
 accounting cannot diverge: you cannot move or drop one without the other.
 
-The implementation should keep this shape simple: local owners for
-runtime-local retention, sendable owners for shared boundaries, and optional
-envelopes when a payload and its owner must move together. Most nodes should not
-need a broad trait hierarchy; they only need to create ownership when they
-retain work and release or transfer it when the payload leaves.
+A concrete design should keep this shape simple: local owners for runtime-local
+retention, sendable owners for shared boundaries, and optional envelopes when a
+payload and its owner must move together. Most nodes should not need a broad
+trait hierarchy; they only need to create ownership when they retain work and
+release or transfer it when the payload leaves.
+
+### Concrete ownership sketch
+
+One proposed observe-only shape uses a small set of ownership primitives:
+
+- `LocalMemoryTicket` would own a logical retained-byte charge while data stays
+  on one pinned runtime. It should be intentionally not `Send`, because it
+  refunds through runtime-local accounting state.
+- `EscrowTicket` would own the same kind of charge after retained work crosses a
+  shared queue, topic, or runtime boundary. It should be sendable and release
+  exactly once on delivery, eviction, close, failed send cleanup, or drop.
+- `EscrowSlot` would be the queue-slot form of shared ownership. A shared
+  boundary can store the slot next to the retained payload so every queue-exit
+  path releases the shared charge uniformly.
+- `LocalEnvelope<T>` would pair a local payload with a `LocalMemoryTicket` when
+  the payload and owner must move together inside one runtime.
+- `SharedEnvelope<T>` would pair a sendable payload with an escrow owner after a
+  local owner has been converted at a shared boundary.
+
+The important split is that local tickets do not go inside `PData` or any
+shared/topic envelope. `PData`-shaped messages are `Send` in several engine
+paths, while a local ticket is not. For runtime-local retained work, the ticket
+should live in an envelope, component state, or a side table whose lifetime is
+tied to the retained payload.
+
+`OtapPdata` can still be part of the envelope story, but only for the sendable
+side of it. When an `OtapPdata` is retained by a shared output channel, it
+could carry a sendable escrow slot that represents the channel's ownership
+while the item is queued. When the item is delivered to a downstream node, the
+shared owner would be released. If that downstream node then batches, retries,
+parks, or otherwise retains the data locally, it would create its own local
+ticket for that new retention site.
+
+This keeps each retained interval single-owned:
+
+```text
+local retained data
+  -> LocalMemoryTicket
+  -> shared boundary converts to EscrowTicket / EscrowSlot
+  -> downstream delivery releases shared owner
+  -> downstream local retention creates a new LocalMemoryTicket if needed
+```
+
+Any future code that unpacks, clones, rebuilds, or repacks `OtapPdata` is
+therefore an accounting boundary to review. It must preserve or transfer the
+relevant owner, or it must intentionally release the owner because the retained
+interval ended. Clones must not accidentally duplicate ownership; failed sends
+must return or release the original owner; and terminal paths must release
+ownership without acquiring new budget.
 
 ### Abandoned ownership
 
