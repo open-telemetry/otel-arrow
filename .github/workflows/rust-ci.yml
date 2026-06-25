@@ -726,7 +726,7 @@ jobs:
   host-metrics-weaver-live-check:
     runs-on: ubuntu-latest
     env:
-      WEAVER_VERSION: v0.23.0
+      WEAVER_VERSION: v0.24.0
       # Semantic-conventions tag to validate against. Keep in sync with
       # the `VERSION` constant in
       # rust/otap-dataflow/crates/core-nodes/src/receivers/host_metrics_receiver/semconv.rs
@@ -748,7 +748,7 @@ jobs:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
       - name: Setup Weaver
-        uses: open-telemetry/weaver/.github/actions/setup-weaver@3a3b7cc98e08f84bccda45c0f20522b51d64a88c # v0.23.0
+        uses: open-telemetry/weaver/.github/actions/setup-weaver@9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4 # v0.24.0
         with:
           version: ${{ env.WEAVER_VERSION }}
       - name: Build df_engine
@@ -1088,6 +1088,16 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
+  # License header check (korandoru/hawkeye, config in licenserc.toml). Covers
+  # both *.go and *.rs; hosted here so it can be made a required check
+  # transitively via rust-required-status-check.needs without editing the
+  # branch-protection ruleset.
+  license-header-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: korandoru/hawkeye@c57037afedf940370c41eb660837c8aa928d472a # v6.5.1
+
   # Aggregated status check - depends only on the required matrix combinations.
   # Add/remove jobs from the needs list to change what is required via PR,
   # rather than updating GitHub branch protection settings directly.
@@ -1108,6 +1118,7 @@ jobs:
       - host-metrics-semconv
       - user_events_linux_smoke
       - etw_windows_smoke
+      - license-header-check
     steps:
       - name: Check if all required jobs succeeded
         run: |
@@ -1157,6 +1168,10 @@ jobs:
           fi
           if [[ "${{ needs.etw_windows_smoke.result }}" != "success" ]]; then
             echo "etw_windows_smoke failed or was cancelled"
+            exit 1
+          fi
+          if [[ "${{ needs.license-header-check.result }}" != "success" ]]; then
+            echo "license-header-check failed or was cancelled"
             exit 1
           fi
           echo "All required checks passed!"
