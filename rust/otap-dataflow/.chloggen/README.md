@@ -39,7 +39,7 @@ workflow honors any of:
 - The `chore` label. (for maintainers).
 - The `skipchangelog` label (for maintainers).
 - Documentation-only PRs (all changes are in `docs/` or
-	`rust/otap-dataflow/docs/`).
+ `rust/otap-dataflow/docs/`).
 - The `dependencies` label (auto-applied by Renovate).
 - Bot authors (`dependabot[bot]`, `renovate[bot]`, `otelbot`).
 
