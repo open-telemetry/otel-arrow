@@ -153,8 +153,8 @@ collisions when two unrelated receivers in different pipelines happen to
 share a bind address; receiver node names are unique only within a pipeline.
 `bind_device` is included only to prevent future logical identity collisions
 if receiver configs expose device binding. This proposal does not apply
-`SO_BINDTODEVICE`, so effective kernel reuseport grouping would still be
-determined only by `(address, protocol)`.
+`SO_BINDTODEVICE` to bind a specific network device, so effective kernel
+reuseport grouping would still be determined only by `(address, protocol)`.
 
 Because Linux groups all `SO_REUSEPORT` sockets with the same effective
 `(address, protocol)` into one kernel reuseport group, the manager would
