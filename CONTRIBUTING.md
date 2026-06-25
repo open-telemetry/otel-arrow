@@ -119,7 +119,9 @@ not user-facing (build chores, internal refactors, doc-only edits, dev-only
 dependency bumps):
 
 - Include `chore` in the PR title.
-- Apply the `chore` label.
+- Apply the `chore` label. (for maintainers).
+- Apply the `skipchangelog` label (for maintainers).
+- Apply the `documentation` label (auto-applied if all changes are in `docs/` or `rust/otap-dataflow/docs/`).
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
 

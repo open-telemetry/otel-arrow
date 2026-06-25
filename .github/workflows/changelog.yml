@@ -2,8 +2,8 @@
 # yaml file to the appropriate `.chloggen/` directory
 # (`go/.chloggen/` for Go changes, `rust/otap-dataflow/.chloggen/` for
 # Rust changes). If a CHANGELOG entry is not required (e.g. internal
-# refactors, dev-dependency bumps), include "chore" in the PR title or
-# apply the "chore" label.
+# refactors, dev-dependency bumps), include "chore" in the PR title,
+# apply the "chore" label, or apply the "skipchangelog" label.
 #
 # Modeled on opentelemetry-collector-contrib/.github/workflows/changelog.yml.
 
@@ -29,7 +29,7 @@ jobs:
     env:
       PR_HEAD: ${{ github.event.pull_request.head.sha }}
       # Reusable expression: true when any bypass condition is set
-      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name, 'chore') || contains(github.event.pull_request.title, 'chore') }}
+      SKIP: ${{ contains(github.event.pull_request.labels.*.name, 'dependencies') || contains(github.event.pull_request.labels.*.name, 'chore') || contains(github.event.pull_request.labels.*.name, 'skipchangelog') || contains(github.event.pull_request.title, 'chore') }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -42,8 +42,29 @@ jobs:
           go-version: stable
           cache-dependency-path: "**/*.sum"
 
+      - name: Check if documentation-only PR
+        id: check_docs_only
+        run: |
+          # Check if documentation label is present
+          if ! echo "${{ github.event.pull_request.labels.*.name }}" | grep -qw documentation; then
+            echo "is_doc_only=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Get all changed files
+          all_changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD")
+
+          # Check if all files are .md files
+          non_md_files=$(echo "$all_changed" | grep -v -E '\.md$' || true)
+
+          if [ -z "$non_md_files" ]; then
+            echo "is_doc_only=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_doc_only=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Ensure no direct edits to CHANGELOG files
-        if: ${{ env.SKIP != 'true' }}
+        if: ${{ env.SKIP != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
         run: |
           changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
             -- go/CHANGELOG.md rust/otap-dataflow/CHANGELOG.md)
@@ -54,12 +75,12 @@ jobs:
             echo "Please add a .yaml entry to go/.chloggen/ or"
             echo "rust/otap-dataflow/.chloggen/ instead (see the README in each)."
             echo "If this PR does not require a changelog entry, add 'chore' to the"
-            echo "PR title or apply the 'chore' label."
+            echo "PR title, apply the 'chore' label, or apply the 'skipchangelog' label."
             exit 1
           fi
 
       - name: Ensure a .chloggen/*.yaml entry was added or edited
-        if: ${{ env.SKIP != 'true' }}
+        if: ${{ env.SKIP != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
         run: |
           touched=$(git diff --diff-filter=AM --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
             -- 'go/.chloggen/' 'rust/otap-dataflow/.chloggen/' \
@@ -80,14 +101,14 @@ jobs:
             echo "  - https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/.chloggen/README.md"
             echo
             echo "If this PR does not require a changelog entry, add 'chore' to the"
-            echo "PR title or apply the 'chore' label."
+            echo "PR title, apply the 'chore' label, or apply the 'skipchangelog' label."
             exit 1
           fi
           echo "Touched chloggen entries:"
           echo "$touched"
 
       - name: Validate .chloggen/*.yaml entries
-        if: ${{ env.SKIP != 'true' }}
+        if: ${{ env.SKIP != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
         run: |
           make chlog-install
           make chlog-validate
