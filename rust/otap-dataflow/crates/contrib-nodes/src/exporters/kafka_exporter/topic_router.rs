@@ -24,6 +24,7 @@
 use super::config::SignalConfig;
 use super::metrics::KafkaExporterMetrics;
 use crate::common::kafka::validate_kafka_topic;
+use otap_df_config::transport_headers::TransportHeader;
 use otap_df_otap::pdata::Context;
 use std::borrow::Cow;
 
@@ -41,6 +42,23 @@ pub enum TopicRoutingError {
         /// Human-readable reason the topic failed validation.
         reason: String,
     },
+}
+
+impl TopicRoutingError {
+    /// Builds an [`TopicRoutingError::InvalidHeaderTopic`] and emits the routing
+    /// warning once, so all "header present but unusable as a topic" cases
+    /// (non-UTF-8 value or failed Kafka topic validation) share a single
+    /// construction and log site.
+    fn invalid_header_topic(topic: impl Into<String>, reason: impl Into<String>) -> Self {
+        let topic = topic.into();
+        let reason = reason.into();
+        tracing::warn!(
+            header_topic = %topic,
+            %reason,
+            "invalid Kafka topic from transport header, permanently nacking batch"
+        );
+        Self::InvalidHeaderTopic { topic, reason }
+    }
 }
 
 /// Stateless topic router for the Kafka exporter.
@@ -79,46 +97,47 @@ impl TopicRouter {
         context: &Context,
         metrics: &mut KafkaExporterMetrics,
     ) -> Result<Cow<'a, str>, TopicRoutingError> {
-        // Priority 1: Transport header for this signal type
-        if let Some(topic) = Self::resolve_from_header(signal_config, context) {
-            if let Err(reason) = validate_kafka_topic(&topic) {
-                // Invalid topic from header -- this is non-retryable. Do NOT
-                // fall back to the static topic; surface an error so the
-                // exporter can permanently nack the batch.
-                tracing::warn!(
-                    header_topic = %topic,
-                    %reason,
-                    "invalid Kafka topic from transport header, permanently nacking batch"
-                );
-                return Err(TopicRoutingError::InvalidHeaderTopic { topic, reason });
-            }
+        // Priority 1: topic from a transport header, if configured and present.
+        if let Some(header) = Self::header_topic(signal_config, context) {
+            // A present routing header must be a usable Kafka topic. If it is
+            // not (non-UTF-8 value, or a value that fails Kafka topic
+            // validation) this is non-retryable: surface an error so the batch
+            // is permanently nacked rather than silently falling back to the
+            // static topic, which would misdeliver the data.
+            let topic = header.value_as_str().ok_or_else(|| {
+                TopicRoutingError::invalid_header_topic(
+                    String::from_utf8_lossy(&header.value),
+                    "value is not valid UTF-8",
+                )
+            })?;
+            validate_kafka_topic(topic)
+                .map_err(|reason| TopicRoutingError::invalid_header_topic(topic, reason))?;
+
             metrics.inc_topic_from_header();
-            return Ok(Cow::Owned(topic));
+            return Ok(Cow::Owned(topic.to_owned()));
         }
 
-        // Priority 2: Static per-signal topic (zero-allocation borrow)
+        // Priority 2: static per-signal topic (zero-allocation borrow).
         metrics.inc_topic_from_static_config();
         Ok(Cow::Borrowed(signal_config.topic()))
     }
 
-    /// Looks up the signal-specific header key in transport headers
-    ///
-    /// Returns the first matching header's string value, or `None` if the
-    /// header key is not configured for this signal or the header is absent.
-    fn resolve_from_header(signal_config: &SignalConfig, context: &Context) -> Option<String> {
+    /// Returns the transport header whose name matches this signal's configured
+    /// topic-routing key, or `None` if routing-by-header is not configured for
+    /// the signal or no matching header is present. The first matching header
+    /// wins.
+    fn header_topic<'a>(
+        signal_config: &SignalConfig,
+        context: &'a Context,
+    ) -> Option<&'a TransportHeader> {
         // `topic_from_transport_header` is pre-normalized (lowercased) in
         // `KafkaExporterConfig::try_from`, matching how transport headers store
         // their logical names, so a plain equality check is sufficient here.
         let header_key = signal_config.topic_from_transport_header()?;
-        let transport_headers = context.transport_headers()?;
-
-        for header in transport_headers.iter() {
-            if header.name == *header_key {
-                return header.value_as_str().map(String::from);
-            }
-        }
-
-        None
+        context
+            .transport_headers()?
+            .iter()
+            .find(|h| h.name == *header_key)
     }
 }
 
@@ -372,6 +391,31 @@ mod tests {
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
+        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.topic_from_header.get(), 0);
+    }
+
+    #[test]
+    fn test_resolve_non_utf8_header_topic_errors() {
+        let config = make_signal_config("fallback-topic", Some("x-topic"));
+        // A matching routing header whose value is not valid UTF-8. This must be
+        // treated as a routing error (permanent nack), not as a missing header
+        // that falls back to the static topic.
+        let header = TransportHeader {
+            name: "x-topic".to_string(),
+            wire_name: "X-Topic".to_string(),
+            value_kind: ValueKind::Binary,
+            value: vec![0xff, 0xfe, 0xfd],
+        };
+        let ctx = context_with_headers(vec![header]);
+        let mut metrics = KafkaExporterMetrics::default();
+
+        let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
+        assert!(matches!(
+            result,
+            Err(TopicRoutingError::InvalidHeaderTopic { .. })
+        ));
+        // No fallback to static topic, and no topic routing metric incremented.
         assert_eq!(metrics.topic_from_static_config.get(), 0);
         assert_eq!(metrics.topic_from_header.get(), 0);
     }
