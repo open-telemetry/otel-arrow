@@ -752,8 +752,7 @@ fn spawn_etw_session(
                                 );
                             }
                             Err(_) => {
-                                let _ =
-                                    telemetry.decode_failed.fetch_add(1, Ordering::Relaxed);
+                                let _ = telemetry.decode_failed.fetch_add(1, Ordering::Relaxed);
                             }
                         }
                     }
