@@ -630,6 +630,7 @@ impl KafkaReceiver {
                                     );
                                 }
                             }
+                            consumer.unsubscribe();
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
