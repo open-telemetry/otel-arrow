@@ -91,7 +91,7 @@ queries:
         metrics_filtered AS (
             SELECT *,
             "metric_attributes.component_name" AS component_name,
-            COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
+            COALESCE("metric_attributes.core_id", 'N/A') AS core_id,
             FROM metrics
             WHERE metric_name IN (
               'logs_produced',
@@ -208,7 +208,15 @@ queries:
           SELECT *,
           "metric_attributes.component_name" AS component_name,
           FROM metrics
-          WHERE metric_name IN ('process.cpu.usage', 'process.memory.usage', 'container.cpu.usage', 'container.memory.usage')
+          WHERE metric_name IN (
+            'process.cpu.usage',
+            'process.memory.usage',
+            'container.cpu.usage',
+            'container.memory.usage',
+            'container.cpu.cycles',
+            'container.cpu.ref_cycles',
+            'container.cpu.instructions'
+          )
         ),
         observation_only AS (
           SELECT *
@@ -340,6 +348,38 @@ queries:
           FROM container_network_rates
           CROSS JOIN metadata_row
           WHERE metric_name = 'container.network.rx' AND component_name IN ('go-collector', 'df-engine')
+
+              UNION ALL
+
+              SELECT 'cpu_cycles_avg' AS name, 'cycles' AS unit, avg_value AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Cycles' AS extra
+              FROM component_resource_metrics
+              CROSS JOIN metadata_row
+              WHERE component_name IN ('backend-service', 'go-collector', 'df-engine') AND metric_name = 'container.cpu.cycles'
+
+              UNION ALL
+
+              SELECT 'cpu_cycles_max' AS name, 'cycles' AS unit, max_value AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Cycles' AS extra
+              FROM component_resource_metrics
+              CROSS JOIN metadata_row
+              WHERE component_name IN ('backend-service', 'go-collector', 'df-engine') AND metric_name = 'container.cpu.cycles'
+
+              UNION ALL
+
+              SELECT 'cpu_ref_cycles_avg' AS name, 'cycles' AS unit, avg_value AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Ref Cycles' AS extra
+              FROM component_resource_metrics
+              CROSS JOIN metadata_row
+              WHERE component_name IN ('backend-service', 'go-collector', 'df-engine') AND metric_name = 'container.cpu.ref_cycles'
+
+              UNION ALL
+
+              SELECT 'cpu_instructions_avg' AS name, 'instructions' AS unit, avg_value AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Instructions' AS extra
+              FROM component_resource_metrics
+              CROSS JOIN metadata_row
+              WHERE component_name IN ('backend-service', 'go-collector', 'df-engine') AND metric_name = 'container.cpu.instructions'
 
           UNION ALL
 
