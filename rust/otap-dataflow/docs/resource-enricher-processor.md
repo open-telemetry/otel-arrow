@@ -66,10 +66,8 @@ The split is driven by two engine constraints:
 ## Required engine support
 
 The processor side of this design is implementable on the engine as it
-exists today; the "one shared discovery loop and cache per group or
-engine" property and the runtime-isolation property are framework work
-that lands later. This section calls that out explicitly so reviewers
-can separate the processor design from the engine work it depends on.
+exists today; however this design will be implemented only once the
+framework provides pipeline-group-scoped and engine-scoped extensions.
 
 Available today (Phase 1 of the extension system; see
 [Extension System Architecture](extension-system-architecture.md)):
@@ -89,15 +87,17 @@ future work):
 
 - **Broader extension scopes — pipeline-group scope and engine scope.**
   Today the only available scope is *pipeline* scope, which the
-  framework documents as per-core. A processor can bind a shared
-  capability today, but "exactly one discovery loop and one cache per
-  group (or per process)" depends on the framework adding group-scoped
-  and engine-scoped extensions. The processor design here is
-  scope-agnostic by construction — it does not name a scope, it just
-  binds a shared capability — and works correctly under per-pipeline
-  per-core extensions; what changes when group/engine scope ships is
-  how many cache/watcher instances run for a given config, not what
-  the processor does.
+  framework documents as per-core. Running the extension at pipeline
+  scope would mean one discovery loop and one cache *per core* — N
+  watches and N cache copies on an N-core collector — which violates the
+  "per-core duplication is unacceptable" constraint that motivates the
+  extension split. The design therefore requires group-scoped or
+  engine-scoped extensions so exactly one discovery loop and cache runs
+  per group (or per process); pipeline scope is rejected at config
+  validation (see [Config rules](#config-rules)), not offered as a
+  degraded mode. The processor itself does not name a scope — it just
+  binds a shared capability — so no processor change is needed once
+  group/engine scope ships.
 - **Runtime isolation for shared extensions.** Today `start()`,
   capability methods, and the data path all run on the same per-core
   async runtime, so blocking I/O or CPU-heavy work inside an extension
@@ -232,11 +232,9 @@ Flow on the control path:
    processors read by calling `snapshot()` once per `process()` call — a
    cheap, non-blocking handle load. The shared read crosses no core
    boundary, and the snapshot itself is `Send + Sync` immutable data.
-4. The shutdown path drains data-path nodes first, then signals the
-   extension to stop the discovery task and drop the client. The engine
-   drains every consumer in the scope unit, then shuts down the
-   extensions in that scope unit, per the ordering contract in
-   [Extension System Architecture](extension-system-architecture.md).
+4. On shutdown the engine drains every consumer in the scope unit, then
+   shuts down the extension and drops the provider client. See
+   [Lifecycle](#lifecycle).
 
 ## Component Boundaries
 
@@ -435,13 +433,11 @@ struct IndexSpec {
 ```
 
 All methods take `&self` and never block. The processor resolves the
-capability once at node construction and holds the typed handle for
-its lifetime; no runtime capability resolution on the hot path. The
-handle exposes a cheap, non-blocking `snapshot()`: every per-core
-processor takes one snapshot per `process()` call and reads from it for
-the whole batch. The snapshot is an immutable view, so there is no
-`Mutex` / `RwLock` on the read path. How the provider implements that
-snapshot is private to the extension.
+capability once at node construction and holds the typed handle for its
+lifetime; no runtime capability resolution on the hot path. It takes one
+`snapshot()` per `process()` call and reads from it for the whole batch.
+How the provider backs that snapshot is private to the extension (see
+[Cache structure](#cache-structure)).
 
 ### Cache structure
 
@@ -490,31 +486,20 @@ consistent view even if the writer publishes a new snapshot mid-call.
 
 Storing owned keys (`OwnedLookupKey = Vec<(String, String)>`) while
 querying with a borrowed `LookupKey<'_> = &[(&str, &str)]` does **not**
-work through `std::collections::HashMap::get`. `get<Q>` requires
-`K: Borrow<Q>`, and `Vec<(String, String)>` cannot `Borrow` as
-`[(&str, &str)]` — the element types differ (`(String, String)` vs.
-`(&str, &str)`), so there is no zero-cost borrow that bridges them. Using
-`std`'s map as-is would force the processor to build an owned
-`Vec<(String, String)>` per lookup, which is exactly the per-resource
-allocation this design avoids.
-
-The extension therefore does not rely on `Borrow`. The `by_key` map is a
-[`hashbrown::HashMap`](https://docs.rs/hashbrown) and the lookup uses its
+work through `std::collections::HashMap::get`, because
+`Vec<(String, String)>` cannot `Borrow` as `[(&str, &str)]` (the element
+types differ), which would force an owned-key allocation per lookup. The
+`by_key` map is therefore a [`hashbrown::HashMap`](https://docs.rs/hashbrown)
+and the lookup goes through its
 [`Equivalent`](https://docs.rs/hashbrown/latest/hashbrown/trait.Equivalent.html)
-trait: a borrowed key type (a thin wrapper over `&[(&str, &str)]`)
-implements `Equivalent<OwnedLookupKey>`, and both the borrowed and owned
-key types implement `Hash` so that a borrowed key hashes **identically**
-to the owned key it should match (hash the sequence of `(name, value)`
-pairs field-by-field, in order, with no intermediate concatenation).
-`HashMap::get(&borrowed_key)` then probes and compares without
-materializing an owned key. (Equivalently, `std`'s `HashMap::raw_entry`
-API gives the same hash-and-compare-by-borrow path; `hashbrown`'s
-`Equivalent` is preferred because `raw_entry` is still unstable.) The
-contract that makes this sound is the standard one: the borrowed key's
-`Hash` and equality must agree with the owned key's, which the writer
-guarantees by building both from the same normalized `(name, value)`
-pairs. No custom key encoding (e.g. a separator-joined `String`) is
-used, so there is nothing to allocate or escape on the query side.
+trait: a borrowed key type wrapping `&[(&str, &str)]` implements
+`Equivalent<OwnedLookupKey>` and hashes **identically** to the owned key
+it matches (hashing the `(name, value)` pairs in order, no concatenation),
+so `get` probes and compares without materializing an owned key.
+Soundness rests on the standard contract that the borrowed and owned
+keys' `Hash`/equality agree, which the writer guarantees by building both
+from the same normalized pairs. (`std`'s unstable `raw_entry` gives the
+same path; `Equivalent` is preferred only because it is stable.)
 
 The writer's job, on every object update, is: read the already-cached
 related objects, pull exactly the `record_fields` from the active
@@ -599,14 +584,10 @@ nodes:
       metadata: k8s_metadata            # binds the group-scoped extension
     config:
       # ----- Association rules -----
-      # Each rule is a composite AND of typed sources. The processor
-      # walks the rules in order and uses the first rule whose sources
-      # are all resolvable on the batch (every `resource_attribute`
-      # source is present on the resource, and every `connection`
-      # source has a peer address on `OtapPdata`). Exactly one lookup
-      # is performed against the chosen rule's values; a miss does NOT
-      # fall through to the next rule (first-match wins, even on miss).
-      # See Association for the full semantics.
+      # Each rule is a composite AND of typed sources, walked in order;
+      # the first rule whose sources are all resolvable on the batch is
+      # used, and exactly one lookup is performed against it (a miss does
+      # not fall through). See Association for the full semantics.
       #
       # Each source is one of:
       #   * { from: resource_attribute, name: <attr> }
@@ -900,19 +881,12 @@ from the processor's config, declared through `set_index_spec()`.
 
 #### Framework constraint
 
-The extension does **not** see processor configs at its own `start()`. The
-extension system wires capabilities in one direction — consumers pull from
-extensions through typed handles — and the engine builds the extension
-from its own `extensions:` config block alone. There is no framework
-pathway that delivers "the union of association shapes and attribute
-paths referenced by every bound processor" to the extension at
-construction time, and reusing the engine-driven `ExtensionControlMsg`
-lifecycle channel for node-to-extension calls would invert the
-architecture.
-
-The only architecture-legal channel for processor-to-extension
-communication is the capability handle, so index-spec declaration lives
-on the trait. The flow:
+The extension does **not** see processor configs at its own `start()` —
+the extension system wires capabilities one-way (consumers pull through
+typed handles) and the engine builds the extension from its own
+`extensions:` block alone. The only architecture-legal channel for
+processor-to-extension communication is the capability handle, so
+index-spec declaration lives on the trait. The flow:
 
 1. At `start()`, the processor builds its `RegistrantId` from
    `PipelineContext` (`pipeline_group_id`, `pipeline_id`, `node_id`),
@@ -920,10 +894,8 @@ on the trait. The flow:
    `record_fields`, calls `validate_index_spec(spec)` against the
    bound provider, and on success calls
    `set_index_spec(registrant, spec)`. A validation error aborts
-   `start()` with the provider's reported reason (unknown attribute or
-   unknown field) so misconfiguration shows up as a config error, not
-   as a silent permanent miss. See
-   [Provider catalog](#provider-catalog).
+   `start()` with the provider's reported reason (see
+   [Provider catalog](#provider-catalog)).
 2. On `NodeControlMsg::Config` reload, the processor re-derives the
    spec, calls `validate_index_spec` again, and on success calls
    `set_index_spec` under the same registrant (set-replacing for that
@@ -1061,33 +1033,24 @@ config does not name an attribute for it.
 ### Provider opt-in via `ConnectionLookup`
 
 Whether a `{from: connection}` source is meaningful is a provider
-concern. Providers that publish an IP-keyed index implement
-`ConnectionLookup` in addition to `MetadataLookup` and provide an
-`as_connection_lookup()` override that returns `Some(self)`:
+concern. Providers with an IP-keyed index implement `ConnectionLookup`
+alongside `MetadataLookup` and override `as_connection_lookup()` to
+return `Some(self)`:
 
 - The Kubernetes provider implements it, mapping the peer IP to the
   pod whose `status.podIP` matches.
 - A future cloud-instance-metadata provider could implement it by
   mapping the peer IP to a cached `(VM, tags)` record.
 
-Providers whose underlying data is not naturally keyed by IP (file /
-CSV / YAML lookup; database / KV lookup; DNS / HTTP lookup — the same
-shape as Go's `lookupprocessor`) do not implement `ConnectionLookup`
-at all and inherit the default `as_connection_lookup()` returning
-`None`. The trait surface is *additive*: adding
-`{from: connection}` support is opt-in per provider, and existing
-providers need no changes.
+Providers whose data is not naturally keyed by IP (file / CSV / YAML;
+database / KV; DNS / HTTP — the shape of Go's `lookupprocessor`) inherit
+the default `None` and need no changes; support is additive and opt-in.
 
-The processor uses `as_connection_lookup()` at `start()` (and on every
-reload) to decide whether to accept `{from: connection}` rules:
-
-- If the spec contains a `KeyShape::Connection` and
-  `as_connection_lookup()` returns `None`, `validate_index_spec`
-  fails with `IndexSpecError::ConnectionSourceUnsupported` — a
-  config-time error rejected at start, not a runtime silent miss.
-- If it returns `Some(&dyn ConnectionLookup)`, the processor caches
-  the borrowed handle on its per-rule dispatch table; rules with
-  `KeyShape::Connection` dispatch through it on the hot path.
+The processor consults `as_connection_lookup()` at `start()`/reload to
+decide whether to accept `{from: connection}` rules: `None` makes
+`validate_index_spec` reject the rule with
+`IndexSpecError::ConnectionSourceUnsupported`; `Some` caches the borrowed
+handle on the per-rule dispatch table for hot-path use.
 
 ### Hot-path dispatch
 
@@ -1207,14 +1170,15 @@ A provider may support both scopes; the operator picks at config time.
 ## Telemetry
 
 The processor is a single concrete component, so its metrics are fixed.
-It reports through the `processor.resource_enricher` set:
 
-| Metric | Type | Labels | Notes |
-| --- | --- | --- | --- |
-| `lookup.attempts` | Counter | `rule_index` | One per resource visited. |
-| `lookup.hits` | Counter | `rule_index` | First-match hit count by rule. |
-| `lookup.miss` | Counter | `rule_index` | First-match miss count by rule. |
-| `attribute.applied` | Counter | `policy` (`written`/`kept`/`overwritten`) | Attribute writes by conflict-policy outcome. |
+| Metric | Type | Notes |
+| --- | --- | --- |
+| `lookup.attempts` | Counter | Incremented once per resource the processor inspects. |
+| `lookup.hits` | Counter | Resources whose first-match lookup hit. |
+| `lookup.miss` | Counter | Resources whose first-match lookup missed. |
+| `attribute.written` | Counter | Writes applied to a previously-absent destination attribute. |
+| `attribute.kept` | Counter | Writes skipped because the attribute existed and `conflict_policy` is `keep_existing`. |
+| `attribute.overwritten` | Counter | Writes that replaced an existing attribute under `overwrite`. |
 
 The capability does not mandate any extension metrics. Each provider
 extension defines and documents its own metrics under its own
@@ -1268,19 +1232,15 @@ re-derive and re-validate the `IndexSpec`, and on success call
 validation failure leaves the previous plan in place and is surfaced as
 a reload error.
 
-The extension does **not** receive `NodeControlMsg::Config` — that
-channel is for pipeline nodes. Extensions live outside any pipeline and
-are reconfigured over the extension system's own control channel
-(`ExtensionControlMsg`), per
-[Extension System Architecture](extension-system-architecture.md). So the
-processor reload and the extension reload travel on two different
-channels and are fully independent: a processor `associations` /
-`attributes` change never touches the extension's discovery/auth/filter
-config, and an extension reconfiguration never re-parses processor config.
-The only coupling between them is the capability surface — after either
-side reloads, the processor's next `set_index_spec()` (on its own reload)
-or the extension's recomputed union (on a discovery-config change) brings
-the effective index back into agreement.
+The extension does **not** receive `NodeControlMsg::Config`; it is
+reconfigured over the extension system's own `ExtensionControlMsg`
+channel, per
+[Extension System Architecture](extension-system-architecture.md). The
+two reloads are independent (a processor `associations` / `attributes`
+change never touches the extension's discovery/auth/filter config, and
+vice versa); the only coupling is the capability surface — after either
+side reloads, the processor's next `set_index_spec()` or the extension's
+recomputed union brings the effective index back into agreement.
 
 | Config field | Hot-swappable | Owner |
 | --- | --- | --- |
