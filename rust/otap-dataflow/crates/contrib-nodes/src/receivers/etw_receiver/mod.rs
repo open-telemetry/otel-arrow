@@ -69,7 +69,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Mmsc, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
@@ -81,6 +81,7 @@ use std::cell::RefCell;
 use std::num::NonZeroU16;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 /// URN for the ETW receiver.
@@ -259,6 +260,10 @@ struct EtwReceiver {
     metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
     /// Per-core consumer channel from the per-session-name ETW session.
     event_rx: tokio::sync::mpsc::Receiver<EtwEventData>,
+    /// Shared atomic counters written by the `!Send` `ProcessTrace` callback
+    /// (queue-full drops, decode failures, session errors). Folded into
+    /// `metrics` on each `CollectTelemetry` tick and before terminal snapshots.
+    session_telemetry: Arc<session::SessionTelemetry>,
 }
 
 impl EtwReceiver {
@@ -285,8 +290,9 @@ impl EtwReceiver {
 
         // Acquire this core's consumer channel from the per-session-name
         // session.  The first call initializes the session; subsequent calls
-        // pop from the pre-allocated pool.
-        let event_rx = session::subscribe(&cfg, num_cores).map_err(|e| {
+        // pop from the pre-allocated pool.  The shared telemetry handle bridges
+        // the `!Send` ProcessTrace callback to this core's metric set.
+        let (event_rx, session_telemetry) = session::subscribe(&cfg, num_cores).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: format!("ETW session initialization failed: {e}"),
             }
@@ -297,6 +303,7 @@ impl EtwReceiver {
             batching,
             metrics: Rc::new(RefCell::new(metrics)),
             event_rx,
+            session_telemetry,
         })
     }
 }
@@ -322,6 +329,10 @@ fn build_pending_batch(
     }
 
     let item_count = u64::from(builder.len());
+
+    // Record the batch-size distribution at flush time (before the outcome of
+    // the build/send is known), since it measures batch *shape*, not success.
+    metrics.borrow_mut().batch_size.record(item_count as f64);
 
     let payload = match std::mem::take(builder).build() {
         Ok(payload) => payload,
@@ -433,6 +444,43 @@ fn try_flush_batch(
 // ── Event processing loop ────────────────────────────────────────────────────
 
 impl EtwReceiver {
+    /// Fold the per-session atomic counters — written by the `!Send`
+    /// `ProcessTrace` callback — into this core's metric set.
+    ///
+    /// Each atomic is `swap(0)`-ed so the value is consumed exactly once: the
+    /// running total since the last drain becomes a counter `add()`. Call this
+    /// on every `CollectTelemetry` tick and immediately before any terminal
+    /// `snapshot()` so the final report is not lossy.
+    ///
+    /// Note: the atomics are shared across all cores of a session, so whichever
+    /// core drains first claims the whole delta — the metric does not carry the
+    /// per-core dimension (the `etw.event.dropped` log still does).
+    fn drain_session_atomics(&self) {
+        let dropped = self
+            .session_telemetry
+            .dropped_queue_full
+            .swap(0, Ordering::Relaxed);
+        let invalid = self
+            .session_telemetry
+            .decode_failed
+            .swap(0, Ordering::Relaxed);
+        let errors = self
+            .session_telemetry
+            .session_errors
+            .swap(0, Ordering::Relaxed);
+
+        let mut m = self.metrics.borrow_mut();
+        if dropped > 0 {
+            m.received_events_dropped_queue_full.add(dropped);
+        }
+        if invalid > 0 {
+            m.received_events_invalid.add(invalid);
+        }
+        if errors > 0 {
+            m.session_errors.add(errors);
+        }
+    }
+
     /// Main event loop when an ETW session is active.
     ///
     /// Consumes events from the per-core MPSC channel, accumulates them into
@@ -456,6 +504,11 @@ impl EtwReceiver {
             self.batching.max_duration,
         );
         flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+        // This core now holds an active subscription to the ETW session.
+        // `UpDownCounter` is a delta instrument, so this reports `+1` once and
+        // the matching `dec()` on the terminal paths reports `-1`.
+        self.metrics.borrow_mut().sessions_active.inc();
 
         loop {
             tokio::select! {
@@ -501,6 +554,10 @@ impl EtwReceiver {
                             // cannot park us past the deadline.
                             try_flush_batch(effect_handler, &self.metrics, &mut builder)?;
                             effect_handler.notify_receiver_drained().await?;
+                            // Fold producer-side atomics and release the active
+                            // subscription before the final snapshot.
+                            self.drain_session_atomics();
+                            self.metrics.borrow_mut().sessions_active.dec();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
@@ -510,10 +567,17 @@ impl EtwReceiver {
                                 "etw_receiver.shutdown",
                                 message = "ETW receiver shutting down",
                             );
+                            // Fold producer-side atomics and release the active
+                            // subscription before the final snapshot.
+                            self.drain_session_atomics();
+                            self.metrics.borrow_mut().sessions_active.dec();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            // Fold the producer-side atomics into the metric set
+                            // first (separate borrow scope), then report.
+                            self.drain_session_atomics();
                             let mut m = self.metrics.borrow_mut();
                             let _ = metrics_reporter.report(&mut m);
                         }
@@ -648,6 +712,25 @@ pub struct EtwReceiverMetrics {
     /// Number of ETW events dropped due to process-wide memory pressure.
     #[metric(unit = "{event}")]
     pub received_events_rejected_memory_pressure: Counter<u64>,
+
+    /// Number of ETW events dropped because the internal per-core channel was
+    /// full (backpressure between the `ProcessTrace` thread and the receiver).
+    #[metric(unit = "{event}")]
+    pub received_events_dropped_queue_full: Counter<u64>,
+
+    /// Number of fatal ETW session errors (`parse_until` / `ProcessTrace`
+    /// failures).
+    #[metric(unit = "{error}")]
+    pub session_errors: Counter<u64>,
+
+    /// Number of currently active ETW session subscriptions owned by this
+    /// receiver core (delta: `+1` on start, `-1` on terminal state).
+    #[metric(unit = "{session}")]
+    pub sessions_active: UpDownCounter<u64>,
+
+    /// Distribution of Arrow batch sizes at flush time.
+    #[metric(unit = "{event}")]
+    pub batch_size: Mmsc,
 }
 
 #[cfg(test)]

@@ -193,7 +193,7 @@ impl EtwArrowRecordsBuilder {
         self.logs.append_id(Some(self.curr_log_id));
 
         // Event name: prefer the TDH event name (e.g. "AppStarted") over
-        // the numeric event ID.  Fall back to "etw.<event_id>" for
+        // the numeric event ID.  Fall back to "etw.<event.id>" for
         // manifest-based events where TDH doesn't provide a name.
         if event.event_name.is_empty() {
             let fallback = format!("etw.{}", event.event_id);
@@ -204,7 +204,7 @@ impl EtwArrowRecordsBuilder {
         }
 
         // Attributes: ETW header metadata
-        self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
+        self.append_attr("etw.event.id", AttrValue::Int(i64::from(event.event_id)));
         // Preserve the raw ETW level so the severity mapping remains
         // reversible (levels 0 and 6-255 map to UNSPECIFIED but the original
         // value is retained here).  See the ETW mapping in the OpenTelemetry
@@ -217,10 +217,10 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Int(event.keywords.min(i64::MAX as u64) as i64),
         );
         self.append_attr(
-            "etw.process_id",
+            "etw.process.id",
             AttrValue::Int(i64::from(event.process_id)),
         );
-        self.append_attr("etw.thread_id", AttrValue::Int(i64::from(event.thread_id)));
+        self.append_attr("etw.thread.id", AttrValue::Int(i64::from(event.thread_id)));
 
         // Provider GUID as hex string (e.g. "d2387720-2907-5677-8625-c1bdc4155197").
         // Format into a stack buffer to avoid a per-event heap allocation.
@@ -229,7 +229,7 @@ impl EtwArrowRecordsBuilder {
         let provider_guid =
             std::str::from_utf8(&provider_guid).expect("GUID buffer is valid ASCII");
         self.append_attr(
-            "etw.provider_id",
+            "etw.provider.id",
             AttrValue::Str(Cow::Borrowed(provider_guid)),
         );
 
@@ -239,7 +239,7 @@ impl EtwArrowRecordsBuilder {
             // safety: `format_guid` only writes ASCII hex digits and '-'.
             let activity =
                 std::str::from_utf8(&activity).expect("activity id buffer is valid ASCII");
-            self.append_attr("etw.activity_id", AttrValue::Str(Cow::Borrowed(activity)));
+            self.append_attr("etw.activity.id", AttrValue::Str(Cow::Borrowed(activity)));
         }
 
         // Attributes: TDH-decoded fields
