@@ -11,6 +11,24 @@ changes. See [`RELEASING.md`](../RELEASING.md) for the versioning policy.
 
 <!-- next version -->
 
+## v0.49.0
+
+### :stop_sign: Breaking changes :stop_sign:
+
+- `collector/cmd/otelarrowcol`: Remove the generated `collector/cmd/otelarrowcol` collector module and its `go.mod`/`go.sum` ([#1482](https://github.com/open-telemetry/otel-arrow/issues/1482), [#2439](https://github.com/open-telemetry/otel-arrow/issues/2439), [#2440](https://github.com/open-telemetry/otel-arrow/issues/2440))
+  The `github.com/open-telemetry/otel-arrow/collector/cmd/otelarrowcol` module
+  is no longer published. The OpenTelemetry Protocol with Apache Arrow (OTAP)
+  components are now exercised using the upstream OpenTelemetry Collector
+  Contrib distribution instead of a collector generated in this repository.
+  This removes a large set of test-only collector dependencies (and the
+  associated dependency/security alerts) from the repository.
+
+### :bulb: Enhancements :bulb:
+
+- `dependencies`: Upgrade various Go dependencies. ([#3185](https://github.com/open-telemetry/otel-arrow/issues/3185), [#3295](https://github.com/open-telemetry/otel-arrow/issues/3295), [#3338](https://github.com/open-telemetry/otel-arrow/issues/3338), [#3339](https://github.com/open-telemetry/otel-arrow/issues/3339))
+
+<!-- previous-version -->
+
 ## v0.48.0
 
 ### :bulb: Enhancements :bulb:

@@ -53,6 +53,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
+use secrecy::ExposeSecret;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
@@ -734,11 +735,48 @@ struct HttpClientPool {
 }
 
 impl HttpClientPool {
+    /// Builds the user-configured static request headers, marking every value
+    /// sensitive so it is redacted in any `HeaderMap` `Debug` output and
+    /// excluded from HTTP/2 HPACK indexing. This mirrors the OTLP/gRPC
+    /// `GrpcClientSettings::build_static_metadata` path, which marks its
+    /// metadata values sensitive for the same reasons.
+    ///
+    /// `reserve_extra` pre-sizes the returned map for additional headers the
+    /// caller will insert afterwards (e.g. the protocol `Content-Type` /
+    /// `Accept` headers), so construction stays single-allocation.
+    ///
+    /// Header names/values are validated up front by
+    /// [`HttpClientSettings::validate`], so for a validated config the per-entry
+    /// parse below cannot fail; the fallible path defends against a programmatic
+    /// caller that bypassed validation.
+    fn build_static_headers(
+        client_settings: &HttpClientSettings,
+        reserve_extra: usize,
+    ) -> Result<HeaderMap, HttpClientError> {
+        let mut headers = HeaderMap::with_capacity(client_settings.headers.len() + reserve_extra);
+        for (name, value) in &client_settings.headers {
+            let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+                HttpClientError::InvalidConfig(format!("invalid header name \"{name}\": {e}"))
+            })?;
+            let mut header_value = HeaderValue::from_str(value.expose_secret()).map_err(|e| {
+                HttpClientError::InvalidConfig(format!("invalid value for header \"{name}\": {e}"))
+            })?;
+            // Mark the value sensitive so it is redacted in any `HeaderMap`
+            // `Debug` output and excluded from HTTP/2 HPACK indexing.
+            header_value.set_sensitive(true);
+            _ = headers.insert(header_name, header_value);
+        }
+        Ok(headers)
+    }
+
     async fn try_new(
         client_settings: &HttpClientSettings,
         pool_size: NonZeroUsize,
     ) -> Result<Self, HttpClientError> {
-        let mut default_headers = HeaderMap::new();
+        // Build the user-configured static headers first (pre-sized for the two
+        // protocol headers added below) so the protocol headers always win on
+        // any (already validated against) collision.
+        let mut default_headers = Self::build_static_headers(client_settings, 2)?;
 
         // TODO eventually this header value should be dynamic once we support JSON OTLP payloads
         _ = default_headers.insert(
@@ -1008,6 +1046,156 @@ mod test {
                 Err(_) => std::thread::sleep(Duration::from_millis(10)),
             }
         }
+    }
+
+    /// Runs a minimal HTTP server that records the headers of the first request
+    /// it receives into `captured` and always replies `200 OK`. Used to assert
+    /// what the exporter actually puts on the wire.
+    fn run_header_capture_server(
+        tokio_rt: &Runtime,
+        endpoint_addr: &str,
+        captured: Arc<parking_lot::Mutex<Option<HeaderMap>>>,
+    ) -> CancellationToken {
+        let server_cancellation_token = CancellationToken::new();
+        let server_cancellation_token2 = server_cancellation_token.clone();
+        let endpoint_addr = endpoint_addr.to_string();
+        _ = tokio_rt.spawn(async move {
+            let listener = tokio::net::TcpListener::bind(endpoint_addr).await.unwrap();
+            let tracker = TaskTracker::new();
+            loop {
+                tokio::select! {
+                    _ = server_cancellation_token.cancelled() => break,
+                    accept_result = listener.accept() => {
+                        let (stream, _peer_addr) = accept_result.unwrap();
+                        let captured = captured.clone();
+                        let shutdown_token = server_cancellation_token.clone();
+                        drop(tracker.spawn(async move {
+                            let io = TokioIo::new(stream);
+                            let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                                let captured = captured.clone();
+                                async move {
+                                    *captured.lock() = Some(req.headers().clone());
+                                    Ok::<_, hyper::Error>(Response::builder()
+                                        .status(200)
+                                        .body(Full::new(Bytes::from(Vec::new())))
+                                        .unwrap())
+                                }
+                            });
+                            let conn = http1::Builder::new().serve_connection(io, service);
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = shutdown_token.cancelled() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                },
+                                conn_result = &mut conn => {
+                                    let _ = conn_result;
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+            let _ = tracker.close();
+        });
+
+        server_cancellation_token2
+    }
+
+    #[test]
+    fn test_configured_headers_sent_on_wire() {
+        use std::collections::HashMap;
+
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = pick_unused_port().expect("no free port available");
+        let endpoint_addr = format!("127.0.0.1:{port}");
+
+        let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+        let cancel = run_header_capture_server(&tokio_rt, &endpoint_addr, captured.clone());
+        wait_for_port_ready(&endpoint_addr);
+
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic dXNlcjpwYXNz".into());
+        _ = headers.insert("x-test".to_string(), "abc".into());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        tokio_rt.block_on(async {
+            let mut pool = HttpClientPool::try_new(&settings, NonZeroUsize::new(1).unwrap())
+                .await
+                .expect("failed to build client pool");
+            let client = pool.get_client();
+            let resp = client
+                .post(format!("http://{endpoint_addr}/v1/logs"))
+                .body(Vec::new())
+                .send()
+                .await
+                .expect("request failed");
+            assert!(resp.status().is_success());
+        });
+
+        cancel.cancel();
+
+        let headers = captured
+            .lock()
+            .clone()
+            .expect("server did not capture any request headers");
+        assert_eq!(
+            headers.get("authorization").unwrap().to_str().unwrap(),
+            "Basic dXNlcjpwYXNz"
+        );
+        assert_eq!(headers.get("x-test").unwrap().to_str().unwrap(), "abc");
+        // Protocol headers are still applied and take precedence.
+        assert_eq!(
+            headers
+                .get(http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            PROTOBUF_CONTENT_TYPE
+        );
+    }
+
+    #[test]
+    fn build_static_headers_marks_values_sensitive() {
+        // Symmetric with the OTLP/gRPC `build_static_metadata_builds_map` test:
+        // every static header value the exporter puts on the wire must be marked
+        // sensitive so it is excluded from HTTP/2 HPACK indexing and redacted in
+        // any `HeaderMap` `Debug` output. (The wire-capture test above cannot
+        // assert this: the sensitive flag is a client-side `HeaderValue`
+        // property that is not transmitted to the server.)
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".into());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        let built =
+            HttpClientPool::build_static_headers(&settings, 0).expect("should build headers");
+        assert_eq!(built.len(), 2);
+        assert_eq!(
+            built.get("authorization").unwrap().to_str().unwrap(),
+            "Basic abc123"
+        );
+        assert_eq!(
+            built.get("x-scope-orgid").unwrap().to_str().unwrap(),
+            "tenant-1"
+        );
+        assert!(
+            built.get("authorization").unwrap().is_sensitive(),
+            "static header values must be marked sensitive so they are excluded from HPACK \
+             indexing and redacted in HeaderMap Debug output"
+        );
+        assert!(
+            built.get("x-scope-orgid").unwrap().is_sensitive(),
+            "every static header value must be marked sensitive, not just the first"
+        );
     }
 
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that

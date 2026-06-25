@@ -52,3 +52,4 @@ tower = { workspace = true }
 tempfile = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+rustls = { workspace = true, features = ["ring"] }

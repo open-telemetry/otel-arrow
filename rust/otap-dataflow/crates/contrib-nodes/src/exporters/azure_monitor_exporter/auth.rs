@@ -4,7 +4,8 @@
 use azure_core::credentials::{AccessToken, TokenCredential};
 use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
-    ManagedIdentityCredentialOptions, UserAssignedId,
+    ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
+    WorkloadIdentityCredentialOptions,
 };
 use futures::future::LocalBoxFuture;
 use otap_df_telemetry::otel_debug;
@@ -141,6 +142,17 @@ impl Auth {
                 DeveloperToolsCredentialOptions::default(),
             ))
             .map_err(|e| Error::create_credential(AuthMethod::Development, e))?),
+            AuthMethod::WorkloadIdentity => {
+                let options = WorkloadIdentityCredentialOptions {
+                    client_id: auth_config.client_id.clone(),
+                    tenant_id: auth_config.tenant_id.clone(),
+                    token_file_path: auth_config.token_file_path.clone(),
+                    ..Default::default()
+                };
+
+                Ok(WorkloadIdentityCredential::new(Some(options))
+                    .map_err(|e| Error::create_credential(AuthMethod::WorkloadIdentity, e))?)
+            }
         }
     }
 }
@@ -223,6 +235,8 @@ mod tests {
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: Some("test-client-id".to_string()),
+            tenant_id: None,
+            token_file_path: None,
             scope: "https://test.scope".to_string(),
         };
 
@@ -238,6 +252,8 @@ mod tests {
         let auth_config = AuthConfig {
             method: AuthMethod::ManagedIdentity,
             client_id: None,
+            tenant_id: None,
+            token_file_path: None,
             scope: "https://test.scope".to_string(),
         };
 
@@ -250,6 +266,8 @@ mod tests {
         let auth_config = AuthConfig {
             method: AuthMethod::Development,
             client_id: None,
+            tenant_id: None,
+            token_file_path: None,
             scope: "https://test.scope".to_string(),
         };
 
@@ -262,6 +280,34 @@ mod tests {
                 ..
             }) => {
                 assert_eq!(method, AuthMethod::Development);
+            }
+            Err(err) => panic!("Unexpected error type: {:?}", err),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_with_workload_identity() {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let auth_config = AuthConfig {
+            method: AuthMethod::WorkloadIdentity,
+            client_id: Some("test-client-id".to_string()),
+            tenant_id: Some("test-tenant-id".to_string()),
+            token_file_path: Some(std::path::PathBuf::from("/tmp/test-token")),
+            scope: "https://test.scope".to_string(),
+        };
+
+        // Credential construction only validates configuration; it does not read
+        // the token file or contact Entra ID until a token is requested. When the
+        // required values are missing from both config and environment, creation
+        // fails - both outcomes are valid here.
+        let result = Auth::new(&auth_config, create_test_metrics());
+        match result {
+            Ok(auth) => assert_eq!(auth.scope, "https://test.scope"),
+            Err(Error::Auth {
+                kind: super::super::error::AuthErrorKind::CreateCredential { method },
+                ..
+            }) => {
+                assert_eq!(method, AuthMethod::WorkloadIdentity);
             }
             Err(err) => panic!("Unexpected error type: {:?}", err),
         }

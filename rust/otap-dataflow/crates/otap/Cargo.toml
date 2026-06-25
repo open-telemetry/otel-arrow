@@ -44,6 +44,7 @@ otap-df-telemetry-macros = { workspace = true }
 
 tower-service.workspace = true
 serde.workspace = true
+secrecy.workspace = true
 tokio-stream.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 humantime.workspace = true
