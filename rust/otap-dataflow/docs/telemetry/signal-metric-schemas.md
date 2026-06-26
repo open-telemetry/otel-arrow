@@ -316,7 +316,6 @@ possible but doubles cardinality and is not recommended as a steady state.
 - **`signal` key** - the value vocabulary is decided (`logs` / `metrics` /
   `traces`, matching the Collector's `otelcol.signal`); the open part is the
   exact attribute *key* (`otelcol.signal` vs an `otap.*` key).
-- **Profiles** - reserve a fourth value now or defer.
 - **Flow split** - expose `signal` on flow in agnostic mode by default? How to
   source per-signal boundary counts (engine aggregates today)?
 - **Verb taxonomy** - flow's verbs are decided (`consumed`/`produced`, per the
@@ -325,8 +324,6 @@ possible but doubles cardinality and is not recommended as a steady state.
   `dropped` stays a verb or becomes an `outcome` attribute, and name ordering
   (verb-first `consumed.items` vs noun-first `signals.incoming`). Full verb
   standardization is orthogonal to the signal axis and may warrant its own doc.
-- **Cardinality** - confirm agnostic's higher per-metric cardinality is
-  acceptable for default backends.
 - **Emit-both mode** - should `signal_schema` support an `both` value that
   emits granular and agnostic simultaneously? section 7 floats it as a
   time-boxed migration aid, but it doubles cardinality and risks
