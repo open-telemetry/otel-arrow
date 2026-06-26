@@ -22,4 +22,6 @@ in go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the fields.
 If not required, include `chore` in the PR title.
 -->
 
-* [ ] Added a `.chloggen/*.yaml` entry, this PR is a `chore` (indicated in title), or this is a documentation-only PR.
+* [ ] Added a `.chloggen/*.yaml` entry
+* [ ] This PR is a `chore` (indicated in title)
+* [ ] This is a documentation-only PR.
