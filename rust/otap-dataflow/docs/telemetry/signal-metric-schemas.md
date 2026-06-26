@@ -324,7 +324,7 @@ possible but doubles cardinality and is not recommended as a steady state.
   `dropped` stays a verb or becomes an `outcome` attribute, and name ordering
   (verb-first `consumed.items` vs noun-first `signals.incoming`). Full verb
   standardization is orthogonal to the signal axis and may warrant its own doc.
-- **Emit-both mode** - should `signal_schema` support an `both` value that
+- **Emit-both mode** - should `signal_schema` support a `both` value that
   emits granular and agnostic simultaneously? section 7 floats it as a
   time-boxed migration aid, but it doubles cardinality and risks
   double-counting in dashboards that scrape both - decide whether to expose it
