@@ -52,7 +52,8 @@ impl TopicRoutingError {
     fn invalid_header_topic(topic: impl Into<String>, reason: impl Into<String>) -> Self {
         let topic = topic.into();
         let reason = reason.into();
-        tracing::warn!(
+        otap_df_telemetry::otel_warn!(
+            "kafka.exporter.topic.invalid_header",
             header_topic = %topic,
             %reason,
             "invalid Kafka topic from transport header, permanently nacking batch"

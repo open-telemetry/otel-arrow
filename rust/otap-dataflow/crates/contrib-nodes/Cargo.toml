@@ -66,6 +66,12 @@ urlencoding = { workspace = true, optional = true }
 [target.'cfg(target_env = "musl")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
 
+# On Windows, librdkafka must be built with CMake. Without `cmake-build`,
+# rdkafka-sys falls back to librdkafka's Unix autotools `./configure` script,
+# which is not a valid Win32 executable (os error 193).
+[target.'cfg(target_os = "windows")'.dependencies]
+rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
+
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
 

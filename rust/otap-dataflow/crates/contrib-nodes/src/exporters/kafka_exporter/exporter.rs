@@ -195,7 +195,8 @@ impl KafkaExporter {
     ) -> Result<Self, KafkaExporterError> {
         // Warn about producer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_producer_config_keys() {
-            tracing::warn!(
+            otap_df_telemetry::otel_warn!(
+                "kafka.exporter.producer_config.overridden_key",
                 key = %key,
                 "producer_config contains key '{key}' which is also managed by a \
                  first-class config field and may be overwritten",
