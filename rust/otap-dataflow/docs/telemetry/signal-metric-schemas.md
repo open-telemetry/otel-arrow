@@ -327,6 +327,11 @@ possible but doubles cardinality and is not recommended as a steady state.
   standardization is orthogonal to the signal axis and may warrant its own doc.
 - **Cardinality** - confirm agnostic's higher per-metric cardinality is
   acceptable for default backends.
+- **Emit-both mode** - should `signal_schema` support an `both` value that
+  emits granular and agnostic simultaneously? section 7 floats it as a
+  time-boxed migration aid, but it doubles cardinality and risks
+  double-counting in dashboards that scrape both - decide whether to expose it
+  at all or keep switching strictly one-at-a-time.
 
 ## 10. Documentation impact: `metrics-guide.md`
 
