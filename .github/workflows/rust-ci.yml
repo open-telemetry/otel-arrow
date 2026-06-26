@@ -124,12 +124,13 @@ jobs:
           tool: cargo-nextest
       - name: Build and archive tests (Complete)
         if: matrix.os != 'ubuntu-24.04-arm'
-        run: cargo nextest archive --workspace --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Build and archive tests (Incomplete)
         if: matrix.os == 'ubuntu-24.04-arm'
         run: |
           cargo nextest archive \
+            --locked \
             --no-default-features \
             --features=crypto-ring,jemalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations \
             --workspace --exclude otap-df-validation --exclude benchmarks \
@@ -209,7 +210,7 @@ jobs:
       - name: Run user_events Linux smoke test when supported
         env:
           OTAP_DF_RUN_USEREVENTS_E2E: "1"
-        run: cargo test -p otap-df-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otap-df-otap/crypto-ring
+        run: cargo test --locked -p otap-df-contrib-nodes user_events_linux_e2e_smoke_when_available --features user_events-receiver,otap-df-otap/crypto-ring
         working-directory: ./rust/otap-dataflow
 
   etw_windows_smoke:
@@ -228,7 +229,7 @@ jobs:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
       - name: Run ETW Windows smoke test
-        run: cargo test -p otap-df-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
+        run: cargo test --locked -p otap-df-contrib-nodes etw_receiver_decodes_tracelogging_events_end_to_end --features etw-receiver -- --ignored
         working-directory: ./rust/otap-dataflow
 
   fmt:
@@ -466,16 +467,16 @@ jobs:
         with:
           toolchain: stable
       - name: cargo check --no-default-features --workspace
-        run: cargo check --no-default-features --workspace
+        run: cargo check --locked --no-default-features --workspace
         working-directory: ./rust/${{ matrix.folder }}
       - name: cargo check validation --no-default-features
-        run: cargo check -p otap-df-validation --lib --no-default-features
+        run: cargo check --locked -p otap-df-validation --lib --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
       - name: cargo check benchmarks --no-default-features
-        run: cargo check -p benchmarks --benches --no-default-features
+        run: cargo check --locked -p benchmarks --benches --no-default-features
         working-directory: ./rust/${{ matrix.folder }}
       - name: cargo test otap integration targets --no-run
-        run: cargo test -p otap-df-otap --tests --no-run
+        run: cargo test --locked -p otap-df-otap --tests --no-run
         working-directory: ./rust/${{ matrix.folder }}
 
   # Required builds for otap-dataflow: compile once per OS, create nextest archive.
@@ -521,11 +522,11 @@ jobs:
           tool: cargo-nextest
       - name: Build and archive tests (Incomplete)
         if: runner.os == 'Windows'
-        run: cargo nextest archive --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Build and archive tests (Complete)
         if: runner.os != 'Windows'
-        run: cargo nextest archive --all-features --workspace --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --all-features --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Upload nextest archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -620,7 +621,7 @@ jobs:
       - name: Build the test collector
         run: make otelarrowcol
       - name: Run tests with coverage
-        run: cargo llvm-cov nextest --profile ci --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov nextest --locked --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow
       # NOTE: when adding or removing a codecov upload step anywhere in
       # the repo, update `codecov.notify.after_n_builds` in
@@ -685,7 +686,7 @@ jobs:
         uses: ./.github/actions/install-symcrypt
       - name: cargo clippy ${{ matrix.folder }}
         run: |
-          cargo clippy --all-targets --all-features --workspace -- -D warnings
+          cargo clippy --locked --all-targets --all-features --workspace -- -D warnings
         working-directory: ./rust/${{ matrix.folder }}
 
   host-metrics-semconv:
@@ -710,7 +711,7 @@ jobs:
         env:
           OTAP_HOST_METRICS_SEMCONV_REGISTRY: ${{ github.workspace }}/semantic-conventions/model
         run: |
-          cargo test -p otap-df-core-nodes \
+          cargo test --locked -p otap-df-core-nodes \
             --features dev-tools,otap-df-otap/crypto-ring \
             emitted_phase1_metric_shapes_match_weaver_semconv --lib -- --ignored
         working-directory: ./rust/otap-dataflow
@@ -752,7 +753,7 @@ jobs:
         with:
           version: ${{ env.WEAVER_VERSION }}
       - name: Build df_engine
-        run: cargo build --release --bin df_engine
+        run: cargo build --locked --release --bin df_engine
         working-directory: ./rust/otap-dataflow
       - name: Run host_metrics_receiver against weaver live-check
         timeout-minutes: 5
@@ -1003,7 +1004,7 @@ jobs:
         with:
           toolchain: stable
       - name: cargo doc otap-dataflow
-        run: cargo doc --no-deps
+        run: cargo doc --locked --no-deps
         working-directory: ./rust/otap-dataflow
 
   validate-configs:
