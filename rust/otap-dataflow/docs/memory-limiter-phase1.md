@@ -38,8 +38,10 @@ Implementation note:
 
 - Sample process memory on a configurable interval
 - Classify pressure as `Normal`, `Soft`, or `Hard`
-- Keep `Soft` informational - requests continue flowing
-- Shed ingress at the receiver boundary only under `Hard` (in `enforce` mode)
+- Keep `Soft` informational by default (`soft_action: observe`);
+  `soft_action: shed` sheds ingress at `Soft` too
+- Shed ingress at the receiver boundary under `Hard` (and under `Soft` when
+  `soft_action: shed`), in `enforce` mode
 - Optionally fail the readiness probe under `Hard` (in `enforce` mode)
 - Optionally run in `observe_only` mode for metrics and logs without
   enforcement
@@ -251,7 +253,7 @@ The limiter maintains a three-level pressure state:
 | Level | Meaning | Receiver behavior |
 | --- | --- | --- |
 | `Normal` | Below `soft_limit` | No action |
-| `Soft` | Above `soft_limit` | Informational only; requests continue flowing |
+| `Soft` | Above `soft_limit` | Informational by default; sheds ingress when `soft_action: shed` (`enforce` mode) |
 | `Hard` | Above `hard_limit` | Ingress shedding enabled (`enforce` mode only) |
 
 When `mode: observe_only` is configured, the same state transitions still

@@ -3,7 +3,9 @@
 
 //! Process-wide memory limiter state and sampling.
 
-use otap_df_config::policy::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource};
+use otap_df_config::policy::{
+    MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, SoftAction,
+};
 use std::cell::Cell;
 #[cfg(all(not(windows), feature = "jemalloc"))]
 use std::ffi::c_char;
@@ -39,7 +41,8 @@ const AUTO_DERIVED_DENOMINATOR: u64 = 100;
 pub enum MemoryPressureLevel {
     /// Below the configured soft limit.
     Normal = 0,
-    /// Above the soft limit; pressure is elevated but ingress still flows in Phase 1.
+    /// Above the soft limit; pressure is elevated. Ingress continues unless
+    /// `soft_action: shed` is configured (default `observe` keeps `Soft` advisory).
     Soft = 1,
     /// Above the hard limit; ingress should be shed and readiness can fail.
     Hard = 2,
@@ -95,6 +98,43 @@ const fn mode_from_u8(val: u8) -> MemoryLimiterMode {
     }
 }
 
+const fn soft_action_to_u8(action: SoftAction) -> u8 {
+    match action {
+        SoftAction::Observe => 0,
+        SoftAction::Shed => 1,
+    }
+}
+
+const fn soft_action_from_u8(val: u8) -> SoftAction {
+    match val {
+        1 => SoftAction::Shed,
+        _ => SoftAction::Observe,
+    }
+}
+
+/// Single source of truth for the ingress-shed predicate, shared by the
+/// process-wide state and both receiver-local states to prevent drift.
+///
+/// `ObserveOnly` mode never sheds (the safe dry-run). In `Enforce` mode, `Hard`
+/// always sheds; `Soft` sheds only when `soft_action == Shed` (default
+/// `Observe` keeps `Soft` advisory — byte-identical to the pre-`soft_action`
+/// behavior). `Normal` never sheds.
+#[inline]
+fn shed_decision(
+    mode: MemoryLimiterMode,
+    level: MemoryPressureLevel,
+    soft_action: SoftAction,
+) -> bool {
+    if !matches!(mode, MemoryLimiterMode::Enforce) {
+        return false;
+    }
+    match level {
+        MemoryPressureLevel::Hard => true,
+        MemoryPressureLevel::Soft => matches!(soft_action, SoftAction::Shed),
+        MemoryPressureLevel::Normal => false,
+    }
+}
+
 /// Shared process-wide memory pressure state.
 #[derive(Clone, Debug)]
 pub struct MemoryPressureState {
@@ -109,6 +149,7 @@ struct MemoryPressureStateInner {
     hard_limit_bytes: AtomicU64,
     retry_after_secs: AtomicU32,
     mode: AtomicU8,
+    soft_action: AtomicU8,
     fail_readiness_on_hard: AtomicBool,
 }
 
@@ -122,6 +163,7 @@ impl Default for MemoryPressureState {
                 hard_limit_bytes: AtomicU64::new(0),
                 retry_after_secs: AtomicU32::new(1),
                 mode: AtomicU8::new(mode_to_u8(MemoryLimiterMode::Enforce)),
+                soft_action: AtomicU8::new(soft_action_to_u8(SoftAction::Observe)),
                 fail_readiness_on_hard: AtomicBool::new(true),
             }),
         }
@@ -140,6 +182,8 @@ pub struct MemoryPressureBehaviorConfig {
     pub fail_readiness_on_hard: bool,
     /// Whether `Hard` pressure is enforced or only observed.
     pub mode: MemoryLimiterMode,
+    /// Graduated response applied at `Soft` pressure.
+    pub soft_action: SoftAction,
 }
 
 impl MemoryPressureState {
@@ -155,6 +199,9 @@ impl MemoryPressureState {
             .mode
             .store(mode_to_u8(config.mode), Ordering::Relaxed);
         self.inner
+            .soft_action
+            .store(soft_action_to_u8(config.soft_action), Ordering::Relaxed);
+        self.inner
             .fail_readiness_on_hard
             .store(config.fail_readiness_on_hard, Ordering::Relaxed);
     }
@@ -165,14 +212,19 @@ impl MemoryPressureState {
         MemoryPressureLevel::from_u8(self.inner.level.load(Ordering::Relaxed))
     }
 
-    /// Returns whether ingress should be rejected.
+    /// Returns whether ingress should be shed under the current pressure level.
     ///
-    /// In Phase 1, only `Hard` pressure sheds ingress. `Soft` remains advisory so
-    /// operators can observe rising pressure without immediately rejecting traffic.
+    /// `Hard` pressure always sheds when the limiter is enforcing. `Soft`
+    /// pressure sheds only when `soft_action == Shed`; with the default
+    /// `Observe`, `Soft` stays advisory so operators can watch rising pressure
+    /// without rejecting traffic. `Normal` never sheds.
     #[must_use]
     pub fn should_shed_ingress(&self) -> bool {
-        mode_from_u8(self.inner.mode.load(Ordering::Relaxed)) == MemoryLimiterMode::Enforce
-            && self.level() == MemoryPressureLevel::Hard
+        shed_decision(
+            mode_from_u8(self.inner.mode.load(Ordering::Relaxed)),
+            self.level(),
+            self.soft_action(),
+        )
     }
 
     /// Returns whether the admin readiness endpoint should fail.
@@ -199,6 +251,12 @@ impl MemoryPressureState {
     #[must_use]
     pub fn usage_bytes(&self) -> u64 {
         self.inner.usage_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Returns the configured graduated `Soft` response.
+    #[must_use]
+    pub fn soft_action(&self) -> SoftAction {
+        soft_action_from_u8(self.inner.soft_action.load(Ordering::Relaxed))
     }
 
     /// Returns the configured soft limit in bytes.
@@ -267,6 +325,7 @@ struct SharedReceiverAdmissionStateInner {
     retry_after_secs: AtomicU32,
     usage_bytes: AtomicU64,
     mode: MemoryLimiterMode,
+    soft_action: SoftAction,
 }
 
 /// Receiver-local admission state shared across task/service clones inside a receiver.
@@ -292,6 +351,7 @@ impl SharedReceiverAdmissionState {
                 retry_after_secs: AtomicU32::new(state.retry_after_secs()),
                 usage_bytes: AtomicU64::new(state.usage_bytes()),
                 mode: state.mode(),
+                soft_action: state.soft_action(),
             }),
         }
     }
@@ -320,9 +380,11 @@ impl SharedReceiverAdmissionState {
     /// Returns whether ingress should be shed for this receiver.
     #[must_use]
     pub fn should_shed_ingress(&self) -> bool {
-        self.inner.mode == MemoryLimiterMode::Enforce
-            && MemoryPressureLevel::from_u8(self.inner.level.load(Ordering::Relaxed))
-                == MemoryPressureLevel::Hard
+        shed_decision(
+            self.inner.mode,
+            MemoryPressureLevel::from_u8(self.inner.level.load(Ordering::Relaxed)),
+            self.inner.soft_action,
+        )
     }
 
     /// Returns the Retry-After value advertised while shedding ingress.
@@ -345,6 +407,7 @@ struct LocalReceiverAdmissionStateInner {
     retry_after_secs: Cell<u32>,
     usage_bytes: Cell<u64>,
     mode: MemoryLimiterMode,
+    soft_action: SoftAction,
 }
 
 /// Receiver-local admission state for LocalSet-only receivers that do not cross task boundaries.
@@ -364,6 +427,7 @@ impl LocalReceiverAdmissionState {
                 retry_after_secs: Cell::new(state.retry_after_secs()),
                 usage_bytes: Cell::new(state.usage_bytes()),
                 mode: state.mode(),
+                soft_action: state.soft_action(),
             }),
         }
     }
@@ -385,8 +449,11 @@ impl LocalReceiverAdmissionState {
     /// Returns whether ingress should be shed for this receiver.
     #[must_use]
     pub fn should_shed_ingress(&self) -> bool {
-        self.inner.mode == MemoryLimiterMode::Enforce
-            && self.inner.level.get() == MemoryPressureLevel::Hard
+        shed_decision(
+            self.inner.mode,
+            self.inner.level.get(),
+            self.inner.soft_action,
+        )
     }
 
     /// Returns the Retry-After value advertised while shedding ingress.
@@ -1108,6 +1175,7 @@ mod tests {
             retry_after_secs: 3,
             fail_readiness_on_hard: true,
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
         });
         _ = state.update_level(MemoryPressureLevel::Soft, 91);
         assert!(!state.should_fail_readiness());
@@ -1119,6 +1187,7 @@ mod tests {
             retry_after_secs: 3,
             fail_readiness_on_hard: false,
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
         });
         assert!(!state.should_fail_readiness());
     }
@@ -1130,6 +1199,7 @@ mod tests {
             retry_after_secs: 3,
             fail_readiness_on_hard: true,
             mode: MemoryLimiterMode::ObserveOnly,
+            soft_action: SoftAction::Observe,
         });
         _ = state.update_level(MemoryPressureLevel::Hard, 96);
 
@@ -1142,6 +1212,7 @@ mod tests {
     fn omitted_hysteresis_defaults_to_a_value_below_soft_limit() {
         let limiter = EffectiveMemoryLimiter::from_policy(&MemoryLimiterPolicy {
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
             source: MemoryLimiterSource::Rss,
             check_interval: Duration::from_secs(1),
             soft_limit: Some(100),
@@ -1175,6 +1246,7 @@ mod tests {
             retry_after_secs: 7,
             fail_readiness_on_hard: true,
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
         });
         _ = state.update_level(MemoryPressureLevel::Hard, 96);
 
@@ -1270,6 +1342,7 @@ mod tests {
     fn non_auto_sources_require_explicit_limits() {
         let err = EffectiveMemoryLimiter::from_policy(&MemoryLimiterPolicy {
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
             source: MemoryLimiterSource::Rss,
             check_interval: Duration::from_secs(1),
             soft_limit: None,
@@ -1472,5 +1545,211 @@ mod tests {
         assert_eq!(tick.pre_purge_usage_bytes, None);
         assert!(tick.purge_duration.is_none());
         assert_eq!(tick.current_level, MemoryPressureLevel::Hard);
+    }
+
+    // --- PR1: graduated Soft-pressure shed (soft_action) ---
+
+    fn shed_cfg(mode: MemoryLimiterMode, soft_action: SoftAction) -> MemoryPressureBehaviorConfig {
+        MemoryPressureBehaviorConfig {
+            retry_after_secs: 1,
+            fail_readiness_on_hard: true,
+            mode,
+            soft_action,
+        }
+    }
+
+    #[test]
+    fn shed_decision_covers_full_mode_level_action_matrix() {
+        use MemoryLimiterMode::{Enforce, ObserveOnly};
+        use MemoryPressureLevel::{Hard, Normal, Soft};
+        use SoftAction::{Observe, Shed};
+        // Independent oracle table covering the FULL input space
+        // (2 modes x 3 levels x 2 actions = 12 cases). `shed_decision` is a pure
+        // total function, so an exhaustive table is a complete oracle.
+        let cases = [
+            (ObserveOnly, Normal, Observe, false),
+            (ObserveOnly, Normal, Shed, false),
+            (ObserveOnly, Soft, Observe, false),
+            (ObserveOnly, Soft, Shed, false),
+            (ObserveOnly, Hard, Observe, false),
+            (ObserveOnly, Hard, Shed, false),
+            (Enforce, Normal, Observe, false),
+            (Enforce, Normal, Shed, false),
+            (Enforce, Soft, Observe, false),
+            (Enforce, Soft, Shed, true),
+            (Enforce, Hard, Observe, true),
+            (Enforce, Hard, Shed, true),
+        ];
+        for (mode, level, action, expected) in cases {
+            assert_eq!(
+                shed_decision(mode, level, action),
+                expected,
+                "mode={mode:?} level={level:?} action={action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn default_soft_action_keeps_soft_advisory() {
+        // Default soft_action (Observe) must be byte-identical to pre-PR1: Hard
+        // sheds, Soft/Normal do not.
+        let state = MemoryPressureState::default();
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        assert!(!state.should_shed_ingress());
+        state.set_level_for_tests(MemoryPressureLevel::Hard);
+        assert!(state.should_shed_ingress());
+        state.set_level_for_tests(MemoryPressureLevel::Normal);
+        assert!(!state.should_shed_ingress());
+    }
+
+    #[test]
+    fn soft_action_shed_sheds_soft_in_process_and_receiver_states() {
+        let state = MemoryPressureState::default();
+        state.configure(shed_cfg(MemoryLimiterMode::Enforce, SoftAction::Shed));
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        assert!(state.should_shed_ingress(), "process sheds Soft when Shed");
+
+        let shared = SharedReceiverAdmissionState::from_process_state(&state);
+        let local = LocalReceiverAdmissionState::from_process_state(&state);
+        let update = MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        };
+        shared.apply(update);
+        local.apply(update);
+        assert!(
+            shared.should_shed_ingress(),
+            "shared receiver sheds Soft when Shed"
+        );
+        assert!(
+            local.should_shed_ingress(),
+            "local receiver sheds Soft when Shed"
+        );
+    }
+
+    #[test]
+    fn all_three_sites_agree_with_oracle_across_full_matrix() {
+        use MemoryLimiterMode::{Enforce, ObserveOnly};
+        use MemoryPressureLevel::{Hard, Normal, Soft};
+        use SoftAction::{Observe, Shed};
+        // Same exhaustive oracle as the shed_decision matrix test, but asserted
+        // through all THREE public should_shed_ingress() sites (process-wide,
+        // shared-receiver, local-receiver). Pins site agreement so a future edit
+        // that changes only one site is caught for every (mode, level, action).
+        let cases = [
+            (ObserveOnly, Normal, Observe, false),
+            (ObserveOnly, Normal, Shed, false),
+            (ObserveOnly, Soft, Observe, false),
+            (ObserveOnly, Soft, Shed, false),
+            (ObserveOnly, Hard, Observe, false),
+            (ObserveOnly, Hard, Shed, false),
+            (Enforce, Normal, Observe, false),
+            (Enforce, Normal, Shed, false),
+            (Enforce, Soft, Observe, false),
+            (Enforce, Soft, Shed, true),
+            (Enforce, Hard, Observe, true),
+            (Enforce, Hard, Shed, true),
+        ];
+        for (mode, level, action, expected) in cases {
+            let state = MemoryPressureState::default();
+            state.configure(shed_cfg(mode, action));
+            state.set_level_for_tests(level);
+            assert_eq!(
+                state.should_shed_ingress(),
+                expected,
+                "process: mode={mode:?} level={level:?} action={action:?}"
+            );
+
+            let shared = SharedReceiverAdmissionState::from_process_state(&state);
+            let local = LocalReceiverAdmissionState::from_process_state(&state);
+            let update = MemoryPressureChanged {
+                generation: 1,
+                level,
+                retry_after_secs: 1,
+                usage_bytes: 0,
+            };
+            shared.apply(update);
+            local.apply(update);
+            assert_eq!(
+                shared.should_shed_ingress(),
+                expected,
+                "shared: mode={mode:?} level={level:?} action={action:?}"
+            );
+            assert_eq!(
+                local.should_shed_ingress(),
+                expected,
+                "local: mode={mode:?} level={level:?} action={action:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn observe_only_overrides_soft_action_shed() {
+        let state = MemoryPressureState::default();
+        state.configure(shed_cfg(MemoryLimiterMode::ObserveOnly, SoftAction::Shed));
+        for level in [MemoryPressureLevel::Soft, MemoryPressureLevel::Hard] {
+            state.set_level_for_tests(level);
+            assert!(
+                !state.should_shed_ingress(),
+                "ObserveOnly never sheds at {level:?}"
+            );
+            let shared = SharedReceiverAdmissionState::from_process_state(&state);
+            shared.apply(MemoryPressureChanged {
+                generation: 1,
+                level,
+                retry_after_secs: 1,
+                usage_bytes: 0,
+            });
+            assert!(!shared.should_shed_ingress());
+        }
+    }
+
+    #[test]
+    fn stale_generation_does_not_change_shed_decision() {
+        let state = MemoryPressureState::default();
+        state.configure(shed_cfg(MemoryLimiterMode::Enforce, SoftAction::Shed));
+        let shared = SharedReceiverAdmissionState::from_process_state(&state);
+        shared.apply(MemoryPressureChanged {
+            generation: 2,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
+        assert!(shared.should_shed_ingress());
+        // A stale (older-generation) Normal update must be ignored.
+        shared.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Normal,
+            retry_after_secs: 1,
+            usage_bytes: 0,
+        });
+        assert!(
+            shared.should_shed_ingress(),
+            "stale update must not lift shedding"
+        );
+    }
+
+    #[test]
+    fn retry_after_zero_is_clamped_to_one() {
+        let shared =
+            SharedReceiverAdmissionState::from_process_state(&MemoryPressureState::default());
+        shared.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 0,
+            usage_bytes: 0,
+        });
+        assert_eq!(shared.retry_after_secs(), 1);
+        let local =
+            LocalReceiverAdmissionState::from_process_state(&MemoryPressureState::default());
+        local.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Hard,
+            retry_after_secs: 0,
+            usage_bytes: 0,
+        });
+        assert_eq!(local.retry_after_secs(), 1);
     }
 }

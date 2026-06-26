@@ -165,7 +165,9 @@ Memory limiter policy:
   `observe_only`.
 - This policy is supported only at top-level `policies.resources`.
   Group/pipeline placements are rejected.
-- In Phase 1, `Soft` is informational only; `Hard` is the enforcement threshold.
+- `Soft` is informational by default (`soft_action: observe`); set
+  `soft_action: shed` to shed ingress at `Soft` as well. `Hard` always sheds in
+  `enforce` mode.
 - For full runtime behavior, metrics, and operational guidance, see
   [`docs/memory-limiter-phase1.md`](../../docs/memory-limiter-phase1.md).
 
