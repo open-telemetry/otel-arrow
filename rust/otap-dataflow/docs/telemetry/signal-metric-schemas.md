@@ -2,7 +2,7 @@
 
 Status: Draft (for discussion). Tracking issue:
 [open-telemetry/otel-arrow#3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
-Scope: design only — proposes a direction, changes no production code.
+Scope: design only - proposes a direction, changes no production code.
 
 ## 1. Summary
 
@@ -10,10 +10,10 @@ Nine pipeline nodes hand-roll **per-signal** counters (logs / metrics / spans)
 with ~6 naming schemes and inconsistent or mislabeled units (see #3300 for the
 full inventory). Two normalized shapes have emerged for the per-signal axis:
 
-- **Granular** — one metric per signal, distinguished by **name** (historical
+- **Granular** - one metric per signal, distinguished by **name** (historical
   Go-collector style): `consumed_log_records`, `consumed_metric_points`,
   `consumed_spans`.
-- **Agnostic** — a **single** metric distinguished by a `signal` **attribute**
+- **Agnostic** - a **single** metric distinguished by a `signal` **attribute**
   (`logs` / `metrics` / `traces`), matching the Collector's `otelcol.signal`
   attribute, per the Collector [Pipeline Component Telemetry
   RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md#processors).
@@ -30,7 +30,7 @@ once, independent of the active schema; pick a generation strategy, a source of
 truth, and a selection mechanism; keep the hot path and static-descriptor model
 intact.
 
-**Non-goals:** renaming every existing counter (the broader #3300 cleanup — this
+**Non-goals:** renaming every existing counter (the broader #3300 cleanup - this
 RFC defines the *mechanism*).
 
 ## 3. Background: how metrics flow today
@@ -43,15 +43,15 @@ RFC defines the *mechanism*).
 3. **Increment.** Hot paths mutate fields directly (`.add(n)` / `.inc()`).
 4. **Aggregate.** Snapshots accumulate in a registry keyed by `EntityKey`.
 5. **Export.** The dispatcher (`crates/telemetry/src/metrics/dispatcher.rs`)
-   maps `descriptor.name` → meter / **scope**, each `field.name` → **OTLP metric
-   name**, entity attributes → **scope** attributes, and hard-codes **data-point
+   maps `descriptor.name` -> meter / **scope**, each `field.name` -> **OTLP metric
+   name**, entity attributes -> **scope** attributes, and hard-codes **data-point
    attributes to `&[]`** (`dispatch_metrics_to`, ~line 85).
 
 Two consequences:
 
-- **Granular is nearly free** — the field name already *is* the metric name, so
+- **Granular is nearly free** - the field name already *is* the metric name, so
   the descriptor the macro produces is essentially the granular schema.
-- **Agnostic needs a new per-data-point attribute path** — `signal` varies per
+- **Agnostic needs a new per-data-point attribute path** - `signal` varies per
   increment, not per entity, so it cannot ride on the scope. **This is the
   single largest piece of work** the agnostic schema implies, independent of
   generation strategy.
@@ -75,17 +75,17 @@ item-level *nouns/units* in the metric **name** (`log_records`/`metric_points`/
 `spans`), while **agnostic** uses signal-*type* values in the `signal`
 **attribute** (`logs`/`metrics`/`traces`), to match the Collector's
 `otelcol.signal`. So a "consumed, item-level" counter is either three named
-metrics (`consumed_log_records {log_record}`, …) or one metric `consumed_items
-{item}` with three `signal`-attributed data points (§6).
+metrics (`consumed_log_records {log_record}`, ...) or one metric `consumed_items
+{item}` with three `signal`-attributed data points (section 6).
 
 ## 5. Design axes
 
-### Axis A — Codegen vs runtime conversion
+### Axis A - Codegen vs runtime conversion
 
-- **A1 codegen** — the macro emits *both* shapes; each metric set selects one at
-  registration. Call site identical (§6); descriptor stays static; hot path
+- **A1 codegen** - the macro emits *both* shapes; each metric set selects one at
+  registration. Call site identical (section 6); descriptor stays static; hot path
   stays a direct add.
-- **A2 runtime reshape** — nodes emit one shape; the dispatcher rewrites it per
+- **A2 runtime reshape** - nodes emit one shape; the dispatcher rewrites it per
   config at export. Needs descriptor grouping metadata, the per-data-point
   attribute path, and a per-tick merge/split transform.
 
@@ -98,18 +98,18 @@ metrics (`consumed_log_records {log_record}`, …) or one metric `consumed_items
 | New machinery    | Macro branch           | Mapping meta + transform |
 
 **Recommendation: A1.** It keeps the static descriptor and the hot path, and
-still gives Axis C2's deploy-time switching (compile both, select per config) —
+still gives Axis C2's deploy-time switching (compile both, select per config) -
 without A2's permanent mapping metadata and per-tick transform. Its only extra
 cost is binary size. (The per-data-point attribute work is needed by agnostic
 either way, so it is not a differentiator.)
 
-### Axis B — Source of truth: Weaver vs proc-macro
+### Axis B - Source of truth: Weaver vs proc-macro
 
-- **B1 Weaver-as-source + codegen** — declare both schemas in `semconv/`,
+- **B1 Weaver-as-source + codegen** - declare both schemas in `semconv/`,
   generate Rust via templates; the same registry drives `live-check`, so
   declared and emitted cannot drift. Cost: a net-new codegen pipeline and a
   second generator beside the proc-macro.
-- **B2 proc-macro generates, Weaver validates** — extend `#[metric_set]` with
+- **B2 proc-macro generates, Weaver validates** - extend `#[metric_set]` with
   the signal-split; Weaver only declares + `live-check`-validates (its current
   role). Cost: schema lives in two places, kept consistent by CI.
 
@@ -117,12 +117,12 @@ either way, so it is not a differentiator.)
 granular descriptor; extending it is incremental. Adopt Weaver for declaration +
 validation immediately; revisit full Weaver codegen once the API stabilizes.
 
-### Axis C — Selection: compile-time vs runtime
+### Axis C - Selection: compile-time vs runtime
 
-- **C1 cargo feature** — mutually exclusive `schema-granular`/`schema-agnostic`
+- **C1 cargo feature** - mutually exclusive `schema-granular`/`schema-agnostic`
   for the whole binary. Zero runtime cost, smallest binary, but **no deploy-time
   flexibility** (rebuild to switch) and feature-unification hazards.
-- **C2 runtime config** — a `metrics.signal_schema` knob chosen at startup, with
+- **C2 runtime config** - a `metrics.signal_schema` knob chosen at startup, with
   an optional per-component override. Deploy-time flexible; one binary serves
   both audiences; costs binary size (both shapes compiled) and config plumbing.
 
@@ -149,7 +149,7 @@ pub struct DebugPdataMetrics {
     pub logs_consumed: Counter<u64>, // plain metrics unchanged
 }
 
-// Hot path — same line regardless of schema:
+// Hot path - same line regardless of schema:
 m.consumed.add(Signal::Logs, n);
 ```
 
@@ -157,10 +157,10 @@ Both shapes are compiled in and resolved from config at registration. The same
 `Signal` variant expands to the item-level noun (granular) or the signal-type
 attribute value (agnostic):
 
-- **Granular** — three descriptor fields (`consumed_log_records {log_record}`,
+- **Granular** - three descriptor fields (`consumed_log_records {log_record}`,
   `consumed_metric_points {data_point}`, `consumed_spans {span}`);
   `add(Signal::X, n)` routes to the matching field; export unchanged.
-- **Agnostic** — one field `consumed_items {item}` plus per-signal slots; export
+- **Agnostic** - one field `consumed_items {item}` plus per-signal slots; export
   emits one metric with a `signal` data-point attribute (`logs` / `metrics` /
   `traces`) per non-zero slot.
 
@@ -183,11 +183,12 @@ emits a zero field for an idle signal; agnostic simply omits that data point
 (naturally sparse).
 
 **Required plumbing (independent of which shape is active):** the dispatcher
-must gain a per-data-point attribute path so agnostic can attach `signal` —
+must gain a per-data-point attribute path so agnostic can attach `signal` -
 `add_opentelemetry_metric` and the snapshot model must carry an optional
 attribute set per value instead of the hard-coded `&[]`. `SignalCounter<u64>` is
 the counter specialization; the abstraction must be generic over the instrument
-(`SignalMetric<I>`) to also cover the `Mmsc` instrument used by `flow` (§6.1).
+(`SignalMetric<I>`) to also cover the `Mmsc` instrument used by `flow`
+(section 6.1).
 
 ### Switching schema via config
 
@@ -215,7 +216,7 @@ groups:
 Precedence: component > engine > built-in default (`granular`). The knob governs
 **only** signal-split metrics (`#[signal_metric]` / `SignalCounter`); plain
 `Counter`/`Gauge` fields are unaffected. Key placement is illustrative pending
-the `otap_df_config` model. Flow metrics (§6.1), being engine/policy-declared,
+the `otap_df_config` model. Flow metrics (section 6.1), being engine/policy-declared,
 follow the engine-wide value.
 
 ### Worked example: debug_processor
@@ -223,11 +224,11 @@ follow the engine-wide value.
 `debug_processor` declares ten counters that mix granularities and mislabel
 units (`debug_processor/metrics.rs`). They fall into three groups:
 
-- **Item-level signal triple** — `log_signals_consumed` (log records),
+- **Item-level signal triple** - `log_signals_consumed` (log records),
   `metric_datapoints_consumed` (data points), `span_signals_consumed` (spans).
-- **Message-level signal triple** — `logs_consumed`, `metrics_consumed`,
+- **Message-level signal triple** - `logs_consumed`, `metrics_consumed`,
   `traces_consumed` (each `.add(1)` per batch).
-- **Auxiliaries with no cross-signal peer** — `metric_signals_consumed` (metric
+- **Auxiliaries with no cross-signal peer** - `metric_signals_consumed` (metric
   *series*, an intermediate grouping above data points that logs/spans lack),
   `events_consumed`, `span_events_consumed`, `span_links_consumed`. These stay
   plain because they cannot live on a uniform `add(Signal::X, n)` axis. (Their
@@ -263,25 +264,25 @@ traces_consumed.add(1)                   //  consumed_messages.add(Traces, 1)
 
 Net: ten bespoke counters become two signal-split declarations plus four
 auxiliaries; the mislabeled `{log}` unit and naming divergence disappear because
-names/units come from the canonical table (§4); node code is schema-independent.
+names/units come from the canonical table (section 4); node code is schema-independent.
 
 ### 6.1 Flow metrics
 
 The engine `flow` metrics (`crates/engine/src/flow_metrics.rs`:
 `signals.incoming`, `.outgoing`, `.dropped`, all `{item}` `Mmsc`) are today's
-purest agnostic baseline — one item measure with no signal dimension. This work
+purest agnostic baseline - one item measure with no signal dimension. This work
 should also **align flow's verbs** to the Collector's component-telemetry
-vocabulary: `incoming`→`consumed`, `outgoing`→`produced` (matching
+vocabulary: `incoming`->`consumed`, `outgoing`->`produced` (matching
 `otelcol.<kind>.consumed.items` / `produced.items`). Under the mechanism:
 **agnostic** keeps a single item measure (`consumed.items {item}`, optionally
 with a `signal` split); **granular** splits per signal (`consumed.log_records
 {log_record}`, etc.). Flow adds requirements beyond the node case:
 
-- **Instrument** — flow uses `Mmsc`, so `#[signal_metric]` must be
+- **Instrument** - flow uses `Mmsc`, so `#[signal_metric]` must be
   instrument-generic.
-- **Engine/policy-declared** — flow sets come from the pipeline telemetry policy
+- **Engine/policy-declared** - flow sets come from the pipeline telemetry policy
   (`otap_df_config::policy`), not node source; codegen must cover them.
-- **Per-signal counts at boundaries** — flow currently *aggregates* across
+- **Per-signal counts at boundaries** - flow currently *aggregates* across
   signals; granular flow needs per-signal counts the engine does not yet carry.
   If unavailable, granular flow degrades to the agnostic `{item}` measure.
 - **`dropped` has no Collector verb.** The Collector models drops as an
@@ -306,25 +307,25 @@ possible but doubles cardinality and is not recommended as a steady state.
 3. Declare both schemas in `semconv/`; extend `live-check` to validate them
    (B2).
 4. Migrate nodes incrementally, starting with `debug_processor`.
-5. Generalize over `Mmsc` and apply to `flow` (§6.1), tracking per-signal
+5. Generalize over `Mmsc` and apply to `flow` (section 6.1), tracking per-signal
    boundary counts as a prerequisite for granular flow.
 6. Reassess Weaver-driven codegen (B1) once stable.
 
 ## 9. Open questions
 
-- **`signal` key** — the value vocabulary is decided (`logs` / `metrics` /
+- **`signal` key** - the value vocabulary is decided (`logs` / `metrics` /
   `traces`, matching the Collector's `otelcol.signal`); the open part is the
   exact attribute *key* (`otelcol.signal` vs an `otap.*` key).
-- **Profiles** — reserve a fourth value now or defer.
-- **Flow split** — expose `signal` on flow in agnostic mode by default? How to
+- **Profiles** - reserve a fourth value now or defer.
+- **Flow split** - expose `signal` on flow in agnostic mode by default? How to
   source per-signal boundary counts (engine aggregates today)?
-- **Verb taxonomy** — flow's verbs are decided (`consumed`/`produced`, per the
+- **Verb taxonomy** - flow's verbs are decided (`consumed`/`produced`, per the
   Collector). Open: the broader set (`accepted`/`refused`,
   `sent`/`send_failed`/`enqueue_failed`, processor `dropped`) per #3300, whether
   `dropped` stays a verb or becomes an `outcome` attribute, and name ordering
   (verb-first `consumed.items` vs noun-first `signals.incoming`). Full verb
   standardization is orthogonal to the signal axis and may warrant its own doc.
-- **Cardinality** — confirm agnostic's higher per-metric cardinality is
+- **Cardinality** - confirm agnostic's higher per-metric cardinality is
   acceptable for default backends.
 
 ## 10. Documentation impact: `metrics-guide.md`
@@ -335,26 +336,27 @@ edits should land **with** the implementation:
 - **Entity-only attributes.** It states all metrics in a set share an
   entity-only attribute set. Agnostic adds a per-data-point `signal` attribute.
   The guide already allows *bounded signal-specific attributes* ("a small enum
-  such as a 'state' dimension") — name `signal` as the canonical example and the
+  such as a 'state' dimension") - name `signal` as the canonical example and the
   one bounded non-entity attribute.
 - **Gap today.** That section defers such attributes to `implementation-gaps.md`
-  and the dispatcher hard-codes `&[]`; link the per-data-point work (§6).
+  and the dispatcher hard-codes `&[]`; link the per-data-point work (section 6).
 - **Units.** The "common units" list blesses `{metric}`, `{log}`, `{event}`,
-  `{span}`, `{signal}` — the units #3300 flags. Align to `{log_record}`,
-  `{data_point}`, `{span}`, `{item}`; map `{metric}`→`{data_point}`,
-  `{log}`→`{log_record}`; revisit the `{signal}` example (ambiguous vs the new
+  `{span}`, `{signal}` - the units #3300 flags. Align to `{log_record}`,
+  `{data_point}`, `{span}`, `{item}`; map `{metric}`->`{data_point}`,
+  `{log}`->`{log_record}`; revisit the `{signal}` example (ambiguous vs the new
   attribute).
-- **Performance.** "Same attribute set… registers once… reports only scalars" —
-  note the agnostic exception (a per-data-point `signal` alongside the scalar).
+- **Performance.** "Same attribute set... registers once... reports only
+  scalars" - note the agnostic exception (a per-data-point `signal` alongside
+  the scalar).
 - **Checklist.** Add: per-signal item counters use the signal-split mechanism
-  (§6), inheriting the active schema.
+  (section 6), inheriting the active schema.
 - **Pre-existing drift (flag only).** Naming examples (`otelcol.node.retry`)
   diverge from actual names (`processor.retry`, per `AGENTS.md`); resolve in the
   same cleanup.
 
 ## References
 
-- #3300 — Alignment of per-signal metric naming conventions.
+- #3300 - Alignment of per-signal metric naming conventions.
 - Collector [Pipeline Component Telemetry
   RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 - `metrics-guide.md`, `semantic-conventions-guide.md`,
