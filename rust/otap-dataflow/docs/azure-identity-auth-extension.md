@@ -54,15 +54,20 @@ path free of authentication plumbing.
 
 - Provide a reusable `BearerTokenProvider` capability backed by Azure identity
   flows (Managed Identity, developer tooling, and Workload Identity Federation).
+- Keep the capability **provider- and execution-model agnostic**: the same trait
+  must serve active and passive providers across both the shared and local
+  execution models, from both the provider's and the consumer's side.
+  `token_stream()` returns a per-consumer `Stream` subscription, so an active
+  provider can back it with a `watch` channel while a passive provider backs it
+  with an on-demand `unfold` - consumers depend only on the `Stream`, not on how
+  it is produced.
 - Refresh tokens **in the background**, ahead of expiry, so consumers read a
   fresh token from cache on the hot path with no per-call credential round-trip.
 - Coalesce concurrent token acquisitions within a pipeline instance so a cache
-  miss does not stampede the token endpoint. (At pipeline scope this is per
-  core; see [Performance Considerations](#performance-considerations).)
+  miss does not stampede the token endpoint.
 - Share a single token cache and refresh loop across all consumers bound to one
-  extension instance. (At pipeline scope an instance is per core, so sharing is
-  within a core, not across cores; see
-  [Performance Considerations](#performance-considerations).)
+  extension instance (per core at pipeline scope; see
+  [Performance Considerations](#performance-considerations)).
 - Preserve the engine's performance model: no locks on the data-path hot path,
   no blocking I/O on the per-core async runtime.
 - Emit telemetry (success/failure counts, publish count, acquisition latency)
@@ -88,6 +93,7 @@ path free of authentication plumbing.
 | Component shape | Standalone extension in a new `otap-df-contrib-extensions` crate; the Azure SDK dependency is isolated behind a feature flag. |
 | Capability surface | `BearerTokenProvider`: `get_token()` (cached fast path / single coalesced slow path) + `token_stream()` (refresh subscription). A single purpose-built capability trait, not a general framework. |
 | Execution model | `Active + Shared`. Shared serves both `require_shared()` and `require_local()` consumers; Active drives the background refresh loop. |
+| Startup gating | Opt into the engine readiness probe; `signal_ready()` after the first token publish so the engine holds data-path node startup until a token exists (bounded by the probe timeout). |
 | Sharing model | All state behind `Arc<Inner>`; every clone (consumers + background task) observes one token cache. At pipeline scope this is per pipeline instance (per core). |
 | Token cache | `tokio::sync::watch<Option<BearerToken>>` - lock-free fast-path read + pub/sub for `token_stream()`. |
 | Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers share one in-flight credential call. |
@@ -105,6 +111,12 @@ trait introduced alongside this work. The trait (generated via the
 methods:
 
 ```rust
+/// A per-consumer subscription to token refreshes. Boxed to hide the concrete
+/// stream type so providers can back it differently (e.g. a `watch` channel or
+/// an `unfold`) without changing the signature.
+pub type TokenStream =
+    Pin<Box<dyn Stream<Item = Result<BearerToken, CapabilityError>> + 'static>>;
+
 #[async_trait]
 pub trait BearerTokenProvider {
     /// Return the current valid token. Fast path reads the cache; slow path
@@ -113,9 +125,7 @@ pub trait BearerTokenProvider {
 
     /// Subscribe to the stream of token refreshes. Yields each newly
     /// published token for the lifetime of the extension.
-    fn token_stream(
-        &self,
-    ) -> Pin<Box<dyn Stream<Item = Result<BearerToken, CapabilityError>> + Send + 'static>>;
+    fn token_stream(&self) -> TokenStream;
 }
 ```
 
@@ -123,6 +133,13 @@ pub trait BearerTokenProvider {
 string and an optional `expires_on: Instant`. Errors are surfaced as
 `CapabilityError`, which carries the `(extension, capability)` identity plus the
 underlying source error.
+
+The `TokenStream` alias omits a `Send` bound: the subscription is always
+consumed on the core that created it (thread-per-core), so it need not be `Send`.
+The `#[capability]` macro emits the signature into both the `local` (`?Send`)
+and `shared` (`Send`) variants; dropping the bound is what lets a passive
+provider back it with a `!Send` `unfold`. This extension backs it with a `watch`
+channel.
 
 ### Execution model: Active + Shared
 
@@ -135,8 +152,9 @@ The extension is registered as **Active + Shared**:
   clones share the same `Arc<Inner>`, so every consumer and the background task
   observe the same token state.
 - **Active** - the extension drives its own event loop via
-  `SharedExtension::start()`, which runs the background refresh task. It receives
-  a control channel and participates in startup/shutdown orchestration (see
+  `SharedExtension::start()`, which runs the background refresh task, receives a
+  control channel, and participates in startup/shutdown orchestration. It opts
+  into the readiness probe and signals ready after the first token publish (see
   [Lifecycle](#lifecycle)).
 
 ## Architecture
@@ -166,9 +184,10 @@ flowchart LR
    registers the metric set, and constructs the extension with an empty `watch`
    channel (`Option<BearerToken> = None`).
 2. **Background refresh.** When the engine spawns the extension, `start()` runs a
-   loop that acquires a token, publishes it onto the `watch` channel (via
-   `send_replace`, so the cache is updated even when no consumer has subscribed
-   yet), and schedules the next refresh ahead of expiry.
+   loop that acquires a token, publishes it onto the `watch` channel, and
+   schedules the next refresh ahead of expiry. After the first successful publish
+   it calls `signal_ready()`, releasing the engine's readiness gate so the data
+   path can start with a warm cache.
 3. **Fast-path read.** `get_token()` first checks the `watch` cache. If the
    cached token is outside the refresh-skew window, it is returned immediately -
    no credential call, no lock.
@@ -295,9 +314,13 @@ than own authentication:
   are removed.
 - At factory time it resolves the capability:
   `capabilities.require_local::<BearerTokenProvider>()`.
-- It starts in a **"no token, no pdata"** state and only begins accepting data
-  once the extension publishes a valid token. If refresh fails before expiry,
-  the exporter stops accepting new pdata until a fresh token arrives.
+- Cold start needs no exporter-side wait: the readiness probe (see
+  [Lifecycle](#lifecycle)) ensures a token is published before the exporter is
+  spawned. If a later refresh fails and the cached token expires, the exporter
+  falls back to a **"no token, no pdata"** state: it stops accepting pdata
+  (`inbox.recv_when(false)`), applying backpressure upstream via the bounded
+  inbox channel until a fresh token arrives - the same pattern the current Azure
+  Monitor exporter uses (pdata is paused, not dropped).
 
 This keeps the exporter's data path free of credential logic and lets multiple
 Azure exporters share one token source.
@@ -324,13 +347,19 @@ Metrics are recorded in both the background refresh loop and the slow-path
    At factory time `create()` has already built `Auth`, registered the metric
    set, and constructed the extension with an empty token cache.
 2. `SharedExtension::start()` runs the refresh loop. The first acquisition
-   publishes a token onto the `watch` channel.
-3. Pipelines start. Each consumer resolves the capability once at construction
-   (`require_local()` / `require_shared()`) and holds the typed handle for its
-   lifetime - no capability resolution on the hot path.
-4. Until the first token is published, fast-path `get_token()` misses and falls
-   through to the slow path (a single coalesced credential call); the Azure
-   Monitor exporter instead waits for the first published token (see
+   publishes a token onto the `watch` channel, then calls
+   `EffectHandler::signal_ready()`.
+3. The engine holds data-path node spawning on the extension's readiness probe
+   (`wait_all_ready`) until that signal fires, bounded by the probe timeout
+   (default 5s; override via `with_readiness_probe_timeout_override`). If the
+   first token is not acquired in time, startup aborts with a readiness-timeout
+   error rather than starting nodes without a token.
+4. Data-path nodes then start. Each consumer resolves the capability once at
+   construction (`require_local()` / `require_shared()`) and holds the typed
+   handle for its lifetime - no capability resolution on the hot path. Because
+   the readiness gate already ensured a token is published, the first
+   `get_token()` hits the warm cache; the slow path remains only for later cache
+   misses (e.g. a refresh failure mid-run; see
    [Consumer Integration](#consumer-integration-azure-monitor-exporter)).
 
 ### Shutdown
@@ -443,8 +472,6 @@ First useful end-to-end scenario (local development):
 
 - A pipeline declares the extension with `method: development` and binds it to
   the Azure Monitor exporter via `capabilities: { bearer_token_provider: ... }`.
-- A traffic generator feeds the pipeline; the exporter targets a local mock
-  endpoint.
 - Verify the exporter only begins exporting once the extension publishes a
   token, and that `auth_successes` / `auth_token_publish` increment.
 
@@ -485,20 +512,15 @@ Additional scenario coverage:
    an enum whose variants carry those fields, so required fields validate
    structurally? This refactor was explicitly deferred during
    [PR #3337](https://github.com/open-telemetry/otel-arrow/pull/3337).
-3. **Readiness gating.** Should the framework offer an opt-in readiness probe so
-   a consumer can block data-path start until the first token is published,
-   rather than each consumer implementing its own "no token, no pdata" state?
-4. **Multi-resource tokens.** A node targeting more than one Azure resource
+3. **Multi-resource tokens.** A node targeting more than one Azure resource
    needs more than one scope. v1's answer is "declare one extension instance per
    scope and bind each"; is a single multi-scope instance worth the extra
    capability surface?
 
 ## Future Work
 
-- **`AuthMethod` enum refactor.** Replace the flat config struct (optional
-  per-method fields) with an `AuthMethod` enum whose variants carry only their
-  own fields, so required fields validate structurally. Deferred during
-  [PR #3337](https://github.com/open-telemetry/otel-arrow/pull/3337) (see
+- **`AuthMethod` enum refactor.** Promote the flat config struct to an
+  `AuthMethod` enum so required per-method fields validate structurally (see
   [Open Questions](#open-questions)).
 - **Broader extension scope.** Hoist the extension to group/engine scope (Phase
   2) for genuine cross-core token-cache sharing, so a single token cache and
