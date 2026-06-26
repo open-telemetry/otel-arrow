@@ -36,9 +36,7 @@ use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_pdata::Consumer as PdataConsumer;
 use otap_df_pdata::OtlpProtoBytes;
-use otap_df_pdata::otap::{
-    Logs, Metrics, OtapArrowRecords, OtapBatchStore, Traces, from_record_messages,
-};
+use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_error, otel_info};
