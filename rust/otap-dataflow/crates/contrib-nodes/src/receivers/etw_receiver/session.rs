@@ -563,6 +563,17 @@ fn extract_decoded_fields(
 /// total with no happens-before relationship to other state.
 #[derive(Debug, Default)]
 pub(super) struct SessionTelemetry {
+    /// Every event the `ProcessTrace` callback observed from the trace
+    /// session, counted *before* any per-core channel send is attempted
+    /// (`received_events_observed`).
+    ///
+    /// This is the producer-side denominator: it counts what the session
+    /// *produced*, in contrast to `received_events_total` (mod.rs) which
+    /// counts what the receiver *pulled off the channel*. The difference
+    /// between the two is the queue-full drop, so the queue-full drop rate is
+    /// computable as `dropped_queue_full / observed`. See the counter-algebra
+    /// note on `EtwReceiverMetrics` for the exact relationships.
+    pub observed: AtomicU64,
     /// Events dropped because a per-core channel was full (Gap B,
     /// `received_events_dropped_queue_full`).
     pub dropped_queue_full: AtomicU64,
@@ -781,6 +792,15 @@ fn spawn_etw_session(
 
                     let i = next.get();
                     next.set(i.wrapping_add(1));
+
+                    // Count every event the session produced, *before* the
+                    // send is attempted. This is the producer-side denominator
+                    // (`received_events_observed`): unlike `received_events_total`
+                    // (which counts only events the receiver later pulls off the
+                    // channel), it includes events that are about to be dropped
+                    // because the target core's channel is full. The queue-full
+                    // drop rate is therefore `dropped_queue_full / observed`.
+                    let _ = telemetry.observed.fetch_add(1, Ordering::Relaxed);
 
                     // Best-effort send; if this core's channel is full the
                     // event is dropped from the pipeline entirely (each event

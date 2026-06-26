@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add ETW receiver telemetry counters for queue-full drops, decode failures, session errors, active sessions, and batch sizes.
+note: Add ETW receiver telemetry counters for observed/produced events, queue-full drops, decode failures, session errors, active sessions, and batch sizes, with an explicit counter-algebra contract.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3361]
@@ -17,7 +17,14 @@ issues: [3361]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  The ETW receiver now records:
+  The ETW receiver now records (emitted under the `receiver.etw` metric set;
+  the names below are the exact field names you query - see the telemetry table
+  in
+  `rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/README.md`):
+  - `received_events_observed`: every event the session produced, counted on
+    the producer (`ProcessTrace`) side before the per-core channel send,
+    including events about to be dropped because the channel is full. This is
+    the producer-side denominator.
   - `received_events_dropped_queue_full`: events dropped when an internal
     per-core channel is full (previously only logged), bridged from the
     `!Send` ProcessTrace callback via a shared atomic.
@@ -25,4 +32,27 @@ subtext: |
     never incremented; the failing decode path now feeds it).
   - `session_errors`: fatal `parse_until` / `ProcessTrace` failures.
   - `sessions_active`: currently active per-core ETW session subscriptions.
-  - `batch_size`: distribution of Arrow batch sizes at flush time.
+  - `batch_size_events`: distribution of the number of events per attempted
+    Arrow batch at flush time (unit `{event}`; the name disambiguates it from
+    byte-valued `batch_size` metrics on exporters).
+
+  Counter algebra (the exact relationships; the authoritative copy lives in the
+  doc comment on `EtwReceiverMetrics` in
+  `rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/mod.rs`):
+  - `received_events_observed = received_events_total + received_events_dropped_queue_full`.
+    `received_events_total` counts events pulled off the channel by the async
+    receiver, NOT events the session produced; the difference is the queue-full
+    drops.
+  - `received_events_total = received_events_forwarded + received_events_forward_failed`
+    plus any events still buffered in the in-flight builder at snapshot time.
+  - Queue-full drop rate = `received_events_dropped_queue_full / received_events_observed`.
+  - `received_events_invalid` is orthogonal: a decode failure does not drop the
+    event (it is still forwarded with empty fields), so it is not subtracted
+    from `received_events_total`.
+
+  The producer-side counters are session-scoped (shared across all per-core
+  receivers of a `session_name`); whichever core drains the shared atomics first
+  on a tick claims the whole delta via `swap(0)`, so concurrent per-core drains
+  never double-count and the registry sums the per-core snapshots into one exact
+  session-wide series. A residual delta produced after the last core's terminal
+  snapshot is acceptably dropped at teardown.

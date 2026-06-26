@@ -209,7 +209,7 @@ impl Config {
                 (Some(_), Some(_)) => {
                     return Err(otap_df_config::error::Error::InvalidUserConfig {
                         error: format!(
-                            "provider[{i}]: 'name' and 'guid' are mutually exclusive — specify one, not both"
+                            "provider[{i}]: 'name' and 'guid' are mutually exclusive - specify one, not both"
                         ),
                     });
                 }
@@ -317,7 +317,7 @@ impl EtwReceiver {
 /// via [`std::mem::take`]) regardless of outcome. Returns `Ok(None)` when the
 /// builder is empty (nothing to flush). On a `build()` failure the
 /// `received_events_forward_failed` metric is recorded and the error is
-/// returned — a build failure indicates an encoding bug rather than a transient
+/// returned - a build failure indicates an encoding bug rather than a transient
 /// downstream condition, so it is surfaced to the caller.
 fn build_pending_batch(
     effect_handler: &local::EffectHandler<OtapPdata>,
@@ -330,9 +330,36 @@ fn build_pending_batch(
 
     let item_count = u64::from(builder.len());
 
-    // Record the batch-size distribution at flush time (before the outcome of
-    // the build/send is known), since it measures batch *shape*, not success.
-    metrics.borrow_mut().batch_size.record(item_count as f64);
+    // `batch_size` semantics: this records the shape of each **attempted
+    // flush** - i.e. the number of events accumulated when a flush is
+    // triggered (interval tick, drain, or shutdown). It is recorded exactly
+    // once per logical batch:
+    //
+    // * `std::mem::take(builder)` below drains the builder unconditionally, so
+    //   the same events can never remain to be re-flushed and re-recorded -
+    //   there is no retry path that re-enters this function with the same
+    //   batch. (`flush_batch`/`try_flush_batch` always call `build_pending_batch`
+    //   on a freshly-drained builder.)
+    // * The early `is_empty()` return above guarantees we never record an
+    //   empty (zero-size) batch, so it does not skew the low end of the
+    //   distribution.
+    //
+    // It is intentionally recorded *before* the build/send outcome is known:
+    // a `build()` failure is an encoding bug (rare) and a send failure is a
+    // transient downstream condition; neither changes the *shape* of the batch
+    // the receiver assembled. Dashboards should therefore read `batch_size` as
+    // "attempted batch shape", not "successfully delivered batch shape". The
+    // success/failure split is carried separately by
+    // `received_events_forwarded` vs `received_events_forward_failed`.
+    //
+    // `item_count as f64`: `Mmsc::record` takes `f64`. The cast is lossless
+    // here - `item_count` is bounded by the builder length, which is in turn
+    // bounded by `batch.max_size` (a `NonZeroU16`, max 65_535), far below the
+    // 2^53 integer-precision limit of `f64`.
+    metrics
+        .borrow_mut()
+        .batch_size_events
+        .record(item_count as f64);
 
     let payload = match std::mem::take(builder).build() {
         Ok(payload) => payload,
@@ -441,44 +468,188 @@ fn try_flush_batch(
     Ok(())
 }
 
+// ── Producer-side atomic folding ─────────────────────────────────────────────
+
+/// The per-session producer-side deltas claimed by a single `swap(0)` pass over
+/// the shared [`session::SessionTelemetry`] atomics.
+///
+/// Returned by [`claim_session_atomics`] and applied to a metric set by
+/// [`SessionAtomicDeltas::apply`]. Splitting the `swap` (claim) from the metric
+/// `add` (apply) keeps the borrow of the `RefCell<MetricSet>` short and, more
+/// importantly, makes the "claim exactly once" semantics unit-testable without
+/// constructing a full registered `MetricSet` (which requires a pipeline
+/// context). See the boundary-case tests in this module.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct SessionAtomicDeltas {
+    observed: u64,
+    dropped_queue_full: u64,
+    invalid: u64,
+    session_errors: u64,
+}
+
+impl SessionAtomicDeltas {
+    /// True when every claimed delta is zero (nothing to fold this pass).
+    ///
+    /// Only used by the boundary-case tests (the production fold path always
+    /// applies unconditionally, skipping zero deltas inside [`Self::apply`]).
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.observed == 0
+            && self.dropped_queue_full == 0
+            && self.invalid == 0
+            && self.session_errors == 0
+    }
+
+    /// Fold the claimed deltas into `metrics`. Each non-zero delta becomes a
+    /// counter `add()`; zero deltas are skipped so we never touch a counter we
+    /// did not advance.
+    fn apply(&self, metrics: &mut EtwReceiverMetrics) {
+        if self.observed > 0 {
+            metrics.received_events_observed.add(self.observed);
+        }
+        if self.dropped_queue_full > 0 {
+            metrics
+                .received_events_dropped_queue_full
+                .add(self.dropped_queue_full);
+        }
+        if self.invalid > 0 {
+            metrics.received_events_invalid.add(self.invalid);
+        }
+        if self.session_errors > 0 {
+            metrics.session_errors.add(self.session_errors);
+        }
+    }
+}
+
+/// Atomically claim (via `swap(0)`) the running producer-side totals from the
+/// shared session telemetry, returning the deltas for one fold pass.
+///
+/// Because every field is `swap(0)`-ed, the returned delta is claimed by
+/// **exactly one** caller even when several per-core receivers race here
+/// concurrently - there is no double counting. See
+/// [`EtwReceiver::drain_session_atomics`] for the cross-core aggregation and
+/// shutdown-race reasoning.
+fn claim_session_atomics(telemetry: &session::SessionTelemetry) -> SessionAtomicDeltas {
+    SessionAtomicDeltas {
+        observed: telemetry.observed.swap(0, Ordering::Relaxed),
+        dropped_queue_full: telemetry.dropped_queue_full.swap(0, Ordering::Relaxed),
+        invalid: telemetry.decode_failed.swap(0, Ordering::Relaxed),
+        session_errors: telemetry.session_errors.swap(0, Ordering::Relaxed),
+    }
+}
+
+/// RAII guard that keeps the `sessions_active` up/down counter symmetric.
+///
+/// `sessions_active` is a delta `UpDownCounter`: the event loop reports `+1`
+/// when a core acquires its subscription and must report `-1` exactly once
+/// when that core releases it - on **every** exit path, including the error
+/// (`?`-propagated) paths, not just the orderly `DrainIngress`/`Shutdown`
+/// terminal arms. Doing the `dec()` manually on each `return` is fragile: a new
+/// `?` or early `return Err(..)` would silently leak `+1` for that core's
+/// lifetime.
+///
+/// This guard calls `inc()` on construction and `dec()` exactly once when the
+/// subscription is released, so the decrement runs whether the loop returns
+/// `Ok(terminal_state)` or unwinds via `?`. The `Rc<RefCell<MetricSet>>` is
+/// shared with the receiver, so the guard folds into the same per-core metric
+/// set.
+///
+/// The orderly terminal arms call [`Self::release`] explicitly **before** they
+/// take their terminal `snapshot()`, so the `-1` is visible in the final
+/// reported snapshot. The error/`?` paths take no snapshot; for those, `Drop`
+/// performs the `dec()`. The `released` flag makes the two routes mutually
+/// exclusive - the counter is decremented exactly once, never twice.
+struct SessionActiveGuard {
+    metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
+    released: bool,
+}
+
+impl SessionActiveGuard {
+    /// Acquire the guard, reporting `+1` on `sessions_active`.
+    fn acquire(metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>) -> Self {
+        metrics.borrow_mut().sessions_active.inc();
+        Self {
+            metrics,
+            released: false,
+        }
+    }
+
+    /// Release the subscription, reporting `-1` on `sessions_active` exactly
+    /// once. Idempotent: a second call (or the `Drop` fallback) is a no-op.
+    ///
+    /// Call this on the orderly terminal arms *before* taking the terminal
+    /// `snapshot()` so the decrement is included in the reported snapshot.
+    fn release(&mut self) {
+        if !self.released {
+            self.released = true;
+            self.metrics.borrow_mut().sessions_active.dec();
+        }
+    }
+}
+
+impl Drop for SessionActiveGuard {
+    fn drop(&mut self) {
+        // Fallback `-1` for the exit paths that did not call `release()`
+        // explicitly - notably the error (`?`-propagated) returns - keeping the
+        // delta counter symmetric on *every* exit path. No-op if already
+        // released by a terminal arm.
+        self.release();
+    }
+}
+
 // ── Event processing loop ────────────────────────────────────────────────────
 
 impl EtwReceiver {
-    /// Fold the per-session atomic counters — written by the `!Send`
-    /// `ProcessTrace` callback — into this core's metric set.
+    /// Fold the per-session atomic counters - written by the `!Send`
+    /// `ProcessTrace` callback - into this core's metric set.
     ///
     /// Each atomic is `swap(0)`-ed so the value is consumed exactly once: the
     /// running total since the last drain becomes a counter `add()`. Call this
     /// on every `CollectTelemetry` tick and immediately before any terminal
     /// `snapshot()` so the final report is not lossy.
     ///
-    /// Note: the atomics are shared across all cores of a session, so whichever
-    /// core drains first claims the whole delta — the metric does not carry the
-    /// per-core dimension (the `etw.event.dropped` log still does).
+    /// ## Cross-core aggregation: "first core drains the whole delta"
+    ///
+    /// The `session_telemetry` atomics are **shared across all cores** of a
+    /// `session_name` (one `Arc<SessionTelemetry>` per session). Each
+    /// `swap(0)` claims the *entire* accumulated delta, so whichever core's
+    /// event loop reaches this function first on a given tick folds the whole
+    /// producer-side count into *its* `MetricSet`; the other cores see zero
+    /// for that tick.
+    ///
+    /// This is correct for the aggregate because:
+    ///
+    /// * `swap(0)` is atomic, so a delta is claimed by **exactly one** core -
+    ///   there is no double counting even when two cores tick concurrently.
+    /// * Every per-core `MetricSet` for this receiver shares the *same*
+    ///   attribute key (the receiver registers metrics without a per-core
+    ///   dimension), so the telemetry registry **sums** the per-core snapshots
+    ///   under one series. The session-wide total is therefore exact.
+    ///
+    /// The trade-off is intentional: the producer-side counters
+    /// (`received_events_observed`, `received_events_dropped_queue_full`,
+    /// `received_events_invalid`, `session_errors`) are **session-scoped, not
+    /// per-core**. They cannot be attributed to an individual core - if they
+    /// were given a per-core attribute they would land on an arbitrary core
+    /// each interval and produce noisy, meaningless per-core series. The
+    /// per-core dimension is preserved only in the human-facing
+    /// `etw.event.dropped` log, which carries the `core` field.
+    ///
+    /// ## Shutdown race: residual delta after the last snapshot
+    ///
+    /// On `DrainIngress`/`Shutdown` each core calls this function once more
+    /// before its terminal `snapshot()`. The `swap(0)` still guarantees no
+    /// double counting across the concurrently-terminating cores. However, a
+    /// producer increment that lands *after* the last surviving core has taken
+    /// its terminal snapshot can no longer be drained (that core's loop has
+    /// exited). Losing this final residual delta at teardown is acceptable: it
+    /// is bounded by the events the `ProcessTrace` thread produces in the
+    /// narrow window between the last snapshot and channel close, and the
+    /// session thread is detached for the process lifetime anyway.
     fn drain_session_atomics(&self) {
-        let dropped = self
-            .session_telemetry
-            .dropped_queue_full
-            .swap(0, Ordering::Relaxed);
-        let invalid = self
-            .session_telemetry
-            .decode_failed
-            .swap(0, Ordering::Relaxed);
-        let errors = self
-            .session_telemetry
-            .session_errors
-            .swap(0, Ordering::Relaxed);
-
+        let deltas = claim_session_atomics(&self.session_telemetry);
         let mut m = self.metrics.borrow_mut();
-        if dropped > 0 {
-            m.received_events_dropped_queue_full.add(dropped);
-        }
-        if invalid > 0 {
-            m.received_events_invalid.add(invalid);
-        }
-        if errors > 0 {
-            m.session_errors.add(errors);
-        }
+        deltas.apply(&mut m);
     }
 
     /// Main event loop when an ETW session is active.
@@ -506,9 +677,12 @@ impl EtwReceiver {
         flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         // This core now holds an active subscription to the ETW session.
-        // `UpDownCounter` is a delta instrument, so this reports `+1` once and
-        // the matching `dec()` on the terminal paths reports `-1`.
-        self.metrics.borrow_mut().sessions_active.inc();
+        // `sessions_active` is a delta `UpDownCounter`: this guard reports `+1`
+        // now and `-1` exactly once on release. The orderly terminal arms call
+        // `session_guard.release()` before their snapshot so the `-1` is
+        // reported; on any error (`?`) exit the guard's `Drop` performs the
+        // `-1`, so the counter never leaks `+1` for this core.
+        let mut session_guard = SessionActiveGuard::acquire(Rc::clone(&self.metrics));
 
         loop {
             tokio::select! {
@@ -544,7 +718,7 @@ impl EtwReceiver {
                                             )?;
                                         }
                                     }
-                                    // Empty or Disconnected — nothing more to do.
+                                    // Empty or Disconnected - nothing more to do.
                                     Err(_) => break,
                                 }
                             }
@@ -557,7 +731,7 @@ impl EtwReceiver {
                             // Fold producer-side atomics and release the active
                             // subscription before the final snapshot.
                             self.drain_session_atomics();
-                            self.metrics.borrow_mut().sessions_active.dec();
+                            session_guard.release();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
@@ -570,7 +744,7 @@ impl EtwReceiver {
                             // Fold producer-side atomics and release the active
                             // subscription before the final snapshot.
                             self.drain_session_atomics();
-                            self.metrics.borrow_mut().sessions_active.dec();
+                            session_guard.release();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
@@ -588,7 +762,7 @@ impl EtwReceiver {
                             return Err(Error::ChannelRecvError(e));
                         }
                         _ => {
-                            // Other control messages — ignore for now.
+                            // Other control messages - ignore for now.
                         }
                     }
                 }
@@ -615,7 +789,7 @@ impl EtwReceiver {
                             }
                         }
                         None => {
-                            // Channel closed — the ETW session thread has
+                            // Channel closed - the ETW session thread has
                             // exited (process shutdown or unrecoverable error).
                             // Flush any remaining events, then stop polling.
                             // Use the non-blocking flush so a slow or
@@ -688,10 +862,73 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
 // ── Telemetry ────────────────────────────────────────────────────────────────
 
 /// Receiver-level metrics for the ETW receiver.
-#[metric_set(name = "etw.receiver.metrics")]
+///
+/// # Counter algebra
+///
+/// There are **two** distinct denominators, and they are not the same number.
+/// The lesson from #3268 is to state which is which explicitly:
+///
+/// * `received_events_observed` - the **producer-side** denominator. Counted
+///   in the `!Send` `ProcessTrace` callback for **every** event the session
+///   produced, *before* the per-core channel send is attempted. This is what
+///   the session *produced*, including events that are immediately dropped
+///   because the target core's channel is full.
+/// * `received_events_total` - the **consumer-side** denominator. Counted in
+///   the async event loop for each event actually *pulled off the channel*
+///   via `recv()`/`try_recv()`. This is what the receiver *delivered into the
+///   batching pipeline*.
+///
+/// The two differ by exactly the queue-full drops, so the relationships are:
+///
+/// ```text
+/// received_events_observed
+///     = received_events_total            (events pulled off the channel)
+///     + received_events_dropped_queue_full   (events the producer dropped, never enqueued)
+///
+/// received_events_total
+///     = received_events_forwarded        (events in successfully-sent batches)
+///     + received_events_forward_failed   (events in batches that failed to build/send)
+///     + events still buffered in the in-flight builder at snapshot time
+/// ```
+///
+/// Derived rates:
+///
+/// * queue-full drop rate = `received_events_dropped_queue_full / received_events_observed`
+/// * forward-failure rate = `received_events_forward_failed / received_events_total`
+///
+/// Notes:
+///
+/// * `received_events_invalid` (TDH decode failures) is **orthogonal** to the
+///   delivery accounting: a decode failure does *not* drop the event - it is
+///   still enqueued and forwarded with empty `decoded_fields`. So it is *not*
+///   subtracted from `received_events_total`; treat it as a quality signal,
+///   not a loss bucket.
+/// * `received_events_observed`, `received_events_dropped_queue_full`,
+///   `received_events_invalid`, and `session_errors` are **session-scoped**
+///   (shared across all per-core receivers of a `session_name`) - see
+///   [`EtwReceiver::drain_session_atomics`]. `received_events_total`,
+///   `received_events_forwarded`, and `received_events_forward_failed` are
+///   per-core but reported under a single summed series.
+#[metric_set(name = "receiver.etw")]
 #[derive(Debug, Default, Clone)]
 pub struct EtwReceiverMetrics {
-    /// Total number of ETW events observed from the trace session.
+    /// Total number of ETW events the session **produced** - counted on the
+    /// producer (`ProcessTrace`) side before any channel send, including
+    /// events about to be dropped due to a full per-core channel.
+    ///
+    /// This is the producer-side denominator. The queue-full drop rate is
+    /// `received_events_dropped_queue_full / received_events_observed`. See the
+    /// "Counter algebra" section on [`EtwReceiverMetrics`].
+    #[metric(unit = "{event}")]
+    pub received_events_observed: Counter<u64>,
+
+    /// Total number of ETW events the receiver **pulled off the channel** in
+    /// the async event loop (the consumer-side denominator).
+    ///
+    /// This is strictly `received_events_observed - received_events_dropped_queue_full`:
+    /// it excludes events the producer dropped because the channel was full and
+    /// which therefore never reached this loop. See the "Counter algebra"
+    /// section on [`EtwReceiverMetrics`].
     #[metric(unit = "{event}")]
     pub received_events_total: Counter<u64>,
 
@@ -728,9 +965,23 @@ pub struct EtwReceiverMetrics {
     #[metric(unit = "{session}")]
     pub sessions_active: UpDownCounter<u64>,
 
-    /// Distribution of Arrow batch sizes at flush time.
+    /// Distribution of the **number of events** in each **attempted** Arrow
+    /// batch at flush time (min/mean/max/sum/count).
+    ///
+    /// The unit is `{event}`; the metric name carries the "per attempted
+    /// batch" framing so a dashboard reads it as "events per batch", not
+    /// "byte size of a batch" (contrast the byte-valued `batch_size` Mmsc on
+    /// some exporters, which use unit `By`).
+    ///
+    /// Recorded once per logical batch when a flush is triggered (interval
+    /// tick, drain, or shutdown), *before* the build/send outcome is known -
+    /// it measures batch *shape*, not delivery success. Empty batches are not
+    /// recorded, and there is no retry path that re-records the same batch, so
+    /// the distribution is free of double-counting. Use
+    /// `received_events_forwarded` / `received_events_forward_failed` for the
+    /// success/failure split.
     #[metric(unit = "{event}")]
-    pub batch_size: Mmsc,
+    pub batch_size_events: Mmsc,
 }
 
 #[cfg(test)]
@@ -871,6 +1122,214 @@ mod tests {
         let cfg = BatchConfig::default();
         assert_eq!(cfg.max_size, DEFAULT_BATCH_MAX_SIZE);
         assert_eq!(cfg.max_duration, DEFAULT_BATCH_MAX_DURATION);
+    }
+
+    // ── Producer-side atomic folding boundary cases ──────────────────
+    //
+    // These exercise the "first core drains the whole delta" design of
+    // `claim_session_atomics` / `SessionAtomicDeltas::apply` without needing a
+    // real ETW session or a registered `MetricSet`:
+    //
+    // 1. A normal fold claims exactly the producer-side counts and applying
+    //    them advances the metric counters.
+    // 2. `swap(0)` semantics: a second claim on the same atomics, with no new
+    //    producer increments in between, sees zero - so two concurrently
+    //    ticking cores can never double-count.
+    // 3. Terminal path: after a final drain, a *late* producer increment is
+    //    left unclaimed (residual loss at teardown is acceptable and bounded).
+
+    use session::SessionTelemetry;
+    use std::sync::atomic::Ordering;
+
+    /// Simulate the producer (`ProcessTrace` callback) recording its
+    /// per-event counters into the shared session telemetry.
+    fn bump_producer(telemetry: &SessionTelemetry, observed: u64, dropped: u64, invalid: u64) {
+        let _ = telemetry.observed.fetch_add(observed, Ordering::Relaxed);
+        let _ = telemetry
+            .dropped_queue_full
+            .fetch_add(dropped, Ordering::Relaxed);
+        let _ = telemetry
+            .decode_failed
+            .fetch_add(invalid, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn claim_session_atomics_claims_full_delta_and_resets() {
+        let telemetry = SessionTelemetry::default();
+        // 10 events observed, 3 dropped queue-full, 2 decode failures.
+        bump_producer(&telemetry, 10, 3, 2);
+        let _ = telemetry.session_errors.fetch_add(1, Ordering::Relaxed);
+
+        let deltas = claim_session_atomics(&telemetry);
+        assert_eq!(
+            deltas,
+            SessionAtomicDeltas {
+                observed: 10,
+                dropped_queue_full: 3,
+                invalid: 2,
+                session_errors: 1,
+            }
+        );
+
+        // The atomics are now drained to zero.
+        assert_eq!(telemetry.observed.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.dropped_queue_full.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.decode_failed.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.session_errors.load(Ordering::Relaxed), 0);
+
+        // Applying the deltas advances the corresponding metric counters and
+        // upholds the counter-algebra invariant:
+        //   observed == dropped_queue_full + (events that would reach the loop)
+        let mut metrics = EtwReceiverMetrics::default();
+        deltas.apply(&mut metrics);
+        assert_eq!(metrics.received_events_observed.get(), 10);
+        assert_eq!(metrics.received_events_dropped_queue_full.get(), 3);
+        assert_eq!(metrics.received_events_invalid.get(), 2);
+        assert_eq!(metrics.session_errors.get(), 1);
+        // `received_events_total` is the consumer-side counter and is NOT
+        // touched by the producer-side fold.
+        assert_eq!(metrics.received_events_total.get(), 0);
+    }
+
+    #[test]
+    fn second_claim_without_new_increments_is_empty_no_double_count() {
+        // Models two cores ticking back-to-back: the first claim takes the
+        // whole delta, the second sees nothing. This is exactly why
+        // concurrent per-core drains cannot double count.
+        let telemetry = SessionTelemetry::default();
+        bump_producer(&telemetry, 7, 1, 0);
+
+        let first = claim_session_atomics(&telemetry);
+        assert_eq!(first.observed, 7);
+        assert_eq!(first.dropped_queue_full, 1);
+        assert!(!first.is_empty());
+
+        let second = claim_session_atomics(&telemetry);
+        assert!(
+            second.is_empty(),
+            "second claim with no intervening producer increments must be empty, got {second:?}"
+        );
+
+        // Folding both into a single metric set sums to the producer total
+        // exactly once (the registry sums per-core snapshots the same way).
+        let mut metrics = EtwReceiverMetrics::default();
+        first.apply(&mut metrics);
+        second.apply(&mut metrics);
+        assert_eq!(metrics.received_events_observed.get(), 7);
+        assert_eq!(metrics.received_events_dropped_queue_full.get(), 1);
+    }
+
+    #[test]
+    fn late_producer_increment_after_terminal_drain_is_residual_loss() {
+        // Terminal path: a core performs its final drain, then the producer
+        // records one more event before the channel actually closes. That
+        // residual delta is left unclaimed - acceptable, bounded loss.
+        let telemetry = SessionTelemetry::default();
+        bump_producer(&telemetry, 5, 0, 0);
+
+        // Final drain on the last surviving core.
+        let terminal = claim_session_atomics(&telemetry);
+        assert_eq!(terminal.observed, 5);
+
+        let mut metrics = EtwReceiverMetrics::default();
+        terminal.apply(&mut metrics);
+        assert_eq!(metrics.received_events_observed.get(), 5);
+
+        // A late producer increment lands after the terminal snapshot.
+        let _ = telemetry.observed.fetch_add(1, Ordering::Relaxed);
+
+        // The receiver loop has exited, so this residual is never folded into
+        // the metric set - it remains visible only in the atomic, confirming
+        // the documented "residual loss at teardown" behaviour.
+        assert_eq!(telemetry.observed.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            metrics.received_events_observed.get(),
+            5,
+            "metric must not reflect the post-terminal increment"
+        );
+    }
+
+    #[test]
+    fn empty_deltas_apply_is_noop() {
+        let deltas = SessionAtomicDeltas::default();
+        assert!(deltas.is_empty());
+        let mut metrics = EtwReceiverMetrics::default();
+        deltas.apply(&mut metrics);
+        assert_eq!(metrics.received_events_observed.get(), 0);
+        assert_eq!(metrics.received_events_dropped_queue_full.get(), 0);
+        assert_eq!(metrics.received_events_invalid.get(), 0);
+        assert_eq!(metrics.session_errors.get(), 0);
+    }
+
+    // ── sessions_active lifecycle symmetry ───────────────────────────
+    //
+    // `sessions_active` is a delta `UpDownCounter`. The `SessionActiveGuard`
+    // must keep it symmetric on EVERY exit path: `+1` on acquire and exactly
+    // one `-1` whether the loop returns normally (terminal arm calls
+    // `release()`) or unwinds via `?` (guard `Drop` performs the `-1`). These
+    // tests assert the guard never leaks `+1` and never double-decrements.
+
+    use otap_df_engine::testing::test_pipeline_ctx;
+
+    /// Build a real per-core metric set wrapped like the receiver holds it.
+    fn test_metrics() -> Rc<RefCell<MetricSet<EtwReceiverMetrics>>> {
+        let (pipeline_ctx, _registry) = test_pipeline_ctx();
+        Rc::new(RefCell::new(
+            pipeline_ctx.register_metrics::<EtwReceiverMetrics>(),
+        ))
+    }
+
+    #[test]
+    fn session_guard_drop_without_release_decrements_once() {
+        // Models the error (`?`-propagated) exit: no terminal arm runs, so the
+        // guard's `Drop` must perform the `-1`. Net delta back to zero.
+        let metrics = test_metrics();
+        {
+            let _guard = SessionActiveGuard::acquire(Rc::clone(&metrics));
+            assert_eq!(metrics.borrow().sessions_active.get(), 1);
+        } // guard dropped here
+        assert_eq!(
+            metrics.borrow().sessions_active.get(),
+            0,
+            "guard Drop must report -1 on the error/`?` exit path"
+        );
+    }
+
+    #[test]
+    fn session_guard_release_then_drop_decrements_exactly_once() {
+        // Models the orderly terminal arm: `release()` reports the `-1` before
+        // the snapshot, and the subsequent `Drop` must be a no-op (no double
+        // decrement, which would underflow the UpDownCounter).
+        let metrics = test_metrics();
+        {
+            let mut guard = SessionActiveGuard::acquire(Rc::clone(&metrics));
+            assert_eq!(metrics.borrow().sessions_active.get(), 1);
+            guard.release();
+            assert_eq!(
+                metrics.borrow().sessions_active.get(),
+                0,
+                "release() must report -1 so the terminal snapshot reflects it"
+            );
+        } // guard dropped here - must NOT decrement again
+        assert_eq!(
+            metrics.borrow().sessions_active.get(),
+            0,
+            "Drop after release() must be a no-op (no double decrement)"
+        );
+    }
+
+    #[test]
+    fn session_guard_release_is_idempotent() {
+        let metrics = test_metrics();
+        let mut guard = SessionActiveGuard::acquire(Rc::clone(&metrics));
+        guard.release();
+        guard.release(); // second call is a no-op
+        guard.release();
+        assert_eq!(
+            metrics.borrow().sessions_active.get(),
+            0,
+            "repeated release() calls must decrement at most once"
+        );
     }
 }
 
