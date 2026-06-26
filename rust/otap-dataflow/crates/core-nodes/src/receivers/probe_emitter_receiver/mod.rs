@@ -51,7 +51,9 @@ use std::time::SystemTime;
 use tokio::time::{MissedTickBehavior, interval};
 use uuid::Uuid;
 
-use self::config::{Config, PROBE_EMITTED_AT_ATTR, PROBE_ID_ATTR, PROBE_SOURCE_ATTR};
+use self::config::{
+    Config, PROBE_BODY, PROBE_EMITTED_AT_ATTR, PROBE_ID_ATTR, PROBE_SOURCE_ATTR,
+};
 use self::metrics::ProbeEmitterMetrics;
 
 pub mod config;
@@ -117,6 +119,7 @@ impl ProbeEmitterReceiver {
         let log = LogRecord {
             time_unix_nano: emitted_at_unix_nanos as u64,
             observed_time_unix_nano: emitted_at_unix_nanos as u64,
+            body: Some(AnyValue::new_string(PROBE_BODY)),
             attributes: vec![
                 KeyValue::new(PROBE_ID_ATTR, AnyValue::new_string(probe_id)),
                 KeyValue::new(

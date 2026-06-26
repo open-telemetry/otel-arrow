@@ -270,9 +270,9 @@ fn decompress_and_count(body: &[u8], headers: &HeaderMap) -> Result<DecompressRe
 
 /// Detect probe entries in the ingested JSON array and print E2E latency.
 ///
-/// A probe is identified by the presence of a `ProbeOriginTimestampNanos` field
-/// (or `_otap_internal.probe.emitted_at_unix_nanos` for raw attribute passthrough).
-/// The latency is computed as `now() - origin_timestamp`.
+/// A probe is identified by `body == "_OTAP_PROBE"` (mapped as `"Message"`
+/// in the schema config). The leading `_` allows backends to short-circuit
+/// with a single-byte prefix check on non-probe logs.
 fn detect_and_report_probes(entries: &[serde_json::Value]) {
     let now_nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -280,33 +280,48 @@ fn detect_and_report_probes(entries: &[serde_json::Value]) {
         .unwrap_or(0);
 
     for entry in entries {
-        // Try mapped field name first, then raw attribute name.
+        // Fast path: check body / Message field for the well-known probe marker.
+        let body = entry
+            .get("Message")
+            .or_else(|| entry.get("body"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        // O(1) prefix check, then full comparison only if prefix matches.
+        if !body.starts_with('_') || body != "_OTAP_PROBE" {
+            continue;
+        }
+
+        // Probe detected — read origin timestamp from attributes.
         let origin_nanos = entry
             .get("ProbeOriginTimestampNanos")
             .or_else(|| entry.get("_otap_internal.probe.emitted_at_unix_nanos"))
             .and_then(|v| v.as_i64());
 
-        if let Some(origin) = origin_nanos {
-            let latency_ns = (now_nanos - origin).max(0);
-            let latency_ms = latency_ns as f64 / 1_000_000.0;
+        let Some(origin) = origin_nanos else {
+            println!("[mock-la] ⚠️  PROBE detected but missing origin timestamp");
+            continue;
+        };
 
-            let probe_id = entry
-                .get("ProbeId")
-                .or_else(|| entry.get("_otap_internal.probe.id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+        let latency_ns = (now_nanos - origin).max(0);
+        let latency_ms = latency_ns as f64 / 1_000_000.0;
 
-            let source = entry
-                .get("ProbeSource")
-                .or_else(|| entry.get("_otap_internal.probe.source"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+        let probe_id = entry
+            .get("ProbeId")
+            .or_else(|| entry.get("_otap_internal.probe.id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
 
-            println!(
-                "[mock-la] 🏓 PROBE E2E latency: {latency_ms:.1}ms | \
-                 source={source} | id={probe_id}"
-            );
-        }
+        let source = entry
+            .get("ProbeSource")
+            .or_else(|| entry.get("_otap_internal.probe.source"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("?");
+
+        println!(
+            "[mock-la] 🏓 PROBE E2E latency: {latency_ms:.1}ms | \
+             source={source} | id={probe_id}"
+        );
     }
 }
 

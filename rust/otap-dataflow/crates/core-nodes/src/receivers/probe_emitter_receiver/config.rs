@@ -9,6 +9,11 @@ use std::time::Duration;
 /// Default emission interval (1 probe per second).
 pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Well-known log body value that backends can use for fast O(1) probe
+/// detection. Starts with `_` so a single-byte prefix check short-circuits
+/// for every non-probe log.
+pub const PROBE_BODY: &str = "_OTAP_PROBE";
+
 /// Reserved attribute key carrying the probe's unique id.
 pub const PROBE_ID_ATTR: &str = "_otap_internal.probe.id";
 
