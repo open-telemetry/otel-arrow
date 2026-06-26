@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782348480578,
+  "lastUpdate": 1782434931268,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5447,6 +5447,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 111.52,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "clhain",
+            "username": "clhain",
+            "email": "8164192+clhain@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "510247bf32178590394681e082fac547cc05cc50",
+          "message": "Fix asymmetric Serialize/Deserialize on AttributeValue (#3359)\n\n# Change Summary\n\n`AttributeValue` and `AttributeValueArray` used a **derived\n`Serialize`** (serde's default externally-tagged enum format) but a\n**custom `Deserialize`** (expecting plain scalars and sequences). These\nwere incompatible: YAML/JSON produced by serialization could not be\ndeserialized back.\n\nThis broke any code path that round-tripped an `OtelDataflowSpec`\nthrough serialization — for example, CRD serialization for Kubernetes or\nconfig export/reimport.\n\n### Before (broken)\n\nSerializing a `TelemetryConfig` with resource attributes produced\nexternally-tagged enum output:\n\n**YAML:**\n```yaml\nresource:\n  k8s.container.name: !String ${env:K8S_CONTAINER_NAME}\n  k8s.pod.uid: !String ${env:K8S_POD_UID}\n  enabled: !Bool true\n  replica: !I64 3\n  tags: !Bool\n  - true\n  - false\n```\n\n**JSON:**\n```json\n{\n  \"k8s.container.name\": {\"String\": \"${env:K8S_CONTAINER_NAME}\"},\n  \"enabled\": {\"Bool\": true},\n  \"tags\": {\"Bool\": [true, false]}\n}\n```\n\nAttempting to deserialize this output back would fail with:\n```\ninvalid type: enum, expected a string, boolean, number, or array\n```\n\n### After (fixed)\n\nSerialization now emits plain scalars and bare sequences, matching what\nthe custom `Deserialize` expects:\n\n**YAML:**\n```yaml\nresource:\n  k8s.container.name: ${env:K8S_CONTAINER_NAME}\n  k8s.pod.uid: ${env:K8S_POD_UID}\n  enabled: true\n  replica: 3\n  tags:\n  - true\n  - false\n```\n\n**JSON:**\n```json\n{\n  \"k8s.container.name\": \"${env:K8S_CONTAINER_NAME}\",\n  \"enabled\": true,\n  \"tags\": [true, false]\n}\n```\n\nRound-tripping through `serde_yaml::to_string` / `serde_yaml::from_str`\n(and the JSON equivalents) now works correctly.\n\n## What issue does this PR close?\n\n* Closes #3358\n\n## How are these changes tested?\n\nFixed tests asserting the broken behavior and added:\n\n- **`test_attribute_value_yaml_roundtrip_scalars`** — Verifies all\nscalar variants (`String`, `Bool`, `I64`, `F64`) survive a YAML\nserialize/deserialize round-trip.\n- **`test_attribute_value_yaml_roundtrip_arrays`** — Verifies all array\nvariants (`String`, `Bool`, `I64`, `F64`) survive a YAML round-trip.\n- **`test_attribute_value_json_roundtrip`** — Verifies mixed scalars and\narrays survive a JSON round-trip.\n- **`test_attribute_value_serializes_plain_scalars_yaml`** — Asserts\nserialized YAML contains no enum tags (`!String`, `!I64`, etc.).\n- **`test_telemetry_config_yaml_roundtrip`** — Verifies a full\n`TelemetryConfig` with resource attributes round-trips through YAML.\n\n## Are there any user-facing changes?\n\nYes. Previously, serializing an OtelDataflowSpec (or any config\ncontaining AttributeValue fields like telemetry resource attributes) and\nthen deserializing it back would fail. This affected CRD round-trips,\nconfig export/reimport, and any serialize-then-deserialize workflow.\n\n### Changelog\n\n* [x] Added a .chloggen/*.yaml entry, OR this PR is a chore (indicated\nin title).\n\nCreated: .chloggen/fix-attribute-value-serialize-roundtrip.yaml",
+          "timestamp": "2026-06-25T23:15:31Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/510247bf32178590394681e082fac547cc05cc50"
+        },
+        "date": 1782434919278,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.57,
             "unit": "MB"
           },
           {
