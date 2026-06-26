@@ -266,6 +266,15 @@ Net: ten bespoke counters become two signal-split declarations plus four
 auxiliaries; the mislabeled `{log}` unit and naming divergence disappear because
 names/units come from the canonical table (section 4); node code is schema-independent.
 
+The `per` axis selects item-level vs message-level (batch) naming; the two sets
+stay distinct, and in both the agnostic metric carries the `signal` data-point
+attribute (`logs` / `metrics` / `traces`):
+
+| `per` | Granular (logs / metrics / traces) | Agnostic |
+| --- | --- | --- |
+| `item` (default) | `consumed_log_records` `{log_record}` / `consumed_metric_points` `{data_point}` / `consumed_spans` `{span}` | `consumed_items` `{item}` |
+| `message` | `consumed_log_messages` / `consumed_metric_messages` / `consumed_trace_messages` (all `{msg}`) | `consumed_messages` `{msg}` |
+
 ### 6.1 Flow metrics
 
 The engine `flow` metrics (`crates/engine/src/flow_metrics.rs`:
