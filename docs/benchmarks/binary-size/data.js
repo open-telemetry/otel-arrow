@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782434931268,
+  "lastUpdate": 1782521157623,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5484,6 +5484,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 98.85,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "80a995ddbf4fd597c897dae3b5ebfcffbbd97dfd",
+          "message": "chore(repo): Revise pull request template and AGENTS.md for better guidance (#3371)\n\nUpdated the pull request template to improve clarity and instructions.\n\n# Change Summary\n\nUpdate PR template to mention doc-only PRs to prevent AI comments like\nhttps://github.com/open-telemetry/otel-arrow/pull/3369#discussion_r3484154450:\n\n> PR description indicates the changelog requirement is satisfied\n(either a .chloggen/*.yaml entry was added or the PR title is a chore),\nbut this PR appears to add only documentation and the title is docs:.\nPer rust/otap-dataflow/AGENTS.md:110-123, skipping a Rust changelog\nentry requires chore in the PR title; otherwise add a .chloggen/*.yaml\nentry if this doc is considered user-facing.\n\n## What issue does this PR close?\n\nN/A\n\n## How are these changes tested?\n\nN/A\n\n## Are there any user-facing changes?\n\nYes, changes to PR description\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [x] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-06-26T22:00:44Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/80a995ddbf4fd597c897dae3b5ebfcffbbd97dfd"
+        },
+        "date": 1782521146335,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.56,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.91,
             "unit": "MB"
           }
         ]
