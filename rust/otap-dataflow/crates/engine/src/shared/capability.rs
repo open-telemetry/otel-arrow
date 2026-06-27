@@ -9,3 +9,5 @@
 //! [`capability`](crate::capability). Test-only reference capabilities
 //! live under [`crate::testing::capability`] and are intentionally not
 //! re-exported here.
+
+pub use crate::capability::bearer_token_provider::shared::BearerTokenProvider;
