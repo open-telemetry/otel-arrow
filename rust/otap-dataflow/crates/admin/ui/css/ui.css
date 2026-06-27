@@ -16,6 +16,12 @@
       background-size: 100vw 100vh;
     }
 
+    /* Opt-in full-width layout: lift the centered max-width cap on the page shell.
+       Default (no body class) keeps the 72rem centered column. */
+    body.full-width .page-shell {
+      max-width: 100%;
+    }
+
     /* Sticky shell for top controls/cards on desktop layouts. */
     .sticky-panels {
       position: sticky;
