@@ -29,12 +29,35 @@ config: {}
 
 ## Configuration
 
-This receiver has no node-specific configuration.
+Batching is optional and off by default. With an empty config each log record is
+emitted as its own `ExportLogsRequest`, exactly as before:
 
 ```yaml
 type: receiver:internal_telemetry
 config: {}
 ```
+
+To batch records, set `batch_size`. Records that share a scope are then combined
+into one `ScopeLogs` message instead of being emitted one per message:
+
+```yaml
+type: receiver:internal_telemetry
+config:
+  # Records to accumulate before emitting one batched ExportLogsRequest.
+  # Omit to disable batching. Must be greater than 0.
+  batch_size: 100
+
+  # Upper bound on how long a record waits in a partial batch before it is
+  # flushed. Only applies when batch_size is set (default: 200ms).
+  max_batch_duration: 200ms
+```
+
+- `batch_size`: omit (the default) to emit each record immediately, or set a
+  positive count to group records sharing a scope into one `ScopeLogs` message.
+- `max_batch_duration`: how long a partial batch may wait before flushing. Only
+  relevant when `batch_size` is set. The pending batch is also flushed on drain,
+  shutdown, and channel close, and large batches are split so every emitted
+  message stays well under the transport size limit.
 
 This receiver is normally declared inside `engine.observability.pipeline`, not
 inside a user ingest pipeline.
