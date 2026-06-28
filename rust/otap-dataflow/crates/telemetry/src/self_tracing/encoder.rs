@@ -615,8 +615,8 @@ pub fn encode_export_logs_request(
 /// the call site) plus the entity-key context that defines the scope
 /// attributes. Each distinct scope becomes one `ScopeLogs` message carrying all
 /// of its records, rather than one message per record. Scopes are ordered by
-/// that identity (one `InstrumentationScope` per distinct entity-key set);
-/// records within a scope keep arrival order.
+/// that identity (target, then entity-key context); records within a scope keep
+/// arrival order.
 ///
 /// Callers must keep each batch small enough to stay under the `ProtoBuffer`
 /// size limit; the receiver does this by splitting on a byte budget before
@@ -632,10 +632,9 @@ pub fn encode_export_logs_request_batch(
         return;
     }
 
-    // Bucket event indices by scope identity = (scope name, entity-key context).
+    // Bucket event indices by scope identity = (target, entity-key context).
     // A BTreeMap is the codebase's grouping idiom (cf. `build_attribute_index`)
-    // and orders scopes by entity-key set, giving one `InstrumentationScope`
-    // per distinct set as the issue describes.
+    // and orders scopes by that key: target first, then the entity-key slice.
     let mut groups: BTreeMap<(&str, &[EntityKey]), Vec<usize>> = BTreeMap::new();
     for (i, event) in events.iter().enumerate() {
         let target = event.record.callsite().target();

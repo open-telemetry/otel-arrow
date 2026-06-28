@@ -44,10 +44,11 @@ fn default_max_batch_duration() -> Duration {
     Duration::from_millis(DEFAULT_MAX_BATCH_DURATION_MS)
 }
 
-/// Per-message byte budget. `flush_batch` splits a batch so each emitted
-/// `ExportLogsRequest` stays under this, keeping messages well below the gRPC
-/// and OTLP encode limits. Records are individually small (bounded by
-/// `LOG_BUFFER_SIZE`), so with this cap an oversized message is impossible.
+/// Per-message byte budget for splitting a batch, so each emitted
+/// `ExportLogsRequest` stays well under typical gRPC/OTLP size limits. The split
+/// is a heuristic: it sums each record's pre-encoded body plus framing and does
+/// not count all protobuf overhead (e.g. scope attributes), so it is a safety
+/// margin, not a hard cap. Internal log records are small, leaving wide headroom.
 const MAX_BATCH_BYTES: usize = 1 << 20; // 1 MiB
 
 /// Rough per-record protobuf overhead added to the record body when estimating
@@ -283,9 +284,9 @@ impl InternalTelemetryReceiver {
     ) -> Result<(), Error> {
         let mut start = 0;
         while start < batch.len() {
-            // Take records until the running size would exceed the budget, always
-            // including at least one (a single record is bounded by LOG_BUFFER_SIZE,
-            // so it always fits).
+            // Take records until the estimated size would exceed the budget,
+            // always including at least one: a record's pre-encoded body is
+            // size-bounded, so a single one always fits.
             let mut end = start;
             let mut chunk_bytes = resource_bytes.len();
             while end < batch.len() {
