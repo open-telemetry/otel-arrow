@@ -32,9 +32,12 @@ jobs:
     steps:
       - name: Detect changelog bypass conditions
         id: detect_bypass
+        env:
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          labels="${{ join(github.event.pull_request.labels.*.name, ' ') }}"
-          title="${{ github.event.pull_request.title }}"
+          labels="$PR_LABELS"
+          title="$PR_TITLE"
 
           skip=false
           for label in dependencies chore skipchangelog; do

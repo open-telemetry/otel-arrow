@@ -137,7 +137,7 @@ once_cell = "1.20.2"
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs"]}
 
 opentelemetry = "0.32.0"
-opentelemetry_sdk = { version = "0.32.0", default-features = false, features = ["metrics", "internal-logs"] }
+opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["metrics", "internal-logs"] }
 opentelemetry-stdout = { version = "0.32.0", default-features = false, features = ["metrics"] }
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "http-json", "reqwest-blocking-client", "metrics", "internal-logs"] }
 opentelemetry-prometheus = { version = "0.32.0", default-features = false, features = ["internal-logs"] }
@@ -208,11 +208,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4" } # v0.24.0
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
