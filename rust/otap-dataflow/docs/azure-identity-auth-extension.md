@@ -31,11 +31,13 @@ It builds on the extension system foundations:
 
 ## Problem
 
-Several exporters need to authenticate to Azure services (e.g. Azure Monitor /
-Log Analytics) using OAuth bearer tokens. Today the Azure Monitor exporter owns
-its own authentication: it constructs an Azure credential, acquires a token,
-and refreshes it inline. This couples authentication to a single node and has
-several drawbacks:
+Several nodes need to authenticate to Azure services using OAuth bearer tokens.
+Today each owns its own authentication: the Azure Monitor exporter constructs an
+Azure credential, acquires a token, and refreshes it inline, and the Parquet
+exporter independently builds an `Arc<dyn TokenCredential>` (via
+`cloud_auth::azure::from_auth_method`) and wraps it in an `object_store`
+`CredentialProvider` (`AzureTokenCredentialProvider`) for blob-storage writes.
+This couples authentication to each node and has several drawbacks:
 
 - **Duplication.** Every Azure-authenticating node must re-implement credential
   construction, token caching, refresh scheduling, and failure handling.
@@ -54,6 +56,11 @@ path free of authentication plumbing.
 
 - Provide a reusable `BearerTokenProvider` capability backed by Azure identity
   flows (Managed Identity, developer tooling, and Workload Identity Federation).
+- Serve every Azure-authenticating node from one capability: the Azure Monitor
+  exporter, the Parquet exporter's `object_store` blob-storage writes (bridged
+  through `object_store`'s `CredentialProvider`), and the OTLP exporters
+  (`Authorization: Bearer` header injection). See
+  [Consumer Integration](#consumer-integration).
 - Keep the capability **provider- and execution-model agnostic**: the same trait
   must serve active and passive providers across both the shared and local
   execution models, from both the provider's and the consumer's side.
@@ -171,7 +178,7 @@ flowchart LR
             LOOP -->|publish| WATCH
             WATCH --> CAP[BearerTokenProvider capability]
         end
-        EXP[azure-monitor-exporter] -->|require_local / require_shared| CAP
+        EXP[consumer node<br/>Azure Monitor / Parquet / OTLP exporter] -->|require_local / require_shared| CAP
         EXP -->|get_token / token_stream| CAP
     end
     AUTH -->|OAuth token request| SRC
@@ -305,7 +312,18 @@ this single conversion the schedule is immune to wall-clock jumps. Non-expiring
 tokens push the next refresh far into the future; the loop is still woken by
 control messages.
 
-## Consumer Integration (Azure Monitor exporter)
+## Consumer Integration
+
+A consumer binds the capability in its `capabilities:` map and resolves it once
+at factory time (`require_local()` / `require_shared()`). Because identity and
+scope are fixed per extension instance, each consumer binds the instance
+configured for the scope it needs - e.g. `https://monitor.azure.com/.default`
+for Azure Monitor, `https://storage.azure.com/.default` for blob storage (see
+[Multi-resource tokens](#open-questions)). This keeps each consumer's data path
+free of credential logic and lets nodes sharing one scope share a single token
+source.
+
+### Azure Monitor exporter
 
 The Azure Monitor exporter is refactored to **consume** the capability rather
 than own authentication:
@@ -322,8 +340,37 @@ than own authentication:
   inbox channel until a fresh token arrives - the same pattern the current Azure
   Monitor exporter uses (pdata is paused, not dropped).
 
-This keeps the exporter's data path free of credential logic and lets multiple
-Azure exporters share one token source.
+### Parquet exporter (object_store)
+
+The Parquet exporter (`urn:otel:exporter:parquet`) writes to Azure Blob Storage
+through the `object_store` crate, which expects an `object_store`
+`CredentialProvider` rather than the engine's `BearerTokenProvider`. The bridge
+is `AzureTokenCredentialProvider` (`crates/otap/src/object_store/azure.rs`): it
+is re-sourced to hold the resolved `BearerTokenProvider` handle instead of
+constructing its own credential, and implements `get_credential()` by calling
+`get_token()` and mapping the result to `AzureCredential::BearerToken`. Token
+caching and refresh move out of the exporter and into the extension; the
+`cloud_auth::azure` credential-construction path is no longer needed on this
+route.
+
+- The exporter binds the storage-scoped extension instance
+  (`scope: https://storage.azure.com/.default`).
+- `object_store` calls `get_credential()` per request, so it reads the current
+  cached token on each write; a missing/expired token surfaces as a write
+  error and is retried per the exporter's existing object-store retry policy,
+  rather than as inbox backpressure.
+
+### OTLP exporters
+
+The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) and HTTP
+(`urn:otel:exporter:otlp_http`) exporters today support only static request
+headers (e.g. a fixed `Authorization` header) and perform no token refresh.
+They will be updated to **optionally** consume `BearerTokenProvider`: when the
+capability is bound, the exporter resolves it at factory time and injects a
+fresh `Authorization: Bearer <token>` on outgoing requests, reading the current
+token from cache via `get_token()`, so credentials refresh without a restart.
+Their factories already receive a `capabilities` argument (currently unused), so
+this is additive and does not change the default (no-auth) behavior.
 
 ## Telemetry
 
@@ -360,7 +407,7 @@ Metrics are recorded in both the background refresh loop and the slow-path
    the readiness gate already ensured a token is published, the first
    `get_token()` hits the warm cache; the slow path remains only for later cache
    misses (e.g. a refresh failure mid-run; see
-   [Consumer Integration](#consumer-integration-azure-monitor-exporter)).
+   [Consumer Integration](#consumer-integration)).
 
 ### Shutdown
 

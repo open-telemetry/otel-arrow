@@ -21,7 +21,9 @@ Required fields: `change_type` (one of `breaking`, `deprecation`,
 directory's `config.yaml`), `note`, and `issues`.
 
 Skip the entry only when the change is not user-facing (build chores, internal
-refactors, doc-only edits, dev-only dependency bumps). In that case include
+refactors, dev-only dependency bumps). In that case include
 `chore` in the PR title.
+
+Doc-only PRs are also excluded from the changelog requirement.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md#changelog-entries) for full details.

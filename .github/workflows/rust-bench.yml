@@ -45,5 +45,5 @@ jobs:
         with:
           toolchain: stable
       - name: cargo bench contrib-nodes (all features)
-        run: cargo bench -p otap-df-contrib-nodes --all-features
+        run: cargo bench --locked -p otap-df-contrib-nodes --all-features
         working-directory: ./rust/otap-dataflow
