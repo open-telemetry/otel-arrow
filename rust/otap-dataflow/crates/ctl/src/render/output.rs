@@ -276,3 +276,87 @@ fn stream_envelope<T: Serialize>(
         "data": value
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::args::MutationOutput;
+    use serde_json::Value;
+
+    /// Parses the single-line NDJSON written to `buf` into a JSON value.
+    fn parse_line(buf: Vec<u8>) -> Value {
+        let text = String::from_utf8(buf).expect("utf8 output");
+        serde_json::from_str(text.trim()).expect("valid JSON line")
+    }
+
+    /// Scenario: NDJSON mutation output carries the default schema version.
+    /// Guarantees: the mutation envelope stamps the active branding's
+    /// `schemaVersion`, which is `dfctl/v1` when no branding is installed.
+    #[test]
+    fn mutation_ndjson_uses_default_schema_version() {
+        let mut buf = Vec::new();
+        write_mutation_output(
+            &mut buf,
+            MutationOutput::Ndjson,
+            "succeeded",
+            &json!({"k": "v"}),
+        )
+        .expect("write mutation ndjson");
+        let value = parse_line(buf);
+        assert_eq!(value["schemaVersion"], "dfctl/v1");
+        assert_eq!(value["resource"], "mutation");
+    }
+
+    /// Scenario: agent-json mutation output carries the default schema version.
+    /// Guarantees: `agent_mutation_envelope` stamps the active branding's
+    /// `schemaVersion`.
+    #[test]
+    fn mutation_agent_json_uses_default_schema_version() {
+        let mut buf = Vec::new();
+        write_mutation_output(
+            &mut buf,
+            MutationOutput::AgentJson,
+            "succeeded",
+            &json!({"k": "v"}),
+        )
+        .expect("write mutation agent-json");
+        let value = parse_line(buf);
+        assert_eq!(value["schemaVersion"], "dfctl/v1");
+        assert_eq!(value["type"], "mutation");
+    }
+
+    /// Scenario: NDJSON stream event output carries the default schema version.
+    /// Guarantees: `stream_envelope` stamps the active branding's
+    /// `schemaVersion`.
+    #[test]
+    fn event_output_uses_default_schema_version() {
+        let mut buf = Vec::new();
+        write_event_output(&mut buf, "snapshot", &json!({"k": "v"})).expect("write event");
+        let value = parse_line(buf);
+        assert_eq!(value["schemaVersion"], "dfctl/v1");
+        assert_eq!(value["resource"], "snapshot");
+    }
+
+    /// Scenario: NDJSON log event output carries the default schema version.
+    /// Guarantees: `write_log_event` stamps the active branding's
+    /// `schemaVersion`.
+    #[test]
+    fn log_event_uses_default_schema_version() {
+        let entry = telemetry::LogEntry {
+            seq: 1,
+            timestamp: "1970-01-01T00:00:00Z".to_string(),
+            level: "INFO".to_string(),
+            target: "test".to_string(),
+            event_name: "event".to_string(),
+            file: None,
+            line: None,
+            rendered: "hello".to_string(),
+            contexts: Vec::new(),
+        };
+        let mut buf = Vec::new();
+        write_log_event(&mut buf, &entry).expect("write log event");
+        let value = parse_line(buf);
+        assert_eq!(value["schemaVersion"], "dfctl/v1");
+        assert_eq!(value["type"], "log");
+    }
+}

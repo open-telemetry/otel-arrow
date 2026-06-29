@@ -244,6 +244,60 @@ mod tests {
         assert!(output.contains(path.to_str().expect("path")));
     }
 
+    /// Scenario: `completions <shell>` writes a completion script to stdout.
+    /// Guarantees: the generated script is named for the active binary and is
+    /// non-empty.
+    #[test]
+    fn generate_writes_named_completion_script() {
+        let mut stdout = Vec::new();
+        run(
+            &mut stdout,
+            CompletionArgs {
+                command: None,
+                shell: Some(Shell::Bash),
+            },
+        )
+        .expect("generate completions");
+        let output = String::from_utf8(stdout).expect("stdout");
+        assert!(!output.is_empty());
+        // The generated bash script references the binary name.
+        assert!(output.contains(branding::active().bin_name));
+    }
+
+    /// Scenario: `completions` without a shell reports an actionable error.
+    /// Guarantees: the error names the active binary in its usage hint.
+    #[test]
+    fn generate_without_shell_errors_with_hint() {
+        let mut stdout = Vec::new();
+        let err = run(
+            &mut stdout,
+            CompletionArgs {
+                command: None,
+                shell: None,
+            },
+        )
+        .expect_err("missing shell should error");
+        assert!(err.to_string().contains(branding::active().bin_name));
+    }
+
+    /// Scenario: Elvish install prints an activation note referencing the binary.
+    /// Guarantees: the Elvish activation note uses the active binary name.
+    #[test]
+    fn elvish_activation_note_uses_bin_name() {
+        let dir = tempdir().expect("tempdir");
+        let mut stdout = Vec::new();
+        install(
+            &mut stdout,
+            CompletionInstallArgs {
+                shell: Shell::Elvish,
+                dir: Some(dir.path().to_path_buf()),
+            },
+        )
+        .expect("install elvish completions");
+        let output = String::from_utf8(stdout).expect("stdout");
+        assert!(output.contains(&format!("use {}", branding::active().bin_name)));
+    }
+
     /// Scenario: XDG paths are available for the supported Unix shells.
     /// Guarantees: default install paths stay user-local and do not require
     /// privileged system completion directories.
