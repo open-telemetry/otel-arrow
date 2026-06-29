@@ -579,8 +579,6 @@ pub(super) struct SessionTelemetry {
     pub dropped_queue_full: AtomicU64,
     /// Events whose TDH decode failed (`received_events_invalid`).
     pub decode_failed: AtomicU64,
-    /// Fatal `parse_until` / `ProcessTrace` session errors (`session_errors`).
-    pub session_errors: AtomicU64,
 }
 
 // ── Per-session state ────────────────────────────────────────────────────────
@@ -851,7 +849,6 @@ fn spawn_etw_session(
             // once the one-collect API stabilizes (TDH decoding work).
             let result = session.parse_until(&session_name, || false);
             if let Err(ref e) = result {
-                let _ = telemetry.session_errors.fetch_add(1, Ordering::Relaxed);
                 otel_error!(
                     "etw.parse_until.failed",
                     session_name = session_name.as_str(),

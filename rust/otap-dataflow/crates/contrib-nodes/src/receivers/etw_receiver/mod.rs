@@ -69,7 +69,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::instrument::{Counter, Mmsc, UpDownCounter};
+use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
@@ -261,7 +261,7 @@ struct EtwReceiver {
     /// Per-core consumer channel from the per-session-name ETW session.
     event_rx: tokio::sync::mpsc::Receiver<EtwEventData>,
     /// Shared atomic counters written by the `!Send` `ProcessTrace` callback
-    /// (queue-full drops, decode failures, session errors). Folded into
+    /// (queue-full drops and decode failures). Folded into
     /// `metrics` on each `CollectTelemetry` tick and before terminal snapshots.
     session_telemetry: Arc<session::SessionTelemetry>,
 }
@@ -329,37 +329,6 @@ fn build_pending_batch(
     }
 
     let item_count = u64::from(builder.len());
-
-    // `batch_size` semantics: this records the shape of each **attempted
-    // flush** - i.e. the number of events accumulated when a flush is
-    // triggered (interval tick, drain, or shutdown). It is recorded exactly
-    // once per logical batch:
-    //
-    // * `std::mem::take(builder)` below drains the builder unconditionally, so
-    //   the same events can never remain to be re-flushed and re-recorded -
-    //   there is no retry path that re-enters this function with the same
-    //   batch. (`flush_batch`/`try_flush_batch` always call `build_pending_batch`
-    //   on a freshly-drained builder.)
-    // * The early `is_empty()` return above guarantees we never record an
-    //   empty (zero-size) batch, so it does not skew the low end of the
-    //   distribution.
-    //
-    // It is intentionally recorded *before* the build/send outcome is known:
-    // a `build()` failure is an encoding bug (rare) and a send failure is a
-    // transient downstream condition; neither changes the *shape* of the batch
-    // the receiver assembled. Dashboards should therefore read `batch_size` as
-    // "attempted batch shape", not "successfully delivered batch shape". The
-    // success/failure split is carried separately by
-    // `received_events_forwarded` vs `received_events_forward_failed`.
-    //
-    // `item_count as f64`: `Mmsc::record` takes `f64`. The cast is lossless
-    // here - `item_count` is bounded by the builder length, which is in turn
-    // bounded by `batch.max_size` (a `NonZeroU16`, max 65_535), far below the
-    // 2^53 integer-precision limit of `f64`.
-    metrics
-        .borrow_mut()
-        .batch_size_events
-        .record(item_count as f64);
 
     let payload = match std::mem::take(builder).build() {
         Ok(payload) => payload,
@@ -484,7 +453,6 @@ struct SessionAtomicDeltas {
     observed: u64,
     dropped_queue_full: u64,
     invalid: u64,
-    session_errors: u64,
 }
 
 impl SessionAtomicDeltas {
@@ -494,10 +462,7 @@ impl SessionAtomicDeltas {
     /// applies unconditionally, skipping zero deltas inside [`Self::apply`]).
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.observed == 0
-            && self.dropped_queue_full == 0
-            && self.invalid == 0
-            && self.session_errors == 0
+        self.observed == 0 && self.dropped_queue_full == 0 && self.invalid == 0
     }
 
     /// Fold the claimed deltas into `metrics`. Each non-zero delta becomes a
@@ -515,9 +480,6 @@ impl SessionAtomicDeltas {
         if self.invalid > 0 {
             metrics.received_events_invalid.add(self.invalid);
         }
-        if self.session_errors > 0 {
-            metrics.session_errors.add(self.session_errors);
-        }
     }
 }
 
@@ -534,66 +496,6 @@ fn claim_session_atomics(telemetry: &session::SessionTelemetry) -> SessionAtomic
         observed: telemetry.observed.swap(0, Ordering::Relaxed),
         dropped_queue_full: telemetry.dropped_queue_full.swap(0, Ordering::Relaxed),
         invalid: telemetry.decode_failed.swap(0, Ordering::Relaxed),
-        session_errors: telemetry.session_errors.swap(0, Ordering::Relaxed),
-    }
-}
-
-/// RAII guard that keeps the `sessions_active` up/down counter symmetric.
-///
-/// `sessions_active` is a delta `UpDownCounter`: the event loop reports `+1`
-/// when a core acquires its subscription and must report `-1` exactly once
-/// when that core releases it - on **every** exit path, including the error
-/// (`?`-propagated) paths, not just the orderly `DrainIngress`/`Shutdown`
-/// terminal arms. Doing the `dec()` manually on each `return` is fragile: a new
-/// `?` or early `return Err(..)` would silently leak `+1` for that core's
-/// lifetime.
-///
-/// This guard calls `inc()` on construction and `dec()` exactly once when the
-/// subscription is released, so the decrement runs whether the loop returns
-/// `Ok(terminal_state)` or unwinds via `?`. The `Rc<RefCell<MetricSet>>` is
-/// shared with the receiver, so the guard folds into the same per-core metric
-/// set.
-///
-/// The orderly terminal arms call [`Self::release`] explicitly **before** they
-/// take their terminal `snapshot()`, so the `-1` is visible in the final
-/// reported snapshot. The error/`?` paths take no snapshot; for those, `Drop`
-/// performs the `dec()`. The `released` flag makes the two routes mutually
-/// exclusive - the counter is decremented exactly once, never twice.
-struct SessionActiveGuard {
-    metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>,
-    released: bool,
-}
-
-impl SessionActiveGuard {
-    /// Acquire the guard, reporting `+1` on `sessions_active`.
-    fn acquire(metrics: Rc<RefCell<MetricSet<EtwReceiverMetrics>>>) -> Self {
-        metrics.borrow_mut().sessions_active.inc();
-        Self {
-            metrics,
-            released: false,
-        }
-    }
-
-    /// Release the subscription, reporting `-1` on `sessions_active` exactly
-    /// once. Idempotent: a second call (or the `Drop` fallback) is a no-op.
-    ///
-    /// Call this on the orderly terminal arms *before* taking the terminal
-    /// `snapshot()` so the decrement is included in the reported snapshot.
-    fn release(&mut self) {
-        if !self.released {
-            self.released = true;
-            self.metrics.borrow_mut().sessions_active.dec();
-        }
-    }
-}
-
-impl Drop for SessionActiveGuard {
-    fn drop(&mut self) {
-        // Fallback `-1` for the exit paths that did not call `release()`
-        // explicitly - notably the error (`?`-propagated) returns - keeping the
-        // delta counter symmetric on *every* exit path. No-op if already
-        // released by a terminal arm.
-        self.release();
     }
 }
 
@@ -627,8 +529,8 @@ impl EtwReceiver {
     ///   under one series. The session-wide total is therefore exact.
     ///
     /// The trade-off is intentional: the producer-side counters
-    /// (`received_events_observed`, `received_events_dropped_queue_full`,
-    /// `received_events_invalid`, `session_errors`) are **session-scoped, not
+    /// (`received_events_observed`, `received_events_dropped_queue_full`, and
+    /// `received_events_invalid`) are **session-scoped, not
     /// per-core**. They cannot be attributed to an individual core - if they
     /// were given a per-core attribute they would land on an arbitrary core
     /// each interval and produce noisy, meaningless per-core series. The
@@ -676,14 +578,6 @@ impl EtwReceiver {
         );
         flush_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-        // This core now holds an active subscription to the ETW session.
-        // `sessions_active` is a delta `UpDownCounter`: this guard reports `+1`
-        // now and `-1` exactly once on release. The orderly terminal arms call
-        // `session_guard.release()` before their snapshot so the `-1` is
-        // reported; on any error (`?`) exit the guard's `Drop` performs the
-        // `-1`, so the counter never leaks `+1` for this core.
-        let mut session_guard = SessionActiveGuard::acquire(Rc::clone(&self.metrics));
-
         loop {
             tokio::select! {
                 biased; // Prioritise control messages over data.
@@ -728,10 +622,8 @@ impl EtwReceiver {
                             // cannot park us past the deadline.
                             try_flush_batch(effect_handler, &self.metrics, &mut builder)?;
                             effect_handler.notify_receiver_drained().await?;
-                            // Fold producer-side atomics and release the active
-                            // subscription before the final snapshot.
+                            // Fold producer-side atomics before the final snapshot.
                             self.drain_session_atomics();
-                            session_guard.release();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
@@ -741,10 +633,8 @@ impl EtwReceiver {
                                 "etw_receiver.shutdown",
                                 message = "ETW receiver shutting down",
                             );
-                            // Fold producer-side atomics and release the active
-                            // subscription before the final snapshot.
+                            // Fold producer-side atomics before the final snapshot.
                             self.drain_session_atomics();
-                            session_guard.release();
                             let snapshot = self.metrics.borrow().snapshot();
                             return Ok(TerminalState::new(deadline, [snapshot]));
                         }
@@ -903,8 +793,8 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
 ///   still enqueued and forwarded with empty `decoded_fields`. So it is *not*
 ///   subtracted from `received_events_total`; treat it as a quality signal,
 ///   not a loss bucket.
-/// * `received_events_observed`, `received_events_dropped_queue_full`,
-///   `received_events_invalid`, and `session_errors` are **session-scoped**
+/// * `received_events_observed`, `received_events_dropped_queue_full`, and
+///   `received_events_invalid` are **session-scoped**
 ///   (shared across all per-core receivers of a `session_name`) - see
 ///   [`EtwReceiver::drain_session_atomics`]. `received_events_total`,
 ///   `received_events_forwarded`, and `received_events_forward_failed` are
@@ -954,34 +844,6 @@ pub struct EtwReceiverMetrics {
     /// full (backpressure between the `ProcessTrace` thread and the receiver).
     #[metric(unit = "{event}")]
     pub received_events_dropped_queue_full: Counter<u64>,
-
-    /// Number of fatal ETW session errors (`parse_until` / `ProcessTrace`
-    /// failures).
-    #[metric(unit = "{error}")]
-    pub session_errors: Counter<u64>,
-
-    /// Number of currently active ETW session subscriptions owned by this
-    /// receiver core (delta: `+1` on start, `-1` on terminal state).
-    #[metric(unit = "{session}")]
-    pub sessions_active: UpDownCounter<u64>,
-
-    /// Distribution of the **number of events** in each **attempted** Arrow
-    /// batch at flush time (min/mean/max/sum/count).
-    ///
-    /// The unit is `{event}`; the metric name carries the "per attempted
-    /// batch" framing so a dashboard reads it as "events per batch", not
-    /// "byte size of a batch" (contrast the byte-valued `batch_size` Mmsc on
-    /// some exporters, which use unit `By`).
-    ///
-    /// Recorded once per logical batch when a flush is triggered (interval
-    /// tick, drain, or shutdown), *before* the build/send outcome is known -
-    /// it measures batch *shape*, not delivery success. Empty batches are not
-    /// recorded, and there is no retry path that re-records the same batch, so
-    /// the distribution is free of double-counting. Use
-    /// `received_events_forwarded` / `received_events_forward_failed` for the
-    /// success/failure split.
-    #[metric(unit = "{event}")]
-    pub batch_size_events: Mmsc,
 }
 
 #[cfg(test)]
@@ -1158,7 +1020,6 @@ mod tests {
         let telemetry = SessionTelemetry::default();
         // 10 events observed, 3 dropped queue-full, 2 decode failures.
         bump_producer(&telemetry, 10, 3, 2);
-        let _ = telemetry.session_errors.fetch_add(1, Ordering::Relaxed);
 
         let deltas = claim_session_atomics(&telemetry);
         assert_eq!(
@@ -1167,7 +1028,6 @@ mod tests {
                 observed: 10,
                 dropped_queue_full: 3,
                 invalid: 2,
-                session_errors: 1,
             }
         );
 
@@ -1175,7 +1035,6 @@ mod tests {
         assert_eq!(telemetry.observed.load(Ordering::Relaxed), 0);
         assert_eq!(telemetry.dropped_queue_full.load(Ordering::Relaxed), 0);
         assert_eq!(telemetry.decode_failed.load(Ordering::Relaxed), 0);
-        assert_eq!(telemetry.session_errors.load(Ordering::Relaxed), 0);
 
         // Applying the deltas advances the corresponding metric counters and
         // upholds the counter-algebra invariant:
@@ -1185,7 +1044,6 @@ mod tests {
         assert_eq!(metrics.received_events_observed.get(), 10);
         assert_eq!(metrics.received_events_dropped_queue_full.get(), 3);
         assert_eq!(metrics.received_events_invalid.get(), 2);
-        assert_eq!(metrics.session_errors.get(), 1);
         // `received_events_total` is the consumer-side counter and is NOT
         // touched by the producer-side fold.
         assert_eq!(metrics.received_events_total.get(), 0);
@@ -1258,78 +1116,6 @@ mod tests {
         assert_eq!(metrics.received_events_observed.get(), 0);
         assert_eq!(metrics.received_events_dropped_queue_full.get(), 0);
         assert_eq!(metrics.received_events_invalid.get(), 0);
-        assert_eq!(metrics.session_errors.get(), 0);
-    }
-
-    // ── sessions_active lifecycle symmetry ───────────────────────────
-    //
-    // `sessions_active` is a delta `UpDownCounter`. The `SessionActiveGuard`
-    // must keep it symmetric on EVERY exit path: `+1` on acquire and exactly
-    // one `-1` whether the loop returns normally (terminal arm calls
-    // `release()`) or unwinds via `?` (guard `Drop` performs the `-1`). These
-    // tests assert the guard never leaks `+1` and never double-decrements.
-
-    use otap_df_engine::testing::test_pipeline_ctx;
-
-    /// Build a real per-core metric set wrapped like the receiver holds it.
-    fn test_metrics() -> Rc<RefCell<MetricSet<EtwReceiverMetrics>>> {
-        let (pipeline_ctx, _registry) = test_pipeline_ctx();
-        Rc::new(RefCell::new(
-            pipeline_ctx.register_metrics::<EtwReceiverMetrics>(),
-        ))
-    }
-
-    #[test]
-    fn session_guard_drop_without_release_decrements_once() {
-        // Models the error (`?`-propagated) exit: no terminal arm runs, so the
-        // guard's `Drop` must perform the `-1`. Net delta back to zero.
-        let metrics = test_metrics();
-        {
-            let _guard = SessionActiveGuard::acquire(Rc::clone(&metrics));
-            assert_eq!(metrics.borrow().sessions_active.get(), 1);
-        } // guard dropped here
-        assert_eq!(
-            metrics.borrow().sessions_active.get(),
-            0,
-            "guard Drop must report -1 on the error/`?` exit path"
-        );
-    }
-
-    #[test]
-    fn session_guard_release_then_drop_decrements_exactly_once() {
-        // Models the orderly terminal arm: `release()` reports the `-1` before
-        // the snapshot, and the subsequent `Drop` must be a no-op (no double
-        // decrement, which would underflow the UpDownCounter).
-        let metrics = test_metrics();
-        {
-            let mut guard = SessionActiveGuard::acquire(Rc::clone(&metrics));
-            assert_eq!(metrics.borrow().sessions_active.get(), 1);
-            guard.release();
-            assert_eq!(
-                metrics.borrow().sessions_active.get(),
-                0,
-                "release() must report -1 so the terminal snapshot reflects it"
-            );
-        } // guard dropped here - must NOT decrement again
-        assert_eq!(
-            metrics.borrow().sessions_active.get(),
-            0,
-            "Drop after release() must be a no-op (no double decrement)"
-        );
-    }
-
-    #[test]
-    fn session_guard_release_is_idempotent() {
-        let metrics = test_metrics();
-        let mut guard = SessionActiveGuard::acquire(Rc::clone(&metrics));
-        guard.release();
-        guard.release(); // second call is a no-op
-        guard.release();
-        assert_eq!(
-            metrics.borrow().sessions_active.get(),
-            0,
-            "repeated release() calls must decrement at most once"
-        );
     }
 }
 

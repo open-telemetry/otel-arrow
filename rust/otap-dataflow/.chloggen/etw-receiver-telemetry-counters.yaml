@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add ETW receiver telemetry counters for observed/produced events, queue-full drops, decode failures, session errors, active sessions, and batch sizes, with an explicit counter-algebra contract.
+note: Add ETW receiver telemetry counters for observed/produced events, queue-full drops, and decode failures, with an explicit counter-algebra contract.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3361]
@@ -30,12 +30,6 @@ subtext: |
     `!Send` ProcessTrace callback via a shared atomic.
   - `received_events_invalid`: TDH decode failures (the counter existed but was
     never incremented; the failing decode path now feeds it).
-  - `session_errors`: fatal `parse_until` / `ProcessTrace` failures.
-  - `sessions_active`: currently active per-core ETW session subscriptions.
-  - `batch_size_events`: distribution of the number of events per attempted
-    Arrow batch at flush time (unit `{event}`; the name disambiguates it from
-    byte-valued `batch_size` metrics on exporters).
-
   Counter algebra (the exact relationships; the authoritative copy lives in the
   doc comment on `EtwReceiverMetrics` in
   `rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/mod.rs`):

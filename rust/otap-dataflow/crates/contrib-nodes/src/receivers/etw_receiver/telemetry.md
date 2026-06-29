@@ -19,9 +19,6 @@ Metrics are registered under the metric set name `receiver.etw`.
 | `receiver.etw.received_events_forward_failed` | Counter | `{event}` | Number of ETW events lost because their batch failed to build or could not be sent downstream. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 | `receiver.etw.received_events_rejected_memory_pressure` | Counter | `{event}` | Number of ETW events dropped due to process-wide memory pressure. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 | `receiver.etw.received_events_dropped_queue_full` | Counter | `{event}` | Number of ETW events dropped because the internal per-core queue was full before the async receiver loop could accept them. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
-| `receiver.etw.session_errors` | Counter | `{error}` | Number of fatal ETW session errors, including `parse_until` and `ProcessTrace` failures. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
-| `receiver.etw.sessions_active` | UpDownCounter | `{session}` | Number of currently active per-core ETW session subscriptions. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
-| `receiver.etw.batch_size_events` | Mmsc | `{event}` | Distribution of the number of events per attempted Arrow batch at flush time. This measures batch shape, not delivery success. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 
 ## Counter algebra
 
@@ -52,8 +49,8 @@ failure does not drop the event, so it is not subtracted from
 ## Aggregation notes
 
 - `received_events_observed`, `received_events_dropped_queue_full`,
-  `received_events_invalid`, and `session_errors` are session-scoped across
-  all per-core receivers sharing a `session_name`.
+  and `received_events_invalid` are session-scoped across all per-core
+  receivers sharing a `session_name`.
 - On each telemetry collection tick, the first core to drain the shared
   atomics claims the whole delta via `swap(0)`, preventing double-counting.
 - The telemetry registry then sums the per-core snapshots into one exact
