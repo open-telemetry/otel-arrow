@@ -292,14 +292,16 @@ Operationally, this means `soft_limit` is the reopening threshold after
 shedding begins. `hard_limit` starts rejection, but recovery does not begin
 until usage has fallen below `soft_limit`.
 
-## Receiver Behavior Under Hard Pressure
+## Receiver Behavior When Shedding Ingress
 
-Phase 1 applies protocol-native overload signals at each receiver. The
-following behaviors apply in `enforce` mode only. In `observe_only` mode,
-receivers continue accepting requests regardless of pressure level.
+Phase 1 applies protocol-native overload signals at each receiver when ingress
+is shed. Ingress is shed at `Hard` (always, in `enforce` mode) and at `Soft`
+when `soft_action: shed`; the per-receiver behaviors below apply in all of those
+cases. In `observe_only` mode, receivers continue accepting requests regardless
+of pressure level.
 
 <!-- markdownlint-disable MD013 -->
-| Receiver | Hard-pressure behavior |
+| Receiver | Shed behavior |
 | --- | --- |
 | OTLP HTTP | `503 Service Unavailable` with `Retry-After: <retry_after_secs>` header |
 | OTLP gRPC | `RESOURCE_EXHAUSTED` with `grpc-retry-pushback-ms: <retry_ms>` metadata |
@@ -309,15 +311,24 @@ receivers continue accepting requests regardless of pressure level.
 | Syslog / CEF UDP | Drop incoming datagrams |
 <!-- markdownlint-enable MD013 -->
 
-**Soft pressure:** all receivers continue operating normally - no requests are
-rejected and no receiver-level rejection counters increment. The engine-level
-`memory_pressure_state` metric reflects `1` (Soft) and
-`process_memory_usage_bytes` reflects the elevated usage. A
+**Soft pressure (default `soft_action: observe`):** all receivers continue
+operating normally - no requests are rejected and no receiver-level rejection
+counters increment. The engine-level `memory_pressure_state` metric reflects
+`1` (Soft) and `process_memory_usage_bytes` reflects the elevated usage. A
 `process_memory_limiter.transition` log event is emitted at `info` level on
-entry to `Soft`. The behaviors in the table above apply only at `Hard` in
-`enforce` mode.
+entry to `Soft`. With the default `soft_action`, the per-receiver behaviors in
+the table above apply only at `Hard` in `enforce` mode.
 
-**Syslog / CEF client behavior under Hard pressure:**
+**Soft pressure with `soft_action: shed`:** in `enforce` mode, `Soft` sheds
+ingress using the **same per-receiver behaviors listed in the table above** -
+the same protocol-native overload signals (OTLP `503` / gRPC & OTAP
+`RESOURCE_EXHAUSTED` / Syslog drops) are emitted and the same receiver-level
+rejection counters increment, while `Soft` is active instead of only while
+`Hard` is active. The `memory_pressure_state` metric (`1`) and the `transition`
+log event are unchanged. `observe_only` mode still overrides `soft_action` and
+accepts all requests regardless of pressure level.
+
+**Syslog / CEF client behavior when shedding:**
 
 - **TCP:** The receiver accepts new connections and then immediately drops the
   socket, closing active connections mid-stream. The connection is closed at the
@@ -329,7 +340,8 @@ entry to `Soft`. The behaviors in the table above apply only at `Hard` in
 - **UDP:** Datagrams are silently dropped at the receiver. UDP is fire-and-forget,
   so the sender receives no feedback at all. Events are permanently lost with no
   indication to the sending client. Operators relying on UDP syslog should treat
-  Hard pressure as a potential data-loss event and monitor
+  any shedding (`Hard`, or `Soft` when `soft_action: shed`) as a potential
+  data-loss event and monitor
   `received_logs_rejected_memory_pressure` to detect it.
 
 **Design rationale:** explicit rejection is preferred over transport-level
@@ -338,9 +350,9 @@ pressure can consume more resources than the data they carry. Explicit close or
 refusal is observable, bounded, and gives senders a clear signal to back off.
 
 **Known gap:** OTAP stream reads are checked for memory pressure at the next
-read boundary. If pressure flips to `Hard` while a stream task is already
-blocked in `message().await`, one additional batch may still be read before the
-stream is rejected.
+read boundary. If pressure flips to a shedding state (`Hard`, or `Soft` when
+`soft_action: shed`) while a stream task is already blocked in `message().await`,
+one additional batch may still be read before the stream is rejected.
 
 ## Readiness Integration
 
