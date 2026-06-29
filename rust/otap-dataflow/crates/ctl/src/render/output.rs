@@ -4,6 +4,7 @@
 //! Writer helpers for machine and human CLI output modes.
 
 use crate::args::{BundleOutput, MutationOutput, ReadOutput, StreamOutput};
+use crate::branding;
 use crate::error::CliError;
 use crate::style::HumanStyle;
 use otap_df_admin_api::telemetry;
@@ -66,10 +67,11 @@ pub fn write_mutation_output<T: Serialize>(
             )?;
         }
         MutationOutput::Ndjson => {
+            let schema_version = branding::active().schema_version;
             serde_json::to_writer(
                 &mut *writer,
                 &json!({
-                    "schemaVersion": "dfctl/v1",
+                    "schemaVersion": schema_version,
                     "type": "snapshot",
                     "event": "snapshot",
                     "resource": "mutation",
@@ -93,7 +95,7 @@ pub fn write_mutation_output<T: Serialize>(
     Ok(())
 }
 
-/// Writes an arbitrary value in the stable `dfctl/v1` agent envelope.
+/// Writes an arbitrary value in the stable agent JSON envelope.
 pub fn write_agent_output<T: Serialize>(
     writer: &mut dyn Write,
     kind: &str,
@@ -156,10 +158,11 @@ pub fn write_log_event(
     writer: &mut dyn Write,
     entry: &telemetry::LogEntry,
 ) -> Result<(), CliError> {
+    let schema_version = branding::active().schema_version;
     serde_json::to_writer(
         &mut *writer,
         &json!({
-            "schemaVersion": "dfctl/v1",
+            "schemaVersion": schema_version,
             "type": "log",
             "event": "log",
             "resource": "telemetry_logs",
@@ -236,7 +239,7 @@ fn agent_envelope<T: Serialize>(
     value: &T,
 ) -> serde_json::Value {
     json!({
-        "schemaVersion": "dfctl/v1",
+        "schemaVersion": branding::active().schema_version,
         "type": kind,
         "resource": resource,
         "generatedAt": humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
@@ -250,7 +253,7 @@ fn agent_mutation_envelope<T: Serialize>(
     value: &T,
 ) -> serde_json::Value {
     json!({
-        "schemaVersion": "dfctl/v1",
+        "schemaVersion": branding::active().schema_version,
         "type": "mutation",
         "resource": resource,
         "generatedAt": humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string(),
@@ -266,7 +269,7 @@ fn stream_envelope<T: Serialize>(
     value: &T,
 ) -> serde_json::Value {
     json!({
-        "schemaVersion": "dfctl/v1",
+        "schemaVersion": branding::active().schema_version,
         "type": kind,
         "event": event,
         "resource": resource,

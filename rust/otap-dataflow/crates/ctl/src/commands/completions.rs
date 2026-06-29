@@ -9,9 +9,10 @@
 //! modify shell startup files; instead, install commands print the next action
 //! needed to activate the generated file when a shell requires one.
 
+use crate::Cli;
 use crate::args::{CompletionArgs, CompletionCommand, CompletionInstallArgs};
+use crate::branding;
 use crate::error::CliError;
-use crate::{BIN_NAME, Cli};
 use clap::CommandFactory;
 use clap_complete::Shell;
 use std::ffi::OsString;
@@ -36,14 +37,15 @@ pub(crate) fn run(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), Cl
 /// The command tree is rebuilt from Clap for every invocation so completion
 /// scripts reflect the currently executing binary.
 fn generate(stdout: &mut dyn Write, args: CompletionArgs) -> Result<(), CliError> {
+    let bin_name = branding::active().bin_name;
     let shell = args.shell.ok_or_else(|| {
         CliError::invalid_usage(format!(
-            "missing shell; use `{BIN_NAME} completions <shell>` or `{BIN_NAME} completions install <shell>`"
+            "missing shell; use `{bin_name} completions <shell>` or `{bin_name} completions install <shell>`"
         ))
     })?;
 
     let mut command = Cli::command();
-    clap_complete::generate(shell, &mut command, BIN_NAME, stdout);
+    clap_complete::generate(shell, &mut command, bin_name, stdout);
     Ok(())
 }
 
@@ -72,14 +74,19 @@ fn install(stdout: &mut dyn Write, args: CompletionInstallArgs) -> Result<(), Cl
     })?;
 
     let mut command = Cli::command();
-    let path = clap_complete::generate_to(args.shell, &mut command, BIN_NAME, dir.clone())
-        .map_err(|err| {
-            CliError::config(format!(
-                "failed to install {} completions in '{}': {err}",
-                args.shell,
-                dir.display()
-            ))
-        })?;
+    let path = clap_complete::generate_to(
+        args.shell,
+        &mut command,
+        branding::active().bin_name,
+        dir.clone(),
+    )
+    .map_err(|err| {
+        CliError::config(format!(
+            "failed to install {} completions in '{}': {err}",
+            args.shell,
+            dir.display()
+        ))
+    })?;
 
     writeln!(
         stdout,
@@ -134,7 +141,10 @@ fn activation_note(shell: Shell, dir: &Path, path: &Path) -> Option<String> {
         Shell::Zsh => Some(format!(
             "If zsh does not load it, add this to .zshrc: fpath=({dir} $fpath); autoload -Uz compinit; compinit"
         )),
-        Shell::Elvish => Some(format!("Load it from rc.elv with: use {BIN_NAME}")),
+        Shell::Elvish => Some(format!(
+            "Load it from rc.elv with: use {}",
+            branding::active().bin_name
+        )),
         Shell::PowerShell => Some(format!(
             "Load it from your PowerShell profile with: . {path}"
         )),
@@ -226,7 +236,9 @@ mod tests {
         )
         .expect("install completions");
 
-        let path = dir.path().join(format!("{BIN_NAME}.fish"));
+        let path = dir
+            .path()
+            .join(format!("{}.fish", branding::active().bin_name));
         assert!(path.exists());
         let output = String::from_utf8(stdout).expect("stdout");
         assert!(output.contains(path.to_str().expect("path")));
