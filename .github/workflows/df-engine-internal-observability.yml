@@ -69,7 +69,7 @@ jobs:
             >/dev/null 2>&1
           ls -la /tmp/df-engine-tls
       - name: Build df_engine
-        run: cargo build --release --bin df_engine
+        run: cargo build --locked --release --bin df_engine
         working-directory: ./rust/otap-dataflow
       # Weaver listener lifecycle (start, readiness probe, /stop, report
       # capture, artifact upload) is owned by the upstream composite

@@ -75,6 +75,7 @@ jobs:
           RUSTFLAGS: "--cfg validation_tests"
         run: >
           cargo nextest run
+          --locked
           --workspace
           --all-features
           --test-threads 1
