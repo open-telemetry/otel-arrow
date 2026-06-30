@@ -12,33 +12,29 @@ Metrics are registered under the metric set name `receiver.etw`.
 
 | Metric name | Type | Unit | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `receiver.etw.received_events_observed` | Counter | `{event}` | Total number of ETW events the session produced, counted on the `ProcessTrace` producer side before attempting the per-core channel send. Includes events that are immediately dropped because the internal queue is full. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
-| `receiver.etw.received_events_total` | Counter | `{event}` | Number of ETW events the async receiver loop actually pulled off the channel. This is the consumer-side denominator. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
+| `receiver.etw.received_events_total` | Counter | `{event}` | Total number of ETW events the session produced, counted on the `ProcessTrace` producer side before attempting the per-core channel send. Includes events that are immediately dropped because the internal queue is full. This is the ingress denominator. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 | `receiver.etw.received_events_forwarded` | Counter | `{event}` | Number of ETW events included in batches successfully forwarded downstream. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 | `receiver.etw.received_events_invalid` | Counter | `{event}` | Number of ETW events whose TDH decode failed. The event is still forwarded with empty decoded fields, so this is a quality signal rather than a drop bucket. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 | `receiver.etw.received_events_forward_failed` | Counter | `{event}` | Number of ETW events lost because their batch failed to build or could not be sent downstream. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 | `receiver.etw.received_events_rejected_memory_pressure` | Counter | `{event}` | Number of ETW events dropped due to process-wide memory pressure. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
-| `receiver.etw.received_events_dropped_queue_full` | Counter | `{event}` | Number of ETW events dropped because the internal per-core queue was full before the async receiver loop could accept them. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
+| `receiver.etw.received_events_dropped_slow_worker` | Counter | `{event}` | Events dropped because the consuming worker (this core's async receiver loop) couldn't drain the internal channel fast enough (the ETW consumer thread filled it). Contrast `received_events_forward_failed`, which is downstream backpressure. | `crates/contrib-nodes/src/receivers/etw_receiver/mod.rs` |
 
 ## Counter algebra
 
-There are two distinct denominators, and they are not the same number:
+There is a single ingress denominator:
 
 ```text
-received_events_observed
-    = received_events_total                 (events pulled off the channel)
-    + received_events_dropped_queue_full    (events the producer dropped, never enqueued)
-
 received_events_total
     = received_events_forwarded             (events in successfully-sent batches)
     + received_events_forward_failed        (events in batches that failed to build/send)
+    + received_events_dropped_slow_worker   (events the consuming worker couldn't drain)
     + events still buffered in the in-flight builder at snapshot time
 ```
 
 Derived rates:
 
-- queue-full drop rate =
-  `received_events_dropped_queue_full / received_events_observed`
+- slow-worker drop rate =
+  `received_events_dropped_slow_worker / received_events_total`
 - forward-failure rate =
   `received_events_forward_failed / received_events_total`
 
@@ -48,7 +44,7 @@ failure does not drop the event, so it is not subtracted from
 
 ## Aggregation notes
 
-- `received_events_observed`, `received_events_dropped_queue_full`,
+- `received_events_total`, `received_events_dropped_slow_worker`,
   and `received_events_invalid` are session-scoped across all per-core
   receivers sharing a `session_name`.
 - On each telemetry collection tick, the first core to drain the shared

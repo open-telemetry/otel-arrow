@@ -564,18 +564,15 @@ fn extract_decoded_fields(
 #[derive(Debug, Default)]
 pub(super) struct SessionTelemetry {
     /// Every event the `ProcessTrace` callback observed from the trace
-    /// session, counted *before* any per-core channel send is attempted
-    /// (`received_events_observed`).
+    /// session, counted *before* any per-core channel send is attempted.
+    /// Published as `received_events_total` in the metric set.
     ///
-    /// This is the producer-side denominator: it counts what the session
-    /// *produced*, in contrast to `received_events_total` (mod.rs) which
-    /// counts what the receiver *pulled off the channel*. The difference
-    /// between the two is the queue-full drop, so the queue-full drop rate is
-    /// computable as `dropped_queue_full / observed`. See the counter-algebra
-    /// note on `EtwReceiverMetrics` for the exact relationships.
+    /// This is the producer-side ingress denominator. The slow-worker drop
+    /// rate is computable as `dropped_queue_full / observed`. See the
+    /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
     pub observed: AtomicU64,
-    /// Events dropped because a per-core channel was full (Gap B,
-    /// `received_events_dropped_queue_full`).
+    /// Events dropped because a per-core channel was full (internal backpressure).
+    /// Published as `received_events_dropped_slow_worker` in the metric set.
     pub dropped_queue_full: AtomicU64,
     /// Events whose TDH decode failed (`received_events_invalid`).
     pub decode_failed: AtomicU64,
@@ -664,7 +661,7 @@ fn spawn_etw_session(
 
             // Shared round-robin counter and sender list.  All provider
             // callbacks run on the single `ProcessTrace` thread, so `Cell` is
-            // safe — no atomics or locking needed.  Sharing the counter ensures
+            // safe - no atomics or locking needed.  Sharing the counter ensures
             // uniform core distribution even at startup when multiple providers
             // would otherwise all start at index 0.  Drop accounting lives in
             // the shared `SessionTelemetry` atomics so the async side can
@@ -748,7 +745,7 @@ fn spawn_etw_session(
                         // schema.  A failure (NotFound for manifest-based
                         // events, or other decode errors) leaves the empty
                         // defaults in place and is counted via
-                        // `received_events_invalid` — the event is still
+                        // `received_events_invalid` - the event is still
                         // forwarded with empty `decoded_fields`.  Future work
                         // will add manifest decoding with a
                         // (Provider, Id, Version) cache key.
@@ -792,12 +789,10 @@ fn spawn_etw_session(
                     next.set(i.wrapping_add(1));
 
                     // Count every event the session produced, *before* the
-                    // send is attempted. This is the producer-side denominator
-                    // (`received_events_observed`): unlike `received_events_total`
-                    // (which counts only events the receiver later pulls off the
-                    // channel), it includes events that are about to be dropped
-                    // because the target core's channel is full. The queue-full
-                    // drop rate is therefore `dropped_queue_full / observed`.
+                    // send is attempted. This is the producer-side ingress
+                    // denominator (`received_events_total` in the metric set).
+                    // The slow-worker drop rate is therefore
+                    // `dropped_queue_full / observed`.
                     let _ = telemetry.observed.fetch_add(1, Ordering::Relaxed);
 
                     // Best-effort send; if this core's channel is full the
@@ -807,7 +802,7 @@ fn spawn_etw_session(
                         Ok(()) => {}
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             // Bump the shared atomic so the async receiver can
-                            // surface it as `received_events_dropped_queue_full`
+                            // surface it as `received_events_dropped_slow_worker`
                             // on the next `CollectTelemetry`. `fetch_add`
                             // returns the previous value, so the running total
                             // is `+ 1`.

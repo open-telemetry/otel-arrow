@@ -452,8 +452,8 @@ fn try_flush_batch(
 /// context). See the boundary-case tests in this module.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct SessionAtomicDeltas {
-    observed: u64,
-    dropped_queue_full: u64,
+    total: u64,
+    dropped_slow_worker: u64,
     invalid: u64,
 }
 
@@ -464,20 +464,20 @@ impl SessionAtomicDeltas {
     /// applies unconditionally, skipping zero deltas inside [`Self::apply`]).
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.observed == 0 && self.dropped_queue_full == 0 && self.invalid == 0
+        self.total == 0 && self.dropped_slow_worker == 0 && self.invalid == 0
     }
 
     /// Fold the claimed deltas into `metrics`. Each non-zero delta becomes a
     /// counter `add()`; zero deltas are skipped so we never touch a counter we
     /// did not advance.
     fn apply(&self, metrics: &mut EtwReceiverMetrics) {
-        if self.observed > 0 {
-            metrics.received_events_observed.add(self.observed);
+        if self.total > 0 {
+            metrics.received_events_total.add(self.total);
         }
-        if self.dropped_queue_full > 0 {
+        if self.dropped_slow_worker > 0 {
             metrics
-                .received_events_dropped_queue_full
-                .add(self.dropped_queue_full);
+                .received_events_dropped_slow_worker
+                .add(self.dropped_slow_worker);
         }
         if self.invalid > 0 {
             metrics.received_events_invalid.add(self.invalid);
@@ -494,10 +494,18 @@ impl SessionAtomicDeltas {
 /// [`EtwReceiver::drain_session_atomics`] for the cross-core aggregation and
 /// shutdown-race reasoning.
 fn claim_session_atomics(telemetry: &session::SessionTelemetry) -> SessionAtomicDeltas {
+    #[inline]
+    fn claim_if_nonzero(a: &std::sync::atomic::AtomicU64) -> u64 {
+        if a.load(Ordering::Relaxed) == 0 {
+            return 0;
+        }
+        a.swap(0, Ordering::Relaxed)
+    }
+
     SessionAtomicDeltas {
-        observed: telemetry.observed.swap(0, Ordering::Relaxed),
-        dropped_queue_full: telemetry.dropped_queue_full.swap(0, Ordering::Relaxed),
-        invalid: telemetry.decode_failed.swap(0, Ordering::Relaxed),
+        total: telemetry.observed.swap(0, Ordering::Relaxed),
+        dropped_slow_worker: claim_if_nonzero(&telemetry.dropped_queue_full),
+        invalid: claim_if_nonzero(&telemetry.decode_failed),
     }
 }
 
@@ -512,26 +520,29 @@ impl EtwReceiver {
     /// on every `CollectTelemetry` tick and immediately before any terminal
     /// `snapshot()` so the final report is not lossy.
     ///
-    /// ## Cross-core aggregation: "first core drains the whole delta"
+    /// ## Cross-core aggregation: per-field claim, summed across cores
     ///
     /// The `session_telemetry` atomics are **shared across all cores** of a
-    /// `session_name` (one `Arc<SessionTelemetry>` per session). Each
-    /// `swap(0)` claims the *entire* accumulated delta, so whichever core's
-    /// event loop reaches this function first on a given tick folds the whole
-    /// producer-side count into *its* `MetricSet`; the other cores see zero
-    /// for that tick.
+    /// `session_name` (one `Arc<SessionTelemetry>` per session). Each field is
+    /// drained with an independent `swap(0)`, so a given field's accumulated
+    /// delta is claimed by **exactly one** core. The three swaps are *not* a
+    /// single transaction: if two cores tick concurrently they may split the
+    /// fields (one core claims `total`, another claims `dropped_slow_worker`,
+    /// etc.). In the common, uncontended case a single core claims all three.
     ///
     /// This is correct for the aggregate because:
     ///
-    /// * `swap(0)` is atomic, so a delta is claimed by **exactly one** core -
-    ///   there is no double counting even when two cores tick concurrently.
+    /// * Each `swap(0)` is atomic, so every field's delta is claimed by exactly
+    ///   one core - no double counting and no loss, even when two cores tick
+    ///   concurrently and split the fields between them.
     /// * Every per-core `MetricSet` for this receiver shares the *same*
     ///   attribute key (the receiver registers metrics without a per-core
     ///   dimension), so the telemetry registry **sums** the per-core snapshots
-    ///   under one series. The session-wide total is therefore exact.
+    ///   under one series. Which core claimed which field is irrelevant; the
+    ///   session-wide total is therefore exact.
     ///
     /// The trade-off is intentional: the producer-side counters
-    /// (`received_events_observed`, `received_events_dropped_queue_full`, and
+    /// (`received_events_total`, `received_events_dropped_slow_worker`, and
     /// `received_events_invalid`) are **session-scoped, not
     /// per-core**. They cannot be attributed to an individual core - if they
     /// were given a per-core attribute they would land on an arbitrary core
@@ -604,7 +615,6 @@ impl EtwReceiver {
                             while std::time::Instant::now() < drain_deadline {
                                 match self.event_rx.try_recv() {
                                     Ok(event) => {
-                                        self.metrics.borrow_mut().received_events_total.inc();
                                         builder.append(&event);
                                         if builder.len() >= batch_max_size {
                                             try_flush_batch(
@@ -672,7 +682,6 @@ impl EtwReceiver {
                 event_data = self.event_rx.recv(), if channel_alive => {
                     match event_data {
                         Some(event) => {
-                            self.metrics.borrow_mut().received_events_total.inc();
                             builder.append(&event);
 
                             // Flush when batch is full
@@ -757,50 +766,33 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
 ///
 /// # Counter algebra
 ///
-/// There are **two** distinct denominators, and they are not the same number.
-/// The lesson from #3268 is to state which is which explicitly:
-///
-/// * `received_events_observed` - the **producer-side** denominator. Counted
-///   in the `!Send` `ProcessTrace` callback for **every** event the session
-///   produced, *before* the per-core channel send is attempted. This is what
-///   the session *produced*, including events that are immediately dropped
-///   because the target core's channel is full.
-/// * `received_events_total` - the **consumer-side** denominator. Counted in
-///   the async event loop for each event actually *pulled off the channel*
-///   via `recv()`/`try_recv()`. This is what the receiver *delivered into the
-///   batching pipeline*.
-///
-/// The two differ by exactly the queue-full drops, so the relationships are:
+/// There is a single ingress denominator:
 ///
 /// ```text
-/// received_events_observed
-///     = received_events_total            (events pulled off the channel)
-///     + received_events_dropped_queue_full   (events the producer dropped, never enqueued)
-///
 /// received_events_total
 ///     = received_events_forwarded        (events in successfully-sent batches)
 ///     + received_events_forward_failed   (events in batches that failed to build/send)
+///     + received_events_dropped_slow_worker (events dropped by internal backpressure)
 ///     + events still buffered in the in-flight builder at snapshot time
 /// ```
 ///
 /// Derived rates:
 ///
-/// * queue-full drop rate = `received_events_dropped_queue_full / received_events_observed`
+/// * slow-worker drop rate = `received_events_dropped_slow_worker / received_events_total`
 /// * forward-failure rate = `received_events_forward_failed / received_events_total`
 ///
 /// Notes:
 ///
 /// * `received_events_invalid` (TDH decode failures) is **orthogonal** to the
 ///   delivery accounting: a decode failure does *not* drop the event - it is
-///   still enqueued and forwarded with empty `decoded_fields`. So it is *not*
-///   subtracted from `received_events_total`; treat it as a quality signal,
-///   not a loss bucket.
-/// * `received_events_observed`, `received_events_dropped_queue_full`, and
+///   still enqueued and forwarded with empty `decoded_fields`. Treat it as a
+///   quality signal, not a loss bucket.
+/// * `received_events_total`, `received_events_dropped_slow_worker`, and
 ///   `received_events_invalid` are **session-scoped**
 ///   (shared across all per-core receivers of a `session_name`) - see
-///   [`EtwReceiver::drain_session_atomics`]. `received_events_total`,
-///   `received_events_forwarded`, and `received_events_forward_failed` are
-///   per-core but reported under a single summed series.
+///   [`EtwReceiver::drain_session_atomics`]. `received_events_forwarded`,
+///   `received_events_forward_failed`, and `received_events_rejected_memory_pressure`
+///   are per-core but reported under a single summed series.
 #[metric_set(name = "receiver.etw")]
 #[derive(Debug, Default, Clone)]
 pub struct EtwReceiverMetrics {
@@ -808,19 +800,10 @@ pub struct EtwReceiverMetrics {
     /// producer (`ProcessTrace`) side before any channel send, including
     /// events about to be dropped due to a full per-core channel.
     ///
-    /// This is the producer-side denominator. The queue-full drop rate is
-    /// `received_events_dropped_queue_full / received_events_observed`. See the
-    /// "Counter algebra" section on [`EtwReceiverMetrics`].
-    #[metric(unit = "{event}")]
-    pub received_events_observed: Counter<u64>,
-
-    /// Total number of ETW events the receiver **pulled off the channel** in
-    /// the async event loop (the consumer-side denominator).
-    ///
-    /// This is strictly `received_events_observed - received_events_dropped_queue_full`:
-    /// it excludes events the producer dropped because the channel was full and
-    /// which therefore never reached this loop. See the "Counter algebra"
-    /// section on [`EtwReceiverMetrics`].
+    /// This is the ingress denominator and the authoritative total. The
+    /// slow-worker drop rate is `received_events_dropped_slow_worker /
+    /// received_events_total`. See the "Counter algebra" section on
+    /// [`EtwReceiverMetrics`].
     #[metric(unit = "{event}")]
     pub received_events_total: Counter<u64>,
 
@@ -842,10 +825,12 @@ pub struct EtwReceiverMetrics {
     #[metric(unit = "{event}")]
     pub received_events_rejected_memory_pressure: Counter<u64>,
 
-    /// Number of ETW events dropped because the internal per-core channel was
-    /// full (backpressure between the `ProcessTrace` thread and the receiver).
+    /// Events dropped because the consuming worker (this core's async receiver
+    /// loop) couldn't drain the internal channel fast enough (the ETW consumer
+    /// thread filled it). Contrast `received_events_forward_failed`, which is
+    /// downstream backpressure.
     #[metric(unit = "{event}")]
-    pub received_events_dropped_queue_full: Counter<u64>,
+    pub received_events_dropped_slow_worker: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -1020,15 +1005,15 @@ mod tests {
     #[test]
     fn claim_session_atomics_claims_full_delta_and_resets() {
         let telemetry = SessionTelemetry::default();
-        // 10 events observed, 3 dropped queue-full, 2 decode failures.
+        // 10 events total, 3 dropped slow-worker, 2 decode failures.
         bump_producer(&telemetry, 10, 3, 2);
 
         let deltas = claim_session_atomics(&telemetry);
         assert_eq!(
             deltas,
             SessionAtomicDeltas {
-                observed: 10,
-                dropped_queue_full: 3,
+                total: 10,
+                dropped_slow_worker: 3,
                 invalid: 2,
             }
         );
@@ -1039,16 +1024,14 @@ mod tests {
         assert_eq!(telemetry.decode_failed.load(Ordering::Relaxed), 0);
 
         // Applying the deltas advances the corresponding metric counters and
-        // upholds the counter-algebra invariant:
-        //   observed == dropped_queue_full + (events that would reach the loop)
+        // upholds the counter-algebra invariant.
         let mut metrics = EtwReceiverMetrics::default();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_observed.get(), 10);
-        assert_eq!(metrics.received_events_dropped_queue_full.get(), 3);
+        assert_eq!(metrics.received_events_total.get(), 10);
+        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 3);
         assert_eq!(metrics.received_events_invalid.get(), 2);
-        // `received_events_total` is the consumer-side counter and is NOT
-        // touched by the producer-side fold.
-        assert_eq!(metrics.received_events_total.get(), 0);
+        // Consumer-side counter is removed from metric set; only producer-side
+        // `received_events_total` exists now.
     }
 
     #[test]
@@ -1060,8 +1043,8 @@ mod tests {
         bump_producer(&telemetry, 7, 1, 0);
 
         let first = claim_session_atomics(&telemetry);
-        assert_eq!(first.observed, 7);
-        assert_eq!(first.dropped_queue_full, 1);
+        assert_eq!(first.total, 7);
+        assert_eq!(first.dropped_slow_worker, 1);
         assert!(!first.is_empty());
 
         let second = claim_session_atomics(&telemetry);
@@ -1075,8 +1058,8 @@ mod tests {
         let mut metrics = EtwReceiverMetrics::default();
         first.apply(&mut metrics);
         second.apply(&mut metrics);
-        assert_eq!(metrics.received_events_observed.get(), 7);
-        assert_eq!(metrics.received_events_dropped_queue_full.get(), 1);
+        assert_eq!(metrics.received_events_total.get(), 7);
+        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 1);
     }
 
     #[test]
@@ -1089,11 +1072,11 @@ mod tests {
 
         // Final drain on the last surviving core.
         let terminal = claim_session_atomics(&telemetry);
-        assert_eq!(terminal.observed, 5);
+        assert_eq!(terminal.total, 5);
 
         let mut metrics = EtwReceiverMetrics::default();
         terminal.apply(&mut metrics);
-        assert_eq!(metrics.received_events_observed.get(), 5);
+        assert_eq!(metrics.received_events_total.get(), 5);
 
         // A late producer increment lands after the terminal snapshot.
         let _ = telemetry.observed.fetch_add(1, Ordering::Relaxed);
@@ -1103,7 +1086,7 @@ mod tests {
         // the documented "residual loss at teardown" behaviour.
         assert_eq!(telemetry.observed.load(Ordering::Relaxed), 1);
         assert_eq!(
-            metrics.received_events_observed.get(),
+            metrics.received_events_total.get(),
             5,
             "metric must not reflect the post-terminal increment"
         );
@@ -1115,8 +1098,8 @@ mod tests {
         assert!(deltas.is_empty());
         let mut metrics = EtwReceiverMetrics::default();
         deltas.apply(&mut metrics);
-        assert_eq!(metrics.received_events_observed.get(), 0);
-        assert_eq!(metrics.received_events_dropped_queue_full.get(), 0);
+        assert_eq!(metrics.received_events_total.get(), 0);
+        assert_eq!(metrics.received_events_dropped_slow_worker.get(), 0);
         assert_eq!(metrics.received_events_invalid.get(), 0);
     }
 }
