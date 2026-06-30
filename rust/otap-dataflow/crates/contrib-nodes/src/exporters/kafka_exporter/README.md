@@ -244,6 +244,198 @@ producer_config:
   "batch.num.messages": "10000"
 ```
 
+### Comparison with the Go Kafka exporter
+
+The OpenTelemetry Collector's Go Kafka exporter bundles a synchronous producer
+with a built-in `sending_queue` (queueing/batching) and `retry_on_failure`
+(exponential backoff) in a single component. This exporter delegates
+transient-failure retry to the separate
+[retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
+(`processor:retry`) placed upstream of the exporter.
+
+This exporter targets the OTAP dataflow engine and intentionally supports a
+narrower feature set than the upstream Go exporter. The tables below summarize
+the **feature gaps**; the
+[Error handling and the retry processor](#error-handling-and-the-retry-processor)
+subsection explains how that node closes the `retry_on_failure` gap.
+
+#### Signals
+
+The Go exporter also exports a `profiles` signal. This exporter supports
+`traces`, `metrics`, and `logs` only -- there is no `profiles` signal.
+
+#### Encodings differences
+
+| Encoding | Go | Here |
+| --- | --- | --- |
+| `otlp_proto` | yes | yes |
+| `otap_proto` (OTAP Arrow) | no | yes |
+| `otlp_json` | yes | no |
+| `jaeger_proto` / `jaeger_json` (traces) | yes | no |
+| `zipkin_proto` / `zipkin_json` (traces) | yes | no |
+| `raw` (logs) | yes | no |
+| encoding extensions | yes | no |
+
+#### Authentication mechanisms
+
+| Mechanism | Go | Here |
+| --- | --- | --- |
+| SASL `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` | yes | yes |
+| SASL `AWS_MSK_IAM_OAUTHBEARER` | yes | yes (requires the build-time `aws` feature) |
+| Generic `OAUTHBEARER` (token-source extension) | yes | no |
+| Kerberos / GSSAPI | yes | no |
+| SASL protocol `version` (0/1) | yes | no |
+
+#### Destination topic and message key
+
+| Capability | Go | Here |
+| --- | --- | --- |
+| Static per-signal `topic` | yes | yes |
+| Topic from transport header | no (uses context topic / attribute) | yes (per-signal `topic_from_transport_header`) |
+| `topic_from_metadata_key` (arbitrary request-metadata key) | yes | no |
+| `topic_from_attribute` (resource attribute) | yes | no |
+| `message_key_from_metadata_key` | yes | no |
+| `partition_traces_by_id` | yes | no (planned) |
+| `partition_*_by_resource_attributes` | yes | no |
+| `partition_logs_by_trace_id` | yes | no |
+| Partition key from hashed transport headers | no | yes (`partition_by_transport_headers`) |
+
+#### Partitioning model
+
+The Go exporter selects a `record_partitioner` (`sticky_key` with a
+`sarama_compat`/`murmur2` hasher, `round_robin`, `least_backup`, or a custom
+`extension`). This exporter instead selects a librdkafka partitioner via
+[`partitioning_strategy`](#partitioning) (`random`, `consistent`,
+`consistent_random`, `murmur2[_random]`, `fnv1a[_random]`). There is **no**
+`least_backup` strategy and **no** custom partitioner extension here.
+
+#### Header differences
+
+The Go exporter supports `record_headers` (static headers written on every
+record) and `include_metadata_keys` (propagate request-metadata values as Kafka
+record headers). This exporter has **neither** as config fields: the only
+always-written header is the encoding indicator (`message_format_header`), and
+transport-header propagation onto Kafka records is driven by a pipeline-level
+`header_propagation` policy rather than an exporter config field.
+
+#### Producer and connection settings
+
+The following Go first-class fields have **no dedicated config field** here.
+Where librdkafka exposes an equivalent setting, it can still be set through the
+[`producer_config`](#producer-config-escape-hatch) passthrough.
+
+| Go field | Equivalent here |
+| --- | --- |
+| `compression_params.level` | `producer_config` (`compression.level`) |
+| `max_broker_write_bytes` | `producer_config` |
+| `flush_max_messages` | `producer_config` (`batch.num.messages`, `queue.buffering.max.messages`) |
+| `allow_auto_topic_creation` | `producer_config` (`allow.auto.create.topics`) |
+| `protocol_version` | `producer_config` (`api.version.request`, etc.) |
+| `resolve_canonical_bootstrap_servers_only` | `producer_config` (`client.dns.lookup`) |
+| `conn_idle_timeout` | `producer_config` (`connections.max.idle.ms`) |
+| `metadata.refresh_interval` | `producer_config` (`topic.metadata.refresh.interval.ms`) |
+
+The Go `timeout`, `compression`, `producer.required_acks`,
+`producer.max_message_bytes`, `producer.linger`, and `client_id` settings have
+direct fields here (`timeout_ms`, `compression`, `required_acks`,
+`max_message_bytes`, `linger_ms`, `client_id`); see
+[Producer Tuning](#producer-tuning), [Authentication](#authentication), and
+[TLS Configuration](#tls-configuration).
+
+#### Sending queue and batching
+
+The Go exporter has a `sending_queue` (with `enabled`, `num_consumers`, and
+`queue_size`) and processes batches. This exporter sends **one message per pdata,
+awaited synchronously** -- there is no application-level sending queue,
+`num_consumers`, or in-memory queue backpressure. Batching and lingering are
+delegated to librdkafka via `linger_ms` and any
+[`producer_config`](#producer-config-escape-hatch) queue knobs (e.g.
+`queue.buffering.max.messages`, `batch.num.messages`).
+
+#### Error handling and the retry processor
+
+The Go exporter retries failed exports internally via `retry_on_failure`. This
+exporter has **no internal retry loop** (beyond librdkafka's queue-full retry).
+Instead, on a Kafka **send failure** it emits a **transient (retryable) nack**;
+a [retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)
+placed **upstream** of the exporter catches that nack and retries the batch with
+exponential backoff, only forwarding it onward once retries are exhausted or the
+failure is permanent.
+
+Not every failure is retryable. The exporter emits a **permanent** (non-retryable)
+nack -- which the retry processor forwards immediately without retrying -- for:
+
+- an **encoding failure** (the payload cannot be serialized);
+- a pdata message for an **unconfigured signal type**; and
+- an **invalid dynamic topic** supplied via a transport header (see
+  [Dynamic Topic Routing](#dynamic-topic-routing)).
+
+The retry processor's backoff fields map onto Go's `retry_on_failure`:
+
+| Go exporter option | Equivalent here | Notes |
+| --- | --- | --- |
+| `retry_on_failure.enabled` | Add a `processor:retry` node upstream of the exporter | Retry is a separate node, not an exporter field. Omit the node to disable. |
+| `retry_on_failure.initial_interval` | retry processor `initial_interval` | Default `5s`. |
+| `retry_on_failure.max_interval` | retry processor `max_interval` | Default `30s`. |
+| `retry_on_failure.multiplier` | retry processor `multiplier` | Default `1.5`. |
+| `retry_on_failure.max_elapsed_time` | retry processor `max_elapsed_time` | Default `300s` (5m); must be > 0. |
+| `retry_on_failure.randomization_factor` | *(no equivalent)* | The retry processor backoff has no jitter -- see [Known gaps](#known-gaps--behavioral-differences). |
+
+Example pipeline placing a retry processor in front of the Kafka exporter so
+transient send failures are retried with backoff:
+
+```yaml
+version: otel_dataflow/v1
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          otlp/ingest:
+            type: receiver:otlp
+
+          retry:
+            type: processor:retry
+            config:
+              initial_interval: 1s     # Go retry_on_failure.initial_interval
+              max_interval: 30s        # Go retry_on_failure.max_interval
+              max_elapsed_time: 5m     # Go retry_on_failure.max_elapsed_time
+              multiplier: 2.0          # Go retry_on_failure.multiplier
+              # Go retry_on_failure.randomization_factor has no equivalent (no jitter).
+
+          kafka/export:
+            type: exporter:kafka
+            config:
+              brokers: "broker-1:9092"
+              client_id: "gateway-instance-1"
+              traces:
+                topic: "otlp_spans"
+
+        connections:
+          - from: otlp/ingest
+            to: retry
+          - from: retry
+            to: kafka/export
+```
+
+##### Known gaps / behavioral differences
+
+The table below maps the Go exporter's remaining error-handling behavior onto
+the equivalent here, assuming this exporter runs with an upstream
+`processor:retry` node.
+
+| Go exporter option | Equivalent here | Notes |
+| --- | --- | --- |
+| `retry_on_failure.randomization_factor` | *(no equivalent)* | The retry processor backoff has no jitter. |
+| `sending_queue` (`queue_size`, `num_consumers`) | *(no equivalent)* | No application-level sending queue or backpressure; relies on the pipeline and the librdkafka producer queue. |
+| `sending_queue` persistent storage | Add a `processor:durable_buffer` node | Retry/queue state is in-memory; add a durable buffer node for cross-restart durability. |
+| *(in-line per-export retry ordering)* | *(no equivalent)* | The retry processor retries out-of-band, so a later batch may be sent and acked before an earlier batch still being retried. |
+| *(drop after retries exhausted)* | Final nack forwarded upstream | After `max_elapsed_time` the retry processor forwards a final nack; data is dropped at the source. No dead-letter queue. |
+| *(encoding failure / unconfigured signal / invalid dynamic topic)* | Permanent nack (not retried) | These are non-retryable; the retry processor forwards them immediately. No dead-letter queue. |
+
+Beyond error handling, this exporter also supports fewer encodings, auth
+mechanisms, and routing/partitioning options -- see the tables above.
+
 ### Validation Rules
 
 1. `brokers` must be non-empty.
@@ -351,6 +543,12 @@ This node does not emit structured events.
   interval as a workaround for high idle CPU utilization in the upstream
   rdkafka implementation.
 - Resource attribute-based partitioning is not yet implemented.
+- Compared to the Go Kafka exporter, this exporter delegates retry to an
+  upstream `processor:retry` node (no built-in `retry_on_failure`), has no
+  application-level sending queue, supports fewer encodings/auth mechanisms, and
+  offers fewer topic-routing/partitioning options. See
+  [Comparison with the Go Kafka exporter](#comparison-with-the-go-kafka-exporter)
+  for details.
 
 ## Related Docs
 
