@@ -773,7 +773,7 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
 ///     = received_events_forwarded        (events in successfully-sent batches)
 ///     + received_events_forward_failed   (events in batches that failed to build/send)
 ///     + received_events_dropped_slow_worker (events dropped by internal backpressure)
-///     + events still buffered in the in-flight builder at snapshot time
+///     + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
 /// ```
 ///
 /// Derived rates:

@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add ETW receiver telemetry counters for observed/produced events, queue-full drops, and decode failures, with an explicit counter-algebra contract.
+note: Add ETW receiver telemetry counters for produced events, slow-worker drops, and decode failures, with an explicit counter-algebra contract.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3361]
@@ -21,11 +21,10 @@ subtext: |
   the names below are the exact field names you query - see the telemetry table
   in
   `rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/README.md`):
-  - `received_events_observed`: every event the session produced, counted on
-    the producer (`ProcessTrace`) side before the per-core channel send,
-    including events about to be dropped because the channel is full. This is
-    the producer-side denominator.
-  - `received_events_dropped_queue_full`: events dropped when an internal
+  - `received_events_total`: every event the session produced, counted on the
+    producer (`ProcessTrace`) side before the per-core channel send. This is
+    the single ingress denominator.
+  - `received_events_dropped_slow_worker`: events dropped when an internal
     per-core channel is full (previously only logged), bridged from the
     `!Send` ProcessTrace callback via a shared atomic.
   - `received_events_invalid`: TDH decode failures (the counter existed but was
@@ -33,20 +32,18 @@ subtext: |
   Counter algebra (the exact relationships; the authoritative copy lives in the
   doc comment on `EtwReceiverMetrics` in
   `rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/mod.rs`):
-  - `received_events_observed = received_events_total + received_events_dropped_queue_full`.
-    `received_events_total` counts events pulled off the channel by the async
-    receiver, NOT events the session produced; the difference is the queue-full
-    drops.
-  - `received_events_total = received_events_forwarded + received_events_forward_failed`
-    plus any events still buffered in the in-flight builder at snapshot time.
-  - Queue-full drop rate = `received_events_dropped_queue_full / received_events_observed`.
+  - `received_events_total = received_events_forwarded + received_events_forward_failed
+    + received_events_dropped_slow_worker` plus any events still buffered in the
+    per-core channel and/or in the in-flight builder at snapshot time.
+  - Slow-worker drop rate = `received_events_dropped_slow_worker / received_events_total`.
+  - Forward-failure rate = `received_events_forward_failed / received_events_total`.
   - `received_events_invalid` is orthogonal: a decode failure does not drop the
     event (it is still forwarded with empty fields), so it is not subtracted
     from `received_events_total`.
 
   The producer-side counters are session-scoped (shared across all per-core
-  receivers of a `session_name`); whichever core drains the shared atomics first
-  on a tick claims the whole delta via `swap(0)`, so concurrent per-core drains
-  never double-count and the registry sums the per-core snapshots into one exact
-  session-wide series. A residual delta produced after the last core's terminal
-  snapshot is acceptably dropped at teardown.
+  receivers of a `session_name`); each field is claimed via an independent
+  `swap(0)`, so concurrent per-core drains never double-count and the registry
+  sums the per-core snapshots into one exact session-wide series. A residual
+  delta produced after the last core's terminal snapshot is acceptably dropped
+  at teardown.

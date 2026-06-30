@@ -28,7 +28,7 @@ received_events_total
     = received_events_forwarded             (events in successfully-sent batches)
     + received_events_forward_failed        (events in batches that failed to build/send)
     + received_events_dropped_slow_worker   (events the consuming worker couldn't drain)
-    + events still buffered in the in-flight builder at snapshot time
+    + events still buffered in the per-core channel and/or in the in-flight builder at snapshot time
 ```
 
 Derived rates:

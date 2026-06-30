@@ -98,7 +98,6 @@ Each decoded ETW event becomes one OTAP log record with the following fields.
 | 1 | CRITICAL | 21 (FATAL) | `CRITICAL` |
 | 2 | ERROR | 17 (ERROR) | `ERROR` |
 | 3 | WARNING | 13 (WARN) | `WARNING` |
-
 | 4 | INFO | 9 (INFO) | `INFO` |
 | 5 | VERBOSE | 5 (DEBUG) | `VERBOSE` |
 | 6-255 | *(reserved / provider-defined)* | 0 (UNSPECIFIED) | *(absent)* |
