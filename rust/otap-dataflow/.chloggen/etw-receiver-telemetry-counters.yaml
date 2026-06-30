@@ -18,9 +18,7 @@ issues: [3361]
 # Use pipe (|) for multiline entries.
 subtext: |
   The ETW receiver now records (emitted under the `receiver.etw` metric set;
-  the names below are the exact field names you query - see the telemetry table
-  in
-  `rust/otap-dataflow/crates/contrib-nodes/src/receivers/etw_receiver/README.md`):
+  the names below are the exact field names you query):
   - `received_events_total`: every event the session produced, counted on the
     producer (`ProcessTrace`) side before the per-core channel send. This is
     the single ingress denominator.
