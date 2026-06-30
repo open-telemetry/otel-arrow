@@ -199,6 +199,82 @@ message marking, and error backoff into a single component. This receiver splits
 those concerns across two pipeline nodes: the receiver handles offset commit and
 marking, while transient-failure retry is delegated to the
 [retry processor](../../../../core-nodes/src/processors/retry_processor/README.md).
+
+The tables below summarize
+the **feature gaps** relative to the Go receiver; the
+[offset/error-handling mapping](#offset-and-error-handling) and
+[Known gaps](#known-gaps--behavioral-differences) further down cover the
+offset-commit and retry differences.
+
+##### Signals
+
+The Go receiver also consumes a `profiles` signal. This receiver supports
+`traces`, `metrics`, and `logs` only -- there is no `profiles` signal.
+
+##### Encodings
+
+| Encoding | Go | Here |
+| --- | --- | --- |
+| `otlp_proto` | yes | yes |
+| `otap_proto` (OTAP Arrow) | no | yes |
+| `otlp_json` | yes | no |
+| `jaeger_proto` / `jaeger_json` (traces) | yes | no |
+| `zipkin_proto` / `zipkin_json` / `zipkin_thrift` (traces) | yes | no |
+| `raw` / `text` / `text_<encoding>` / `json` (logs) | yes | no |
+| `azure_resource_logs` (logs) | yes (deprecated) | no |
+| encoding extensions | yes | no |
+
+##### Authentication mechanisms
+
+| Mechanism | Go | Here |
+| --- | --- | --- |
+| SASL `PLAIN`, `SCRAM-SHA-256`, `SCRAM-SHA-512` | yes | yes |
+| SASL `AWS_MSK_IAM_OAUTHBEARER` | yes | yes (requires the build-time `aws` feature) |
+| Generic `OAUTHBEARER` (token-source extension) | yes | no |
+| Kerberos / GSSAPI | yes | no |
+
+##### Consumer / connection settings
+
+The following Go first-class fields have **no dedicated config field** here.
+Where librdkafka exposes an equivalent setting, it can still be set through the
+[`consumer_config`](#consumer_config) passthrough.
+
+| Go field | Equivalent here |
+| --- | --- |
+| `protocol_version` | `consumer_config` passthrough (`api.version.request`, etc.) |
+| `resolve_canonical_bootstrap_servers_only` | `consumer_config` passthrough (`client.dns.lookup`) |
+| `rack_id` | `consumer_config` passthrough (`client.rack`) |
+| `use_leader_epoch` | not exposed |
+| `conn_idle_timeout` | `consumer_config` passthrough (`connections.max.idle.ms`) |
+| `metadata.full` / `metadata.refresh_interval` / `metadata.retry.*` | `consumer_config` passthrough (`topic.metadata.refresh.*`, `metadata.max.age.ms`) |
+| `group_rebalance_strategies` (ordered list + custom balancer extensions) | single `rebalance_strategy` value; a comma-separated list can be set via `consumer_config` (`partition.assignment.strategy`) |
+
+##### Message metadata propagation
+
+The Go receiver injects `kafka.topic`, `kafka.partition`, and `kafka.offset`
+(plus all Kafka headers) into each request's metadata/context for downstream
+use. This receiver does **not** place those values into the pdata context; the
+topic/partition/offset are used internally for offset routing and appear only on
+log events. (Header values can still be surfaced via
+[`resource_attrs_from_headers`](#header-extraction) or
+[transport header capture](#transport-header-capture).)
+
+##### Telemetry differences
+
+The Go receiver exposes an opt-in `telemetry.metrics.kafka_receiver_records_delay`
+gauge (consumer lag/delay) and per-metric enable toggles. This receiver emits
+always-on counters only (see [Metric Sets](#metric-sets)) -- there is no
+consumer-lag/delay gauge, no histograms, and no per-metric toggles.
+
+##### Defaults and required fields
+
+The Go receiver has no required settings (it defaults `brokers`, `group_id`,
+`client_id`, and per-signal topics). This receiver **requires** `brokers`,
+`group_id`, and `client_id`, and has no default topics -- at least one signal
+must declare `topics`.
+
+##### Offset and error handling
+
 The table below maps the Go receiver's error-handling/offset options onto the
 equivalent configuration here.
 
