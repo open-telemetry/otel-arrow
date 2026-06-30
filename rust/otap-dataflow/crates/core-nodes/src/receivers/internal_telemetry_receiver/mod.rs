@@ -217,6 +217,9 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // No metrics to report for now
                         }
                         Err(e) => {
+                            // Best-effort flush so a control-channel failure does
+                            // not drop records already buffered for batching.
+                            let _ = Self::flush_batch(&effect_handler, &mut batch, &resource_bytes, &mut scope_cache).await;
                             return Err(Error::ChannelRecvError(e));
                         }
                         _ => {
@@ -272,49 +275,93 @@ impl InternalTelemetryReceiver {
         batch.push(log_event);
     }
 
-    /// Encode and send the accumulated batch, grouping records by scope. The
-    /// batch is split so each emitted `ExportLogsRequest` stays under
-    /// [`MAX_BATCH_BYTES`], keeping every message well below the transport size
-    /// limit. Clears the batch; a no-op when empty.
+    /// Encode and send the accumulated batch, grouping records by scope. A batch
+    /// that would exceed [`MAX_BATCH_BYTES`] is split (see [`chunk_end`]) so every
+    /// message stays well below the transport size limit. Clears the batch; a
+    /// no-op when empty.
     async fn flush_batch(
         effect_handler: &local::EffectHandler<OtapPdata>,
         batch: &mut Vec<LogEvent>,
         resource_bytes: &Bytes,
         scope_cache: &mut ScopeToBytesMap,
     ) -> Result<(), Error> {
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let base = resource_bytes.len();
+        let total = base
+            + batch
+                .iter()
+                .map(|e| e.record.body_attrs_bytes.len() + RECORD_FRAMING_BYTES)
+                .sum::<usize>();
+
+        // Common case: the whole batch fits one message, so encode it directly
+        // with no per-record size vector or chunk loop. The default (batching
+        // off) one-record flush always lands here.
+        if total <= MAX_BATCH_BYTES {
+            Self::send_chunk(effect_handler, batch, total, resource_bytes, scope_cache).await?;
+            batch.clear();
+            return Ok(());
+        }
+
+        // Oversized batch: split into byte-bounded messages.
+        let sizes: Vec<usize> = batch
+            .iter()
+            .map(|e| e.record.body_attrs_bytes.len() + RECORD_FRAMING_BYTES)
+            .collect();
         let mut start = 0;
         while start < batch.len() {
-            // Take records until the estimated size would exceed the budget,
-            // always including at least one: a record's pre-encoded body is
-            // size-bounded, so a single one always fits.
-            let mut end = start;
-            let mut chunk_bytes = resource_bytes.len();
-            while end < batch.len() {
-                let record_bytes = batch[end].record.body_attrs_bytes.len() + RECORD_FRAMING_BYTES;
-                if end > start && chunk_bytes + record_bytes > MAX_BATCH_BYTES {
-                    break;
-                }
-                chunk_bytes += record_bytes;
-                end += 1;
-            }
-
-            let mut buf = ProtoBuffer::with_capacity(chunk_bytes);
-            encode_export_logs_request_batch(
-                &mut buf,
+            let end = chunk_end(&sizes, start, base, MAX_BATCH_BYTES);
+            let capacity = base + sizes[start..end].iter().sum::<usize>();
+            Self::send_chunk(
+                effect_handler,
                 &batch[start..end],
+                capacity,
                 resource_bytes,
                 scope_cache,
-            );
-            let pdata = OtapPdata::new(
-                Context::default(),
-                OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into(),
-            );
-            effect_handler.send_message(pdata).await?;
+            )
+            .await?;
             start = end;
         }
         batch.clear();
         Ok(())
     }
+
+    /// Encode one `ExportLogsRequest` from `events` and send it downstream.
+    async fn send_chunk(
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        events: &[LogEvent],
+        capacity: usize,
+        resource_bytes: &Bytes,
+        scope_cache: &mut ScopeToBytesMap,
+    ) -> Result<(), Error> {
+        let mut buf = ProtoBuffer::with_capacity(capacity);
+        encode_export_logs_request_batch(&mut buf, events, resource_bytes, scope_cache);
+        let pdata = OtapPdata::new(
+            Context::default(),
+            OtlpProtoBytes::ExportLogsRequest(buf.into_bytes()).into(),
+        );
+        effect_handler.send_message(pdata).await?;
+        Ok(())
+    }
+}
+
+/// Index one past the last record of the chunk starting at `start`: as many
+/// records as fit the byte budget, but always at least one (a record's body is
+/// size-bounded, so a single one always fits). Pure, so it is unit-tested
+/// directly without driving the full receiver.
+fn chunk_end(record_sizes: &[usize], start: usize, base_bytes: usize, budget: usize) -> usize {
+    let mut end = start;
+    let mut bytes = base_bytes;
+    while end < record_sizes.len() {
+        let size = record_sizes[end];
+        if end > start && bytes + size > budget {
+            break;
+        }
+        bytes += size;
+        end += 1;
+    }
+    end
 }
 
 #[cfg(test)]
@@ -422,5 +469,51 @@ mod tests {
                     assert_eq!(scope_logs[0].log_records.len(), 1);
                 }
             });
+    }
+
+    #[test]
+    fn timer_flushes_partial_batch_before_shutdown() {
+        let test_runtime = TestRuntime::new();
+        // High batch_size so size never triggers; short duration so the timer does.
+        let config = Config {
+            batch_size: NonZeroUsize::new(10),
+            max_batch_duration: Duration::from_millis(20),
+        };
+        let (receiver, sender) = wire_receiver(&test_runtime, config);
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |ctx| async move {
+                sender.send(ObservedEvent::Log(log_event())).unwrap();
+                sender.send(ObservedEvent::Log(log_event())).unwrap();
+                // Stay alive well past the timer, then shut down. The message must
+                // be flushed by the timer during this window, not by the shutdown.
+                ctx.sleep(Duration::from_millis(300)).await;
+                ctx.send_shutdown(Instant::now(), "done").await.unwrap();
+            })
+            .run_validation_concurrent(|mut ctx| async move {
+                // A 150ms bound (well under the 300ms shutdown) fails if the timer
+                // never fires, so a passing recv proves the timer-driven flush.
+                let pdata = tokio::time::timeout(Duration::from_millis(150), ctx.recv())
+                    .await
+                    .expect("timer flush within bound")
+                    .expect("a message");
+                let request = decode_logs(pdata);
+                assert_eq!(request.resource_logs[0].scope_logs[0].log_records.len(), 2);
+            });
+    }
+
+    #[test]
+    fn chunk_end_splits_on_byte_budget() {
+        let sizes = [300, 300, 300, 300];
+        // 300 + 300 = 600 fits a 700 budget; the third would reach 900, so stop.
+        assert_eq!(chunk_end(&sizes, 0, 0, 700), 2);
+        assert_eq!(chunk_end(&sizes, 2, 0, 700), 4);
+        // A single record always advances, even if it alone exceeds the budget.
+        assert_eq!(chunk_end(&[1000], 0, 0, 100), 1);
+        // Base (resource) bytes count against the budget.
+        assert_eq!(chunk_end(&[300, 300], 0, 500, 700), 1);
+        // Everything fits one chunk when the budget is ample.
+        assert_eq!(chunk_end(&sizes, 0, 0, 10_000), 4);
     }
 }

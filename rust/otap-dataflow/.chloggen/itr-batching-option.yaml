@@ -10,11 +10,10 @@ component: pipeline
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
 note: >-
   The internal telemetry receiver can now batch log records. Setting
-  `batch_size` accumulates records and emits them as a single
-  `ExportLogsRequest`, with records sharing a scope combined into one
-  `ScopeLogs` message rather than one message each. `max_batch_duration`
-  (default 200ms) caps how long a partial batch waits. Batching is off by
-  default, so existing behavior is unchanged.
+  `batch_size` accumulates records and emits them together, with records
+  sharing a scope combined into one `ScopeLogs` message rather than one message
+  each. `max_batch_duration` (default 200ms) caps how long a partial batch
+  waits. Batching is off by default, so existing behavior is unchanged.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [1902]

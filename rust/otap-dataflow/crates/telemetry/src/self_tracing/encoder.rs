@@ -588,24 +588,62 @@ fn encode_any_value(
     Ok(())
 }
 
+/// Encode one `ScopeLogs` block: the `InstrumentationScope` (name plus the
+/// entity-key attributes) followed by each referenced record as its own
+/// length-delimited `LogRecord`.
+fn encode_scope_logs(
+    buf: &mut ProtoBuffer,
+    target: &str,
+    context: &[EntityKey],
+    events: &[LogEvent],
+    indices: &[usize],
+    scope_cache: &mut ScopeToBytesMap,
+) -> EncodeResult {
+    buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
+        // ScopeLogs.scope (field 1, InstrumentationScope message)
+        buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
+            buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
+            for entity_key in context {
+                let scope_bytes = scope_cache.get_or_encode(*entity_key);
+                buf.extend_from_slice(&scope_bytes)?;
+            }
+            Ok(())
+        })?;
+        // ScopeLogs.log_records (field 2, repeated LogRecord): one entry each.
+        for &idx in indices {
+            buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
+                let mut encoder = DirectLogRecordEncoder::new(buf);
+                let _ = encoder.encode_log_record(events[idx].time, &events[idx].record);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })
+}
+
 /// Encode a single `LogEvent` as a complete `ExportLogsServiceRequest`.
 ///
-/// Resolves the entity keys from the log record's context to populate
-/// `InstrumentationScope.attributes`. This is the single-record case of
-/// [`encode_export_logs_request_batch`]; both share one encoding path, so the
-/// output is identical to passing a one-element slice to the batch encoder.
+/// The fast path used when batching is disabled: one scope encoded directly,
+/// with no grouping map. Output is identical to passing a one-element slice to
+/// [`encode_export_logs_request_batch`].
 pub fn encode_export_logs_request(
     buf: &mut ProtoBuffer,
     event: &LogEvent,
     resource_bytes: &Bytes,
     scope_cache: &mut ScopeToBytesMap,
 ) {
-    encode_export_logs_request_batch(
-        buf,
-        std::slice::from_ref(event),
-        resource_bytes,
-        scope_cache,
-    );
+    buf.clear();
+    let _: EncodeResult = buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
+        buf.extend_from_slice(resource_bytes)?;
+        encode_scope_logs(
+            buf,
+            event.record.callsite().target(),
+            &event.record.context,
+            std::slice::from_ref(event),
+            &[0],
+            scope_cache,
+        )
+    });
 }
 
 /// Encode a batch of `LogEvent`s as a single `ExportLogsServiceRequest`.
@@ -618,62 +656,43 @@ pub fn encode_export_logs_request(
 /// that identity (target, then entity-key context); records within a scope keep
 /// arrival order.
 ///
+/// The single-event case takes the [`encode_export_logs_request`] fast path, so
+/// the common batching-disabled flow does not build the grouping map.
+///
 /// Callers must keep each batch small enough to stay under the `ProtoBuffer`
-/// size limit; the receiver does this by splitting on a byte budget before
-/// calling here.
+/// size limit; the receiver does this by splitting on a byte budget first.
 pub fn encode_export_logs_request_batch(
     buf: &mut ProtoBuffer,
     events: &[LogEvent],
     resource_bytes: &Bytes,
     scope_cache: &mut ScopeToBytesMap,
 ) {
-    buf.clear();
-    if events.is_empty() {
-        return;
-    }
+    match events {
+        [] => buf.clear(),
+        [event] => encode_export_logs_request(buf, event, resource_bytes, scope_cache),
+        _ => {
+            buf.clear();
+            // Bucket event indices by scope identity = (target, entity-key
+            // context). A BTreeMap is the codebase's grouping idiom (cf.
+            // `build_attribute_index`) and orders scopes by that key: target
+            // first, then the entity-key slice.
+            let mut groups: BTreeMap<(&str, &[EntityKey]), Vec<usize>> = BTreeMap::new();
+            for (i, event) in events.iter().enumerate() {
+                let target = event.record.callsite().target();
+                let context = event.record.context.as_slice();
+                groups.entry((target, context)).or_default().push(i);
+            }
 
-    // Bucket event indices by scope identity = (target, entity-key context).
-    // A BTreeMap is the codebase's grouping idiom (cf. `build_attribute_index`)
-    // and orders scopes by that key: target first, then the entity-key slice.
-    let mut groups: BTreeMap<(&str, &[EntityKey]), Vec<usize>> = BTreeMap::new();
-    for (i, event) in events.iter().enumerate() {
-        let target = event.record.callsite().target();
-        let context = event.record.context.as_slice();
-        groups.entry((target, context)).or_default().push(i);
-    }
-
-    // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
-    let _: EncodeResult = buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
-        // ResourceLogs.resource (field 1, Resource message)
-        buf.extend_from_slice(resource_bytes)?;
-
-        // ResourceLogs.scope_logs (field 2, repeated ScopeLogs): one per scope.
-        for (&(target, context), indices) in &groups {
-            buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
-                // ScopeLogs.scope (field 1, InstrumentationScope message)
-                buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                    buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
-                    for entity_key in context {
-                        let scope_bytes = scope_cache.get_or_encode(*entity_key);
-                        buf.extend_from_slice(&scope_bytes)?;
+            let _: EncodeResult =
+                buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
+                    buf.extend_from_slice(resource_bytes)?;
+                    for (&(target, context), indices) in &groups {
+                        encode_scope_logs(buf, target, context, events, indices, scope_cache)?;
                     }
                     Ok(())
-                })?;
-
-                // ScopeLogs.log_records (field 2, repeated LogRecord): each
-                // record is its own length-delimited entry.
-                for &idx in indices {
-                    buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
-                        let mut encoder = DirectLogRecordEncoder::new(buf);
-                        let _ = encoder.encode_log_record(events[idx].time, &events[idx].record);
-                        Ok(())
-                    })?;
-                }
-                Ok(())
-            })?;
+                });
         }
-        Ok(())
-    });
+    }
 }
 
 #[cfg(test)]
