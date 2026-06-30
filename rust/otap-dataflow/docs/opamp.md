@@ -150,7 +150,6 @@ engine:
           #  ... same exponential retry options as connect_retry above
         }
 
-       
         # Options for engine reconciliation
         reconcile:
           # timeout for reconcile - Optional (default = 30)
@@ -389,7 +388,7 @@ Example:
 ```rs
 AgentToServer {
     health: ComponentHealth {
-        healthy: true,       
+        healthy: true,
         status: "running",
         component_health_map: HashMap {
             "<group_key>": ComponentHealth {
