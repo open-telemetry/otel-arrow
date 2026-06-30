@@ -68,7 +68,7 @@ mod test {
     use weaver_common::result::WResult;
     use weaver_common::vdir::VirtualDirectoryPath;
     use weaver_forge::registry::ResolvedRegistry;
-    use weaver_resolver::SchemaResolver;
+    use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
     use weaver_semconv::registry_repo::RegistryRepo;
 
     const LOG_SIGNAL_COUNT: usize = 100;
@@ -89,26 +89,21 @@ mod test {
         )
         .expect("all registries are definied under the model folder in semantic convention repo");
 
-        // Load the semantic convention registry.
-        let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
-            WResult::Ok(registry) => registry,
-            WResult::OkWithNFEs(registry, _) => registry,
-            WResult::FatalErr(_err) => {
-                panic!("Failed to load semantic convention specs");
-            }
+        let resolver_config = WeaverResolverConfig {
+            include_unreferenced: true,
+            ..WeaverResolverConfig::default()
         };
-
-        // Resolve the semantic convention specifications.
-        // If there are any resolution errors, they should be captured into the ongoing list of
-        // diagnostic messages and returned immediately because there is no point in continuing
-        // as the resolution is a prerequisite for the next stages.
-        let resolved_schema = match SchemaResolver::resolve(registry, true) {
-            WResult::Ok(resolved_schema) => resolved_schema,
-            WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-            WResult::FatalErr(_err) => {
-                panic!("Failed to resolve semantic convetion schema");
+        let mut resolver = WeaverResolver::new(resolver_config);
+        let resolved_schema =
+            match resolver.load_and_resolve_schema(registry_repo, DefaultSchemaVisitor) {
+                WResult::Ok(resolved_schema) => resolved_schema,
+                WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                WResult::FatalErr(_err) => {
+                    panic!("Failed to resolve semantic convetion schema");
+                }
             }
-        };
+            .into_v1()
+            .expect("semantic convention registry uses v1 schema");
 
         ResolvedRegistry::try_from_resolved_registry(
             &resolved_schema.registry,

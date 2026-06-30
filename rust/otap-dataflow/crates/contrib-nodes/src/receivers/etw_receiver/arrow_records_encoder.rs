@@ -41,14 +41,32 @@ const fn etw_level_to_otel_severity(level: u8) -> i32 {
     }
 }
 
-/// Map an ETW level to the conventional OTel severity text.
+/// Map an ETW level to the `SeverityText`.
+///
+/// Per the OpenTelemetry logs data model, `SeverityText` is the original
+/// string representation of the severity as it is known at the source, so this
+/// returns the ETW level name (e.g. `"CRITICAL"`) rather than the OTel
+/// severity short name (e.g. `"FATAL"`).
+///
+/// Level 0 (`LOG_ALWAYS`) is a filtering directive rather than a severity, but
+/// its source name is still recorded here even though `SeverityNumber` maps to
+/// UNSPECIFIED. Reserved (6-15) and provider-defined (16-255) levels have no
+/// name standardized across providers, so they return `None`. The names match
+/// the ETW mapping table in the OpenTelemetry logs data model appendix.
+///
+/// See the Windows `EVENT_DESCRIPTOR` documentation for the level semantics:
+/// <https://learn.microsoft.com/en-us/windows/win32/api/evntprov/ns-evntprov-event_descriptor>
 const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
     match level {
-        1 => Some("FATAL"),
+        0 => Some("LOG_ALWAYS"),
+        1 => Some("CRITICAL"),
         2 => Some("ERROR"),
-        3 => Some("WARN"),
+        3 => Some("WARNING"),
         4 => Some("INFO"),
-        5 => Some("DEBUG"),
+        5 => Some("VERBOSE"),
+        // TODO: Manifest-based events can define their own levels in the
+        // 16-255 range. We will need to handle the mapping for those once
+        // manifest-based event support is implemented.
         _ => None,
     }
 }
@@ -162,22 +180,21 @@ impl EtwArrowRecordsBuilder {
         // field in the general case).  Decoded fields go into attributes.
         self.logs.body.append_null();
 
-        // Severity from ETW level
+        // Severity from ETW level. The severity number is always emitted;
+        // unmapped levels resolve to UNSPECIFIED (0). The `SeverityText`
+        // carries the original ETW level name as known at the source and is
+        // emitted even when the number is UNSPECIFIED (e.g. level 0 ->
+        // "LOG_ALWAYS"), per the OpenTelemetry logs data model.
         let severity = etw_level_to_otel_severity(event.level);
-        if severity > 0 {
-            self.logs.append_severity_number(Some(severity));
-            self.logs
-                .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
-        } else {
-            self.logs.append_severity_number(None);
-            self.logs.append_severity_text(None);
-        }
+        self.logs.append_severity_number(Some(severity));
+        self.logs
+            .append_severity_text(etw_level_to_severity_text(event.level).map(str::as_bytes));
 
         self.logs.append_id(Some(self.curr_log_id));
 
         // Event name: prefer the TDH event name (e.g. "AppStarted") over
-        // the numeric event ID.  Fall back to "etw.<event_id>" for
-        // manifest-based events where TDH doesn't provide a name.
+        // the numeric event ID.  Fall back to "etw.<event_id>" (e.g.
+        // "etw.42") for manifest-based events where TDH doesn't provide a name.
         if event.event_name.is_empty() {
             let fallback = format!("etw.{}", event.event_id);
             self.logs.append_event_name(Some(fallback.as_bytes()));
@@ -187,7 +204,12 @@ impl EtwArrowRecordsBuilder {
         }
 
         // Attributes: ETW header metadata
-        self.append_attr("etw.event_id", AttrValue::Int(i64::from(event.event_id)));
+        self.append_attr("etw.event.id", AttrValue::Int(i64::from(event.event_id)));
+        // Preserve the raw ETW level so the severity mapping remains
+        // reversible (levels 0 and 6-255 map to UNSPECIFIED but the original
+        // value is retained here).  See the ETW mapping in the OpenTelemetry
+        // logs data model appendix.
+        self.append_attr("etw.level", AttrValue::Int(i64::from(event.level)));
         self.append_attr("etw.opcode", AttrValue::Int(i64::from(event.opcode)));
         self.append_attr("etw.version", AttrValue::Int(i64::from(event.version)));
         self.append_attr(
@@ -195,10 +217,10 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Int(event.keywords.min(i64::MAX as u64) as i64),
         );
         self.append_attr(
-            "etw.process_id",
+            "etw.process.id",
             AttrValue::Int(i64::from(event.process_id)),
         );
-        self.append_attr("etw.thread_id", AttrValue::Int(i64::from(event.thread_id)));
+        self.append_attr("etw.thread.id", AttrValue::Int(i64::from(event.thread_id)));
 
         // Provider GUID as hex string (e.g. "d2387720-2907-5677-8625-c1bdc4155197").
         // Format into a stack buffer to avoid a per-event heap allocation.
@@ -207,7 +229,7 @@ impl EtwArrowRecordsBuilder {
         let provider_guid =
             std::str::from_utf8(&provider_guid).expect("GUID buffer is valid ASCII");
         self.append_attr(
-            "etw.provider_id",
+            "etw.provider.id",
             AttrValue::Str(Cow::Borrowed(provider_guid)),
         );
 
@@ -217,7 +239,7 @@ impl EtwArrowRecordsBuilder {
             // safety: `format_guid` only writes ASCII hex digits and '-'.
             let activity =
                 std::str::from_utf8(&activity).expect("activity id buffer is valid ASCII");
-            self.append_attr("etw.activity_id", AttrValue::Str(Cow::Borrowed(activity)));
+            self.append_attr("etw.activity.id", AttrValue::Str(Cow::Borrowed(activity)));
         }
 
         // Attributes: TDH-decoded fields
@@ -352,12 +374,12 @@ mod tests {
             .expect("attrs batch present");
 
         assert_eq!(logs_rb.num_rows(), 1);
-        // 7 header attrs (event_id, opcode, version, keywords, process_id,
-        // thread_id, provider_id) + 2 decoded fields = 9 rows.
+        // 8 header attrs (event_id, level, opcode, version, keywords,
+        // process_id, thread_id, provider_id) + 2 decoded fields = 10 rows.
         // (event_name is carried in the OTAP `event_name` log-record column,
         // not duplicated as an attribute; activity_id is all zeros so it's
         // omitted.)
-        assert_eq!(attrs_rb.num_rows(), 9);
+        assert_eq!(attrs_rb.num_rows(), 10);
     }
 
     #[test]
@@ -369,6 +391,112 @@ mod tests {
         assert_eq!(etw_level_to_otel_severity(5), 5); // DEBUG
         assert_eq!(etw_level_to_otel_severity(0), 0); // UNSPECIFIED
         assert_eq!(etw_level_to_otel_severity(255), 0); // Unknown
+    }
+
+    #[test]
+    fn severity_text_matches_data_model_mapping() {
+        // SeverityText carries the original ETW level name per the
+        // OpenTelemetry logs data model appendix ETW mapping table.
+        assert_eq!(etw_level_to_severity_text(0), Some("LOG_ALWAYS"));
+        assert_eq!(etw_level_to_severity_text(1), Some("CRITICAL"));
+        assert_eq!(etw_level_to_severity_text(2), Some("ERROR"));
+        assert_eq!(etw_level_to_severity_text(3), Some("WARNING"));
+        assert_eq!(etw_level_to_severity_text(4), Some("INFO"));
+        assert_eq!(etw_level_to_severity_text(5), Some("VERBOSE"));
+        // Reserved (6-15) and provider-defined (16-255) levels have no
+        // standardized name.
+        assert_eq!(etw_level_to_severity_text(6), None);
+        assert_eq!(etw_level_to_severity_text(200), None);
+    }
+
+    #[test]
+    fn unspecified_severity_preserves_raw_level() {
+        use arrow::array::{Array, DictionaryArray, Int32Array, Int64Array, StringArray};
+        use arrow::datatypes::{UInt8Type, UInt16Type};
+
+        // An ETW level outside the documented 1-5 range (e.g. 200) maps to
+        // OTel UNSPECIFIED, so the severity number is emitted as 0 and no
+        // severity text is emitted.
+        assert_eq!(etw_level_to_otel_severity(200), 0);
+        assert_eq!(etw_level_to_severity_text(200), None);
+
+        let mut event = test_event();
+        event.level = 200;
+
+        let mut builder = EtwArrowRecordsBuilder::new();
+        builder.append(&event);
+        let batch = builder.build().expect("build succeeds");
+
+        // The severity maps to UNSPECIFIED, so the logs batch carries a
+        // severity number of 0.
+        let logs_rb = batch
+            .get(ArrowPayloadType::Logs)
+            .expect("logs batch present");
+        if let Some(severity) = logs_rb.column_by_name("severity_number") {
+            // The column may be dictionary-encoded, so cast to a plain Int32
+            // array before inspecting the value.
+            let severity = arrow::compute::cast(severity, &arrow::datatypes::DataType::Int32)
+                .expect("cast severity_number to i32");
+            let severity = severity
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .expect("severity_number is i32");
+            assert!(
+                !severity.is_null(0),
+                "UNSPECIFIED severity must still emit a severity number"
+            );
+            assert_eq!(
+                severity.value(0),
+                0,
+                "UNSPECIFIED severity number must be 0"
+            );
+        }
+
+        // The raw ETW level is still recoverable from the `etw.level`
+        // attribute, even though the severity mapping discarded it.
+        let attrs_rb = batch
+            .get(ArrowPayloadType::LogAttrs)
+            .expect("attrs batch present");
+
+        let key_dict = attrs_rb
+            .column_by_name("key")
+            .expect("key column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt8Type>>()
+            .expect("key is dictionary-encoded");
+        let key_values = key_dict
+            .values()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key dictionary values are strings");
+
+        let int_dict = attrs_rb
+            .column_by_name("int")
+            .expect("int column present")
+            .as_any()
+            .downcast_ref::<DictionaryArray<UInt16Type>>()
+            .expect("int is dictionary-encoded");
+        let int_values = int_dict
+            .values()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("int dictionary values are i64");
+
+        let mut recovered_level = None;
+        for row in 0..attrs_rb.num_rows() {
+            let key = key_values.value(key_dict.key(row).expect("key index"));
+            if key == "etw.level" {
+                let int_idx = int_dict.key(row).expect("etw.level has an int value");
+                recovered_level = Some(int_values.value(int_idx));
+                break;
+            }
+        }
+
+        assert_eq!(
+            recovered_level,
+            Some(200),
+            "raw ETW level should be recoverable from the etw.level attribute"
+        );
     }
 
     #[test]
@@ -399,10 +527,10 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 7 header attributes (event_id, opcode, version, keywords,
+        // 8 header attributes (event_id, level, opcode, version, keywords,
         // process_id, thread_id, provider_id); event_name is carried in the
         // OTAP `event_name` log-record column; activity_id is zero → omitted
-        assert_eq!(attrs_rb.num_rows(), 7);
+        assert_eq!(attrs_rb.num_rows(), 8);
     }
 
     #[test]
@@ -419,7 +547,7 @@ mod tests {
         let attrs_rb = batch
             .get(ArrowPayloadType::LogAttrs)
             .expect("attrs batch present");
-        // 7 header attributes; the empty-named field is skipped
-        assert_eq!(attrs_rb.num_rows(), 7);
+        // 8 header attributes; the empty-named field is skipped
+        assert_eq!(attrs_rb.num_rows(), 8);
     }
 }

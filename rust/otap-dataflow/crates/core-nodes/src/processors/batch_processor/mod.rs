@@ -1218,6 +1218,7 @@ impl local::Processor<OtapPdata> for BatchProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         ProcessorRuntimeRequirements {
             local_wakeups: Some(self.local_wakeup_requirements()),
+            ..ProcessorRuntimeRequirements::none()
         }
     }
 

@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// User configuration for an extension in the pipeline.
+/// User configuration for an extension instance.
 ///
 /// Unlike [`NodeUserConfig`](crate::node::NodeUserConfig), extensions have no
 /// output ports, wiring contracts, or transport header policies — they only
@@ -53,6 +53,23 @@ impl ExtensionUserConfig {
             config: Value::Null,
         }
     }
+
+    /// Returns a clone of this extension config with credential header values
+    /// redacted, for safe exposure through the admin/config snapshot APIs.
+    ///
+    /// Extension `config` is the same raw [`Value`] mechanism as
+    /// [`NodeUserConfig::config`](crate::node::NodeUserConfig::config), so an
+    /// extension that carries static `headers` (credentials) is redacted with
+    /// the same policy as a node: every value under any `headers` object is
+    /// replaced with
+    /// [`REDACTED_HEADER_VALUE`](crate::node::REDACTED_HEADER_VALUE) while the
+    /// keys are preserved. The stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> ExtensionUserConfig {
+        let mut redacted = self.clone();
+        crate::node::redact_secret_headers(&mut redacted.config);
+        redacted
+    }
 }
 
 #[cfg(test)]
@@ -80,5 +97,26 @@ capabilities:
 "#;
         let result: Result<ExtensionUserConfig, _> = serde_yaml::from_str(yaml);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_extension_headers() {
+        let yaml = r#"
+type: "urn:otap:extension:headers_setter"
+config:
+  headers:
+    authorization: "Bearer ext-super-secret"
+"#;
+        let cfg: ExtensionUserConfig = serde_yaml::from_str(yaml).unwrap();
+        let redacted = cfg.redacted_for_snapshot();
+        assert_eq!(
+            redacted.config["headers"]["authorization"],
+            crate::node::REDACTED_HEADER_VALUE
+        );
+        // The original extension config is left untouched (redaction is a copy).
+        assert_eq!(
+            cfg.config["headers"]["authorization"],
+            "Bearer ext-super-secret"
+        );
     }
 }

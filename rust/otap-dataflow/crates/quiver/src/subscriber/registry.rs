@@ -103,8 +103,7 @@ pub trait SegmentProvider: Send + Sync {
     /// Quiver needing to understand signal semantics.
     fn bundle_metadata(&self, segment_seq: SegmentSeq) -> Result<Vec<BundleMetadata>>;
 
-    /// Returns the bundle and total item counts for a segment in a single
-    /// lock acquisition.
+    /// Returns the bundle and total item counts for a segment in a single lock acquisition.
     fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)>;
 
     /// Reads a bundle from a segment.
@@ -1114,10 +1113,8 @@ mod tests {
 
         fn segment_drop_counts(&self, segment_seq: SegmentSeq) -> Result<(u32, u64)> {
             let info = self.get_info(segment_seq)?;
-            Ok((
-                info.bundle_count,
-                info.bundle_count as u64 * info.items_per_bundle,
-            ))
+            let total_items = info.bundle_count as u64 * info.items_per_bundle;
+            Ok((info.bundle_count, total_items))
         }
 
         fn read_bundle(&self, bundle_ref: BundleRef) -> Result<ReconstructedBundle> {

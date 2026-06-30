@@ -3,7 +3,7 @@
 
 //! Extension wrapper, control channel, and bundle types.
 //!
-//! Extensions are PData-free — they never process pipeline data, only control
+//! Extensions are PData-free — they never process PData, only control
 //! messages. This module defines [`EffectHandler`], [`ExtensionWrapper`], and
 //! [`ExtensionBundle`]. The typestate builder that constructs bundles lives
 //! in [`super::builder`].
@@ -14,11 +14,11 @@
 
 use crate::capability::factory::{LocalInstanceFactory, SharedInstanceFactory};
 use crate::channel_metrics::ChannelMetricsRegistry;
-use crate::channel_mode::{LocalMode, SharedMode, wrap_control_channel_metrics};
+use crate::channel_mode::{LocalMode, SharedMode, wrap_extension_control_channel_metrics};
 use crate::config::ExtensionConfig;
-use crate::context::PipelineContext;
-use crate::control::ExtensionControlMsg;
-use crate::entity_context::NodeTelemetryGuard;
+use crate::context::ExtensionContext;
+use crate::control::{ExtensionControlMsg, ShutdownPayload};
+use crate::entity_context::{EntityTelemetryGuard, EntityTelemetryHandle};
 use crate::error::Error;
 use crate::local::extension as local_ext;
 use crate::local::message::LocalReceiver;
@@ -39,28 +39,17 @@ use std::sync::Arc;
 /// A shutdown-aware channel for receiving extension control messages.
 ///
 /// Generic over the receiver type `R` to support both local (!Send) and
-/// shared (Send) channels. Concrete types are defined in
-/// [`local::extension::ControlChannel`](crate::local::extension::ControlChannel)
-/// and [`shared::extension::ControlChannel`](crate::shared::extension::ControlChannel).
+/// shared (Send) channels.
 ///
-/// `Shutdown` is delivered to the extension immediately on arrival; the
-/// deadline carried in the message is the extension's cooperative
-/// cleanup budget (i.e., "you have until `deadline` to wind down"),
-/// **not** a delay before delivery. Once `Shutdown` has been returned,
-/// subsequent calls to [`recv`](Self::recv) return [`RecvError::Closed`]
-/// so the extension's event loop terminates instead of dispatching
-/// further control messages.
-///
-/// Immediate delivery is appropriate here: the runtime broadcasts
-/// `Shutdown` to extensions only after every data-path node has
-/// drained (see [`crate::extension_lifecycle`]), so the full
-/// `deadline - now()` window is available for cleanup. This differs
-/// from the data-path node control channel in [`crate::message`],
-/// which stashes `Shutdown` and keeps delivering other control
-/// messages until the deadline so nodes can drain in-flight PData.
+/// `Shutdown` is delivered immediately via a dedicated priority
+/// oneshot channel (`shutdown_rx`) that is checked ahead of the regular
+/// control channel via a biased select. After `Shutdown` is returned
+/// the regular channel is closed and subsequent [`recv`](Self::recv)
+/// calls yield [`RecvError::Closed`] so the event loop exits cleanly.
 #[doc(hidden)]
 pub struct ControlChannel<R> {
     control_rx: Option<R>,
+    shutdown_rx: Option<tokio::sync::oneshot::Receiver<ShutdownPayload>>,
 }
 
 /// Trait abstracting over local and shared receivers for control messages.
@@ -82,37 +71,61 @@ impl ControlReceiver for SharedReceiver<ExtensionControlMsg> {
     }
 }
 
-impl<R: ControlReceiver> ControlChannel<R> {
-    /// Creates a new `ControlChannel` with the given control receiver.
+impl<R: ControlReceiver + Unpin> ControlChannel<R> {
+    /// Creates a new `ControlChannel`. The `shutdown_rx` is a dedicated
+    /// priority oneshot path; if it fires it preempts any pending
+    /// messages on `control_rx`.
     #[must_use]
-    pub fn new(control_rx: R) -> Self {
+    pub fn new(
+        control_rx: R,
+        shutdown_rx: tokio::sync::oneshot::Receiver<ShutdownPayload>,
+    ) -> Self {
         ControlChannel {
             control_rx: Some(control_rx),
+            shutdown_rx: Some(shutdown_rx),
         }
     }
 
-    /// Asynchronously receives the next control message.
-    ///
-    /// `Shutdown` is delivered immediately on arrival; the extension is
-    /// responsible for honouring the `deadline` field as its cooperative
-    /// cleanup budget. After `Shutdown` has been delivered the channel
-    /// is closed and subsequent calls return [`RecvError::Closed`].
+    /// Asynchronously receives the next control message. The priority
+    /// shutdown channel is checked ahead of the regular control channel
+    /// (biased select). After `Shutdown` is delivered the regular
+    /// channel is closed and subsequent calls return [`RecvError::Closed`].
     ///
     /// # Errors
     ///
     /// Returns a [`RecvError`] if the channel is closed.
     pub async fn recv(&mut self) -> Result<ExtensionControlMsg, RecvError> {
-        let rx = self.control_rx.as_mut().ok_or(RecvError::Closed)?;
-        match rx.recv().await {
-            Ok(ExtensionControlMsg::Shutdown { deadline, reason }) => {
-                // Close the underlying receiver so subsequent recv()
-                // calls return Closed and the extension's event loop
-                // exits instead of attempting to dispatch further
-                // control messages past Shutdown.
-                let _ = self.control_rx.take();
-                Ok(ExtensionControlMsg::Shutdown { deadline, reason })
+        loop {
+            let control_rx = self.control_rx.as_mut().ok_or(RecvError::Closed)?;
+            match self.shutdown_rx.as_mut() {
+                Some(shutdown_rx) => {
+                    tokio::select! {
+                        biased;
+                        res = shutdown_rx => {
+                            // Receiver is consumed regardless of outcome.
+                            self.shutdown_rx = None;
+                            match res {
+                                Ok(payload) => {
+                                    // Close the regular channel; post-Shutdown semantics.
+                                    let _ = self.control_rx.take();
+                                    return Ok(ExtensionControlMsg::Shutdown {
+                                        deadline: payload.deadline,
+                                        reason: payload.reason,
+                                    });
+                                }
+                                Err(_) => {
+                                    // Sender was dropped without sending; no
+                                    // shutdown will ever arrive. Fall through
+                                    // to control-only path on the next loop.
+                                    continue;
+                                }
+                            }
+                        }
+                        msg = control_rx.recv() => return msg,
+                    }
+                }
+                None => return control_rx.recv().await,
             }
-            other => other,
         }
     }
 }
@@ -121,23 +134,30 @@ impl<R: ControlReceiver> ControlChannel<R> {
 
 /// The effect handler for extensions.
 ///
-/// Provides extensions with identity and basic I/O. Extensions manage their
-/// own timers directly via `tokio::time` rather than through the engine's
-/// timer infrastructure, keeping the extension system fully PData-free.
+/// Provides extensions with identity, basic I/O, and engine-supplied
+/// signalling capabilities. Extensions manage their own timers directly
+/// via `tokio::time` rather than through the engine's timer
+/// infrastructure, keeping the extension system fully PData-free.
 #[derive(Clone)]
 pub struct EffectHandler {
     name: ExtensionId,
     #[allow(dead_code)]
     metrics_reporter: MetricsReporter,
+    readiness: Option<super::readiness::ReadinessSignaller>,
 }
 
 impl EffectHandler {
     /// Creates a new `EffectHandler` for the given extension.
     #[must_use]
-    pub const fn new(name: ExtensionId, metrics_reporter: MetricsReporter) -> Self {
+    pub(crate) fn new(
+        name: ExtensionId,
+        metrics_reporter: MetricsReporter,
+        readiness: Option<super::readiness::ReadinessSignaller>,
+    ) -> Self {
         EffectHandler {
             name,
             metrics_reporter,
+            readiness,
         }
     }
 
@@ -145,6 +165,41 @@ impl EffectHandler {
     #[must_use]
     pub fn extension_id(&self) -> ExtensionId {
         self.name.clone()
+    }
+
+    /// Signal that this variant is ready. No-op when not opted in;
+    /// idempotent across clones when opted in.
+    pub fn signal_ready(&self) {
+        if let Some(sig) = &self.readiness {
+            sig.ready();
+        }
+    }
+}
+
+// ── Variant kind ─────────────────────────────────────────────────────────────
+
+/// Identifies a physical extension variant within an [`ExtensionBundle`].
+/// A single `ExtensionId` may register both `Local` and `Shared` variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ExtensionVariant {
+    /// `!Send` variant scheduled onto the host `LocalSet`.
+    Local,
+    /// `Send` variant runnable on multi-threaded executors.
+    /// Whether an extension is shared between pipelines or not
+    /// is a separate concern that will be handled by the scope
+    /// that the extension is declared in. Currently only pipeline
+    /// scope is supported.
+    Shared,
+}
+
+impl ExtensionVariant {
+    /// Attribute string used in telemetry (`extension.variant`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ExtensionVariant::Local => "local",
+            ExtensionVariant::Shared => "shared",
+        }
     }
 }
 
@@ -164,6 +219,18 @@ pub enum ExtensionLifecycle<E, R> {
         control_sender: Sender<ExtensionControlMsg>,
         /// Control channel receiver.
         control_receiver: R,
+        /// Owned sender for the dedicated priority shutdown oneshot.
+        /// `Some` until [`ExtensionWrapper::take_shutdown_sender`] takes
+        /// it out at lifecycle-spawn time.
+        shutdown_sender: Option<tokio::sync::oneshot::Sender<ShutdownPayload>>,
+        /// Owned receiver for the dedicated priority shutdown oneshot.
+        /// `Some` until [`ExtensionWrapper::start`] takes it out and
+        /// hands it to the extension's [`ControlChannel`].
+        shutdown_receiver: Option<tokio::sync::oneshot::Receiver<ShutdownPayload>>,
+        /// Engine-side readiness probe; `None` when not opted in.
+        readiness_probe: Option<super::readiness::ReadinessProbe>,
+        /// Send-side handle paired with `readiness_probe`.
+        readiness_signaller: Option<super::readiness::ReadinessSignaller>,
     },
     /// Passive extension — capabilities only, no task spawned.
     Passive,
@@ -171,7 +238,7 @@ pub enum ExtensionLifecycle<E, R> {
 
 // ── ExtensionWrapper ────────────────────────────────────────────────────────
 
-/// Wrapper for a single extension variant in the pipeline engine.
+/// Wrapper for a single extension variant in the engine.
 ///
 /// Extensions are NOT generic over PData — they operate exclusively on
 /// [`ExtensionControlMsg`], keeping the extension system entirely decoupled
@@ -190,8 +257,8 @@ pub enum ExtensionWrapper {
         user_config: Arc<ExtensionUserConfig>,
         /// Engine runtime configuration for this extension.
         runtime_config: ExtensionConfig,
-        /// Node telemetry guard, set during pipeline wiring.
-        telemetry: Option<NodeTelemetryGuard>,
+        /// Telemetry guard for this extension entity, set during wiring.
+        telemetry: Option<EntityTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
         lifecycle: ExtensionLifecycle<
             std::rc::Rc<dyn local_ext::Extension>,
@@ -211,8 +278,8 @@ pub enum ExtensionWrapper {
         user_config: Arc<ExtensionUserConfig>,
         /// Engine runtime configuration for this extension.
         runtime_config: ExtensionConfig,
-        /// Node telemetry guard, set during pipeline wiring.
-        telemetry: Option<NodeTelemetryGuard>,
+        /// Telemetry guard for this extension entity, set during wiring.
+        telemetry: Option<EntityTelemetryGuard>,
         /// The lifecycle state (active with channels, or passive).
         lifecycle:
             ExtensionLifecycle<Box<dyn shared_ext::Extension>, SharedReceiver<ExtensionControlMsg>>,
@@ -254,6 +321,15 @@ impl ExtensionWrapper {
         }
     }
 
+    /// Returns the variant kind of this extension wrapper.
+    #[must_use]
+    pub fn variant(&self) -> ExtensionVariant {
+        match self {
+            ExtensionWrapper::Local { .. } => ExtensionVariant::Local,
+            ExtensionWrapper::Shared { .. } => ExtensionVariant::Shared,
+        }
+    }
+
     /// Returns `true` if this extension is passive (no active lifecycle).
     #[must_use]
     pub fn is_passive(&self) -> bool {
@@ -289,7 +365,7 @@ impl ExtensionWrapper {
         }
     }
 
-    pub(crate) fn with_node_telemetry_guard(mut self, guard: NodeTelemetryGuard) -> Self {
+    pub(crate) fn with_entity_telemetry_guard(mut self, guard: EntityTelemetryGuard) -> Self {
         match &mut self {
             ExtensionWrapper::Local { telemetry, .. }
             | ExtensionWrapper::Shared { telemetry, .. } => *telemetry = Some(guard),
@@ -297,9 +373,18 @@ impl ExtensionWrapper {
         self
     }
 
+    /// Extracts the wrapper's `EntityTelemetryGuard`, if one was wired.
+    pub(crate) fn take_telemetry_guard(&mut self) -> Option<EntityTelemetryGuard> {
+        match self {
+            ExtensionWrapper::Local { telemetry, .. }
+            | ExtensionWrapper::Shared { telemetry, .. } => telemetry.take(),
+        }
+    }
+
     pub(crate) fn with_control_channel_metrics(
         self,
-        pipeline_ctx: &PipelineContext,
+        entity_handle: &EntityTelemetryHandle,
+        ext_ctx: &ExtensionContext,
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
     ) -> Self {
@@ -318,15 +403,24 @@ impl ExtensionWrapper {
                         extension,
                         control_sender,
                         control_receiver,
+                        shutdown_sender,
+                        shutdown_receiver,
+                        readiness_probe,
+                        readiness_signaller,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
                         let (local_sender, local_receiver) = match control_sender {
                             Sender::Local(s) => (s, control_receiver),
                             _ => unreachable!("Local variant always has local sender"),
                         };
-                        let (s, r) = wrap_control_channel_metrics::<LocalMode, ExtensionControlMsg>(
-                            name.as_ref(),
-                            pipeline_ctx,
+                        let (s, r) = wrap_extension_control_channel_metrics::<
+                            LocalMode,
+                            ExtensionControlMsg,
+                        >(
+                            name.clone(),
+                            ExtensionVariant::Local,
+                            entity_handle,
+                            ext_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
                             capacity,
@@ -337,6 +431,10 @@ impl ExtensionWrapper {
                             extension,
                             control_sender: Sender::Local(s),
                             control_receiver: r,
+                            shutdown_sender,
+                            shutdown_receiver,
+                            readiness_probe,
+                            readiness_signaller,
                         }
                     }
                 };
@@ -363,15 +461,24 @@ impl ExtensionWrapper {
                         extension,
                         control_sender,
                         control_receiver,
+                        shutdown_sender,
+                        shutdown_receiver,
+                        readiness_probe,
+                        readiness_signaller,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
                         let shared_sender = match control_sender {
                             Sender::Shared(s) => s,
                             _ => unreachable!("Shared variant always has shared sender"),
                         };
-                        let (s, r) = wrap_control_channel_metrics::<SharedMode, ExtensionControlMsg>(
-                            name.as_ref(),
-                            pipeline_ctx,
+                        let (s, r) = wrap_extension_control_channel_metrics::<
+                            SharedMode,
+                            ExtensionControlMsg,
+                        >(
+                            name.clone(),
+                            ExtensionVariant::Shared,
+                            entity_handle,
+                            ext_ctx,
                             channel_metrics,
                             channel_metrics_enabled,
                             capacity,
@@ -382,6 +489,10 @@ impl ExtensionWrapper {
                             extension,
                             control_sender: Sender::Shared(s),
                             control_receiver: r,
+                            shutdown_sender,
+                            shutdown_receiver,
+                            readiness_probe,
+                            readiness_signaller,
                         }
                     }
                 };
@@ -403,23 +514,105 @@ impl ExtensionWrapper {
     pub(crate) fn extension_control_sender(
         &self,
     ) -> Option<crate::control::ExtensionControlSender> {
-        let (name, sender) = match self {
+        let sender = match self {
             ExtensionWrapper::Local {
-                name,
                 lifecycle: ExtensionLifecycle::Active { control_sender, .. },
                 ..
             }
             | ExtensionWrapper::Shared {
-                name,
                 lifecycle: ExtensionLifecycle::Active { control_sender, .. },
                 ..
-            } => (name, control_sender),
+            } => control_sender,
             _ => return None,
         };
         Some(crate::control::ExtensionControlSender {
-            name: name.clone(),
             sender: sender.clone(),
         })
+    }
+
+    /// Takes the owning sender half of the extension's dedicated
+    /// shutdown oneshot. Returns `None` for passive extensions and on
+    /// subsequent calls (single-use by construction).
+    pub(crate) fn take_shutdown_sender(
+        &mut self,
+    ) -> Option<crate::control::ExtensionShutdownChannel> {
+        let (name, sender_slot) = match self {
+            ExtensionWrapper::Local {
+                name,
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        shutdown_sender, ..
+                    },
+                ..
+            }
+            | ExtensionWrapper::Shared {
+                name,
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        shutdown_sender, ..
+                    },
+                ..
+            } => (name, shutdown_sender),
+            _ => return None,
+        };
+        let sender = sender_slot.take()?;
+        Some(crate::control::ExtensionShutdownChannel {
+            name: name.clone(),
+            sender,
+        })
+    }
+
+    /// Takes the readiness probe placed on this variant when its
+    /// extension opted in. Single-use; returns `None` for passive
+    /// extensions and for variants that did not opt in.
+    pub(crate) fn take_readiness_probe(&mut self) -> Option<super::readiness::ReadinessProbe> {
+        let probe_slot = match self {
+            ExtensionWrapper::Local {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_probe, ..
+                    },
+                ..
+            }
+            | ExtensionWrapper::Shared {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_probe, ..
+                    },
+                ..
+            } => readiness_probe,
+            _ => return None,
+        };
+        probe_slot.take()
+    }
+
+    /// Returns `true` if a readiness signaller is attached to this
+    /// variant — i.e. the extension opted in via the builder's
+    /// `with_readiness_probe`. The signaller itself is private to the
+    /// engine; it is consumed by [`Self::start`] and threaded into the
+    /// extension's [`EffectHandler`]. Intended for tests that need to
+    /// verify the builder wired both halves of the probe pair.
+    #[cfg(test)]
+    pub(crate) fn has_readiness_signaller(&self) -> bool {
+        match self {
+            ExtensionWrapper::Local {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_signaller,
+                        ..
+                    },
+                ..
+            }
+            | ExtensionWrapper::Shared {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_signaller,
+                        ..
+                    },
+                ..
+            } => readiness_signaller.is_some(),
+            _ => false,
+        }
     }
 
     /// Starts the extension lifecycle.
@@ -427,7 +620,10 @@ impl ExtensionWrapper {
     /// # Errors
     ///
     /// Returns an error if this is a passive extension (no active lifecycle).
-    pub async fn start(self, metrics_reporter: MetricsReporter) -> Result<TerminalState, Error> {
+    pub(crate) async fn start(
+        self,
+        metrics_reporter: MetricsReporter,
+    ) -> Result<TerminalState, Error> {
         match self {
             ExtensionWrapper::Local {
                 name,
@@ -435,15 +631,21 @@ impl ExtensionWrapper {
                     ExtensionLifecycle::Active {
                         extension,
                         control_receiver,
+                        shutdown_receiver,
+                        readiness_signaller,
                         ..
                     },
                 ..
             } => {
                 otel_debug!("extension.start.local", name = name.as_ref());
-                let effect_handler = EffectHandler::new(name, metrics_reporter);
+                let effect_handler =
+                    EffectHandler::new(name, metrics_reporter, readiness_signaller);
+                let shutdown_rx = shutdown_receiver.expect(
+                    "shutdown_receiver must be present when an active extension is started",
+                );
                 extension
                     .start(
-                        local_ext::ControlChannel::new(control_receiver),
+                        local_ext::ControlChannel::new(control_receiver, shutdown_rx),
                         effect_handler,
                     )
                     .await
@@ -454,15 +656,21 @@ impl ExtensionWrapper {
                     ExtensionLifecycle::Active {
                         extension,
                         control_receiver,
+                        shutdown_receiver,
+                        readiness_signaller,
                         ..
                     },
                 ..
             } => {
                 otel_debug!("extension.start.shared", name = name.as_ref());
-                let effect_handler = EffectHandler::new(name, metrics_reporter);
+                let effect_handler =
+                    EffectHandler::new(name, metrics_reporter, readiness_signaller);
+                let shutdown_rx = shutdown_receiver.expect(
+                    "shutdown_receiver must be present when an active extension is started",
+                );
                 extension
                     .start(
-                        shared_ext::ControlChannel::new(control_receiver),
+                        shared_ext::ControlChannel::new(control_receiver, shutdown_rx),
                         effect_handler,
                     )
                     .await
@@ -513,28 +721,13 @@ impl ExtensionBundle {
 
     /// Register this bundle's capabilities into the given registry.
     ///
-    /// Calls the `register_shared` / `register_local` fn pointers on
-    /// `capabilities` (produced by the `extension_capabilities!` macro)
-    /// with a clone of the wrapper's corresponding instance factory.
-    /// The fn pointers fan out one registry entry per listed capability.
-    ///
-    /// `capabilities` is `Some(_)` for active or passive extensions and
-    /// `None` for Background extensions (no capabilities exposed); when
-    /// `None` this method is a no-op.
+    /// No-op when `capabilities` is `None` (Background extensions).
     ///
     /// # Errors
     ///
     /// - [`Error::InternalError`](crate::capability::registry::Error::InternalError)
-    ///   if `capabilities` advertises an execution model that the
-    ///   runtime [`ExtensionBundle`] does not contain (e.g. the
-    ///   `extension_capabilities!` macro lists local capabilities but
-    ///   the factory's `create()` body never called `.local(...)` on
-    ///   the builder). This catches a metadata-vs-bundle drift early
-    ///   instead of letting it surface as a downstream
-    ///   `Error::ConfigError("…does not provide capability…")` from
-    ///   `resolve_bindings`. The shared-only-with-`SharedAsLocal`
-    ///   fallback case stays valid: that macro arm advertises an
-    ///   empty `local: &[]`, so there is no asymmetry to reject.
+    ///   if `capabilities` advertises an execution model the bundle
+    ///   does not contain (metadata-vs-bundle drift caught early).
     /// - Any error returned by the capability registry
     ///   (e.g. duplicate `(capability, extension)` registration).
     pub fn register_into(
@@ -542,25 +735,13 @@ impl ExtensionBundle {
         capabilities: Option<&crate::capability::ExtensionCapabilities>,
         registry: &mut crate::capability::registry::CapabilityRegistry,
     ) -> Result<(), crate::capability::registry::Error> {
-        // Background extensions carry `None` here - engine-driven event
-        // loop only, no capability registration. The `Option`
-        // discriminant is the source of truth: a `.background()` builder
-        // path always pairs with `capabilities: None` on the factory.
-        // (Invariant: builder typestate guides authors but does not
-        //  feed back into the bundle, so we trust the `Option`.)
+        // Background extensions: no capability registration.
         let Some(capabilities) = capabilities else {
             return Ok(());
         };
 
-        // Fail fast on metadata-vs-bundle drift: the
-        // `extension_capabilities!` macro only checks that the listed
-        // types implement the listed capability traits. It cannot see
-        // what the factory's `create()` actually built. If the macro
-        // advertises an execution model the runtime bundle is
-        // missing, the mismatch would silently slip through
-        // `register_into` and surface later as a confusing
-        // `"extension does not provide capability"` config error
-        // pointing at the wrong layer.
+        // Fail fast on metadata-vs-bundle drift instead of letting it
+        // surface later as a confusing config error.
         let bundle_name = self
             .local
             .as_ref()
@@ -602,23 +783,52 @@ impl ExtensionBundle {
         }
         Ok(())
     }
-}
 
-impl crate::TelemetryWrapped for ExtensionWrapper {
-    fn with_control_channel_metrics(
-        self,
-        pipeline_ctx: &PipelineContext,
+    /// Wire entity telemetry and control-channel metrics onto each variant
+    /// present in this bundle. Local and Shared variants of the same
+    /// `ExtensionId` get **distinct** entity registrations so their
+    /// telemetry stays separable downstream.
+    pub(crate) fn wire_telemetry(
+        &mut self,
+        extension_id: ExtensionId,
+        ext_ctx: &ExtensionContext,
         channel_metrics: &mut ChannelMetricsRegistry,
         channel_metrics_enabled: bool,
-    ) -> Self {
-        ExtensionWrapper::with_control_channel_metrics(
-            self,
-            pipeline_ctx,
-            channel_metrics,
-            channel_metrics_enabled,
-        )
+    ) -> ExtensionEntityKeys {
+        let mut keys = ExtensionEntityKeys::default();
+        if let Some(w) = self.local.take() {
+            let entity_key =
+                ext_ctx.register_extension_entity(extension_id.clone(), ExtensionVariant::Local);
+            let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
+            keys.local = Some(entity_key);
+            let w = w.with_control_channel_metrics(
+                &handle,
+                ext_ctx,
+                channel_metrics,
+                channel_metrics_enabled,
+            );
+            self.local = Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle)));
+        }
+        if let Some(w) = self.shared.take() {
+            let entity_key =
+                ext_ctx.register_extension_entity(extension_id, ExtensionVariant::Shared);
+            let handle = EntityTelemetryHandle::new(ext_ctx.metrics_registry(), entity_key);
+            keys.shared = Some(entity_key);
+            let w = w.with_control_channel_metrics(
+                &handle,
+                ext_ctx,
+                channel_metrics,
+                channel_metrics_enabled,
+            );
+            self.shared = Some(w.with_entity_telemetry_guard(EntityTelemetryGuard::new(handle)));
+        }
+        keys
     }
-    fn with_node_telemetry_guard(self, guard: NodeTelemetryGuard) -> Self {
-        ExtensionWrapper::with_node_telemetry_guard(self, guard)
-    }
+}
+
+/// Entity keys assigned to each variant in a wired [`ExtensionBundle`].
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ExtensionEntityKeys {
+    pub local: Option<otap_df_telemetry::registry::EntityKey>,
+    pub shared: Option<otap_df_telemetry::registry::EntityKey>,
 }

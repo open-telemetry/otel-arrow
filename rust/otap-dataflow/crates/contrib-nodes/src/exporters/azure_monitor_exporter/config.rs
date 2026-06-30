@@ -6,6 +6,7 @@ use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
@@ -36,6 +37,13 @@ pub enum AuthMethod {
     /// Use developer tools (Azure CLI, Azure Developer CLI)
     #[serde(alias = "dev", alias = "developer", alias = "cli")]
     Development,
+
+    /// Use Workload Identity Federation (federated ServiceAccount token).
+    /// Reads the federated assertion from a projected token file and exchanges
+    /// it with Entra ID for an access token. Suitable for Kubernetes workloads
+    /// without managed identity (e.g. self-hosted clusters using WIF).
+    #[serde(alias = "wif", alias = "workload_identity")]
+    WorkloadIdentity,
 }
 
 /// Authentication configuration for Azure
@@ -45,10 +53,22 @@ pub struct AuthConfig {
     #[serde(default)]
     pub method: AuthMethod,
 
-    /// Client ID for user-assigned managed identity (optional)
-    /// Only used when method is ManagedIdentity
-    /// If not provided with ManagedIdentity, system-assigned identity will be used
+    /// Client ID of the Entra identity.
+    /// For ManagedIdentity: the user-assigned identity client ID (optional; if
+    /// omitted the system-assigned identity is used).
+    /// For WorkloadIdentity: the application (client) ID; defaults to the
+    /// `AZURE_CLIENT_ID` environment variable when omitted.
     pub client_id: Option<String>,
+
+    /// Tenant ID of the Entra identity. Only used when method is
+    /// WorkloadIdentity; defaults to the `AZURE_TENANT_ID` environment
+    /// variable when omitted.
+    pub tenant_id: Option<String>,
+
+    /// Path to the federated token file to read the assertion from. Only used
+    /// when method is WorkloadIdentity; defaults to the
+    /// `AZURE_FEDERATED_TOKEN_FILE` environment variable when omitted.
+    pub token_file_path: Option<PathBuf>,
 
     /// OAuth scope for token acquisition (defaults to "https://monitor.azure.com/.default")
     #[serde(default = "default_scope")]
@@ -68,6 +88,7 @@ impl AuthConfig {
                 }
             }
             AuthMethod::Development => "developer_tools",
+            AuthMethod::WorkloadIdentity => "workload_identity",
         }
     }
 }
@@ -77,6 +98,8 @@ impl Default for AuthConfig {
         Self {
             method: AuthMethod::default(),
             client_id: None,
+            tenant_id: None,
+            token_file_path: None,
             scope: default_scope(),
         }
     }
@@ -351,6 +374,8 @@ mod tests {
             auth: AuthConfig {
                 scope: "https://monitor.azure.com/.default".to_string(),
                 client_id: Some("myclientid".to_string()),
+                tenant_id: None,
+                token_file_path: None,
                 method: AuthMethod::ManagedIdentity,
             },
             ..test_config()

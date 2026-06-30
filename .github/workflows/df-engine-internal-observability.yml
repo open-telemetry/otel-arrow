@@ -32,7 +32,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  WEAVER_VERSION: v0.23.0
+  WEAVER_VERSION: v0.24.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -54,7 +54,7 @@ jobs:
           workspaces: ./rust/otap-dataflow
           cache-bin: false
       - name: Setup Weaver
-        uses: open-telemetry/weaver/.github/actions/setup-weaver@3a3b7cc98e08f84bccda45c0f20522b51d64a88c # v0.23.0
+        uses: open-telemetry/weaver/.github/actions/setup-weaver@9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4 # v0.24.0
         with:
           version: ${{ env.WEAVER_VERSION }}
       - name: Generate self-signed TLS cert
@@ -69,18 +69,15 @@ jobs:
             >/dev/null 2>&1
           ls -la /tmp/df-engine-tls
       - name: Build df_engine
-        run: cargo build --release --bin df_engine
+        run: cargo build --locked --release --bin df_engine
         working-directory: ./rust/otap-dataflow
       # Weaver listener lifecycle (start, readiness probe, /stop, report
       # capture, artifact upload) is owned by the upstream composite
-      # actions below. Pinned to the weaver#1448 merge commit on
-      # weaver `main`; no released weaver tag contains these actions
-      # yet (latest = v0.23.0). The actions are pure bash wrappers and
-      # only use weaver flags that v0.23.0 already supports, so the
-      # WEAVER_VERSION binary above is unaffected.
+      # actions below. Pinned to the published v0.24.0 release, which is
+      # the first tag to ship these actions.
       - name: Start weaver live-check listener
         id: weaver-start
-        uses: open-telemetry/weaver/.github/actions/weaver-live-check-start@3e9b722324783f871d2828f62c8cf706e046c83a
+        uses: open-telemetry/weaver/.github/actions/weaver-live-check-start@9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4 # v0.24.0
         with:
           registry: rust/otap-dataflow/semconv
           otlp-grpc-port: '4317'
@@ -154,7 +151,7 @@ jobs:
       - name: Stop weaver live-check and collect report
         id: weaver-stop
         if: always()
-        uses: open-telemetry/weaver/.github/actions/weaver-live-check-stop@3e9b722324783f871d2828f62c8cf706e046c83a
+        uses: open-telemetry/weaver/.github/actions/weaver-live-check-stop@9b84f5cd76cb98e8aaf37bc58936b31fe0ddbab4 # v0.24.0
         with:
           # Match the explicit state dir from the start action so this
           # works even if start failed before exporting it via env.
