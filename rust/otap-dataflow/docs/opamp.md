@@ -1,6 +1,6 @@
 # OpAMP Controller Extension
 
-This document describes the mechanism through which dataflow engine can be 
+This document describes the mechanism through which dataflow engine can be
 configured via an embedded OpAMP Agent, implemented as a controller extension.
 
 ## Problem
@@ -21,23 +21,25 @@ configuration from some remote server while emitting its state & health.
 
 ### OpAMP
 
-Full OpAMP documentation is available [here](https://opentelemetry.io/docs/specs/opamp/).
+See [Full OpAMP documentation](https://opentelemetry.io/docs/specs/opamp/) for
+more information.
 
-OpAMP (Open Agent Management Protocol) is a vendor-agnostic network protocol 
+OpAMP (Open Agent Management Protocol) is a vendor-agnostic network protocol
 existing as part of the Open-Telemetry ecosystem. It specifies a mechanism for:
+
 - _Servers_ to configure remote _Agents_
 - Agents to report their status to the Server
 - Management of Agent downloadable _packages_.
 - Connection credential management (including client-side TLS)
 
 Agent to Server communication typically happens over a network where the Agent
-acts as a client, using either 
+acts as a client, using either
 [WebSocket](https://opentelemetry.io/docs/specs/opamp/#websocket-transport) or
 [plain HTTP](https://opentelemetry.io/docs/specs/opamp/#plain-http-transport)
 (plain meaning standard HTTP request-response model, not HTTP over plaintext).
 
 The messages exchanged are protobuf serialized `AgentToServer` and 
-`ServerToAgent` messages. 
+`ServerToAgent` messages.
 Find proto message definitions
 [here](https://github.com/open-telemetry/opamp-spec/blob/main/proto/opamp/v1/opamp.proto).
 
@@ -45,7 +47,7 @@ Find proto message definitions
 
 OTel Controller Extensions allow custom implementation of logic that interacts
 with the engine control API to reconcile configuration and report status. They
-are configurable at runtime and can be linked at compile time (similar to 
+are configurable at runtime and can be linked at compile time (similar to
 processors, exporters, receivers, etc.).
 
 See [#3263](https://github.com/open-telemetry/otel-arrow/issues/3263) and
@@ -56,7 +58,7 @@ See [#3263](https://github.com/open-telemetry/otel-arrow/issues/3263) and
 This design document only covers the implementation of OpAMP for exchanging
 engine configuration and pipeline status.
 
-OpAMP has additional capabilities such as server directed management of 
+OpAMP has additional capabilities such as server directed management of
 connection/credential settings and package management (which could be used
 for dynamic loading of WASM components, for example). These considerations
 are left as future design work.
