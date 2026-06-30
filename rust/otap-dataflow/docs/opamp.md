@@ -238,11 +238,12 @@ it should handle:
 In any case where a message is ignored (especially in error cases), appropriate
 telemetry should be emitted.
 
-##### Send periodic heart beats:
+##### Send periodic heart beats
 
 The client should send periodic heartbeats to the server at regular intervals.
 
 These should contain:
+
 - `instance_uid`
 - `sequence_num`
 - `capabilities`
@@ -251,7 +252,6 @@ These should contain:
 - `remote_config_status` - computed from current pipeline status (see section
   below on Status Resolution)
 - `custom_message` - full pipeline status from status snapshot
-
 
 #### Error Handling
 
@@ -291,9 +291,7 @@ engine:
 If `instance_uuid` is not specified, a uuid v7 will be created.
 Note that this logic only applies to bootstrap resolution of the
 `instance_uid` - the server may respond with a new agent identification to
-override the initial value (see
-[here](https://opentelemetry.io/docs/specs/opamp/#servertoagentagent_identification)
-).
+override the [initial value](https://opentelemetry.io/docs/specs/opamp/#servertoagentagent_identification).
 
 If `agent_description` is not configured, the `agent_description` field will
 not be set on the `AgentToServer` messages.
@@ -328,8 +326,8 @@ The `config_hash` computation is performed by the server. The client does not
 depend on any particular implementation or algorithm, but the server should
 endeavour to choose the hash such that each new config has a unique hash value
 without collisions. The agent does not calculate hashes, it only stores and
-compares them (see
-[here](https://opentelemetry.io/docs/specs/opamp/#calculating-hashes)).
+compares them. This is
+[recommended by the OpAMP spec as well](https://opentelemetry.io/docs/specs/opamp/#calculating-hashes).
 
 ### Engine Config Reconciliation
 
@@ -372,6 +370,7 @@ which contains a `PipelinePhase`.
 
 The remote config status will be derived from the snapshot using the following
 rules:
+
 - If any instance of any pipeline has phase is `Pending`, `Starting`,
   `Draining`, `Updating`, `RollingBack` or `Deleting` the remote config status
   will be `Applying`
@@ -386,6 +385,7 @@ The `AgentToServer` message contains a `health` field which is a
 health status of each group and pipeline.
 
 Example:
+
 ```rs
 AgentToServer {
     health: ComponentHealth {
@@ -411,6 +411,7 @@ The health status (`status` field) for each component can take on the following
 values: `starting`, `running`, `stopping`, `stopped`, `failed` and `degraded`.
 
 When resolving the status for the pipelines, the following logic will be used:
+
 - If any instance has phase `Deleting` or `Draining` the status will be
   `stopping`
 - Otherwise if any instance has phase `Pending`, `Updating`, `Starting` or
@@ -425,6 +426,7 @@ When resolving the status for the pipelines, the following logic will be used:
 
 When resolving the status for engine's pipeline groups, the resolution logic
 will use the following rules:
+
 - If any pipeline has status `stopping`, the group status will be `stopping`
 - Otherwise if any pipeline has status `failed`, the group status will be
   `failed`
@@ -442,6 +444,7 @@ to provide the full configuration status via a custom message.
 Proposed capability FQDN: `io.open-telemetry.otap-dfe.pipeline-status/v1`.
 
 Custom message example:
+
 ```rs
 AgentToServer {
   capabilities: ["io.open-telemetry.otap-dfe.pipeline-status/v1"],
