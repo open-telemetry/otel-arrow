@@ -6242,7 +6242,7 @@ mod test {
             )],
         )]);
 
-        let query = "logs | extend resource.attributes[\"complex\"].child.name = \"after\"";
+        let query = "logs | set resource.attributes[\"complex\"].child.name = \"after\"";
         let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
         let mut pipeline = Pipeline::new(pipeline_expr);
 
