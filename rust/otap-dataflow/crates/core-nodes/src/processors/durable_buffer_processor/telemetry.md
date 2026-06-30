@@ -82,6 +82,9 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 | `otap.processor.durable_buffer.dropped_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.dropped_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP metric slots (slots 11-14 for Arrow, slot 62 for OTLP). | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_log_records_delta` | `{log_record}` | Counter | Delta (point-in-time) log records lost to force-dropped segments (`DropOldest`) in the current reporting interval. Pairs with the cumulative `dropped_log_records` ObserveCounter. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_spans_delta` | `{span}` | Counter | Delta (point-in-time) spans lost to force-dropped segments (`DropOldest`) in the current reporting interval. Pairs with the cumulative `dropped_spans` ObserveCounter. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_metric_datapoints_delta` | `{data_point}` | Counter | Delta (point-in-time) metric data points lost to force-dropped segments (`DropOldest`) in the current reporting interval. Pairs with the cumulative `dropped_metric_datapoints` ObserveCounter. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Per-Signal Expired Items (max_age policy)
 
@@ -90,6 +93,9 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 | `otap.processor.durable_buffer.expired_log_records` | `{log_record}` | ObserveCounter | Cumulative log records lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.expired_spans` | `{span}` | ObserveCounter | Cumulative spans lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 | `otap.processor.durable_buffer.expired_metric_datapoints` | `{data_point}` | ObserveCounter | Cumulative metric data points lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP metric slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_log_records_delta` | `{log_record}` | Counter | Delta (point-in-time) log records lost to `max_age` segment expiry in the current reporting interval. Pairs with the cumulative `expired_log_records` ObserveCounter. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_spans_delta` | `{span}` | Counter | Delta (point-in-time) spans lost to `max_age` segment expiry in the current reporting interval. Pairs with the cumulative `expired_spans` ObserveCounter. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_metric_datapoints_delta` | `{data_point}` | Counter | Delta (point-in-time) metric data points lost to `max_age` segment expiry in the current reporting interval. Pairs with the cumulative `expired_metric_datapoints` ObserveCounter. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### In-flight and Retry
 

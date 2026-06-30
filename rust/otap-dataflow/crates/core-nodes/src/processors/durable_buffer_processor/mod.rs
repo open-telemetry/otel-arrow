@@ -298,18 +298,19 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub queued_spans: Gauge<u64>,
 
-    // ─── Flush metrics -----------------------------------───────────────────
+    // ─── Flush metrics ──────────────────────────────────────────────────────
     /// Number of segment finalization (flush) failures.
     /// Non-zero values indicate data at risk -- check logs for root cause.
     /// Data may still be recoverable via WAL replay on restart.
     #[metric(unit = "{error}")]
     pub flush_failures: Counter<u64>,
 
-    // ─── Appended metrics (Do not shift index) ──────────────────────────────
+    // ─── Utilization metrics ────────────────────────────────────────────────
     /// Current storage utilization ratio (0.0 to 1.0).
     #[metric(unit = "{1}")]
     pub storage_utilization: Gauge<f64>,
 
+    // ─── Data-loss metrics (per signal type) ────────────────────────────────
     /// Total log records lost due to force-dropped segments (DropOldest policy).
     #[metric(unit = "{log_record}")]
     pub dropped_log_records: ObserveCounter<u64>,
@@ -333,6 +334,31 @@ pub struct DurableBufferMetrics {
     /// Total metric data points lost due to expired segments (max_age retention).
     #[metric(unit = "{data_point}")]
     pub expired_metric_datapoints: ObserveCounter<u64>,
+
+    // ─── Data-loss delta metrics (per signal type) ─────────────────────────
+    /// Log records lost to force-dropped segments (DropOldest) in this interval.
+    #[metric(unit = "{log_record}")]
+    pub dropped_log_records_delta: Counter<u64>,
+
+    /// Spans lost to force-dropped segments (DropOldest) in this interval.
+    #[metric(unit = "{span}")]
+    pub dropped_spans_delta: Counter<u64>,
+
+    /// Metric data points lost to force-dropped segments (DropOldest) in this interval.
+    #[metric(unit = "{data_point}")]
+    pub dropped_metric_datapoints_delta: Counter<u64>,
+
+    /// Log records lost to expired segments (max_age) in this interval.
+    #[metric(unit = "{log_record}")]
+    pub expired_log_records_delta: Counter<u64>,
+
+    /// Spans lost to expired segments (max_age) in this interval.
+    #[metric(unit = "{span}")]
+    pub expired_spans_delta: Counter<u64>,
+
+    /// Metric data points lost to expired segments (max_age) in this interval.
+    #[metric(unit = "{data_point}")]
+    pub expired_metric_datapoints_delta: Counter<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -995,9 +1021,18 @@ impl DurableBuffer {
         for (slot_ids, count) in engine.drain_dropped_bundles_pending() {
             let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
             match sig {
-                Some(SignalType::Logs) => self.total_dropped_logs += count,
-                Some(SignalType::Metrics) => self.total_dropped_metrics += count,
-                Some(SignalType::Traces) => self.total_dropped_spans += count,
+                Some(SignalType::Logs) => {
+                    self.total_dropped_logs += count;
+                    self.metrics.dropped_log_records_delta.add(count);
+                }
+                Some(SignalType::Metrics) => {
+                    self.total_dropped_metrics += count;
+                    self.metrics.dropped_metric_datapoints_delta.add(count);
+                }
+                Some(SignalType::Traces) => {
+                    self.total_dropped_spans += count;
+                    self.metrics.dropped_spans_delta.add(count);
+                }
                 None => {}
             }
         }
@@ -1012,9 +1047,18 @@ impl DurableBuffer {
         for (slot_ids, count) in engine.drain_expired_bundles_pending() {
             let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
             match sig {
-                Some(SignalType::Logs) => self.total_expired_logs += count,
-                Some(SignalType::Metrics) => self.total_expired_metrics += count,
-                Some(SignalType::Traces) => self.total_expired_spans += count,
+                Some(SignalType::Logs) => {
+                    self.total_expired_logs += count;
+                    self.metrics.expired_log_records_delta.add(count);
+                }
+                Some(SignalType::Metrics) => {
+                    self.total_expired_metrics += count;
+                    self.metrics.expired_metric_datapoints_delta.add(count);
+                }
+                Some(SignalType::Traces) => {
+                    self.total_expired_spans += count;
+                    self.metrics.expired_spans_delta.add(count);
+                }
                 None => {}
             }
         }
@@ -2180,7 +2224,7 @@ mod tests {
     const IDX_QUEUED_LOG_RECORDS: usize = 27;
     const IDX_QUEUED_METRIC_POINTS: usize = 28;
     const IDX_QUEUED_SPANS: usize = 29;
-    const EXPECTED_METRIC_COUNT: usize = 38;
+    const EXPECTED_METRIC_COUNT: usize = 44;
 
     #[test]
     fn test_bundle_ref_encoding_roundtrip() {
@@ -3056,58 +3100,60 @@ mod tests {
         let (mut processor, engine, subscriber_id, _temp_dir) =
             setup_test_processor(Some(Duration::from_millis(5))).await;
 
+        // ObserveCounter (cumulative) fields and their Counter (delta) twins.
+        const DROPPED: usize = 32;
+        const DROPPED_DELTA: usize = 38;
+        const EXPIRED: usize = 35;
+        const EXPIRED_DELTA: usize = 41;
+
         let slot_id = SlotId::new(30);
-        let bundle = make_simple_bundle(slot_id, 5);
-
-        // 1. Ingest and flush a segment
-        engine.ingest(&bundle).await.unwrap();
-        engine.flush().await.unwrap();
-
-        // 2. Force drop the oldest pending segment
-        let dropped = engine.force_drop_oldest_pending_segments();
-        assert_eq!(dropped, 1, "should have dropped 1 segment");
-
-        // Recompute metrics so processor reads the engine drop counts
-        processor.recompute_metrics(&engine, &subscriber_id);
-
         let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-        let metrics = snap.get_metrics();
 
-        const IDX_DROPPED_LOG_RECORDS: usize = 32;
-        assert_eq!(
-            metrics[IDX_DROPPED_LOG_RECORDS].to_u64_lossy(),
-            5,
-            "dropped_log_records should show 5 items dropped"
-        );
+        // Report a fresh interval; returns (dropped, dropped_delta, expired, expired_delta).
+        let mut sample = |p: &mut DurableBuffer| {
+            p.recompute_metrics(&engine, &subscriber_id);
+            reporter.report(&mut p.metrics).unwrap();
+            let snap = metrics_rx.try_recv().unwrap();
+            let m = snap.get_metrics();
+            (
+                m[DROPPED].to_u64_lossy(),
+                m[DROPPED_DELTA].to_u64_lossy(),
+                m[EXPIRED].to_u64_lossy(),
+                m[EXPIRED_DELTA].to_u64_lossy(),
+            )
+        };
 
-        // 3. Test expiry metrics
-        // Ingest and flush another segment
-        let bundle2 = make_simple_bundle(slot_id, 3);
-        engine.ingest(&bundle2).await.unwrap();
+        // Interval 1: drop a 5-record segment.
+        engine
+            .ingest(&make_simple_bundle(slot_id, 5))
+            .await
+            .unwrap();
         engine.flush().await.unwrap();
+        assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
+        assert_eq!(sample(&mut processor), (5, 5, 0, 0));
 
-        // Wait for it to exceed max_age (5ms)
+        // Interval 2: expire a 3-record segment; no new drops. Cumulative dropped
+        // is retained while its delta resets to 0.
+        engine
+            .ingest(&make_simple_bundle(slot_id, 3))
+            .await
+            .unwrap();
+        engine.flush().await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(engine.cleanup_expired_segments().unwrap(), 1);
+        assert_eq!(sample(&mut processor), (5, 0, 3, 3));
 
-        // Clean up expired segments
-        let expired = engine.cleanup_expired_segments().unwrap();
-        assert_eq!(expired, 1, "should have expired 1 segment");
-
-        // Recompute metrics so processor reads the engine expiry counts
-        processor.recompute_metrics(&engine, &subscriber_id);
-
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap2 = metrics_rx.try_recv().unwrap();
-        let metrics2 = snap2.get_metrics();
-
-        const IDX_EXPIRED_LOG_RECORDS: usize = 35;
-        assert_eq!(
-            metrics2[IDX_EXPIRED_LOG_RECORDS].to_u64_lossy(),
-            3,
-            "expired_log_records should show 3 items expired"
-        );
+        // Interval 3: drop a 4-record segment. Cumulative climbs to 9, but the
+        // delta reports only this interval's 4 (reset after interval 1) -- proving
+        // the delta is point-in-time, not a running total. Expired shows
+        // only accumulated (3) and the delta is 0.
+        engine
+            .ingest(&make_simple_bundle(slot_id, 4))
+            .await
+            .unwrap();
+        engine.flush().await.unwrap();
+        assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
+        assert_eq!(sample(&mut processor), (9, 4, 3, 0));
     }
 
     #[tokio::test]
@@ -3284,6 +3330,45 @@ mod tests {
         assert_eq!(
             expired_logs + expired_spans + expired_metrics,
             expired_items
+        );
+
+        // Per-signal delta twins
+        const IDX_DROPPED_LOG_RECORDS_DELTA: usize = 38;
+        const IDX_DROPPED_SPANS_DELTA: usize = 39;
+        const IDX_DROPPED_METRIC_DATAPOINTS_DELTA: usize = 40;
+        const IDX_EXPIRED_LOG_RECORDS_DELTA: usize = 41;
+        const IDX_EXPIRED_SPANS_DELTA: usize = 42;
+        const IDX_EXPIRED_METRIC_DATAPOINTS_DELTA: usize = 43;
+
+        assert_eq!(
+            metrics[IDX_DROPPED_LOG_RECORDS_DELTA].to_u64_lossy(),
+            dropped_logs,
+            "dropped_log_records_delta must match its cumulative twin on first report"
+        );
+        assert_eq!(
+            metrics[IDX_DROPPED_SPANS_DELTA].to_u64_lossy(),
+            dropped_spans,
+            "dropped_spans_delta must match its cumulative twin on first report"
+        );
+        assert_eq!(
+            metrics[IDX_DROPPED_METRIC_DATAPOINTS_DELTA].to_u64_lossy(),
+            dropped_metrics,
+            "dropped_metric_datapoints_delta must match its cumulative twin on first report"
+        );
+        assert_eq!(
+            metrics[IDX_EXPIRED_LOG_RECORDS_DELTA].to_u64_lossy(),
+            expired_logs,
+            "expired_log_records_delta must match its cumulative twin on first report"
+        );
+        assert_eq!(
+            metrics[IDX_EXPIRED_SPANS_DELTA].to_u64_lossy(),
+            expired_spans,
+            "expired_spans_delta must match its cumulative twin on first report"
+        );
+        assert_eq!(
+            metrics[IDX_EXPIRED_METRIC_DATAPOINTS_DELTA].to_u64_lossy(),
+            expired_metrics,
+            "expired_metric_datapoints_delta must match its cumulative twin on first report"
         );
     }
 }
