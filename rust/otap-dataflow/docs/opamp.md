@@ -5,7 +5,7 @@ configured via an embedded OpAMP Agent, implemented as a controller extension.
 
 ## Problem
 
-As the machinations of those desiring to control telemetry flow the become more
+As the machinations of those desiring to control telemetry flow become more
 sophisticated, the concept of building some fleet management becomes
 increasingly appealing.
 
@@ -14,8 +14,8 @@ plane without having to design, from scratch, a new protocol for sending
 configuration or receiving status.
 
 OpAMP provides such a protocol, and the solution to this problem will be to
-add the capability for dataflow engine to act as a OpAMP agent, receiving
-configuration from some remote server while emitting its state & health.
+add the capability for the dataflow engine to act as an OpAMP agent, receiving
+configuration from some remote server while emitting its state and health.
 
 ## Background
 
