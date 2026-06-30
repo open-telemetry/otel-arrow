@@ -19,9 +19,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, AsArray, BinaryArray, BinaryBuilder, BooleanArray, DictionaryArray,
-    Float64Array, Int64Array, LargeBinaryArray, NullArray, RecordBatch, StringArray, StructArray,
-    UInt8Array, UInt16Array,
+    Array, ArrayRef, AsArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, NullArray,
+    RecordBatch, StringArray, StructArray, UInt8Array, UInt16Array,
 };
 use arrow::buffer::BooleanBuffer;
 use arrow::compute::kernels::cmp::{eq, neq};
@@ -36,6 +35,11 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::arrays::ByteArrayAccessor;
+use otap_df_pdata::encode::record::array::dictionary::DictionaryOptions;
+use otap_df_pdata::encode::record::array::{
+    ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
+};
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
@@ -1521,23 +1525,24 @@ fn mutate_serialized_attribute_values(
         })?;
 
     let ser_col = attrs_record_batch.column(ser_col_index);
-    let ser_values = match ser_col.data_type() {
-        DataType::Dictionary(_, _) => cast(ser_col, &DataType::Binary)?,
-        _ => Arc::clone(ser_col),
-    };
-    let mut ser_builder = BinaryBuilder::with_capacity(ser_col.len(), 0);
+    let ser_values = ByteArrayAccessor::try_new(ser_col).map_err(Error::from)?;
+    let mut ser_builder = BinaryArrayBuilder::new(ArrayOptions {
+        optional: true,
+        dictionary_options: Some(DictionaryOptions::dict16()),
+        ..Default::default()
+    });
     let mut mutation_indices = vec![0; updates.len()];
     let mut changed_any = false;
 
     for row in 0..attrs_record_batch.num_rows() {
-        let original = serialized_value_bytes(&ser_values, row)?;
+        let original = ser_values.slice_at(row);
         let row_has_updates = updates.iter().any(|update| {
             update.existing_key_mask.is_valid(row) && update.existing_key_mask.value(row)
         });
 
         if !row_has_updates {
             if let Some(original) = original {
-                ser_builder.append_value(original.as_ref());
+                ser_builder.append_slice(original);
             } else {
                 ser_builder.append_null();
             }
@@ -1553,7 +1558,7 @@ fn mutate_serialized_attribute_values(
         if matches!(
             value_type,
             AttributeValueType::Map | AttributeValueType::Slice
-        ) && let Some(original) = original.as_deref()
+        ) && let Some(original) = original
         {
             let mut mutations = Vec::new();
             for (update_index, update) in updates.iter().enumerate() {
@@ -1572,7 +1577,7 @@ fn mutate_serialized_attribute_values(
                 && let Some(updated) = mutate_cbor_bytes_many(original, &mutations)?
             {
                 changed_any = true;
-                ser_builder.append_value(updated);
+                ser_builder.append_slice(&updated);
                 continue;
             }
         } else {
@@ -1584,7 +1589,7 @@ fn mutate_serialized_attribute_values(
         };
 
         if let Some(original) = original {
-            ser_builder.append_value(original.as_ref());
+            ser_builder.append_slice(original);
         } else {
             ser_builder.append_null();
         }
@@ -1594,11 +1599,19 @@ fn mutate_serialized_attribute_values(
         return Ok(attrs_record_batch.clone());
     }
 
+    let ser_array = ser_builder.finish().ok_or_else(|| Error::ExecutionError {
+        cause: "serialized attribute update produced no ser column".into(),
+    })?;
     let mut fields = attrs_record_batch.schema_ref().fields.to_vec();
-    fields[ser_col_index] = Arc::new(ser_field.as_ref().clone().with_data_type(DataType::Binary));
+    fields[ser_col_index] = Arc::new(
+        ser_field
+            .as_ref()
+            .clone()
+            .with_data_type(ser_array.data_type().clone()),
+    );
 
     let mut columns = attrs_record_batch.columns().to_vec();
-    columns[ser_col_index] = Arc::new(ser_builder.finish());
+    columns[ser_col_index] = ser_array;
 
     let schema = Arc::new(
         Schema::new(fields).with_metadata(attrs_record_batch.schema_ref().metadata().clone()),
@@ -1638,40 +1651,6 @@ fn scalar_value_to_cbor(value: ScalarValue) -> Result<SerializedAttributeScalarV
             message: format!(
                 "setting nested serialized attribute path from value type {:?} is not supported",
                 other.data_type()
-            ),
-        }),
-    }
-}
-
-fn serialized_value_bytes(array: &ArrayRef, row: usize) -> Result<Option<Cow<'_, [u8]>>> {
-    if array.is_null(row) {
-        return Ok(None);
-    }
-
-    match array.data_type() {
-        DataType::Binary => {
-            let array = array
-                .as_any()
-                .downcast_ref::<BinaryArray>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: "serialized attribute binary column had unexpected array type".into(),
-                })?;
-            Ok(Some(Cow::Borrowed(array.value(row))))
-        }
-        DataType::LargeBinary => {
-            let array = array
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .ok_or_else(|| Error::ExecutionError {
-                    cause: "serialized attribute large binary column had unexpected array type"
-                        .into(),
-                })?;
-            Ok(Some(Cow::Borrowed(array.value(row))))
-        }
-        other => Err(Error::ExecutionError {
-            cause: format!(
-                "serialized attribute column must contain binary values. found {:?}",
-                other
             ),
         }),
     }
@@ -6239,6 +6218,53 @@ mod test {
         assert_eq!(
             log.attributes,
             vec![KeyValue::new("raw", AnyValue::new_bytes(b"before"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_on_resource_attribute() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("before"),
+                        )]),
+                    )]),
+                )])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        let query = "logs | extend resource.attributes[\"complex\"].child.name = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource = result_logs_data.resource_logs[0].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "child",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("after"),
+                    )]),
+                )]),
+            )]
         );
     }
 
