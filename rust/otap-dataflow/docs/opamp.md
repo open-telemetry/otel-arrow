@@ -465,6 +465,7 @@ The payload here is the bytes from a JSON serialized status snapshot (e.g., the
 ### Metrics
 
 The controller extension implementation should produce metrics:
+
 - Count successful `AgentToServer` messages transmitted
 - Count failed `AgentToServer` messages transmitted (due to TCP or HTTP errors)
 - Count `ServerToAgent` successfully handled
