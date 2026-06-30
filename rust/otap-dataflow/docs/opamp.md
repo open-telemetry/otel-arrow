@@ -38,10 +38,9 @@ acts as a client, using either
 [plain HTTP](https://opentelemetry.io/docs/specs/opamp/#plain-http-transport)
 (plain meaning standard HTTP request-response model, not HTTP over plaintext).
 
-The messages exchanged are protobuf serialized `AgentToServer` and 
+The messages exchanged are protobuf serialized `AgentToServer` and
 `ServerToAgent` messages.
-Find proto message definitions
-[here](https://github.com/open-telemetry/opamp-spec/blob/main/proto/opamp/v1/opamp.proto).
+Find [proto message definitions](https://github.com/open-telemetry/opamp-spec/blob/main/proto/opamp/v1/opamp.proto).
 
 ### Controller extension
 
@@ -67,10 +66,10 @@ are left as future design work.
 
 ### Control Plane Implementation Agnostic
 
-The goal of this implementation is simply to expose a mechanism through which 
+The goal of this implementation is simply to expose a mechanism through which
 remote control plane authors can configure an instance of Dataflow Engine via
 OpAMP, however the implementation of the server (how it resolves configuration,
-identifies, DFE instances, manages state, etc.) is outside the scope of the 
+identifies, DFE instances, manages state, etc.) is outside the scope of the
 design and is left to the whim of its creator.
 
 The goal is intentionally to solve the use case of being the interaction point
@@ -112,7 +111,7 @@ engine:
           key_file: "./my-certs/client.key"
 
 
-        # Configuration for heart-beat timing. 
+        # Configuration for heart-beat timing.
         #
         # Optional (default = 30s)
         heart_beat_interval: "10s"
@@ -145,13 +144,13 @@ engine:
         # Used in the event that the initial request to the server fails or
         # when the server responds with an error response type Unavailable but
         # does not specify retry_info in the response details
-        # 
+        #
         # Optional
         request_retry: {
           #  ... same exponential retry options as connect_retry above
         }
 
-        
+       
         # Options for engine reconciliation
         reconcile:
           # timeout for reconcile - Optional (default = 30)
@@ -187,8 +186,9 @@ engine:
 
 #### 1. Initial Message
 
-The client begins by sending an initial `AgentToServer` message sending its 
+The client begins by sending an initial `AgentToServer` message sending its
 full state, including the following fields:
+
 - `instance_uid` - from config if present, otherwise generated
 - `sequence_num` - zero if first message in sequence
 - `agent_description` - from configuration if present, otherwise omit
@@ -200,7 +200,7 @@ full state, including the following fields:
   - Reports Heart Beat
 - `health` - see section below on server health
 - `flags` - `Unset`
-- `custom_capabilities` - list capability to send full state as custom message 
+- `custom_capabilities` - list capability to send full state as custom message
   (see section below on custom capabilities).
 - `remote_config_status` - status field = `Unset`
 - `connection_settings_status` - status field = `Unset`
@@ -215,24 +215,24 @@ The client and server exchange a series of messages.
 When the client receives a message from the server (a `ServerToAgent` message),
 it should handle:
 
-- If the message is in any way invalid (invalid protobuf, unexpected type of 
+- If the message is in any way invalid (invalid protobuf, unexpected type of
   websocket message, etc.) it should ignore the message
 - If the `instance_uid` field does not match the agent's `instance_uid`,
   then ignore the message
 - If the message contained an error in the `error_response` field:
-  - If the type is `Unavailable`, the client should disconnect the TCP 
+  - If the type is `Unavailable`, the client should disconnect the TCP
     connection, backoff exponentially, and retry the last request
   - Otherwise, ignore the message
 - If the field `agent_identification` is set, update the `instance_uid`
 - If the field `remote_config` is set:
-  - If a valid config can be found in the config map and the hash does not 
-    match the last applied hash, reconcile the new config while sending 
+  - If a valid config can be found in the config map and the hash does not
+    match the last applied hash, reconcile the new config while sending
     appropriate replies (see section below on Engine Config Reconciliation)
 - If the flags `ReportFullState` and/or `ReportAvailableComponents` are set,
-  the next reply to the server should contain full state or available 
+  the next reply to the server should contain full state or available
   components. If a new config is being reconciled, these can be included on
-  the message that is sent to the server letting it know config is being 
-  applied. Otherwise, send an ad-hoc message immediately reporting these 
+  the message that is sent to the server letting it know config is being
+  applied. Otherwise, send an ad-hoc message immediately reporting these
   fields.
 
 In any case where a message is ignored (especially in error cases), appropriate
@@ -246,7 +246,7 @@ These should contain:
 - `instance_uid`
 - `sequence_num`
 - `capabilities`
-- `health` - computed from current pipeline status (see section below on 
+- `health` - computed from current pipeline status (see section below on
   Health Resolution).
 - `remote_config_status` - computed from current pipeline status (see section
   below on Status Resolution)
@@ -261,11 +261,11 @@ Initial Message for what to include).
 
 ### Agent Identity
 
-The `AgentToServer` message contains an `instance_uid` and an 
+The `AgentToServer` message contains an `instance_uid` and an
 `AgentDescription` with identifying attributes. These are used by the server
 to identify the agent.
 
-Different control plane implementation may have different mechanisms for 
+Different control plane implementation may have different mechanisms for
 identifying the client depending on their unique deployment scenario. As such,
 it is not specified how agents should identify themselves nor how to compute
 agent description - these parameters will be configurable.
@@ -289,9 +289,9 @@ engine:
 ```
 
 If `instance_uuid` is not specified, a uuid v7 will be created.
-Note that this logic only applies to bootstrap resolution of the 
+Note that this logic only applies to bootstrap resolution of the
 `instance_uid` - the server may respond with a new agent identification to
-override the initial value (see 
+override the initial value (see
 [here](https://opentelemetry.io/docs/specs/opamp/#servertoagentagent_identification)
 ).
 
@@ -300,11 +300,11 @@ not be set on the `AgentToServer` messages.
 
 ### Engine Config Representation
 
-The server should supply the engine config as JSON, embedded within the 
+The server should supply the engine config as JSON, embedded within the
 `ServerToAgent.remote_config.config.config_map["desired_state"]` which contains
-an  `AgentConfigFile` message. 
+an  `AgentConfigFile` message.
 
-The `body` of the message should contain the JSON serialized 
+The `body` of the message should contain the JSON serialized
 `otap_df_config::engine::OtelDataflowSpec` and the `content_type` field should
 identify that the body is JSON serialized.
 
@@ -327,8 +327,8 @@ ServerToAgent {
 The `config_hash` computation is performed by the server. The client does not
 depend on any particular implementation or algorithm, but the server should
 endeavour to choose the hash such that each new config has a unique hash value
-without collisions. The agent does not calculate hashes, it only stores and 
-compares them (see 
+without collisions. The agent does not calculate hashes, it only stores and
+compares them (see
 [here](https://opentelemetry.io/docs/specs/opamp/#calculating-hashes)).
 
 ### Engine Config Reconciliation
@@ -337,7 +337,7 @@ When the OpAMP agent controller extension receives a `ServerToAgent` message,
 if it contains a remote configuration whose `config_hash` does not match the
 last applied config hash, the new config will be applied to the engine.
 
-The agent will try to deserialize the remote config as an `OtelDataflowSpec`. 
+The agent will try to deserialize the remote config as an `OtelDataflowSpec`.
 If deserialization fails, it will respond to the server with an `AgentToServer`
 message with a `remote_config_status` containing a `FAILED` status.
 
@@ -349,7 +349,7 @@ reconcile the engine config.
 `ControlPlane::reconcile_engine_config` also takes as arguments various timeouts,
 which will be exposed as configuration on the controller extension.
 
-When this function returns, the agent will use the 
+When this function returns, the agent will use the
 `Result<EngineConfigReconcileStatus>` to generate another `AgentToServer` message
 with status indicating the result of the reconciliation of the remote config.
 
@@ -357,12 +357,12 @@ with status indicating the result of the reconciliation of the remote config.
 
 #### `RemoteConfigStatus`
 
-The `AgentToServer` message will contain a 
+The `AgentToServer` message will contain a
 [`RemoteConfigStatus` message](https://opentelemetry.io/docs/specs/opamp/#remoteconfigstatus-message)
 for this purpose which contains high-level information about the applied remote
 config.
 
-Before receiving any configuration from a remote server, the agent will always 
+Before receiving any configuration from a remote server, the agent will always
 set the status to `APPLYING`.
 
 Otherwise, the status will be derived from the pipeline status snapshot
@@ -372,8 +372,8 @@ which contains a `PipelinePhase`.
 
 The remote config status will be derived from the snapshot using the following
 rules:
-- If any instance of any pipeline has phase is `Pending`, `Starting`, 
-  `Draining`, `Updating`, `RollingBack` or `Deleting` the remote config status 
+- If any instance of any pipeline has phase is `Pending`, `Starting`,
+  `Draining`, `Updating`, `RollingBack` or `Deleting` the remote config status
   will be `Applying`
 - Otherwise, if any instance of any pipeline has phase `Failed` or `Rejected`,
   the remote config status will be `Failed`
@@ -389,7 +389,7 @@ Example:
 ```rs
 AgentToServer {
     health: ComponentHealth {
-        healthy: true,        
+        healthy: true,       
         status: "running",
         component_health_map: HashMap {
             "<group_key>": ComponentHealth {
@@ -411,13 +411,13 @@ The health status (`status` field) for each component can take on the following
 values: `starting`, `running`, `stopping`, `stopped`, `failed` and `degraded`.
 
 When resolving the status for the pipelines, the following logic will be used:
-- If any instance has phase `Deleting` or `Draining` the status will be 
+- If any instance has phase `Deleting` or `Draining` the status will be
   `stopping`
 - Otherwise if any instance has phase `Pending`, `Updating`, `Starting` or
   `RollingBack` the status will be `starting`
 - Otherwise if any instance has phase `Failed` or `Rejected` the status will be
   `failed`
-- Otherwise if all the instances have phase `Running` the status will be 
+- Otherwise if all the instances have phase `Running` the status will be
   `running`
 - Otherwise if all the instances have phase `Stopped` or `Deleted` the status
   will be `stopped`
@@ -426,9 +426,9 @@ When resolving the status for the pipelines, the following logic will be used:
 When resolving the status for engine's pipeline groups, the resolution logic
 will use the following rules:
 - If any pipeline has status `stopping`, the group status will be `stopping`
-- Otherwise if any pipeline has status `failed`, the group status will be 
+- Otherwise if any pipeline has status `failed`, the group status will be
   `failed`
-- Otherwise if all pipeline has status `stopped`, the group status will be 
+- Otherwise if all pipeline has status `stopped`, the group status will be
   `stopped`
 - Otherwise if all pipelines have status `running`, the group status will be
   `running`
@@ -477,12 +477,12 @@ implementation described in this document
 
 ### Client Settings
 
-OpAMP has the capability to configure connection settings both between the 
+OpAMP has the capability to configure connection settings both between the
 agent & server, and between agent and some external OTLP receiver to which the
 agent should export its own internal telemetry.
 
 In the case of DFE, the settings between agent & OTLP receiver are not useful
-because this can be configured via the internal telemetry pipeline, the 
+because this can be configured via the internal telemetry pipeline, the
 configuration for which is contained in the `ServerToAgent`'s `remote_config`
 message.
 
@@ -498,7 +498,7 @@ This design assumes the server will specify the remote configuration in full.
 E.g. the agent expects to receive the config declaratively.
 
 However, in the future we may want to expose a mechanism for servers to trigger
-the ad-hoc creation/reconfiguration/deletion of some pipeline. This could be 
+the ad-hoc creation/reconfiguration/deletion of some pipeline. This could be
 supported through a custom agent capability / custom server message.
 
 ### Packages
@@ -519,11 +519,11 @@ looking to manage their own fleet of DFEs. It's not the intention of this
 design to prescribe a solution for this, especially given that its unknown
 how such a theoretical system will manage/generate DFE config.
 
-However, we can still imagine a world where there are some cross-cutting 
+However, we can still imagine a world where there are some cross-cutting
 primitives that _most_ OpAMP server implementers will need to build. This
 includes an HTTP server, possibly with websocket enabled, cert management,
 instance_uid and other state management, etc.
 
 We could consider making this easier by providing an SDK in rust that abstracts
-away all these details and exposes a higher level API at the level of agent 
+away all these details and exposes a higher level API at the level of agent
 identity, DFE config.
