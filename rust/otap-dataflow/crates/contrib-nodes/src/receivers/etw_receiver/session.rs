@@ -562,18 +562,18 @@ fn extract_decoded_fields(
 /// `Relaxed` ordering is sufficient: each field is an independent running
 /// total with no happens-before relationship to other state.
 #[derive(Debug, Default)]
-pub(super) struct SessionTelemetry {
+pub(super) struct SessionWideMetrics {
     /// Every event the `ProcessTrace` callback observed from the trace
     /// session, counted *before* any per-core channel send is attempted.
     /// Published as `received_events_total` in the metric set.
     ///
     /// This is the producer-side ingress denominator. The slow-worker drop
-    /// rate is computable as `dropped_queue_full / observed`. See the
+    /// rate is computable as `dropped_slow_worker / total`. See the
     /// counter-algebra note on `EtwReceiverMetrics` for the exact relationships.
-    pub observed: AtomicU64,
+    pub total: AtomicU64,
     /// Events dropped because a per-core channel was full (internal backpressure).
     /// Published as `received_events_dropped_slow_worker` in the metric set.
-    pub dropped_queue_full: AtomicU64,
+    pub dropped_slow_worker: AtomicU64,
     /// Events whose TDH decode failed (`received_events_invalid`).
     pub decode_failed: AtomicU64,
 }
@@ -592,7 +592,7 @@ struct SessionEntry {
     pool: Vec<mpsc::Receiver<EtwEventData>>,
     /// Shared atomic counters bridging the `!Send` `ProcessTrace` callback to
     /// the async receivers. Cloned to every per-core subscriber.
-    telemetry: Arc<SessionTelemetry>,
+    telemetry: Arc<SessionWideMetrics>,
 }
 
 /// Process-global session registry.  Keyed by `session_name` so that:
@@ -623,7 +623,7 @@ static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None)
 fn spawn_etw_session(
     config: &Config,
     txs: Vec<mpsc::Sender<EtwEventData>>,
-    telemetry: Arc<SessionTelemetry>,
+    telemetry: Arc<SessionWideMetrics>,
 ) -> Result<(), Error> {
     // Resolve all provider GUIDs up-front so configuration errors are
     // reported synchronously (before the session thread is spawned).
@@ -664,7 +664,7 @@ fn spawn_etw_session(
             // safe - no atomics or locking needed.  Sharing the counter ensures
             // uniform core distribution even at startup when multiple providers
             // would otherwise all start at index 0.  Drop accounting lives in
-            // the shared `SessionTelemetry` atomics so the async side can
+            // the shared `SessionWideMetrics` atomics so the async side can
             // surface it as a metric.
             let next: Rc<Cell<usize>> = Rc::new(Cell::new(0));
             let closed_logged: Rc<Vec<Cell<bool>>> =
@@ -792,8 +792,8 @@ fn spawn_etw_session(
                     // send is attempted. This is the producer-side ingress
                     // denominator (`received_events_total` in the metric set).
                     // The slow-worker drop rate is therefore
-                    // `dropped_queue_full / observed`.
-                    let _ = telemetry.observed.fetch_add(1, Ordering::Relaxed);
+                    // `dropped_slow_worker / total`.
+                    let _ = telemetry.total.fetch_add(1, Ordering::Relaxed);
 
                     // Best-effort send; if this core's channel is full the
                     // event is dropped from the pipeline entirely (each event
@@ -803,21 +803,8 @@ fn spawn_etw_session(
                         Err(mpsc::error::TrySendError::Full(_)) => {
                             // Bump the shared atomic so the async receiver can
                             // surface it as `received_events_dropped_slow_worker`
-                            // on the next `CollectTelemetry`. `fetch_add`
-                            // returns the previous value, so the running total
-                            // is `+ 1`.
-                            let count =
-                                telemetry.dropped_queue_full.fetch_add(1, Ordering::Relaxed) + 1;
-                            // Keep the rate-limited human-facing log for the
-                            // per-core detail the metric cannot carry:
-                            // first drop, then every 10,000th.
-                            if count == 1 || count.is_multiple_of(10_000) {
-                                otel_warn!(
-                                    "etw.event.dropped",
-                                    total_dropped = count,
-                                    core = i % txs.len(),
-                                );
-                            }
+                            // on the next `CollectTelemetry`.
+                            let _ = telemetry.dropped_slow_worker.fetch_add(1, Ordering::Relaxed);
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             // The receiver for this core has been dropped
@@ -890,7 +877,7 @@ fn spawn_etw_session(
 pub(super) fn subscribe(
     config: &Config,
     num_cores: usize,
-) -> Result<(mpsc::Receiver<EtwEventData>, Arc<SessionTelemetry>), Error> {
+) -> Result<(mpsc::Receiver<EtwEventData>, Arc<SessionWideMetrics>), Error> {
     let mut guard = SESSIONS.lock().map_err(|e| Error::InternalError {
         message: format!("ETW sessions lock poisoned: {e}"),
     })?;
@@ -906,7 +893,7 @@ pub(super) fn subscribe(
 
             // Shared telemetry bridge for this session_name, cloned into the
             // ProcessTrace callback and into every per-core subscriber.
-            let telemetry = Arc::new(SessionTelemetry::default());
+            let telemetry = Arc::new(SessionWideMetrics::default());
 
             spawn_etw_session(config, txs, Arc::clone(&telemetry))?;
 
@@ -980,7 +967,7 @@ mod tests {
                 SessionEntry {
                     config,
                     pool,
-                    telemetry: Arc::new(SessionTelemetry::default()),
+                    telemetry: Arc::new(SessionWideMetrics::default()),
                 },
             );
             Self {
