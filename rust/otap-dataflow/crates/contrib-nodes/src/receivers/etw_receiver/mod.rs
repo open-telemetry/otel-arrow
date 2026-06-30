@@ -291,7 +291,9 @@ impl EtwReceiver {
         // Acquire this core's consumer channel from the per-session-name
         // session.  The first call initializes the session; subsequent calls
         // pop from the pre-allocated pool.  The shared telemetry handle bridges
-        // the `!Send` ProcessTrace callback to this core's metric set.
+        // the `!Send` ProcessTrace callback to the async receivers: the producer
+        // writes the session-scoped atomics that whichever core drains first
+        // folds into its own metric set.
         let (event_rx, session_telemetry) = session::subscribe(&cfg, num_cores).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
                 error: format!("ETW session initialization failed: {e}"),
