@@ -49,7 +49,7 @@ fn default_max_batch_duration() -> Duration {
 /// is a heuristic: it sums each record's pre-encoded body plus framing and does
 /// not count all protobuf overhead (e.g. scope attributes), so it is a safety
 /// margin, not a hard cap. Internal log records are small, leaving wide headroom.
-const MAX_BATCH_BYTES: usize = 1 << 20; // 1 MiB
+const MAX_BATCH_BYTES: usize = 1 << 21; // 2 MiB
 
 /// Rough per-record protobuf overhead added to the record body when estimating
 /// a message's size (timestamp, severity, event name, length prefixes).
