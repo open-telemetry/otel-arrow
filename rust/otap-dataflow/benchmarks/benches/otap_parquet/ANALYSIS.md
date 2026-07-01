@@ -1,17 +1,22 @@
 <!-- markdownlint-disable MD013 -->
 
-# Analysis: why OTAP/IPC is cheaper than flattened Parquet
+# Analysis part 1: OTAP/IPC versus flattened Parquet
 
-This explains the ratios the `otap_parquet` benchmark measures. Numbers are from
-one development machine running WSL with jemalloc. Times are indicative medians
-in milliseconds. Both `zstd` and `lz4` are shown, because `lz4` is how the
-comparison was measured elsewhere.
+Read this first. It measures the cost of moving OTAP logs as compressed Arrow
+IPC versus flattened Parquet, on both size and CPU, and treats the Parquet
+`flatten` step as a fixed cost. Part 2,
+[`OTAP_FLAT_ANALYSIS.md`](./OTAP_FLAT_ANALYSIS.md), opens up that flatten step
+and the single columnar view behind it.
+
+Numbers are indicative medians in milliseconds and bytes from one development
+machine running WSL with jemalloc. Both `zstd` and `lz4` are shown, because
+`lz4` is how the comparison was measured elsewhere.
 
 A single OTAP logs batch holds at most 65,535 log records, because the log id
-that links a log row to its attributes is a `u16`. The breakdown below therefore
-uses a 50,000-record batch as its headline, which is a large but valid single
-batch. Volumes larger than 65,535 records must be streamed as several batches,
-which is analyzed at the end and turns out to change the size comparison.
+that links a log row to its attributes is a `u16`. The breakdown below uses a
+50,000-record batch as its headline, a large but valid single batch. Volumes
+above 65,535 records must be streamed as several batches, analyzed at the end,
+which changes the size comparison.
 
 ## Headline ratios (50k records, one batch)
 
@@ -169,16 +174,15 @@ amortization here should be read as the ceiling for dictionaries plus the schema
 which is always recovered.
 
 This also explains why the steady-state batches do not keep shrinking. The drop
-is one-time, at the first batch, and every batch after that is the same size. The
-reason is that Arrow IPC amortizes the schema and the dictionary value tables
-once, but it does not compress one batch against another: each batch's column
-buffers are compressed independently so a reader can decode any batch on its own.
-So even though the batches here are identical, every steady-state batch re-sends
-and re-compresses the full per-row payload, which is the dictionary indices plus
-the non-dictionary columns. Dictionary reuse saves the value tables, not the
-per-row references, and the per-row payload is the actual information in the
-batch. How much redundancy this leaves unexploited, and why a naive whole-stream
-compressor does not recover it, is measured in the next section.
+is one-time, at the first batch, and every batch after that is the same size.
+Arrow IPC amortizes the schema and the dictionary value tables once, but it does
+not compress one batch against another: each batch's column buffers are
+compressed independently so a reader can decode any batch on its own. So every
+steady-state batch re-sends and re-compresses its full per-row payload, the
+dictionary indices plus the non-dictionary columns, which is the actual
+information in the batch. Dictionary reuse saves the value tables, not the
+per-row references. How much redundancy that leaves unexploited, and why a
+whole-stream compressor does not easily recover it, is the next section.
 
 ### The redundancy Arrow IPC leaves unexploited
 
@@ -203,16 +207,15 @@ match and collapses each extra batch to about 269 bytes, storing all eight in
 69 KB, close to the size of one. That factor of roughly nine is the cross-batch
 redundancy Arrow IPC leaves on the table in this best case.
 
-Three caveats keep this from being free savings. First, it is a best case,
-because these batches are byte-for-byte duplicates, whereas real telemetry batches
-carry different records and share far less. Second, the large-window configuration
-costs much more CPU than the light per-buffer codec Arrow IPC uses, so this is a
-size ceiling, not a drop-in win. Third, whole-stream compression gives up the
-per-batch independent decode that Arrow IPC provides, where any batch can be read
-without the others. Arrow IPC trades cross-batch compression for low CPU and
-independently decodable batches, which is the right trade for streaming transport,
-so capturing the remaining redundancy is a job for a storage-side recompression
-pass rather than the wire format.
+Three caveats keep this from being free. It is a best case, since these batches
+are byte-for-byte duplicates while real telemetry shares far less. The
+large-window configuration costs far more CPU than the light per-buffer codec
+Arrow IPC uses, so it is a size ceiling, not a drop-in win. And whole-stream
+compression gives up the per-batch independent decode Arrow IPC provides, where
+any batch can be read without the others. Arrow IPC trades cross-batch
+compression for low CPU and independently decodable batches, the right trade for
+streaming transport, so capturing the rest is a job for a storage-side
+recompression pass rather than the wire format.
 
 So the single-batch size comparison understates OTAP/IPC, and it understates it
 most for the small, frequent batches that low-latency telemetry actually sends.
@@ -222,76 +225,60 @@ the schema and dictionary amortization applies.
 
 ## Applying the model: precompute Parquet at the gateway
 
-The read and write costs above assume the converter runs on the server. The
-deployment that motivates this study is different. A single vendor controls both
-ends of the path: it supplies the gateway software that the customer runs on
-premises, and it operates the ingestion service that receives the data. Because
-it owns both, and because the ingestion service's CPU is the resource it most
-wants to protect, it prefers to shift the encoding cost onto the customer-run
-gateway. The same ownership means it controls the storage schema as well, so it
-can version the on-premises exporter and the store together. That ownership
-changes the trade in several ways.
+The costs above assume the converter runs on the server. The motivating
+deployment is different: one vendor owns both ends, supplying the gateway the
+customer runs on premises and operating the ingestion service that receives the
+data. Because it owns both, it can shift the encoding cost onto the customer-run
+gateway and version the on-premises exporter and the store together.
 
-First, the coupling objection to client-side Parquet mostly goes away. When a
-third party owns the storage format, making it the wire contract is brittle. When
-the vendor owns both the exporter and the store, the gateway can emit exactly the
-flattened layout the store wants, the columns, partitioning, sort order,
-row-group sizing, and compression, and the two are versioned together. The
-gateway also aggregates many hosts, so it forms the large batches where flattened
-Parquet is 0.60 to 0.71x the IPC size, which cuts ingress bandwidth into the
-service.
+That ownership dissolves the usual coupling objection to client-side Parquet.
+When a third party owns the storage format, making it the wire contract is
+brittle; when the vendor owns both, the gateway can emit exactly the layout the
+store wants, the columns, partitioning, sort order, row-group sizing, and
+compression, and the two are versioned together. The gateway also aggregates
+many hosts, so it forms the large batches where flattened Parquet is 0.60 to
+0.71x the IPC size, which cuts ingress bandwidth.
 
-Second, the decisive question becomes how much the ingestion service must read.
-Precomputing Parquet removes server CPU only if ingestion is close to a validated
-append. Two facts from the cost model bound this. If the service fully decodes,
-Parquet is the most expensive input, about 13x the IPC decode with zstd, and the
-service would re-encode anyway, so precomputing helps only when it avoids that
-decode. But Parquet also carries a footer and per-row-group statistics, so tenant
-routing, quota and cardinality checks, and min or max pruning can run on that
-metadata without decoding column data. A service that inspects metadata and
-appends pays far less than the 13x figure, and that is the regime where accepting
-client Parquet wins.
+The decisive question is how much the ingestion service must read. If it fully
+decodes, Parquet is the most expensive input, about 13x the IPC decode with
+zstd, so precompute helps only when it avoids that decode. But Parquet carries a
+footer and per-row-group statistics, so tenant routing, quota and cardinality
+checks, and min or max pruning can run on that metadata without touching column
+data. A service that inspects metadata and appends pays far less than 13x, and
+that is the regime where accepting client Parquet wins. Any work that needs the
+row values still forces a full decode, so the goal is to move that work into the
+exporter. Logs fit cleanly, because parsing, filtering, redaction, and attribute
+shaping already happen at the gateway, the last writer, which can then write the
+final records straight to Parquet.
 
-Third, any work that needs the row values still forces a full decode, so the goal
-is to move that work into the exporter. For logs this is a clean fit, because the
-per-record work, parsing, filtering, redaction, and attribute shaping, is all done
-at the gateway, which is the last writer. Once it has run, the gateway holds the
-final records and can write them straight to Parquet, leaving the ingestion
-service to validate and append.
-
-Two operational costs remain. Because exporters run on customer-managed
-collectors, a storage-layout change cannot deploy atomically, so the ingestion
-service must accept several layout versions at once and conform older ones itself,
-which returns some CPU to the server. And not every sender is a large gateway, so
-small and legacy senders still emit small batches where IPC is smaller and cheaper
-than Parquet. The robust intake accepts both, OTAP/IPC for small senders and for
-traffic that needs a server-side transform, and precomputed Parquet for large
-gateways running the custom exporter.
-
-The Parquet here is written by arrow-rs in the Rust sender, so its compression is
-independent of the receiver's stack, and the primary server-CPU argument does not
-depend on the compressor at all, because precompute moves the Parquet encode
-itself off the server.
+Two operational costs remain. Exporters run on customer-managed collectors, so a
+layout change cannot deploy atomically; the service must accept several layout
+versions and conform older ones itself, returning some CPU to the server. And
+not every sender is a large gateway, so small and legacy senders still emit the
+small batches where IPC is smaller and cheaper. The robust intake accepts both,
+OTAP/IPC for small senders and for traffic that needs a server-side transform,
+and precomputed Parquet for large gateways running the custom exporter. Because
+that Parquet is written by arrow-rs in the sender, the server-CPU argument does
+not depend on the compressor at all; precompute moves the Parquet encode itself
+off the server.
 
 ## Bottom line
 
 For a single large batch, flattened Parquet is smaller on the wire, about 0.60 to
-0.71x the IPC size, but it costs roughly an order of magnitude more CPU to
-produce and, with `zstd`, to consume. When the traffic is streamed, which is the
-normal case and is required above 65,535 records per batch, OTAP/IPC amortizes a
-fixed cost of about 11 KB per batch that is roughly two thirds dictionaries and
-one third schema, and for small frequent batches that makes IPC smaller on the
-wire than Parquet as well as far cheaper to produce and consume. Produce Parquet
-where the columnar file and its smaller size for large data at rest are needed,
-and keep the streaming client on OTAP/IPC. When comparing measurements, hold the
-compressor fixed and state whether the size is cold or steady-state, because both
-choices move the ratio by a large factor. And when one organization owns both the
-exporter and the store, the applied section above shows the convert step can move
-to the sending gateway, as long as ingestion stays close to a metadata-validated
+0.71x the IPC size, but costs roughly an order of magnitude more CPU to produce
+and, with `zstd`, to consume. Streaming, the normal case and required above
+65,535 records per batch, changes this: OTAP/IPC amortizes a fixed cost of about
+11 KB per batch, roughly two thirds dictionaries and one third schema, so for
+small frequent batches IPC is smaller on the wire than Parquet as well as far
+cheaper to produce and consume. Produce Parquet where the columnar file and its
+smaller size at rest are needed, and keep the streaming client on OTAP/IPC. When
+comparing measurements, hold the compressor fixed and state whether the size is
+cold or steady-state, since both move the ratio by a large factor. And when one
+organization owns both the exporter and the store, the convert step can move to
+the sending gateway, as long as ingestion stays close to a metadata-validated
 append rather than a full decode.
 
-The flatten step that this analysis treats as a fixed part of the Parquet cost is
-itself examined in [`OTAP_FLAT_ANALYSIS.md`](./OTAP_FLAT_ANALYSIS.md), which shows
-that most of it is avoidable because OTAP attribute batches are already grouped by
-parent, and which measures how cheaply OTAP can be presented as a single columnar
-view.
+Part 2, [`OTAP_FLAT_ANALYSIS.md`](./OTAP_FLAT_ANALYSIS.md), opens up the flatten
+step this analysis treats as fixed, and shows that most of it is avoidable
+because OTAP attribute batches are already grouped by parent, and measures how
+cheaply OTAP can be presented as a single columnar view.

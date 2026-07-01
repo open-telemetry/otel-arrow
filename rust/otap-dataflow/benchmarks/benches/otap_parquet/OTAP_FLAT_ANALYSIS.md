@@ -1,25 +1,23 @@
 <!-- markdownlint-disable MD013 -->
 
-# Analysis: an efficient OTAP-flat single columnar view
+# Analysis part 2: the OTAP-flat single columnar view
 
-This is a companion to [`ANALYSIS.md`](./ANALYSIS.md). That study measured the
-cost of moving OTAP logs as compressed Arrow IPC versus flattened Parquet, and
-found that producing Parquet costs roughly an order of magnitude more CPU than
-IPC. A large and compressor-independent part of that Parquet cost is the
-`flatten` step, which turns OTAP's four normalized record batches into one
-denormalized table before the Parquet writer ever runs. This document focuses on
-that intermediate. It asks how cheaply OTAP can be presented as a single
-columnar view, and it measures three ways to do it. It then asks whether that
-flat view is also a good format to move between two services, and measures it
-against OTAP-standard and Parquet on the wire. Finally it measures every
-conversion in the pipeline edge by edge, to show that the flat view sits at a
-natural center where each move to a neighbor rewrites only a handful of columns
-and copies the rest.
+Read [`ANALYSIS.md`](./ANALYSIS.md) first. Part 1 measured OTAP logs as
+compressed Arrow IPC versus flattened Parquet and found that producing Parquet
+costs roughly an order of magnitude more CPU than IPC. A large,
+compressor-independent part of that cost is the `flatten` step, which turns
+OTAP's four normalized record batches into one denormalized table before the
+Parquet writer runs. This part opens up that step. It asks how cheaply OTAP can
+be presented as a single columnar view and measures three ways to do it; then
+whether that flat view is a good format to move between two services, against
+OTAP-standard and Parquet on the wire; and finally every conversion in the
+pipeline edge by edge, showing the flat view sits at a natural center where each
+move to a neighbor rewrites only a handful of columns and copies the rest.
 
-Numbers below are indicative medians in milliseconds and bytes from one
-development machine running WSL with jemalloc. Both scenarios hold the record
-count fixed at 60,000 logs and vary only the attribute mix, because the layouts
-studied here differ only in how they treat attributes.
+Numbers are indicative medians in milliseconds and bytes from one development
+machine running WSL with jemalloc. Both scenarios hold the record count fixed at
+60,000 logs and vary only the attribute mix, because the layouts studied here
+differ only in how they treat attributes.
 
 ## The flatten tax and where it comes from
 
@@ -130,34 +128,32 @@ five scope attributes, and two attributes per record:
 
 There are two independent levers, and the two scenarios separate them.
 
-The first lever is the zero-copy log attributes, and the materialized layout
-already captures it because it shares the same log-attribute path. In the
-log-heavy scenario the record attributes dominate, and building them without a
-hash join and without a full `take` cuts the conversion from 74 milliseconds to
-18, about four times faster, while producing a byte-identical Parquet file. The
-run-end and dictionary layouts go a little further in this scenario, to about 8
-and 9 milliseconds, because they also stop repeating the small resource and scope
-sets, and that trims the in-memory view from 47 to 36 megabytes.
+The first is the zero-copy log attributes, which the materialized layout already
+captures because it shares the same log-attribute path. In the log-heavy scenario
+the record attributes dominate, so building them without a hash join and without
+a full `take` cuts the conversion from 74 to 18 milliseconds, about four times
+faster, while producing a byte-identical Parquet file. The run-end and dictionary
+layouts reach about 8 and 9 milliseconds by also not repeating the small resource
+and scope sets, which trims the in-memory view from 47 to 36 megabytes.
 
-The second lever is the shared attributes, and only the run-end and dictionary
-layouts capture it. The resource-heavy scenario is where this shows. The
-materialized layout has to repeat twenty resource attributes across every one of
-the 60,000 rows, which is 1.2 million struct rows of pure duplication, so it is
-no cheaper than the baseline at about 87 milliseconds and it holds a 102 megabyte
-view. The run-end layout stores each resource's attributes once, 600 lists in
-total, so it builds the same logical view in 4.4 milliseconds and holds it in
-12.7 megabytes. That is about twenty times less conversion work and eight times
-less memory for a view that answers the same per-row questions. The dictionary
-layout is close behind at 4.3 milliseconds and 12.9 megabytes.
+The second lever is the shared attributes, which only the run-end and dictionary
+layouts capture, and the resource-heavy scenario is where it shows. The
+materialized layout repeats twenty resource attributes across every one of the
+60,000 rows, 1.2 million struct rows of pure duplication, so at about 87
+milliseconds and a 102 megabyte view it is no cheaper than the baseline. The
+run-end layout stores each resource's attributes once, 600 lists in total, and
+builds the same logical view in 4.4 milliseconds and 12.7 megabytes, about twenty
+times less work and eight times less memory. The dictionary layout is close
+behind at 4.3 milliseconds and 12.9 megabytes.
 
-The Parquet column is the counterpoint. The on-disk size is the same for the
-materialized layout as for the baseline, about 3.9 and 2.8 megabytes, because the
-Parquet writer applies its own run-length and dictionary encodings and recovers
-the repetition that the materialized view spelled out in memory. The physical
-duplication in the materialized layout is therefore a cost paid in build time and
-peak memory, not in file size. Writing Parquet still requires that materialized
-form, so the conversion cannot be avoided when Parquet is the target. It can only
-be avoided when the consumer reads the columnar view directly.
+The Parquet column is the counterpoint. On-disk size is identical for the
+materialized layout and the baseline, about 3.9 and 2.8 megabytes, because the
+writer applies its own run-length and dictionary encodings and recovers the
+repetition the materialized view spelled out in memory. That physical
+duplication is a cost paid in build time and peak memory, not in file size.
+Writing Parquet still requires the materialized form, so the conversion is
+unavoidable when Parquet is the target and can be skipped only when the consumer
+reads the columnar view directly.
 
 ## Transferring between two services
 
@@ -192,55 +188,48 @@ Resource-heavy:
 | ipc-flat-dict         |  3,345,544 |  4,737,672 |      15.5 |       6.3 | flat table      |
 | parquet-flat          |  2,750,262 |  3,783,505 |     416.4 |     172.6 | flat table      |
 
-On realistic data the wire sizes land close together, and the ordering is
-Parquet first, then OTAP-standard, then the run-end flat form, with the
-materialized flat form well behind. Parquet is the smallest on the wire, about
+On realistic data the wire sizes land close together. Parquet is smallest, about
 3.9 megabytes log-heavy and 2.8 resource-heavy, because it applies run-length and
 dictionary encoding to every column. OTAP-standard is next and close, about 4.5
-and 3.0 megabytes, because it never denormalizes the shared attributes and
-transport-optimizes ids and values. The run-end flat form is close behind again,
-about 5.7 and 3.3 megabytes. Only the materialized flat form is far off, 7.0 and
-12.1 megabytes, because it repeats the shared resource attributes on the wire and
+and 3.0 megabytes, since it never denormalizes the shared attributes and
+transport-optimizes ids and values. The run-end flat form follows again, about
+5.7 and 3.3 megabytes. Only the materialized flat form is far off, 7.0 and 12.1
+megabytes, because it repeats the shared resource attributes on the wire and
 Arrow IPC does not fold that repetition away the way Parquet does.
 
-This is the reconciliation with the companion analysis, which found Parquet
-smaller on the wire than OTAP-standard for a single large batch. The same holds
-here, by a smaller margin because the high-cardinality per-record data sets a
-floor that both formats carry. An earlier pass of this study used identical
-records and reported OTAP-standard many times smaller than any flat form, which
-was an artifact of that degenerate data, not a real result. With realistic
-records the four forms are within about a factor of two on the wire, apart from
-the materialized flat form.
+This reconciles with part 1, which found Parquet smaller on the wire than
+OTAP-standard for a single large batch. The same holds here, by a smaller margin
+because the high-cardinality per-record data sets a floor both formats carry. An
+earlier pass of this study used identical records and reported OTAP-standard many
+times smaller than any flat form, an artifact of that degenerate data. With
+realistic records the four forms are within about a factor of two on the wire,
+apart from the materialized flat form.
 
-The CPU picture is where the forms separate. OTAP-standard and the run-end flat
-form are the cheap pair. OTAP-standard decodes fastest, about 6 to 13
-milliseconds, because it is a light Arrow IPC deserialize plus a transport
-decode. The run-end flat form is often the cheapest to encode, and in the
-resource-heavy scenario it encodes in 15 milliseconds against OTAP-standard's 28,
-because it only flattens with a run-end layout and writes plain Arrow IPC,
-whereas OTAP-standard pays for its transport optimization. Parquet is the
-expensive outlier on both ends, 238 to 416 milliseconds to encode and 58 to 173
-to decode, five to fifteen times the others, which is the same result the
-companion analysis reported.
+CPU is where the forms separate. OTAP-standard and the run-end flat form are the
+cheap pair. OTAP-standard decodes fastest, about 6 to 13 milliseconds, being a
+light Arrow IPC deserialize plus a transport decode. The run-end flat form is
+often the cheapest to encode, 15 milliseconds against OTAP-standard's 28 in the
+resource-heavy scenario, because it only flattens with a run-end layout and
+writes plain Arrow IPC while OTAP-standard pays for its transport optimization.
+Parquet is the expensive outlier on both ends, 238 to 416 milliseconds to encode
+and 58 to 173 to decode, five to fifteen times the others.
 
-Two caveats remain. The per-record trace ids here are unique, which is the
-high-cardinality end for logs; correlated logs that share a trace id across a
-span would compress somewhat better and lower every wire number together. And to
-write the flat batch to Parquet the study first materializes the encoder's
-dictionary columns, because arrow-rs 58.3 cannot read a dictionary-encoded
-`FixedSizeBinary` such as `trace_id` back from Parquet. Arrow IPC has no such
-limit and carries those dictionaries directly.
+Two caveats remain. The per-record trace ids here are unique, the
+high-cardinality end for logs; correlated logs that share a trace id would
+compress somewhat better and lower every wire number together. And to write the
+flat batch to Parquet the study first materializes the encoder's dictionary
+columns, because arrow-rs 58.3 cannot read a dictionary-encoded `FixedSizeBinary`
+such as `trace_id` back, while Arrow IPC has no such limit and carries those
+dictionaries directly.
 
-The reason this matters for the original hypothesis is that a flat wire format is
-not obviously worse. The run-end flat form is within about a quarter of
-OTAP-standard on the wire, is sometimes cheaper to encode, and hands the receiver
-a query-ready table with no projection step. Against that, OTAP-standard is
-slightly smaller and decodes fastest and yields the normalized form, and Parquet
-is the smallest at rest but by far the most expensive to produce and consume. So
-the choice is a real trade rather than a rout. If the receiver wants columns and
-values CPU, shipping the run-end flat form is defensible. If it wants the smallest
-wire or the normalized model, or the cheapest decode, OTAP-standard is the better
-default, and the flat view is then a cheap projection at the consumer.
+So a flat wire format is not obviously worse. The run-end flat form is within
+about a quarter of OTAP-standard on the wire, is sometimes cheaper to encode, and
+hands the receiver a query-ready table with no projection step. Against that,
+OTAP-standard is slightly smaller, decodes fastest, and yields the normalized
+form, while Parquet is smallest at rest but by far the most expensive to produce
+and consume. The choice is a real trade rather than a rout: ship the run-end flat
+form when the receiver wants columns and values CPU; otherwise OTAP-standard is
+the better default and the flat view is a cheap projection at the consumer.
 
 ## OTAP-flat as the natural center
 
@@ -383,88 +372,80 @@ resource-heavy case. But the Parquet prepare-and-write is the floor and is share
 by both paths, so the end-to-end saving is smaller than the flatten saving alone,
 about seventeen percent log-heavy and six percent resource-heavy.
 
-The gap between the two scenarios is the point. The zero-copy build only helps the
-columns it can share, which are the per-record log attributes. Log-heavy has nine
-of them, so avoiding the join and the full `take` removes most of the flatten
-cost. Resource-heavy has only two log attributes but twenty resource attributes,
-and those must be materialized per row for Parquet whichever path builds them, so
-the optimized path saves the join overhead and the small log-attribute `take` but
+The gap between the two scenarios is the point. The zero-copy build only helps
+the columns it can share, the per-record log attributes. Log-heavy has nine of
+them, so avoiding the join and the full `take` removes most of the flatten cost.
+Resource-heavy has only two log attributes but twenty resource attributes, and
+those must be materialized per row for Parquet whichever path builds them, so the
+optimized path saves the join overhead and the small log-attribute `take` but
 still pays the resource materialization. In both cases the flatten is roughly a
-fifth of the OTAP-to-Parquet total, so this refines the companion analysis: the
-flatten tax is real and the shared-column build cuts it several fold, but the
-Parquet writer sets a floor that leaves the end-to-end win in the single to low
-double digits until the writer itself is made cheaper, for instance by the
-run-end passthrough discussed above.
+fifth of the OTAP-to-Parquet total, so this refines part 1: the flatten tax is
+real and the shared-column build cuts it several fold, but the Parquet writer
+sets a floor that leaves the end-to-end win in the single to low double digits
+until the writer itself is made cheaper, for instance by the run-end passthrough
+above.
 
 ## What this means for the pipeline
 
-The applied section of the companion analysis argued that when the gateway owns
-both the exporter and the store, the OTAP to Parquet conversion can move to the
-sending gateway. This study refines where the remaining cost lives and when it is
-avoidable.
-
-If the target is a Parquet file, the materialized single view is the right
-intermediate, and the win available is the zero-copy log-attribute build, which
-removed about three quarters of the conversion time in the log-heavy case without
-changing the output. The resource and scope repetition still has to be written
-out for the Parquet writer to consume, though the file it produces is no larger
-for it.
-
-If the target is an Arrow-native store answering queries, which is the serving
-path for this system, the run-end or dictionary single view is dramatically
-cheaper to build and to hold, and the advantage grows with the weight of the
-shared attributes. Real resource attributes in production telemetry are numerous
-and highly shared, so the resource-heavy scenario is the representative one for a
-host or a gateway that aggregates many records under a small number of resources.
-In that regime the run-end view is the most efficient single columnar
-presentation of OTAP measured here, because it never materializes a value that
+Part 1 argued that when the gateway owns both the exporter and the store, the
+OTAP-to-Parquet conversion can move to the sending gateway. This study refines
+where the remaining cost lives. If the target is a Parquet file, the materialized
+view is the right intermediate and the zero-copy log-attribute build is the win,
+removing about three quarters of the conversion time log-heavy without changing
+the output; the shared resource and scope repetition still has to be written for
+the writer, though the file is no larger for it. If the target is an Arrow-native
+store answering queries, the serving path for this system, the run-end or
+dictionary view is dramatically cheaper to build and hold, and the advantage
+grows with the weight of the shared attributes. Real resource attributes in
+production telemetry are numerous and highly shared, so the resource-heavy
+scenario is the representative one for a host or gateway that aggregates many
+records under a few resources, and there the run-end view is the most efficient
+single columnar presentation measured here, because it never materializes a value
 OTAP already stored once.
 
 ## Caveats and limits
 
 The zero-copy log-attribute build relies on the encoder emitting attributes
-grouped by `parent_id`, which the current OTAP producer does and which the probe
-confirmed. This is a correctness precondition, not just a performance one: the
-transport optimization re-sorts each attribute batch by key, so a
-transport-optimized batch is not grouped by `parent_id` and the zero-copy path
-must regroup it first or fall back to the hash join, as the standard-to-Parquet
-subsection above details. The key column is normalized from its dictionary
-encoding to plain `Utf8`, so that one column is cast rather than shared, while
-the other value columns are shared unchanged.
+grouped by `parent_id`, which the current producer does and the probe confirmed.
+This is a correctness precondition, not just performance: a transport-optimized
+batch is re-sorted by key, so it is not grouped by `parent_id` and must be
+regrouped first or fall back to the hash join, as the direct-path subsection
+details. The key column is normalized from its dictionary encoding to plain
+`Utf8`, so that one column is cast rather than shared.
 
 The generated data models realistic telemetry with unique per-record ids and
-mixed-type attributes, which is what keeps the wire comparison honest, since
-identical rows collapse under dictionary and delta encoding and mislead. The wire
-magnitudes still depend on cardinality: correlated logs that share a trace id
-would compress better and lower every number together, so the comparison should
-be read as one point on a spectrum rather than a fixed ratio.
+mixed-type attributes, which keeps the wire comparison honest, since identical
+rows collapse under dictionary and delta encoding and mislead. The magnitudes
+still depend on cardinality: correlated logs that share a trace id would compress
+better and lower every number together, so read the comparison as one point on a
+spectrum rather than a fixed ratio.
 
-Two arrow-rs 58.3 limits shape the results. The Parquet writer cannot serialize
-run-end or nested-dictionary columns, so those layouts are in-memory forms only.
-The Parquet reader cannot read a dictionary-encoded `FixedSizeBinary` such as
-`trace_id` back, so the study materializes the encoder's dictionary columns
-before writing Parquet. Both may change as arrow-rs adds support, at which point
-the run-end view could also become a Parquet write target.
+Two arrow-rs 58.3 limits shape the results. The writer cannot serialize run-end
+or nested-dictionary columns, so those layouts are in-memory forms only, and the
+reader cannot read a dictionary-encoded `FixedSizeBinary` such as `trace_id`
+back, so the study materializes those columns before writing Parquet. Both may
+lift as arrow-rs adds support, at which point the run-end view could also become
+a Parquet write target.
 
 ## Bottom line
 
 OTAP attribute batches are already grouped by parent, so presenting them as a
 single columnar view does not need a hash join. Building the log attributes zero
-copy makes the materialized view, which is the one Parquet can write, about four
-times cheaper to produce for log-heavy data while leaving the file identical. For
-the shared resource and scope attributes, a run-end or dictionary view stores
-each set once and is the most efficient single presentation, about twenty times
+copy makes the materialized view, the one Parquet can write, about four times
+cheaper to produce for log-heavy data while leaving the file identical. For the
+shared resource and scope attributes, a run-end or dictionary view stores each
+set once and is the most efficient single presentation, about twenty times
 cheaper to build and eight times smaller in memory for resource-heavy data, at
 the cost of not being directly writable to Parquet today. The choice follows the
-consumer. Materialize for a Parquet file, and keep the run-end view for an
+consumer: materialize for a Parquet file, and keep the run-end view for an
 Arrow-native store that serves queries.
 
 For moving data between two services the answer is a genuine trade rather than a
 rout. On realistic data the four forms sit within about a factor of two on the
 wire, apart from the materialized flat form, which repeats shared attributes and
-falls behind. Parquet is the smallest at rest but by far the most expensive to
-produce and consume. OTAP-standard is close on size, decodes fastest, and yields
-the normalized model. The run-end flat form is close again on size, is sometimes
+falls behind. Parquet is smallest at rest but by far the most expensive to
+produce and consume; OTAP-standard is close on size, decodes fastest, and yields
+the normalized model; the run-end flat form is close again on size, is sometimes
 cheaper to encode than OTAP-standard, and hands the receiver a query-ready table.
 So a flat wire format is defensible when the receiver wants columns and values
 CPU, while OTAP-standard remains the better default for the smallest wire, the
