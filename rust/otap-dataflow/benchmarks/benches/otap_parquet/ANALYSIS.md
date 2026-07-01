@@ -177,10 +177,42 @@ So even though the batches here are identical, every steady-state batch re-sends
 and re-compresses the full per-row payload, which is the dictionary indices plus
 the non-dictionary columns. Dictionary reuse saves the value tables, not the
 per-row references, and the per-row payload is the actual information in the
-batch. A streaming compressor with cross-batch context could shrink near-identical
-batches much further, but that is outside what Arrow IPC does, and real telemetry,
-where every batch carries different records, has less cross-batch redundancy to
-exploit anyway.
+batch. How much redundancy this leaves unexploited, and why a naive whole-stream
+compressor does not recover it, is measured in the next section.
+
+### The redundancy Arrow IPC leaves unexploited
+
+Because each batch is compressed on its own, the steady-state batches are stored
+at full size even when they are nearly identical. To measure how much that leaves
+unexploited, the study also compresses a whole stream of eight batches as a single
+unit and compares the per-batch cost. At 10,000 logs per batch with `zstd`:
+
+| approach               | 8 batches | per extra batch |
+|------------------------|-----------|-----------------|
+| ipc, per-batch zstd    | 659 KB    | 81 KB           |
+| whole stream, zstd L3  | 595 KB    | 74 KB           |
+| whole stream, zstd L19 | 69 KB     | 269 B           |
+
+The uncompressed batches here differ by a single byte, a batch counter, so they
+are almost pure duplicates, yet Arrow IPC still spends about 81 KB on each one. A
+default-effort whole-stream `zstd` barely does better, about 74 KB per extra
+batch, because each uncompressed batch is roughly 2.4 MB, larger than the match
+window at that level, so the compressor cannot see that the previous batch was a
+duplicate. Only a large-window, long-distance configuration at level 19 finds the
+match and collapses each extra batch to about 269 bytes, storing all eight in
+69 KB, close to the size of one. That factor of roughly nine is the cross-batch
+redundancy Arrow IPC leaves on the table in this best case.
+
+Three caveats keep this from being free savings. First, it is a best case,
+because these batches are byte-for-byte duplicates, whereas real telemetry batches
+carry different records and share far less. Second, the large-window configuration
+costs much more CPU than the light per-buffer codec Arrow IPC uses, so this is a
+size ceiling, not a drop-in win. Third, whole-stream compression gives up the
+per-batch independent decode that Arrow IPC provides, where any batch can be read
+without the others. Arrow IPC trades cross-batch compression for low CPU and
+independently decodable batches, which is the right trade for streaming transport,
+so capturing the remaining redundancy is a job for a storage-side recompression
+pass rather than the wire format.
 
 So the single-batch size comparison understates OTAP/IPC, and it understates it
 most for the small, frequent batches that low-latency telemetry actually sends.

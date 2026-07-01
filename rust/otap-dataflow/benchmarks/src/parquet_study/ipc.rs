@@ -174,4 +174,72 @@ mod tests {
             );
         }
     }
+
+    /// Produce `count` batches through one long-lived producer with IPC
+    /// compression disabled, concatenate the wire bytes, and compress the whole
+    /// stream once with zstd at `level`. This models the size a stream-level
+    /// (cross-batch) compressor could reach, whereas Arrow IPC compresses each
+    /// batch independently and cannot exploit redundancy across batches.
+    fn stream_whole_zstd(logs: &OtapArrowRecords, count: usize, level: i32) -> usize {
+        let mut producer = Producer::new_with_options(ProducerOptions {
+            ipc_compression: None,
+        });
+        let mut stream = Vec::new();
+        for _ in 0..count {
+            let mut batch = logs.clone();
+            let bar = producer.produce_bar(&mut batch).expect("produce");
+            bar.encode(&mut stream).expect("encode");
+        }
+        zstd::stream::encode_all(&stream[..], level)
+            .expect("zstd")
+            .len()
+    }
+
+    /// Arrow IPC compresses each batch independently, so it never exploits the
+    /// large redundancy across the near-identical steady-state batches. This test
+    /// shows two things about that unexploited redundancy:
+    ///
+    /// 1. A whole-stream compressor at default effort recovers almost none of it,
+    ///    because each uncompressed batch (~2.4 MB at 10k logs) is larger than the
+    ///    match window, so an extra near-duplicate batch still costs about as much
+    ///    as one Arrow IPC batch.
+    /// 2. A whole-stream compressor with a large window and long-distance matching
+    ///    does find it, collapsing each extra near-duplicate batch to a tiny
+    ///    fraction of an Arrow IPC batch.
+    ///
+    /// The identical-batch case here is a best case; real telemetry batches differ
+    /// substantially, so the recoverable cross-batch redundancy is far smaller.
+    #[test]
+    fn cross_batch_redundancy_needs_large_window() {
+        let params = LogsGenParams {
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 10_000,
+        };
+        let (otap, _) = gen_logs_otap(&params);
+
+        let count = 8;
+        // Arrow IPC steady-state batch size (per-batch independent compression).
+        let warm = stream_batch_sizes(&otap, Compressor::Zstd, count).expect("sizes")[1];
+
+        // Default effort: window smaller than one uncompressed batch, so an extra
+        // near-duplicate batch costs about the same as an Arrow IPC batch.
+        let low_1 = stream_whole_zstd(&otap, 1, 3);
+        let low_n = stream_whole_zstd(&otap, count, 3);
+        let low_marginal = (low_n - low_1) / (count - 1);
+        assert!(
+            low_marginal * 2 > warm,
+            "default-effort cross-batch unexpectedly cheap: {low_marginal} vs warm {warm}"
+        );
+
+        // High effort: large window plus long-distance matching finds the
+        // cross-batch redundancy and collapses each extra batch to near zero.
+        let high_1 = stream_whole_zstd(&otap, 1, 19);
+        let high_n = stream_whole_zstd(&otap, count, 19);
+        let high_marginal = (high_n - high_1) / (count - 1);
+        assert!(
+            high_marginal * 10 < warm,
+            "high-effort cross-batch did not collapse: {high_marginal} vs warm {warm}"
+        );
+    }
 }
