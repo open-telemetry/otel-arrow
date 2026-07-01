@@ -27,15 +27,20 @@ use vortex::array::arrow::ArrowSessionExt;
 use vortex::array::arrow::FromArrowArray;
 use vortex::array::stream::ArrayStreamExt;
 use vortex::buffer::ByteBuffer;
-use vortex::file::{OpenOptionsSessionExt, WriteOptionsSessionExt};
+use vortex::compressor::BtrBlocksCompressorBuilder;
+use vortex::file::{OpenOptionsSessionExt, WriteOptionsSessionExt, WriteStrategyBuilder};
 use vortex::io::session::RuntimeSessionExt;
 use vortex::session::VortexSession;
 
 use super::{Codec, StudyResult, nested};
 
 /// Contender that flattens OTAP logs (nested layout) and stores them in an
-/// in-memory Vortex file.
-pub struct VortexCodec;
+/// in-memory Vortex file. `fast` selects an uncompressed, near-zero-copy write
+/// strategy instead of the default BtrBlocks cascading compressor.
+pub struct VortexCodec {
+    /// When true, write with no compression to prioritize write throughput.
+    pub fast: bool,
+}
 
 fn runtime() -> &'static tokio::runtime::Runtime {
     static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -164,18 +169,29 @@ fn restore_fixed_size_binary(batch: RecordBatch) -> StudyResult<RecordBatch> {
     )?)
 }
 
-/// Encode a flat Arrow record batch as an in-memory Vortex file.
-fn encode(flat: RecordBatch) -> StudyResult<Vec<u8>> {
+/// Encode a flat Arrow record batch as an in-memory Vortex file. When `fast` is
+/// set, a no-op compressor is used so the write is essentially a canonical
+/// (uncompressed) layout, skipping the BtrBlocks encoding search.
+fn encode(flat: RecordBatch, fast: bool) -> StudyResult<Vec<u8>> {
     let flat = to_vortex_compatible(&flat)?;
     runtime()
         .block_on(async move {
             let session = VortexSession::default().with_tokio();
             let array = ArrayRef::from_arrow(flat, false)?;
             let mut sink: Vec<u8> = Vec::with_capacity(4096);
-            let _summary = session
-                .write_options()
-                .write(&mut sink, array.to_array_stream())
-                .await?;
+            let write_options = session.write_options();
+            let stream = array.to_array_stream();
+            let _summary = if fast {
+                let strategy = WriteStrategyBuilder::default()
+                    .with_btrblocks_builder(BtrBlocksCompressorBuilder::empty())
+                    .build();
+                write_options
+                    .with_strategy(strategy)
+                    .write(&mut sink, stream)
+                    .await?
+            } else {
+                write_options.write(&mut sink, stream).await?
+            };
             Ok::<Vec<u8>, vortex::error::VortexError>(sink)
         })
         .map_err(Into::into)
@@ -205,12 +221,12 @@ fn decode(bytes: &[u8]) -> StudyResult<RecordBatch> {
 
 impl Codec for VortexCodec {
     fn name(&self) -> &'static str {
-        "vortex"
+        if self.fast { "vortex-fast" } else { "vortex" }
     }
 
     fn write(&self, logs: OtapArrowRecords) -> StudyResult<Vec<u8>> {
         let flat = nested::flatten(&logs)?;
-        encode(flat)
+        encode(flat, self.fast)
     }
 
     fn read(&self, bytes: &[u8]) -> StudyResult<OtapArrowRecords> {
@@ -240,10 +256,12 @@ mod tests {
         };
         let (otap, _) = gen_logs_otap(&params);
 
-        let codec = VortexCodec;
-        let bytes = codec.write(otap.clone()).expect("write");
-        assert!(!bytes.is_empty());
-        let decoded = codec.read(&bytes).expect("read");
-        assert_logs_equivalent(&otap, &decoded, codec.name(), "none");
+        for fast in [false, true] {
+            let codec = VortexCodec { fast };
+            let bytes = codec.write(otap.clone()).expect("write");
+            assert!(!bytes.is_empty());
+            let decoded = codec.read(&bytes).expect("read");
+            assert_logs_equivalent(&otap, &decoded, codec.name(), "none");
+        }
     }
 }

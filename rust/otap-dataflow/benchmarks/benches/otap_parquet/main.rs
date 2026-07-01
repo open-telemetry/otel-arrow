@@ -43,7 +43,7 @@ use benchmarks::parquet_study::{Compressor, Scheme, StudyResult, server};
 #[allow(unused_variables)]
 fn reparse(scheme: Scheme, bytes: &[u8]) -> StudyResult<arrow::array::RecordBatch> {
     #[cfg(feature = "vortex")]
-    if matches!(scheme, Scheme::Vortex) {
+    if matches!(scheme, Scheme::Vortex | Scheme::VortexFast) {
         return benchmarks::parquet_study::vortex::reparse_to_arrow(bytes);
     }
     server::reparse_parquet(bytes)
@@ -56,31 +56,20 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-/// Input shapes covering a few resource/scope/log fan-outs. The first is the
-/// "many small groups" shape from the `otap_encoder` bench; the rest scale the
-/// number of log records under a single resource/scope (so resource/scope
-/// attribute denormalization is amortized over more rows).
+/// Input shapes. Parquet and Vortex both carry per-file overhead, so the study
+/// uses realistic block sizes of several thousand to 100k log records under a
+/// single resource/scope. A small multi-group shape is kept for reference.
 fn input_shapes() -> Vec<LogsGenParams> {
     vec![
         LogsGenParams {
-            num_resources: 5,
-            num_scopes: 10,
-            num_logs: 5,
-        },
-        LogsGenParams {
-            num_resources: 50,
-            num_scopes: 2,
-            num_logs: 10,
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 10_000,
         },
         LogsGenParams {
             num_resources: 1,
             num_scopes: 1,
-            num_logs: 1000,
-        },
-        LogsGenParams {
-            num_resources: 1,
-            num_scopes: 1,
-            num_logs: 5000,
+            num_logs: 100_000,
         },
     ]
 }
@@ -138,10 +127,8 @@ fn print_size_table(shapes: &[LogsGenParams]) {
 /// Median wall-clock milliseconds of `f` over a few iterations (with warm-up).
 /// Indicative only; the `server_cost` Criterion group provides rigorous numbers.
 fn median_ms(mut f: impl FnMut()) -> f64 {
-    for _ in 0..2 {
-        f();
-    }
-    let iters = 11;
+    f();
+    let iters = 3;
     let mut samples = Vec::with_capacity(iters);
     for _ in 0..iters {
         let start = Instant::now();

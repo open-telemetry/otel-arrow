@@ -132,6 +132,10 @@ pub enum Scheme {
     /// Flattened Vortex file (nested layout). Requires the `vortex` feature.
     #[cfg(feature = "vortex")]
     Vortex,
+    /// Flattened Vortex file written with no compression, prioritizing write
+    /// throughput. Requires the `vortex` feature.
+    #[cfg(feature = "vortex")]
+    VortexFast,
 }
 
 impl Scheme {
@@ -142,7 +146,7 @@ impl Scheme {
         #[allow(unused_mut)]
         let mut v = vec![Scheme::Ipc, Scheme::Nested, Scheme::Map, Scheme::Wide];
         #[cfg(feature = "vortex")]
-        v.push(Scheme::Vortex);
+        v.extend([Scheme::Vortex, Scheme::VortexFast]);
         v
     }
 
@@ -153,7 +157,7 @@ impl Scheme {
         #[allow(unused_mut)]
         let mut v = vec![Scheme::Nested, Scheme::Map, Scheme::Wide];
         #[cfg(feature = "vortex")]
-        v.push(Scheme::Vortex);
+        v.extend([Scheme::Vortex, Scheme::VortexFast]);
         v
     }
 
@@ -167,6 +171,8 @@ impl Scheme {
             Scheme::Wide => "parquet-wide",
             #[cfg(feature = "vortex")]
             Scheme::Vortex => "vortex",
+            #[cfg(feature = "vortex")]
+            Scheme::VortexFast => "vortex-fast",
         }
     }
 
@@ -177,7 +183,7 @@ impl Scheme {
         match self {
             Scheme::Ipc => &Compressor::IPC,
             #[cfg(feature = "vortex")]
-            Scheme::Vortex => &[Compressor::None],
+            Scheme::Vortex | Scheme::VortexFast => &[Compressor::None],
             _ => &Compressor::ALL,
         }
     }
@@ -191,7 +197,9 @@ impl Scheme {
             Scheme::Map => Box::new(map::MapParquetCodec { compressor }),
             Scheme::Wide => Box::new(wide::WideParquetCodec { compressor }),
             #[cfg(feature = "vortex")]
-            Scheme::Vortex => Box::new(vortex::VortexCodec),
+            Scheme::Vortex => Box::new(vortex::VortexCodec { fast: false }),
+            #[cfg(feature = "vortex")]
+            Scheme::VortexFast => Box::new(vortex::VortexCodec { fast: true }),
         }
     }
 }
