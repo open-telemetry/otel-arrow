@@ -11,19 +11,17 @@ on:
 jobs:
   pipeline-perf-test:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
-    # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
-    # at the start and end of every job. Required when running directly on the
-    # shared bare-metal host (no job-level container) per
-    # https://github.com/open-telemetry/community/blob/main/docs/how-to-use-bare-metal-runner.md
-    env:
-      TMPDIR: ${{ runner.temp }}
-      TMP: ${{ runner.temp }}
-      TEMP: ${{ runner.temp }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
           egress-policy: audit
+
+      - name: Route temp files to RUNNER_TEMP
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
