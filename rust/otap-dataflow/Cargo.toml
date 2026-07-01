@@ -65,6 +65,8 @@ data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
 data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
 
+aws-config = "1.0"
+aws-msk-iam-sasl-signer = "1.0.1"
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
@@ -101,6 +103,7 @@ futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
 futures-timer = "3.0.3"
+futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
@@ -155,6 +158,7 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.1"
 rcgen = "0.14"
+rdkafka = { version = "=0.38.0", features = ["tokio", "tracing"] }
 regex = "1.12"
 roaring = "0.11.2"
 ryu = "1"
@@ -171,6 +175,7 @@ serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 crc32fast = "1.4.2"
+hex = "0.4.3"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
@@ -269,7 +274,7 @@ default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
-aws = ["otap-df-otap/aws"]
+aws = ["otap-df-otap/aws", "otap-df-contrib-nodes/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
@@ -320,7 +325,7 @@ rust_2021_compatibility = { level = "warn", priority = -1 }
 rust_2024_compatibility = { level = "warn", priority = -1 }
 future_incompatible = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(validation_tests)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(validation_tests)", "cfg(feature, values(\"test-helpers\"))"] }
 
 # Strict safety & quality standards
 missing_docs = "deny"
