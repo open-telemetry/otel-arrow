@@ -107,3 +107,9 @@ criterion.workspace = true
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
+
+[[bench]]
+name = "journald_decode"
+harness = false
+path = "benches/journald_decode/main.rs"
+required-features = ["bench"]
