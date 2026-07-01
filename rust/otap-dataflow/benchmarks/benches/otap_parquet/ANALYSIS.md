@@ -264,14 +264,26 @@ than Parquet. The robust intake accepts both, OTAP/IPC for small senders and for
 traffic that needs a server-side transform, and precomputed Parquet for large
 gateways running the custom exporter.
 
-Finally, the compressor interacts with the .NET stack. The measured IPC decode
-advantage depends on zstd. With lz4 the IPC decode is about 20 ms at 50k against
-4 ms for zstd, so if the service does decode, the Parquet decode penalty over IPC
-falls from about 13x to about 2.6x. And if the .NET Parquet writer can emit zstd
-even where the .NET Arrow IPC writer cannot, the exporter can ship zstd Parquet,
-which is smaller than lz4 and cheaper for any server read than lz4 IPC. That is
-worth confirming on the .NET stack, because it removes the main compressor
-argument against the Parquet path for that sender.
+The compressor question is really about the .NET receiver, because the Parquet
+here is written by arrow-rs in the Rust sender and can always use zstd. For the
+IPC path, the current Apache Arrow .NET library, as of version 23, can decompress
+both lz4 and zstd record-batch buffers, but only when the service adds the
+Apache.Arrow.Compression package and passes its codec factory to the reader. The
+core Apache.Arrow package decompresses neither and throws on any compressed body.
+The two codecs ship together, on the pure-managed ZstdSharp.Port and K4os LZ4
+implementations, so there is no configuration where lz4 IPC works but zstd does
+not.
+
+This splits into two cases. If the service takes that package, zstd IPC is
+available, the IPC path keeps its smaller zstd wire size, and the compressor is
+not by itself a reason to prefer Parquet. If the service cannot take it,
+compressed IPC is unavailable at all, so IPC must travel uncompressed and far
+larger than Parquet-zstd, which is the case that most favors precomputed Parquet.
+Either way, the decode times in the tables above are arrow-rs in Rust, while the
+.NET receiver decodes with the managed codecs, a separate cost this study does not
+measure and one that precomputing Parquet lets the service avoid entirely. The
+primary server-CPU argument does not depend on the compressor at all, because
+precompute moves the Parquet encode itself off the server.
 
 ## Bottom line
 
