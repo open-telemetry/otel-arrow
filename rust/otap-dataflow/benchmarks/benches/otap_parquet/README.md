@@ -109,8 +109,14 @@ Parquet pipeline breakdown, milliseconds:
 | scheme / comp         | flatten | pq-write | enc-tot | pq-read | unflat | dec-tot |
 |-----------------------|---------|----------|---------|---------|--------|---------|
 | parquet-nested / zstd | 148     | 404      | 552     | 152     | 65     | 217     |
+| parquet-nested / lz4  | 148     | 329      | 477     | 143     | 70     | 213     |
 | parquet-map / zstd    | 139     | 363      | 503     | 160     | 63     | 223     |
+| parquet-map / lz4     | 139     | 334      | 474     | 167     | 67     | 234     |
 | parquet-wide / zstd   | 183     | 147      | 330     | 56      | 91     | 147     |
+| parquet-wide / lz4    | 183     | 147      | 330     | 55      | 87     | 142     |
+
+A companion write-up of what these ratios mean is in
+[`ANALYSIS.md`](./ANALYSIS.md).
 
 ## Takeaways
 
