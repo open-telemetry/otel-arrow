@@ -220,6 +220,59 @@ The `u16` log-id limit reinforces this: because one batch cannot exceed 65,535
 records, high volume is delivered as a stream of batches, which is exactly where
 the schema and dictionary amortization applies.
 
+## Applying the model: precompute Parquet at the gateway
+
+The read and write costs above assume the converter runs on the server. The
+deployment that motivates this study is different. A large sender, a customer
+collector gateway, ships to a .NET SaaS ingestion service whose CPU is the
+resource being optimized, and the same organization owns both the client exporter
+and the storage schema. That ownership changes the trade in several ways.
+
+First, the coupling objection to client-side Parquet mostly goes away. When a
+third party owns the storage format, making it the wire contract is brittle. When
+the ingestion service owns the exporter, it can emit exactly the flattened layout
+its store wants, the columns, partitioning, sort order, row-group sizing, and
+compression, and it can version the exporter and the store together. The gateway
+also aggregates many hosts, so it forms the large batches where flattened Parquet
+is 0.60 to 0.71x the IPC size, which cuts ingress bandwidth into the service.
+
+Second, the decisive question becomes how much the ingestion service must read.
+Precomputing Parquet removes server CPU only if ingestion is close to a validated
+append. Two facts from the cost model bound this. If the service fully decodes,
+Parquet is the most expensive input, about 13x the IPC decode with zstd, and the
+service would re-encode anyway, so precomputing helps only when it avoids that
+decode. But Parquet also carries a footer and per-row-group statistics, so tenant
+routing, quota and cardinality checks, and min or max pruning can run on that
+metadata without decoding column data. A service that inspects metadata and
+appends pays far less than the 13x figure, and that is the regime where accepting
+client Parquet wins.
+
+Third, any work that needs the row values still forces a full decode, so the goal
+is to move that work into the exporter. Per-record transforms and redaction move
+cleanly to the gateway, since the gateway is the last writer. Cross-source metric
+re-aggregation does not, because one gateway sees only its own slice, so temporal
+rollups across gateways remain a server-side read. Logs and traces are therefore
+the strong case for precomputed Parquet, while aggregated metrics are the residual
+case that still wants OTAP/IPC and a server-side convert.
+
+Two operational costs remain. Because exporters run on customer-managed
+collectors, a storage-layout change cannot deploy atomically, so the ingestion
+service must accept several layout versions at once and conform older ones itself,
+which returns some CPU to the server. And not every sender is a large gateway, so
+small and legacy senders still emit small batches where IPC is smaller and cheaper
+than Parquet. The robust intake accepts both, OTAP/IPC for small senders and for
+traffic that needs a server-side transform, and precomputed Parquet for large
+gateways running the custom exporter.
+
+Finally, the compressor interacts with the .NET stack. The measured IPC decode
+advantage depends on zstd. With lz4 the IPC decode is about 20 ms at 50k against
+4 ms for zstd, so if the service does decode, the Parquet decode penalty over IPC
+falls from about 13x to about 2.6x. And if the .NET Parquet writer can emit zstd
+even where the .NET Arrow IPC writer cannot, the exporter can ship zstd Parquet,
+which is smaller than lz4 and cheaper for any server read than lz4 IPC. That is
+worth confirming on the .NET stack, because it removes the main compressor
+argument against the Parquet path for that sender.
+
 ## Bottom line
 
 For a single large batch, flattened Parquet is smaller on the wire, about 0.60 to
@@ -232,4 +285,7 @@ wire than Parquet as well as far cheaper to produce and consume. Produce Parquet
 where the columnar file and its smaller size for large data at rest are needed,
 and keep the streaming client on OTAP/IPC. When comparing measurements, hold the
 compressor fixed and state whether the size is cold or steady-state, because both
-choices move the ratio by a large factor.
+choices move the ratio by a large factor. And when one organization owns both the
+exporter and the store, the applied section above shows the convert step can move
+to the sending gateway, as long as ingestion stays close to a metadata-validated
+append rather than a full decode.
