@@ -80,6 +80,24 @@ impl TraceFilter {
         Self { include, exclude }
     }
 
+    /// Returns true when an include match configuration is present.
+    ///
+    /// This reflects configuration only ("an include path is configured"),
+    /// not whether any record actually matched the include rule.
+    #[must_use]
+    pub const fn has_include(&self) -> bool {
+        self.include.is_some()
+    }
+
+    /// Returns true when an exclude match configuration is present.
+    ///
+    /// This reflects configuration only ("an exclude path is configured"),
+    /// not whether any record actually matched the exclude rule.
+    #[must_use]
+    pub const fn has_exclude(&self) -> bool {
+        self.exclude.is_some()
+    }
+
     /// take a traces payload and return the filtered result
     pub fn filter(
         &self,
