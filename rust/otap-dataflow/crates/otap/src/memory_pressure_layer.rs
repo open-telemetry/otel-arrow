@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tower middleware that rejects requests while hard memory pressure is active.
+//! Tower middleware that rejects requests while the memory limiter is shedding ingress.
 
 use futures::future::BoxFuture;
 use http::{Request, Response};
@@ -20,7 +20,7 @@ pub trait ReceiverRejectionMetrics: Send + Sync {
     /// Records one request rejected before entering the pipeline.
     fn record_rejection(&self);
 
-    /// Records one request rejected before entering the pipeline due to hard memory pressure.
+    /// Records one request rejected before entering the pipeline due to memory pressure.
     fn record_memory_pressure_rejection(&self) {
         self.record_rejection();
     }
@@ -55,8 +55,9 @@ impl ReceiverRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
 
 /// Layer that fails fast with `resource_exhausted` before tonic decodes request bodies.
 ///
-/// This is only enforced at `Hard` pressure. `Soft` remains advisory in the
-/// process-wide state machine for this Phase 1 implementation.
+/// Rejection follows the limiter's `should_shed_ingress()`: `Hard` pressure, or
+/// `Soft` pressure when `soft_action: shed` is configured. The default
+/// (`soft_action: observe`) keeps `Soft` advisory.
 #[derive(Clone)]
 pub struct MemoryPressureLayer {
     state: SharedReceiverAdmissionState,
@@ -154,7 +155,7 @@ where
 mod tests {
     use super::*;
     use http::{Request, Response, StatusCode};
-    use otap_df_config::policy::MemoryLimiterMode;
+    use otap_df_config::policy::{MemoryLimiterMode, SoftAction};
     use otap_df_engine::memory_limiter::{MemoryPressureBehaviorConfig, MemoryPressureState};
     use std::convert::Infallible;
     use std::sync::Arc;
@@ -200,6 +201,7 @@ mod tests {
             retry_after_secs: 3,
             fail_readiness_on_hard: true,
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
         });
 
         let inner = CountingService::new();

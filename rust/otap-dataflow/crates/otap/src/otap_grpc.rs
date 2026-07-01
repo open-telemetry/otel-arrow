@@ -595,7 +595,7 @@ async fn send_pending_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_config::policy::MemoryLimiterMode;
+    use otap_df_config::policy::{MemoryLimiterMode, SoftAction};
     use otap_df_engine::memory_limiter::{
         MemoryPressureBehaviorConfig, MemoryPressureLevel, MemoryPressureState,
     };
@@ -658,6 +658,7 @@ mod tests {
             retry_after_secs: 3,
             fail_readiness_on_hard: true,
             mode: MemoryLimiterMode::Enforce,
+            soft_action: SoftAction::Observe,
         });
         state.set_level_for_tests(MemoryPressureLevel::Hard);
 

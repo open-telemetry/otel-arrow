@@ -1406,6 +1406,7 @@ impl<
                 retry_after_secs: memory_limiter_policy.retry_after_secs,
                 fail_readiness_on_hard: memory_limiter_policy.fail_readiness_on_hard,
                 mode: memory_limiter_policy.mode,
+                soft_action: memory_limiter_policy.soft_action,
             });
 
             let mut limiter = EffectiveMemoryLimiter::from_policy(memory_limiter_policy)
