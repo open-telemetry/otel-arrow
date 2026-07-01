@@ -65,7 +65,7 @@ use one_collect::Guid;
 use one_collect::etw::tdh::TdhDecoder;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
-use otap_df_telemetry::{otel_error, otel_info, otel_warn};
+use otap_df_telemetry::{otel_error, otel_info};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
@@ -804,7 +804,9 @@ fn spawn_etw_session(
                             // Bump the shared atomic so the async receiver can
                             // surface it as `received_events_dropped_slow_worker`
                             // on the next `CollectTelemetry`.
-                            let _ = telemetry.dropped_slow_worker.fetch_add(1, Ordering::Relaxed);
+                            let _ = telemetry
+                                .dropped_slow_worker
+                                .fetch_add(1, Ordering::Relaxed);
                         }
                         Err(mpsc::error::TrySendError::Closed(_)) => {
                             // The receiver for this core has been dropped

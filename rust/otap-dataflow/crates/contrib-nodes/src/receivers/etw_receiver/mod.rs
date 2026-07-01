@@ -294,11 +294,12 @@ impl EtwReceiver {
         // the `!Send` ProcessTrace callback to the async receivers: the producer
         // writes the session-scoped atomics that whichever core drains first
         // folds into its own metric set.
-        let (event_rx, session_wide_metrics) = session::subscribe(&cfg, num_cores).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: format!("ETW session initialization failed: {e}"),
-            }
-        })?;
+        let (event_rx, session_wide_metrics) =
+            session::subscribe(&cfg, num_cores).map_err(|e| {
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!("ETW session initialization failed: {e}"),
+                }
+            })?;
 
         Ok(EtwReceiver {
             config: cfg,
@@ -546,9 +547,7 @@ impl EtwReceiver {
     /// `received_events_invalid`) are **session-scoped, not
     /// per-core**. They cannot be attributed to an individual core - if they
     /// were given a per-core attribute they would land on an arbitrary core
-    /// each interval and produce noisy, meaningless per-core series. The
-    /// per-core dimension is preserved only in the human-facing
-    /// `etw.event.dropped` log, which carries the `core` field.
+    /// each interval and produce noisy, meaningless per-core series.
     ///
     /// ## Shutdown race: residual delta after the last snapshot
     ///
