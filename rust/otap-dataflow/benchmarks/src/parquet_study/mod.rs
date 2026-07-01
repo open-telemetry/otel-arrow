@@ -22,6 +22,8 @@ pub mod map;
 pub mod nested;
 pub mod parquet_io;
 pub mod server;
+#[cfg(feature = "vortex")]
+pub mod vortex;
 pub mod wide;
 
 /// Error type used throughout the study (benchmark/test code, so a boxed error
@@ -127,15 +129,33 @@ pub enum Scheme {
     Map,
     /// Flattened Parquet, attributes exploded to one typed column per key.
     Wide,
+    /// Flattened Vortex file (nested layout). Requires the `vortex` feature.
+    #[cfg(feature = "vortex")]
+    Vortex,
 }
 
 impl Scheme {
-    /// All schemes, in reporting order.
-    pub const ALL: [Scheme; 4] = [Scheme::Ipc, Scheme::Nested, Scheme::Map, Scheme::Wide];
+    /// All schemes, in reporting order (includes Vortex when the `vortex`
+    /// feature is enabled).
+    #[must_use]
+    pub fn all() -> Vec<Scheme> {
+        #[allow(unused_mut)]
+        let mut v = vec![Scheme::Ipc, Scheme::Nested, Scheme::Map, Scheme::Wide];
+        #[cfg(feature = "vortex")]
+        v.push(Scheme::Vortex);
+        v
+    }
 
-    /// Only the flattened-Parquet schemes (used by the server-cost model, where
-    /// IPC is the input rather than an output format).
-    pub const PARQUET: [Scheme; 3] = [Scheme::Nested, Scheme::Map, Scheme::Wide];
+    /// Only the flattened-file schemes (used by the server-cost model, where IPC
+    /// is the input rather than an output format). Includes Vortex when enabled.
+    #[must_use]
+    pub fn flattened() -> Vec<Scheme> {
+        #[allow(unused_mut)]
+        let mut v = vec![Scheme::Nested, Scheme::Map, Scheme::Wide];
+        #[cfg(feature = "vortex")]
+        v.push(Scheme::Vortex);
+        v
+    }
 
     /// Stable contender name.
     #[must_use]
@@ -145,22 +165,20 @@ impl Scheme {
             Scheme::Nested => "parquet-nested",
             Scheme::Map => "parquet-map",
             Scheme::Wide => "parquet-wide",
+            #[cfg(feature = "vortex")]
+            Scheme::Vortex => "vortex",
         }
     }
 
-    /// Whether this scheme produces Parquet (as opposed to Arrow IPC).
-    #[must_use]
-    pub fn is_parquet(self) -> bool {
-        !matches!(self, Scheme::Ipc)
-    }
-
-    /// The compressors valid for this scheme (IPC excludes snappy).
+    /// The compressors valid for this scheme. IPC excludes snappy; Vortex applies
+    /// its own cascading compression, so it exposes only a single `none` setting.
     #[must_use]
     pub fn compressors(self) -> &'static [Compressor] {
-        if self.is_parquet() {
-            &Compressor::ALL
-        } else {
-            &Compressor::IPC
+        match self {
+            Scheme::Ipc => &Compressor::IPC,
+            #[cfg(feature = "vortex")]
+            Scheme::Vortex => &[Compressor::None],
+            _ => &Compressor::ALL,
         }
     }
 
@@ -172,6 +190,8 @@ impl Scheme {
             Scheme::Nested => Box::new(nested::NestedParquetCodec { compressor }),
             Scheme::Map => Box::new(map::MapParquetCodec { compressor }),
             Scheme::Wide => Box::new(wide::WideParquetCodec { compressor }),
+            #[cfg(feature = "vortex")]
+            Scheme::Vortex => Box::new(vortex::VortexCodec),
         }
     }
 }
@@ -192,7 +212,7 @@ mod tests {
         };
         let (otap, _) = gen_logs_otap(&params);
 
-        for scheme in Scheme::ALL {
+        for scheme in Scheme::all() {
             for &compressor in scheme.compressors() {
                 let codec = scheme.codec(compressor);
                 let bytes = codec

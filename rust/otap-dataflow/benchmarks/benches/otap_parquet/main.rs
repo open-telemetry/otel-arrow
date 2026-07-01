@@ -35,7 +35,19 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use benchmarks::parquet_study::datagen::{LogsGenParams, gen_logs_otap};
-use benchmarks::parquet_study::{Compressor, Scheme, server};
+use benchmarks::parquet_study::{Compressor, Scheme, StudyResult, server};
+
+/// Reparse a stored flattened file back into an Arrow record batch (no
+/// unflatten), dispatching on the scheme's format. Used by the server-cost
+/// "accept-B" measurement.
+#[allow(unused_variables)]
+fn reparse(scheme: Scheme, bytes: &[u8]) -> StudyResult<arrow::array::RecordBatch> {
+    #[cfg(feature = "vortex")]
+    if matches!(scheme, Scheme::Vortex) {
+        return benchmarks::parquet_study::vortex::reparse_to_arrow(bytes);
+    }
+    server::reparse_parquet(bytes)
+}
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -98,7 +110,7 @@ fn print_size_table(shapes: &[LogsGenParams]) {
             .expect("ipc zstd write")
             .len();
 
-        for scheme in Scheme::ALL {
+        for scheme in Scheme::all() {
             for &compressor in scheme.compressors() {
                 let codec = scheme.codec(compressor);
                 let bytes = codec
@@ -167,8 +179,8 @@ fn print_server_cost_table(shapes: &[LogsGenParams]) {
             .write(otap.clone())
             .expect("ipc write");
 
-        for scheme in Scheme::PARQUET {
-            for compressor in Compressor::ALL {
+        for scheme in Scheme::flattened() {
+            for &compressor in scheme.compressors() {
                 let pcodec = scheme.codec(compressor);
                 let parquet_bytes = pcodec.write(otap.clone()).expect("parquet write");
 
@@ -176,7 +188,7 @@ fn print_server_cost_table(shapes: &[LogsGenParams]) {
                     let _ = server::convert_ipc_to_parquet(&ipc_bytes, &*pcodec).expect("convert");
                 });
                 let reparse_b = median_ms(|| {
-                    let _ = server::reparse_parquet(&parquet_bytes).expect("reparse");
+                    let _ = reparse(scheme, &parquet_bytes).expect("reparse");
                 });
 
                 println!(
@@ -205,7 +217,7 @@ fn bench_round_trip(c: &mut Criterion) {
     let _ = write_group.measurement_time(Duration::from_secs(2));
     for shape in &shapes {
         let (otap, _) = gen_logs_otap(shape);
-        for scheme in Scheme::ALL {
+        for scheme in Scheme::all() {
             for &compressor in scheme.compressors() {
                 let codec = scheme.codec(compressor);
                 let id = BenchmarkId::new(
@@ -230,7 +242,7 @@ fn bench_round_trip(c: &mut Criterion) {
     let _ = read_group.measurement_time(Duration::from_secs(2));
     for shape in &shapes {
         let (otap, _) = gen_logs_otap(shape);
-        for scheme in Scheme::ALL {
+        for scheme in Scheme::all() {
             for &compressor in scheme.compressors() {
                 let codec = scheme.codec(compressor);
                 let bytes = codec.write(otap.clone()).expect("write");
@@ -263,8 +275,8 @@ fn bench_server_cost(c: &mut Criterion) {
             .write(otap.clone())
             .expect("ipc write");
 
-        for scheme in Scheme::PARQUET {
-            for compressor in Compressor::ALL {
+        for scheme in Scheme::flattened() {
+            for &compressor in scheme.compressors() {
                 let pcodec = scheme.codec(compressor);
 
                 // Option A: server converts received OTAP/IPC to Parquet.
@@ -287,7 +299,7 @@ fn bench_server_cost(c: &mut Criterion) {
                     shape.label(),
                 );
                 let _ = group.bench_with_input(id_b, shape, |b, _| {
-                    b.iter(|| black_box(server::reparse_parquet(&parquet_bytes).expect("reparse")));
+                    b.iter(|| black_box(reparse(scheme, &parquet_bytes).expect("reparse")));
                 });
             }
         }

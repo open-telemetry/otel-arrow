@@ -23,6 +23,15 @@ otap-df-otap = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
 otap-df-pdata-views = { workspace = true }
 
+# Optional: the Vortex file format contender for the parquet study. Heavy
+# dependency, so gated behind the `vortex` feature. Vortex 0.75 pins arrow 58.3
+# (same as this workspace), so Arrow types interoperate directly.
+vortex = { version = "0.75", optional = true, features = ["tokio"] }
+
+[features]
+# Enables the Vortex contender in the otap_parquet benchmark.
+vortex = ["dep:vortex"]
+
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
