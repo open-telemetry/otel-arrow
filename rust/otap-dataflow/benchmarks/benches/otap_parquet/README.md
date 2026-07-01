@@ -141,11 +141,12 @@ is in [`ANALYSIS.md`](./ANALYSIS.md).
   the 19 ms, and it is essentially compressor-independent because it runs before
   compression. Inside IPC decode, the deserialization dominates and the transport
   decode is small.
-- Streaming amortizes a fixed cost of about 11 KB per batch, which is the schema
-  plus initial dictionaries. For small frequent batches this flips the size
-  verdict: at 1,000 records the steady-state IPC batch is 0.69x the Parquet file.
-  Parquet has no equivalent per-batch amortization. Because a batch cannot exceed
-  65,535 records, high volume is streamed, which is where this applies.
+- Streaming amortizes a fixed cost of about 11 KB per batch, which is roughly two
+  thirds dictionary messages and one third schema, and is independent of the row
+  count. For small frequent batches this flips the size verdict: at 1,000 records
+  the steady-state IPC batch is 0.69x the Parquet file. Parquet has no equivalent
+  per-batch amortization. Because a batch cannot exceed 65,535 records, high
+  volume is streamed, which is where this applies.
 - Inside Parquet encode, the Parquet writer dominates and the flatten is roughly
   a third to a half of the total. `parquet-wide` writes fastest because it has
   typed scalar columns rather than nested `List<Struct>` or `Map`, but it pays

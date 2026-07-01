@@ -126,9 +126,30 @@ Parquet file for reference:
 | 50,000 | zstd | 401,966 | 390,640 | 11,326 | 240,211   | 1.63x   |
 | 50,000 | lz4  | 466,416 | 455,088 | 11,326 | 329,298   | 1.38x   |
 
-The amortization is a fixed cost of about 11,326 bytes per batch, which is the
-schema message plus the initial dictionaries, and it is the same at every batch
-size. What changes is how large that fixed cost is relative to the batch:
+The amortization is a fixed cost of about 11,326 bytes per batch, and it is the
+same at every batch size. Splitting that fixed cost by Arrow IPC message type, at
+1,000 records with `zstd`, shows it is mostly dictionaries rather than schema:
+
+| payload       | schema | dictionaries | data (warm) |
+|---------------|--------|--------------|-------------|
+| Logs          | 1,856  | 4,032        | 3,968       |
+| LogAttrs      | 832    | 2,048        | 7,744       |
+| ResourceAttrs | 448    | 832          | 832         |
+| ScopeAttrs    | 448    | 832          | 832         |
+| total         | 3,584  | 7,744        | 13,376      |
+
+So of the 11,328 bytes saved per steady-state batch, 7,744 are dictionary
+messages and only 3,584 are schema, about 68 percent dictionaries and 32 percent
+schema. The dictionary messages are large not because the values are large, since
+this data has few distinct values, but because the four batches carry many
+dictionary columns, and each carries per-message framing that the stream sends
+once and then reuses.
+
+The cost is fixed with batch size because both parts are per-stream, not
+per-row. The schema describes columns, not rows. The dictionaries are the set of
+distinct values, and in this synthetic data that set is the same whether the
+batch has 1,000 or 50,000 rows, so the dictionary messages do not grow. What
+changes is how large that fixed cost is relative to the batch:
 
 - At 1,000 records per batch it is about 46 percent of the cold size, and it
   flips the verdict: the steady-state IPC batch is smaller than the Parquet file,
@@ -136,6 +157,16 @@ size. What changes is how large that fixed cost is relative to the batch:
 - At 10,000 records it is about 12 percent, and Parquet is still smaller on the
   wire, though the gap narrows.
 - At 50,000 records it is about 3 percent, and Parquet keeps its size advantage.
+
+This synthetic data is a best case for dictionary amortization, because every
+batch carries the identical low-cardinality values, so batches after the first
+send no new dictionary entries at all. Real telemetry amortizes only the stable
+low-cardinality columns, such as attribute keys, severity, and scope names. A
+high-cardinality column such as a trace id or a log body carries new values in
+every batch, so its delta dictionary keeps sending new entries and does not
+amortize, and such a column is often better left non-dictionary. The measured
+amortization here should be read as the ceiling for dictionaries plus the schema,
+which is always recovered.
 
 So the single-batch size comparison understates OTAP/IPC, and it understates it
 most for the small, frequent batches that low-latency telemetry actually sends.
@@ -149,9 +180,10 @@ For a single large batch, flattened Parquet is smaller on the wire, about 0.60 t
 0.71x the IPC size, but it costs roughly an order of magnitude more CPU to
 produce and, with `zstd`, to consume. When the traffic is streamed, which is the
 normal case and is required above 65,535 records per batch, OTAP/IPC amortizes a
-fixed schema and dictionary cost of about 11 KB per batch, and for small frequent
-batches that makes IPC smaller on the wire than Parquet as well as far cheaper to
-produce and consume. Produce Parquet where the columnar file and its smaller size
-for large data at rest are needed, and keep the streaming client on OTAP/IPC.
-When comparing measurements, hold the compressor fixed and state whether the size
-is cold or steady-state, because both choices move the ratio by a large factor.
+fixed cost of about 11 KB per batch that is roughly two thirds dictionaries and
+one third schema, and for small frequent batches that makes IPC smaller on the
+wire than Parquet as well as far cheaper to produce and consume. Produce Parquet
+where the columnar file and its smaller size for large data at rest are needed,
+and keep the streaming client on OTAP/IPC. When comparing measurements, hold the
+compressor fixed and state whether the size is cold or steady-state, because both
+choices move the ratio by a large factor.
