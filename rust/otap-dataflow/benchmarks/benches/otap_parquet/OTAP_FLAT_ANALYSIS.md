@@ -365,6 +365,37 @@ attribute batches by key, which the flatten must undo. The attribute sort that
 shrinks the standard wire is wasted, and then some, for a receiver that flattens
 to Parquet.
 
+### Measuring the optimized path against the naive one
+
+For the common OTLP to batch to Parquet case the batch is fresh and grouped, so
+the direct path applies. Timing it against the naive hash-join flatten, both
+followed by the same parquet-ready transform and Parquet write, since both
+produce byte-identical files:
+
+| scenario       | flatten naive | flatten opt | prep+write | total naive | total opt |
+| -------------- | ------------: | ----------: | ---------: | ----------: | --------: |
+| log-heavy      |          47.7 |        10.7 |      168.5 |       216.3 |     179.3 |
+| resource-heavy |          79.6 |        60.4 |      265.1 |       344.7 |     325.5 |
+
+The optimized flatten is much cheaper on its own, from 47.7 to 10.7 milliseconds
+in the log-heavy case, a bit over four times faster, and from 79.6 to 60.4 in the
+resource-heavy case. But the Parquet prepare-and-write is the floor and is shared
+by both paths, so the end-to-end saving is smaller than the flatten saving alone,
+about seventeen percent log-heavy and six percent resource-heavy.
+
+The gap between the two scenarios is the point. The zero-copy build only helps the
+columns it can share, which are the per-record log attributes. Log-heavy has nine
+of them, so avoiding the join and the full `take` removes most of the flatten
+cost. Resource-heavy has only two log attributes but twenty resource attributes,
+and those must be materialized per row for Parquet whichever path builds them, so
+the optimized path saves the join overhead and the small log-attribute `take` but
+still pays the resource materialization. In both cases the flatten is roughly a
+fifth of the OTAP-to-Parquet total, so this refines the companion analysis: the
+flatten tax is real and the shared-column build cuts it several fold, but the
+Parquet writer sets a floor that leaves the end-to-end win in the single to low
+double digits until the writer itself is made cheaper, for instance by the
+run-end passthrough discussed above.
+
 ## What this means for the pipeline
 
 The applied section of the companion analysis argued that when the gateway owns

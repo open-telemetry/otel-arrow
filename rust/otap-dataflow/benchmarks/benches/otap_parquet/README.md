@@ -54,15 +54,16 @@ rather than the deprecated Hadoop-framed `LZ4`.
 cargo bench -p benchmarks --bench otap_parquet
 ```
 
-Seven tables are printed to stdout before the timed round-trip benchmarks run:
+Eight tables are printed to stdout before the timed round-trip benchmarks run:
 serialized size, the OTAP/IPC pipeline breakdown, the Parquet pipeline breakdown,
 the OTAP-flat single columnar view study, the service-to-service transfer
-comparison, the conversion-cost matrix, and the OTAP/IPC streaming amortization.
-The breakdown shapes are 10k, 30k, and 60k log records. A single OTAP logs batch
-holds at most 65,535 records because the log id is a `u16`, so the shapes stay
-below that and larger volumes are streamed. The full Criterion sweep is slow; the
-printed tables are the main output. For a quick pass add `-- --measurement-time
-0.5 --sample-size 10`, or read the tables and stop the run.
+comparison, the conversion-cost matrix, the naive-versus-optimized OTAP-to-Parquet
+comparison, and the OTAP/IPC streaming amortization. The breakdown shapes are 10k,
+30k, and 60k log records. A single OTAP logs batch holds at most 65,535 records
+because the log id is a `u16`, so the shapes stay below that and larger volumes
+are streamed. The full Criterion sweep is slow; the printed tables are the main
+output. For a quick pass add `-- --measurement-time 0.5 --sample-size 10`, or read
+the tables and stop the run.
 
 ## Pipeline steps
 
@@ -179,6 +180,17 @@ attribute containers change:
 | F  -> P   parquet-ready (REE+FSB)  |      13.8 |           58.7 |
 | F  -> P   parquet write            |     144.9 |          242.8 |
 | P  -> F   parquet read             |      52.8 |          140.1 |
+
+Naive versus optimized OTAP-to-Parquet for the common OTLP -> batch -> Parquet
+case, where the batch is fresh and `parent_id`-grouped. `naive` is the hash-join
+flatten from `ANALYSIS.md`; `optimized` is the shared-column zero-copy build.
+Both write byte-identical Parquet, so only the flatten differs and the
+prepare-and-write is shared:
+
+| scenario       | flatten naive | flatten opt | prep+write | total naive | total opt |
+| -------------- | ------------: | ----------: | ---------: | ----------: | --------: |
+| log-heavy      |          47.7 |        10.7 |      168.5 |       216.3 |     179.3 |
+| resource-heavy |          79.6 |        60.4 |      265.1 |       344.7 |     325.5 |
 
 A companion write-up of what these ratios mean, including the streaming effect,
 is in [`ANALYSIS.md`](./ANALYSIS.md). The OTAP-flat single columnar view, the

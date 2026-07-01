@@ -588,6 +588,83 @@ fn print_conversion_matrix() {
     println!();
 }
 
+/// The common OTLP -> batch -> Parquet path, comparing the naive hash-join
+/// flatten used in `ANALYSIS.md` against the optimized shared-column build. Both
+/// produce byte-identical Parquet, so only the flatten differs; the Parquet
+/// prepare-and-write cost is shared. This assumes a fresh, `parent_id`-grouped
+/// batch straight from the encoder, which is exactly the OTLP -> batch -> Parquet
+/// case and is where the zero-copy log-attribute build applies.
+fn print_parquet_fastpath() {
+    use benchmarks::parquet_study::datagen::{RichGenParams, gen_logs_otap_rich};
+
+    let scenarios = [
+        RichGenParams {
+            label: "log-heavy",
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 60_000,
+            num_resource_attrs: 1,
+            num_scope_attrs: 2,
+            num_log_attrs: 9,
+        },
+        RichGenParams {
+            label: "resource-heavy",
+            num_resources: 600,
+            num_scopes: 1,
+            num_logs: 100,
+            num_resource_attrs: 20,
+            num_scope_attrs: 5,
+            num_log_attrs: 2,
+        },
+    ];
+
+    println!("\n=== OTAP -> Parquet: naive vs optimized flatten (indicative ms) ===");
+    println!("naive = hash-join flatten (ANALYSIS.md); optimized = shared-column zero-copy build.");
+    println!("Both write byte-identical Parquet; only the flatten differs. Assumes a fresh");
+    println!("parent_id-grouped batch, i.e. the OTLP -> batch -> Parquet case.");
+    println!(
+        "{:<16} {:>11} {:>10} {:>11} {:>12} {:>11} {:>12}",
+        "scenario", "flat-naive", "flat-opt", "prep+write", "total-naive", "total-opt", "pq-bytes"
+    );
+    for s in &scenarios {
+        let otap = gen_logs_otap_rich(s);
+        let flat_opt = otap_flat::flatten(&otap, Layout::Materialized).expect("opt flatten");
+        let ready = to_parquet_ready(&flat_opt).expect("ready");
+        let pq_opt = write_parquet(&ready, Compressor::Zstd.parquet()).expect("write");
+        // Confirm the naive path yields the same Parquet size.
+        let naive_ready =
+            to_parquet_ready(&Scheme::Nested.flatten(&otap).expect("naive")).expect("ready");
+        let pq_naive = write_parquet(&naive_ready, Compressor::Zstd.parquet()).expect("write");
+        debug_assert_eq!(
+            pq_opt.len(),
+            pq_naive.len(),
+            "naive/opt Parquet size differs"
+        );
+
+        let flat_naive_ms = median_ms(|| {
+            let _ = Scheme::Nested.flatten(&otap).expect("naive flatten");
+        });
+        let flat_opt_ms = median_ms(|| {
+            let _ = otap_flat::flatten(&otap, Layout::Materialized).expect("opt flatten");
+        });
+        let prep_write_ms = median_ms(|| {
+            let r = to_parquet_ready(&flat_opt).expect("ready");
+            let _ = write_parquet(&r, Compressor::Zstd.parquet()).expect("write");
+        });
+        println!(
+            "{:<16} {:>11.1} {:>10.1} {:>11.1} {:>12.1} {:>11.1} {:>12}",
+            s.label,
+            flat_naive_ms,
+            flat_opt_ms,
+            prep_write_ms,
+            flat_naive_ms + prep_write_ms,
+            flat_opt_ms + prep_write_ms,
+            pq_opt.len(),
+        );
+    }
+    println!();
+}
+
 /// OTAP/IPC streaming amortization: cold (first) versus warm (steady-state)
 /// per-batch size when a single long-lived Producer streams many batches, with
 /// the equivalent single Parquet file for reference.
@@ -635,6 +712,7 @@ fn bench_round_trip(c: &mut Criterion) {
     print_otap_flat_table();
     print_transfer_table();
     print_conversion_matrix();
+    print_parquet_fastpath();
     print_streaming_table(&streaming_shapes());
 
     let mut write_group = c.benchmark_group("parquet_study/write");
