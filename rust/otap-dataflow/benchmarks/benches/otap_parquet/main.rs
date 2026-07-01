@@ -45,11 +45,25 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-/// Input shapes: several block sizes larger than a few thousand log records,
-/// under a single resource/scope, which is the realistic case for a Parquet
-/// file.
+/// Input shapes for the breakdown: block sizes larger than a few thousand log
+/// records, under a single resource/scope. A single OTAP logs batch caps at
+/// 65,535 records because log ids are u16, so these stay below that limit; larger
+/// volumes must be streamed as multiple batches (see the streaming table).
 fn input_shapes() -> Vec<LogsGenParams> {
-    [10_000usize, 50_000, 100_000]
+    [10_000usize, 30_000, 60_000]
+        .into_iter()
+        .map(|num_logs| LogsGenParams {
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs,
+        })
+        .collect()
+}
+
+/// Batch sizes for the streaming table, spanning small to large so the fixed
+/// per-batch schema/dictionary overhead is visible as a fraction of the batch.
+fn streaming_shapes() -> Vec<LogsGenParams> {
+    [1_000usize, 10_000, 50_000]
         .into_iter()
         .map(|num_logs| LogsGenParams {
             num_resources: 1,
@@ -206,11 +220,51 @@ fn print_parquet_breakdown(shapes: &[LogsGenParams]) {
     }
 }
 
+/// OTAP/IPC streaming amortization: cold (first) versus warm (steady-state)
+/// per-batch size when a single long-lived Producer streams many batches, with
+/// the equivalent single Parquet file for reference.
+fn print_streaming_table(shapes: &[LogsGenParams]) {
+    println!("\n=== OTAP/IPC streaming amortization (bytes per batch) ===");
+    println!("One long-lived Producer streams batches: schema once, delta dictionaries.");
+    println!("cold = first batch (schema + full dictionaries + data); warm = steady-state batch.");
+    println!(
+        "pq-nested is the same batch as one Parquet file, which has no per-batch amortization."
+    );
+    println!(
+        "{:<8} {:<6} {:>12} {:>12} {:>10} {:>12} {:>9}",
+        "logs", "comp", "cold", "warm", "saved", "pq-nested", "warm/pq"
+    );
+    for shape in shapes {
+        let (otap, _) = gen_logs_otap(shape);
+        let flat = Scheme::Nested.flatten(&otap).expect("flatten");
+        for &comp in Scheme::Ipc.compressors() {
+            let sizes = ipc::stream_batch_sizes(&otap, comp, 6).expect("stream sizes");
+            let cold = sizes[0];
+            let warm = *sizes.last().expect("non-empty");
+            let pq = write_parquet(&flat, comp.parquet())
+                .expect("parquet write")
+                .len();
+            println!(
+                "{:<8} {:<6} {:>12} {:>12} {:>10} {:>12} {:>8.2}x",
+                shape.total_logs(),
+                comp.label(),
+                cold,
+                warm,
+                cold - warm,
+                pq,
+                warm as f64 / pq as f64,
+            );
+        }
+    }
+    println!();
+}
+
 fn bench_round_trip(c: &mut Criterion) {
     let shapes = input_shapes();
     print_size_table(&shapes);
     print_ipc_breakdown(&shapes);
     print_parquet_breakdown(&shapes);
+    print_streaming_table(&streaming_shapes());
 
     let mut write_group = c.benchmark_group("parquet_study/write");
     let _ = write_group.sample_size(10);

@@ -54,12 +54,14 @@ rather than the deprecated Hadoop-framed `LZ4`.
 cargo bench -p benchmarks --bench otap_parquet
 ```
 
-Three tables are printed to stdout before the timed round-trip benchmarks run:
-serialized size, the OTAP/IPC pipeline breakdown, and the Parquet pipeline
-breakdown. The default shapes are 10k, 50k, and 100k log records, so the full
-Criterion sweep is slow. The printed tables are the main output; for a quick pass
-add `-- --measurement-time 0.5 --sample-size 10`, or read the tables and stop the
-run.
+Four tables are printed to stdout before the timed round-trip benchmarks run:
+serialized size, the OTAP/IPC pipeline breakdown, the Parquet pipeline breakdown,
+and the OTAP/IPC streaming amortization. The breakdown shapes are 10k, 30k, and
+60k log records. A single OTAP logs batch holds at most 65,535 records because
+the log id is a `u16`, so the shapes stay below that and larger volumes are
+streamed. The full Criterion sweep is slow; the printed tables are the main
+output. For a quick pass add `-- --measurement-time 0.5 --sample-size 10`, or
+read the tables and stop the run.
 
 ## Pipeline steps
 
@@ -85,53 +87,69 @@ carries.
 ## Illustrative results
 
 These numbers come from one development machine running WSL with jemalloc, at the
-100,000 log-record shape whose OTLP protobuf encoding is 22,700,225 bytes.
-Absolute values vary by host, but the relationships are stable.
+50,000 log-record shape, which is a large but valid single OTAP batch. Absolute
+values vary by host, but the relationships are stable.
 
 Serialized size in bytes:
 
 | contender      | zstd    | lz4     | snappy  | none       |
 |----------------|---------|---------|---------|------------|
-| ipc            | 702,702 | 915,632 | n/a     | 24,428,084 |
-| parquet-nested | 384,740 | 518,503 | 800,452 | 7,079,037  |
-| parquet-wide   | 392,782 | 509,659 | 608,717 | 2,838,767  |
+| ipc            | 401,966 | 466,416 | n/a     | 12,221,748 |
+| parquet-nested | 240,211 | 329,298 | 405,397 | 2,118,185  |
+| parquet-wide   | 245,757 | 327,547 | 327,294 | 344,708    |
 
 OTAP/IPC pipeline breakdown, milliseconds:
 
 | comp | t-enc | ipc-ser | enc-tot | ipc-des | t-dec | dec-tot |
 |------|-------|---------|---------|---------|-------|---------|
-| zstd | 35.2  | 9.2     | 44.4    | 6.6     | 3.2   | 9.8     |
-| lz4  | 34.5  | 7.1     | 41.6    | 42.2    | 2.4   | 44.7    |
-| none | 39.5  | 64.9    | 104.4   | 54.6    | 2.5   | 57.1    |
+| zstd | 13.0  | 5.9     | 18.9    | 3.0     | 1.2   | 4.2     |
+| lz4  | 13.5  | 2.6     | 16.1    | 18.7    | 1.3   | 20.0    |
+| none | 12.6  | 29.6    | 42.2    | 27.1    | 1.2   | 28.3    |
 
 Parquet pipeline breakdown, milliseconds:
 
 | scheme / comp         | flatten | pq-write | enc-tot | pq-read | unflat | dec-tot |
 |-----------------------|---------|----------|---------|---------|--------|---------|
-| parquet-nested / zstd | 148     | 404      | 552     | 152     | 65     | 217     |
-| parquet-nested / lz4  | 148     | 329      | 477     | 143     | 70     | 213     |
-| parquet-map / zstd    | 139     | 363      | 503     | 160     | 63     | 223     |
-| parquet-map / lz4     | 139     | 334      | 474     | 167     | 67     | 234     |
-| parquet-wide / zstd   | 183     | 147      | 330     | 56      | 91     | 147     |
-| parquet-wide / lz4    | 183     | 147      | 330     | 55      | 87     | 142     |
+| parquet-nested / zstd | 44      | 127      | 171     | 39      | 16     | 55      |
+| parquet-nested / lz4  | 44      | 116      | 160     | 35      | 17     | 51      |
+| parquet-map / zstd    | 52      | 133      | 185     | 53      | 14     | 67      |
+| parquet-map / lz4     | 52      | 110      | 162     | 53      | 14     | 66      |
+| parquet-wide / zstd   | 69      | 25       | 94      | 14      | 20     | 34      |
+| parquet-wide / lz4    | 69      | 22       | 92      | 12      | 20     | 32      |
 
-A companion write-up of what these ratios mean is in
-[`ANALYSIS.md`](./ANALYSIS.md).
+Streaming amortization, IPC bytes per batch when a long-lived Producer streams
+many batches, with the equivalent single Parquet file for reference. `cold` is
+the first batch, `warm` is steady-state, and `saved` is the fixed schema and
+dictionary cost that streaming amortizes:
+
+| logs   | comp | cold    | warm    | saved  | pq-nested | warm/pq |
+|--------|------|---------|---------|--------|-----------|---------|
+| 1,000  | zstd | 24,748  | 13,422  | 11,326 | 19,512    | 0.69x   |
+| 10,000 | zstd | 92,270  | 80,944  | 11,326 | 57,023    | 1.42x   |
+| 50,000 | zstd | 401,966 | 390,640 | 11,326 | 240,211   | 1.63x   |
+
+A companion write-up of what these ratios mean, including the streaming effect,
+is in [`ANALYSIS.md`](./ANALYSIS.md).
 
 ## Takeaways
 
-- IPC is far cheaper than Parquet on both sides. At 100k with zstd, IPC encodes
-  in about 44 ms and decodes in about 10 ms, while `parquet-nested` encodes in
-  about 552 ms and decodes in about 217 ms. That is roughly 12 times cheaper to
-  encode and 22 times cheaper to decode.
-- Inside IPC encode, the transport-optimized encoding dominates, about 35 ms of
-  the 44 ms, and it is essentially compressor-independent because it runs before
+- IPC is far cheaper than Parquet on both sides. At 50k with zstd, IPC encodes in
+  about 19 ms and decodes in about 4 ms, while `parquet-nested` encodes in about
+  171 ms and decodes in about 55 ms. That is roughly 9 times cheaper to encode and
+  13 times cheaper to decode.
+- Inside IPC encode, the transport-optimized encoding dominates, about 13 ms of
+  the 19 ms, and it is essentially compressor-independent because it runs before
   compression. Inside IPC decode, the deserialization dominates and the transport
   decode is small.
+- Streaming amortizes a fixed cost of about 11 KB per batch, which is the schema
+  plus initial dictionaries. For small frequent batches this flips the size
+  verdict: at 1,000 records the steady-state IPC batch is 0.69x the Parquet file.
+  Parquet has no equivalent per-batch amortization. Because a batch cannot exceed
+  65,535 records, high volume is streamed, which is where this applies.
 - Inside Parquet encode, the Parquet writer dominates and the flatten is roughly
   a third to a half of the total. `parquet-wide` writes fastest because it has
   typed scalar columns rather than nested `List<Struct>` or `Map`, but it pays
-  more in flatten, and it ends up the cheapest Parquet encoder overall at 330 ms.
+  more in flatten, and it ends up the cheapest Parquet encoder overall at 94 ms.
 - Compression choice matters in surprising ways. For IPC, compression makes the
   serialize step faster because there is far less data to move, so `none` is the
   slowest to serialize, and `lz4` is much slower to deserialize than `zstd` in
@@ -148,8 +166,9 @@ A companion write-up of what these ratios mean is in
 Contenders are the `Scheme` enum and its `Codec` implementations in
 `benchmarks/src/parquet_study`. Add a variant to include a contender everywhere.
 The IPC sub-steps are `ipc::transport_encode`, `ipc::encode_to_bytes`,
-`ipc::deserialize`, and `ipc::transport_decode`; the Parquet steps are
-`Scheme::flatten`, `parquet_io::write_parquet`, `parquet_io::read_parquet`, and
-`Scheme::unflatten`. Input shapes are defined in `input_shapes()` in
+`ipc::deserialize`, and `ipc::transport_decode`, and `ipc::stream_batch_sizes`
+measures streaming amortization; the Parquet steps are `Scheme::flatten`,
+`parquet_io::write_parquet`, `parquet_io::read_parquet`, and `Scheme::unflatten`.
+Input shapes are defined in `input_shapes()` and `streaming_shapes()` in
 `benches/otap_parquet/main.rs`. The round-trips have unit tests runnable with
 `cargo test -p benchmarks --lib parquet_study`.

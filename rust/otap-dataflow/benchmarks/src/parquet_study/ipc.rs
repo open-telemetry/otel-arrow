@@ -69,6 +69,34 @@ pub fn transport_decode(logs: &mut OtapArrowRecords) -> StudyResult<()> {
     Ok(())
 }
 
+/// Serialize the same logs batch `count` times through a single long-lived
+/// [`Producer`], returning the wire size of each batch.
+///
+/// This models OTAP streaming: the Arrow schema is written once into the stream
+/// and dictionaries are delta-encoded, so `sizes[0]` is the cold size (schema
+/// plus full dictionaries plus data) while `sizes[1..]` are the steady-state
+/// sizes (data plus only new dictionary entries). Sending the identical batch
+/// repeatedly is a best case for dictionary amortization; real telemetry with
+/// varying values falls between the cold and steady-state sizes.
+pub fn stream_batch_sizes(
+    logs: &OtapArrowRecords,
+    compressor: Compressor,
+    count: usize,
+) -> StudyResult<Vec<usize>> {
+    let mut producer = Producer::new_with_options(ProducerOptions {
+        ipc_compression: compressor.ipc(),
+    });
+    let mut sizes = Vec::with_capacity(count);
+    for _ in 0..count {
+        let mut batch = logs.clone();
+        let bar = producer.produce_bar(&mut batch)?;
+        let mut buf = Vec::with_capacity(1024);
+        bar.encode(&mut buf)?;
+        sizes.push(buf.len());
+    }
+    Ok(sizes)
+}
+
 impl Codec for IpcCodec {
     fn name(&self) -> &'static str {
         "ipc"
@@ -111,6 +139,29 @@ mod tests {
                 &decoded,
                 codec.name(),
                 compressor.label(),
+            );
+        }
+    }
+
+    #[test]
+    fn streaming_amortizes_schema_and_dictionaries() {
+        let params = LogsGenParams {
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 2000,
+        };
+        let (otap, _) = gen_logs_otap(&params);
+
+        for compressor in Compressor::IPC {
+            let sizes = stream_batch_sizes(&otap, compressor, 4).expect("stream sizes");
+            // The steady-state batch (2nd onward) omits the schema header and
+            // re-sends only new dictionary entries, so it is smaller than the
+            // cold first batch.
+            assert!(
+                sizes[1] < sizes[0],
+                "{compressor:?}: steady {} not smaller than cold {}",
+                sizes[1],
+                sizes[0]
             );
         }
     }
