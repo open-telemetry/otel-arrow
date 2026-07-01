@@ -30,25 +30,34 @@ trait JournalSeek {
 /// forward from the first entry (the documented `SD_JOURNAL_FOREACH` idiom).
 ///
 /// `StartAt::End` is subtle. `sd_journal_seek_tail()` parks the read head
-/// *after* the most recent entry without making any entry current, and
-/// `sd_journal_next()` at the tail is documented to behave like
-/// `sd_journal_previous()` (it moves backward and ignores the advance). A bare
-/// `next()`/`wait()` follow loop therefore never advances onto entries appended
-/// after startup. So we step back once with `previous()` to anchor on the last
-/// existing entry; the worker's first `next()` then steps forward onto genuinely
-/// new entries.
+/// *after* the most recent entry without making any entry current. From there a
+/// bare `sd_journal_next()` advances toward a *following* entry, finds none, and
+/// returns `0` (the documented EOF marker) without anchoring — so a plain
+/// `next()`/`wait()` follow loop started at the raw tail never advances onto
+/// entries appended after startup (verified against real journald). (It is
+/// `sd_journal_step_one()`, not `sd_journal_next()`, that libsystemd documents as
+/// behaving like `sd_journal_previous()` at the tail.) So we step back once with
+/// `previous()` — documented to seek the closest *preceding* entry — to anchor on
+/// the last existing entry; the worker's first `next()` then steps forward onto
+/// genuinely new entries.
 ///
 /// When the journal is empty — or a filter matches none of the existing
 /// entries — `previous()` returns `0` and anchors nothing, leaving the read head
 /// parked at the tail where `next()` keeps returning `0` even after `wait()`
 /// reports appends (the same permanent stall the tail branch exists to avoid,
 /// verified against real journald). In that case we reposition to the head with
-/// `seek_head()`; because a well-behaved `previous()` returns `0` only when no
-/// matching entry exists yet, `next()` then follows onto the first entry
-/// appended after startup without replaying history. This assumes a reliable
-/// `seek_tail()` + `previous()`; a very old/buggy libsystemd of the
-/// systemd#17662 class that spuriously reports `0` while matching entries exist
-/// would replay that history once at startup (not observed on modern systemd).
+/// `seek_head()` so the follow loop can make progress. This does not replay
+/// history: `sd-journal` merges *all* open journal files (active plus
+/// rotated/archived) into a single view, and with the receiver's matches
+/// installed a well-behaved `previous()` returns `0` only when no matching entry
+/// exists in ANY of them yet — so `seek_head()` + `next()` land on the first
+/// matching entry appended *after* startup, with nothing older to replay. Replay
+/// would require `seek_tail()` + `previous()` to spuriously report `0` while
+/// matching entries actually exist (the multi-file positioning bug of the
+/// systemd#17662 class noted below); on such an old/buggy libsystemd it would
+/// replay that history once at startup (not observed on modern systemd). Bounding
+/// replay even under that bug would need a durable tail-boundary guard, which
+/// `start_at: end` deliberately omits (see the resume-anchor note below).
 ///
 /// Returns `Err((operation, rc))` with the failing call's name and its negative
 /// return code. `seek_tail`/`seek_head` return `0` on success; `previous`
