@@ -3003,6 +3003,74 @@ groups: {{}}
     }
 
     #[test]
+    fn controller_extension_panic_stops_parked_controller() {
+        const PANICKING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:panicking";
+
+        let engine_config = OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  controller:
+    extensions:
+      panicking:
+        type: "{}"
+groups: {{}}
+        "#,
+            PANICKING_CONTROLLER_EXTENSION_URN
+        ))
+        .expect("panicking controller extension config should parse");
+
+        let mut registry = ControllerExtensionRegistry::empty();
+        registry.register(
+            PANICKING_CONTROLLER_EXTENSION_URN.into(),
+            |_context| {
+                // A controller extension task that panics instead of returning Err.
+                let task_factory: ControllerExtensionTaskFactory =
+                    Box::new(|_cancellation_token| {
+                        Box::pin(async {
+                            panic!("simulated controller extension panic");
+                        })
+                    });
+                Ok(task_factory)
+            },
+            otap_df_config::validation::no_config,
+        );
+
+        let (result_tx, result_rx) = std_mpsc::channel();
+        let controller_thread = thread::spawn(move || {
+            let controller = Controller::new(empty_pipeline_factory());
+            let result = controller
+                .run_forever_with_options(
+                    engine_config,
+                    ControllerRunOptions {
+                        extensions: registry,
+                    },
+                )
+                .map_err(|err| err.to_string());
+            result_tx
+                .send(result)
+                .expect("test receiver should remain open");
+        });
+
+        // On the unfixed code this times out: a panicking extension never calls
+        // unpark(), so run_forever stays parked at thread::park() and no result
+        // is ever sent. The fix routes panics through the same shutdown + unpark
+        // + ControllerExtensionRuntimeError path as a returned Err.
+        let err = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("controller extension panic should unpark the controller")
+            .expect_err("controller should fail when a controller extension panics at runtime");
+        controller_thread
+            .join()
+            .expect("controller thread should not panic");
+
+        assert!(err.contains("Controller extension `panicking` failed"));
+        assert!(err.contains("panic"));
+    }
+
+    #[test]
     fn select_with_valid_single_core_range() {
         let available_core_ids = available_core_ids();
         let first_id = available_core_ids[0].id;
