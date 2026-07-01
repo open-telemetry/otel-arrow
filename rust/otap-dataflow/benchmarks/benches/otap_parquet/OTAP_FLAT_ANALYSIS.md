@@ -331,6 +331,40 @@ Parquet writer skip its own sort and produces meaningful row-group statistics,
 and it keeps the run-end runs maximal. The sort is optional, and its value grows
 after a merge or shuffle where the natural resource clustering has been broken.
 
+### A direct standard-to-Parquet path, and its ordering precondition
+
+Recognizing which columns are shared also yields a direct OTAP-standard to
+Parquet path that skips the hash join the naive flatten performs. It copies the
+ten `Logs` columns, attaches the log attributes as a `List<Struct>` whose struct
+children are the existing `LogAttrs` value columns, and materializes the resource
+and scope attributes as lists, then writes. The log-attribute attach is the
+zero-copy step, and it works by reading contiguous `parent_id` runs, so it
+depends on the attribute batches being grouped by `parent_id`.
+
+That grouping is present in a freshly encoded batch but not in a
+transport-optimized one, and the difference is not a matter of speed but of
+correctness. The OTAP encoder emits each parent's attributes contiguously, so a
+batch straight from OTLP has `LogAttrs.parent_id` as `[0, 0, ..., 1, 1, ...]`.
+The transport optimization then sorts each attribute batch by `(type, key,
+value, parent_id)` to compress the value columns, which scatters `parent_id`.
+A probe confirms it: on the fresh batch the zero-copy flatten round-trips
+exactly, while on the same batch after a wire round-trip the `parent_id` column
+is no longer grouped and the zero-copy path fails its own precondition. A
+converter that receives a transport-optimized batch must therefore regroup the
+attributes by `parent_id` first, which is a stable sort, or fall back to the hash
+join.
+
+This splits the pipeline cleanly. A gateway that encodes OTLP to OTAP and writes
+Parquet in the same place holds the fresh, `parent_id`-grouped batch and gets the
+direct path for free, which is the precompute-at-the-gateway case. A service that
+receives OTAP-standard off the wire holds a transport-optimized batch and pays a
+regroup before the direct path applies. There is a tension worth naming: the
+transport optimization sorts the `Logs` batch by `(resource, scope, trace_id)`,
+which helps Parquet by clustering the low-cardinality columns, but it sorts the
+attribute batches by key, which the flatten must undo. The attribute sort that
+shrinks the standard wire is wasted, and then some, for a receiver that flattens
+to Parquet.
+
 ## What this means for the pipeline
 
 The applied section of the companion analysis argued that when the gateway owns
@@ -359,11 +393,13 @@ OTAP already stored once.
 
 The zero-copy log-attribute build relies on the encoder emitting attributes
 grouped by `parent_id`, which the current OTAP producer does and which the probe
-confirmed. A path that reordered or interleaved attributes would need a stable
-sort first, which would add a pass but would still avoid the hash join. The key
-column is normalized from its dictionary encoding to plain `Utf8`, so that one
-column is cast rather than shared, while the other value columns are shared
-unchanged.
+confirmed. This is a correctness precondition, not just a performance one: the
+transport optimization re-sorts each attribute batch by key, so a
+transport-optimized batch is not grouped by `parent_id` and the zero-copy path
+must regroup it first or fall back to the hash join, as the standard-to-Parquet
+subsection above details. The key column is normalized from its dictionary
+encoding to plain `Utf8`, so that one column is cast rather than shared, while
+the other value columns are shared unchanged.
 
 The generated data models realistic telemetry with unique per-record ids and
 mixed-type attributes, which is what keeps the wire comparison honest, since
