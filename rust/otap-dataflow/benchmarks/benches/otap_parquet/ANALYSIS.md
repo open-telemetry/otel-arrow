@@ -162,7 +162,7 @@ This synthetic data is a best case for dictionary amortization, because every
 batch carries the identical low-cardinality values, so batches after the first
 send no new dictionary entries at all. Real telemetry amortizes only the stable
 low-cardinality columns, such as attribute keys, severity, and scope names. A
-high-cardinality column such as a trace id or a log body carries new values in
+high-cardinality column such as a log body carries new values in
 every batch, so its delta dictionary keeps sending new entries and does not
 amortize, and such a column is often better left non-dictionary. The measured
 amortization here should be read as the ceiling for dictionaries plus the schema,
@@ -248,12 +248,11 @@ appends pays far less than the 13x figure, and that is the regime where acceptin
 client Parquet wins.
 
 Third, any work that needs the row values still forces a full decode, so the goal
-is to move that work into the exporter. Per-record transforms and redaction move
-cleanly to the gateway, since the gateway is the last writer. Cross-source metric
-re-aggregation does not, because one gateway sees only its own slice, so temporal
-rollups across gateways remain a server-side read. Logs and traces are therefore
-the strong case for precomputed Parquet, while aggregated metrics are the residual
-case that still wants OTAP/IPC and a server-side convert.
+is to move that work into the exporter. For logs this is a clean fit, because the
+per-record work, parsing, filtering, redaction, and attribute shaping, is all done
+at the gateway, which is the last writer. Once it has run, the gateway holds the
+final records and can write them straight to Parquet, leaving the ingestion
+service to validate and append.
 
 Two operational costs remain. Because exporters run on customer-managed
 collectors, a storage-layout change cannot deploy atomically, so the ingestion
