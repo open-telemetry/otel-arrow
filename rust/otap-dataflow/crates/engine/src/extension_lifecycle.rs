@@ -59,7 +59,7 @@ pub(crate) struct ExtensionLifecycle {
     monitor: ExtensionMetricsMonitor,
     started_rx: mpsc::UnboundedReceiver<ExtensionKey>,
     // Keys we have not yet seen a spawn signal for. Each event (start signal
-    // or task completion) calls `remove`, which is idempotent — so a task
+    // or task completion) calls `remove`, which is idempotent -- so a task
     // that signals and then completes can never under-count its slot.
     pending_starts: HashSet<ExtensionKey>,
     extension_readiness_probes: Vec<(ExtensionKey, crate::extension::ReadinessProbe)>,
@@ -156,7 +156,7 @@ impl ExtensionLifecycle {
     }
 
     /// Yields the next extension completion or monitor tick. Spawn-handshake
-    /// signals on `started_rx` are drained silently — they only exist to
+    /// signals on `started_rx` are drained silently -- they only exist to
     /// power `wait_all_spawned`.
     pub async fn next_event(&mut self) -> LifecycleEvent {
         loop {
@@ -204,7 +204,7 @@ impl ExtensionLifecycle {
     /// before signalling are routed through the normal completion path; the
     /// first surfaced error is returned. A task that signals and then
     /// completes (success or failure) before the barrier observes the
-    /// completion is also surfaced as an error — `Ok(())` upgrades to
+    /// completion is also surfaced as an error -- `Ok(())` upgrades to
     /// `ExtensionExitedBeforeShutdown` via `route_joined`.
     pub async fn wait_all_spawned(&mut self) -> Result<(), Error> {
         loop {
@@ -999,7 +999,7 @@ mod tests {
     }
 
     /// After a completion is routed, `initiate_shutdown` must not signal the
-    /// completed extension's oneshot — even if its receiver is still alive.
+    /// completed extension's oneshot -- even if its receiver is still alive.
     #[test]
     fn initiate_shutdown_skips_already_completed_extension() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
@@ -1537,7 +1537,7 @@ mod tests {
 
             // Three fast extensions that signal immediately, plus a laggard
             // with the longest timeout that never signals. The gate must wait
-            // for the laggard, so the worst-case wait is the longest timeout —
+            // for the laggard, so the worst-case wait is the longest timeout --
             // and, because probes are awaited in parallel, never the sum.
             let fast = Duration::from_millis(500);
             let longest = Duration::from_secs(1);

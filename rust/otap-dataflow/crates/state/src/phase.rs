@@ -203,7 +203,7 @@ pub enum RejectReason {
 pub enum DeletionMode {
     /// Deletion preceded by a graceful drain of work/traffic.
     Graceful,
-    /// Immediate deletion that preempts draining and can drop in‑flight work.
+    /// Immediate deletion that preempts draining and can drop in-flight work.
     Forced,
 }
 

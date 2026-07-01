@@ -15,7 +15,7 @@ use otap_df_telemetry_macros::metric_set;
 /// Shared handle to the metrics tracker.
 ///
 /// The exporter runs on a single-threaded runtime (`#[async_trait(?Send)]`),
-/// so `Rc<RefCell<…>>` is sufficient—no `Arc`/`Mutex` overhead needed.
+/// so `Rc<RefCell<...>>` is sufficient--no `Arc`/`Mutex` overhead needed.
 pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsTracker>>;
 
 /// Telemetry metrics for the Azure Monitor Exporter.
@@ -145,7 +145,7 @@ impl AzureMonitorExporterMetricsTracker {
         &mut self.metrics
     }
 
-    // ── Metric accessors (delegated) ────────────────────────────────
+    // -- Metric accessors (delegated) --------------------------------
 
     /// Get the total number of successfully exported rows.
     #[inline]
@@ -252,7 +252,7 @@ impl AzureMonitorExporterMetricsTracker {
         self.metrics.msg_to_data_count.get()
     }
 
-    // ── Mutation helpers ────────────────────────────────────────────
+    // -- Mutation helpers --------------------------------------------
 
     /// Increment successful row count.
     #[inline]
@@ -486,7 +486,7 @@ mod tests {
         stats.record_laclient_status_code(599);
         assert_eq!(stats.metrics().laclient_http_5xx.get(), 3);
 
-        // Ignored status codes — counters should remain unchanged
+        // Ignored status codes -- counters should remain unchanged
         stats.record_laclient_status_code(100); // 1xx
         stats.record_laclient_status_code(301); // 3xx
         stats.record_laclient_status_code(404); // 4xx not tracked individually

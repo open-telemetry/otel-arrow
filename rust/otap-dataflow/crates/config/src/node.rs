@@ -370,11 +370,11 @@ pub const REDACTED_HEADER_VALUE: &str = "[REDACTED]";
 /// Two header shapes carry credentials in the OpenTelemetry ecosystem and are
 /// both handled, since node/extension `config` is opaque JSON:
 ///
-/// - **Map form** — `headers: { name: value }` (e.g. `config.headers` for
+/// - **Map form** -- `headers: { name: value }` (e.g. `config.headers` for
 ///   OTAP/gRPC, `config.http.headers` for OTLP/HTTP exporters). Every value is
 ///   masked; the keys are preserved so a snapshot still shows which headers are
 ///   configured.
-/// - **List form** — `headers: [ { key, value, ... }, ... ]` (e.g. the
+/// - **List form** -- `headers: [ { key, value, ... }, ... ]` (e.g. the
 ///   `headers_setter` schema). The static `value` of each entry is masked;
 ///   reference fields such as `from_context` / `from_attribute` are not secrets
 ///   and are left intact.

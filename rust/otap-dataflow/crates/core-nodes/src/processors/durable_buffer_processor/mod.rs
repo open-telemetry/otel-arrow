@@ -11,10 +11,10 @@
 //! # Architecture
 //!
 //! ```text
-//! Upstream → DurableBuffer → Downstream
-//!                    ↓
+//! Upstream -> DurableBuffer -> Downstream
+//!                    v
 //!              StorageEngine
-//!                    ↓
+//!                    v
 //!            WAL + Segments
 //! ```
 //!
@@ -30,10 +30,10 @@
 //!
 //! | Strategy | Behavior | Recommendation |
 //! |----------|----------|----------------|
-//! | `RoundRobin` | Data distributed across cores, each persists its share | ✅ **Recommended** |
-//! | `Random` | Similar to round-robin | ✅ OK |
-//! | `LeastLoaded` | Similar to round-robin | ✅ OK |
-//! | `Broadcast` | Same data persisted N times (once per core) | ⚠️ **Avoid** - causes N× storage and duplicates |
+//! | `RoundRobin` | Data distributed across cores, each persists its share | [x] **Recommended** |
+//! | `Random` | Similar to round-robin | [x] OK |
+//! | `LeastLoaded` | Similar to round-robin | [x] OK |
+//! | `Broadcast` | Same data persisted N times (once per core) | (!) **Avoid** - causes Nx storage and duplicates |
 //!
 //! For the outgoing edge (to exporters), any dispatch strategy is valid.
 //!
@@ -42,7 +42,7 @@
 //! - `Message::Data`: Ingested to storage, ACK sent upstream after durable write
 //! - `TimerTick`: Poll storage for bundles, send downstream
 //! - `Ack`: Extract BundleRef from calldata, call handle.ack()
-//! - `Nack (permanent)`: Call handle.reject() — no retry
+//! - `Nack (permanent)`: Call handle.reject() -- no retry
 //! - `Nack (transient)`: Call handle.defer() and schedule retry via a wakeup
 //! - `Shutdown`: Flush storage engine
 //!
@@ -137,9 +137,9 @@ const WARN_RATE_LIMIT: Duration = Duration::from_secs(10);
 /// Subscriber ID used by this processor.
 const SUBSCRIBER_ID: &str = "durable-buffer";
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Metrics
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Metrics for the durable buffer processor.
 ///
@@ -153,7 +153,7 @@ const SUBSCRIBER_ID: &str = "durable-buffer";
 #[metric_set(name = "otap.processor.durable_buffer")]
 #[derive(Debug, Default, Clone)]
 pub struct DurableBufferMetrics {
-    // ─── ACK/NACK tracking ──────────────────────────────────────────────────
+    // --- ACK/NACK tracking --------------------------------------------------
     // Note: Bundle send/receive counts are tracked by channel metrics.
     // These metrics track downstream acknowledgement status.
     /// Number of bundles acknowledged by downstream.
@@ -169,7 +169,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{bundle}")]
     pub bundles_nacked_permanent: Counter<u64>,
 
-    // ─── Rejected item metrics (per signal type) ────────────────────────
+    // --- Rejected item metrics (per signal type) ------------------------
     /// Number of log records rejected.
     #[metric(unit = "{log_record}")]
     pub rejected_log_records: Counter<u64>,
@@ -182,7 +182,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub rejected_spans: Counter<u64>,
 
-    // ─── Consumed item metrics (per signal type) ────────────────────────
+    // --- Consumed item metrics (per signal type) ------------------------
     /// Number of log records consumed (ingested to durable storage).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
     #[metric(unit = "{log_record}")]
@@ -198,7 +198,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub consumed_spans: Counter<u64>,
 
-    // ─── Produced item metrics (per signal type) ────────────────────────
+    // --- Produced item metrics (per signal type) ------------------------
     /// Number of log records produced (sent downstream).
     /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
     #[metric(unit = "{log_record}")]
@@ -214,7 +214,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub produced_spans: Counter<u64>,
 
-    // ─── Error and backpressure metrics ─────────────────────────────────────
+    // --- Error and backpressure metrics -------------------------------------
     /// Number of ingest errors (excludes backpressure/capacity rejections).
     #[metric(unit = "{error}")]
     pub ingest_errors: Counter<u64>,
@@ -227,7 +227,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{error}")]
     pub read_errors: Counter<u64>,
 
-    // ─── Storage metrics (updated on telemetry collection) ──────────────────
+    // --- Storage metrics (updated on telemetry collection) ------------------
     /// Current bytes used by persistent storage (WAL + segments).
     #[metric(unit = "By")]
     pub storage_bytes_used: Gauge<u64>,
@@ -262,7 +262,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{item}")]
     pub expired_items: ObserveCounter<u64>,
 
-    // ─── Retry metrics ──────────────────────────────────────────────────────
+    // --- Retry metrics ------------------------------------------------------
     /// Number of retry attempts scheduled.
     #[metric(unit = "{retry}")]
     pub retries_scheduled: Counter<u64>,
@@ -271,7 +271,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{bundle}")]
     pub in_flight: Gauge<u64>,
 
-    // ─── Requeued item metrics (per signal type) ────────────────────────────
+    // --- Requeued item metrics (per signal type) ----------------------------
     // These count individual items in NACKed bundles when scheduled for retry.
     /// Number of individual log records requeued for retry after NACK.
     #[metric(unit = "{log_record}")]
@@ -285,7 +285,7 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub requeued_spans: Counter<u64>,
 
-    // ─── Queued item metrics (per signal type) ──────────────────────────────
+    // --- Queued item metrics (per signal type) ------------------------------
     /// Current number of log records queued (ingested but not yet ACKed).
     #[metric(unit = "{log_record}")]
     pub queued_log_records: Gauge<u64>,
@@ -298,19 +298,19 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub queued_spans: Gauge<u64>,
 
-    // ─── Flush metrics ──────────────────────────────────────────────────────
+    // --- Flush metrics ------------------------------------------------------
     /// Number of segment finalization (flush) failures.
     /// Non-zero values indicate data at risk -- check logs for root cause.
     /// Data may still be recoverable via WAL replay on restart.
     #[metric(unit = "{error}")]
     pub flush_failures: Counter<u64>,
 
-    // ─── Utilization metrics ────────────────────────────────────────────────
+    // --- Utilization metrics ------------------------------------------------
     /// Current storage utilization ratio (0.0 to 1.0).
     #[metric(unit = "{1}")]
     pub storage_utilization: Gauge<f64>,
 
-    // ─── Data-loss metrics (per signal type) ────────────────────────────────
+    // --- Data-loss metrics (per signal type) --------------------------------
     /// Log records lost due to force-dropped segments (DropOldest policy).
     #[metric(unit = "{log_record}")]
     pub dropped_log_records: Counter<u64>,
@@ -336,9 +336,9 @@ pub struct DurableBufferMetrics {
     pub expired_metric_datapoints: Counter<u64>,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // BundleRef CallData Encoding
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Encode a BundleRef into CallData for ACK/NACK tracking.
 ///
@@ -363,9 +363,9 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Pending Bundle Tracking
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// State for tracking a pending downstream delivery.
 ///
@@ -396,9 +396,9 @@ enum ProcessBundleResult {
     Error(Error),
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // DurableBuffer
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Type alias for the bundle handle with our callback type.
 type QuiverBundleHandle = BundleHandle<RegistryCallback<SegmentStore>>;
@@ -429,7 +429,7 @@ enum RetryResumeOutcome {
 /// Cached per-segment signal classification for queued-item gauge computation.
 ///
 /// Populated once per segment (on first access after finalization) and never
-/// invalidated — segments are immutable after finalization.  Evicted when the
+/// invalidated -- segments are immutable after finalization.  Evicted when the
 /// segment is no longer tracked by the subscriber.
 struct SegmentMetricsSummary {
     /// Per-bundle `(item_count, signal_type)`, ordered by bundle index.
@@ -454,7 +454,7 @@ struct CachedSegmentMetrics {
 /// maintains a `segment_cache` that maps finalized segment sequences to their
 /// pre-computed per-bundle signal classification.  Because segments are
 /// **immutable** after finalization, the cache entry for a given segment
-/// never needs invalidation — only eviction when the segment is cleaned up.
+/// never needs invalidation -- only eviction when the segment is cleaned up.
 pub struct DurableBuffer {
     /// The Quiver engine state (lazy initialized on first message).
     engine_state: EngineState,
@@ -802,9 +802,9 @@ impl DurableBuffer {
     ///
     /// # Lock budget
     ///
-    /// 1. `pending_segment_progress` — subscriber read-lock (brief clone).
-    /// 2. Per cache-miss: `bundle_metadata` — segment-store read-lock.
-    /// 3. `open_segment_metrics` — engine open-segment lock (brief snapshot).
+    /// 1. `pending_segment_progress` -- subscriber read-lock (brief clone).
+    /// 2. Per cache-miss: `bundle_metadata` -- segment-store read-lock.
+    /// 3. `open_segment_metrics` -- engine open-segment lock (brief snapshot).
     ///
     /// After snapshots are taken, all iteration is lock-free.
     fn recompute_metrics(&mut self, engine: &QuiverEngine, subscriber_id: &SubscriberId) {
@@ -901,7 +901,7 @@ impl DurableBuffer {
             let mut seg_metrics = 0;
             let mut seg_spans = 0;
 
-            // Fast path: no bundles resolved → use precomputed totals.
+            // Fast path: no bundles resolved -> use precomputed totals.
             if progress.resolved_count() == 0 {
                 seg_logs = summary.total_logs;
                 seg_metrics = summary.total_metrics;
@@ -1111,7 +1111,7 @@ impl DurableBuffer {
     ///
     /// # Data Flow
     ///
-    /// 1. Data is written to Quiver's durable storage (WAL → segment finalization)
+    /// 1. Data is written to Quiver's durable storage (WAL -> segment finalization)
     /// 2. Upstream is ACK'd after successful durable write
     /// 3. Data becomes visible to subscribers after segment finalization
     /// 4. Timer tick polls for finalized bundles and forwards downstream
@@ -1877,9 +1877,9 @@ impl DurableBuffer {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Processor Trait Implementation
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 #[async_trait(?Send)]
 impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
@@ -2003,9 +2003,9 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Factory Registration
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Factory function to create a DurableBuffer.
 pub fn create_durable_buffer(
@@ -2740,7 +2740,7 @@ mod tests {
     ///
     /// The `queued_log_records` (and siblings) gauge tracks items ingested but
     /// not yet resolved (ACKed or rejected). When a bundle is permanently
-    /// NACKed, it must be decremented just like an ACK — otherwise the gauge
+    /// NACKed, it must be decremented just like an ACK -- otherwise the gauge
     /// drifts upward, giving operators a false picture of backlog.
     #[test]
     fn test_permanent_nack_decrements_queued_gauge() {

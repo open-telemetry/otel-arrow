@@ -110,16 +110,16 @@ pub(crate) struct RuntimeControlMetrics {
     pub shutdown_received: Counter<u64>,
     /// Count of `DrainIngress` fan-out operations sent to receivers.
     ///
-    /// This confirms that shutdown moved from “requested” to “stop admitting
-    /// new ingress”, which is the first active liveness step of graceful drain.
+    /// This confirms that shutdown moved from "requested" to "stop admitting
+    /// new ingress", which is the first active liveness step of graceful drain.
     ///
     /// Level: `normal`.
     #[metric(name = "drain_ingress.sent", unit = "{message}")]
     pub drain_ingress_sent: Counter<u64>,
     /// Count of `ReceiverDrained` notifications received from receivers.
     ///
-    /// This shows actual receiver-side drain progress and helps distinguish “no
-    /// work admitted anymore” from “receivers have really finished draining”.
+    /// This shows actual receiver-side drain progress and helps distinguish "no
+    /// work admitted anymore" from "receivers have really finished draining".
     ///
     /// Level: `normal`.
     #[metric(name = "receiver_drained.received", unit = "{message}")]

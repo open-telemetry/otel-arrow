@@ -9,13 +9,13 @@
 //! The hierarchical structure mirrors the OTLP traces data model:
 //! ```text
 //! OtapTracesView (TracesView)
-//! └── OtapResourceSpansView (ResourceSpansView)
-//!     └── OtapScopeSpansView (ScopeSpansView)
-//!         └── OtapSpanView (SpanView)
-//!             ├── attributes (via OtapAttributeIter)
-//!             ├── OtapEventView (EventView)
-//!             ├── OtapLinkView (LinkView)
-//!             └── OtapStatusView (StatusView)
+//! +-- OtapResourceSpansView (ResourceSpansView)
+//!     +-- OtapScopeSpansView (ScopeSpansView)
+//!         +-- OtapSpanView (SpanView)
+//!             +-- attributes (via OtapAttributeIter)
+//!             +-- OtapEventView (EventView)
+//!             +-- OtapLinkView (LinkView)
+//!             +-- OtapStatusView (StatusView)
 //! ```
 
 use std::collections::BTreeMap;
@@ -70,7 +70,7 @@ pub struct OtapTracesView<'a> {
     resource_attrs_map: BTreeMap<u16, Vec<usize>>,
     scope_attrs_map: BTreeMap<u16, Vec<usize>>,
     span_attrs_map: BTreeMap<u16, Vec<usize>>,
-    // Event and link attributes use u32 parent_id per OTAP spec §5.4.1
+    // Event and link attributes use u32 parent_id per OTAP spec sec.5.4.1
     event_attrs_map: BTreeMap<u32, Vec<usize>>,
     link_attrs_map: BTreeMap<u32, Vec<usize>>,
 
@@ -722,7 +722,7 @@ impl<'a> EventView for OtapEventView<'a> {
 
     #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        // Event attributes use u32 parent_id per OTAP spec §5.4.1
+        // Event attributes use u32 parent_id per OTAP spec sec.5.4.1
         let event_id = self.get_event_id();
         let matching_rows = event_id
             .and_then(|id| self.view.event_attrs_map.get(&id))
@@ -852,7 +852,7 @@ impl<'a> LinkView for OtapLinkView<'a> {
 
     #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        // Link attributes use u32 parent_id per OTAP spec §5.4.1
+        // Link attributes use u32 parent_id per OTAP spec sec.5.4.1
         let link_id = self.get_link_id();
         let matching_rows = link_id
             .and_then(|id| self.view.link_attrs_map.get(&id))

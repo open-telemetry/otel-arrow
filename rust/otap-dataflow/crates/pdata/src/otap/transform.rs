@@ -1459,7 +1459,7 @@ pub fn transform_attributes_impl(
             )?;
             (attrs_record_batch_cow, is_transport_optimized, ranges)
         } else {
-            // Transport-optimized but no target key exists — no collision possible
+            // Transport-optimized but no target key exists -- no collision possible
             (attrs_record_batch_cow, is_transport_optimized, Vec::new())
         }
     } else {
@@ -2113,7 +2113,7 @@ fn extract_dict_string_values(key_col: &ArrayRef) -> Result<&StringArray> {
 /// Downcast the `parent_id` column to the appropriate `PrimitiveArray` type and
 /// dispatch to the generic [`find_rename_collisions_to_delete_ranges`].
 ///
-/// For dictionary-encoded parent_ids, the dictionary keys are passed directly —
+/// For dictionary-encoded parent_ids, the dictionary keys are passed directly --
 /// their ordinal values still partition rows by parent identity, which is
 /// sufficient for collision detection.
 fn dispatch_find_rename_collisions(
@@ -2176,7 +2176,7 @@ fn dispatch_find_rename_collisions(
 /// duplicate.
 ///
 /// Optimized to:
-/// 1. Check new_key (target) first — collisions are rare, so we exit early when
+/// 1. Check new_key (target) first -- collisions are rare, so we exit early when
 ///    the target key doesn't exist in the column.
 /// 2. Use `find_matching_key_ranges` (raw offset/values buffer scan) instead of
 ///    the arrow `eq` compute kernel, which has significant per-call overhead.
@@ -6527,7 +6527,7 @@ mod test {
     #[test]
     fn test_materialize_parent_ids_when_rename_merges_runs() {
         // This test covers the rename-only case where quasi-delta parent ID encoding can become invalid.
-        // Additionally, renaming k2→k1 creates a collision at parent_id=1 (row 2 with k2 → k1
+        // Additionally, renaming k2->k1 creates a collision at parent_id=1 (row 2 with k2 -> k1
         // would duplicate existing k1 rows at rows 0 and 3), so those colliding k1 rows are removed.
         let schema = Arc::new(Schema::new(vec![
             // note: absence of encoding metadata means we assume it's quasi-delta encoded
@@ -6537,7 +6537,7 @@ mod test {
             Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
         ]));
 
-        // After rename k2→k1, quasi-delta parent_ids are materialized to [1,2,1,1,2].
+        // After rename k2->k1, quasi-delta parent_ids are materialized to [1,2,1,1,2].
         // Collision detection removes rows 0 and 3 (pid=1, key=k1), leaving rows 1,2,4.
         let expected_schema = Arc::new(Schema::new(vec![
             Field::new(consts::PARENT_ID, DataType::UInt16, false).with_plain_encoding(),
@@ -6602,8 +6602,8 @@ mod test {
     #[test]
     fn test_materialize_parent_ids_when_rename_merges_runs_dict_keys() {
         // Same as the above test, but with dictionary-encoded keys.
-        // Renaming k2→k1 triggers materialization, then collision detection removes
-        // rows 0 and 3 (pid=1, key=k1) that would conflict with renamed row 2 (pid=1, k2→k1).
+        // Renaming k2->k1 triggers materialization, then collision detection removes
+        // rows 0 and 3 (pid=1, key=k1) that would conflict with renamed row 2 (pid=1, k2->k1).
         let schema = Arc::new(Schema::new(vec![
             // note: absence of encoding metadata means we assume it's quasi-delta encoded
             Field::new(consts::PARENT_ID, DataType::UInt16, false),
@@ -10753,16 +10753,16 @@ mod upsert_tests {
     ///   row | parent_id | key | val
     ///   ----+-----------+-----+----
     ///    0  |     1     |  a  | v1
-    ///    1  |     1     |  b  | v2   ← collision: pid=1 already has key "a" being renamed to "b"
+    ///    1  |     1     |  b  | v2   <- collision: pid=1 already has key "a" being renamed to "b"
     ///    2  |     2     |  a  | v3
-    ///    3  |     2     |  c  | v4   ← real delete target
-    ///    4  |     3     |  b  | v5   ← no collision: pid=3 has no key "a"
+    ///    3  |     2     |  c  | v4   <- real delete target
+    ///    4  |     3     |  b  | v5   <- no collision: pid=3 has no key "a"
     ///
-    /// Transform: rename a→b, delete c
+    /// Transform: rename a->b, delete c
     ///
     /// After collision removal: row 1 is removed (pid=1 has both "a" and "b")
     /// After delete: row 3 is removed (key "c")
-    /// Remaining: rows 0, 2, 4 → keys [b, b, b], vals [v1, v3, v5], pids [1, 2, 3]
+    /// Remaining: rows 0, 2, 4 -> keys [b, b, b], vals [v1, v3, v5], pids [1, 2, 3]
     #[test]
     fn test_rename_collision_with_real_delete_utf8() {
         let schema = Arc::new(Schema::new(vec![
@@ -10839,7 +10839,7 @@ mod upsert_tests {
         ]));
 
         // dict values: ["a", "b", "c"]
-        // dict keys:   [ 0,   1,   0,   2,   1 ]  → a, b, a, c, b
+        // dict keys:   [ 0,   1,   0,   2,   1 ]  -> a, b, a, c, b
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -10876,7 +10876,7 @@ mod upsert_tests {
         )
         .unwrap();
 
-        // After transform: rows 0, 2, 4 survive → all keys are now "b" (renamed from "a"
+        // After transform: rows 0, 2, 4 survive -> all keys are now "b" (renamed from "a"
         // or already "b"), vals: [v1, v3, v5], pids: [1, 2, 3]
         let result_keys = result
             .column_by_name(consts::ATTRIBUTE_KEY)
@@ -10936,7 +10936,7 @@ mod upsert_tests {
         ]));
 
         // dict values: ["a", "b", "c"]
-        // dict keys:   [ 0,   1,   0,   2,   1 ]  → a, b, a, c, b
+        // dict keys:   [ 0,   1,   0,   2,   1 ]  -> a, b, a, c, b
         let input = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -10973,7 +10973,7 @@ mod upsert_tests {
         )
         .unwrap();
 
-        // After transform: rows 0, 2, 4 survive → all keys are now "b" (renamed from "a"
+        // After transform: rows 0, 2, 4 survive -> all keys are now "b" (renamed from "a"
         // or already "b"), vals: [v1, v3, v5], pids: [1, 2, 3]
         let result_keys = result
             .column_by_name(consts::ATTRIBUTE_KEY)

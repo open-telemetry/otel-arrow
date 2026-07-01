@@ -109,7 +109,7 @@ pub struct EngineConfig {
 
     /// Opaque metadata for applications that embed the dataflow engine.
     ///
-    /// The engine ignores this field entirely — embedding binaries can
+    /// The engine ignores this field entirely -- embedding binaries can
     /// read namespaced keys for their own engine-level concerns
     /// (remote management, auth, fleet coordination, etc.).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -124,21 +124,21 @@ impl EngineConfig {
     /// header-bearing config and are redacted with the same policy as pipeline
     /// nodes/extensions:
     ///
-    /// - `controller.extensions` — controller-owned extensions whose `config`
+    /// - `controller.extensions` -- controller-owned extensions whose `config`
     ///   is the same opaque [`Value`] as a node's. See
     ///   [`ControllerExtensions::redacted_for_snapshot`].
-    /// - `observability.pipeline.nodes` — the engine observability pipeline's
+    /// - `observability.pipeline.nodes` -- the engine observability pipeline's
     ///   node set. See [`PipelineNodes::redacted_for_snapshot`].
-    /// - `telemetry.metrics.readers[].exporter.config` — each metrics reader's
+    /// - `telemetry.metrics.readers[].exporter.config` -- each metrics reader's
     ///   opaque exporter `config` [`Value`]. See
     ///   [`TelemetryConfig::redacted_for_snapshot`].
-    /// - `custom` — opaque, freeform metadata the engine never interprets, but
+    /// - `custom` -- opaque, freeform metadata the engine never interprets, but
     ///   the most likely place an embedder stashes arbitrary config (including
     ///   auth `headers`). The whole map is walked with the same
     ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
-    ///   used by the structured arms, so any value under a `headers` key — map
+    ///   used by the structured arms, so any value under a `headers` key -- map
     ///   or `[{key, value}]` list form, at any depth, including a top-level
-    ///   `custom.headers` — is masked. Matching is on the conventional
+    ///   `custom.headers` -- is masked. Matching is on the conventional
     ///   lowercase `headers` key only.
     ///
     /// The remaining strongly-typed engine settings (`observed_state`,
@@ -505,7 +505,7 @@ groups:
         // config. Controller extensions, the engine observability pipeline's
         // nodes, and each telemetry metrics reader's opaque exporter `config`
         // all carry raw header-bearing config, so redaction must reach them too
-        // — not just `groups`. Deserialize directly (no validation) to keep the
+        // -- not just `groups`. Deserialize directly (no validation) to keep the
         // test focused on redaction.
         let yaml = r#"
 version: otel_dataflow/v1
@@ -573,7 +573,7 @@ engine:
     #[test]
     fn redacted_for_snapshot_masks_headers_under_engine_custom() {
         // `engine.custom` is freeform metadata the engine never interprets, but
-        // `/api/v1/config` still serializes it — so auth `headers` an embedder
+        // `/api/v1/config` still serializes it -- so auth `headers` an embedder
         // stashes there must be masked too, matching the policy applied to the
         // structured engine arms. The whole map is treated as one object so a
         // *top-level* `custom.headers` is caught just like a nested one, and the
@@ -1427,7 +1427,7 @@ groups:
       health:
         ready_if: [Failed]
     pipelines:
-      # Pipeline sets only channel_capacity → gets telemetry from group,
+      # Pipeline sets only channel_capacity -> gets telemetry from group,
       # health from group, channel_capacity from itself.
       pipeline_with_capacity:
         policies:
@@ -1447,8 +1447,8 @@ groups:
         connections:
           - from: receiver
             to: exporter
-      # Pipeline sets only health → gets channel_capacity from group
-      # (absent) → falls through to engine; telemetry from group.
+      # Pipeline sets only health -> gets channel_capacity from group
+      # (absent) -> falls through to engine; telemetry from group.
       pipeline_with_health:
         policies:
           health:
@@ -1463,7 +1463,7 @@ groups:
         connections:
           - from: receiver
             to: exporter
-      # No pipeline-level policies → inherits everything from group,
+      # No pipeline-level policies -> inherits everything from group,
       # with channel_capacity falling through to engine level.
       pipeline_no_policies:
         nodes:
@@ -1510,7 +1510,7 @@ groups:
         );
 
         // pipeline_with_health: health from pipeline, telemetry from group,
-        // channel_capacity absent at both pipeline and group → falls through to engine.
+        // channel_capacity absent at both pipeline and group -> falls through to engine.
         let p = find("pipeline_with_health");
         assert_eq!(
             p.policies.health.ready_if,

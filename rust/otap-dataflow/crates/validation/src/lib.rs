@@ -1387,7 +1387,7 @@ mod tests {
     }
 
     /// End-to-end validation: transport headers injected by the fake data
-    /// generator survive the full pipeline chain (generator → SUV → capture)
+    /// generator survive the full pipeline chain (generator -> SUV -> capture)
     /// and can be asserted via transport header validation instructions.
     ///
     /// Only OTLP receivers and exporters support transport header

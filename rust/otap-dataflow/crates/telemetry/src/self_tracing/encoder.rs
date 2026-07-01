@@ -83,7 +83,7 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 /// Encode the event name from callsite metadata.
 ///
 /// Emits the bare `callsite.name()` (the first argument to `otel_info!` /
-/// `otel_warn!` / …). The crate name (`callsite.target()`) is **not**
+/// `otel_warn!` / ...). The crate name (`callsite.target()`) is **not**
 /// prefixed here; it is conveyed separately through
 /// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
 /// `event.name` on the wire matches the value declared in the
@@ -261,7 +261,7 @@ fn encode_debug_string<B: BoundedBuf>(buf: &mut B, value: &dyn std::fmt::Debug) 
 /// Compute the per-attribute budget: at most half of remaining space, but
 /// at least 1 byte (to ensure a chance of a tag byte being written and
 /// triggering an atomic drop). Intentionally halves for every attribute,
-/// including the last — this keeps the policy single-pass without requiring
+/// including the last -- this keeps the policy single-pass without requiring
 /// pre-counting the field set, while still preventing one large value from
 /// consuming the entire remaining buffer.
 #[inline]
@@ -611,7 +611,7 @@ pub fn encode_export_logs_request(
         buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
             // ScopeLogs.scope (field 1, InstrumentationScope message)
             buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) — the crate
+                // InstrumentationScope.name (field 1, string) -- the crate
                 // that emitted the event (i.e. the tracing target,
                 // `env!("CARGO_PKG_NAME")` at the call site). Pairing
                 // scope.name with the bare `event.name` encoded below
@@ -1008,7 +1008,7 @@ mod tests {
 
     /// Verify `record_debug` formats a Debug value directly into the buffer
     /// (via the `BoundedBufFmt` adapter) and produces a decodable KeyValue
-    /// whose string matches `format!("{:?}", value)` — i.e. no truncation
+    /// whose string matches `format!("{:?}", value)` -- i.e. no truncation
     /// when the value comfortably fits.
     #[test]
     fn record_debug_writes_fmt_output_without_intermediate_string() {
@@ -1061,7 +1061,7 @@ mod tests {
     /// When a Debug value overflows the available buffer, `BoundedBufFmt`
     /// returns `fmt::Error` from the formatter, `encode_debug_string`
     /// propagates `Dropped`, and the surrounding `try_encode` rolls back
-    /// any partial KeyValue bytes — leaving the buffer unchanged and
+    /// any partial KeyValue bytes -- leaving the buffer unchanged and
     /// incrementing `dropped_count`.
     #[test]
     fn record_debug_overflow_rolls_back_and_increments_dropped() {
@@ -1094,7 +1094,7 @@ mod tests {
             "the single oversized debug field should be counted as dropped"
         );
 
-        // No partial KeyValue bytes survive — the transaction was rolled back.
+        // No partial KeyValue bytes survive -- the transaction was rolled back.
         assert_eq!(
             buf.len(),
             before_len,

@@ -201,7 +201,7 @@ mod tests {
         "#;
         let config: MetricsPullExporterConfig = serde_yaml::from_str(yaml_str).unwrap();
         assert_eq!(config.exporter_type, MetricsPullExporterType::Prometheus);
-        // Should succeed — PrometheusExporterConfig has defaults for all fields,
+        // Should succeed -- PrometheusExporterConfig has defaults for all fields,
         // and from_config treats null as an empty object.
         config
             .validate()
