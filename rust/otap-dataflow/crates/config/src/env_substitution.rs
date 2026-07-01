@@ -243,15 +243,15 @@ mod tests {
     fn test_non_ascii_characters() {
         with_var(
             "GREETING",
-            "\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}",
+            "こんにちは", // sanitycheck: allow-non-ascii-line
             || {
                 let result = substitute_env_vars(
-                "message: \"${env:GREETING}\", endpoint: \"ch\u{E2}teau-\u{E9}l\u{E8}ve.example.com:4317\"",
-            )
-            .unwrap();
+                    "message: \"${env:GREETING}\", endpoint: \"château-élève.example.com:4317\"", // sanitycheck: allow-non-ascii-line
+                )
+                .unwrap();
                 assert_eq!(
                     result,
-                    "message: \"\u{3053}\u{3093}\u{306B}\u{3061}\u{306F}\", endpoint: \"ch\u{E2}teau-\u{E9}l\u{E8}ve.example.com:4317\""
+                    "message: \"こんにちは\", endpoint: \"château-élève.example.com:4317\"" // sanitycheck: allow-non-ascii-line
                 );
             },
         );

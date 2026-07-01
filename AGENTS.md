@@ -3,6 +3,12 @@
 If working on Rust code (i.e., the `rust/` directory), read and follow all
 instructions in [rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md).
 
+## ASCII-only source
+
+Rust source under `rust/otap-dataflow` must be ASCII-only; CI
+(`tools/sanitycheck.py`) rejects non-ASCII bytes in those `.rs` files. See
+[rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md#ascii-only-rust-source).
+
 ## Changelog entries
 
 If your change is user-facing, add a changelog entry by **copying
