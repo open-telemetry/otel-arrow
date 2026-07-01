@@ -26,7 +26,13 @@ pub(crate) struct JournalField {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct JournalEntry {
     pub(crate) cursor: String,
-    pub(crate) message_body: Option<Vec<u8>>,
+    /// Index into `fields` of the `MESSAGE` field used as the log body. This is
+    /// the entry's FIRST `MESSAGE`, but only if it survived extraction: if that
+    /// first `MESSAGE` was dropped (e.g. oversized), this stays `None` even when
+    /// a later `MESSAGE` remains in `fields`. Stored as an index so the message
+    /// payload is held once (in `fields`) instead of being cloned into a second
+    /// buffer.
+    pub(crate) message_body_index: Option<usize>,
     pub(crate) realtime_unix_nano: u64,
     pub(crate) fields: Vec<JournalField>,
     pub(crate) dropped_fields: u64,
@@ -43,6 +49,17 @@ impl JournalEntry {
         self.fields
             .iter()
             .find(|field| field.name == key)
+            .map(|field| field.value.as_slice())
+    }
+
+    /// Returns the log body: the value at `message_body_index` — the entry's
+    /// first `MESSAGE` field if it was kept, otherwise `None` (including the
+    /// case where the first `MESSAGE` was dropped but a later `MESSAGE` survives
+    /// in `fields`). Reads the bytes back from `fields`, so the message payload
+    /// is not duplicated.
+    pub(crate) fn message_body(&self) -> Option<&[u8]> {
+        self.message_body_index
+            .and_then(|index| self.fields.get(index))
             .map(|field| field.value.as_slice())
     }
 }
@@ -78,7 +95,7 @@ impl JournaldArrowRecordsBuilder {
         );
         self.logs.append_severity_text(None);
 
-        match entry.message_body.as_deref() {
+        match entry.message_body() {
             Some(message) if std::str::from_utf8(message).is_ok() => {
                 self.logs.body.append_str(message);
             }
@@ -168,7 +185,7 @@ mod tests {
     fn projects_message_priority_time_and_attributes() {
         let entry = JournalEntry {
             cursor: "s=1".to_owned(),
-            message_body: Some(b"hello".to_vec()),
+            message_body_index: Some(0),
             realtime_unix_nano: 123,
             fields: vec![
                 JournalField {
@@ -224,7 +241,7 @@ mod tests {
     fn leaves_body_unset_when_first_message_was_dropped() {
         let entry = JournalEntry {
             cursor: "s=2".to_owned(),
-            message_body: None,
+            message_body_index: None,
             realtime_unix_nano: 456,
             fields: vec![JournalField {
                 name: "MESSAGE".to_owned(),
