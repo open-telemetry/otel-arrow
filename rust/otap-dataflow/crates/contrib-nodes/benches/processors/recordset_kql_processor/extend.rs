@@ -38,12 +38,14 @@ fn generate_logs_batch(batch_size: usize) -> Vec<u8> {
                     value: Some(AnyValue {
                         value: Some(Value::StringValue(namespace.into())),
                     }),
+                    ..Default::default()
                 },
                 KeyValue {
                     key: "code.line.number".into(),
                     value: Some(AnyValue {
                         value: Some(Value::IntValue((i % 5) as i64)),
                     }),
+                    ..Default::default()
                 },
             ];
 
