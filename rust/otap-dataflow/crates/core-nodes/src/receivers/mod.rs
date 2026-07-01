@@ -25,3 +25,6 @@ pub mod host_metrics_receiver;
 
 /// Journald receiver.
 pub mod journald_receiver;
+
+/// Probe emitter receiver (synthetic probes for end-to-end latency measurement).
+pub mod probe_emitter_receiver;
