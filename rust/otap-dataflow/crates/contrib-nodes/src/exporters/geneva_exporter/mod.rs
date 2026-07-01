@@ -941,6 +941,9 @@ mod tests {
 
     #[test]
     fn geneva_exporter_emits_ack_for_empty_payload() {
+        // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
+        // process-wide crypto provider, which production installs at startup.
+        otap_df_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -980,6 +983,9 @@ mod tests {
 
     #[test]
     fn geneva_exporter_emits_nack_for_decode_failure() {
+        // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
+        // process-wide crypto provider, which production installs at startup.
+        otap_df_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -1176,6 +1182,9 @@ mod tests {
 
     #[test]
     fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
+        // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
+        // process-wide crypto provider, which production installs at startup.
+        otap_df_otap::crypto::ensure_crypto_provider();
         let config = serde_json::json!({
             "endpoint": "https://localhost",
             "environment": "test",
