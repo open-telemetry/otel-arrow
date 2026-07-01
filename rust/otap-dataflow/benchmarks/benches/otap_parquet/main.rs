@@ -5,17 +5,16 @@
 //!
 //! Compares the read/write cost and serialized size of OTAP logs encoded as
 //! compressed Arrow IPC (the representation we have today) versus several
-//! flattened single-file Parquet layouts, across the `zstd`, `lz4`, `snappy`,
-//! and `none` compressors.
+//! flattened single-file Parquet layouts, and breaks each pipeline into its
+//! sub-steps so the cost of every stage is visible.
 //!
-//! Two questions are answered:
+//! Starting from an OTAP logs batch (four record batches: Logs, ResourceAttrs,
+//! ScopeAttrs, LogAttrs):
 //!
-//! 1. Round-trip cost and size of each representation (the `write` / `read` and
-//!    size-table output).
-//! 2. Where the OTAP -> Parquet conversion CPU lands, given the data ends up as
-//!    Parquet on the server either way (the `server_cost` output): the server
-//!    converting received OTAP/IPC (Option A) versus accepting Parquet the
-//!    client already produced (Option B).
+//! - OTAP/IPC encode = transport-optimize, then Arrow IPC serialize (+compress).
+//!   Decode = IPC deserialize, then transport-decode.
+//! - Parquet encode = flatten to one Arrow record batch, then write Parquet.
+//!   Decode = read Parquet, then unflatten.
 //!
 //! Run with:
 //!
@@ -23,7 +22,8 @@
 //! cargo bench -p benchmarks --bench otap_parquet
 //! ```
 //!
-//! Two tables are printed to stdout before the timed benchmarks run.
+//! Three tables (size, OTAP/IPC breakdown, Parquet breakdown) are printed to
+//! stdout before the timed round-trip benchmarks run.
 
 #![allow(missing_docs)]
 // This benchmark intentionally prints comparison tables to stdout before
@@ -35,19 +35,8 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use benchmarks::parquet_study::datagen::{LogsGenParams, gen_logs_otap};
-use benchmarks::parquet_study::{Compressor, Scheme, StudyResult, server};
-
-/// Reparse a stored flattened file back into an Arrow record batch (no
-/// unflatten), dispatching on the scheme's format. Used by the server-cost
-/// "accept-B" measurement.
-#[allow(unused_variables)]
-fn reparse(scheme: Scheme, bytes: &[u8]) -> StudyResult<arrow::array::RecordBatch> {
-    #[cfg(feature = "vortex")]
-    if matches!(scheme, Scheme::Vortex | Scheme::VortexFast) {
-        return benchmarks::parquet_study::vortex::reparse_to_arrow(bytes);
-    }
-    server::reparse_parquet(bytes)
-}
+use benchmarks::parquet_study::parquet_io::{read_parquet, write_parquet};
+use benchmarks::parquet_study::{Compressor, Scheme, ipc};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -56,76 +45,22 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-/// Input shapes. Parquet and Vortex both carry per-file overhead, so the study
-/// uses realistic block sizes of several thousand to 100k log records under a
-/// single resource/scope. A small multi-group shape is kept for reference.
+/// Input shapes: several block sizes larger than a few thousand log records,
+/// under a single resource/scope, which is the realistic case for a Parquet
+/// file.
 fn input_shapes() -> Vec<LogsGenParams> {
-    vec![
-        LogsGenParams {
+    [10_000usize, 50_000, 100_000]
+        .into_iter()
+        .map(|num_logs| LogsGenParams {
             num_resources: 1,
             num_scopes: 1,
-            num_logs: 10_000,
-        },
-        LogsGenParams {
-            num_resources: 1,
-            num_scopes: 1,
-            num_logs: 100_000,
-        },
-    ]
+            num_logs,
+        })
+        .collect()
 }
 
-/// Print a serialized-size comparison table to stdout (not part of the timed
-/// measurements, but the most important output for the "on the wire" debate).
-fn print_size_table(shapes: &[LogsGenParams]) {
-    println!("\n=== OTAP logs serialized size (bytes) ===");
-    println!(
-        "{:<16} {:<8} {:>12} {:>10} {:>10} {:>12}",
-        "contender", "comp", "bytes", "vs-otlp", "b/log", "vs-ipc-zstd"
-    );
-
-    for shape in shapes {
-        let (otap, proto_len) = gen_logs_otap(shape);
-        let total_logs = shape.total_logs();
-        println!(
-            "-- shape {} : {} log records, OTLP proto = {} bytes --",
-            shape.label(),
-            total_logs,
-            proto_len
-        );
-
-        let ipc_zstd = Scheme::Ipc
-            .codec(Compressor::Zstd)
-            .write(otap.clone())
-            .expect("ipc zstd write")
-            .len();
-
-        for scheme in Scheme::all() {
-            for &compressor in scheme.compressors() {
-                let codec = scheme.codec(compressor);
-                let bytes = codec
-                    .write(otap.clone())
-                    .unwrap_or_else(|e| panic!("{} write failed: {e}", codec.name()))
-                    .len();
-                let vs_otlp = proto_len as f64 / bytes as f64;
-                let per_log = bytes as f64 / total_logs as f64;
-                let vs_ipc = bytes as f64 / ipc_zstd as f64;
-                println!(
-                    "{:<16} {:<8} {:>12} {:>9.2}x {:>10.1} {:>11.2}x",
-                    codec.name(),
-                    compressor.label(),
-                    bytes,
-                    vs_otlp,
-                    per_log,
-                    vs_ipc
-                );
-            }
-        }
-        println!();
-    }
-}
-
-/// Median wall-clock milliseconds of `f` over a few iterations (with warm-up).
-/// Indicative only; the `server_cost` Criterion group provides rigorous numbers.
+/// Median wall-clock milliseconds of `f` over a few iterations (with one warm-up
+/// pass). Indicative only; the Criterion round-trip group gives rigorous totals.
 fn median_ms(mut f: impl FnMut()) -> f64 {
     f();
     let iters = 3;
@@ -139,53 +74,131 @@ fn median_ms(mut f: impl FnMut()) -> f64 {
     samples[samples.len() / 2]
 }
 
-/// Print the server-side CPU model: where the OTAP -> Parquet conversion lands.
-fn print_server_cost_table(shapes: &[LogsGenParams]) {
+/// Serialized-size comparison for every contender x compressor x shape.
+fn print_size_table(shapes: &[LogsGenParams]) {
+    println!("\n=== OTAP logs serialized size (bytes) ===");
     println!(
-        "\n=== Server-side CPU: where does OTAP->Parquet conversion land? (indicative ms) ==="
+        "{:<16} {:<8} {:>12} {:>10} {:>10} {:>12}",
+        "contender", "comp", "bytes", "vs-otlp", "b/log", "vs-ipc-zstd"
     );
-    println!("Option A (client sends OTAP/IPC): server = IPC-decode + flatten + Parquet-encode");
-    println!(
-        "Option B (client sends Parquet):  server = persist (~0 CPU) or reparse Parquet->Arrow"
-    );
-    println!("IPC input fixed at zstd; 'comp' is the Parquet output compressor.");
-    println!(
-        "{:<16} {:<8} {:>12} {:>12} {:>13} {:>15}",
-        "flatten", "comp", "A:convert", "B:reparse", "save(store)", "save(reparse)"
-    );
-
     for shape in shapes {
-        let (otap, _) = gen_logs_otap(shape);
+        let (otap, proto_len) = gen_logs_otap(shape);
+        let total_logs = shape.total_logs();
         println!(
-            "-- shape {} : {} log records --",
-            shape.label(),
-            shape.total_logs()
+            "-- shape {} log records, OTLP proto = {} bytes --",
+            total_logs, proto_len
         );
-        let ipc_bytes = Scheme::Ipc
+        let ipc_zstd = Scheme::Ipc
             .codec(Compressor::Zstd)
             .write(otap.clone())
-            .expect("ipc write");
-
-        for scheme in Scheme::flattened() {
+            .expect("ipc zstd write")
+            .len();
+        for scheme in Scheme::all() {
             for &compressor in scheme.compressors() {
-                let pcodec = scheme.codec(compressor);
-                let parquet_bytes = pcodec.write(otap.clone()).expect("parquet write");
-
-                let convert_a = median_ms(|| {
-                    let _ = server::convert_ipc_to_parquet(&ipc_bytes, &*pcodec).expect("convert");
-                });
-                let reparse_b = median_ms(|| {
-                    let _ = reparse(scheme, &parquet_bytes).expect("reparse");
-                });
-
+                let codec = scheme.codec(compressor);
+                let bytes = codec.write(otap.clone()).expect("write").len();
                 println!(
-                    "{:<16} {:<8} {:>10.3}ms {:>10.3}ms {:>11.3}ms {:>13.3}ms",
+                    "{:<16} {:<8} {:>12} {:>9.2}x {:>10.1} {:>11.2}x",
+                    codec.name(),
+                    compressor.label(),
+                    bytes,
+                    proto_len as f64 / bytes as f64,
+                    bytes as f64 / total_logs as f64,
+                    bytes as f64 / ipc_zstd as f64,
+                );
+            }
+        }
+        println!();
+    }
+}
+
+/// Per-step breakdown of the OTAP/IPC encode and decode pipelines.
+fn print_ipc_breakdown(shapes: &[LogsGenParams]) {
+    println!("\n=== OTAP/IPC pipeline breakdown (indicative ms) ===");
+    println!("encode = transport-optimize + Arrow-IPC-serialize(+compress)");
+    println!("decode = IPC-deserialize + transport-decode");
+    println!(
+        "{:<6} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
+        "comp", "t-enc", "ipc-ser", "enc-tot", "ipc-des", "t-dec", "dec-tot", "bytes"
+    );
+    for shape in shapes {
+        let (otap, _) = gen_logs_otap(shape);
+        println!("-- shape {} log records --", shape.total_logs());
+        for &comp in Scheme::Ipc.compressors() {
+            let t_enc = median_ms(|| {
+                let mut o = otap.clone();
+                ipc::transport_encode(&mut o).expect("transport encode");
+            });
+            let enc_tot = median_ms(|| {
+                let _ = ipc::encode_to_bytes(otap.clone(), comp).expect("encode");
+            });
+            let ipc_ser = (enc_tot - t_enc).max(0.0);
+
+            let bytes = ipc::encode_to_bytes(otap.clone(), comp).expect("encode");
+            let optimized = ipc::deserialize(&bytes).expect("deserialize");
+            let ipc_des = median_ms(|| {
+                let _ = ipc::deserialize(&bytes).expect("deserialize");
+            });
+            let t_dec = median_ms(|| {
+                let mut o = optimized.clone();
+                ipc::transport_decode(&mut o).expect("transport decode");
+            });
+
+            println!(
+                "{:<6} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>10}",
+                comp.label(),
+                t_enc,
+                ipc_ser,
+                enc_tot,
+                ipc_des,
+                t_dec,
+                ipc_des + t_dec,
+                bytes.len(),
+            );
+        }
+        println!();
+    }
+}
+
+/// Per-step breakdown of the Parquet encode and decode pipelines.
+fn print_parquet_breakdown(shapes: &[LogsGenParams]) {
+    println!("\n=== Parquet pipeline breakdown (indicative ms) ===");
+    println!("encode = flatten + parquet-write   decode = parquet-read + unflatten");
+    println!(
+        "{:<16} {:<8} {:>9} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10}",
+        "scheme", "comp", "flatten", "pq-write", "enc-tot", "pq-read", "unflat", "dec-tot", "bytes"
+    );
+    for shape in shapes {
+        let (otap, _) = gen_logs_otap(shape);
+        println!("-- shape {} log records --", shape.total_logs());
+        for scheme in Scheme::flattened() {
+            let flat = scheme.flatten(&otap).expect("flatten");
+            let flatten_t = median_ms(|| {
+                let _ = scheme.flatten(&otap).expect("flatten");
+            });
+            for compressor in Compressor::ALL {
+                let write_t = median_ms(|| {
+                    let _ = write_parquet(&flat, compressor.parquet()).expect("write");
+                });
+                let bytes = write_parquet(&flat, compressor.parquet()).expect("write");
+                let read_flat = read_parquet(&bytes).expect("read");
+                let read_t = median_ms(|| {
+                    let _ = read_parquet(&bytes).expect("read");
+                });
+                let unflatten_t = median_ms(|| {
+                    let _ = scheme.unflatten(&read_flat).expect("unflatten");
+                });
+                println!(
+                    "{:<16} {:<8} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>8.2} {:>10}",
                     scheme.name(),
                     compressor.label(),
-                    convert_a,
-                    reparse_b,
-                    convert_a,
-                    convert_a - reparse_b
+                    flatten_t,
+                    write_t,
+                    flatten_t + write_t,
+                    read_t,
+                    unflatten_t,
+                    read_t + unflatten_t,
+                    bytes.len(),
                 );
             }
         }
@@ -196,12 +209,13 @@ fn print_server_cost_table(shapes: &[LogsGenParams]) {
 fn bench_round_trip(c: &mut Criterion) {
     let shapes = input_shapes();
     print_size_table(&shapes);
-    print_server_cost_table(&shapes);
+    print_ipc_breakdown(&shapes);
+    print_parquet_breakdown(&shapes);
 
     let mut write_group = c.benchmark_group("parquet_study/write");
-    let _ = write_group.sample_size(20);
+    let _ = write_group.sample_size(10);
     let _ = write_group.warm_up_time(Duration::from_millis(500));
-    let _ = write_group.measurement_time(Duration::from_secs(2));
+    let _ = write_group.measurement_time(Duration::from_secs(3));
     for shape in &shapes {
         let (otap, _) = gen_logs_otap(shape);
         for scheme in Scheme::all() {
@@ -209,7 +223,7 @@ fn bench_round_trip(c: &mut Criterion) {
                 let codec = scheme.codec(compressor);
                 let id = BenchmarkId::new(
                     format!("{}/{}", codec.name(), compressor.label()),
-                    shape.label(),
+                    shape.total_logs(),
                 );
                 let _ = write_group.bench_with_input(id, shape, |b, _| {
                     b.iter_batched(
@@ -224,9 +238,9 @@ fn bench_round_trip(c: &mut Criterion) {
     write_group.finish();
 
     let mut read_group = c.benchmark_group("parquet_study/read");
-    let _ = read_group.sample_size(20);
+    let _ = read_group.sample_size(10);
     let _ = read_group.warm_up_time(Duration::from_millis(500));
-    let _ = read_group.measurement_time(Duration::from_secs(2));
+    let _ = read_group.measurement_time(Duration::from_secs(3));
     for shape in &shapes {
         let (otap, _) = gen_logs_otap(shape);
         for scheme in Scheme::all() {
@@ -235,7 +249,7 @@ fn bench_round_trip(c: &mut Criterion) {
                 let bytes = codec.write(otap.clone()).expect("write");
                 let id = BenchmarkId::new(
                     format!("{}/{}", codec.name(), compressor.label()),
-                    shape.label(),
+                    shape.total_logs(),
                 );
                 let _ = read_group.bench_with_input(id, shape, |b, _| {
                     b.iter(|| black_box(codec.read(&bytes).expect("read")));
@@ -246,58 +260,10 @@ fn bench_round_trip(c: &mut Criterion) {
     read_group.finish();
 }
 
-fn bench_server_cost(c: &mut Criterion) {
-    let shapes = input_shapes();
-
-    let mut group = c.benchmark_group("parquet_study/server_cost");
-    let _ = group.sample_size(20);
-    let _ = group.warm_up_time(Duration::from_millis(500));
-    let _ = group.measurement_time(Duration::from_secs(2));
-
-    for shape in &shapes {
-        let (otap, _) = gen_logs_otap(shape);
-        // Client -> server wire is OTAP/IPC; decode auto-detects compression.
-        let ipc_bytes = Scheme::Ipc
-            .codec(Compressor::Zstd)
-            .write(otap.clone())
-            .expect("ipc write");
-
-        for scheme in Scheme::flattened() {
-            for &compressor in scheme.compressors() {
-                let pcodec = scheme.codec(compressor);
-
-                // Option A: server converts received OTAP/IPC to Parquet.
-                let id_a = BenchmarkId::new(
-                    format!("convert-A/{}/{}", scheme.name(), compressor.label()),
-                    shape.label(),
-                );
-                let _ = group.bench_with_input(id_a, shape, |b, _| {
-                    b.iter(|| {
-                        black_box(
-                            server::convert_ipc_to_parquet(&ipc_bytes, &*pcodec).expect("convert"),
-                        )
-                    });
-                });
-
-                // Option B: server reparses client-precomputed Parquet.
-                let parquet_bytes = pcodec.write(otap.clone()).expect("parquet write");
-                let id_b = BenchmarkId::new(
-                    format!("accept-B/{}/{}", scheme.name(), compressor.label()),
-                    shape.label(),
-                );
-                let _ = group.bench_with_input(id_b, shape, |b, _| {
-                    b.iter(|| black_box(reparse(scheme, &parquet_bytes).expect("reparse")));
-                });
-            }
-        }
-    }
-    group.finish();
-}
-
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
-    criterion_group!(benches, bench_round_trip, bench_server_cost);
+    criterion_group!(benches, bench_round_trip);
 }
 
 criterion_main!(bench_entry::benches);

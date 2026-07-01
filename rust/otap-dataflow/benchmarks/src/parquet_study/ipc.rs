@@ -27,27 +27,60 @@ pub struct IpcCodec {
     pub compressor: Compressor,
 }
 
+/// Pipeline sub-step: apply the OTAP transport-optimized encoding in place
+/// (delta/dictionary encodings on id and value columns, parent-id remapping).
+/// This is the first thing `Producer::produce_bar` does; measuring it alone lets
+/// the benchmark separate it from the Arrow IPC serialization.
+pub fn transport_encode(logs: &mut OtapArrowRecords) -> StudyResult<()> {
+    logs.encode_transport_optimized()?;
+    Ok(())
+}
+
+/// Pipeline sub-step: serialize a logs batch to wire bytes. This runs the whole
+/// encode side (transport-optimized encoding, then Arrow IPC serialization with
+/// compression, then prost-encoding the `BatchArrowRecords`). The IPC
+/// serialization time alone is this minus [`transport_encode`].
+pub fn encode_to_bytes(mut logs: OtapArrowRecords, compressor: Compressor) -> StudyResult<Vec<u8>> {
+    let mut producer = Producer::new_with_options(ProducerOptions {
+        ipc_compression: compressor.ipc(),
+    });
+    let bar = producer.produce_bar(&mut logs)?;
+    let mut buf = Vec::with_capacity(1024);
+    bar.encode(&mut buf)?;
+    Ok(buf)
+}
+
+/// Pipeline sub-step: deserialize wire bytes into a logs batch that is still in
+/// the transport-optimized encoding (prost-decode, then `Consumer::consume_bar`,
+/// then `from_record_messages`). Does not run the transport decode.
+pub fn deserialize(bytes: &[u8]) -> StudyResult<OtapArrowRecords> {
+    let mut bar = BatchArrowRecords::decode(bytes)?;
+    let mut consumer = Consumer::default();
+    let messages = consumer.consume_bar(&mut bar)?;
+    Ok(OtapArrowRecords::Logs(from_record_messages::<Logs>(
+        messages,
+    )?))
+}
+
+/// Pipeline sub-step: reverse the transport-optimized encoding in place, leaving
+/// the logical OTAP logs batch.
+pub fn transport_decode(logs: &mut OtapArrowRecords) -> StudyResult<()> {
+    logs.decode_transport_optimized_ids()?;
+    Ok(())
+}
+
 impl Codec for IpcCodec {
     fn name(&self) -> &'static str {
         "ipc"
     }
 
-    fn write(&self, mut logs: OtapArrowRecords) -> StudyResult<Vec<u8>> {
-        let mut producer = Producer::new_with_options(ProducerOptions {
-            ipc_compression: self.compressor.ipc(),
-        });
-        let bar = producer.produce_bar(&mut logs)?;
-        let mut buf = Vec::with_capacity(1024);
-        bar.encode(&mut buf)?;
-        Ok(buf)
+    fn write(&self, logs: OtapArrowRecords) -> StudyResult<Vec<u8>> {
+        encode_to_bytes(logs, self.compressor)
     }
 
     fn read(&self, bytes: &[u8]) -> StudyResult<OtapArrowRecords> {
-        let mut bar = BatchArrowRecords::decode(bytes)?;
-        let mut consumer = Consumer::default();
-        let messages = consumer.consume_bar(&mut bar)?;
-        let mut logs = OtapArrowRecords::Logs(from_record_messages::<Logs>(messages)?);
-        logs.decode_transport_optimized_ids()?;
+        let mut logs = deserialize(bytes)?;
+        transport_decode(&mut logs)?;
         Ok(logs)
     }
 }

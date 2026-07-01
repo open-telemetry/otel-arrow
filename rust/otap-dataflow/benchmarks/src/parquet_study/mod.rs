@@ -13,6 +13,7 @@
 //! zstd. Arrow IPC only supports zstd and lz4 (frame), so snappy is offered for
 //! the Parquet schemes only.
 
+use arrow::array::RecordBatch;
 use otap_df_pdata::otap::OtapArrowRecords;
 
 pub mod attrs;
@@ -22,8 +23,6 @@ pub mod map;
 pub mod nested;
 pub mod parquet_io;
 pub mod server;
-#[cfg(feature = "vortex")]
-pub mod vortex;
 pub mod wide;
 
 /// Error type used throughout the study (benchmark/test code, so a boxed error
@@ -129,36 +128,20 @@ pub enum Scheme {
     Map,
     /// Flattened Parquet, attributes exploded to one typed column per key.
     Wide,
-    /// Flattened Vortex file (nested layout). Requires the `vortex` feature.
-    #[cfg(feature = "vortex")]
-    Vortex,
-    /// Flattened Vortex file written with no compression, prioritizing write
-    /// throughput. Requires the `vortex` feature.
-    #[cfg(feature = "vortex")]
-    VortexFast,
 }
 
 impl Scheme {
-    /// All schemes, in reporting order (includes Vortex when the `vortex`
-    /// feature is enabled).
+    /// All schemes, in reporting order.
     #[must_use]
     pub fn all() -> Vec<Scheme> {
-        #[allow(unused_mut)]
-        let mut v = vec![Scheme::Ipc, Scheme::Nested, Scheme::Map, Scheme::Wide];
-        #[cfg(feature = "vortex")]
-        v.extend([Scheme::Vortex, Scheme::VortexFast]);
-        v
+        vec![Scheme::Ipc, Scheme::Nested, Scheme::Map, Scheme::Wide]
     }
 
-    /// Only the flattened-file schemes (used by the server-cost model, where IPC
-    /// is the input rather than an output format). Includes Vortex when enabled.
+    /// Only the flattened-file schemes (used by the server-cost model and the
+    /// pipeline-step breakdown, where IPC is handled separately).
     #[must_use]
     pub fn flattened() -> Vec<Scheme> {
-        #[allow(unused_mut)]
-        let mut v = vec![Scheme::Nested, Scheme::Map, Scheme::Wide];
-        #[cfg(feature = "vortex")]
-        v.extend([Scheme::Vortex, Scheme::VortexFast]);
-        v
+        vec![Scheme::Nested, Scheme::Map, Scheme::Wide]
     }
 
     /// Stable contender name.
@@ -169,21 +152,14 @@ impl Scheme {
             Scheme::Nested => "parquet-nested",
             Scheme::Map => "parquet-map",
             Scheme::Wide => "parquet-wide",
-            #[cfg(feature = "vortex")]
-            Scheme::Vortex => "vortex",
-            #[cfg(feature = "vortex")]
-            Scheme::VortexFast => "vortex-fast",
         }
     }
 
-    /// The compressors valid for this scheme. IPC excludes snappy; Vortex applies
-    /// its own cascading compression, so it exposes only a single `none` setting.
+    /// The compressors valid for this scheme. IPC excludes snappy.
     #[must_use]
     pub fn compressors(self) -> &'static [Compressor] {
         match self {
             Scheme::Ipc => &Compressor::IPC,
-            #[cfg(feature = "vortex")]
-            Scheme::Vortex | Scheme::VortexFast => &[Compressor::None],
             _ => &Compressor::ALL,
         }
     }
@@ -196,10 +172,27 @@ impl Scheme {
             Scheme::Nested => Box::new(nested::NestedParquetCodec { compressor }),
             Scheme::Map => Box::new(map::MapParquetCodec { compressor }),
             Scheme::Wide => Box::new(wide::WideParquetCodec { compressor }),
-            #[cfg(feature = "vortex")]
-            Scheme::Vortex => Box::new(vortex::VortexCodec { fast: false }),
-            #[cfg(feature = "vortex")]
-            Scheme::VortexFast => Box::new(vortex::VortexCodec { fast: true }),
+        }
+    }
+
+    /// Flatten an OTAP logs batch into this Parquet scheme's flat record batch.
+    /// Errors for [`Scheme::Ipc`], which is not a flattened-file scheme.
+    pub fn flatten(self, otap: &OtapArrowRecords) -> StudyResult<RecordBatch> {
+        match self {
+            Scheme::Nested => nested::flatten(otap),
+            Scheme::Map => map::flatten(otap),
+            Scheme::Wide => wide::flatten(otap),
+            Scheme::Ipc => Err("ipc has no flatten step".into()),
+        }
+    }
+
+    /// Reconstruct an OTAP logs batch from this scheme's flat record batch.
+    pub fn unflatten(self, flat: &RecordBatch) -> StudyResult<OtapArrowRecords> {
+        match self {
+            Scheme::Nested => nested::unflatten(flat),
+            Scheme::Map => map::unflatten(flat),
+            Scheme::Wide => wide::unflatten(flat),
+            Scheme::Ipc => Err("ipc has no unflatten step".into()),
         }
     }
 }
