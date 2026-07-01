@@ -24,9 +24,12 @@ issues: [3395]
 # Use pipe (|) for multiline entries.
 subtext: >-
   `sd_journal_seek_tail()` parks the read head after the most recent entry
-  without making any entry current, and `sd_journal_next()` at the tail is
-  documented to behave like `sd_journal_previous()` (it moves backward). The
-  fresh `StartAt::End` start now issues `sd_journal_seek_tail()` then a single
+  without making any entry current; from there a bare `sd_journal_next()`
+  advances toward a following entry, finds none, and returns `0` (the EOF
+  marker) without anchoring; it does not move backward. (It is
+  `sd_journal_step_one()`, not `sd_journal_next()`, that libsystemd documents
+  as behaving like `sd_journal_previous()` at the tail.) The fresh
+  `StartAt::End` start now issues `sd_journal_seek_tail()` then a single
   `sd_journal_previous()` to anchor on the last existing entry, so the worker's
   first `next()` steps forward onto genuinely new entries. When `previous()`
   finds no entry (empty or fully-filtered journal) the head is repositioned with
