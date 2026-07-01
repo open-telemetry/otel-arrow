@@ -79,17 +79,17 @@ The effective instrument name is `otap.processor.durable_buffer.<field_name>`.
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.dropped_log_records` | `{log_record}` | Counter | Log records lost due to force-dropped segments (`DropOldest`). Delta-native: a Delta exporter reports per-interval loss; a cumulative exporter reports the running total. Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_spans` | `{span}` | Counter | Spans lost due to force-dropped segments (`DropOldest`). Delta-native: a Delta exporter reports per-interval loss; a cumulative exporter reports the running total. Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | Counter | Metric data points lost due to force-dropped segments (`DropOldest`). Delta-native: a Delta exporter reports per-interval loss; a cumulative exporter reports the running total. Aggregated across all Arrow and OTLP metric slots (slots 11-14 for Arrow, slot 62 for OTLP). | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_log_records` | `{log_record}` | Counter | Log records lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_spans` | `{span}` | Counter | Spans lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.dropped_metric_datapoints` | `{data_point}` | Counter | Metric data points lost due to force-dropped segments (`DropOldest`). Aggregated across all Arrow and OTLP metric slots (slots 11-14 for Arrow, slot 62 for OTLP). | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### Per-Signal Expired Items (max_age policy)
 
 | Metric name | Unit | Instrument | Description | Produced in file |
 | --- | --- | --- | --- | --- |
-| `otap.processor.durable_buffer.expired_log_records` | `{log_record}` | Counter | Log records lost due to `max_age` segment expiry. Delta-native: a Delta exporter reports per-interval loss; a cumulative exporter reports the running total. Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.expired_spans` | `{span}` | Counter | Spans lost due to `max_age` segment expiry. Delta-native: a Delta exporter reports per-interval loss; a cumulative exporter reports the running total. Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
-| `otap.processor.durable_buffer.expired_metric_datapoints` | `{data_point}` | Counter | Metric data points lost due to `max_age` segment expiry. Delta-native: a Delta exporter reports per-interval loss; a cumulative exporter reports the running total. Aggregated across all Arrow and OTLP metric slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_log_records` | `{log_record}` | Counter | Log records lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP log slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_spans` | `{span}` | Counter | Spans lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP trace slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
+| `otap.processor.durable_buffer.expired_metric_datapoints` | `{data_point}` | Counter | Metric data points lost due to `max_age` segment expiry. Aggregated across all Arrow and OTLP metric slots. | `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs` |
 
 ### In-flight and Retry
 
