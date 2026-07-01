@@ -1,0 +1,4 @@
+change_type: enhancement
+component: engine
+note: "Document the proposed NUMA-aware SO_REUSEPORT eBPF load balancing design for df-engine receivers."
+issues: [2974]

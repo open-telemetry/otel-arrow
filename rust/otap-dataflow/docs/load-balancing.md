@@ -68,6 +68,9 @@ be attached to influence kernel listener selection within a reuseport group.
 Practical uses include adding randomization, weighting sockets, or leveraging
 additional header information to mitigate distribution skew.
 
+For the df-engine NUMA-local selector design proposal, see
+[NUMA-Local Reuseport Load Balancing: Design Proposal](reuseport-ebpf-numa.md).
+
 #### 2.b. Front-End **L7 (HTTP/2-aware) Load Balancer**
 
 Deploying an HTTP/2-aware proxy (e.g. Envoy, NGINX) that terminates HTTP/2/TLS
