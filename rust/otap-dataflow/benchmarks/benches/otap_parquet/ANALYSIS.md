@@ -168,6 +168,20 @@ amortize, and such a column is often better left non-dictionary. The measured
 amortization here should be read as the ceiling for dictionaries plus the schema,
 which is always recovered.
 
+This also explains why the steady-state batches do not keep shrinking. The drop
+is one-time, at the first batch, and every batch after that is the same size. The
+reason is that Arrow IPC amortizes the schema and the dictionary value tables
+once, but it does not compress one batch against another: each batch's column
+buffers are compressed independently so a reader can decode any batch on its own.
+So even though the batches here are identical, every steady-state batch re-sends
+and re-compresses the full per-row payload, which is the dictionary indices plus
+the non-dictionary columns. Dictionary reuse saves the value tables, not the
+per-row references, and the per-row payload is the actual information in the
+batch. A streaming compressor with cross-batch context could shrink near-identical
+batches much further, but that is outside what Arrow IPC does, and real telemetry,
+where every batch carries different records, has less cross-batch redundancy to
+exploit anyway.
+
 So the single-batch size comparison understates OTAP/IPC, and it understates it
 most for the small, frequent batches that low-latency telemetry actually sends.
 The `u16` log-id limit reinforces this: because one batch cannot exceed 65,535

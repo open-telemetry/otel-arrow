@@ -153,7 +153,7 @@ mod tests {
         let (otap, _) = gen_logs_otap(&params);
 
         for compressor in Compressor::IPC {
-            let sizes = stream_batch_sizes(&otap, compressor, 4).expect("stream sizes");
+            let sizes = stream_batch_sizes(&otap, compressor, 5).expect("stream sizes");
             // The steady-state batch (2nd onward) omits the schema header and
             // re-sends only new dictionary entries, so it is smaller than the
             // cold first batch.
@@ -162,6 +162,15 @@ mod tests {
                 "{compressor:?}: steady {} not smaller than cold {}",
                 sizes[1],
                 sizes[0]
+            );
+            // The drop is one-time: with identical batches, every steady-state
+            // batch is the same size. Arrow IPC does not compress frames against
+            // each other, so frame N is not smaller than frame 2 despite carrying
+            // identical data.
+            assert!(
+                sizes[2..].iter().all(|&s| s == sizes[1]),
+                "{compressor:?}: steady-state not flat: {:?}",
+                sizes
             );
         }
     }
