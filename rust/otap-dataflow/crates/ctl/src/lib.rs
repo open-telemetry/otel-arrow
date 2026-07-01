@@ -11,6 +11,7 @@
 //! command hints.
 
 mod args;
+mod branding;
 mod commands;
 mod config;
 mod crypto;
@@ -22,6 +23,7 @@ mod troubleshoot;
 mod ui;
 
 pub use args::{Cli, ErrorFormat};
+pub use branding::Branding;
 
 /// Installed command name used in help, completions, generated command
 /// metadata, diagnostics, and TUI command hints.
@@ -53,6 +55,24 @@ pub async fn run_with_terminal(
 ) -> Result<(), CliError> {
     let mut stderr = io::sink();
     run_with_terminal_and_diagnostics(cli, stdout, stdout_is_terminal, &mut stderr).await
+}
+
+/// Executes a parsed command with a caller-supplied [`Branding`].
+///
+/// This is the entrypoint for library embedders that need the CLI's
+/// user-visible identity and machine-readable output envelopes to reflect their
+/// own binary rather than `dfctl`. The branding is installed process-wide
+/// (set-once) before the command runs; the non-branded entrypoints leave it
+/// unset and therefore use [`Branding::default`].
+pub async fn run_with_terminal_and_diagnostics_branded(
+    cli: ParsedCli,
+    stdout: &mut dyn Write,
+    stdout_is_terminal: bool,
+    stderr: &mut dyn Write,
+    branding: Branding,
+) -> Result<(), CliError> {
+    branding::set_branding(branding);
+    run_with_terminal_and_diagnostics(cli, stdout, stdout_is_terminal, stderr).await
 }
 
 /// Executes a parsed command and writes requested diagnostics to `stderr`.
@@ -90,8 +110,9 @@ pub async fn run_with_terminal_and_diagnostics(
     };
 
     if matches!(command, Command::Ui(_)) && !stdout_is_terminal {
+        let bin_name = branding::active().bin_name;
         return Err(CliError::invalid_usage(format!(
-            "`{BIN_NAME} ui` requires an interactive terminal"
+            "`{bin_name} ui` requires an interactive terminal"
         )));
     }
 
@@ -149,7 +170,8 @@ fn write_diagnostics(
         return Ok(());
     }
 
-    writeln!(stderr, "{BIN_NAME}: target={}", resolved.display_url())?;
+    let bin_name = branding::active().bin_name;
+    writeln!(stderr, "{bin_name}: target={}", resolved.display_url())?;
     if verbose > 1 {
         let settings = &resolved.settings;
         let request_timeout = settings
@@ -162,7 +184,7 @@ fn write_diagnostics(
             .unwrap_or_else(|| "none".to_string());
         writeln!(
             stderr,
-            "{BIN_NAME}: connect_timeout={} request_timeout={} tcp_nodelay={} tcp_keepalive={}",
+            "{bin_name}: connect_timeout={} request_timeout={} tcp_nodelay={} tcp_keepalive={}",
             humantime::format_duration(settings.connect_timeout),
             request_timeout,
             settings.tcp_nodelay,
