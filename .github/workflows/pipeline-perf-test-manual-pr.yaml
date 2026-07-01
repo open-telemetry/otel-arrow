@@ -72,7 +72,7 @@ jobs:
       # Check out the PR's merge commit so tests run against how it would integrate with the base branch.
       # This works for PRs from the same repo or forks.
       - name: Checkout PR merge ref
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: refs/pull/${{ inputs.pr_number }}/merge
           fetch-depth: 0
