@@ -223,18 +223,23 @@ the schema and dictionary amortization applies.
 ## Applying the model: precompute Parquet at the gateway
 
 The read and write costs above assume the converter runs on the server. The
-deployment that motivates this study is different. A large sender, a customer
-collector gateway, ships to a .NET SaaS ingestion service whose CPU is the
-resource being optimized, and the same organization owns both the client exporter
-and the storage schema. That ownership changes the trade in several ways.
+deployment that motivates this study is different. A single vendor controls both
+ends of the path: it supplies the gateway software that the customer runs on
+premises, and it operates the ingestion service that receives the data. Because
+it owns both, and because the ingestion service's CPU is the resource it most
+wants to protect, it prefers to shift the encoding cost onto the customer-run
+gateway. The same ownership means it controls the storage schema as well, so it
+can version the on-premises exporter and the store together. That ownership
+changes the trade in several ways.
 
 First, the coupling objection to client-side Parquet mostly goes away. When a
 third party owns the storage format, making it the wire contract is brittle. When
-the ingestion service owns the exporter, it can emit exactly the flattened layout
-its store wants, the columns, partitioning, sort order, row-group sizing, and
-compression, and it can version the exporter and the store together. The gateway
-also aggregates many hosts, so it forms the large batches where flattened Parquet
-is 0.60 to 0.71x the IPC size, which cuts ingress bandwidth into the service.
+the vendor owns both the exporter and the store, the gateway can emit exactly the
+flattened layout the store wants, the columns, partitioning, sort order,
+row-group sizing, and compression, and the two are versioned together. The
+gateway also aggregates many hosts, so it forms the large batches where flattened
+Parquet is 0.60 to 0.71x the IPC size, which cuts ingress bandwidth into the
+service.
 
 Second, the decisive question becomes how much the ingestion service must read.
 Precomputing Parquet removes server CPU only if ingestion is close to a validated
@@ -264,7 +269,7 @@ traffic that needs a server-side transform, and precomputed Parquet for large
 gateways running the custom exporter.
 
 The Parquet here is written by arrow-rs in the Rust sender, so its compression is
-independent of the .NET receiver, and the primary server-CPU argument does not
+independent of the receiver's stack, and the primary server-CPU argument does not
 depend on the compressor at all, because precompute moves the Parquet encode
 itself off the server.
 

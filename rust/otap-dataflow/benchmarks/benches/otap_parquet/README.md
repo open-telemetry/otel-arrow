@@ -34,8 +34,8 @@ every stage is visible on both the encode and decode side.
 
 Compressors are explicit codecs so `zstd` can be compared head-to-head with
 `lz4`. This matters for cross-language consumers, because some Arrow and Parquet
-stacks, for example certain .NET builds, may not support `zstd`. In that case
-`lz4`, and `snappy` for Parquet, need first-class numbers.
+stacks may not support `zstd`. In that case `lz4`, and `snappy` for Parquet, need
+first-class numbers.
 
 | compressor | Arrow IPC     | Parquet      |
 |------------|---------------|--------------|

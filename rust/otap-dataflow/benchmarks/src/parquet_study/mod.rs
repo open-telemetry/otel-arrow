@@ -9,9 +9,8 @@
 //! Contenders are enumerated by [`Scheme`] and parameterized by a [`Compressor`].
 //! Compressors are explicit codecs (`zstd`, `lz4`, `snappy`, `none`) so that
 //! zstd can be compared head-to-head with lz4 -- important when a consumer's
-//! Arrow/Parquet stack (for example some .NET implementations) may not support
-//! zstd. Arrow IPC only supports zstd and lz4 (frame), so snappy is offered for
-//! the Parquet schemes only.
+//! Arrow/Parquet stack may not support zstd. Arrow IPC only supports zstd and
+//! lz4 (frame), so snappy is offered for the Parquet schemes only.
 
 use arrow::array::RecordBatch;
 use otap_df_pdata::otap::OtapArrowRecords;
