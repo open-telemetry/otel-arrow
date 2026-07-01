@@ -10,23 +10,28 @@ rust-version.workspace = true
 
 [dependencies]
 arrow.workspace = true
+arrow-ipc.workspace = true
+# Parquet study (benches/otap_parquet) needs the compression codecs enabled so
+# the Arrow writer can emit zstd/snappy/lz4-compressed files.
+parquet = { workspace = true, features = ["zstd", "snap", "lz4"] }
+bytes.workspace = true
+prost = { workspace = true }
 tokio.workspace = true
 serde_json.workspace = true
 otap-df-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
 otap-df-otap = { workspace = true }
+otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
+otap-df-pdata-views = { workspace = true }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
 tonic = { workspace = true }
-prost = { workspace = true }
 
 otap-df-control-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-channel = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-telemetry = { workspace = true }
-otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
-otap-df-pdata-views = { workspace = true }
 
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry"] }
@@ -43,13 +48,17 @@ unsync.workspace = true
 portpicker.workspace = true
 tokio-stream.workspace = true
 weaver_common.workspace = true
-bytes.workspace = true
+zstd.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator.workspace = true
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "otap_parquet"
+harness = false
 
 [[bench]]
 name = "channel"
