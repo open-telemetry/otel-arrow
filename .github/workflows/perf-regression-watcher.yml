@@ -1,0 +1,75 @@
+name: Perf Regression Watcher
+
+# Compares the latest two entries of every docs/benchmarks/**/data.js file on
+# the benchmarks branch and opens (or comments on) a single shared issue when
+# any metric moves by more than the configured threshold.
+#
+# See .github/perf-regression.yml for thresholds and overrides.
+# See .github/scripts/perf-regression-check.mjs for the comparison logic.
+
+on:
+  schedule:
+    # 06:00 UTC daily — well after the 00:00 UTC nightlies finish publishing.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      default_threshold_pct:
+        description: "Override the default regression threshold (%) for this run only."
+        type: string
+        default: ""
+      dry_run:
+        description: "Print findings without opening/commenting an issue."
+        type: boolean
+        default: false
+      benchmarks_repo:
+        description: "owner/name of the repo hosting the benchmarks branch."
+        type: string
+        default: "open-telemetry/otel-arrow"
+      benchmarks_branch:
+        description: "Branch holding the data.js files."
+        type: string
+        default: "benchmarks"
+      path_filter:
+        description: "Only process data.js paths containing this substring (e.g. 'syslog'). Empty = all."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - name: Checkout (default branch for config + script)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Parse perf-regression config to JSON
+        id: cfg
+        run: |
+          if [ -f .github/perf-regression.yml ]; then
+            python3 -c 'import sys, json, yaml; print(json.dumps(yaml.safe_load(open(".github/perf-regression.yml"))))' > /tmp/perf-regression.json
+          else
+            echo "{}" > /tmp/perf-regression.json
+          fi
+          echo "config_path=/tmp/perf-regression.json" >> "$GITHUB_OUTPUT"
+
+      - name: Run perf regression watcher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BENCHMARKS_REPO: ${{ inputs.benchmarks_repo || 'open-telemetry/otel-arrow' }}
+          BENCHMARKS_BRANCH: ${{ inputs.benchmarks_branch || 'benchmarks' }}
+          DEFAULT_THRESHOLD_PCT: ${{ inputs.default_threshold_pct || '10' }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          PATH_FILTER: ${{ inputs.path_filter || '' }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          CONFIG_JSON="$(cat ${{ steps.cfg.outputs.config_path }})" \
+            node .github/scripts/perf-regression-check.mjs
