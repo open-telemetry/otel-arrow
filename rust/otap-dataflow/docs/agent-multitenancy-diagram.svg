@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="952" viewBox="0 0 1100 952" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .title { font-weight:700; font-size:20px; fill:#1f2733; }
+      .sub   { font-weight:400; font-size:13px; fill:#5b6470; }
+      .stage { font-weight:700; font-size:14px; fill:#1f2733; }
+      .body  { font-weight:400; font-size:12px; fill:#3a4250; }
+      .small { font-weight:400; font-size:11px; fill:#5b6470; }
+      .ital  { font-style:italic; font-weight:400; font-size:11px; fill:#5b6470; }
+      .mono  { font-family:Consolas,'SF Mono',Menlo,monospace; font-size:11.5px; fill:#3a4250; }
+      .monos { font-family:Consolas,'SF Mono',Menlo,monospace; font-size:11px; fill:#5b6470; }
+      .lane  { font-weight:700; font-size:14px; fill:#6b3fa0; }
+      .cap   { font-weight:700; font-size:13px; fill:#5a6678; }
+      .num   { font-weight:700; font-size:13px; fill:#ffffff; }
+      .pill  { font-weight:700; font-size:10px; }
+    </style>
+    <marker id="mFlow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L9,5 L0,10 z" fill="#2d3748"/></marker>
+    <marker id="mWrite" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L9,5 L0,10 z" fill="#8a5cc0"/></marker>
+    <marker id="mRead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0,0 L9,5 L0,10 z" fill="#2fa090"/></marker>
+  </defs>
+
+  <rect x="0" y="0" width="1100" height="952" fill="#ffffff"/>
+
+  <!-- Title -->
+  <text x="546" y="32" text-anchor="middle" class="title">Tenant descriptor model: request and limiter flow</text>
+  <text x="546" y="54" text-anchor="middle" class="sub">A receiver resolves tenant descriptors, precomputes lookup keys, and limiters probe them in O(1) across the pipeline</text>
+
+  <!-- ===================== RECEIVER CONTAINER ===================== -->
+  <rect x="20" y="78" width="700" height="616" rx="12" fill="#fafbfd" stroke="#c3ccdb" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="36" y="102" class="cap">RECEIVER  -  originates the request context</text>
+
+  <!-- Step 1: request arrives -->
+  <rect x="44" y="116" width="632" height="96" rx="8" fill="#fff4e5" stroke="#e0992f" stroke-width="1.5"/>
+  <circle cx="66" cy="136" r="12" fill="#2d3748"/>
+  <text x="66" y="140" text-anchor="middle" class="num">1</text>
+  <text x="86" y="140" class="stage">Request arrives at receiver (with headers)</text>
+  <text x="88" y="162" class="mono">POST /v1/logs     peer 10.1.2.3     signal=logs  (reserved key)</text>
+  <text x="88" y="180" class="mono">x-customer-id: acme    x-workspace-id: ws-42    x-customer-tier: premium</text>
+  <text x="88" y="198" class="mono">x-service-id: billing    x-subscription-id: sub-9</text>
+
+  <line x1="360" y1="212" x2="360" y2="234" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
+
+  <!-- Step 2: apply descriptor action lists -->
+  <rect x="44" y="234" width="632" height="162" rx="8" fill="#eaf2fd" stroke="#4a82c4" stroke-width="1.5"/>
+  <circle cx="66" cy="254" r="12" fill="#2d3748"/>
+  <text x="66" y="258" text-anchor="middle" class="num">2</text>
+  <text x="86" y="258" class="stage">Receiver applies its tenant descriptor action lists</text>
+  <text x="88" y="278" class="ital">every descriptor is evaluated; one resolves only when all its keys are present and match</text>
+
+  <text x="88" y="299" class="body" font-weight="700">enduser_tenant_modern</text>
+  <rect x="470" y="288" width="86" height="15" rx="7" fill="#d8efd8" stroke="#4FAE5A"/>
+  <text x="513" y="299" text-anchor="middle" class="pill" fill="#2f7a3a">resolved</text>
+  <text x="104" y="314" class="monos">customer_id&lt;-x-customer-id   workspace_id&lt;-x-workspace-id   tier&lt;-x-customer-tier</text>
+
+  <text x="88" y="334" class="body" font-weight="700">enduser_tenant_legacy</text>
+  <rect x="470" y="323" width="92" height="15" rx="7" fill="#ececec" stroke="#b0b0b0"/>
+  <text x="516" y="334" text-anchor="middle" class="pill" fill="#777777">unresolved</text>
+  <text x="104" y="349" class="monos">requires request_header_match x-protocol-version = very-old  (header absent)</text>
+
+  <text x="88" y="369" class="body" font-weight="700">onbehalfof_tenant</text>
+  <rect x="470" y="358" width="86" height="15" rx="7" fill="#d8efd8" stroke="#4FAE5A"/>
+  <text x="513" y="369" text-anchor="middle" class="pill" fill="#2f7a3a">resolved</text>
+  <text x="104" y="384" class="monos">service_id&lt;-x-service-id   subscription_id&lt;-x-subscription-id</text>
+
+  <line x1="360" y1="396" x2="360" y2="418" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
+
+  <!-- Step 3: precompute keys + place in context -->
+  <rect x="44" y="418" width="632" height="104" rx="8" fill="#e6f7f4" stroke="#2fa090" stroke-width="1.5"/>
+  <circle cx="66" cy="438" r="12" fill="#2d3748"/>
+  <text x="66" y="442" text-anchor="middle" class="num">3</text>
+  <text x="86" y="442" class="stage">Precompute lookup keys &amp; place them in the request context</text>
+  <text x="88" y="464" class="body">Take the union of the resolved descriptors' key:values.</text>
+  <text x="88" y="482" class="body">Precompute one fixed-size table-lookup key per reachable limiter condition.</text>
+  <text x="88" y="500" class="body">Cost is paid once here  =&gt;  O(1) probe at every downstream limiter.</text>
+
+  <line x1="360" y1="522" x2="360" y2="544" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
+
+  <!-- Step 4: limiter applied in receiver -->
+  <rect x="44" y="544" width="632" height="128" rx="8" fill="#ecf8ec" stroke="#4FAE5A" stroke-width="1.5"/>
+  <circle cx="66" cy="564" r="12" fill="#2d3748"/>
+  <text x="66" y="568" text-anchor="middle" class="num">4</text>
+  <text x="86" y="568" class="stage">Limiters applied in the receiver</text>
+  <text x="88" y="588" class="ital">bound limiters are evaluated in ascending numeric order; all must grant or the request fails</text>
+  <text x="104" y="607" class="mono">rate_limit/0 = obo_rate      (req onbehalfof_tenant)</text>
+  <text x="104" y="623" class="mono">rate_limit/1 = customer_rate  (opt modern / legacy)</text>
+  <rect x="486" y="596" width="170" height="16" rx="8" fill="#ecf8ec" stroke="#4FAE5A"/>
+  <text x="571" y="608" text-anchor="middle" class="pill" fill="#2f7a3a">all grant  -&gt;  proceed</text>
+  <rect x="486" y="618" width="170" height="16" rx="8" fill="#fdeee8" stroke="#d2603a"/>
+  <text x="571" y="630" text-anchor="middle" class="pill" fill="#b8431d">any deny  -&gt;  reject + cancel</text>
+  <text x="88" y="650" class="body">Each limiter: O(1) lookup with precomputed key  -&gt;  first matching condition  -&gt;  bucket.</text>
+  <text x="88" y="666" class="small">On failure the request short-circuits and already-granted reservations are cancelled.</text>
+
+  <!-- Step 5: enter pipeline (transition) -->
+  <line x1="360" y1="672" x2="360" y2="762" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
+  <circle cx="360" cy="700" r="12" fill="#2d3748"/>
+  <text x="360" y="704" text-anchor="middle" class="num">5</text>
+  <text x="382" y="698" class="stage" fill="#2f7a3a">Enter pipeline</text>
+  <text x="382" y="713" class="small">request data + context flow on together</text>
+
+  <!-- ===================== PIPELINE CONTAINER ===================== -->
+  <rect x="20" y="716" width="700" height="180" rx="12" fill="#fafbfd" stroke="#c3ccdb" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="36" y="740" class="cap">PIPELINE  -  request data carries the context to each node</text>
+
+  <!-- Node A: downstream limiter -->
+  <rect x="216" y="762" width="288" height="104" rx="8" fill="#ecf8ec" stroke="#4FAE5A" stroke-width="1.5"/>
+  <circle cx="238" cy="786" r="12" fill="#2d3748"/>
+  <text x="238" y="790" text-anchor="middle" class="num">6</text>
+  <text x="258" y="790" class="stage">Downstream node:</text>
+  <text x="232" y="812" class="stage">a second limiter is applied</text>
+  <text x="232" y="834" class="body">reuses the same precomputed keys</text>
+  <text x="232" y="851" class="body">from the context  -&gt;  O(1)</text>
+
+  <line x1="504" y1="814" x2="548" y2="814" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
+
+  <!-- Node B: and so on -->
+  <rect x="548" y="782" width="150" height="64" rx="8" fill="#eef1f5" stroke="#8893a5" stroke-width="1.5"/>
+  <text x="623" y="810" text-anchor="middle" class="body" font-weight="700">... and so on</text>
+  <text x="623" y="828" text-anchor="middle" class="small">-&gt; more limiters / exporter</text>
+
+  <!-- ===================== REQUEST CONTEXT LANE ===================== -->
+  <rect x="740" y="116" width="332" height="780" rx="12" fill="#f7f2fb" stroke="#8a5cc0" stroke-width="1.5"/>
+  <text x="756" y="140" class="lane">REQUEST CONTEXT</text>
+  <text x="756" y="158" class="small">carried with the request data; erased when out of scope</text>
+
+  <!-- Resolved descriptor values -->
+  <rect x="756" y="176" width="300" height="132" rx="6" fill="#ffffff" stroke="#cbb6e3"/>
+  <text x="768" y="196" class="body" font-weight="700" fill="#6b3fa0">Resolved descriptor values</text>
+  <text x="768" y="216" class="mono">enduser_tenant_modern</text>
+  <text x="768" y="232" class="mono">  customer_id=acme  workspace_id=ws-42</text>
+  <text x="768" y="248" class="mono">  tier=premium</text>
+  <text x="768" y="270" class="mono">onbehalfof_tenant</text>
+  <text x="768" y="286" class="mono">  service_id=billing</text>
+  <text x="768" y="302" class="mono">  subscription_id=sub-9</text>
+
+  <!-- Precomputed lookup keys -->
+  <rect x="756" y="324" width="300" height="150" rx="6" fill="#ffffff" stroke="#cbb6e3"/>
+  <text x="768" y="344" class="body" font-weight="700" fill="#6b3fa0">Precomputed lookup keys</text>
+  <text x="768" y="362" class="ital">one fixed-size key per reachable condition</text>
+  <text x="768" y="384" class="mono">k[customer_rate/bigfish]  = 0x9af3..</text>
+  <text x="768" y="400" class="mono">k[customer_rate/default]  = 0x1c20..</text>
+  <text x="768" y="416" class="mono">k[obo_rate/default]       = 0x77be..</text>
+  <text x="768" y="438" class="ital">probed by each limiter in O(1)</text>
+
+  <!-- Optional resource hold -->
+  <rect x="756" y="490" width="300" height="66" rx="6" fill="#ffffff" stroke="#cbb6e3" stroke-dasharray="3 2"/>
+  <text x="768" y="510" class="body" font-weight="700" fill="#6b3fa0">(optional) resource hold</text>
+  <text x="768" y="528" class="small">a reservation follows the request;</text>
+  <text x="768" y="543" class="small">released by whoever consumes the context</text>
+
+  <!-- Write arrow: step 3 -> context -->
+  <path d="M676,470 H712 V206 H752" fill="none" stroke="#8a5cc0" stroke-width="2" marker-end="url(#mWrite)"/>
+  <text x="704" y="330" text-anchor="middle" class="small" fill="#8a5cc0" transform="rotate(-90 704 330)">place in context</text>
+
+  <!-- Read arrow 1: context keys -> receiver limiter (step 4) -->
+  <path d="M756,440 H724 V600 H678" fill="none" stroke="#2fa090" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#mRead)"/>
+  <text x="704" y="560" text-anchor="middle" class="small" fill="#2fa090" transform="rotate(-90 704 560)">read key  -&gt;  O(1)</text>
+
+  <!-- Read arrow 2: context keys -> pipeline limiter (step 6) -->
+  <path d="M752,470 V884 H360 V866" fill="none" stroke="#2fa090" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#mRead)"/>
+  <text x="478" y="880" text-anchor="middle" class="small" fill="#2fa090">read: same precomputed keys (O(1))</text>
+
+  <!-- ===================== LEGEND ===================== -->
+  <line x1="40" y1="920" x2="72" y2="920" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
+  <text x="80" y="924" class="small">data flow</text>
+  <line x1="180" y1="920" x2="212" y2="920" stroke="#8a5cc0" stroke-width="2" marker-end="url(#mWrite)"/>
+  <text x="220" y="924" class="small">write to context</text>
+  <line x1="350" y1="920" x2="382" y2="920" stroke="#2fa090" stroke-width="2" stroke-dasharray="5 3" marker-end="url(#mRead)"/>
+  <text x="390" y="924" class="small">read from context (O(1))</text>
+  <rect x="560" y="912" width="16" height="14" rx="3" fill="#ecf8ec" stroke="#4FAE5A"/>
+  <text x="582" y="924" class="small">grant</text>
+  <rect x="636" y="912" width="16" height="14" rx="3" fill="#fdeee8" stroke="#d2603a"/>
+  <text x="658" y="924" class="small">deny / short-circuit</text>
+</svg>
