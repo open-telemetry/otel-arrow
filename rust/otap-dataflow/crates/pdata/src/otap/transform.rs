@@ -113,6 +113,29 @@ where
         .expect("should be able to create record batch"))
 }
 
+fn mark_parent_id_plain(record_batch: &RecordBatch) -> Result<RecordBatch> {
+    if record_batch
+        .schema_ref()
+        .index_of(consts::PARENT_ID)
+        .is_err()
+    {
+        return Ok(record_batch.clone());
+    }
+
+    let schema = update_field_metadata(
+        record_batch.schema_ref(),
+        consts::PARENT_ID,
+        metadata::COLUMN_ENCODING,
+        metadata::encodings::PLAIN,
+    );
+
+    RecordBatch::try_new(Arc::new(schema), record_batch.columns().to_vec()).map_err(|e| {
+        Error::UnexpectedRecordBatchState {
+            reason: format!("could not mark parent_id as plain encoded: {e}"),
+        }
+    })
+}
+
 #[must_use]
 pub fn remove_delta_encoding_from_column<T>(array: &PrimitiveArray<T>) -> PrimitiveArray<T>
 where
@@ -179,9 +202,10 @@ where
     <T as ParentId>::ArrayType: ArrowPrimitiveType,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: AddAssign,
 {
-    // if the batch is empty, just skip all this logic and return a batch
+    // Empty batches have no values to materialize, but callers still rely on
+    // decode updating the transport encoding metadata.
     if record_batch.num_rows() == 0 {
-        return Ok(record_batch.clone());
+        return mark_parent_id_plain(record_batch);
     }
 
     // check if the column is already decoded
@@ -510,9 +534,10 @@ where
     T: ParentId,
     <<T as ParentId>::ArrayType as ArrowPrimitiveType>::Native: AddAssign,
 {
-    // if the record batch is empty, nothing to decode so return early
+    // Empty batches have no values to materialize, but callers still rely on
+    // decode updating the transport encoding metadata.
     if record_batch.num_rows() == 0 {
-        return Ok(record_batch.clone());
+        return mark_parent_id_plain(record_batch);
     }
 
     // check that the column hasn't already been decoded
@@ -4239,7 +4264,15 @@ mod test {
         let result_batch = materialize_parent_id_for_attributes::<u16>(&record_batch).unwrap();
         let parent_ids = get_u16_array(&result_batch, consts::PARENT_ID).unwrap();
         let expected = UInt16Array::from_iter_values(vec![]);
-        assert_eq!(parent_ids, &expected)
+        assert_eq!(parent_ids, &expected);
+        assert_eq!(
+            get_field_metadata(
+                result_batch.schema_ref(),
+                consts::PARENT_ID,
+                metadata::COLUMN_ENCODING,
+            ),
+            Some(metadata::encodings::PLAIN)
+        );
     }
 
     // test that the materialize_parent_id
@@ -4498,6 +4531,40 @@ mod test {
         let result_ids = get_u16_array(&result, consts::PARENT_ID).unwrap();
         let expected = UInt16Array::from_iter_values(vec![1, 1, 1, 1, 1]);
         assert_eq!(&expected, result_ids)
+    }
+
+    #[test]
+    fn test_materialize_parent_id_by_column_empty_marks_plain() {
+        let record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false).with_metadata(
+                    HashMap::from_iter(vec![(
+                        metadata::COLUMN_ENCODING.into(),
+                        metadata::encodings::QUASI_DELTA.into(),
+                    )]),
+                ),
+                Field::new(consts::NAME, DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![])),
+                Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+            ],
+        )
+        .unwrap();
+
+        let result_batch =
+            materialize_parent_ids_by_columns::<u16>(&record_batch, [consts::NAME]).unwrap();
+        let parent_ids = get_u16_array(&result_batch, consts::PARENT_ID).unwrap();
+        let expected = UInt16Array::from_iter_values(vec![]);
+        assert_eq!(parent_ids, &expected);
+        assert_eq!(
+            get_field_metadata(
+                result_batch.schema_ref(),
+                consts::PARENT_ID,
+                metadata::COLUMN_ENCODING,
+            ),
+            Some(metadata::encodings::PLAIN)
+        );
     }
 
     #[test]
