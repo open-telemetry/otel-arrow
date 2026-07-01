@@ -157,6 +157,187 @@ pub fn gen_logs_otap(params: &LogsGenParams) -> (OtapArrowRecords, usize) {
     (otap, proto_bytes.len())
 }
 
+/// Shape of generated logs data with configurable attribute richness, used by
+/// the OTAP-flat study to vary the ratio of *shared* resource/scope attributes
+/// (which the REE and dictionary layouts store once) to *per-record* log
+/// attributes (which every layout stores per row).
+///
+/// The generated records model realistic telemetry rather than identical rows:
+/// each record has a unique pseudo-random `trace_id`/`span_id`, a varying
+/// timestamp, a templated body, and mixed-type log attributes that blend
+/// low-cardinality enums with high-cardinality per-record values. Resource and
+/// scope attributes are distinct per resource/scope but shared across that
+/// resource/scope's records, which is the low-cardinality-shared case the
+/// run-end and dictionary layouts target.
+#[derive(Clone, Copy, Debug)]
+pub struct RichGenParams {
+    /// A short label for tables.
+    pub label: &'static str,
+    /// Number of distinct resources.
+    pub num_resources: usize,
+    /// Number of scopes within each resource.
+    pub num_scopes: usize,
+    /// Number of log records within each scope.
+    pub num_logs: usize,
+    /// Attributes attached to each resource (distinct per resource, shared by
+    /// that resource's records).
+    pub num_resource_attrs: usize,
+    /// Attributes attached to each scope.
+    pub num_scope_attrs: usize,
+    /// Mixed-type attributes attached to each log record.
+    pub num_log_attrs: usize,
+}
+
+impl RichGenParams {
+    /// Total number of log records produced.
+    #[must_use]
+    pub fn total_logs(&self) -> usize {
+        self.num_resources * self.num_scopes * self.num_logs
+    }
+}
+
+/// splitmix64: a cheap deterministic mixer used to synthesize high-entropy,
+/// unique-per-record trace ids and attribute values, so the generated data does
+/// not compress like identical rows.
+fn mix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = x;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// A unique, high-entropy 16-byte trace id for a global record index.
+fn trace_id_for(idx: u64) -> Vec<u8> {
+    let mut b = Vec::with_capacity(16);
+    b.extend_from_slice(&mix64(idx).to_be_bytes());
+    b.extend_from_slice(&mix64(idx ^ 0xDEAD_BEEF).to_be_bytes());
+    b
+}
+
+/// A unique 8-byte span id for a global record index.
+fn span_id_for(idx: u64) -> Vec<u8> {
+    mix64(idx.wrapping_mul(0x100_0001)).to_be_bytes().to_vec()
+}
+
+/// Distinct-per-resource, low-cardinality resource attributes.
+fn resource_attrs_for(res_idx: usize, n: usize) -> Vec<KeyValue> {
+    (0..n)
+        .map(|i| {
+            let value = if i == 0 {
+                format!("service-{res_idx}")
+            } else {
+                format!("res{res_idx}-attr{i}")
+            };
+            KeyValue::new(format!("resource_attr{i}"), AnyValue::new_string(value))
+        })
+        .collect()
+}
+
+/// Distinct-per-scope, low-cardinality scope attributes.
+fn scope_attrs_for(scope_idx: usize, n: usize) -> Vec<KeyValue> {
+    (0..n)
+        .map(|i| {
+            KeyValue::new(
+                format!("scope_attr{i}"),
+                AnyValue::new_string(format!("scope{scope_idx}-attr{i}")),
+            )
+        })
+        .collect()
+}
+
+const HTTP_METHODS: [&str; 4] = ["GET", "POST", "PUT", "DELETE"];
+
+/// Mixed-type log attributes for a global record index, blending
+/// low-cardinality enums with high-cardinality per-record values.
+fn log_attrs_for(idx: u64, n: usize) -> Vec<KeyValue> {
+    (0..n)
+        .map(|i| {
+            let key = format!("log_attr{i}");
+            let value = match i % 5 {
+                // low-cardinality enum string
+                0 => AnyValue::new_string(HTTP_METHODS[(idx as usize + i) % 4].to_string()),
+                // high-cardinality int
+                1 => AnyValue::new_int((mix64(idx + i as u64) % 1_000_000) as i64),
+                // high-cardinality double
+                2 => AnyValue::new_double((idx as f64) * 1.5 + i as f64),
+                // bool
+                3 => AnyValue::new_bool((idx as usize + i).is_multiple_of(2)),
+                // high-cardinality id-like string
+                _ => AnyValue::new_string(format!("id-{:016x}", mix64(idx.wrapping_add(i as u64)))),
+            };
+            KeyValue::new(key, value)
+        })
+        .collect()
+}
+
+/// Build an OTLP [`LogsData`] with configurable per-scope/resource/log attribute
+/// counts. Unlike [`create_logs_data`], attribute richness is a parameter and
+/// each record carries realistic high-cardinality content so the study can
+/// measure resource-heavy versus log-heavy telemetry without identical rows.
+#[must_use]
+pub fn create_logs_data_rich(params: &RichGenParams) -> LogsData {
+    let base_time = 1_700_000_000_000_000_000u64;
+    LogsData::new(
+        (0..params.num_resources)
+            .map(|res_idx| {
+                ResourceLogs::new(
+                    Resource::build()
+                        .attributes(resource_attrs_for(res_idx, params.num_resource_attrs))
+                        .dropped_attributes_count(0u32),
+                    (0..params.num_scopes)
+                        .map(|scope_idx| {
+                            ScopeLogs::new(
+                                InstrumentationScope::build()
+                                    .name("library")
+                                    .version("scopev1")
+                                    .attributes(scope_attrs_for(scope_idx, params.num_scope_attrs))
+                                    .dropped_attributes_count(0u32)
+                                    .finish(),
+                                (0..params.num_logs)
+                                    .map(|log_idx| {
+                                        let idx = ((res_idx * params.num_scopes + scope_idx)
+                                            * params.num_logs
+                                            + log_idx)
+                                            as u64;
+                                        LogRecord::build()
+                                            .time_unix_nano(base_time + idx * 1_000_000)
+                                            .observed_time_unix_nano(
+                                                base_time + idx * 1_000_000 + 500,
+                                            )
+                                            .severity_number(SeverityNumber::Info)
+                                            .severity_text("Info")
+                                            .trace_id(trace_id_for(idx))
+                                            .span_id(span_id_for(idx))
+                                            .attributes(log_attrs_for(idx, params.num_log_attrs))
+                                            .body(AnyValue::new_string(format!(
+                                                "request {idx} handled in {}ms",
+                                                idx % 500
+                                            )))
+                                            .finish()
+                                    })
+                                    .collect::<Vec<_>>(),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
+/// Generate an OTAP logs batch for a [`RichGenParams`] shape.
+#[must_use]
+pub fn gen_logs_otap_rich(params: &RichGenParams) -> OtapArrowRecords {
+    let logs_data = create_logs_data_rich(params);
+    let mut proto_bytes = Vec::new();
+    logs_data
+        .encode(&mut proto_bytes)
+        .expect("can encode OTLP proto bytes");
+    let view = RawLogsData::new(proto_bytes.as_ref());
+    encode_logs_otap_batch(&view).expect("can encode OTAP logs batch")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

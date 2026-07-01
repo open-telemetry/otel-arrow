@@ -54,14 +54,15 @@ rather than the deprecated Hadoop-framed `LZ4`.
 cargo bench -p benchmarks --bench otap_parquet
 ```
 
-Four tables are printed to stdout before the timed round-trip benchmarks run:
+Seven tables are printed to stdout before the timed round-trip benchmarks run:
 serialized size, the OTAP/IPC pipeline breakdown, the Parquet pipeline breakdown,
-and the OTAP/IPC streaming amortization. The breakdown shapes are 10k, 30k, and
-60k log records. A single OTAP logs batch holds at most 65,535 records because
-the log id is a `u16`, so the shapes stay below that and larger volumes are
-streamed. The full Criterion sweep is slow; the printed tables are the main
-output. For a quick pass add `-- --measurement-time 0.5 --sample-size 10`, or
-read the tables and stop the run.
+the OTAP-flat single columnar view study, the service-to-service transfer
+comparison, the conversion-cost matrix, and the OTAP/IPC streaming amortization.
+The breakdown shapes are 10k, 30k, and 60k log records. A single OTAP logs batch
+holds at most 65,535 records because the log id is a `u16`, so the shapes stay
+below that and larger volumes are streamed. The full Criterion sweep is slow; the
+printed tables are the main output. For a quick pass add `-- --measurement-time
+0.5 --sample-size 10`, or read the tables and stop the run.
 
 ## Pipeline steps
 
@@ -128,8 +129,61 @@ dictionary cost that streaming amortizes:
 | 10,000 | zstd | 92,270  | 80,944  | 11,326 | 57,023    | 1.42x   |
 | 50,000 | zstd | 401,966 | 390,640 | 11,326 | 240,211   | 1.63x   |
 
+OTAP-flat single columnar view. `convert` is the cost of turning the four OTAP
+record batches into one, `view-mem` is the in-memory footprint of that view, and
+`pq-write`/`pq-bytes` are the Parquet encode where arrow-rs can write it. The
+`otap-flat-*` rows exploit the fact that OTAP attribute batches are already
+grouped by `parent_id`, so the per-record log attributes are a zero-copy
+`List<Struct>` and only the layout of the shared resource/scope sets differs. The
+resource-heavy shape is 60k logs across 600 resources with twenty attributes
+each:
+
+| contender              | convert ms |  view mem | pq-write ms |  pq bytes | writable |
+| ---------------------- | ---------: | --------: | ----------: | --------: | -------- |
+| nested, baseline       |       94.3 |  101.9 MB |       355.6 | 2,750,262 | yes      |
+| otap-flat-materialized |       86.8 |  101.9 MB |       380.0 | 2,750,262 | yes      |
+| otap-flat-ree          |        4.4 |   12.7 MB |         n/a |       n/a | no       |
+| otap-flat-dict         |        4.3 |   12.9 MB |         n/a |       n/a | no       |
+
+Service-to-service transfer. Each form is serialized the way it would travel:
+OTAP-standard is the transport-optimized `Producer` over the normalized batches,
+each flat layout is one Arrow IPC stream, and Parquet is the flat file. `zstd
+wire` and `lz4 wire` are the compressed bytes, `encode`/`decode` are the CPU to
+and from the wire, and `receiver form` is what the decoder yields. On realistic
+data the forms sit within about a factor of two on the wire, apart from the
+materialized flat form, and Parquet is smallest at rest but most expensive on
+CPU:
+
+| contender             |  zstd wire |   lz4 wire | encode ms | decode ms | receiver form   |
+| --------------------- | ---------: | ---------: | --------: | --------: | --------------- |
+| ipc-standard          |  3,013,172 |  3,841,908 |      28.0 |       5.6 | normalized OTAP |
+| ipc-flat-materialized | 12,137,288 | 17,397,896 |     153.3 |      65.4 | flat table      |
+| ipc-flat-ree          |  3,345,992 |  4,736,200 |      15.1 |       6.5 | flat table      |
+| ipc-flat-dict         |  3,345,544 |  4,737,672 |      15.5 |       6.3 | flat table      |
+| parquet-flat          |  2,750,262 |  3,783,505 |     416.4 |     172.6 | flat table      |
+
+Conversion-cost matrix. Every directed edge of the pipeline, timed in isolation,
+where `S` is OTAP-standard, `F` is OTAP-flat/REE, `Ws`/`Wf` are their Arrow IPC
+wire forms, and `P` is Parquet. The two OTAP forms are the cheapest pair to move
+between, because they share ten of the flat table's thirteen columns and only the
+attribute containers change:
+
+| edge                               | log-heavy | resource-heavy |
+| ---------------------------------- | --------: | -------------: |
+| S  -> F   flatten to REE           |       6.1 |            1.7 |
+| F  -> S   unflatten                |      12.9 |            2.9 |
+| S  -> Ws  standard serialize       |      62.9 |           25.8 |
+| Ws -> S   standard deserialize     |       9.9 |            4.5 |
+| F  -> Wf  flat serialize           |      37.0 |           12.2 |
+| Wf -> F   flat deserialize         |      16.1 |            6.4 |
+| F  -> P   parquet-ready (REE+FSB)  |      13.8 |           58.7 |
+| F  -> P   parquet write            |     144.9 |          242.8 |
+| P  -> F   parquet read             |      52.8 |          140.1 |
+
 A companion write-up of what these ratios mean, including the streaming effect,
-is in [`ANALYSIS.md`](./ANALYSIS.md).
+is in [`ANALYSIS.md`](./ANALYSIS.md). The OTAP-flat single columnar view, the
+transfer comparison, and the natural-center conversion analysis are in
+[`OTAP_FLAT_ANALYSIS.md`](./OTAP_FLAT_ANALYSIS.md).
 
 ## Takeaways
 
@@ -173,3 +227,15 @@ measures streaming amortization; the Parquet steps are `Scheme::flatten`,
 Input shapes are defined in `input_shapes()` and `streaming_shapes()` in
 `benches/otap_parquet/main.rs`. The round-trips have unit tests runnable with
 `cargo test -p benchmarks --lib parquet_study`.
+
+The OTAP-flat single columnar view lives in `parquet_study::otap_flat`. Its
+`flatten` and `unflatten` take a `Layout` of `Materialized`, `RunEndEncoded`, or
+`Dictionary`, and `in_memory_bytes` reports the view footprint. The two attribute
+mixes it sweeps are defined by `RichGenParams` in `parquet_study::datagen`. The
+service-to-service transfer table serializes each flat layout as plain Arrow IPC
+with `parquet_study::ipc_flat`, which unlike Parquet can carry run-end and
+dictionary columns on the wire. `parquet_study::parquet_io::to_parquet_ready`
+prepares a flat batch for Parquet by expanding run-end columns and materializing
+the dictionary `FixedSizeBinary` `trace_id`/`span_id`, the only two encodings
+arrow-rs cannot round-trip, and the conversion-cost matrix in `main.rs` times
+every pipeline edge in isolation.

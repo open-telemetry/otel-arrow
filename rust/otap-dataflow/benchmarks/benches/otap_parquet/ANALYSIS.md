@@ -284,3 +284,9 @@ choices move the ratio by a large factor. And when one organization owns both th
 exporter and the store, the applied section above shows the convert step can move
 to the sending gateway, as long as ingestion stays close to a metadata-validated
 append rather than a full decode.
+
+The flatten step that this analysis treats as a fixed part of the Parquet cost is
+itself examined in [`OTAP_FLAT_ANALYSIS.md`](./OTAP_FLAT_ANALYSIS.md), which shows
+that most of it is avoidable because OTAP attribute batches are already grouped by
+parent, and which measures how cheaply OTAP can be presented as a single columnar
+view.

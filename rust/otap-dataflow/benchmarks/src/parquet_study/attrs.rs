@@ -65,7 +65,7 @@ pub fn attr_struct_fields() -> Fields {
 
 /// The list element field used for the `List<Struct>` attribute columns.
 #[must_use]
-fn attr_list_element_field() -> Arc<Field> {
+pub fn attr_list_element_field() -> Arc<Field> {
     Arc::new(Field::new(
         "item",
         DataType::Struct(attr_struct_fields()),

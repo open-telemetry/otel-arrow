@@ -35,8 +35,9 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use benchmarks::parquet_study::datagen::{LogsGenParams, gen_logs_otap};
-use benchmarks::parquet_study::parquet_io::{read_parquet, write_parquet};
-use benchmarks::parquet_study::{Compressor, Scheme, ipc};
+use benchmarks::parquet_study::otap_flat::{self, Layout};
+use benchmarks::parquet_study::parquet_io::{read_parquet, to_parquet_ready, write_parquet};
+use benchmarks::parquet_study::{Compressor, Scheme, ipc, ipc_flat};
 
 #[cfg(not(windows))]
 use tikv_jemallocator::Jemalloc;
@@ -220,6 +221,373 @@ fn print_parquet_breakdown(shapes: &[LogsGenParams]) {
     }
 }
 
+/// OTAP-flat study: the cost of presenting the four OTAP record batches as a
+/// single columnar view, and the size of that view, for three layouts of the
+/// shared resource/scope attributes. `nested` is the baseline flatten (hash join
+/// plus full `take`); the `otap-flat-*` rows exploit the fact that OTAP
+/// attribute batches are already grouped by `parent_id`, so the per-row log
+/// attributes are a zero-copy `List<Struct>` and only the layout of the shared
+/// resource/scope sets differs. `convert` is OTAP -> single view; `view-mem` is
+/// the in-memory footprint of the view; `pq-write`/`pq-bytes` are the Parquet
+/// encode of the view when arrow-rs can write it (materialized only -- REE and
+/// dictionary-of-`List<Struct>` are in-memory/query forms).
+///
+/// Two scenarios hold the record count fixed and vary the attribute mix, because
+/// REE and dictionary only save on the *shared* resource/scope attributes:
+///
+/// - `log-heavy`: many per-record log attributes, few resource/scope attributes.
+/// - `resource-heavy`: many resources each with many attributes, few log
+///   attributes, which is where storing the shared sets once pays off.
+fn print_otap_flat_table() {
+    use benchmarks::parquet_study::datagen::{RichGenParams, gen_logs_otap_rich};
+
+    let scenarios = [
+        RichGenParams {
+            label: "log-heavy",
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 60_000,
+            num_resource_attrs: 1,
+            num_scope_attrs: 2,
+            num_log_attrs: 9,
+        },
+        RichGenParams {
+            label: "resource-heavy",
+            num_resources: 600,
+            num_scopes: 1,
+            num_logs: 100,
+            num_resource_attrs: 20,
+            num_scope_attrs: 5,
+            num_log_attrs: 2,
+        },
+    ];
+
+    println!("\n=== OTAP-flat single columnar view (indicative ms, bytes) ===");
+    println!("convert = OTAP -> one RecordBatch; view-mem = in-memory footprint of the view.");
+    println!("pq-write/pq-bytes use zstd; REE and dict cannot be written to Parquet by arrow-rs.");
+    println!(
+        "{:<24} {:>10} {:>12} {:>10} {:>12} {:>6}",
+        "contender", "convert-ms", "view-mem", "pq-write", "pq-bytes", "pq-ok"
+    );
+    for scenario in &scenarios {
+        let otap = gen_logs_otap_rich(scenario);
+        println!(
+            "-- {} : {} logs, {} resources x {} resource-attrs, {} log-attrs --",
+            scenario.label,
+            scenario.total_logs(),
+            scenario.num_resources,
+            scenario.num_resource_attrs,
+            scenario.num_log_attrs,
+        );
+
+        // Baseline: the existing nested flatten (hash join + full take).
+        let base_convert = median_ms(|| {
+            let _ = Scheme::Nested.flatten(&otap).expect("nested flatten");
+        });
+        let base_flat = Scheme::Nested.flatten(&otap).expect("nested flatten");
+        let base_mem = otap_flat::in_memory_bytes(&base_flat);
+        let base_pq_input = to_parquet_ready(&base_flat).expect("parquet-ready");
+        let base_pq_ms = median_ms(|| {
+            let _ = write_parquet(&base_pq_input, Compressor::Zstd.parquet()).expect("write");
+        });
+        let base_pq = write_parquet(&base_pq_input, Compressor::Zstd.parquet())
+            .expect("write")
+            .len();
+        println!(
+            "{:<24} {:>10.2} {:>12} {:>10.2} {:>12} {:>6}",
+            "nested (baseline)", base_convert, base_mem, base_pq_ms, base_pq, "yes"
+        );
+
+        for layout in [
+            Layout::Materialized,
+            Layout::RunEndEncoded,
+            Layout::Dictionary,
+        ] {
+            let convert = median_ms(|| {
+                let _ = otap_flat::flatten(&otap, layout).expect("flatten");
+            });
+            let flat = otap_flat::flatten(&otap, layout).expect("flatten");
+            let mem = otap_flat::in_memory_bytes(&flat);
+            if layout.parquet_writable() {
+                let pq_input = to_parquet_ready(&flat).expect("parquet-ready");
+                let pq_ms = median_ms(|| {
+                    let _ = write_parquet(&pq_input, Compressor::Zstd.parquet()).expect("write");
+                });
+                let pq_bytes = write_parquet(&pq_input, Compressor::Zstd.parquet())
+                    .expect("write")
+                    .len();
+                println!(
+                    "{:<24} {:>10.2} {:>12} {:>10.2} {:>12} {:>6}",
+                    layout.name(),
+                    convert,
+                    mem,
+                    pq_ms,
+                    pq_bytes,
+                    "yes"
+                );
+            } else {
+                println!(
+                    "{:<24} {:>10.2} {:>12} {:>10} {:>12} {:>6}",
+                    layout.name(),
+                    convert,
+                    mem,
+                    "n/a",
+                    "n/a",
+                    "no"
+                );
+            }
+        }
+        println!();
+    }
+}
+
+/// Transfer study: how OTAP-flat compares to OTAP-standard and to Parquet when
+/// the question is moving data between two large services. Each row reports the
+/// serialized wire size under zstd and lz4, the encode cost from an OTAP batch to
+/// wire bytes, the decode cost from wire bytes to the receiver's working form,
+/// and what that working form is.
+///
+/// - `ipc-standard` is the OTAP representation today: the transport-optimized
+///   `Producer` over the four normalized batches, decoded back to normalized
+///   OTAP.
+/// - `ipc-flat-*` is one flat record batch serialized as plain Arrow IPC. Arrow
+///   IPC can carry `RunEndEncoded` and dictionary columns, so the compact
+///   resource/scope layouts survive on the wire. The receiver gets a single
+///   query-ready table; projecting it back to normalized OTAP is an extra
+///   `otap_flat::unflatten` that this table does not include.
+/// - `parquet-flat` is the same flat batch written as a Parquet file.
+///
+/// encode and decode are timed with zstd.
+fn print_transfer_table() {
+    use benchmarks::parquet_study::datagen::{RichGenParams, gen_logs_otap_rich};
+
+    let scenarios = [
+        RichGenParams {
+            label: "log-heavy",
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 60_000,
+            num_resource_attrs: 1,
+            num_scope_attrs: 2,
+            num_log_attrs: 9,
+        },
+        RichGenParams {
+            label: "resource-heavy",
+            num_resources: 600,
+            num_scopes: 1,
+            num_logs: 100,
+            num_resource_attrs: 20,
+            num_scope_attrs: 5,
+            num_log_attrs: 2,
+        },
+    ];
+
+    println!("\n=== Transfer between two services: wire size and CPU (indicative) ===");
+    println!("encode = OTAP batch -> wire bytes; decode = wire bytes -> receiver working form.");
+    println!("ipc-flat carries REE/dict on the wire (Parquet cannot); decode yields one table.");
+    println!(
+        "{:<22} {:>12} {:>12} {:>10} {:>10} {:<18}",
+        "contender", "zstd-bytes", "lz4-bytes", "encode-ms", "decode-ms", "receiver-form"
+    );
+    for scenario in &scenarios {
+        let otap = gen_logs_otap_rich(scenario);
+        println!(
+            "-- {} : {} logs, {} resources x {} resource-attrs, {} log-attrs --",
+            scenario.label,
+            scenario.total_logs(),
+            scenario.num_resources,
+            scenario.num_resource_attrs,
+            scenario.num_log_attrs,
+        );
+
+        // OTAP standard: transport-optimized Producer over the normalized batches.
+        {
+            let zstd_bytes = ipc::encode_to_bytes(otap.clone(), Compressor::Zstd)
+                .expect("encode")
+                .len();
+            let lz4_bytes = ipc::encode_to_bytes(otap.clone(), Compressor::Lz4)
+                .expect("encode")
+                .len();
+            let encode_ms = median_ms(|| {
+                let _ = ipc::encode_to_bytes(otap.clone(), Compressor::Zstd).expect("encode");
+            });
+            let bytes = ipc::encode_to_bytes(otap.clone(), Compressor::Zstd).expect("encode");
+            let decode_ms = median_ms(|| {
+                let mut o = ipc::deserialize(&bytes).expect("deserialize");
+                ipc::transport_decode(&mut o).expect("transport decode");
+            });
+            println!(
+                "{:<22} {:>12} {:>12} {:>10.2} {:>10.2} {:<18}",
+                "ipc-standard", zstd_bytes, lz4_bytes, encode_ms, decode_ms, "normalized OTAP"
+            );
+        }
+
+        // OTAP flat: one Arrow IPC batch, three shared-attribute layouts.
+        for layout in [
+            Layout::Materialized,
+            Layout::RunEndEncoded,
+            Layout::Dictionary,
+        ] {
+            let flat = otap_flat::flatten(&otap, layout).expect("flatten");
+            let zstd_bytes = ipc_flat::write_ipc(&flat, Compressor::Zstd)
+                .expect("write ipc")
+                .len();
+            let lz4_bytes = ipc_flat::write_ipc(&flat, Compressor::Lz4)
+                .expect("write ipc")
+                .len();
+            let encode_ms = median_ms(|| {
+                let f = otap_flat::flatten(&otap, layout).expect("flatten");
+                let _ = ipc_flat::write_ipc(&f, Compressor::Zstd).expect("write ipc");
+            });
+            let bytes = ipc_flat::write_ipc(&flat, Compressor::Zstd).expect("write ipc");
+            let decode_ms = median_ms(|| {
+                let _ = ipc_flat::read_ipc(&bytes).expect("read ipc");
+            });
+            let name = format!("ipc-flat-{}", layout_suffix(layout));
+            println!(
+                "{:<22} {:>12} {:>12} {:>10.2} {:>10.2} {:<18}",
+                name, zstd_bytes, lz4_bytes, encode_ms, decode_ms, "flat table"
+            );
+        }
+
+        // Parquet: the same flat batch as a Parquet file. Arrow dictionaries are
+        // materialized first because arrow-rs cannot read a dictionary-encoded
+        // FixedSizeBinary (trace_id/span_id) back from Parquet.
+        {
+            let flat = Scheme::Nested.flatten(&otap).expect("nested flatten");
+            let pq_input = to_parquet_ready(&flat).expect("parquet-ready");
+            let zstd_bytes = write_parquet(&pq_input, Compressor::Zstd.parquet())
+                .expect("write")
+                .len();
+            let lz4_bytes = write_parquet(&pq_input, Compressor::Lz4.parquet())
+                .expect("write")
+                .len();
+            let encode_ms = median_ms(|| {
+                let f = Scheme::Nested.flatten(&otap).expect("nested flatten");
+                let d = to_parquet_ready(&f).expect("parquet-ready");
+                let _ = write_parquet(&d, Compressor::Zstd.parquet()).expect("write");
+            });
+            let bytes = write_parquet(&pq_input, Compressor::Zstd.parquet()).expect("write");
+            let decode_ms = median_ms(|| {
+                let _ = read_parquet(&bytes).expect("read");
+            });
+            println!(
+                "{:<22} {:>12} {:>12} {:>10.2} {:>10.2} {:<18}",
+                "parquet-flat", zstd_bytes, lz4_bytes, encode_ms, decode_ms, "flat table"
+            );
+        }
+        println!();
+    }
+}
+
+/// Short suffix for a shared-attribute layout, used in transfer row names.
+fn layout_suffix(layout: Layout) -> &'static str {
+    match layout {
+        Layout::Materialized => "materialized",
+        Layout::RunEndEncoded => "ree",
+        Layout::Dictionary => "dict",
+    }
+}
+
+/// Conversion-cost matrix: every directed edge of the pipeline, timed in
+/// isolation, so the cost of moving between representations is visible edge by
+/// edge. The nodes are OTAP-standard (`S`, four normalized batches),
+/// OTAP-flat/REE (`F`, one batch with run-end resource/scope columns),
+/// OTAP/IPC-standard (`Ws`), OTAP/IPC-flat (`Wf`), and Parquet (`P`). The flat to
+/// Parquet edge is split into the parquet-ready transform, which expands the
+/// run-end columns and materializes `trace_id`/`span_id`, and the Parquet write.
+fn print_conversion_matrix() {
+    use benchmarks::parquet_study::datagen::{RichGenParams, gen_logs_otap_rich};
+    use otap_df_pdata::otap::OtapArrowRecords;
+
+    let scenarios = [
+        RichGenParams {
+            label: "log-heavy",
+            num_resources: 1,
+            num_scopes: 1,
+            num_logs: 60_000,
+            num_resource_attrs: 1,
+            num_scope_attrs: 2,
+            num_log_attrs: 9,
+        },
+        RichGenParams {
+            label: "resource-heavy",
+            num_resources: 600,
+            num_scopes: 1,
+            num_logs: 100,
+            num_resource_attrs: 20,
+            num_scope_attrs: 5,
+            num_log_attrs: 2,
+        },
+    ];
+
+    let edges = [
+        "S  -> F   flatten to REE",
+        "F  -> S   unflatten",
+        "S  -> Ws  standard serialize",
+        "Ws -> S   standard deserialize",
+        "F  -> Wf  flat serialize",
+        "Wf -> F   flat deserialize",
+        "F  -> P   parquet-ready (REE+FSB)",
+        "F  -> P   parquet write",
+        "P  -> F   parquet read",
+    ];
+
+    fn measure(otap: &OtapArrowRecords) -> Vec<f64> {
+        let flat = otap_flat::flatten(otap, Layout::RunEndEncoded).expect("flatten");
+        let ws = ipc::encode_to_bytes(otap.clone(), Compressor::Zstd).expect("ws");
+        let wf = ipc_flat::write_ipc(&flat, Compressor::Zstd).expect("wf");
+        let ready = to_parquet_ready(&flat).expect("ready");
+        let pq = write_parquet(&ready, Compressor::Zstd.parquet()).expect("pq");
+
+        vec![
+            median_ms(|| {
+                let _ = otap_flat::flatten(otap, Layout::RunEndEncoded).expect("flatten");
+            }),
+            median_ms(|| {
+                let _ = otap_flat::unflatten(&flat).expect("unflatten");
+            }),
+            median_ms(|| {
+                let _ = ipc::encode_to_bytes(otap.clone(), Compressor::Zstd).expect("ws");
+            }),
+            median_ms(|| {
+                let mut o = ipc::deserialize(&ws).expect("des");
+                ipc::transport_decode(&mut o).expect("tdec");
+            }),
+            median_ms(|| {
+                let _ = ipc_flat::write_ipc(&flat, Compressor::Zstd).expect("wf");
+            }),
+            median_ms(|| {
+                let _ = ipc_flat::read_ipc(&wf).expect("rf");
+            }),
+            median_ms(|| {
+                let _ = to_parquet_ready(&flat).expect("ready");
+            }),
+            median_ms(|| {
+                let _ = write_parquet(&ready, Compressor::Zstd.parquet()).expect("pq");
+            }),
+            median_ms(|| {
+                let _ = read_parquet(&pq).expect("read");
+            }),
+        ]
+    }
+
+    println!("\n=== Conversion cost matrix (indicative ms) ===");
+    println!(
+        "S=OTAP-standard, F=OTAP-flat(REE), Ws=OTAP/IPC-standard, Wf=OTAP/IPC-flat, P=Parquet."
+    );
+    let log = measure(&gen_logs_otap_rich(&scenarios[0]));
+    let res = measure(&gen_logs_otap_rich(&scenarios[1]));
+    println!(
+        "{:<34} {:>12} {:>14}",
+        "edge", "log-heavy", "resource-heavy"
+    );
+    for (i, name) in edges.iter().enumerate() {
+        println!("{:<34} {:>12.2} {:>14.2}", name, log[i], res[i]);
+    }
+    println!();
+}
+
 /// OTAP/IPC streaming amortization: cold (first) versus warm (steady-state)
 /// per-batch size when a single long-lived Producer streams many batches, with
 /// the equivalent single Parquet file for reference.
@@ -264,6 +632,9 @@ fn bench_round_trip(c: &mut Criterion) {
     print_size_table(&shapes);
     print_ipc_breakdown(&shapes);
     print_parquet_breakdown(&shapes);
+    print_otap_flat_table();
+    print_transfer_table();
+    print_conversion_matrix();
     print_streaming_table(&streaming_shapes());
 
     let mut write_group = c.benchmark_group("parquet_study/write");
