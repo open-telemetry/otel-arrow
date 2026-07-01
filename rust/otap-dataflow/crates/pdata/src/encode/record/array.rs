@@ -723,7 +723,7 @@ pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanoseco
 /// [`DictionaryArray`]s where the values are [`DataType::Binary`].
 ///
 /// If any value contains invalid UTF-8, the invalid byte sequences are replaced with the
-/// Unicode replacement character (U+FFFD `�`) using lossy conversion, ensuring that a single
+/// Unicode replacement character (`\u{FFFD}`) using lossy conversion, ensuring that a single
 /// malformed value never causes the entire batch to fail.
 ///
 /// Returns an error if the passed source array does not contain binary data.
@@ -760,7 +760,7 @@ pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
 }
 
 /// Convert a [`BinaryArray`] to a [`StringArray`], replacing any invalid UTF-8 byte sequences
-/// with the Unicode replacement character (U+FFFD `�`).
+/// with the Unicode replacement character (`\u{FFFD}`).
 ///
 /// Uses a fast path that attempts a zero-copy conversion first. If the entire values buffer is
 /// valid UTF-8, no additional allocation is needed. Only when invalid UTF-8 is encountered does
@@ -1652,7 +1652,7 @@ pub mod test {
         let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
         let result = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(result.value(0), "ab");
-        assert_eq!(result.value(1), "\u{FFFD}("); // invalid byte replaced with �
+        assert_eq!(result.value(1), "\u{FFFD}("); // invalid byte replaced with \u{FFFD}
 
         // check that invalid UTF-8 in dictionary values is also handled with lossy conversion
         let input = DictionaryArray::new(

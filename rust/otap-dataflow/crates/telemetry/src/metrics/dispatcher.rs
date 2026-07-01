@@ -741,9 +741,9 @@ mod tests {
     /// Verifies that MMSC instruments are exported as OTel SDK histograms
     /// with no bucket boundaries (only min/max/sum/count).
     ///
-    /// Flow: Mmsc::record → snapshot → accumulate into registry →
-    /// visit_metrics_and_reset → add_opentelemetry_metric →
-    /// record_synthetic_histogram → OTel SDK histogram export.
+    /// Flow: Mmsc::record -> snapshot -> accumulate into registry ->
+    /// visit_metrics_and_reset -> add_opentelemetry_metric ->
+    /// record_synthetic_histogram -> OTel SDK histogram export.
     #[test]
     fn test_mmsc_exported_as_histogram_with_no_buckets() {
         // --- Mock metric set with a single MMSC field --------------------------

@@ -279,7 +279,7 @@ impl<PData> EffectHandler<PData> {
     ///
     /// This is called on the send path at the stop node.  The observation
     /// is accumulated into a local `Mmsc` and drained into the `MetricSet`
-    /// on the next periodic [`report_flow_metrics`] call — matching the
+    /// on the next periodic [`report_flow_metrics`] call -- matching the
     /// `ComputeDuration` reporting pattern.
     pub fn record_flow_duration(&self, total: u64) {
         let Some((_, acc_cell)) = self.flow.end.duration.as_ref() else {
@@ -328,7 +328,7 @@ impl<PData> EffectHandler<PData> {
     /// report to the telemetry collector.
     ///
     /// Called by the engine on periodic `CollectTelemetry` and at
-    /// shutdown — the same cadence as `ComputeDuration::report`.
+    /// shutdown -- the same cadence as `ComputeDuration::report`.
     pub(crate) fn report_flow_metrics(&mut self) {
         if let Some((metrics, acc_cell)) = self.flow.incoming.signals_incoming.as_mut() {
             let acc = acc_cell.replace(Mmsc::default());
@@ -1078,7 +1078,7 @@ mod tests {
             true,
         );
 
-        // Record two observations — should accumulate in the local Mmsc,
+        // Record two observations -- should accumulate in the local Mmsc,
         // not touch the MetricSet yet.
         eh.record_flow_signals_incoming(10);
         eh.record_flow_signals_incoming(20);

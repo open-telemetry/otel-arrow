@@ -105,7 +105,7 @@ pub struct PipelineAttributeSet {
 /// Fields are private; the type can only be constructed through a scope-kind
 /// constructor (e.g. [`ExtensionScopeAttributeSet::pipeline`]). This enforces
 /// the invariant that every scope value has a populated payload matching its
-/// `scope.kind` discriminator — there is no way to build a "kind-less" or
+/// `scope.kind` discriminator -- there is no way to build a "kind-less" or
 /// inconsistent scope set in the public API.
 ///
 /// When new scope kinds are introduced (e.g. `"engine"`, `"group"`),
@@ -129,7 +129,7 @@ pub struct ExtensionScopeAttributeSet {
 impl Default for ExtensionScopeAttributeSet {
     /// Sentinel default used by the `#[compose]` macro to compute the cached
     /// composed descriptor once at startup. The produced value carries an
-    /// empty `scope.kind` and is **not** a valid scope identity — production
+    /// empty `scope.kind` and is **not** a valid scope identity -- production
     /// telemetry must construct values through a scope-kind constructor
     /// (e.g. [`ExtensionScopeAttributeSet::pipeline`]).
     fn default() -> Self {

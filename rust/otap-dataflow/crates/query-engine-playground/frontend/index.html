@@ -3,7 +3,7 @@
   Copyright The OpenTelemetry Authors
   SPDX-License-Identifier: Apache-2.0
 
-  OPL Playground — interactive web UI for executing OPL programs against
+  OPL Playground -- interactive web UI for executing OPL programs against
   OpenTelemetry data.  Uses protobuf.js (CDN) to encode/decode OTLP messages
   in the browser, sending binary protobuf to the Rust backend for execution.
 -->
@@ -107,7 +107,7 @@ pre.r{font-family:var(--mono);font-size:.8125rem;line-height:1.5;white-space:pre
   </div>
 </div>
 
-<!-- protobuf.js from CDN — full build includes descriptor-set support -->
+<!-- protobuf.js from CDN -- full build includes descriptor-set support -->
 <script src="https://cdn.jsdelivr.net/npm/protobufjs@7.4.0/dist/protobuf.min.js"
         integrity="sha384-QXLBv6MtfHjfkbBq/Oaa6WF7xDVm8Gp2yJrGA7MAt5QBYEckWkYdIdiK7v0Ce5xE"
         crossorigin="anonymous"></script>
@@ -201,7 +201,7 @@ function saveState(){
       query: qry.value,
       data: inp.value
     }));
-  } catch(e) { /* quota exceeded or private mode — ignore */ }
+  } catch(e) { /* quota exceeded or private mode -- ignore */ }
 }
 
 function restoreState(){
@@ -274,9 +274,9 @@ var LogsData, TracesData, MetricsData;
 // --- Encode/decode ---
 function encode(signal, json){
   var T = signal==="logs"?LogsData : signal==="traces"?TracesData : MetricsData;
-  // Skip T.verify() — it rejects string-encoded uint64 values like
+  // Skip T.verify() -- it rejects string-encoded uint64 values like
   // "1544712660300000000" which are valid per the OTLP JSON spec.
-  // T.fromObject() handles the string→Long conversion correctly.
+  // T.fromObject() handles the string->Long conversion correctly.
   var msg = T.fromObject(json);
   return T.encode(msg).finish();
 }

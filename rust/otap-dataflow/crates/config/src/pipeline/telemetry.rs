@@ -55,7 +55,7 @@ impl TelemetryConfig {
     /// operator who sets a static `headers` map (e.g. an `authorization` token
     /// for an OTLP telemetry backend) would otherwise have those values served
     /// in cleartext. Both reader arms are masked here for defensive consistency
-    /// with pipeline nodes/extensions — even the pull/Prometheus schema, which
+    /// with pipeline nodes/extensions -- even the pull/Prometheus schema, which
     /// rejects unknown fields today, since the stored value is still opaque. The
     /// stored config is left unchanged.
     #[must_use]
@@ -296,7 +296,7 @@ impl AttributeValue {
     /// - `String`: cloned verbatim.
     /// - `Bool`: `"true"` / `"false"`.
     /// - `I64`: standard decimal formatting.
-    /// - `F64`: Rust's `Display`, which uses the Ryu algorithm — the
+    /// - `F64`: Rust's `Display`, which uses the Ryu algorithm -- the
     ///   shortest decimal that round-trips back to the same `f64`.
     /// - `Array`: encoded as a bare JSON array (e.g. `["a","b"]`,
     ///   `[1,2,3]`). JSON preserves element type and order, and avoids
@@ -948,7 +948,7 @@ mod tests {
 
     #[test]
     fn test_attribute_value_array_json_schema_is_untagged() {
-        // Same check for AttributeValueArray — schema should describe bare
+        // Same check for AttributeValueArray -- schema should describe bare
         // arrays of primitives, not externally-tagged objects like {"Bool": [...]}.
         let schema = schemars::schema_for!(AttributeValueArray);
         let json = serde_json::to_string_pretty(&schema).unwrap();

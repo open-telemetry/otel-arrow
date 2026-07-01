@@ -3605,7 +3605,7 @@ mod tests {
     }
 
     /// Build a TestPData with frames simulating a 3-node pipeline:
-    /// receiver(node0) → processor(node1) → exporter(node2).
+    /// receiver(node0) -> processor(node1) -> exporter(node2).
     ///
     /// Frames are pushed bottom-to-top (receiver first, exporter last on top).
     fn build_3node_pdata(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
@@ -3642,7 +3642,7 @@ mod tests {
             },
         });
 
-        // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
+        // Node 2 (exporter): consumer metrics only (no acks subscription -- terminal node)
         let entry_time_ns = if with_timestamp {
             nanos_since_birth()
         } else {
@@ -3668,7 +3668,7 @@ mod tests {
     fn build_3node_pdata_no_subscribers(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
         let mut pdata = TestPData::new();
 
-        // Node 0 (receiver): producer metrics only — no ACKS/NACKS, no CONSUMER_METRICS.
+        // Node 0 (receiver): producer metrics only -- no ACKS/NACKS, no CONSUMER_METRICS.
         let entry_time_ns = if with_timestamp {
             nanos_since_birth()
         } else {
@@ -3813,7 +3813,7 @@ mod tests {
         assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
 
         // Receiver produced: unwind_ack delivers to first ACKS subscriber (processor)
-        // so receiver frame is never popped → no metrics recorded.
+        // so receiver frame is never popped -> no metrics recorded.
         assert!(
             !snapshots.contains_key(&MetricLabel::RecvProduced),
             "Receiver produced should have no metrics (ack delivered at processor)"
@@ -3925,7 +3925,7 @@ mod tests {
         .await;
 
         // Receiver produced duration: 1 observation, min > 0
-        // (producer-only frame, no CONSUMER_METRICS → produced_duration recorded)
+        // (producer-only frame, no CONSUMER_METRICS -> produced_duration recorded)
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
         let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
@@ -3939,7 +3939,7 @@ mod tests {
         );
 
         // Processor produced duration: 0 observations
-        // (merged frame has CONSUMER_METRICS → produced_duration suppressed)
+        // (merged frame has CONSUMER_METRICS -> produced_duration suppressed)
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
         let snap = assert_mmsc(proc_p, PRODUCER_DURATION, "Processor produced duration");
         assert_eq!(
@@ -4073,11 +4073,11 @@ mod tests {
         assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
     }
 
-    /// Simulate the real two-pass unwind for a receiver→processor→exporter pipeline.
+    /// Simulate the real two-pass unwind for a receiver->processor->exporter pipeline.
     ///
-    /// Pass 1: full stack [recv, proc, exp] — unwinds exp and proc frames,
+    /// Pass 1: full stack [recv, proc, exp] -- unwinds exp and proc frames,
     ///         delivers ack to processor (first ACKS subscriber).
-    /// Pass 2: processor re-notifies with just the receiver frame — unwinds recv,
+    /// Pass 2: processor re-notifies with just the receiver frame -- unwinds recv,
     ///         recording producer duration on the receiver's output.
     ///
     /// This is the scenario where producer.duration must be recorded for the receiver.
@@ -4617,7 +4617,7 @@ mod tests {
                 // Recurring timers reschedule immediately after firing, so
                 // the 5ms timer may fire more than once before `drop(pipeline_tx)`
                 // closes the manager. Unlike delayed data (one-shot), these are
-                // inherently non-deterministic — we only require at least one
+                // inherently non-deterministic -- we only require at least one
                 // dispatch was recorded.
                 assert_u64_gte(
                     &due_metrics,
@@ -5969,15 +5969,15 @@ mod tests {
     ///
     /// ```ignore
     /// for (_, context, payload) in completed_messages {
-    ///     effect_handler.notify_ack(AckMsg::new(…)).await?;
+    ///     effect_handler.notify_ack(AckMsg::new(...)).await?;
     ///     //             ^^^^^^^^^ sends DeliverAck to pipeline ctrl channel
     /// }
     /// ```
     ///
     /// Setup:
-    ///   - Pipeline ctrl channel (nodes → manager): capacity 3
-    ///   - Node A control channel (manager → A):    capacity 1
-    ///   - Node B control channel (manager → B):    capacity 10
+    ///   - Pipeline ctrl channel (nodes -> manager): capacity 3
+    ///   - Node A control channel (manager -> A):    capacity 1
+    ///   - Node B control channel (manager -> B):    capacity 10
     ///
     /// The circular wait forms as follows:
     ///   1. Pre-load pipeline ctrl with [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}].
@@ -5987,13 +5987,13 @@ mod tests {
     ///   3. Manager processes the two DeliverAck{A}s (freeing slots that Node A
     ///      promptly refills), sending Acks to A's control channel.
     ///      The first Ack succeeds (fills A's cap-1 channel).
-    ///      The second Ack finds A's channel full → manager blocks on `.await`.
+    ///      The second Ack finds A's channel full -> manager blocks on `.await`.
     ///   4. Now both are stuck:
     ///      - Manager is blocked sending to A's control channel (full)
     ///      - Node A is blocked sending to pipeline ctrl channel (full, refilled
     ///        after manager freed the initial two slots)
     ///      - Neither can make progress.
-    ///   5. DeliverAck{B} sits in the pipeline ctrl queue — never processed.
+    ///   5. DeliverAck{B} sits in the pipeline ctrl queue -- never processed.
     ///
     /// The test asserts Node B receives its ack within 500 ms.  The non-blocking
     /// `try_send` + `pending_sends` buffering in `send()` prevents the manager
@@ -6030,7 +6030,7 @@ mod tests {
                 let node_a = nodes[0].clone();
                 let node_b = nodes[1].clone();
 
-                // Node A: control channel capacity 1 — fills up after one message
+                // Node A: control channel capacity 1 -- fills up after one message
                 let (tx_a, rx_a) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(1);
                 control_senders.register(
                     node_a.clone(),
@@ -6038,7 +6038,7 @@ mod tests {
                     Sender::Shared(SharedSender::mpsc(tx_a)),
                 );
 
-                // Node B: control channel capacity 10 — plenty of room
+                // Node B: control channel capacity 10 -- plenty of room
                 let (tx_b, rx_b) = tokio::sync::mpsc::channel::<NodeControlMsg<TestPData>>(10);
                 control_senders.register(
                     node_b.clone(),
@@ -6083,7 +6083,7 @@ mod tests {
                 // `for msg in completed_messages { notify_ack(..).await; }` loop).
                 //
                 // Node A keeps sending DeliverAck to the shared return channel.
-                // When the channel is full, Node A blocks — and since it never
+                // When the channel is full, Node A blocks -- and since it never
                 // drains its own control channel (rx_a), the dispatcher can't
                 // deliver acks to it either.
                 let node_a_tx = return_tx.clone();

@@ -1083,7 +1083,7 @@ impl ExprPlanner {
             }
         }
 
-        // handle body field comparisons — body is an AnyValue struct, so we need to
+        // handle body field comparisons -- body is an AnyValue struct, so we need to
         // resolve the sub-field based on the other side's type
         resolve_body_field_in_planned_ops(&mut left, &mut right);
 
@@ -1185,7 +1185,7 @@ impl ExprPlanner {
                 return match column_accessor {
                     ColumnAccessor::ColumnName(col_name) => {
                         let is_null_expr = if col_name == crate::consts::BODY_FIELD_NAME {
-                            // body null check — check all sub-fields
+                            // body null check -- check all sub-fields
                             col(col_name).is_null()
                         } else {
                             col(col_name).is_null()
@@ -1263,7 +1263,7 @@ impl ExprPlanner {
                 _ => return Ok(None),
             };
 
-        // Only apply when the attribute side is a simple `col("value")` reference —
+        // Only apply when the attribute side is a simple `col("value")` reference --
         // not when the attribute value is used in arithmetic, function calls, etc.
         if !is_simple_attr_value_column(attrs_op) {
             return Ok(None);
@@ -1616,7 +1616,7 @@ impl ExprPlanner {
                     }
                 })?;
 
-                // Array, Map, and Null types have no standalone Arrow representation —
+                // Array, Map, and Null types have no standalone Arrow representation --
                 // they only appear as subtypes inside AnyValue struct columns. Handle
                 // them via the IsTypeFunc UDF on the AnyValue discriminator.
                 if matches!(
@@ -1663,7 +1663,7 @@ impl ExprPlanner {
                     ));
 
                     // Use eval_anyval_as_struct because the IsTypeFunc UDF
-                    // operates directly on the AnyValue struct discriminator — no
+                    // operates directly on the AnyValue struct discriminator -- no
                     // type-based partitioning needed.
                     return Ok(Some(ScopedExpr::Eval {
                         scope,
@@ -2101,7 +2101,7 @@ fn is_body_planned_op(planned: &PlannedOp) -> bool {
 /// Check if a `PlannedOp` is a simple attribute value column reference.
 ///
 /// Returns `true` if this is an attribute-scoped `Eval` with a simple `col("value")`
-/// expression — the pattern produced by `plan_scalar` for `attributes["key"]`.
+/// expression -- the pattern produced by `plan_scalar` for `attributes["key"]`.
 ///
 /// Returns `false` if the attribute value has been used in arithmetic, function calls,
 /// or other complex expressions that require the actual typed value column to be

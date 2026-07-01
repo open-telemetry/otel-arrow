@@ -717,7 +717,7 @@ where
     // safety: Caller checks the type before
     let dict = id_col.as_dictionary::<K>();
 
-    // Keys are indices into the values array — directly comparable to the
+    // Keys are indices into the values array -- directly comparable to the
     // redaction ranges which are also value-array indices. We keep the keys
     // in their native type (u8 or u16) and cast the range bounds to match.
     let mut sorted_keys: Vec<K::Native> = dict.keys().values().to_vec();
@@ -2129,7 +2129,7 @@ mod tests {
     #[test]
     #[rustfmt::skip]
     fn test_metrics_exemplar_attrs() {
-        // Four-level relationship: Metrics -> DataPoints -> Exemplars → ExemplarAttrs
+        // Four-level relationship: Metrics -> DataPoints -> Exemplars -> ExemplarAttrs
         let metric_ids          = vec![0u16, 1];
         let metric_ids_2        = vec![2u16, 3];
         let dp_pids             = vec![0u16, 0, 1];

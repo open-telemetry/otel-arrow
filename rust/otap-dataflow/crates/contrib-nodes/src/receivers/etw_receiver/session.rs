@@ -70,7 +70,7 @@ use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
 
-// ── QPC → Unix epoch conversion ──────────────────────────────────────────────
+// -- QPC -> Unix epoch conversion ----------------------------------------------
 
 /// Reference point captured once at session start to convert QPC ticks to
 /// Unix epoch nanoseconds.  All three values are sampled on the session
@@ -140,15 +140,15 @@ impl QpcReference {
 /// next event continues to the following core (no retry on another core).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-// ── Event data transferred across the channel ────────────────────────────────
+// -- Event data transferred across the channel --------------------------------
 
 /// Typed value of a single TDH-decoded ETW field.
 ///
 /// The decoder interprets each field's raw bytes **once** (on the
 /// `ProcessTrace` thread) into one of these variants, instead of deferring
 /// interpretation to the encoder via a `(type_name, len)` string match.  This
-/// gives compile-time exhaustiveness at every consumer match site — adding a
-/// variant is a compile error rather than a silent fall-through — and avoids
+/// gives compile-time exhaustiveness at every consumer match site -- adding a
+/// variant is a compile error rather than a silent fall-through -- and avoids
 /// the redundant `type_name: String` allocation plus consumer-side byte
 /// re-parsing.  Modeled on the Linux `user_events_receiver`'s
 /// `DecodedAttrValue`.
@@ -229,7 +229,7 @@ pub struct EtwEventData {
     pub decoded_fields: Vec<DecodedField>,
 }
 
-// ── GUID parsing ─────────────────────────────────────────────────────────────
+// -- GUID parsing -------------------------------------------------------------
 
 /// Parse a GUID string in the standard `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 /// format into a [`one_collect::Guid`].
@@ -304,7 +304,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     }
 
     if let Some(name) = &cfg.name {
-        // TODO: Implement provider name → GUID resolution via
+        // TODO: Implement provider name -> GUID resolution via
         // TdhEnumerateProviders or registry lookup.
         return Err(Error::ConfigError(Box::new(
             otap_df_config::error::Error::InvalidUserConfig {
@@ -320,7 +320,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
-// ── TDH field extraction ─────────────────────────────────────────────────────
+// -- TDH field extraction -----------------------------------------------------
 
 /// Number of 100-nanosecond ticks between the Windows `FILETIME` epoch
 /// (1601-01-01 UTC) and the Unix epoch (1970-01-01 UTC).
@@ -330,8 +330,8 @@ const FILETIME_TICKS_TO_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 ///
 /// The `type_name` strings come from `one_collect`'s TDH decoder
 /// (`intype_to_field_info`) and follow the same naming conventions as the
-/// user_events tracefs decoder.  Doing this interpretation here — next to the
-/// decoder — keeps TDH type knowledge in one place and lets the encoder
+/// user_events tracefs decoder.  Doing this interpretation here -- next to the
+/// decoder -- keeps TDH type knowledge in one place and lets the encoder
 /// collapse to an exhaustive match over [`EtwAttributeValue`] with no silent
 /// `(type_name, len)` fall-throughs.
 ///
@@ -521,8 +521,8 @@ fn extract_decoded_fields(
 
     for field in format.fields() {
         // The data closure is allocated only for the `LocationType` variants
-        // that TDH produces — `Static`, `StaticString`, `StaticUTF16String`,
-        // and `StaticLenPrefixArray` — all of which are handled without
+        // that TDH produces -- `Static`, `StaticString`, `StaticUTF16String`,
+        // and `StaticLenPrefixArray` -- all of which are handled without
         // panicking.  The `todo!()` paths in `get_data_with_offset_direct`
         // are reached only for `DynRelative`/`DynAbsolute`, which are a Linux
         // tracefs (`__rel_loc`) concept that `intype_to_field_info` never
@@ -548,7 +548,7 @@ fn extract_decoded_fields(
     fields
 }
 
-// ── Per-session telemetry bridge ─────────────────────────────────────────────
+// -- Per-session telemetry bridge ---------------------------------------------
 
 /// Counters written by the `!Send` `ProcessTrace` callback and read by the
 /// async per-core receivers.
@@ -578,7 +578,7 @@ pub(super) struct SessionWideMetrics {
     pub decode_failed: AtomicU64,
 }
 
-// ── Per-session state ────────────────────────────────────────────────────────
+// -- Per-session state --------------------------------------------------------
 
 /// State for a single ETW session keyed by `session_name`.
 struct SessionEntry {
@@ -603,7 +603,7 @@ struct SessionEntry {
 ///   `InvalidUserConfig` error instead of silently sharing or failing with
 ///   a misleading "pool exhausted" message.
 ///
-/// We use `Mutex<HashMap<…>>` rather than `OnceLock` / `LazyLock` because:
+/// We use `Mutex<HashMap<...>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
 static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None);
@@ -851,7 +851,7 @@ fn spawn_etw_session(
     Ok(())
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// -- Public API ---------------------------------------------------------------
 
 /// Acquire one consumer channel from the ETW session for the given
 /// `session_name`.
@@ -888,7 +888,7 @@ pub(super) fn subscribe(
 
     let entry = match sessions.entry(config.session_name.clone()) {
         Entry::Vacant(v) => {
-            // First call for this session_name — initialize the session.
+            // First call for this session_name -- initialize the session.
             let (txs, rxs): (Vec<_>, Vec<_>) = (0..num_cores)
                 .map(|_| mpsc::channel(EVENT_CHANNEL_CAPACITY))
                 .unzip();
@@ -1001,7 +1001,7 @@ mod tests {
         }
     }
 
-    // ── Session registry ─────────────────────────────
+    // -- Session registry -----------------------------
 
     #[test]
     fn subscribe_rejects_exhausted_session_name() {
@@ -1039,7 +1039,7 @@ mod tests {
         let result2 = subscribe(&config, 2);
         assert!(result2.is_ok(), "second subscribe should succeed");
 
-        // Third pop — pool exhausted — should return InvalidUserConfig.
+        // Third pop -- pool exhausted -- should return InvalidUserConfig.
         let err = subscribe(&config, 2).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -1089,7 +1089,7 @@ mod tests {
         let _guard = TestSession::insert_with_config("test-mismatch", vec![rx], original_config);
 
         // Attempt to subscribe with a different provider config but the
-        // same session_name — this should be rejected.
+        // same session_name -- this should be rejected.
         let different_config = Config {
             session_name: "test-mismatch".to_string(),
             providers: vec![ProviderConfig {
@@ -1113,7 +1113,7 @@ mod tests {
         );
     }
 
-    // ── GUID parsing ─────────────────────────────────
+    // -- GUID parsing ---------------------------------
 
     #[test]
     fn parse_guid_standard_format() {
@@ -1145,7 +1145,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Field value interpretation ───────────────────
+    // -- Field value interpretation -------------------
 
     #[test]
     fn interpret_signed_integers() {
@@ -1260,7 +1260,7 @@ mod tests {
             interpret_field_value("filetime", &FILETIME_TICKS_TO_UNIX_EPOCH.to_ne_bytes()),
             EtwAttributeValue::Int(0)
         );
-        // One second (10,000,000 ticks) past the Unix epoch → 1e9 ns.
+        // One second (10,000,000 ticks) past the Unix epoch -> 1e9 ns.
         let one_sec_after = FILETIME_TICKS_TO_UNIX_EPOCH + 10_000_000;
         assert_eq!(
             interpret_field_value("filetime", &one_sec_after.to_ne_bytes()),
@@ -1302,7 +1302,7 @@ mod tests {
         );
     }
 
-    // ── Trace level mapping ──────────────────────────
+    // -- Trace level mapping --------------------------
 
     #[test]
     fn trace_level_mapping() {

@@ -8,7 +8,7 @@
 //!
 //! Benchmark names follow the pattern: `group/description/N_events`
 //!
-//! Example: `encode/3_attrs/1000_events` = 300 µs → 300 ns per event
+//! Example: `encode/3_attrs/1000_events` = 300 us -> 300 ns per event
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_pdata::otlp::ProtoBuffer;
@@ -345,7 +345,7 @@ fn bench_format_with_entity(c: &mut Criterion) {
 
 /// Benchmark a single realistic event (oversized attrs) across all ops.
 /// Designed to exercise the buffer-growth path in upstream and the bounded
-/// truncation path here — the body+attrs encode to ~300+ bytes, exceeding
+/// truncation path here -- the body+attrs encode to ~300+ bytes, exceeding
 /// upstream's 256B initial Vec capacity.
 fn bench_realistic(c: &mut Criterion) {
     let mut group = c.benchmark_group("realistic");

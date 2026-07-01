@@ -71,7 +71,7 @@ impl PipelineStage for FilterPipelineStage {
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
             None => {
-                // expression data was absent — no rows pass the filter
+                // expression data was absent -- no rows pass the filter
                 BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)
             }
             Some(scoped_value) => {
@@ -119,10 +119,10 @@ impl PipelineStage for FilterPipelineStage {
 /// Convert a `ColumnarValue` into a `BooleanArray` selection vector of the given number of rows.
 ///
 /// Handles:
-/// - `ColumnarValue::Array` — casts to `BooleanArray`, strips null buffer by ANDing values with
+/// - `ColumnarValue::Array` -- casts to `BooleanArray`, strips null buffer by ANDing values with
 ///   the null buffer (null predicate results are treated as false)
-/// - `ColumnarValue::Scalar(Boolean(true))` — all-true array
-/// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` — all-false array
+/// - `ColumnarValue::Scalar(Boolean(true))` -- all-true array
+/// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` -- all-false array
 pub(crate) fn scoped_value_to_boolean_array(
     values: ColumnarValue,
     num_rows: usize,
@@ -252,7 +252,7 @@ fn align_selection_vec_from_atts(
             });
         }
         None => {
-            // no ID column means no attributes exist — return all-null for the root
+            // no ID column means no attributes exist -- return all-null for the root
             return Ok(ScopedValue::new(
                 null_columnar_value_for_rows(&value.values, num_rows)?,
                 DataScope::Root,

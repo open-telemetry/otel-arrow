@@ -574,7 +574,7 @@ pub trait BoundedBuf {
         }
     }
 
-    /// Returns the narrowest placeholder width (1–4 bytes) sufficient
+    /// Returns the narrowest placeholder width (1-4 bytes) sufficient
     /// for this buffer's remaining space.
     #[inline]
     fn placeholder_width(&self) -> usize {
@@ -1159,11 +1159,11 @@ impl BatchSorter {
                     .sorted_indices
                     .extend(self.u32_ids.iter().map(|(i, _)| *i));
             }
-            // Single ID column — sort directly by u16 value.
+            // Single ID column -- sort directly by u16 value.
             [Some(ids), None, None] => {
                 self.init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(ids), cursor);
             }
-            // No ID columns — visit in natural order.
+            // No ID columns -- visit in natural order.
             [None, None, None] => {
                 cursor.sorted_indices.extend(0..record_batch.num_rows());
             }
@@ -1805,7 +1805,7 @@ mod test {
 
         // Append another field after the partial one and confirm it parses.
         buf.encode_string(8, "after").unwrap();
-        // Find "after" by scanning — it must be intact at the end.
+        // Find "after" by scanning -- it must be intact at the end.
         assert!(
             buf.as_ref().windows(5).any(|w| w == b"after"),
             "subsequent field is intact when partial used"

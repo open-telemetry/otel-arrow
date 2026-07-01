@@ -464,7 +464,7 @@ impl From<f64> for Gauge<f64> {
 ///
 /// Records individual observations via [`record()`](Mmsc::record), maintaining
 /// running min/max/sum/count. Exported as a synthetic OTel histogram preserving
-/// exact MMSC values. This is a delta instrument — values are reset after each
+/// exact MMSC values. This is a delta instrument -- values are reset after each
 /// reporting interval.
 ///
 /// The dispatcher uses `.with_boundaries(vec![])` when building the OTel

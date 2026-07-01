@@ -300,7 +300,7 @@ impl FieldRanges for LogFieldOffsets {
     }
 }
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// Iterator of ResourceLogs - produces implementation of `ResourceLogs` view from byte array
 /// containing a serialized LogsData message
@@ -363,7 +363,7 @@ impl<'a> Iterator for LogRecordsIter<'a> {
     }
 }
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl LogsDataView for RawLogsData<'_> {
     type ResourceLogs<'a>

@@ -9,7 +9,7 @@ use otap_df_pdata_views::views::resource::ResourceView;
 
 use crate::proto::opentelemetry::resource::v1::Resource;
 
-/* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
+/* ----------------------------- VIEW WRAPPERS (zero-alloc) -------------- */
 
 /// Lightweight wrapper around `Resource` that implements `ResourceView`
 #[derive(Clone, Copy)]
@@ -25,7 +25,7 @@ impl<'a> ObjResource<'a> {
     }
 }
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl ResourceView for ObjResource<'_> {
     type Attribute<'b>
