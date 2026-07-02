@@ -21,36 +21,73 @@
 use super::error::CapabilityError;
 use futures::Stream;
 use otap_df_engine_macros::capability;
-use std::fmt;
+use secrecy::{ExposeSecret, SecretString};
 use std::pin::Pin;
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 /// An OAuth bearer token plus its (optional) expiry.
 ///
-/// The secret is held in memory only and is never emitted by [`Debug`]
-/// (see the manual impl below) so it cannot leak into logs or telemetry.
+/// The secret is wrapped in [`SecretString`], which zeroizes on drop and
+/// masks itself in [`Debug`] output, so it cannot leak into logs or
+/// telemetry. The `SecretString` sits behind an [`Arc`] so cloning a
+/// token (handing it to multiple `token_stream` subscribers, or returning
+/// it from `get_token` on the hot path) is a cheap refcount bump that
+/// shares one plaintext allocation rather than copying the secret bytes.
+///
 /// `expires_on` is a monotonic [`Instant`] — providers convert the
 /// credential's absolute wall-clock expiry to an `Instant` once, so the
 /// value is immune to wall-clock jumps thereafter. `None` means the token
 /// does not expire (or no expiry was reported).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct BearerToken {
-    secret: String,
+    secret: Arc<SecretString>,
     expires_on: Option<Instant>,
 }
 
 impl BearerToken {
     /// Creates a token from its secret and optional monotonic expiry.
+    ///
+    /// Accepts anything convertible into [`SecretString`] (e.g. a
+    /// `String`), which is then shared behind an [`Arc`].
     #[must_use]
-    pub fn new(secret: String, expires_on: Option<Instant>) -> Self {
-        Self { secret, expires_on }
+    pub fn new(secret: impl Into<SecretString>, expires_on: Option<Instant>) -> Self {
+        Self {
+            secret: Arc::new(secret.into()),
+            expires_on,
+        }
     }
 
-    /// The bearer token secret, for injection into an `Authorization`
-    /// header or an `object_store` credential.
+    /// Creates a token from its secret and an **absolute** wall-clock
+    /// expiry.
+    ///
+    /// Credential services that report an absolute expiry often give it as
+    /// calendar time ([`SystemTime`]), but [`BearerToken`] stores a
+    /// monotonic [`Instant`] (see the field docs for why). Every such
+    /// provider has to perform the same wall-clock-to-monotonic
+    /// conversion; this constructor centralizes it so no provider gets it
+    /// subtly wrong.
+    ///
+    /// It measures how far `expires_on` is from *now* and offsets the
+    /// current `Instant` by that duration. An `expires_on` already in the
+    /// past (or a backwards clock) clamps to "expires immediately"
+    /// (`Instant::now()`) rather than producing a time before now.
     #[must_use]
-    pub fn secret(&self) -> &str {
-        &self.secret
+    pub fn from_absolute_expiry(secret: impl Into<SecretString>, expires_on: SystemTime) -> Self {
+        let remaining = expires_on
+            .duration_since(SystemTime::now())
+            .unwrap_or(Duration::ZERO);
+        Self::new(secret, Some(Instant::now() + remaining))
+    }
+
+    /// Exposes the bearer token secret, for injection into an
+    /// `Authorization` header or an `object_store` credential.
+    ///
+    /// Named `expose_secret` (rather than a plain getter) so every
+    /// plaintext access is explicit and greppable.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        self.secret.expose_secret()
     }
 
     /// The monotonic instant at which this token expires, if known.
@@ -60,17 +97,14 @@ impl BearerToken {
     }
 }
 
-// Manual `Debug` that redacts the secret. Never print `self.secret`.
-impl fmt::Debug for BearerToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BearerToken")
-            .field("secret", &"<redacted>")
-            .field("expires_on", &self.expires_on)
-            .finish()
-    }
-}
-
 /// A per-consumer subscription to token refreshes.
+///
+/// The item is a plain [`BearerToken`], not a `Result`: a refresh
+/// failure does not terminate the subscription. The stream simply does
+/// not emit until the next successful refresh, and failures surface via
+/// [`BearerTokenProvider::get_token`] and telemetry instead. Because the
+/// item is [`Clone`], a provider can fan one refreshed token out to all
+/// subscribers via a `watch`/`broadcast` channel.
 ///
 /// Boxed to hide the concrete stream type so providers can back it
 /// differently (e.g. a `watch` channel or an `unfold`) without changing
@@ -79,7 +113,7 @@ impl fmt::Debug for BearerToken {
 /// (thread-per-core), so it need not be `Send`. The `#[capability]`
 /// macro emits this signature into both the `local` (`?Send`) and
 /// `shared` (`Send`) trait variants unchanged.
-pub type TokenStream = Pin<Box<dyn Stream<Item = Result<BearerToken, CapabilityError>> + 'static>>;
+pub type TokenStream = Pin<Box<dyn Stream<Item = BearerToken> + 'static>>;
 
 /// Hands out OAuth bearer tokens to data-path nodes.
 #[capability(
@@ -87,17 +121,31 @@ pub type TokenStream = Pin<Box<dyn Stream<Item = Result<BearerToken, CapabilityE
     description = "Provides OAuth bearer tokens, refreshed in the background"
 )]
 pub trait BearerTokenProvider {
-    /// Returns the current valid token.
+    /// Returns the current valid token for the provider's configured
+    /// scope(s).
     ///
-    /// The fast path reads a cached token; the slow path performs a
-    /// single (coalesced) credential call on a cache miss. Returns a
+    /// The fast path reads a cached token; on a cache miss the provider
+    /// performs a credential call. A provider that shares its cache and
+    /// refresh state across cloned instances can coalesce concurrent
+    /// misses into a single call — but that is a provider implementation
+    /// detail, not a guarantee of this trait. Returns a
     /// [`CapabilityError`] if no valid token can be produced.
+    ///
+    /// The token is scoped to the resource(s) the provider was configured
+    /// for. There is no wiring-time check that a consumer's target
+    /// resource matches the provider's scope, so a mismatch surfaces at
+    /// the service as an auth failure (e.g. HTTP 401) rather than at
+    /// startup. Consumers must bind to a provider configured for their
+    /// resource.
     async fn get_token(&self) -> Result<BearerToken, CapabilityError>;
 
     /// Subscribes to the stream of token refreshes.
     ///
     /// Yields each newly published token for the lifetime of the
-    /// extension. Each call returns an independent subscription.
+    /// extension; each call returns an independent subscription. The
+    /// stream does not carry errors: a failed refresh does not end the
+    /// subscription, and the next successful refresh still yields a token
+    /// (see [`TokenStream`]).
     fn token_stream(&self) -> TokenStream;
 }
 
@@ -109,7 +157,7 @@ mod tests {
     fn accessors_round_trip() {
         let now = Instant::now();
         let token = BearerToken::new("super-secret".to_owned(), Some(now));
-        assert_eq!(token.secret(), "super-secret");
+        assert_eq!(token.expose_secret(), "super-secret");
         assert_eq!(token.expires_on(), Some(now));
 
         let non_expiring = BearerToken::new("s".to_owned(), None);
@@ -117,13 +165,51 @@ mod tests {
     }
 
     #[test]
-    fn debug_redacts_secret() {
+    fn from_absolute_expiry_converts_future_wall_clock_to_instant() {
+        let before = Instant::now();
+        let token = BearerToken::from_absolute_expiry(
+            "s".to_owned(),
+            SystemTime::now() + Duration::from_secs(60),
+        );
+        let after = Instant::now();
+        let expiry = token.expires_on().expect("future expiry is set");
+        // The converted instant lands ~60s ahead of when we called it.
+        assert!(expiry >= before + Duration::from_secs(59));
+        assert!(expiry <= after + Duration::from_secs(61));
+    }
+
+    #[test]
+    fn from_absolute_expiry_clamps_past_wall_clock_to_now() {
+        let before = Instant::now();
+        let token = BearerToken::from_absolute_expiry(
+            "s".to_owned(),
+            SystemTime::now() - Duration::from_secs(60),
+        );
+        let after = Instant::now();
+        let expiry = token.expires_on().expect("expiry is set");
+        // A past expiry clamps to "now", never a time before now.
+        assert!(expiry >= before);
+        assert!(expiry <= after);
+    }
+
+    #[test]
+    fn clone_shares_the_same_secret_allocation() {
+        let token = BearerToken::new("super-secret".to_owned(), None);
+        let cloned = token.clone();
+        // Both handles observe the same plaintext...
+        assert_eq!(token.expose_secret(), cloned.expose_secret());
+        // ...backed by one shared allocation (a clone is a refcount bump,
+        // not a fresh copy of the secret bytes).
+        assert!(std::ptr::eq(token.expose_secret(), cloned.expose_secret()));
+    }
+
+    #[test]
+    fn debug_never_leaks_the_secret() {
         let token = BearerToken::new("super-secret".to_owned(), None);
         let rendered = format!("{token:?}");
         assert!(
             !rendered.contains("super-secret"),
             "secret leaked: {rendered}"
         );
-        assert!(rendered.contains("<redacted>"));
     }
 }

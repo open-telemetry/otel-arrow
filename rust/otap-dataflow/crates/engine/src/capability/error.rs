@@ -27,8 +27,13 @@ use std::marker::PhantomData;
 /// instance id and the capability name — alongside the underlying
 /// `source` error, so a consumer can attribute the failure without
 /// knowing the provider's internal error types.
+///
+/// Marked `#[non_exhaustive]` so fields can be added later without it
+/// being a breaking change for downstream crates. Construct instances
+/// through [`CapabilityErrorSource::error`] rather than a struct literal.
 #[derive(Debug, thiserror::Error)]
-#[error("capability '{capability}' on extension '{extension}' failed: {source}")]
+#[error("capability '{capability}' on extension '{extension}' failed")]
+#[non_exhaustive]
 pub struct CapabilityError {
     /// The extension instance whose capability invocation failed.
     pub extension: ExtensionId,

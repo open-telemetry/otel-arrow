@@ -12,9 +12,14 @@
 //! re-exported from [`local::capability`](crate::local::capability) and
 //! [`shared::capability`](crate::shared::capability).
 
-pub mod bearer_token_provider;
-pub mod error;
-pub mod factory;
+// These modules are crate-private: nothing outside the crate needs the raw
+// module path, and every public item is re-exported at `capability::` (below)
+// or via `{local,shared}::capability`. Keeping them `pub(crate)` collapses each
+// item to a single canonical public path. `registry` stays `pub` because
+// `registry::Capabilities` is not re-exported at the root.
+pub(crate) mod bearer_token_provider;
+pub(crate) mod error;
+pub(crate) mod factory;
 pub mod registry;
 
 pub use bearer_token_provider::{BearerToken, BearerTokenProvider, TokenStream};
