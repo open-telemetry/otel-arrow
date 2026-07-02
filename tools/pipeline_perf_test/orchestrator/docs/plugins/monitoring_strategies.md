@@ -6,6 +6,7 @@
 | --------- | ------ | ----- | ------------ | -------------------- |
 | `docker_component` | `lib.impl.strategies.monitoring.docker_component` | `DockerComponentMonitoringStrategy` | `DockerComponentMonitoringConfig` | Strategy for monitoring a docker container resource mentrics via the python docker API client |
 | `process_component` | `lib.impl.strategies.monitoring.process_component` | `ProcessComponentMonitoringStrategy` | `ProcessComponentMonitoringConfig` | Strategy for monitoring a Process via the python psutil library |
+| `perf_cycles_process` | `lib.impl.strategies.monitoring.perf_cycles_process` | `PerfCyclesProcessMonitoringStrategy` | `PerfCyclesProcessMonitoringConfig` | Strategy for monitoring Linux process perf cycle counters via `perf stat` |
 | `prometheus` | `lib.impl.strategies.monitoring.prometheus` | `PrometheusMonitoringStrategy` | `PrometheusMonitoringConfig` | Strategy for monitoring a prometheus endpoint for a component |
 
 ---
@@ -127,4 +128,36 @@ components:
           - otelcol_exporter_send_failed_log_records_total
           - otelcol_exporter_sent_log_records_total
           - otelcol_process_cpu_seconds_total
+```
+
+## `perf_cycles_process`
+
+**Class**: `lib.impl.strategies.monitoring.perf_cycles_process.PerfCyclesProcessMonitoringStrategy`
+
+**Config Class**: `lib.impl.strategies.monitoring.perf_cycles_process.PerfCyclesProcessMonitoringConfig`
+
+**Supported Contexts:**
+
+- StepContext
+
+**Description:**
+
+```python
+"""
+Monitor process CPU cycles using Linux `perf stat`.
+"""
+```
+
+**Example YAML:**
+
+```yaml
+components:
+  backend-service:
+    deployment:
+      process: ...
+    monitoring:
+      perf_cycles_process:
+        interval: 1
+        include_ref_cycles: true
+        include_instructions: true
 ```
