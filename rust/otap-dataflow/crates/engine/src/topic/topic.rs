@@ -17,14 +17,16 @@ use crate::error::Error::{
 use crate::topic::backend::{PublishFuture, PublishTrackedFuture, SubscriptionBackend, TopicState};
 use crate::topic::subscription::{Delivery, RecvDelivery};
 use crate::topic::types::{
-    Envelope, PublishOutcome, SubscriberOptions, TopicOptions, TrackedPublishOutcome,
-    TrackedPublishPermit, TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
+    AckFromResult, BroadcastSubscriberId, Envelope, NackFromResult, PublishOutcome,
+    SubscriberOptions, TopicOptions, TrackedPublishOutcome, TrackedPublishPermit,
+    TrackedPublishReceipt, TrackedPublishTracker, TrackedTryPublishOutcome,
 };
 use futures_core::Stream;
-use otap_df_config::topic::TopicBroadcastOnLagPolicy;
+use otap_df_config::topic::{TopicBroadcastAckMode, TopicBroadcastOnLagPolicy};
 use otap_df_config::{SubscriptionGroupName, TopicName};
 use parking_lot::{Mutex, RwLock};
 use smallvec::SmallVec;
+use std::collections::HashSet;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 struct QueuedEnvelope<T> {
@@ -269,13 +271,15 @@ impl<T: Send + Sync + 'static> TopicInner<T> {
             TopicOptions::BalancedOnly { capacity } => {
                 TopicInner::BalancedOnly(BalancedOnlyTopic::new(name, capacity))
             }
-            // TODO(#2252 PR2): honor `ack_mode` here so broadcast topics support
-            // `all` (consensus) resolution. Ignored in PR1 (always behaves as `first`).
+            // `all` (consensus) resolution is honored only for broadcast-only
+            // topics. `first` keeps the original lock-free behavior.
             TopicOptions::BroadcastOnly {
                 capacity,
                 on_lag,
-                ack_mode: _,
-            } => TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity, on_lag)),
+                ack_mode,
+            } => {
+                TopicInner::BroadcastOnly(BroadcastOnlyTopic::new(name, capacity, on_lag, ack_mode))
+            }
             // `ack_mode` is intentionally ignored for Mixed: PR3 rejects `all` on
             // any non-broadcast-only topic, so Mixed is always `first`.
             TopicOptions::Mixed {
@@ -570,9 +574,7 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 
         Ok(BalancedSub {
             rx: Box::pin(single_group.rx.clone()),
-            ack_state: AckState {
-                outcomes: self.outcomes.clone(),
-            },
+            ack_state: AckState::new(self.outcomes.clone()),
         })
     }
 
@@ -586,6 +588,32 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
     }
 }
 
+/// Registry of live broadcast subscribers for a single `all`-mode topic.
+///
+/// Constructed only when `ack_mode == All`. It is the single linearization
+/// point for consensus membership: subscribe, publish, and disconnect all take
+/// its lock so a subscriber is either in a message's snapshot AND started at or
+/// before that message's ring sequence, or excluded AND started strictly after
+/// it. Lock order is always **registry -> tracker**; tracker code must never
+/// call back into the registry.
+struct BroadcastSubscriberRegistry {
+    next_subscriber_id: AtomicU64,
+    subscribers: Mutex<HashSet<BroadcastSubscriberId>>,
+}
+
+impl BroadcastSubscriberRegistry {
+    fn new() -> Self {
+        Self {
+            next_subscriber_id: AtomicU64::new(1),
+            subscribers: Mutex::new(HashSet::new()),
+        }
+    }
+
+    fn allocate_id(&self) -> BroadcastSubscriberId {
+        BroadcastSubscriberId(self.next_subscriber_id.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     name: TopicName,
     next_id: AtomicU64,
@@ -593,9 +621,10 @@ pub(crate) struct BroadcastOnlyTopic<T: Send + Sync + 'static> {
     broadcast_on_lag: TopicBroadcastOnLagPolicy,
     outcomes: TrackedPublishTracker,
     closed: AtomicBool,
-    // TODO(#2252 PR2): add a broadcast subscriber registry, used only in `all`
-    // mode, to track which subscribers must ack each message. `first` mode never
-    // touches it.
+    ack_mode: TopicBroadcastAckMode,
+    /// Subscriber registry, present only in `all` (consensus) mode. `first`
+    /// mode never constructs or touches it, so it stays zero-overhead.
+    registry: Option<Arc<BroadcastSubscriberRegistry>>,
 }
 
 impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
@@ -603,7 +632,12 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
         name: TopicName,
         broadcast_capacity: usize,
         broadcast_on_lag: TopicBroadcastOnLagPolicy,
+        ack_mode: TopicBroadcastAckMode,
     ) -> Self {
+        let registry = match ack_mode {
+            TopicBroadcastAckMode::All => Some(Arc::new(BroadcastSubscriberRegistry::new())),
+            TopicBroadcastAckMode::First => None,
+        };
         Self {
             name,
             next_id: AtomicU64::new(1),
@@ -611,6 +645,8 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             broadcast_on_lag,
             outcomes: TrackedPublishTracker::new(),
             closed: AtomicBool::new(false),
+            ack_mode,
+            registry,
         }
     }
 
@@ -643,9 +679,35 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
             return Err(TopicClosed);
         }
 
-        // TODO(#2252 PR2): in `all` mode, record the set of subscribers that must
-        // ack this message before resolving upstream. `first` mode is unchanged.
         let id = self.next_message_id();
+
+        // `all` mode: snapshot the eligible subscriber set and reserve the ring
+        // sequence atomically under the registry lock so the consensus
+        // membership exactly matches who will receive this message. The heavier
+        // slot write plus waker fan-out happen after releasing the lock.
+        //
+        // Lock order is registry -> tracker (`register_consensus` locks the
+        // tracker); the tracker must never call back into the registry.
+        if let Some(registry) = &self.registry {
+            let subscribers = registry.subscribers.lock();
+            let snapshot = subscribers.clone();
+            let seq = self.broadcast_ring.reserve_seq();
+            let receipt = self
+                .outcomes
+                .register_consensus(id, timeout, permit, snapshot, seq);
+            drop(subscribers);
+            self.broadcast_ring.commit_slot(
+                seq,
+                Envelope {
+                    id,
+                    tracked: true,
+                    payload: msg,
+                },
+            );
+            return Ok(receipt);
+        }
+
+        // `first` mode: unchanged single-call path, no registry involvement.
         let receipt = self.outcomes.register(id, timeout, permit);
         self.broadcast_ring.publish(Envelope {
             id,
@@ -671,9 +733,19 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
-        // TODO(#2252 PR2): in `all` mode, register this subscriber so it can be
-        // included in the must-ack set of future messages. `first` mode is unchanged.
-        let start_seq = self.broadcast_ring.current_seq() + 1;
+        // `all` mode: allocate this subscriber's id and couple its `start_seq`
+        // with insertion into the registry under one lock (the linearization
+        // point). `first` mode stays lock-free.
+        let (start_seq, subscriber_id) = match &self.registry {
+            Some(registry) => {
+                let mut subscribers = registry.subscribers.lock();
+                let start_seq = self.broadcast_ring.current_seq() + 1;
+                let subscriber_id = registry.allocate_id();
+                let _ = subscribers.insert(subscriber_id);
+                (start_seq, Some(subscriber_id))
+            }
+            None => (self.broadcast_ring.current_seq() + 1, None),
+        };
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
             cursor: Arc::new(Mutex::new(BroadcastCursor {
@@ -684,9 +756,10 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
                 permit_waiters: WakerSet::new(),
             })),
             on_lag: self.broadcast_on_lag,
-            ack_state: AckState {
-                outcomes: self.outcomes.clone(),
-            },
+            ack_state: AckState::broadcast(self.outcomes.clone(), self.ack_mode, subscriber_id),
+            registry: self.registry.clone(),
+            subscriber_id,
+            disconnect_done: AtomicBool::new(false),
         }
     }
 
@@ -967,13 +1040,13 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
 
         Ok(BalancedSub {
             rx: Box::pin(rx),
-            ack_state: AckState {
-                outcomes: self.outcomes.clone(),
-            },
+            ack_state: AckState::new(self.outcomes.clone()),
         })
     }
 
     fn subscribe_broadcast(&self, _opts: SubscriberOptions) -> BroadcastSub<T> {
+        // Mixed topics never run `all` mode (PR3 rejects `all` on non
+        // broadcast-only topics), so broadcast subs here are always `first`.
         let start_seq = self.broadcast_ring.current_seq() + 1;
         BroadcastSub {
             ring: Arc::clone(&self.broadcast_ring),
@@ -985,9 +1058,10 @@ impl<T: Send + Sync + 'static> MixedTopic<T> {
                 permit_waiters: WakerSet::new(),
             })),
             on_lag: self.broadcast_on_lag,
-            ack_state: AckState {
-                outcomes: self.outcomes.clone(),
-            },
+            ack_state: AckState::new(self.outcomes.clone()),
+            registry: None,
+            subscriber_id: None,
+            disconnect_done: AtomicBool::new(false),
         }
     }
 
@@ -1037,9 +1111,13 @@ pub(crate) struct BroadcastSub<T: Send + Sync + 'static> {
     cursor: Arc<Mutex<BroadcastCursor>>,
     on_lag: TopicBroadcastOnLagPolicy,
     ack_state: AckState,
-    // TODO(#2252 PR2): in `all` mode, track this subscriber's identity so its
-    // acks count toward the consensus and its disconnect/drop nacks any messages it
-    // still owes. `first` mode is unchanged.
+    /// Subscriber registry, present only in `all` mode. Used to remove this
+    /// subscriber and nack any messages it still owes on disconnect/drop.
+    registry: Option<Arc<BroadcastSubscriberRegistry>>,
+    /// This subscriber's consensus identity, present only in `all` mode.
+    subscriber_id: Option<BroadcastSubscriberId>,
+    /// Guards the disconnect path so it runs at most once (lag then drop, etc.).
+    disconnect_done: AtomicBool,
 }
 
 impl<T: Send + Sync + 'static> SubscriptionBackend<T> for BroadcastSub<T> {
@@ -1134,18 +1212,87 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
                 missed,
                 new_read_seq,
             } => {
-                let mut cursor = self.cursor.lock();
-                cursor.read_seq = new_read_seq;
-                cursor.spun = false;
-                if self.on_lag == TopicBroadcastOnLagPolicy::Disconnect {
-                    cursor.disconnected_on_lag = true;
-                    // TODO(#2252 PR2): in `all` mode, a lag-disconnect here must
-                    // nack any messages this subscriber still owes an ack for.
+                let disconnect = {
+                    let mut cursor = self.cursor.lock();
+                    cursor.read_seq = new_read_seq;
+                    cursor.spun = false;
+                    if self.on_lag == TopicBroadcastOnLagPolicy::Disconnect {
+                        cursor.disconnected_on_lag = true;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if disconnect {
+                    // In `all` mode this nacks any messages this subscriber
+                    // still owes an ack for. `first` mode is a no-op.
+                    self.disconnect(Arc::<str>::from(
+                        "broadcast subscriber disconnected after lag",
+                    ));
+                } else {
+                    // `DropOldest`: the subscriber stays connected but the
+                    // skipped messages (ring sequence < new_read_seq) were
+                    // overwritten before it read them, so in `all` mode it can
+                    // never ack them. Nack exactly those owed entries; messages
+                    // at or after new_read_seq remain readable. No-op in `first`
+                    // mode.
+                    self.nack_skipped_on_lag(
+                        new_read_seq,
+                        Arc::<str>::from("broadcast subscriber lagged past message"),
+                    );
                 }
                 Some(Ok(RecvDelivery::Lagged { missed }))
             }
             BroadcastReadResult::NotReady => None,
         }
+    }
+
+    /// Remove this subscriber from the registry and nack every consensus
+    /// (`all`-mode) message it still owes an ack for. No-op in `first` mode and
+    /// idempotent across repeated calls (lag-disconnect followed by drop).
+    ///
+    /// Lock order is registry -> tracker: the registry lock is held across the
+    /// removal and the tracker scan so a concurrent publish cannot add this
+    /// subscriber to a new consensus entry after it has been removed.
+    fn disconnect(&self, reason: Arc<str>) {
+        let (Some(registry), Some(subscriber_id)) = (&self.registry, self.subscriber_id) else {
+            return;
+        };
+        if self.disconnect_done.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let mut subscribers = registry.subscribers.lock();
+        let _ = subscribers.remove(&subscriber_id);
+        self.ack_state
+            .outcomes
+            .nack_pending_for_subscriber(subscriber_id, reason);
+        drop(subscribers);
+    }
+
+    /// Nack the `all`-mode consensus messages this subscriber skipped after a
+    /// `DropOldest` lag (publish sequence `< new_read_seq`) without disconnecting
+    /// it. No-op in `first` mode.
+    ///
+    /// The registry lock is held across the tracker scan (registry -> tracker,
+    /// matching [`Self::disconnect`] and `publish_tracked`) so a consensus entry
+    /// with sequence `< new_read_seq` that is concurrently being registered
+    /// cannot be missed: its publish holds the registry lock until registration
+    /// completes.
+    fn nack_skipped_on_lag(&self, new_read_seq: u64, reason: Arc<str>) {
+        let (Some(registry), Some(subscriber_id)) = (&self.registry, self.subscriber_id) else {
+            return;
+        };
+        let subscribers = registry.subscribers.lock();
+        self.ack_state
+            .outcomes
+            .nack_owed_before(subscriber_id, new_read_seq, reason);
+        drop(subscribers);
+    }
+}
+
+impl<T: Send + Sync + 'static> Drop for BroadcastSub<T> {
+    fn drop(&mut self) {
+        self.disconnect(Arc::<str>::from("broadcast subscriber dropped"));
     }
 }
 
@@ -1271,10 +1418,52 @@ impl InMemoryDeliveryFinalizer {
 #[derive(Clone)]
 pub(crate) struct AckState {
     pub(crate) outcomes: TrackedPublishTracker,
+    /// Ack-resolution mode for this subscriber. `First` (the default for
+    /// balanced and `first`-mode broadcast) resolves on the first Ack/Nack;
+    /// `All` routes acks through per-subscriber consensus aggregation.
+    ack_mode: TopicBroadcastAckMode,
+    /// Consensus identity, present only for `all`-mode broadcast subscribers.
+    subscriber_id: Option<BroadcastSubscriberId>,
 }
 
 impl AckState {
+    /// `AckState` for balanced subscribers and `first`-mode broadcast: the
+    /// first terminal Ack/Nack resolves the tracked publish.
+    pub(crate) fn new(outcomes: TrackedPublishTracker) -> Self {
+        Self {
+            outcomes,
+            ack_mode: TopicBroadcastAckMode::First,
+            subscriber_id: None,
+        }
+    }
+
+    /// `AckState` for a broadcast subscriber. In `all` mode (`subscriber_id` is
+    /// `Some`) acks are aggregated per subscriber; in `first` mode it behaves
+    /// like [`AckState::new`].
+    pub(crate) fn broadcast(
+        outcomes: TrackedPublishTracker,
+        ack_mode: TopicBroadcastAckMode,
+        subscriber_id: Option<BroadcastSubscriberId>,
+    ) -> Self {
+        Self {
+            outcomes,
+            ack_mode,
+            subscriber_id,
+        }
+    }
+
     pub(crate) fn send_ack(&self, message_id: u64) -> Result<(), Error> {
+        // `all`-mode broadcast: contribute this subscriber's Ack to the
+        // consensus. The message stays tracked (Ok) until the set completes.
+        if let (TopicBroadcastAckMode::All, Some(subscriber_id)) =
+            (self.ack_mode, self.subscriber_id)
+        {
+            return match self.outcomes.resolve_ack_from(message_id, subscriber_id) {
+                AckFromResult::Resolved | AckFromResult::StillPending => Ok(()),
+                AckFromResult::NotTracked => Err(MessageNotTracked),
+            };
+        }
+
         if self
             .outcomes
             .resolve(message_id, TrackedPublishOutcome::Ack)
@@ -1290,12 +1479,28 @@ impl AckState {
         message_id: u64,
         reason: impl Into<Arc<str>>,
     ) -> Result<(), Error> {
-        if self.outcomes.resolve(
-            message_id,
-            TrackedPublishOutcome::Nack {
-                reason: reason.into(),
-            },
-        ) {
+        let reason = reason.into();
+
+        // `all`-mode broadcast: only a subscriber that still requires the message
+        // may fail the consensus. A Nack from a subscriber that has already acked
+        // (or was never eligible) is a no-op, mirroring the disappearance handling
+        // and keeping outcomes insensitive to accidental double-signalling.
+        if let (TopicBroadcastAckMode::All, Some(subscriber_id)) =
+            (self.ack_mode, self.subscriber_id)
+        {
+            return match self
+                .outcomes
+                .resolve_nack_from(message_id, subscriber_id, reason)
+            {
+                NackFromResult::Resolved | NackFromResult::NotRequired => Ok(()),
+                NackFromResult::NotTracked => Err(MessageNotTracked),
+            };
+        }
+
+        if self
+            .outcomes
+            .resolve(message_id, TrackedPublishOutcome::Nack { reason })
+        {
             Ok(())
         } else {
             Err(MessageNotTracked)
