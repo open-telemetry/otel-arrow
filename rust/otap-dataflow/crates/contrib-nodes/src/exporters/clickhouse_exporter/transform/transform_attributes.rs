@@ -3,7 +3,7 @@
 
 //! Attribute row grouping and serialization helpers for ClickHouse attribute columns.
 //!
-//! This module contains utilities for converting OTAP “attribute row” payloads (key/type/value
+//! This module contains utilities for converting OTAP "attribute row" payloads (key/type/value
 //! columns keyed by `parent_id`) into the denormalized `Map(LowCardinality(String), String)`
 //! representation used by ClickHouse.
 //!
@@ -15,7 +15,7 @@
 //! - `group_attributes_to_map_str`: for each `parent_id` group, builds a ClickHouse-compatible
 //!   Arrow `MapArray` where each entry is `key -> stringified value`. Values are coerced from the
 //!   OTLP attribute variants (string/int/double/bool/bytes/map/slice), including base64 encoding for
-//!   bytes and CBOR→JSON transcoding for map/slice serialized values. Returns the deduped parent ID
+//!   bytes and CBOR->JSON transcoding for map/slice serialized values. Returns the deduped parent ID
 //!   column alongside the map column.
 //!
 //! These helpers are typically used as part of the multi-column transformation stage that

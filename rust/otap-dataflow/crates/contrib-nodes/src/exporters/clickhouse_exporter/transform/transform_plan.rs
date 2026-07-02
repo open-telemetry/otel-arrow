@@ -36,7 +36,7 @@ pub struct CoerceStructStringSpec {
     pub output_column: String,
 }
 
-/// Selects a proto enum → string mapping function.
+/// Selects a proto enum -> string mapping function.
 ///
 /// Used with [`ColumnTransformOp::EnumToString`] to convert an `Int32` Arrow column
 /// (possibly dictionary-encoded) into a `StringArray` using the proto enum's
@@ -44,10 +44,10 @@ pub struct CoerceStructStringSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub enum EnumStringMapper {
     /// Maps `trace::v1::span::SpanKind` integer values to their proto string names
-    /// (e.g. 2 → `"SPAN_KIND_SERVER"`).
+    /// (e.g. 2 -> `"SPAN_KIND_SERVER"`).
     SpanKind,
     /// Maps `trace::v1::status::StatusCode` integer values to their proto string names
-    /// (e.g. 2 → `"STATUS_CODE_ERROR"`).
+    /// (e.g. 2 -> `"STATUS_CODE_ERROR"`).
     StatusCode,
 }
 
@@ -57,7 +57,7 @@ pub enum ColumnTransformOp {
     /// Leave the column untouched.
     NoOp,
 
-    /// Rename the column — schema-level change only, does not modify values.
+    /// Rename the column - schema-level change only, does not modify values.
     Rename(String),
 
     /// Cast the column to the specified Arrow [`DataType`] and rename it.
@@ -382,7 +382,7 @@ impl TransformationPlan {
         );
 
         // The flatten above extracts status.code as an Int32 column named CH_STATUS_CODE.
-        // Convert the integer values to their proto string names (e.g. 2 → "STATUS_CODE_ERROR").
+        // Convert the integer values to their proto string names (e.g. 2 -> "STATUS_CODE_ERROR").
         // This runs in the second pass of apply_column_ops since CH_STATUS_CODE is a
         // synthetic column created by the flatten rather than an original batch column.
         self.column_ops

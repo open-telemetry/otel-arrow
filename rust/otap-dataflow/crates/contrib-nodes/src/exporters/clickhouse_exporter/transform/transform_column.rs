@@ -3,13 +3,13 @@
 
 //! Per-column Arrow transformations that shape OTAP columns into the ClickHouse schema.
 //!
-//! [`apply_one_op`] dispatches each [`ColumnTransformOp`] against [`ColumnOpCtx`] — the mutable
+//! [`apply_one_op`] dispatches each [`ColumnTransformOp`] against [`ColumnOpCtx`] - the mutable
 //! output-column set plus the other payloads' multi-column results (used to join/remap between
 //! parent and child payloads). The notable helpers:
 //!
 //! - `flatten_struct` lifts struct fields (resource/scope) into top-level columns.
 //!   `coerce_body_to_string` / `struct_column_to_string` collapse an "AnyValue" struct into one
-//!   string column (base64 for bytes, CBOR→JSON for map/slice).
+//!   string column (base64 for bytes, CBOR->JSON for map/slice).
 //! - `inline_attribute` inlines a child attribute payload into the parent as a
 //!   `Map(LowCardinality(String), String)`; `inline_child_lists` / `build_child_attr_list` expand
 //!   compact, id-indexed child arrays back to parent row order via the child's remap table.
@@ -465,7 +465,7 @@ fn coerce_body_to_string(
 /// Build an `Array(Map(Utf8, Utf8))` column from a per-parent `List<UInt32>` of child ids and a
 /// child attribute payload's compact map.
 ///
-/// For each parent (span) row, the output array holds one map per child id, in list order — keeping
+/// For each parent (span) row, the output array holds one map per child id, in list order - keeping
 /// it index-aligned with the sibling `Events.*` / `Links.*` list columns. A child id with no
 /// attributes (or a null id) yields an empty map. The id-list column named by `current_name` is
 /// consumed; the result is stored under `to_col`. Child ids are looked up in the same u16 id-space
@@ -694,7 +694,7 @@ pub(crate) fn append_cbor_as_json(
 ///   - otherwise, the output row is a list containing a copy of `compact[j]`'s elements
 ///     (including element-level nulls)
 ///
-/// The output list’s element type is the same as `compact.values().data_type()`. Elements are copied
+/// The output list's element type is the same as `compact.values().data_type()`. Elements are copied
 /// using [`append_list_value`], which handles the concrete element array types and preserves nulls.
 ///
 /// # Errors
@@ -992,7 +992,7 @@ fn attr_output_name(pt: ArrowPayloadType) -> Result<&'static str, ClickhouseExpo
     }
 }
 
-/// Inlines a child “attributes” payload column into the parent row-set.
+/// Inlines a child "attributes" payload column into the parent row-set.
 ///
 /// This operator consumes the current parent  attribute id column (expected to be a `UInt16Array`)
 /// and replaces it with a new column containing the *materialized attribute value per parent row*.
@@ -1046,7 +1046,7 @@ fn inline_attribute(
         })?;
 
     // No attribute payload for this group in this batch (e.g. every scope/resource/log had empty
-    // attributes). Drop the foreign-key id column entirely — it is NOT a ClickHouse column, and
+    // attributes). Drop the foreign-key id column entirely - it is NOT a ClickHouse column, and
     // since inserts bind by column name, leaking it (`scope_id`/`resource_id`/`id`) makes the
     // INSERT reference a column the table doesn't have (NO_SUCH_COLUMN_IN_TABLE). The attribute
     // column is simply omitted; ClickHouse fills its default (empty map). `id_arr` was already
@@ -1468,7 +1468,7 @@ mod tests {
 
     #[test]
     fn cast_fixed_binary_16_to_hex_string() {
-        // 16-byte trace ID → 32-char lowercase hex
+        // 16-byte trace ID -> 32-char lowercase hex
         let bytes: Vec<Option<&[u8]>> = vec![
             Some(&[
                 0x0a, 0x1b, 0x2c, 0x3d, 0x4e, 0x5f, 0x60, 0x71, 0x82, 0x93, 0xa4, 0xb5, 0xc6, 0xd7,
@@ -1492,7 +1492,7 @@ mod tests {
 
     #[test]
     fn cast_fixed_binary_8_to_hex_string() {
-        // 8-byte span ID → 16-char lowercase hex
+        // 8-byte span ID -> 16-char lowercase hex
         let bytes: Vec<Option<&[u8]>> = vec![
             Some(&[0xde, 0xad, 0xbe, 0xef, 0xca, 0xfe, 0xba, 0xbe]),
             Some(&[0x00; 8]),
@@ -1685,7 +1685,7 @@ mod tests {
         assert_eq!(offsets[2], 1);
     }
 
-    // ── EnumToString tests ──────────────────────────────────────────────
+    // -- EnumToString tests ----------------------------------------------
 
     #[test]
     fn enum_to_string_span_kind_plain_int32() {
@@ -1922,7 +1922,7 @@ mod tests {
         let mut current = "attr_id".to_string();
         inline_attribute(&mut ctx, &mut current, ArrowPayloadType::ResourceAttrs).unwrap();
 
-        // The foreign-key id column must be DROPPED when the child attribute payload is absent —
+        // The foreign-key id column must be DROPPED when the child attribute payload is absent -
         // it is not a ClickHouse column, and leaking it breaks the bind-by-name INSERT.
         assert!(!ctx.columns.contains_key("attr_id"));
         // No attribute column is emitted either; ClickHouse fills the default empty map.

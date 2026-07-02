@@ -205,7 +205,7 @@ fn validate_ttl(ttl: &str) -> Result<(), ClickhouseExporterError> {
     Ok(())
 }
 
-/// Punctuation permitted in `engine_params` in addition to alphanumerics — covers replicated-engine
+/// Punctuation permitted in `engine_params` in addition to alphanumerics - covers replicated-engine
 /// paths and macros, e.g. `"('/clickhouse/tables/{shard}/{db}/{table}', '{replica}')"`.
 const ENGINE_PARAM_PUNCT: &str = "/{}'(),. -_";
 
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn test_global_ttl_interval_applied_to_ddl() {
-        // No per-table `ttl`, but a global `ttl_interval` default — it should appear in the DDL.
+        // No per-table `ttl`, but a global `ttl_interval` default - it should appear in the DDL.
         let json = serde_json::json!({
             "endpoint": "http://localhost:8123",
             "database": "otap",

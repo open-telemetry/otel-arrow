@@ -1,13 +1,13 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! RecordBatch transformation runner for OTAP → ClickHouse shaping.
+//! RecordBatch transformation runner for OTAP -> ClickHouse shaping.
 //!
 //! [`BatchTransformer`] runs a per-payload [`TransformationPlan`] in two stages:
 //!
-//! - Multi-column stage (`run_multi_column_stage`): reshapes whole column sets — extract/group
+//! - Multi-column stage (`run_multi_column_stage`): reshapes whole column sets - extract/group
 //!   fields into list columns (`build_list_arrays`), or normalize OTLP attributes into a string map
-//!   — producing a [`MultiColumnOpResult`] (the column map plus an optional `old_id -> new_id` remap
+//!   - producing a [`MultiColumnOpResult`] (the column map plus an optional `old_id -> new_id` remap
 //!   used to reindex foreign keys in parent payloads).
 //! - Single-column stage (`apply_column_ops`): applies per-column [`ColumnTransformOp`]s via
 //!   [`apply_one_op`], optionally rebuilding a `RecordBatch` with a deterministic column order.
@@ -243,7 +243,7 @@ pub(crate) fn append_list_value(
 
             // Append each (key,value) entry
             for j in start..end {
-                // keys in Arrow Map are usually non-null, but we’ll be defensive
+                // keys in Arrow Map are usually non-null, but we'll be defensive
                 if key_arr.is_null(j) {
                     return Err(ClickhouseExporterError::CoercionError {
                         error: "Map contains null key (unsupported).".into(),
@@ -313,7 +313,7 @@ fn build_list_arrays(
                 append_list_value(builder.values(), target, row)?;
             }
         }
-        // New group — close the current list on every builder.
+        // New group - close the current list on every builder.
         for builder in builders.iter_mut() {
             builder.append(true);
         }
@@ -906,7 +906,7 @@ mod multi_plus_single_tests {
                 .unwrap();
 
         // Multi results map contains child payload result
-        let child_payload = ArrowPayloadType::SpanEvents; // choose your “child lists” payload
+        let child_payload = ArrowPayloadType::SpanEvents; // choose your "child lists" payload
         let parent_payload = ArrowPayloadType::Spans; // choose your parent payload
 
         let mut multi_results: HashMap<ArrowPayloadType, MultiColumnOpResult> = HashMap::new();

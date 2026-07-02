@@ -129,7 +129,7 @@ Snapshots of the current structure are generated in the
 [table_snapshots](./table_snapshots/) directory. There is currently no
 automated testing to ensure schema drift relative to the go collector.
 
-## Verified Arrow → ClickHouse Type Mapping
+## Verified Arrow -> ClickHouse Type Mapping
 
 Inserts go out as `FORMAT ArrowStream` (Arrow IPC over HTTP); ClickHouse
 performs the Arrow column coercion server-side. The mappings below were
@@ -144,8 +144,8 @@ missing columns are server-defaulted, and an unknown column name errors on
 | `Map<Utf8, Utf8>` | `Map(LowCardinality(String), String)` | ResourceAttributes, ScopeAttributes, LogAttributes, SpanAttributes |
 | `Dictionary<_, Utf8>` | `LowCardinality(String)` | ServiceName, SpanName, SpanKind, StatusCode |
 | `Timestamp(Nanosecond)` | `DateTime64(9)` | Timestamp, Events.Timestamp (as `Array(DateTime64(9))`) |
-| `Int*` → `UInt8` | `UInt8` | SeverityNumber |
-| `*` → `UInt64` | `UInt64` | Duration |
+| `Int*` -> `UInt8` | `UInt8` | SeverityNumber |
+| `*` -> `UInt64` | `UInt64` | Duration |
 | hex `Utf8` | `String` | TraceId, SpanId, ParentSpanId (top-level) |
 | `Utf8` | `String` | Body, EventName, StatusMessage, TraceState |
 | `List<Utf8>` | `Array(LowCardinality(String))` / `Array(String)` | Events.Name, Links.TraceState |
