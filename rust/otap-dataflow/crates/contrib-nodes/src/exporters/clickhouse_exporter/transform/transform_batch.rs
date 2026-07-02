@@ -5,10 +5,10 @@
 //!
 //! [`BatchTransformer`] runs a per-payload [`TransformationPlan`] in two stages:
 //!
-//! - Multi-column stage (`run_multi_column_stage`): reshapes whole column sets - extract/group
-//!   fields into list columns (`build_list_arrays`), or normalize OTLP attributes into a string map
-//!   - producing a [`MultiColumnOpResult`] (the column map plus an optional `old_id -> new_id` remap
-//!   used to reindex foreign keys in parent payloads).
+//! - Multi-column stage (`run_multi_column_stage`): reshapes whole column sets (extract/group
+//!   fields into list columns via `build_list_arrays`, or normalize OTLP attributes into a string
+//!   map), producing a [`MultiColumnOpResult`] (the column map plus an optional `old_id -> new_id`
+//!   remap used to reindex foreign keys in parent payloads).
 //! - Single-column stage (`apply_column_ops`): applies per-column [`ColumnTransformOp`]s via
 //!   [`apply_one_op`], optionally rebuilding a `RecordBatch` with a deterministic column order.
 use std::ops::ControlFlow;
