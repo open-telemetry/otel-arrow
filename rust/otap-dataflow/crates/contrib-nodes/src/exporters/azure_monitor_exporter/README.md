@@ -59,6 +59,10 @@ config:
     dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
     stream_name: "Custom-MyLogTable_CL"
     dcr: "dcr-abc123def456"
+    # Schema mapping is optional. When omitted, the exporter runs in attribute
+    # passthrough mode: every log record attribute is emitted as a JSON
+    # key/value pair using the attribute key as the column name, and no
+    # field/resource/scope mappings are applied.
     schema:
       # Map OTLP resource attributes to Azure fields.
       resource_mapping:

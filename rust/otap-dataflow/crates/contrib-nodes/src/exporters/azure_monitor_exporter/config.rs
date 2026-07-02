@@ -194,9 +194,13 @@ pub struct ApiConfig {
     /// Data Collection Rule identifier
     pub dcr: String,
 
-    /// Schema mapping configuration
+    /// Schema mapping configuration.
+    ///
+    /// When omitted, the exporter runs in attribute passthrough mode: every log
+    /// record attribute is emitted as a JSON key/value pair, using the attribute
+    /// key as the column name, and no field/resource/scope mappings are applied.
     #[serde(default)]
-    pub schema: SchemaConfig,
+    pub schema: Option<SchemaConfig>,
 
     /// Arm Resource ID header for the logs exported to Azure Monitor (optional)
     pub azure_monitor_source_resourceid: Option<String>,
@@ -290,22 +294,26 @@ impl Config {
     }
 
     fn validate_schema_unique_columns(&self) -> Result<(), Error> {
+        let Some(schema) = &self.api.schema else {
+            return Ok(());
+        };
+
         let mut seen = HashSet::new();
         let mut duplicates = HashSet::new();
 
-        for value in self.api.schema.resource_mapping.values() {
+        for value in schema.resource_mapping.values() {
             if !seen.insert(value.clone()) {
                 _ = duplicates.insert(value.clone());
             }
         }
 
-        for value in self.api.schema.scope_mapping.values() {
+        for value in schema.scope_mapping.values() {
             if !seen.insert(value.clone()) {
                 _ = duplicates.insert(value.clone());
             }
         }
 
-        for (key, value) in &self.api.schema.log_record_mapping {
+        for (key, value) in &schema.log_record_mapping {
             match value {
                 Value::String(s) if !seen.insert(s.clone()) => {
                     _ = duplicates.insert(s.clone());
@@ -351,7 +359,7 @@ mod tests {
             dcr_endpoint: "https://example.com".to_string(),
             stream_name: "mystream".to_string(),
             dcr: "mydcr".to_string(),
-            schema: SchemaConfig::default(),
+            schema: Some(SchemaConfig::default()),
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
             user_agent: None,
@@ -408,7 +416,7 @@ mod tests {
     fn test_schema_duplicate_columns() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
                     scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
                     log_record_mapping: HashMap::from([
@@ -416,7 +424,7 @@ mod tests {
                         ("severity_text".into(), json!("Body")),
                         ("attributes".into(), json!({"user.name": "Name"})),
                     ]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -437,7 +445,7 @@ mod tests {
     fn test_schema_duplicate_columns_in_nested_log_record_mapping() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::from([(
                         "service.name".into(),
                         "ServiceName".into(),
@@ -454,7 +462,7 @@ mod tests {
                             }),
                         ),
                     ]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -474,14 +482,14 @@ mod tests {
     fn test_schema_nested_object_only_allowed_for_attributes() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::from([(
                         "body".into(),
                         json!({"nested": "NotAllowed"}),
                     )]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -504,11 +512,11 @@ mod tests {
     fn test_resource_scope_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::from([("service.name".into(), "Name".into())]),
                     scope_mapping: HashMap::from([("scope.name".into(), "Name".into())]),
                     log_record_mapping: HashMap::new(),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -528,14 +536,14 @@ mod tests {
     fn test_resource_log_record_field_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::from([("host.name".into(), "TimeGenerated".into())]),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::from([(
                         "time_unix_nano".into(),
                         json!("TimeGenerated"),
                     )]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -555,14 +563,14 @@ mod tests {
     fn test_resource_log_record_attribute_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::from([("service.name".into(), "Source".into())]),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::from([(
                         "attributes".into(),
                         json!({"log.source": "Source"}),
                     )]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -582,14 +590,14 @@ mod tests {
     fn test_scope_log_record_attribute_overlap_rejected() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::from([("scope.version".into(), "Version".into())]),
                     log_record_mapping: HashMap::from([(
                         "attributes".into(),
                         json!({"app.version": "Version"}),
                     )]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -609,7 +617,7 @@ mod tests {
     fn test_non_overlapping_mappings_accepted() {
         let config = Config {
             api: ApiConfig {
-                schema: SchemaConfig {
+                schema: Some(SchemaConfig {
                     resource_mapping: HashMap::from([
                         ("service.name".into(), "ServiceName".into()),
                         ("host.name".into(), "HostName".into()),
@@ -627,7 +635,7 @@ mod tests {
                             json!({"env": "Environment", "request.id": "RequestId"}),
                         ),
                     ]),
-                },
+                }),
                 ..test_api_config()
             },
             ..test_config()
@@ -665,6 +673,38 @@ mod tests {
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.api.gzip_compression_level, 6);
+    }
+
+    #[test]
+    fn test_schema_omitted_is_passthrough() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.api.schema.is_none());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_schema_provided_is_some() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+                schema:
+                    resource_mapping:
+                        service.name: ServiceName
+                    log_record_mapping:
+                        body: Body
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let schema = config.api.schema.expect("schema should be Some");
+        assert_eq!(schema.resource_mapping["service.name"], "ServiceName");
+        assert_eq!(schema.log_record_mapping["body"], serde_json::json!("Body"));
     }
 
     #[test]

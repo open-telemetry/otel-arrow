@@ -25,6 +25,37 @@ use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
 
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
 
+/// Attribute keys carried by every benchmarked log record.
+///
+/// Both modes emit exactly one output column per attribute on identical input:
+/// passthrough uses the attribute key verbatim, and the mapped config maps each
+/// key 1:1 (see [`attr_mapping`]). This keeps dataset and output field counts as
+/// close as possible so the benchmark isolates the mapping mechanism itself.
+const ATTR_KEYS: [&str; 8] = [
+    "env",
+    "request.id",
+    "user.id",
+    "http.method",
+    "http.status_code",
+    "http.duration_ms",
+    "http.success",
+    "region",
+];
+
+/// 1:1 mapping of every [`ATTR_KEYS`] entry to a destination column name.
+fn attr_mapping() -> serde_json::Value {
+    json!({
+        "env": "Environment",
+        "request.id": "RequestId",
+        "user.id": "UserId",
+        "http.method": "HttpMethod",
+        "http.status_code": "HttpStatusCode",
+        "http.duration_ms": "HttpDurationMs",
+        "http.success": "HttpSuccess",
+        "region": "Region",
+    })
+}
+
 fn create_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
         ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
@@ -35,33 +66,33 @@ fn create_config() -> Config {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".into(),
             stream_name: "Custom-TestTable".into(),
             dcr: "dcr-test-rule-id".into(),
-            schema: SchemaConfig {
-                resource_mapping: HashMap::from([
-                    ("service.name".into(), "ServiceName".into()),
-                    ("service.version".into(), "ServiceVersion".into()),
-                    ("host.name".into(), "HostName".into()),
-                ]),
-                scope_mapping: HashMap::from([
-                    ("scope.name".into(), "ScopeName".into()),
-                    ("scope.version".into(), "ScopeVersion".into()),
-                ]),
-                log_record_mapping: HashMap::from([
-                    ("time_unix_nano".into(), json!("TimeGenerated")),
-                    ("severity_text".into(), json!("SeverityText")),
-                    ("severity_number".into(), json!("SeverityNumber")),
-                    ("body".into(), json!("Body")),
-                    ("trace_id".into(), json!("TraceId")),
-                    ("span_id".into(), json!("SpanId")),
-                    (
-                        "attributes".into(),
-                        json!({
-                            "env": "Environment",
-                            "request.id": "RequestId",
-                            "user.id": "UserId"
-                        }),
-                    ),
-                ]),
-            },
+            schema: Some(SchemaConfig {
+                resource_mapping: HashMap::new(),
+                scope_mapping: HashMap::new(),
+                log_record_mapping: HashMap::from([("attributes".into(), attr_mapping())]),
+            }),
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
+            user_agent: None,
+        },
+        auth: AuthConfig::default(),
+        heartbeat: HeartbeatConfig::default(),
+    }
+}
+
+/// Config with no schema mapping: the transformer runs in attribute passthrough
+/// mode, emitting every log record attribute as a JSON key/value pair.
+fn create_passthrough_config() -> Config {
+    use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
+        ApiConfig, AuthConfig, HeartbeatConfig,
+    };
+
+    Config {
+        api: ApiConfig {
+            dcr_endpoint: "https://test.ingest.monitor.azure.com".into(),
+            stream_name: "Custom-TestTable".into(),
+            dcr: "dcr-test-rule-id".into(),
+            schema: None,
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
             user_agent: None,
@@ -72,6 +103,35 @@ fn create_config() -> Config {
 }
 
 fn make_log_record(i: usize) -> LogRecord {
+    let str_val = |s: String| AnyValue {
+        value: Some(OtelAnyValueEnum::StringValue(s)),
+    };
+    // One value per ATTR_KEYS entry, with a representative mix of value types.
+    let attr_values = [
+        str_val("production".into()),
+        str_val(format!("req-{i:06}")),
+        str_val("user-42".into()),
+        str_val("GET".into()),
+        AnyValue {
+            value: Some(OtelAnyValueEnum::IntValue(200)),
+        },
+        AnyValue {
+            value: Some(OtelAnyValueEnum::DoubleValue(12.5)),
+        },
+        AnyValue {
+            value: Some(OtelAnyValueEnum::BoolValue(true)),
+        },
+        str_val("westus2".into()),
+    ];
+    let attributes = ATTR_KEYS
+        .iter()
+        .zip(attr_values)
+        .map(|(key, value)| KeyValue {
+            key: (*key).into(),
+            value: Some(value),
+        })
+        .collect();
+
     LogRecord {
         time_unix_nano: 1_700_000_000_000_000_000 + (i as u64) * 1_000_000,
         observed_time_unix_nano: 1_700_000_000_000_000_000 + (i as u64) * 1_000_000,
@@ -82,26 +142,7 @@ fn make_log_record(i: usize) -> LogRecord {
                 "Log message number {i}"
             ))),
         }),
-        attributes: vec![
-            KeyValue {
-                key: "env".into(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("production".into())),
-                }),
-            },
-            KeyValue {
-                key: "request.id".into(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue(format!("req-{i:06}"))),
-                }),
-            },
-            KeyValue {
-                key: "user.id".into(),
-                value: Some(AnyValue {
-                    value: Some(OtelAnyValueEnum::StringValue("user-42".into())),
-                }),
-            },
-        ],
+        attributes,
         trace_id: vec![
             0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x01, 0x23, 0x45, 0x67, 0x89, 0xab,
             0xcd, 0xef,
@@ -179,8 +220,19 @@ fn make_request(
 fn bench_transform(c: &mut Criterion) {
     let mut group = c.benchmark_group("transformer");
 
-    let config = create_config();
-    let transformer = Transformer::new(&config);
+    let mapped_config = create_config();
+    mapped_config
+        .validate()
+        .expect("mapped config should be valid");
+    let mapped = Transformer::new(&mapped_config);
+
+    let passthrough_config = create_passthrough_config();
+    passthrough_config
+        .validate()
+        .expect("passthrough config should be valid");
+    let passthrough = Transformer::new(&passthrough_config);
+
+    let modes: [(&str, &Transformer); 2] = [("mapped", &mapped), ("passthrough", &passthrough)];
 
     // Varying record counts: 1 ResourceLogs, 1 ScopeLogs, N records
     for num_records in [10, 100, 1000] {
@@ -188,17 +240,19 @@ fn bench_transform(c: &mut Criterion) {
         let total_records = num_records;
 
         group.throughput(criterion::Throughput::Elements(total_records as u64));
-        group.bench_with_input(
-            BenchmarkId::new("1r_1s", total_records),
-            &bytes,
-            |b, bytes| {
-                b.iter(|| {
-                    let view = RawLogsData::new(bytes);
-                    let result = transformer.convert_to_log_analytics(&view);
-                    assert_eq!(result.len(), total_records);
-                });
-            },
-        );
+        for (mode, transformer) in modes {
+            group.bench_with_input(
+                BenchmarkId::new(format!("1r_1s/{mode}"), total_records),
+                &bytes,
+                |b, bytes| {
+                    b.iter(|| {
+                        let view = RawLogsData::new(bytes);
+                        let result = transformer.convert_to_log_analytics(&view);
+                        assert_eq!(result.len(), total_records);
+                    });
+                },
+            );
+        }
     }
 
     // Many scopes: 1 ResourceLogs, 10 ScopeLogs, 100 records each
@@ -207,17 +261,19 @@ fn bench_transform(c: &mut Criterion) {
         let total_records = 1000;
 
         group.throughput(criterion::Throughput::Elements(total_records as u64));
-        group.bench_with_input(
-            BenchmarkId::new("1r_10s", total_records),
-            &bytes,
-            |b, bytes| {
-                b.iter(|| {
-                    let view = RawLogsData::new(bytes);
-                    let result = transformer.convert_to_log_analytics(&view);
-                    assert_eq!(result.len(), total_records);
-                });
-            },
-        );
+        for (mode, transformer) in modes {
+            group.bench_with_input(
+                BenchmarkId::new(format!("1r_10s/{mode}"), total_records),
+                &bytes,
+                |b, bytes| {
+                    b.iter(|| {
+                        let view = RawLogsData::new(bytes);
+                        let result = transformer.convert_to_log_analytics(&view);
+                        assert_eq!(result.len(), total_records);
+                    });
+                },
+            );
+        }
     }
 
     // Many resources: 10 ResourceLogs, 1 ScopeLogs, 100 records each
@@ -226,17 +282,19 @@ fn bench_transform(c: &mut Criterion) {
         let total_records = 1000;
 
         group.throughput(criterion::Throughput::Elements(total_records as u64));
-        group.bench_with_input(
-            BenchmarkId::new("10r_1s", total_records),
-            &bytes,
-            |b, bytes| {
-                b.iter(|| {
-                    let view = RawLogsData::new(bytes);
-                    let result = transformer.convert_to_log_analytics(&view);
-                    assert_eq!(result.len(), total_records);
-                });
-            },
-        );
+        for (mode, transformer) in modes {
+            group.bench_with_input(
+                BenchmarkId::new(format!("10r_1s/{mode}"), total_records),
+                &bytes,
+                |b, bytes| {
+                    b.iter(|| {
+                        let view = RawLogsData::new(bytes);
+                        let result = transformer.convert_to_log_analytics(&view);
+                        assert_eq!(result.len(), total_records);
+                    });
+                },
+            );
+        }
     }
 
     group.finish();
