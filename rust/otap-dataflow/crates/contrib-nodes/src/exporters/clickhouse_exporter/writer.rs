@@ -30,6 +30,7 @@ use clickhouse::Client;
 use clickhouse_ext_arrow::ArrowClientExt;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_telemetry::metrics::MetricSet;
+use secrecy::ExposeSecret;
 
 use crate::exporters::clickhouse_exporter::{
     config::Config,
@@ -124,7 +125,7 @@ pub fn build_client(config: &Config, database: &str) -> Client {
         .with_url(config.endpoint.clone())
         .with_database(database)
         .with_user(config.username.clone())
-        .with_password(config.password.clone());
+        .with_password(config.password.expose_secret());
     if config.async_insert {
         client = client.with_setting("async_insert", "1");
     }

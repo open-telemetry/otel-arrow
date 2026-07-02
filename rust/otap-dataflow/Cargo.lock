@@ -6407,6 +6407,7 @@ dependencies = [
  "regex",
  "reqwest 0.13.4",
  "ryu",
+ "secrecy",
  "serde",
  "serde-transcode",
  "serde_cbor",

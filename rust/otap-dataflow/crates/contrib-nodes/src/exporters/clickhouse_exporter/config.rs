@@ -26,6 +26,7 @@
 //! The merge helpers (`from_patch` and `merge_table`) apply patch overrides on top of defaults so
 //! downstream code can generate schemas and write data without needing to reason about missing
 //! configuration fields.
+use secrecy::SecretString;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize, Clone)]
@@ -34,7 +35,7 @@ pub struct ConfigPatch {
     pub endpoint: String,
     pub database: String,
     pub username: String,
-    pub password: String,
+    pub password: SecretString,
 
     pub async_insert: Option<bool>,
 
@@ -46,7 +47,7 @@ pub struct ConfigPatch {
 }
 
 /// Configuration for the Clickhouse Exporter
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// ClickHouse HTTP(S) endpoint URL (e.g. "http://localhost:8123"). TCP is not supported for now.
     pub endpoint: String,
@@ -55,7 +56,7 @@ pub struct Config {
     /// Clickhouse user name
     pub username: String,
     /// Clickhouse password
-    pub password: String,
+    pub password: SecretString,
     /// Use async insert
     pub async_insert: bool,
     pub table_defaults: DefaultTableConfig,
@@ -281,6 +282,7 @@ fn merge_table(default: TableConfig, patch: Option<TableConfigPatch>) -> TableCo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use secrecy::ExposeSecret;
 
     #[test]
     fn test_config_deserialization() {
@@ -315,7 +317,7 @@ mod tests {
         assert_eq!(config.endpoint, "http://localhost:8123");
         assert_eq!(config.database, "otap");
         assert_eq!(config.username, "clickhouse");
-        assert_eq!(config.password, "secret");
+        assert_eq!(config.password.expose_secret(), "secret");
         assert!(!config.async_insert);
 
         // --- Table defaults ---
