@@ -1,0 +1,35 @@
+version: otel_dataflow/v1
+engine: { }
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 1000
+                signals_per_second: 30
+                log_weight: 100
+              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
+          exporter:
+            type: "exporter:clickhouse"
+            config:
+              endpoint: "http://127.0.0.1:8123"
+              database: "otap"
+              username: "default"
+              # Read the password from $CLICKHOUSE_PASSWORD, falling back to "test" if unset.
+              password: "${env:CLICKHOUSE_PASSWORD:-test}"
+
+        connections:
+          - from: receiver
+            to: exporter
+
