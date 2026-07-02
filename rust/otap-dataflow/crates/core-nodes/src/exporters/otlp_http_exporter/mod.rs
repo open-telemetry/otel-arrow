@@ -323,7 +323,9 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
 
             match msg {
                 Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
-                    otel_info!("otlp.exporter.http.shutdown", reason = reason);
+                    // TODO: same as otlp_grpc_exporter — start time should
+                    // come from the shutdown initiator, not message receipt.
+                    let shutdown_start = std::time::Instant::now();
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
                             finalize_completed_export(
@@ -334,6 +336,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             .await;
                         }
                     }
+                    let duration_secs = shutdown_start.elapsed().as_secs_f64();
+                    otel_info!(
+                        "df_engine.component.shutdown",
+                        reason = reason,
+                        "otel.component.type" = "otlp_http_exporter",
+                        "otel.component.shutdown.result" = "success",
+                        "otel.component.shutdown.duration" = duration_secs,
+                    );
                     return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
