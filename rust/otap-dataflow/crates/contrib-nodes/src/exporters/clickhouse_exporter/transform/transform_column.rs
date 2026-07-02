@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Per-column Arrow transformations that shape OTAP columns into the ClickHouse schema.
 //!
 //! [`apply_one_op`] dispatches each [`ColumnTransformOp`] against [`ColumnOpCtx`] — the mutable

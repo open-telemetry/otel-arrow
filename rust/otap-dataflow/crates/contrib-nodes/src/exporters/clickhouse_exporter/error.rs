@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 /// Definition of errors that could happen when exporting OTAP batches to Clickhouse
 #[derive(thiserror::Error, Debug)]
 pub enum ClickhouseExporterError {

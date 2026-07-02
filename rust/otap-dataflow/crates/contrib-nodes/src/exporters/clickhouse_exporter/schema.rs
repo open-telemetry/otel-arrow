@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickHouse column definitions for the OTAP ClickHouse exporter.
 //!
 //! This module provides the ClickHouse-side schema building blocks used by the exporter when

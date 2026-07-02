@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Static transformation plans per OTAP payload type.
 //!
 //! A [`TransformationPlan`] pairs multi-column ops ([`MultiColumnTransformOp`], applied to the whole

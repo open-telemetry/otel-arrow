@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickHouse write path and database bootstrap for the OTAP ClickHouse exporter.
 //!
 //! This module owns the runtime ClickHouse client, bootstraps the target database/schema (tables),

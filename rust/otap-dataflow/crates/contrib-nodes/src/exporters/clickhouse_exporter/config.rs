@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Configuration types for the OTAP ClickHouse exporter.
 //!
 //! This module defines the user-facing configuration model (deserialized via `serde`) and the

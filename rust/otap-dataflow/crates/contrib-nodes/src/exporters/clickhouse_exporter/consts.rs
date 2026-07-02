@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // These fields are flattened from the original schema due to ClickHouse limitations
 // in representing nullable structs with nullable values. This prevents reconstruction
 // of the original arrow payload from the stored data, but is sufficient for generation of

@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! ClickHouse schema initialization for the OTAP-based ClickHouse exporter.
 //!
 //! This module is responsible for translating the exporter [`Config`] into concrete ClickHouse

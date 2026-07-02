@@ -9,12 +9,14 @@ The current architecture is intentionally simple:
 
 - one flat table for logs
 - one flat table for traces
-- attributes always inlined on the signal tables as `Map(LowCardinality(String), String)`
+- attributes always inlined on the signal tables as
+  `Map(LowCardinality(String), String)`
 - no lookup attribute tables
 - no views
 - no ID generation layer
 
-The schema and transform behavior are aligned with the Go OpenTelemetry Collector ClickHouse exporter where practical.
+The schema and transform behavior are aligned with the Go OpenTelemetry
+Collector ClickHouse exporter where practical.
 
 ## Status
 
@@ -69,7 +71,8 @@ SELECT * FROM otel_traces LIMIT 10;
 At runtime the exporter does the following:
 
 1. Deserializes `ConfigPatch` and normalizes it into `Config`
-2. Connects to ClickHouse and creates the target database and configured tables if enabled
+2. Connects to ClickHouse and creates the target database and configured
+   tables if enabled
 3. Receives `OtapPdata` messages from the engine
 4. Converts payloads into `OtapArrowRecords`
 5. Runs the transform pipeline across supported payload types
@@ -91,7 +94,8 @@ The exporter currently understands these OTAP payload types:
 - `SpanLinkAttrs`
 - `SpanLinks`
 
-Only `Logs` and `Spans` are written to ClickHouse tables. The attribute and child payloads are consumed during transformation.
+Only `Logs` and `Spans` are written to ClickHouse tables. The attribute and
+child payloads are consumed during transformation.
 
 ## Configuration Model
 
@@ -105,8 +109,8 @@ Top-level config fields:
 - `table_defaults`
 - `tables`
 
-Inline attributes are always stored as `Map(LowCardinality(String), String)`; there is no
-per-group representation configuration.
+Inline attributes are always stored as `Map(LowCardinality(String), String)`;
+there is no per-group representation configuration.
 
 Table config supports:
 
@@ -117,22 +121,26 @@ Table config supports:
 
 ## Schema Shape
 
-The current implementation follows the clickhouse-exporter in opentelemetry-collector-contrib
-defined [here](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter/internal/sqltemplates).
+The current implementation follows the clickhouse-exporter in
+opentelemetry-collector-contrib defined by
+[the Go exporter's SQL templates](https://github.com/open-telemetry/opentelemetry-collector-contrib/tree/main/exporter/clickhouseexporter/internal/sqltemplates).
 
-Snapshots of the current structure are generated in the [table_snapshots](./table_snapshots/) directory.
-There is currently no automated testing to ensure schema drift relative to the go collector.
+Snapshots of the current structure are generated in the
+[table_snapshots](./table_snapshots/) directory. There is currently no
+automated testing to ensure schema drift relative to the go collector.
 
 ## Verified Arrow → ClickHouse Type Mapping
 
-Inserts go out as `FORMAT ArrowStream` (Arrow IPC over HTTP); ClickHouse performs the
-Arrow column coercion server-side. The mappings below were validated end-to-end against a live
-ClickHouse by the `e2e_*` integration tests in `transform/transform_batch.rs` (inserting the
-realistic fixtures and reading every column back). Columns bind **by name**, so column order is
-irrelevant, missing columns are server-defaulted, and an unknown column name errors on `end()`.
+Inserts go out as `FORMAT ArrowStream` (Arrow IPC over HTTP); ClickHouse
+performs the Arrow column coercion server-side. The mappings below were
+validated end-to-end against a live ClickHouse by the `e2e_*` integration tests
+in `transform/transform_batch.rs` (inserting the realistic fixtures and reading
+every column back). Columns bind **by name**, so column order is irrelevant,
+missing columns are server-defaulted, and an unknown column name errors on
+`end()`.
 
 | Emitted Arrow type | ClickHouse column type | Example columns |
-|---|---|---|
+| --- | --- | --- |
 | `Map<Utf8, Utf8>` | `Map(LowCardinality(String), String)` | ResourceAttributes, ScopeAttributes, LogAttributes, SpanAttributes |
 | `Dictionary<_, Utf8>` | `LowCardinality(String)` | ServiceName, SpanName, SpanKind, StatusCode |
 | `Timestamp(Nanosecond)` | `DateTime64(9)` | Timestamp, Events.Timestamp (as `Array(DateTime64(9))`) |
@@ -155,7 +163,8 @@ Inline attributes are stored as:
 Map(LowCardinality(String), String)
 ```
 
-Nested attribute values (Map/Slice) are transcoded from binary/CBOR into a JSON string stored as the map value.
+Nested attribute values (Map/Slice) are transcoded from binary/CBOR into a JSON
+string stored as the map value.
 
 ## Transform Pipeline
 
@@ -175,7 +184,8 @@ Key operations:
 - extracting `service.name` from inlined resource attributes into `ServiceName`
 - casting `duration_time_unix_nano` into `Duration`
 
-The transformer reconstructs batches only for `Logs` and `Spans`. Child payloads remain internal to the transform process.
+The transformer reconstructs batches only for `Logs` and `Spans`. Child
+payloads remain internal to the transform process.
 
 ## Writer Behavior
 
@@ -186,7 +196,8 @@ The transformer reconstructs batches only for `Logs` and `Spans`. Child payloads
 - writes only signal payloads
 - maps `Logs -> logs table` and `Spans -> traces table`
 
-There is no longer any special write ordering for attribute tables because attribute tables do not exist.
+There is no longer any special write ordering for attribute tables because
+attribute tables do not exist.
 
 ## Snapshots and Tests
 

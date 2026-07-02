@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! Attribute row grouping and serialization helpers for ClickHouse attribute columns.
 //!
 //! This module contains utilities for converting OTAP “attribute row” payloads (key/type/value

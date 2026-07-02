@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 //! RecordBatch transformation runner for OTAP → ClickHouse shaping.
 //!
 //! [`BatchTransformer`] runs a per-payload [`TransformationPlan`] in two stages:
