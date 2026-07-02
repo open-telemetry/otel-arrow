@@ -174,6 +174,10 @@ impl ExprPlanner {
                         expr_type: ExprLogicalType::AnyValue,
                         requires_dict_downcast: false,
                     }),
+                    ColumnAccessor::NestedAttribute(_, _, _) => Err(Error::NotYetSupportedError {
+                        message: "reading nested serialized attribute paths is not yet supported"
+                            .into(),
+                    }),
                 }
             }
 
@@ -1222,6 +1226,7 @@ impl ExprPlanner {
                             )?,
                         }))))
                     }
+                    ColumnAccessor::NestedAttribute(_, _, _) => Ok(None),
                 };
             }
         }
