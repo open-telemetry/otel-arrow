@@ -136,8 +136,11 @@ configuration with the following:
 ```bash
 git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
-cargo build --bin df_engine --no-default-features
+cargo build --bin df_engine --no-default-features --features crypto-ring
 ```
+Minimal builds using `--no-default-features` should enable exactly one
+`crypto-*` provider feature. `crypto-ring` is the default-compatible
+provider used by the standard feature set.
 
 A [directory of example configurations][EXAMPLE-CONFIGS] provides a
 number of examples (e.g.,
