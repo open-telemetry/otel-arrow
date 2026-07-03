@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782953234127,
+  "lastUpdate": 1783039411613,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5661,6 +5661,38 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/open-telemetry/otel-arrow/commit/474998ab250661c7f54ab1819aa0029a06afbb3f"
         },
         "date": 1782953223420,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Tim R",
+            "username": "timr-dev",
+            "email": "68666585+timr-dev@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "474998ab250661c7f54ab1819aa0029a06afbb3f",
+          "message": "fix(otap): default gRPC server settings to loopback bind (#3400)\n\n## Summary\n\n`GrpcServerSettings::default()`\n(`crates/otap/src/otap_grpc/server_settings.rs`) defaulted\n`listening_addr` to\n`([0, 0, 0, 0], 0)` = **`0.0.0.0:0`** (all interfaces, ephemeral port).\nThe\nephemeral port `0` shows this default is test/builder-oriented (a real\nserver\nneeds a known port), but an all-interfaces bind triggers the **Windows\nDefender\nFirewall prompt** during `cargo test` — the exact issue the \"Test and\nexample\nserver bind addresses\" guidance in `CONTRIBUTING.md` (added in #3353)\nexists to\nprevent.\n\nThis changes the default to **`127.0.0.1:0`** (loopback ephemeral).\n\n## Why this is safe\n\n- `listening_addr` is a **required** config field (the struct is\n`#[serde(deny_unknown_fields)]` with no `#[serde(default)]` on the\nfield), so\nconfig-driven deployments always set it explicitly — production behavior\nis\n  unchanged.\n- The only in-tree consumer of the bare default today is a compression\nunit\ntest that never binds a socket; this is a latent-risk fix, not a\nbehavior fix\n  for existing tests.\n- A server that must serve external traffic still sets an explicit\n  all-interfaces address in config (`CONTRIBUTING.md` explicitly allows\n  production defaults to bind `0.0.0.0`).\n\n## Testing\n\n- New regression test `default_listening_addr_is_loopback` pins the\ndefault to a\nloopback address — it fails if the default is ever changed back to\n`0.0.0.0` /\n  `[::]`.\n- `cargo clippy -p otap-df-otap --all-targets -- -D warnings` — clean.\n- `cargo test -p otap-df-otap --lib server_settings` — passes.\n- `cargo fmt` — clean.\n\nChangelog: a `bug_fix` entry under `.chloggen` (component `otap`), since\n`GrpcServerSettings` is a `pub` type and its `Default` bind behavior\nchanges for\nprogrammatic Rust API consumers (the crate is `publish = false`, so\nthere are no\nexternal consumers).\n\nCo-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
+          "timestamp": "2026-07-01T22:40:33Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/474998ab250661c7f54ab1819aa0029a06afbb3f"
+        },
+        "date": 1783039400532,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
