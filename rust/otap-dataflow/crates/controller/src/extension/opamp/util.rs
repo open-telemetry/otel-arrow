@@ -63,7 +63,7 @@ fn apply_jitter(base: Duration) -> Duration {
         .subsec_nanos();
 
     // Map nanos to a jitter multiplier in [1 - JITTER_FRACTION, 1 + JITTER_FRACTION]
-    let normalized = (nanos as f64) / (u32::MAX as f64); // 0.0..1.0
+    let normalized = (nanos as f64) / 999_999_999.0;
     let jitter_multiplier = 1.0 - JITTER_FRACTION + (normalized * 2.0 * JITTER_FRACTION);
 
     Duration::from_secs_f64(base.as_secs_f64() * jitter_multiplier)

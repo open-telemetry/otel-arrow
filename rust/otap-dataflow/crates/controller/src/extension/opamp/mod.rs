@@ -12,7 +12,7 @@
 //!   controller:
 //!     extensions:
 //!       opamp:
-//!         type: "urn:otel:controller_extension:opamp"
+//!         type: "urn:otel:extension:opamp"
 //!         config:
 //!           endpoint: "ws://127.0.0.1:4320/v1/opamp"
 //! ```
@@ -229,7 +229,13 @@ async fn run_websocket_connect_loop(
         // AgentToServer request.
         if stats.messages_sent <= 1 || stats.messages_received <= 1 {
             let delay = retry_connect_backoff.next_delay();
-            tokio::time::sleep(delay).await;
+            if cancellation_token
+                .run_until_cancelled(tokio::time::sleep(delay))
+                .await
+                .is_none()
+            {
+                break;
+            }
         } else {
             retry_connect_backoff.set_current(retry_connect_initial_backoff); // reset
         }
@@ -271,7 +277,13 @@ async fn connect_websocket(
                     retry_in =? retry_in
                 );
 
-                tokio::time::sleep(retry_in).await
+                if cancellation_token
+                    .run_until_cancelled(tokio::time::sleep(retry_in))
+                    .await
+                    .is_none()
+                {
+                    return None;
+                }
             }
         }
     }
@@ -388,6 +400,7 @@ async fn run_websocket_request_loop(
                     // periodically send heart beat
                     _ = tokio::time::sleep(config.heart_beat_interval) => {
                         session_state.sequence_num += 1;
+                         stats.messages_sent += 1;
                         let message = heartbeat_message(
                             session_state,
                             context,
@@ -1140,6 +1153,7 @@ fn set_remote_config_status_from_observed_state(
                 PipelinePhase::Rejected(rejected_reason) => {
                     remote_config_status.status = RemoteConfigStatuses::Failed as i32;
                     remote_config_status.error_message = format!("{rejected_reason:?}");
+                    return;
                 }
                 _ => {
                     remote_config_status.status = RemoteConfigStatuses::Applied as i32;
