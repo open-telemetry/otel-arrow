@@ -277,13 +277,9 @@ async fn connect_websocket(
                     retry_in =? retry_in
                 );
 
-                if cancellation_token
+                cancellation_token
                     .run_until_cancelled(tokio::time::sleep(retry_in))
-                    .await
-                    .is_none()
-                {
-                    return None;
-                }
+                    .await?;
             }
         }
     }
