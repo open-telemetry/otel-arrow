@@ -347,9 +347,9 @@ impl InternalTelemetryReceiver {
 }
 
 /// Index one past the last record of the chunk starting at `start`: as many
-/// records as fit the byte budget, but always at least one (a record's body is
-/// size-bounded, so a single one always fits). Pure, so it is unit-tested
-/// directly without driving the full receiver.
+/// records as fit the byte budget, but always at least one (even if the first
+/// record alone would exceed `budget`). Pure, so it is unit-tested directly
+/// without driving the full receiver.
 fn chunk_end(record_sizes: &[usize], start: usize, base_bytes: usize, budget: usize) -> usize {
     let mut end = start;
     let mut bytes = base_bytes;

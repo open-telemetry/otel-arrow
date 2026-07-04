@@ -659,8 +659,9 @@ pub fn encode_export_logs_request(
 /// The single-event case takes the [`encode_export_logs_request`] fast path, so
 /// the common batching-disabled flow does not build the grouping map.
 ///
-/// Callers must keep each batch small enough to stay under the `ProtoBuffer`
-/// size limit; the receiver does this by splitting on a byte budget first.
+/// Callers must keep each batch small enough to stay under the intended OTLP
+/// transport/payload size; the receiver does this by splitting on a byte budget
+/// first.
 pub fn encode_export_logs_request_batch(
     buf: &mut ProtoBuffer,
     events: &[LogEvent],
