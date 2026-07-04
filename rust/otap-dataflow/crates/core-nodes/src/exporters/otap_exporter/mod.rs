@@ -815,7 +815,16 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                     *req_stream.metadata_mut() = (**static_metadata).clone();
                 }
 
-                match client.handle_req_stream(req_stream).await {
+                let req_fut = client.handle_req_stream(req_stream);
+                let connect_res = tokio::select! {
+                    res = req_fut => res,
+                    _ = shutdown_rx.changed() => {
+                        drop(correlation_tx);
+                        break;
+                    }
+                };
+
+                match connect_res {
                     Ok(res) => {
                         // reset the reconnect timeout backoff
                         failed_request_backoff = INITIAL_BACKOFF;
@@ -2982,5 +2991,195 @@ mod tests {
                 "authorization header missing on stream open #{i} (must be re-applied per open)"
             );
         }
+    }
+
+    #[test]
+    fn test_otap_exporter_connection_failure_backoff() {
+        use std::ops::Add;
+        use tokio::runtime::Runtime;
+        use tokio::time::timeout;
+
+        let tokio_rt = Runtime::new().unwrap();
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &serde_json::json!({
+                    "grpc_endpoint": "http://127.0.0.1:56790",
+                    "compression_method": "none",
+                    "stream_queue_capacity": 10,
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .unwrap();
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let exporter_handle = local_set.spawn_local(async move {
+                exporter
+                    .start(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        metrics_reporter,
+                        Interests::empty(),
+                    )
+                    .await
+            });
+
+            local_set
+                .run_until(async move {
+                    let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                    let pdata1 = OtapPdata::new_default(log_message.into());
+                    pdata_tx.send(pdata1).await.unwrap();
+
+                    // Wait enough time for handle_req_stream to fail with connection refused
+                    // and enter the Err(e) branch which sleeps for 50ms (INITIAL_BACKOFF).
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+
+                    control_sender
+                        .send(NodeControlMsg::Shutdown {
+                            deadline: Instant::now().add(Duration::from_millis(500)),
+                            reason: "shutdown test".into(),
+                        })
+                        .await
+                        .unwrap();
+
+                    let shutdown_result = timeout(Duration::from_secs(1), exporter_handle).await;
+                    assert!(shutdown_result.is_ok(), "Expected clean shutdown");
+                })
+                .await;
+        });
+    }
+
+    #[test]
+    fn test_otap_exporter_deadlock_on_full_queue_shutdown() {
+        use std::ops::Add;
+        use tokio::runtime::Runtime;
+        use tokio::time::timeout;
+
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_EXPORTER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let mut exporter = ExporterWrapper::local(
+            OTAPExporter::from_config(
+                pipeline_ctx,
+                &serde_json::json!({
+                    "grpc_endpoint": "http://127.0.0.1:56789",
+                    "compression_method": "none",
+                    "stream_queue_capacity": 1,
+                }),
+            )
+            .unwrap(),
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(16);
+        let (pipeline_completion_msg_tx, _pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(16);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+        tokio_rt.block_on(async move {
+            let local_set = tokio::task::LocalSet::new();
+            let exporter_handle = local_set.spawn_local(async move {
+                exporter
+                    .start(
+                        runtime_ctrl_msg_tx,
+                        pipeline_completion_msg_tx,
+                        metrics_reporter,
+                        Interests::empty(),
+                    )
+                    .await
+            });
+
+            local_set
+                .run_until(async move {
+                    // Send first batch — exporter forwards it to a stream worker.
+                    let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
+                    let pdata1 = OtapPdata::new_default(log_message.into());
+                    pdata_tx.send(pdata1).await.unwrap();
+
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    // Send second batch — fills the stream queue (capacity=1).
+                    let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
+                    let pdata2 = OtapPdata::new_default(log_message.into());
+                    pdata_tx.send(pdata2).await.unwrap();
+
+                    // Send third batch in a background task — this will block inside
+                    // enqueue_stream_batch waiting for queue space, simulating full
+                    // backpressure with an unreachable downstream.
+                    let log_message = create_otap_batch(LOG_BATCH_ID + 2, ArrowPayloadType::Logs);
+                    let pdata3 = OtapPdata::new_default(log_message.into());
+                    let pdata_tx_clone = pdata_tx.clone();
+                    let send_handle = tokio::task::spawn_local(async move {
+                        _ = pdata_tx_clone.send(pdata3).await;
+                    });
+
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+
+                    // Request shutdown — before the fix, the exporter would deadlock
+                    // because the main loop was blocked in enqueue_stream_batch and
+                    // could never process this Shutdown control message.
+                    control_sender
+                        .send(NodeControlMsg::Shutdown {
+                            deadline: Instant::now().add(Duration::from_millis(10)),
+                            reason: "shutdown test".into(),
+                        })
+                        .await
+                        .unwrap();
+
+                    // The exporter must shut down within 200ms, not hang forever.
+                    let shutdown_result =
+                        timeout(Duration::from_millis(200), exporter_handle).await;
+                    assert!(
+                        shutdown_result.is_ok(),
+                        "Expected exporter to shut down successfully and not deadlock"
+                    );
+
+                    send_handle.abort();
+                    drop(pdata_tx);
+                })
+                .await;
+        });
     }
 }

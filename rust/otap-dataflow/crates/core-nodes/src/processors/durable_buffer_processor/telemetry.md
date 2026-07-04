@@ -226,5 +226,5 @@ When adding or changing telemetry in this module:
      - Search for new metric fields: `#[metric(` in
        `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs`.
      - Search for new log events: `otel_(trace|debug|info|warn|error)!(` in
-       `crates/otap/src/durable_buffer_processor/**`.
+       `crates/core-nodes/src/processors/durable_buffer_processor/**`.
      - Confirm this document still matches current source files.
