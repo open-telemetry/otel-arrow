@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: observability
+note: Self-telemetry cumulative counters (`ObserveCounter`) are now exported as asynchronous monotonic sums instead of gauges, so the metrics reader's requested temporality (cumulative or delta) is honored.
+issues: [3397]

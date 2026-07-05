@@ -960,15 +960,12 @@ impl DurableBuffer {
         self.segment_cache
             .retain(|seq, _| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
 
-        // NOTE (temporality inconsistency): these aggregate loss metrics are
-        // still cumulative ObserveCounters sourced from monotonic engine atomics
-        // via .observe(), so the dispatcher exports them as gauges regardless of
-        // reader temporality. Their per-signal breakdowns below are now delta
-        // Counters, so `dropped_items` will NOT equal the sum of the per-signal
-        // `dropped_*` across intervals. Making these delta-native (and every other
-        // ObserveCounter temporality-aware) is tracked as a follow-up; it needs
-        // either engine-side drain methods or a dispatcher-level fix rather than
-        // reintroducing per-metric last-value bookkeeping here.
+        // These aggregate loss metrics are cumulative ObserveCounters sourced
+        // from monotonic engine atomics via .observe(). The telemetry
+        // dispatcher exports them as asynchronous monotonic sums, so the
+        // reader's requested temporality applies: cumulative totals, or
+        // per-interval deltas that align with the per-signal delta Counters
+        // below.
         self.metrics
             .dropped_segments
             .observe(engine.force_dropped_segments());
