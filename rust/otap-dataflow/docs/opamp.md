@@ -34,6 +34,8 @@ acts as a client, using either
 The messages exchanged are protobuf serialized `AgentToServer` and
 `ServerToAgent` messages.
 Find [proto message definitions](https://github.com/open-telemetry/opamp-spec/blob/main/proto/opamp/v1/opamp.proto).
+Note: When constructing/handling messages, language bindings generated from
+these official OpAMP protos should be used when possible.
 
 ### Controller extension
 
