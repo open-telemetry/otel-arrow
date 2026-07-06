@@ -180,6 +180,18 @@ engine:
               # ...
 ```
 
+### TLS/mTLS behaviour
+
+The configuration in the `tls` block will use the structure defined in [`otap_df_config::tls::TlsClientConfig`](
+https://github.com/open-telemetry/otel-arrow/blob/f45dc00642f0187020a4a46de796a07bf368d443/rust/otap-dataflow/crates/config/src/tls.rs#L49-L92)
+
+If the key is supplied without the certificate, or the certificate is 
+configured without the key, configuration will be considered invalid at 
+startup.
+
+If the `tls` section of the config is not supplied, messages will be exchanged
+in plaintext.
+
 ## Protocol Implementation
 
 ### Client Behaviour and Message Flow
