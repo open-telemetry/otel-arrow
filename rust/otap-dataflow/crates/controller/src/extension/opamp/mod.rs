@@ -332,7 +332,7 @@ async fn run_websocket_request_loop(
                 }
 
                 let Some(last_message) = session_state.last_sent_message.as_ref() else {
-                    otel_error!(
+                    otel_warn!(
                         "opamp.controller_extension.retry.invalid_state",
                         message = "RetryBackoff phase entered with no last_sent_message; resetting to Initiating"
                     );
