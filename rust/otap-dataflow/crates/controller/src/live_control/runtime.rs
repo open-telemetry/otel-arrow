@@ -488,18 +488,37 @@ impl<
         self.spawn_shutdown_for_engine_operation(plan, engine_operation_id)
     }
 
-    /// Blocks until all active runtime instances have exited.
+    /// Blocks until all active runtime instances have exited, or until the wait
+    /// is released via [`release_instance_wait`](Self::release_instance_wait).
     pub(crate) fn wait_until_all_instances_exit(&self) {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        while state.active_instances > 0 {
+        while state.active_instances > 0 && !state.instance_wait_released {
             state = self
                 .state_changed
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+    }
+
+    /// Releases [`wait_until_all_instances_exit`](Self::wait_until_all_instances_exit)
+    /// unconditionally, even if runtime instances are still active.
+    ///
+    /// This is a fatal-shutdown escape hatch: when a controller extension fails
+    /// at runtime the engine tears down regardless of whether the graceful drain
+    /// of pipeline instances completes, so the main controller thread must not
+    /// block forever if that drain stalls. The latch is one-way for the current
+    /// run — `wait_until_all_instances_exit` is only entered once, after which
+    /// the controller proceeds to teardown.
+    pub(crate) fn release_instance_wait(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.instance_wait_released = true;
+        self.state_changed.notify_all();
     }
 
     /// Returns the first runtime error observed by any watched pipeline thread.

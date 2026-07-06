@@ -1723,11 +1723,19 @@ impl<
 
         drop(metrics_reporter);
 
+        // Wake handle for a fatal controller-extension failure: release the main
+        // thread's `wait_until_all_instances_exit` even if the graceful drain
+        // stalls, so the controller always proceeds to teardown and surfaces the
+        // error instead of hanging.
+        let release_instance_wait: Arc<dyn Fn() + Send + Sync> = {
+            let runtime = Arc::clone(&runtime);
+            Arc::new(move || runtime.release_instance_wait())
+        };
         let controller_extension_handles = match Self::spawn_controller_extensions(
             prepared_controller_extensions,
             admin_tracing_setup.clone(),
             Arc::clone(&control_plane),
-            thread::current(),
+            release_instance_wait,
         ) {
             Ok(handles) => handles,
             Err(err) => {
@@ -1859,7 +1867,7 @@ impl<
         prepared_extensions: Vec<PreparedControllerExtension>,
         tracing_setup: TracingSetup,
         control_plane: Arc<dyn ControlPlane>,
-        controller_thread: thread::Thread,
+        release_instance_wait: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Vec<ThreadLocalTaskHandle<(), Error>>, Error> {
         let mut handles = Vec::new();
         for prepared_extension in prepared_extensions {
@@ -1870,7 +1878,7 @@ impl<
             let thread_name = format!("controller-extension-{}", extension_id.as_ref());
             let runtime_extension_id = extension_id.to_string();
             let extension_control_plane = Arc::clone(&control_plane);
-            let extension_controller_thread = controller_thread.clone();
+            let extension_release_instance_wait = Arc::clone(&release_instance_wait);
             handles.push(spawn_thread_local_task(
                 thread_name,
                 tracing_setup.clone(),
@@ -1896,7 +1904,10 @@ impl<
                                         message = "Failed to shut down pipelines after controller extension runtime failure"
                                     );
                                 }
-                                extension_controller_thread.unpark();
+                                // Release the main thread's instance wait so the
+                                // controller proceeds to teardown even if the drain
+                                // requested above stalls or failed.
+                                extension_release_instance_wait();
                                 Err(Error::ControllerExtensionRuntimeError {
                                 extension_id: runtime_extension_id,
                                 source,
@@ -3131,7 +3142,7 @@ groups: {{}}
 
         let err = result_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("controller extension runtime error should unpark the controller")
+            .expect("controller extension runtime error should release the controller")
             .expect_err("controller should fail when a controller extension fails at runtime");
         controller_thread
             .join()
