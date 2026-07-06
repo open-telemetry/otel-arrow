@@ -42,6 +42,8 @@ pub mod descriptor;
 pub mod error;
 /// Event types for lifecycle and log events.
 pub mod event;
+/// Per-EventName runtime filtering of internal telemetry logs.
+pub mod eventname_filter;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
