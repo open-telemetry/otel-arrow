@@ -1,0 +1,24 @@
+[package]
+name = "otap-df-contrib-extensions"
+description = "OTAP Contrib extensions"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+azure_core = { workspace = true, optional = true }
+
+[features]
+# Umbrella feature enabling all contrib extensions.
+contrib-extensions = ["azure-identity-auth-extension"]
+# Azure Identity authentication extension (BearerTokenProvider capability).
+azure-identity-auth-extension = ["dep:azure_core"]
