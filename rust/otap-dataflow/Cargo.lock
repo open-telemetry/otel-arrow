@@ -6427,6 +6427,7 @@ dependencies = [
  "otap-df-telemetry-macros",
  "parking_lot",
  "prost",
+ "secrecy",
  "serde_json",
  "serde_yaml",
  "smallvec",
