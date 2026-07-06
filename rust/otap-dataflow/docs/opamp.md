@@ -430,7 +430,7 @@ will use the following rules:
 - If any pipeline has status `stopping`, the group status will be `stopping`
 - Otherwise if any pipeline has status `failed`, the group status will be
   `failed`
-- Otherwise if all pipeline has status `stopped`, the group status will be
+- Otherwise if all pipeline have status `stopped`, the group status will be
   `stopped`
 - Otherwise if all pipelines have status `running`, the group status will be
   `running`
