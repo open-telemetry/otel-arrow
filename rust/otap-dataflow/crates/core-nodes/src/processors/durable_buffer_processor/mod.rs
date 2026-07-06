@@ -298,41 +298,42 @@ pub struct DurableBufferMetrics {
     #[metric(unit = "{span}")]
     pub queued_spans: Gauge<u64>,
 
-    // ─── Flush metrics -----------------------------------───────────────────
+    // ─── Flush metrics ──────────────────────────────────────────────────────
     /// Number of segment finalization (flush) failures.
     /// Non-zero values indicate data at risk -- check logs for root cause.
     /// Data may still be recoverable via WAL replay on restart.
     #[metric(unit = "{error}")]
     pub flush_failures: Counter<u64>,
 
-    // ─── Appended metrics (Do not shift index) ──────────────────────────────
+    // ─── Utilization metrics ────────────────────────────────────────────────
     /// Current storage utilization ratio (0.0 to 1.0).
     #[metric(unit = "{1}")]
     pub storage_utilization: Gauge<f64>,
 
-    /// Total log records lost due to force-dropped segments (DropOldest policy).
+    // ─── Data-loss metrics (per signal type) ────────────────────────────────
+    /// Log records lost due to force-dropped segments (DropOldest policy).
     #[metric(unit = "{log_record}")]
-    pub dropped_log_records: ObserveCounter<u64>,
+    pub dropped_log_records: Counter<u64>,
 
-    /// Total spans lost due to force-dropped segments (DropOldest policy).
+    /// Spans lost due to force-dropped segments (DropOldest policy).
     #[metric(unit = "{span}")]
-    pub dropped_spans: ObserveCounter<u64>,
+    pub dropped_spans: Counter<u64>,
 
-    /// Total metric data points lost due to force-dropped segments (DropOldest policy).
+    /// Metric data points lost due to force-dropped segments (DropOldest policy).
     #[metric(unit = "{data_point}")]
-    pub dropped_metric_datapoints: ObserveCounter<u64>,
+    pub dropped_metric_datapoints: Counter<u64>,
 
-    /// Total log records lost due to expired segments (max_age retention).
+    /// Log records lost due to expired segments (max_age retention).
     #[metric(unit = "{log_record}")]
-    pub expired_log_records: ObserveCounter<u64>,
+    pub expired_log_records: Counter<u64>,
 
-    /// Total spans lost due to expired segments (max_age retention).
+    /// Spans lost due to expired segments (max_age retention).
     #[metric(unit = "{span}")]
-    pub expired_spans: ObserveCounter<u64>,
+    pub expired_spans: Counter<u64>,
 
-    /// Total metric data points lost due to expired segments (max_age retention).
+    /// Metric data points lost due to expired segments (max_age retention).
     #[metric(unit = "{data_point}")]
-    pub expired_metric_datapoints: ObserveCounter<u64>,
+    pub expired_metric_datapoints: Counter<u64>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -504,16 +505,6 @@ pub struct DurableBuffer {
     /// Prevents warning spam when `bundle_metadata` repeatedly fails for the
     /// same segment across telemetry ticks.
     metadata_load_warned_segments: HashSet<u64>,
-
-    /// Cumulative logged items dropped via DropOldest policy.
-    total_dropped_logs: u64,
-    total_dropped_metrics: u64,
-    total_dropped_spans: u64,
-
-    /// Cumulative logged items dropped via MaxAge policy.
-    total_expired_logs: u64,
-    total_expired_metrics: u64,
-    total_expired_spans: u64,
 }
 
 impl DurableBuffer {
@@ -579,12 +570,6 @@ impl DurableBuffer {
             segment_cache: HashMap::new(),
             segment_cache_generation: 0,
             metadata_load_warned_segments: HashSet::new(),
-            total_dropped_logs: 0,
-            total_dropped_metrics: 0,
-            total_dropped_spans: 0,
-            total_expired_logs: 0,
-            total_expired_metrics: 0,
-            total_expired_spans: 0,
         })
     }
 
@@ -975,6 +960,15 @@ impl DurableBuffer {
         self.segment_cache
             .retain(|seq, _| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
 
+        // NOTE (temporality inconsistency): these aggregate loss metrics are
+        // still cumulative ObserveCounters sourced from monotonic engine atomics
+        // via .observe(), so the dispatcher exports them as gauges regardless of
+        // reader temporality. Their per-signal breakdowns below are now delta
+        // Counters, so `dropped_items` will NOT equal the sum of the per-signal
+        // `dropped_*` across intervals. Making these delta-native (and every other
+        // ObserveCounter temporality-aware) is tracked as a follow-up; it needs
+        // either engine-side drain methods or a dispatcher-level fix rather than
+        // reintroducing per-metric last-value bookkeeping here.
         self.metrics
             .dropped_segments
             .observe(engine.force_dropped_segments());
@@ -995,36 +989,22 @@ impl DurableBuffer {
         for (slot_ids, count) in engine.drain_dropped_bundles_pending() {
             let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
             match sig {
-                Some(SignalType::Logs) => self.total_dropped_logs += count,
-                Some(SignalType::Metrics) => self.total_dropped_metrics += count,
-                Some(SignalType::Traces) => self.total_dropped_spans += count,
+                Some(SignalType::Logs) => self.metrics.dropped_log_records.add(count),
+                Some(SignalType::Metrics) => self.metrics.dropped_metric_datapoints.add(count),
+                Some(SignalType::Traces) => self.metrics.dropped_spans.add(count),
                 None => {}
             }
         }
-        self.metrics
-            .dropped_log_records
-            .observe(self.total_dropped_logs);
-        self.metrics
-            .dropped_metric_datapoints
-            .observe(self.total_dropped_metrics);
-        self.metrics.dropped_spans.observe(self.total_dropped_spans);
 
         for (slot_ids, count) in engine.drain_expired_bundles_pending() {
             let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
             match sig {
-                Some(SignalType::Logs) => self.total_expired_logs += count,
-                Some(SignalType::Metrics) => self.total_expired_metrics += count,
-                Some(SignalType::Traces) => self.total_expired_spans += count,
+                Some(SignalType::Logs) => self.metrics.expired_log_records.add(count),
+                Some(SignalType::Metrics) => self.metrics.expired_metric_datapoints.add(count),
+                Some(SignalType::Traces) => self.metrics.expired_spans.add(count),
                 None => {}
             }
         }
-        self.metrics
-            .expired_log_records
-            .observe(self.total_expired_logs);
-        self.metrics
-            .expired_metric_datapoints
-            .observe(self.total_expired_metrics);
-        self.metrics.expired_spans.observe(self.total_expired_spans);
 
         self.metadata_load_warned_segments
             .retain(|seq| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
@@ -3056,58 +3036,57 @@ mod tests {
         let (mut processor, engine, subscriber_id, _temp_dir) =
             setup_test_processor(Some(Duration::from_millis(5))).await;
 
+        // Data-loss Counters. As delta-native synchronous counters they are reset
+        // by the reporter after every flush, so each report carries only the loss
+        // observed in that interval.
+        const DROPPED_LOG_RECORDS: usize = 32;
+        const EXPIRED_LOG_RECORDS: usize = 35;
+
         let slot_id = SlotId::new(30);
-        let bundle = make_simple_bundle(slot_id, 5);
-
-        // 1. Ingest and flush a segment
-        engine.ingest(&bundle).await.unwrap();
-        engine.flush().await.unwrap();
-
-        // 2. Force drop the oldest pending segment
-        let dropped = engine.force_drop_oldest_pending_segments();
-        assert_eq!(dropped, 1, "should have dropped 1 segment");
-
-        // Recompute metrics so processor reads the engine drop counts
-        processor.recompute_metrics(&engine, &subscriber_id);
-
         let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-        let metrics = snap.get_metrics();
 
-        const IDX_DROPPED_LOG_RECORDS: usize = 32;
-        assert_eq!(
-            metrics[IDX_DROPPED_LOG_RECORDS].to_u64_lossy(),
-            5,
-            "dropped_log_records should show 5 items dropped"
-        );
+        // Report a fresh interval; returns (dropped_log_records, expired_log_records).
+        let mut sample = |p: &mut DurableBuffer| {
+            p.recompute_metrics(&engine, &subscriber_id);
+            reporter.report(&mut p.metrics).unwrap();
+            let snap = metrics_rx.try_recv().unwrap();
+            let m = snap.get_metrics();
+            (
+                m[DROPPED_LOG_RECORDS].to_u64_lossy(),
+                m[EXPIRED_LOG_RECORDS].to_u64_lossy(),
+            )
+        };
 
-        // 3. Test expiry metrics
-        // Ingest and flush another segment
-        let bundle2 = make_simple_bundle(slot_id, 3);
-        engine.ingest(&bundle2).await.unwrap();
+        // Interval 1: drop a 5-record segment -> dropped reports 5.
+        engine
+            .ingest(&make_simple_bundle(slot_id, 5))
+            .await
+            .unwrap();
         engine.flush().await.unwrap();
+        assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
+        assert_eq!(sample(&mut processor), (5, 0));
 
-        // Wait for it to exceed max_age (5ms)
+        // Interval 2: expire a 3-record segment; no new drops. The dropped counter
+        // was reset by the previous flush, so it reads 0 -- proving these are
+        // per-interval (delta) values, not running totals.
+        engine
+            .ingest(&make_simple_bundle(slot_id, 3))
+            .await
+            .unwrap();
+        engine.flush().await.unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(engine.cleanup_expired_segments().unwrap(), 1);
+        assert_eq!(sample(&mut processor), (0, 3));
 
-        // Clean up expired segments
-        let expired = engine.cleanup_expired_segments().unwrap();
-        assert_eq!(expired, 1, "should have expired 1 segment");
-
-        // Recompute metrics so processor reads the engine expiry counts
-        processor.recompute_metrics(&engine, &subscriber_id);
-
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap2 = metrics_rx.try_recv().unwrap();
-        let metrics2 = snap2.get_metrics();
-
-        const IDX_EXPIRED_LOG_RECORDS: usize = 35;
-        assert_eq!(
-            metrics2[IDX_EXPIRED_LOG_RECORDS].to_u64_lossy(),
-            3,
-            "expired_log_records should show 3 items expired"
-        );
+        // Interval 3: drop a 4-record segment. Dropped reports only this interval's
+        // 4 (not the lifetime 9); expired was reset and reads 0.
+        engine
+            .ingest(&make_simple_bundle(slot_id, 4))
+            .await
+            .unwrap();
+        engine.flush().await.unwrap();
+        assert_eq!(engine.force_drop_oldest_pending_segments(), 1);
+        assert_eq!(sample(&mut processor), (4, 0));
     }
 
     #[tokio::test]
