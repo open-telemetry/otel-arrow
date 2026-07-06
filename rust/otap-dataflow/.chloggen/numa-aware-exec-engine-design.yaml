@@ -1,0 +1,4 @@
+change_type: enhancement
+component: engine
+note: "Document the proposed NUMA-aware execution engine placement model."
+issues: [3317]

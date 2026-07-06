@@ -70,6 +70,8 @@ additional header information to mitigate distribution skew.
 
 For the df-engine NUMA-local selector design proposal, see
 [NUMA-Local Reuseport Load Balancing: Design Proposal](reuseport-ebpf-numa.md).
+For the engine placement model that the selector consumes, see
+[NUMA-Aware Execution Engine: Design Proposal](numa-aware-exec-engine.md).
 
 #### 2.b. Front-End **L7 (HTTP/2-aware) Load Balancer**
 
