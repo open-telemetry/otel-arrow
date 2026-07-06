@@ -13,6 +13,7 @@
 //!
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -34,6 +35,11 @@ use datafusion::logical_expr::ColumnarValue;
 use datafusion::prelude::SessionContext;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
+use otap_df_pdata::arrays::ByteArrayAccessor;
+use otap_df_pdata::encode::record::array::dictionary::DictionaryOptions;
+use otap_df_pdata::encode::record::array::{
+    ArrayAppendNulls, ArrayAppendSlice, ArrayOptions, BinaryArrayBuilder,
+};
 use otap_df_pdata::error::Error as PdataError;
 use otap_df_pdata::otap::Logs;
 use otap_df_pdata::otap::filter::IdBitmapPool;
@@ -41,7 +47,13 @@ use otap_df_pdata::otap::transform::concatenate::{Cardinality, FieldInfo, estima
 use otap_df_pdata::otap::transform::upsert_attributes::{
     AttributeUpsert, EMPTY_U16_ATTRS_RECORD_BATCH, upsert_attributes,
 };
-use otap_df_pdata::otlp::attributes::AttributeValueType;
+use otap_df_pdata::otlp::attributes::{
+    AttributeValueType,
+    cbor::{
+        SerializedAttributeScalarValue, SerializedValueMutation, SerializedValuePathElement,
+        SerializedValuePathMutation, mutate_cbor_bytes_many,
+    },
+};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts::metadata;
 use otap_df_pdata::schema::{consts, get_field_metadata, update_field_metadata};
@@ -131,6 +143,10 @@ impl AssignPipelineStage {
                     (
                         ColumnAccessor::Attributes(last_attr_id, _),
                         ColumnAccessor::Attributes(curr_attr_id, _),
+                    ) => last_attr_id == curr_attr_id,
+                    (
+                        ColumnAccessor::NestedAttribute(last_attr_id, _, _),
+                        ColumnAccessor::NestedAttribute(curr_attr_id, _, _),
                     ) => last_attr_id == curr_attr_id,
                     _ => false,
                 };
@@ -809,6 +825,142 @@ impl AssignPipelineStage {
         Ok(otap_batch)
     }
 
+    fn assign_to_nested_attributes(
+        &mut self,
+        mut otap_batch: OtapArrowRecords,
+        eval_results: &mut [Option<ScopedValue>],
+        dest_attrs_id: AttributesIdentifier,
+    ) -> Result<OtapArrowRecords> {
+        if otap_batch.root_record_batch().is_none() {
+            return Ok(otap_batch);
+        }
+
+        let attrs_payload_type = match dest_attrs_id {
+            AttributesIdentifier::Root => match otap_batch {
+                OtapArrowRecords::Logs(_) => ArrowPayloadType::LogAttrs,
+                OtapArrowRecords::Metrics(_) => ArrowPayloadType::MetricAttrs,
+                OtapArrowRecords::Traces(_) => ArrowPayloadType::SpanAttrs,
+            },
+            AttributesIdentifier::NonRoot(payload_type) => payload_type,
+        };
+
+        let Some(mut attrs_record_batch) = otap_batch.get(attrs_payload_type).cloned() else {
+            return Ok(otap_batch);
+        };
+
+        let key_column = attrs_record_batch
+            .column_by_name(consts::ATTRIBUTE_KEY)
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "attribute record batch missing key column".into(),
+            })?;
+        let parent_ids_col = attrs_record_batch
+            .column_by_name(consts::PARENT_ID)
+            .ok_or_else(|| Error::ExecutionError {
+                cause: "attribute record batch missing parent_id column".into(),
+            })?;
+
+        let mut updates = Vec::with_capacity(eval_results.len());
+        let mut key_matches: HashMap<String, (BooleanArray, ArrayRef)> = HashMap::new();
+
+        for (i, eval_result) in eval_results.iter_mut().enumerate() {
+            let ColumnAccessor::NestedAttribute(_, attrs_key, path) = &self.dest_columns[i] else {
+                unreachable!("invalid column accessor variant")
+            };
+
+            let (existing_key_mask, update_parent_ids) =
+                if let Some((mask, parent_ids)) = key_matches.get(attrs_key) {
+                    (mask.clone(), Arc::clone(parent_ids))
+                } else {
+                    let existing_key_mask = eq(&key_column, &StringArray::new_scalar(attrs_key))?;
+                    if existing_key_mask.true_count() == 0 {
+                        continue;
+                    }
+
+                    let update_parent_ids = filter(&parent_ids_col, &existing_key_mask)?;
+                    _ = key_matches.insert(
+                        attrs_key.clone(),
+                        (existing_key_mask.clone(), Arc::clone(&update_parent_ids)),
+                    );
+                    (existing_key_mask, update_parent_ids)
+                };
+            let update_parent_ids_u16 = update_parent_ids
+                .as_any()
+                .downcast_ref::<UInt16Array>()
+                .ok_or_else(|| Error::ExecutionError {
+                    cause: format!(
+                        "invalid ID column. expected u16 type, found {:?}",
+                        update_parent_ids.data_type()
+                    ),
+                })?;
+
+            let mut scoped_value = eval_result
+                .take()
+                .unwrap_or_else(|| ScopedValue::new_scalar(ScalarValue::Null));
+
+            if let ColumnarValue::Array(ref arr) = scoped_value.values {
+                if is_any_value_data_type(arr.data_type()) {
+                    let coerced_value_col =
+                        attempt_coerce_value_column_from_any_value_struct_column(arr)?;
+                    scoped_value.values = ColumnarValue::Array(coerced_value_col);
+                }
+            }
+
+            let aligned_values = if let ColumnarValue::Scalar(s) = scoped_value.values {
+                ColumnarValue::Scalar(s)
+            } else {
+                let eval_result = scoped_value_to_join_input(scoped_value, &otap_batch)?;
+                let ColumnarValue::Array(ref result_values) = eval_result.values else {
+                    unreachable!("expected ColumnarResult::Array")
+                };
+
+                let left_join_input = &JoinInput::new_with_parent_ids(
+                    ColumnarValue::Scalar(ScalarValue::Null),
+                    Rc::clone(&self.dest_scopes[i]),
+                    update_parent_ids_u16,
+                );
+
+                let vals_take_indices = match eval_result.data_scope.as_ref() {
+                    DataScope::Attribute(result_attrs_id, _)
+                    | DataScope::AttributesAll(result_attrs_id) => {
+                        if dest_attrs_id == *result_attrs_id {
+                            AttributeToSameAttributeJoin::new().rows_to_take(
+                                left_join_input,
+                                &eval_result,
+                                &otap_batch,
+                            )?
+                        } else {
+                            AttributeToDifferentAttributeJoin::new(dest_attrs_id, *result_attrs_id)
+                                .rows_to_take(left_join_input, &eval_result, &otap_batch)?
+                        }
+                    }
+                    DataScope::Root | DataScope::RootParent(_) => RootAttrsToRootJoin::new()
+                        .rows_to_take(left_join_input, &eval_result, &otap_batch)?,
+                    DataScope::StaticScalar => unreachable!("unexpected array for scalar scope"),
+                };
+
+                let mut values = take(result_values, &vals_take_indices, None)?;
+                if is_any_value_data_type(values.data_type()) {
+                    values = attempt_coerce_value_column_from_any_value_struct_column(&values)?;
+                }
+                if let DataType::Dictionary(_, value_type) = values.data_type() {
+                    values = cast(&values, value_type.as_ref())?;
+                }
+                ColumnarValue::Array(values)
+            };
+
+            updates.push(SerializedAttributeUpdate {
+                existing_key_mask,
+                path,
+                values: aligned_values,
+            });
+        }
+
+        attrs_record_batch = mutate_serialized_attribute_values(&attrs_record_batch, &updates)?;
+        otap_batch.set(attrs_payload_type, attrs_record_batch)?;
+
+        Ok(otap_batch)
+    }
+
     /// Fills in any nulls in the root batch's ID column with newly assigned IDs.
     ///
     /// when we are setting attributes, we must ensure that the record to which the attribute is
@@ -939,6 +1091,18 @@ impl PipelineStage for AssignPipelineStage {
             return Ok(result);
         }
 
+        if let ColumnAccessor::NestedAttribute(attrs_id, _, _) = &self.dest_columns[0] {
+            let mut eval_results = Vec::new();
+            for source in &mut self.sources {
+                let eval_result = source.execute_as_value(&otap_batch, session_context)?;
+                eval_results.push(eval_result);
+            }
+            let result =
+                self.assign_to_nested_attributes(otap_batch, &mut eval_results, *attrs_id)?;
+
+            return Ok(result);
+        }
+
         // Assigning to the root batch.. Unlike attribute assignment this does not currently
         // support bulk assignment so we just evaluate the expressions and update the columns
         // one at a time
@@ -971,6 +1135,11 @@ impl PipelineStage for AssignPipelineStage {
                 ColumnAccessor::Attributes(_, _) => {
                     unreachable!(
                         "attributes assignment should be handled separately before this loop"
+                    )
+                }
+                ColumnAccessor::NestedAttribute(_, _, _) => {
+                    unreachable!(
+                        "nested attributes assignment should be handled separately before this loop"
                     )
                 }
             };
@@ -1322,6 +1491,171 @@ impl PipelineStage for AssignPipelineStage {
     }
 }
 
+struct SerializedAttributeUpdate<'a> {
+    existing_key_mask: BooleanArray,
+    path: &'a [SerializedValuePathElement],
+    values: ColumnarValue,
+}
+
+fn mutate_serialized_attribute_values(
+    attrs_record_batch: &RecordBatch,
+    updates: &[SerializedAttributeUpdate<'_>],
+) -> Result<RecordBatch> {
+    if updates.is_empty() {
+        return Ok(attrs_record_batch.clone());
+    }
+
+    let Some((ser_col_index, ser_field)) = attrs_record_batch
+        .schema_ref()
+        .fields()
+        .find(consts::ATTRIBUTE_SER)
+    else {
+        return Ok(attrs_record_batch.clone());
+    };
+
+    let type_col = attrs_record_batch
+        .column_by_name(consts::ATTRIBUTE_TYPE)
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "attribute record batch missing type column".into(),
+        })?
+        .as_any()
+        .downcast_ref::<UInt8Array>()
+        .ok_or_else(|| Error::ExecutionError {
+            cause: "attribute type column must be UInt8".into(),
+        })?;
+
+    let ser_col = attrs_record_batch.column(ser_col_index);
+    let ser_values = ByteArrayAccessor::try_new(ser_col).map_err(Error::from)?;
+    let mut ser_builder = BinaryArrayBuilder::new(ArrayOptions {
+        optional: true,
+        dictionary_options: Some(DictionaryOptions::dict16()),
+        ..Default::default()
+    });
+    let mut mutation_indices = vec![0; updates.len()];
+    let mut changed_any = false;
+
+    for row in 0..attrs_record_batch.num_rows() {
+        let original = ser_values.slice_at(row);
+        let row_has_updates = updates.iter().any(|update| {
+            update.existing_key_mask.is_valid(row) && update.existing_key_mask.value(row)
+        });
+
+        if !row_has_updates {
+            if let Some(original) = original {
+                ser_builder.append_slice(original);
+            } else {
+                ser_builder.append_null();
+            }
+            continue;
+        }
+
+        let value_type = AttributeValueType::try_from(type_col.value(row)).map_err(|e| {
+            Error::ExecutionError {
+                cause: format!("invalid attribute type {}: {e}", type_col.value(row)),
+            }
+        })?;
+
+        if matches!(
+            value_type,
+            AttributeValueType::Map | AttributeValueType::Slice
+        ) && let Some(original) = original
+        {
+            let mut mutations = Vec::new();
+            for (update_index, update) in updates.iter().enumerate() {
+                if update.existing_key_mask.is_valid(row) && update.existing_key_mask.value(row) {
+                    let mutation_value =
+                        columnar_value_to_cbor(&update.values, mutation_indices[update_index])?;
+                    mutation_indices[update_index] += 1;
+                    mutations.push(SerializedValuePathMutation {
+                        path: update.path,
+                        mutation: SerializedValueMutation::Set(mutation_value),
+                    });
+                }
+            }
+
+            if !mutations.is_empty()
+                && let Some(updated) = mutate_cbor_bytes_many(original, &mutations)?
+            {
+                changed_any = true;
+                ser_builder.append_slice(&updated);
+                continue;
+            }
+        } else {
+            for (update_index, update) in updates.iter().enumerate() {
+                if update.existing_key_mask.is_valid(row) && update.existing_key_mask.value(row) {
+                    mutation_indices[update_index] += 1;
+                }
+            }
+        };
+
+        if let Some(original) = original {
+            ser_builder.append_slice(original);
+        } else {
+            ser_builder.append_null();
+        }
+    }
+
+    if !changed_any {
+        return Ok(attrs_record_batch.clone());
+    }
+
+    let ser_array = ser_builder.finish().ok_or_else(|| Error::ExecutionError {
+        cause: "serialized attribute update produced no ser column".into(),
+    })?;
+    let mut fields = attrs_record_batch.schema_ref().fields.to_vec();
+    fields[ser_col_index] = Arc::new(
+        ser_field
+            .as_ref()
+            .clone()
+            .with_data_type(ser_array.data_type().clone()),
+    );
+
+    let mut columns = attrs_record_batch.columns().to_vec();
+    columns[ser_col_index] = ser_array;
+
+    let schema = Arc::new(
+        Schema::new(fields).with_metadata(attrs_record_batch.schema_ref().metadata().clone()),
+    );
+    RecordBatch::try_new(schema, columns).map_err(Error::from)
+}
+
+fn columnar_value_to_cbor(
+    value: &ColumnarValue,
+    index: usize,
+) -> Result<SerializedAttributeScalarValue> {
+    match value {
+        ColumnarValue::Scalar(scalar) => scalar_value_to_cbor(scalar.clone()),
+        ColumnarValue::Array(array) => {
+            let scalar = ScalarValue::try_from_array(array, index)?;
+            scalar_value_to_cbor(scalar)
+        }
+    }
+}
+
+fn scalar_value_to_cbor(value: ScalarValue) -> Result<SerializedAttributeScalarValue> {
+    if value.is_null() {
+        return Ok(SerializedAttributeScalarValue::Null);
+    }
+
+    match value {
+        ScalarValue::Boolean(Some(value)) => Ok(SerializedAttributeScalarValue::Bool(value)),
+        ScalarValue::Float64(Some(value)) => Ok(SerializedAttributeScalarValue::Float(value)),
+        ScalarValue::Int64(Some(value)) => Ok(SerializedAttributeScalarValue::Integer(value)),
+        ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) => {
+            Ok(SerializedAttributeScalarValue::Text(value))
+        }
+        ScalarValue::Binary(Some(value)) | ScalarValue::LargeBinary(Some(value)) => {
+            Ok(SerializedAttributeScalarValue::Bytes(value))
+        }
+        other => Err(Error::NotYetSupportedError {
+            message: format!(
+                "setting nested serialized attribute path from value type {:?} is not supported",
+                other.data_type()
+            ),
+        }),
+    }
+}
+
 /// Extension implementation used to keep track of the next max ID when the ID column
 /// nulls are filled in when assigning attributes.
 struct NextIdTracker {
@@ -1635,7 +1969,8 @@ fn validate_assign(
                 &source_plan.expr,
             )?;
         }
-        ColumnAccessor::Attributes(dest_attrs_id, _) => {
+        ColumnAccessor::Attributes(dest_attrs_id, _)
+        | ColumnAccessor::NestedAttribute(dest_attrs_id, _, _) => {
             if !can_assign_type(&ExprLogicalType::AnyValue, &source_plan.expr_type) {
                 return Err(Error::InvalidPipelineError {
                     cause: format!(
@@ -2500,6 +2835,54 @@ mod test {
     #[tokio::test]
     async fn test_set_root_column_rejects_invalid_column_during_planning_kql_parser() {
         test_set_root_column_rejects_invalid_column_during_planning::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_root_column_rejects_nested_selector() {
+        let pipeline = OplParser::parse("logs | extend severity_text.foo = \"x\"")
+            .unwrap()
+            .pipeline;
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let planner = PipelinePlanner::new();
+        let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("unsupported nested selector on column severity_text"),
+                    "unexpected error message: {err_msg:?}"
+                )
+            }
+            Ok(_) => {
+                panic!("expected error")
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn test_set_struct_field_rejects_nested_selector() {
+        let pipeline = OplParser::parse("logs | extend resource.schema_url.bar = \"x\"")
+            .unwrap()
+            .pipeline;
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let planner = PipelinePlanner::new();
+        let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains(
+                        "unsupported nested selector on struct field resource.schema_url"
+                    ),
+                    "unexpected error message: {err_msg:?}"
+                )
+            }
+            Ok(_) => {
+                panic!("expected error")
+            }
+        };
     }
 
     async fn test_set_root_invalid_expr_result_type_rejected_at_runtime<P: Parser>() {
@@ -5399,6 +5782,490 @@ mod test {
     #[tokio::test]
     async fn test_upsert_attribute_scalar_kql_parser() {
         test_upsert_attribute_scalar::<KqlParser>().await
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_map_attribute_path() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("existing", AnyValue::new_string("old")),
+                        KeyValue::new(
+                            "child",
+                            AnyValue::new_kvlist(vec![KeyValue::new(
+                                "name",
+                                AnyValue::new_string("before"),
+                            )]),
+                        ),
+                    ]),
+                )])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].child.name = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![
+                    KeyValue::new("existing", AnyValue::new_string("old")),
+                    KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("after"),
+                        )]),
+                    ),
+                ]),
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_rejects_dynamic_bracket_selector() {
+        let pipeline = OplParser::parse("logs | extend attributes[key].child = \"after\"")
+            .unwrap()
+            .pipeline;
+        let session_ctx = Pipeline::create_session_context();
+        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let planner = PipelinePlanner::new();
+
+        let result = planner.plan_stages(&pipeline, &session_ctx, &otap_batch);
+        match result {
+            Err(e) => {
+                let err_msg = e.to_string();
+                assert!(
+                    err_msg.contains("unsupported attributes key"),
+                    "unexpected error message: {err_msg:?}"
+                )
+            }
+            Ok(_) => {
+                panic!("expected error")
+            }
+        };
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_array_attribute_path() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "items",
+                        AnyValue::new_array(vec![AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("before"),
+                        )])]),
+                    )]),
+                )])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].items[0].name = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "items",
+                    AnyValue::new_array(vec![AnyValue::new_kvlist(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("after"),
+                    )])]),
+                )]),
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_multiple_nested_paths_decodes_once_per_row() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![
+                            KeyValue::new("name", AnyValue::new_string("before")),
+                            KeyValue::new("count", AnyValue::new_int(1)),
+                        ]),
+                    )]),
+                )])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].child.name = \"after\", attributes[\"complex\"].child.count = 2";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "child",
+                    AnyValue::new_kvlist(vec![
+                        KeyValue::new("name", AnyValue::new_string("after")),
+                        KeyValue::new("count", AnyValue::new_int(2)),
+                    ]),
+                )]),
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_missing_top_level_key_is_noop() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("source", AnyValue::new_string("value"))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"missing\"].child = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new("source", AnyValue::new_string("value"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_missing_intermediate_path_is_noop() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("before"),
+                        )]),
+                    )]),
+                )])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].missing.name = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "child",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("before"),
+                    )]),
+                )]),
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_from_attribute_rhs() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "complex",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "child",
+                            AnyValue::new_kvlist(vec![KeyValue::new(
+                                "name",
+                                AnyValue::new_string("before"),
+                            )]),
+                        )]),
+                    ),
+                    KeyValue::new("source", AnyValue::new_string("after")),
+                ])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![
+                KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("after"),
+                        )]),
+                    )]),
+                ),
+                KeyValue::new("source", AnyValue::new_string("after")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_from_mixed_attribute_rhs_after_alignment() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "complex",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "child",
+                            AnyValue::new_kvlist(vec![KeyValue::new(
+                                "name",
+                                AnyValue::new_string("before"),
+                            )]),
+                        )]),
+                    ),
+                    KeyValue::new("source", AnyValue::new_string("after")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("source", AnyValue::new_int(7))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let records = &result_logs_data.resource_logs[0].scope_logs[0].log_records;
+        assert_eq!(
+            records[0].attributes,
+            vec![
+                KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("after"),
+                        )]),
+                    )]),
+                ),
+                KeyValue::new("source", AnyValue::new_string("after")),
+            ]
+        );
+        assert_eq!(
+            records[1].attributes,
+            vec![KeyValue::new("source", AnyValue::new_int(7))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_from_mixed_attribute_rhs_errors_when_still_mixed_after_alignment()
+    {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "complex",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "child",
+                            AnyValue::new_kvlist(vec![KeyValue::new(
+                                "name",
+                                AnyValue::new_string("before"),
+                            )]),
+                        )]),
+                    ),
+                    KeyValue::new("source", AnyValue::new_string("after")),
+                ])
+                .finish(),
+            LogRecord::build()
+                .attributes(vec![
+                    KeyValue::new(
+                        "complex",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "child",
+                            AnyValue::new_kvlist(vec![KeyValue::new(
+                                "name",
+                                AnyValue::new_string("before"),
+                            )]),
+                        )]),
+                    ),
+                    KeyValue::new("source", AnyValue::new_int(7)),
+                ])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].child.name = attributes[\"source\"]";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let err = pipeline.execute(input).await.expect_err("mixed RHS errors");
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("setting nested serialized attribute path from value type Struct"),
+            "unexpected error message: {err_msg:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_negative_int_round_trips_to_otlp() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new("count", AnyValue::new_int(1))]),
+                )])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"complex\"].count = 0 - 1";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new("count", AnyValue::new_int(-1))]),
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_ignores_bytes_attribute() {
+        let logs_data = to_logs_data(vec![
+            LogRecord::build()
+                .attributes(vec![KeyValue::new("raw", AnyValue::new_bytes(b"before"))])
+                .finish(),
+        ]);
+
+        let query = "logs | extend attributes[\"raw\"].name = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let log = &result_logs_data.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            log.attributes,
+            vec![KeyValue::new("raw", AnyValue::new_bytes(b"before"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_set_nested_path_on_resource_attribute() {
+        let logs_data = LogsData::new(vec![ResourceLogs::new(
+            Resource::build()
+                .attributes(vec![KeyValue::new(
+                    "complex",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "child",
+                        AnyValue::new_kvlist(vec![KeyValue::new(
+                            "name",
+                            AnyValue::new_string("before"),
+                        )]),
+                    )]),
+                )])
+                .finish(),
+            vec![ScopeLogs::new(
+                InstrumentationScope::default(),
+                vec![LogRecord::build().finish()],
+            )],
+        )]);
+
+        let query = "logs | set resource.attributes[\"complex\"].child.name = \"after\"";
+        let pipeline_expr = OplParser::parse(query).unwrap().pipeline;
+        let mut pipeline = Pipeline::new(pipeline_expr);
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+        let result = pipeline.execute(input).await.unwrap();
+
+        let OtlpProtoMessage::Logs(result_logs_data) = otap_to_otlp(&result) else {
+            panic!("invalid signal type");
+        };
+        let resource = result_logs_data.resource_logs[0].resource.as_ref().unwrap();
+        assert_eq!(
+            resource.attributes,
+            vec![KeyValue::new(
+                "complex",
+                AnyValue::new_kvlist(vec![KeyValue::new(
+                    "child",
+                    AnyValue::new_kvlist(vec![KeyValue::new(
+                        "name",
+                        AnyValue::new_string("after"),
+                    )]),
+                )]),
+            )]
+        );
     }
 
     async fn test_upsert_multi_attribute_scalar<P: Parser>() {

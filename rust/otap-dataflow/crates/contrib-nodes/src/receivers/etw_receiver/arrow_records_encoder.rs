@@ -193,8 +193,8 @@ impl EtwArrowRecordsBuilder {
         self.logs.append_id(Some(self.curr_log_id));
 
         // Event name: prefer the TDH event name (e.g. "AppStarted") over
-        // the numeric event ID.  Fall back to "etw.<event_id>" (e.g.
-        // "etw.42") for manifest-based events where TDH doesn't provide a name.
+        // the numeric event ID.  Fall back to "etw.<event_id>" for
+        // manifest-based events where TDH doesn't provide a name.
         if event.event_name.is_empty() {
             let fallback = format!("etw.{}", event.event_id);
             self.logs.append_event_name(Some(fallback.as_bytes()));
