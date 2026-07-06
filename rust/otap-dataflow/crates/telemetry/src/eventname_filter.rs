@@ -148,6 +148,44 @@ impl EventNameFilter {
         let mode = Arc::new(ArcSwap::from_pointee(Mode::AllowAll));
         (Self { mode: mode.clone() }, EventNameFilterHandle { mode })
     }
+
+    /// Builds a filter fixed to `mode`, with no external handle.
+    fn from_mode(mode: Mode) -> Self {
+        Self {
+            mode: Arc::new(ArcSwap::from_pointee(mode)),
+        }
+    }
+
+    /// A static filter that lets every EventName pass. Installing it is a no-op
+    /// relative to having no EventName filter at all.
+    #[must_use]
+    pub fn allow_all() -> Self {
+        Self::from_mode(Mode::AllowAll)
+    }
+
+    /// A static filter that passes only EventNames matching one of `specs`.
+    ///
+    /// An empty set drops every internal-telemetry event. A spec ending in `*`
+    /// is a prefix match.
+    #[must_use]
+    pub fn allowing<I, S>(specs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::from_mode(Mode::Allow(Patterns::compile(specs)))
+    }
+
+    /// A static filter that passes every EventName except those matching one of
+    /// `specs`. A spec ending in `*` is a prefix match.
+    #[must_use]
+    pub fn denying<I, S>(specs: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Self::from_mode(Mode::Deny(Patterns::compile(specs)))
+    }
 }
 
 impl EventNameFilterHandle {
