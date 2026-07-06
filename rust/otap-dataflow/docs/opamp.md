@@ -155,6 +155,13 @@ engine:
             # timeout for pipeline delete - Optional (default = 30)
             delete_timeout_secs: 10
 
+            # Whether to delete any pipelines that are missing from the config
+            # received from the server. When `true`, any currently running 
+            # pipeline not in the received config is drained/deleted. When 
+            # `false` received remote configs are treated as additive/partial
+            # updates.
+            delete_missing: true
+
           # Manually specify an instance_uuid.
           #
           # Optional - if not provided, a UUID v7 will be generated
