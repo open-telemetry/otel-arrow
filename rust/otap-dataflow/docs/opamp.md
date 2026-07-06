@@ -1,7 +1,8 @@
 # OpAMP Controller Extension
 
 This document describes the mechanism through which dataflow engine can be
-configured via an embedded OpAMP Agent, implemented as a controller extension.
+configured via an embedded [OpAMP](https://opentelemetry.io/docs/specs/opamp/) 
+Agent, implemented as a controller extension.
 
 ## Problem
 
