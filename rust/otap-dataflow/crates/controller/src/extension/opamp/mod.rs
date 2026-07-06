@@ -270,7 +270,7 @@ async fn connect_websocket(
             // backoff and retry connection
             Err(e) => {
                 let retry_in = backoff.next_delay();
-                otel_error!(
+                otel_warn!(
                     "opamp.controller_extension.ws_connect.error",
                     message = "Error initiating websocket",
                     error =? e,
