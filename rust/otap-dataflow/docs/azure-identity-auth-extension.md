@@ -121,10 +121,9 @@ methods:
 /// A per-consumer subscription to token refreshes. Boxed to hide the concrete
 /// stream type so providers can back it differently (e.g. a `watch` channel or
 /// an `unfold`) without changing the signature.
-pub type TokenStream =
-    Pin<Box<dyn Stream<Item = Result<BearerToken, CapabilityError>> + 'static>>;
+pub type TokenStream = Pin<Box<dyn Stream<Item = BearerToken> + 'static>>;
 
-#[async_trait]
+#[capability(name = "bearer_token_provider", description = "...")]
 pub trait BearerTokenProvider {
     /// Return the current valid token. Fast path reads the cache; slow path
     /// performs a single credential call on a cache miss.
@@ -137,9 +136,10 @@ pub trait BearerTokenProvider {
 ```
 
 `BearerToken` is a hand-written shared data type carrying the secret token
-string and an optional `expires_on: Instant`. Errors are surfaced as
-`CapabilityError`, which carries the `(extension, capability)` identity plus the
-underlying source error.
+and an optional `expires_on: Instant`. Refresh failures are surfaced only via
+`get_token()`, which returns a `CapabilityError` carrying the
+`(extension, capability)` identity plus the underlying source error; the
+stream itself carries only successfully published tokens.
 
 The `TokenStream` alias omits a `Send` bound: the subscription is always
 consumed on the core that created it (thread-per-core), so it need not be `Send`.
