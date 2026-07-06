@@ -370,7 +370,6 @@ async fn run_websocket_request_loop(
                             Err(e) => {
                                 otel_error!(
                                     "opamp.controller_extension.receive_message.error",
-                                    message = "Error received while awaiting message",
                                     error =? e
                                 );
                                 return stats
