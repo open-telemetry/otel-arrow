@@ -588,7 +588,3 @@ However, we can still imagine a world where there are some cross-cutting
 primitives that _most_ OpAMP server implementers will need to build. This
 includes an HTTP server, possibly with websocket enabled, cert management,
 instance_uid and other state management, etc.
-
-We could consider making this easier by providing an SDK in rust that abstracts
-away all these details and exposes a higher level API at the level of agent
-identity, DFE config.
