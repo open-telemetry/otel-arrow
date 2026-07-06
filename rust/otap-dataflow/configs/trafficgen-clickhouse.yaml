@@ -18,7 +18,8 @@ groups:
               traffic_config:
                 max_batch_size: 1000
                 signals_per_second: 30
-                log_weight: 100
+                log_weight: 50
+                trace_weight: 50
               registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
           exporter:
             type: "exporter:clickhouse"
