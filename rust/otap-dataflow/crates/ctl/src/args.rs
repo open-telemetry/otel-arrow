@@ -87,6 +87,32 @@ impl Cli {
         Self::from_arg_matches_with_effective_defaults(&matches)
     }
 
+    /// Return a cloned `clap::Command` with the given [`Branding`] applied.
+    ///
+    /// The standalone `dfctl` binary uses [`Cli::command()`] (compile-time
+    /// [`crate::BIN_NAME`]); embedders can use this to produce a command whose
+    /// `--help`, `--version`, and error messages carry their own binary name.
+    #[must_use]
+    pub fn command_branded(branding: &crate::Branding) -> clap::Command {
+        let mut cmd = Self::command();
+        cmd = cmd.name(branding.bin_name);
+        cmd
+    }
+
+    /// Parse arguments through a command built with [`Cli::command_branded`].
+    pub fn try_parse_from_branded<I, T>(
+        itr: I,
+        branding: &crate::Branding,
+    ) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        Self::command_branded(branding)
+            .try_get_matches_from(itr)
+            .and_then(|m| Self::from_arg_matches(&m))
+    }
+
     fn from_arg_matches_with_effective_defaults(matches: &ArgMatches) -> Result<Self, clap::Error> {
         let error_format_is_default =
             matches.value_source("error_format") == Some(ValueSource::DefaultValue);
@@ -1527,5 +1553,40 @@ mod tests {
             }
             other => panic!("unexpected command: {other:?}"),
         }
+    }
+
+    /// Scenario: a branded command carries the embedder's binary name.
+    /// Guarantees: `command_branded` produces a clap `Command` whose `--help`
+    /// and `--version` output is named for the embedder rather than `dfctl`.
+    #[test]
+    fn command_branded_uses_embedder_name() {
+        use crate::Branding;
+        let branding = Branding {
+            bin_name: "embedder",
+            schema_version: "embedder/v1",
+        };
+        let cmd = Cli::command_branded(&branding);
+        assert_eq!(cmd.get_name(), "embedder");
+    }
+
+    /// Scenario: parse errors under a branded command carry the embedder's
+    /// binary name in the error message.
+    /// Guarantees: the embedder name appears in the clap error output so
+    /// operators see their own tool name in diagnostics.
+    #[test]
+    fn try_parse_from_branded_error_uses_bin_name() {
+        use crate::Branding;
+        let branding = Branding {
+            bin_name: "embedder",
+            schema_version: "embedder/v1",
+        };
+        // Use a bogus unrecognized subcommand to provoke a clap parse error.
+        let err = Cli::try_parse_from_branded(["embedder", "__nonexistent__"], &branding)
+            .expect_err("nonexistent subcommand should fail parsing");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("embedder"),
+            "parse error should name the embedder binary, got: {rendered}"
+        );
     }
 }

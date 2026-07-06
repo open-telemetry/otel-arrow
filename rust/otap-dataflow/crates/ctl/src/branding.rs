@@ -15,6 +15,10 @@
 
 use std::sync::OnceLock;
 
+/// The single `dfctl` default binary-name literal shared by the standalone
+/// `BIN_NAME` constant and [`Branding::default`].
+pub(crate) const DEFAULT_BIN_NAME: &str = "dfctl";
+
 /// Identity strings used in the CLI's user-visible and machine-readable output.
 ///
 /// Defaults reproduce the standalone `dfctl` identity. The fields are
@@ -22,8 +26,11 @@ use std::sync::OnceLock;
 /// process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Branding {
-    /// Installed command name used in help, completions, and generated command
-    /// metadata (e.g. `dfctl`).
+    /// Installed command name used in help, completions, shell completions,
+    /// generated command metadata, and diagnostics (e.g. `dfctl`). Use
+    /// [`crate::Cli::command_branded`] to produce a clap `Command` with your
+    /// own name before parsing, and [`crate::run_with_terminal_and_diagnostics_branded`]
+    /// to install the branding for runtime output.
     pub bin_name: &'static str,
     /// Schema-version identifier stamped into machine-readable output envelopes
     /// (e.g. `dfctl/v1`).
@@ -33,7 +40,7 @@ pub struct Branding {
 impl Default for Branding {
     fn default() -> Self {
         Self {
-            bin_name: "dfctl",
+            bin_name: DEFAULT_BIN_NAME,
             schema_version: "dfctl/v1",
         }
     }

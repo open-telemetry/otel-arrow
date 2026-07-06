@@ -68,3 +68,46 @@ async fn branded_verbose_diagnostics_use_bin_name() {
         "verbose diagnostics should be prefixed with the embedder binary name, got: {diagnostics:?}"
     );
 }
+
+#[tokio::test]
+async fn branded_catalog_uses_bin_name() {
+    // `commands --output json` is a connection-free catalog dump.  Under a
+    // non-default branding, the catalog's `binary` field and command IDs must
+    // carry the embedder's name.
+    let cli = Cli::try_parse_from(["embedder", "commands", "--output", "json"])
+        .expect("parse commands invocation");
+
+    let branding = Branding {
+        bin_name: "embedder",
+        schema_version: "embedder/v1",
+    };
+
+    let mut stdout: Vec<u8> = Vec::new();
+    let mut stderr: Vec<u8> = Vec::new();
+    run_with_terminal_and_diagnostics_branded(cli, &mut stdout, false, &mut stderr, branding)
+        .await
+        .expect("branded catalog run should succeed");
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&stdout).expect("output should be valid JSON");
+    assert_eq!(
+        value
+            .get("binary")
+            .and_then(|v| v.as_str())
+            .expect("binary field present"),
+        "embedder",
+        "catalog binary field should use the embedder name"
+    );
+    let commands = value
+        .get("commands")
+        .and_then(|v| v.as_array())
+        .expect("commands array present");
+    let first_id = commands[0]
+        .get("id")
+        .and_then(|v| v.as_str())
+        .expect("first command id");
+    assert!(
+        first_id.starts_with("embedder."),
+        "command id should be prefixed with the embedder name, got: {first_id}"
+    );
+}

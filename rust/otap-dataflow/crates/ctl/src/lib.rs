@@ -25,9 +25,14 @@ mod ui;
 pub use args::{Cli, ErrorFormat};
 pub use branding::Branding;
 
-/// Installed command name used in help, completions, generated command
-/// metadata, diagnostics, and TUI command hints.
-pub const BIN_NAME: &str = "dfctl";
+/// Default binary name for the standalone `dfctl` CLI.  Used by the TUI and
+/// by clap for `--help` and `--version`; embedders should instead build a
+/// branded parse command via [`crate::Cli::command_branded`] and install
+/// [`Branding`] at runtime via
+/// [`crate::run_with_terminal_and_diagnostics_branded`].  Internal code paths
+/// that route through the active branding read
+/// [`crate::branding::active`] rather than this constant.
+pub const BIN_NAME: &str = branding::DEFAULT_BIN_NAME;
 
 pub(crate) use commands::fetch::{fetch_logs, fetch_pipeline_describe};
 pub(crate) use commands::output::build_bundle_metadata;
