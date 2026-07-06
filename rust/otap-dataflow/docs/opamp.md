@@ -530,6 +530,8 @@ The controller extension implementation should produce metrics:
   mismatch, invalid proto encoding, etc.)
 - Count remote configs successfully reconciled
 - Count remote configs unsuccessfully reconciled
+- Count of times WebSocket connects/reconnects
+- Count of instances where WebSocket was unexpectedly closed by the server.
 
 ## Future Work
 
