@@ -112,10 +112,10 @@ engine:
             key_file: "./my-certs/client.key"
 
 
-          # Configuration for heart-beat timing.
+          # Configuration for heartbeat timing.
           #
           # Optional (default = 30s)
-          heart_beat_interval: "10s"
+          heartbeat_interval: "10s"
 
           # Options for configuring exponential backoff for initial Websocket
           # connection.
