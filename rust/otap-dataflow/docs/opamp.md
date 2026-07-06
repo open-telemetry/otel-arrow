@@ -371,7 +371,7 @@ which contains a `PipelinePhase`.
 The remote config status will be derived from the snapshot using the following
 rules:
 
-- If any instance of any pipeline has phase is `Pending`, `Starting`,
+- If any instance of a pipeline has phase `Pending`, `Starting`,
   `Draining`, `Updating`, `RollingBack` or `Deleting` the remote config status
   will be `Applying`
 - Otherwise, if any instance of any pipeline has phase `Failed` or `Rejected`,
