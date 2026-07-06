@@ -86,97 +86,98 @@ The URN used to identify the controller extension will be
 # example DFE config
 engine:
   controller:
-    opamp:
-      type: urn:otel:controller_extension:opamp
-      config:
-        # The URL of the OpAMP server, including the scheme and path.
-        #
-        # The scheme will be used to determine whether communication
-        # is done over WebSocket or HTTP. E.g. use "ws://..." for websocket
-        # and http:// for http.
-        #
-        # Required
-        endpoint: ws://127.0.0.1:4320/v1/opamp
-
-        # mTLS configuration
-        #
-        # Optional: if not provided, messages will be sent as plaintext
-        tls:
-          # Trust settings for verifying the server certificate
-          ca_file: "./my-certs/ca.crt"
-          include_system_ca_certs_pool: false
-
-          # Client identity for mTLS (these make it mTLS instead of just TLS)
-          cert_file: "./my-certs/client.crt"
-          key_file: "./my-certs/client.key"
-
-
-        # Configuration for heart-beat timing.
-        #
-        # Optional (default = 30s)
-        heart_beat_interval: "10s"
-
-        # Options for configuring exponential backoff for initial Websocket
-        # connection.
-        #
-        # Each exponential backoff computed as
-        # min(last_backoff * factor, max) + jitter
-        #
-        # Optional
-        connect_retry:
-          # initial backoff
+    extensions:
+      opamp:
+        type: urn:otel:controller_extension:opamp
+        config:
+          # The URL of the OpAMP server, including the scheme and path.
           #
-          # Optional (default = 250ms)
-          initial: 1s
+          # The scheme will be used to determine whether communication
+          # is done over WebSocket or HTTP. E.g. use "ws://..." for websocket
+          # and http:// for http.
+          #
+          # Required
+          endpoint: ws://127.0.0.1:4320/v1/opamp
 
-          # maximum backoff
+          # mTLS configuration
+          #
+          # Optional: if not provided, messages will be sent as plaintext
+          tls:
+            # Trust settings for verifying the server certificate
+            ca_file: "./my-certs/ca.crt"
+            include_system_ca_certs_pool: false
+
+            # Client identity for mTLS (these make it mTLS instead of just TLS)
+            cert_file: "./my-certs/client.crt"
+            key_file: "./my-certs/client.key"
+
+
+          # Configuration for heart-beat timing.
           #
           # Optional (default = 30s)
-          max: 30s
+          heart_beat_interval: "10s"
 
-          # exponential backoff increase factor
+          # Options for configuring exponential backoff for initial Websocket
+          # connection.
           #
-          # Optional (default = 2.0)
-          factor: 2.0
+          # Each exponential backoff computed as
+          # min(last_backoff * factor, max) + jitter
+          #
+          # Optional
+          connect_retry:
+            # initial backoff
+            #
+            # Optional (default = 250ms)
+            initial: 1s
 
-        # Options for configuring exponential backoff retry for requests.
-        #
-        # Used in the event that the initial request to the server fails or
-        # when the server responds with an error response type Unavailable but
-        # does not specify retry_info in the response details
-        #
-        # Optional
-        request_retry: {
-          #  ... same exponential retry options as connect_retry above
-        }
+            # maximum backoff
+            #
+            # Optional (default = 30s)
+            max: 30s
 
-        # Options for engine reconciliation
-        reconcile:
-          # timeout for reconcile - Optional (default = 30)
-          step_timeout_secs: 10
+            # exponential backoff increase factor
+            #
+            # Optional (default = 2.0)
+            factor: 2.0
 
-          # timeout for pipeline drain - Optional (default = 30)
-          drain_timeout_secs: 10
+          # Options for configuring exponential backoff retry for requests.
+          #
+          # Used in the event that the initial request to the server fails or
+          # when the server responds with an error response type Unavailable but
+          # does not specify retry_info in the response details
+          #
+          # Optional
+          request_retry: {
+            #  ... same exponential retry options as connect_retry above
+          }
 
-          # timeout for pipeline delete - Optional (default = 30)
-          delete_timeout_secs: 10
+          # Options for engine reconciliation
+          reconcile:
+            # timeout for reconcile - Optional (default = 30)
+            step_timeout_secs: 10
 
-        # Manually specify an instance_uuid.
-        #
-        # Optional - if not provided, a UUID v7 will be generated
-        instance_uuid: "..."
+            # timeout for pipeline drain - Optional (default = 30)
+            drain_timeout_secs: 10
 
-        # Attributes describing agent
-        #
-        # Optional
-        agent_description:
-          identifying_attributes:
-            "attr.key": "attr value"
-            # ...
+            # timeout for pipeline delete - Optional (default = 30)
+            delete_timeout_secs: 10
 
-          non_identifying_attributes:
-            "attr.key2": "attr value"
-            # ...
+          # Manually specify an instance_uuid.
+          #
+          # Optional - if not provided, a UUID v7 will be generated
+          instance_uuid: "..."
+
+          # Attributes describing agent
+          #
+          # Optional
+          agent_description:
+            identifying_attributes:
+              "attr.key": "attr value"
+              # ...
+
+            non_identifying_attributes:
+              "attr.key2": "attr value"
+              # ...
 ```
 
 ## Protocol Implementation
