@@ -300,7 +300,7 @@ not be set on the `AgentToServer` messages.
 
 The server should supply the engine config as JSON, embedded within the
 `ServerToAgent.remote_config.config.config_map["desired_state"]` which contains
-an  `AgentConfigFile` message.
+an `AgentConfigFile` message.
 
 The `body` of the message should contain the JSON serialized
 `otap_df_config::engine::OtelDataflowSpec` and the `content_type` field should
