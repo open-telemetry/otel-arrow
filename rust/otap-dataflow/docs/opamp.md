@@ -496,15 +496,15 @@ will use the following rules:
 The implementation will advertise a custom capability representing its ability
 to provide the full configuration status via a custom message.
 
-Proposed capability FQDN: `io.open-telemetry.otap-dfe.pipeline-status/v1`.
+Proposed capability FQDN: `io.open-telemetry.arrow-dfe.pipeline-status/v1`.
 
 Custom message example:
 
 ```rs
 AgentToServer {
-  capabilities: ["io.open-telemetry.otap-dfe.pipeline-status/v1"],
+  capabilities: ["io.open-telemetry.arrow-dfe.pipeline-status/v1"],
   custom_message: CustomMessage {
-    capability: "io.open-telemetry.otap-dfe.pipeline-status/v1",
+    capability: "io.open-telemetry.arrow-dfe.pipeline-status/v1",
     r#type: "report",
     data: [ ... ]
   }
