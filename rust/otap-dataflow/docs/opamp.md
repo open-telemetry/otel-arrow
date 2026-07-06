@@ -420,7 +420,7 @@ for this purpose which contains high-level information about the applied remote
 config.
 
 Before receiving any configuration from a remote server, the agent will always
-set the status to `APPLYING`.
+set the status to `UNSET`.
 
 Otherwise, the status will be derived from the pipeline status snapshot
 returned by the control plane. Note, this snapshot contains a `PipelineStatus`
