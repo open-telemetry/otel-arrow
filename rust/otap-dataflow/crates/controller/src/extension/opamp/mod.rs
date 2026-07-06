@@ -113,8 +113,8 @@ fn start(
 
 /// State of session between OpAMP Agent (this client) and control planes OpAMP server
 struct SessionState {
-    /// OpAMP instance UID. This will be initialized from the K8s Pod's UID. If this hasn't
-    /// been passed in, or the passed value is somehow invalid, we'll produce an error here.
+    // The OpAMP Agent's instance_uid. This will be initialized from config (if set), otherwise
+    // a UUIDv7 will be generated.
     instance_uid: [u8; 16],
 
     /// OpAMP sequence number. Increments by one for each new message sent to server and used
@@ -150,7 +150,7 @@ impl SessionState {
     fn try_new(config: &Config) -> Result<Self, Error> {
         let instance_uid = match &config.instance_uid {
             Some(instance_uid) => {
-                // safety: this was validated in validatE_config
+                // safety: this was validated in validate_config
                 Uuid::parse_str(instance_uid).expect("valid UUID")
             }
             None => Uuid::now_v7(),
