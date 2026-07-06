@@ -212,6 +212,8 @@ full state, including the following fields:
   - Reports Health
   - Reports Remote Config
   - Reports Heartbeat
+  - Accepts Remote Config
+  - Accepts Restart Command
 - `health` - see section below on server health
 - `flags` - `Unset`
 - `custom_capabilities` - list capability to send full state as custom message
