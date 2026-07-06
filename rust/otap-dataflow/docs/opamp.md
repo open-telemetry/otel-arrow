@@ -6,17 +6,9 @@ Agent, implemented as a controller extension.
 
 ## Problem
 
-As the machinations of those desiring to control telemetry flow become more
-sophisticated, the concept of building some fleet management becomes
-increasingly appealing.
-
-System designers, probably, will wish to implement their own remote control
-plane without having to design, from scratch, a new protocol for sending
-configuration or receiving status.
-
-OpAMP provides such a protocol, and the solution to this problem will be to
-add the capability for the dataflow engine to act as an OpAMP agent, receiving
-configuration from some remote server while emitting its state and health.
+The OpAMP protocol is used in the OpenTelemetry ecosystem for fleet management.
+As members of the OpenTelemetry ecosystem, it is sensible to add the capability
+to Otel Arrow Dataflow Engine to be configured using this management protocol.
 
 ## Background
 
