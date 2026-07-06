@@ -395,11 +395,12 @@ message with a `remote_config_status` containing a `FAILED` status.
 
 If deserialization of the new remote_config succeeds, the agent will immediately
 reply to the server with an `AgentToServer` message with a `remote_config_status`
-containing an `APPLYING` status, and it will then use the DFE `ControlPlane` to
-reconcile the engine config.
+containing an `APPLYING` status. This message should be sent before using the DFE 
+`ControlPlane` to reconcile the engine config.
 
-`ControlPlane::reconcile_engine_config` also takes as arguments various timeouts,
-which will be exposed as configuration on the controller extension.
+The agent will then call `ControlPlane::reconcile_engine_config` which takes as 
+arguments various timeouts and options which will be exposed as configuration
+on the controller extension.
 
 When this function returns, the agent will use the
 `Result<EngineConfigReconcileStatus>` to generate another `AgentToServer` message
