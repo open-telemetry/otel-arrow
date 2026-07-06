@@ -250,6 +250,48 @@ it should handle:
 In any case where a message is ignored (especially in error cases), appropriate
 telemetry should be emitted.
 
+#### Error Handling
+
+When errors arise during the exchange of messages, there are three categories 
+of errors and ways in which they should be handled
+- ignorable errors
+- notifiable errors
+- session fatal errors
+
+When the error is ignorable, the agent may emit appropriate telemetry but will
+continue receiving messages on the same connection.
+
+Notifiable errors generally occur when the server sends some invalid/
+unprocessable configuration. The agent should send an `AgentToServer` message
+to the server with `remote_config_status.status` of `Failed` with an 
+`error_message` explaining why the message could not be handled as well as the
+config hash.
+
+For session fatal errors, the client should disconnect backoff, retry connecting,
+and commence exchanging messages by reporting its full state (see section above
+on Initial Message for what to include). In these cases, the client will not reset
+the sequence_num to 0.
+
+The following errors are considered ignorable:
+- The response contains an `instance_uid` that does not match the agent's 
+  instance uid.
+- `ServerToAgent` messages containing `error_response.type` of anything other
+  than `Unavailable`.
+
+Notifiable errors include:
+- The client receives a valid `ServerToAgent` message, but the remote_config
+  did not contain the config at the expected key, the config is not encoded
+  in a supported format (e.g. `application/json`), or the config could not be
+  decoded as the format identified in the config file content type.
+
+All other errors are considered session fatal including:
+- TCP/http errors, including non-200 HTTP responses and unexpected closure of
+  TCP connection
+- The client has received a message, but it has invalid protobuf encoding
+- The client has received a WebSocket message, but the message type is not
+  Binary (Opcode 0x2).
+
+
 ##### Send periodic heartbeats
 
 The client should send periodic heartbeats to the server at regular intervals.
@@ -265,11 +307,7 @@ These should contain:
   below on Status Resolution)
 - `custom_message` - full pipeline status from status snapshot
 
-#### Error Handling
 
-On TCP Errors or HTTP errors, the client should backoff, retry connecting, and
-commence exchanging messages by reporting its full state (see section above on
-Initial Message for what to include).
 
 ### Agent Identity
 
