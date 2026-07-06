@@ -296,7 +296,7 @@ All other errors are considered session fatal including:
 
 The client should send periodic heartbeats to the server at regular intervals.
 
-These should contain:
+These should always contain:
 
 - `instance_uid`
 - `sequence_num`
@@ -304,10 +304,14 @@ These should contain:
 - `health` - computed from current pipeline status (see section below on
   Health Resolution).
 - `remote_config_status` - computed from current pipeline status (see section
-  below on Status Resolution)
+  below on Status Resolution), including the last applied config hash.
 - `custom_message` - full pipeline status from status snapshot
 
-
+Note: the heartbeat message should carry the `remote_config_status` and the
+`custom_message` with the status snapshot even when there is no change to the
+applied configuration. This gives the server periodic confirmation that the
+agent is still running some configuration version alongside simple
+confirmation that the server is alive.
 
 ### Agent Identity
 
