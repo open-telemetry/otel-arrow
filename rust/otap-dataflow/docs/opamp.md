@@ -117,7 +117,7 @@ engine:
           # Optional (default = 30s)
           heartbeat_interval: "10s"
 
-          # Options for configuring exponential backoff for initial Websocket
+          # Options for configuring exponential backoff for initial WebSocket
           # connection.
           #
           # Each exponential backoff computed as
