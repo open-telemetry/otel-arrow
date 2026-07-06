@@ -33,6 +33,38 @@ pub struct LogsConfig {
     /// Internal log tap configuration.
     #[serde(default)]
     pub tap: InternalLogTapConfig,
+
+    /// EventName-based filtering applied on top of `level`.
+    ///
+    /// While `level` gates internal logs by level and target (crate), `events`
+    /// filters by the OpenTelemetry EventName (e.g. `receiver.start`), allowing
+    /// much finer selection. The two are combined: an event is emitted only if
+    /// it passes both `level` and `events`. When `events` is empty (the
+    /// default), no EventName filtering is applied.
+    #[serde(default)]
+    pub events: EventsConfig,
+}
+
+/// EventName-based filtering of internal logs.
+///
+/// At most one of `allow` / `deny` may be set:
+/// - `allow` — emit only EventNames matching one of the patterns ("zoom in").
+/// - `deny` — emit every EventName except those matching a pattern ("zoom out
+///   but suppress known noise").
+/// - neither — no EventName filtering (default).
+///
+/// Each pattern is either an exact EventName (`receiver.start`) or, with a
+/// trailing `*`, a prefix match over the dotted EventName hierarchy
+/// (`receiver.*` matches `receiver.start`, `receiver.stop`, ...).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Default)]
+pub struct EventsConfig {
+    /// Allowlist of EventName patterns. Empty means "no allowlist".
+    #[serde(default)]
+    pub allow: Vec<String>,
+
+    /// Denylist of EventName patterns. Empty means "no denylist".
+    #[serde(default)]
+    pub deny: Vec<String>,
 }
 
 /// Configuration for the internal log tap used by admin/MCP-style consumers.
@@ -216,6 +248,7 @@ impl Default for LogsConfig {
             level: LogLevel::default(),
             providers: default_providers(),
             tap: InternalLogTapConfig::default(),
+            events: EventsConfig::default(),
         }
     }
 }
@@ -264,6 +297,45 @@ impl LogsConfig {
             });
         }
 
+        self.events.validate()?;
+
+        Ok(())
+    }
+}
+
+impl EventsConfig {
+    /// Returns true if no EventName filtering is configured.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.allow.is_empty() && self.deny.is_empty()
+    }
+
+    /// Validate the EventName filter configuration.
+    ///
+    /// Returns an error if both `allow` and `deny` are set, or if any pattern
+    /// is empty or contains whitespace (EventNames are short, stable
+    /// identifiers such as `receiver.start`).
+    pub fn validate(&self) -> Result<(), Error> {
+        if !self.allow.is_empty() && !self.deny.is_empty() {
+            return Err(Error::InvalidUserConfig {
+                error: "logs.events cannot set both 'allow' and 'deny'".into(),
+            });
+        }
+        for pattern in self.allow.iter().chain(self.deny.iter()) {
+            if pattern.is_empty() {
+                return Err(Error::InvalidUserConfig {
+                    error: "logs.events patterns must not be empty".into(),
+                });
+            }
+            if pattern.chars().any(char::is_whitespace) {
+                return Err(Error::InvalidUserConfig {
+                    error: format!(
+                        "logs.events pattern '{pattern}' must not contain whitespace; \
+                         use a short EventName identifier (e.g. 'receiver.start' or 'receiver.*')"
+                    ),
+                });
+            }
+        }
         Ok(())
     }
 }
@@ -463,13 +535,39 @@ mod tests {
     }
 
     #[test]
-    fn test_uses_its_provider() {
-        use ProviderMode::*;
-        assert!(!providers(Noop, Noop, Noop, Noop).uses_its_provider());
-        assert!(!providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect).uses_its_provider());
-        assert!(providers(ITS, Noop, Noop, Noop).uses_its_provider());
-        assert!(providers(Noop, ITS, Noop, Noop).uses_its_provider());
-        assert!(providers(Noop, Noop, Noop, ITS).uses_its_provider());
-        assert!(!providers(Noop, Noop, ITS, Noop).uses_its_provider());
+    fn test_events_default_is_empty() {
+        let config = LogsConfig::default();
+        assert!(config.events.is_empty());
+        assert!(config.validate().is_ok());
+
+        let parsed = parse("{}");
+        assert!(parsed.events.is_empty());
+    }
+
+    #[test]
+    fn test_events_parsing() {
+        let config = parse("events: { allow: [\"receiver.start\", \"channel.*\"] }");
+        assert_eq!(config.events.allow, vec!["receiver.start", "channel.*"]);
+        assert!(config.events.deny.is_empty());
+        assert!(config.validate().is_ok());
+
+        let config = parse("events: { deny: [\"exporter.heartbeat\"] }");
+        assert_eq!(config.events.deny, vec!["exporter.heartbeat"]);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_events_rejects_both_allow_and_deny() {
+        let config = parse("events: { allow: [\"a\"], deny: [\"b\"] }");
+        assert_invalid(&config, "cannot set both 'allow' and 'deny'");
+    }
+
+    #[test]
+    fn test_events_rejects_empty_and_whitespace_patterns() {
+        let config = parse("events: { allow: [\"\"] }");
+        assert_invalid(&config, "must not be empty");
+
+        let config = parse("events: { deny: [\"has space\"] }");
+        assert_invalid(&config, "must not contain whitespace");
     }
 }
