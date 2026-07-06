@@ -92,7 +92,7 @@ This proposal uses those primitives to express a NUMA-local,
 round-robin-within-node policy that the kernel's built-in hash cannot.
 
 In this design, the selector is not a sidecar or separate userspace process. It
-is a small eBPF program loaded into the kernel by `df_engine` at startup and
+is a small eBPF program loaded into the kernel by df-engine at startup and
 attached to each eligible `SO_REUSEPORT` socket group. Linux invokes it whenever
 it needs to choose which socket in that group should receive a new TCP
 connection or UDP datagram.
@@ -101,14 +101,14 @@ connection or UDP datagram.
 flowchart TD
     Clients[Clients] --> Kernel[Linux kernel]
     Kernel --> Group["SO_REUSEPORT group<br/>same IP:port"]
-    Group --> Selector["eBPF sk_reuseport selector<br/>loaded by df_engine"]
+    Group --> Selector["eBPF sk_reuseport selector<br/>loaded by df-engine"]
     Selector --> R0["Receiver socket<br/>core 0 / NUMA 0"]
     Selector --> R1["Receiver socket<br/>core 1 / NUMA 0"]
     Selector --> R8["Receiver socket<br/>core 8 / NUMA 1"]
     Selector --> R9["Receiver socket<br/>core 9 / NUMA 1"]
 ```
 
-In Docker or Kubernetes, `df_engine` still loads the selector into the host
+In Docker or Kubernetes, df-engine still loads the selector into the host
 kernel from inside the container; the container only needs the required
 capabilities and seccomp permissions.
 
@@ -148,17 +148,62 @@ receivers fall back to independent binding.
 
 ## Proposed Design
 
+### Coordinated listener groups
+
+A coordinated listener-group manager owns the lifecycle for each planned
+`SO_REUSEPORT` group. It is the socket-specific consumer of the placement
+metadata contract: the controller registers one plan per shared receiver bind
+address, and the plan lists the expected listener members with their listener
+ids, core ids, NUMA node ids, and socket identity.
+
+The manager creates the whole group in one coordinated step:
+
+1. Before launching receiver tasks, the controller registers a listener-group
+   plan for each shared bind address.
+2. Each per-core receiver asks the manager for its listener during startup.
+3. The manager waits until all expected members arrive, then binds every socket
+   for the group before any member begins listening.
+4. If the eBPF selector is enabled, the manager populates the BPF maps and
+   attaches the selector after bind and before listen.
+5. Once the group is ready, each receiver gets the listener assigned to its own
+   core and starts accepting on that socket.
+
+This lifecycle prevents partial group construction and gives the selector a
+complete socket array before traffic can enter the group.
+
+Fallback must be deterministic:
+
+- If no listener-group plan covers a receiver, the receiver uses the existing
+  independent bind path.
+- If not all expected members arrive within a bounded startup timeout, the
+  group permanently falls back to independent binding for that startup attempt.
+- If socket creation or selector attach fails in non-strict mode, the engine
+  logs the failure and falls back to coordinated plain `SO_REUSEPORT` when
+  possible, or independent binding otherwise.
+- If strict mode is enabled, selector attach failure aborts startup.
+
 ### eBPF NUMA selector
 
 When enabled and supported, the manager attaches a
 `BPF_PROG_TYPE_SK_REUSEPORT` selector to each eligible group exactly once,
-after all sockets are bound and before any member starts accepting. The
+after all sockets are bound and before any socket calls `listen()`. The
 userspace side populates per-group BPF maps describing the socket array and the
 per-NUMA contiguous ranges, then attaches the program to the group with
-`setsockopt(SO_ATTACH_REUSEPORT_EBPF)`.
+`setsockopt(SO_ATTACH_REUSEPORT_EBPF)`. Attaching before `listen()` avoids a
+window where the kernel could complete handshakes into accept queues using the
+default reuseport hash.
 
 The selector is intentionally tiny and never drops traffic: any helper failure
 leaves the kernel free to apply its default hash.
+
+If a listener exits after the selector is attached, the kernel removes the
+closed socket from the reuseport sockarray. The selector's range and total-count
+maps can then be stale. Selection attempts that hit the removed slot fail the
+helper and degrade to the kernel's default hash for that packet. This is safe
+because traffic is not dropped, but it is no longer guaranteed to be
+NUMA-local. The initial design accepts that degraded distribution until the
+engine process is restarted; live map repair or group replacement belongs with
+future live reconfiguration work.
 
 ### Selection policy
 
@@ -198,7 +243,7 @@ only possible balancing strategy. An engine-level policy can also consume the
 same controller-owned placement snapshot and remain aligned with the engine
 configuration model.
 
-For example, a future policy could select among:
+The long-term configuration should be an engine policy, for example:
 
 ```yaml
 load_balancing:
@@ -217,7 +262,9 @@ contract strategy-agnostic so the backend remains swappable.
 
 ### Proposed configuration
 
-A single user-facing switch is proposed:
+The proposed user-facing model is the engine policy above. For implementation
+and operator rollout, two environment variables can be used as temporary
+prototype or debug overrides until the engine configuration field exists:
 
 - `OTAP_DF_REUSEPORT_EBPF=1` activates coordinated listener planning and
   acquisition end-to-end and, where supported, installs the eBPF selector. On
@@ -229,8 +276,9 @@ A single user-facing switch is proposed:
 
 The eBPF loader itself is proposed to sit behind a `reuseport-ebpf` Cargo
 feature so the default build carries no BPF toolchain or runtime dependency.
-With the switch unset, behavior is identical to today: every receiver binds
-independently and no coordination, planning, or attach occurs.
+With the policy set to `kernel` and no debug override, behavior is identical to
+today: every receiver binds independently and no coordination, planning, or
+attach occurs.
 
 ### OTLP and OTAP / gRPC connection fan-out
 
@@ -279,7 +327,7 @@ root or giving the whole container broad privileges. The coordinated plain
 `SO_REUSEPORT` fallback needs no special permission, and the optional eBPF
 selector only needs enough privilege to load and attach that selector. On
 kernels and runtimes that support fine-grained BPF capabilities, prefer a
-non-root `df_engine` process with only the required capabilities.
+non-root df-engine process with only the required capabilities.
 
 For a systemd-managed Linux service, that usually means setting `User=...`,
 `AmbientCapabilities=CAP_BPF CAP_NET_ADMIN`, and
@@ -327,17 +375,21 @@ securityContext:
   capabilities:
     add: ["BPF", "NET_ADMIN"]
   seccompProfile:
-    type: Unconfined
+    type: Localhost
+    localhostProfile: profiles/df-engine-bpf.json
 ```
 
 Clusters enforcing the `restricted` Pod Security Standard normally reject these
-capabilities and unconfined seccomp, so the workload is intended for an
-explicitly trusted namespace or dedicated node pool. Sandboxed runtimes that do
-not pass `bpf()` through to the host kernel are out of scope. Attaching the
-selector yields per-core placement inside the pod's reuseport group; the
-NUMA-locality benefit additionally needs a multi-NUMA node, stable CPU
-placement, and node-level RSS / IRQ alignment. Ordinary multi-tenant pods should
-expect the fallback or per-core tier, not guaranteed NUMA-local placement.
+capabilities, so the workload is intended for an explicitly trusted namespace
+or dedicated node pool. Prefer a localhost seccomp profile that allowlists the
+needed BPF operations. Use `seccompProfile.type: Unconfined` only as a
+compatibility fallback when the cluster cannot provide such a profile.
+Sandboxed runtimes that do not pass `bpf()` through to the host kernel are out
+of scope. Attaching the selector yields per-core placement inside the pod's
+reuseport group; the NUMA-locality benefit additionally needs a multi-NUMA node,
+stable CPU placement, and node-level RSS / IRQ alignment. Ordinary multi-tenant
+pods should expect the fallback or per-core tier, not guaranteed NUMA-local
+placement.
 
 ## Limitations
 
@@ -348,6 +400,12 @@ expect the fallback or per-core tier, not guaranteed NUMA-local placement.
   benchmark-gated before enabling the selector in production.
 - The eBPF path needs a supported kernel and attach-time capabilities.
 - Single-NUMA hosts get per-core distribution only, not locality.
+- Wildcard and specific-address binds on the same port can interact in kernel
+  lookup before reuseport selection. A specific-address bind can shadow a
+  wildcard bind, and dual-stack sockets with IPv6-only disabled have similar
+  address-family nuance. The listener-group identity and duplicate effective
+  bind checks should treat these cases conservatively and fall back rather than
+  attach a selector to an ambiguous group.
 
 ## Alternatives Considered
 
@@ -369,14 +427,14 @@ expect the fallback or per-core tier, not guaranteed NUMA-local placement.
   the normal socket listener path. It could be explored as a separate future
   ingestion architecture, but it does not fit this design's goal of preserving
   the standard `TcpListener` / `UdpSocket` receiver model.
-- Aya: Aya is a viable future alternative because it exposes `SkReuseport` and
-  `ReusePortSockArray`, and it would provide a more Rust-native eBPF stack. This
-  proposal keeps libbpf-rs for the initial design because the selector is a
-  small, stable UAPI-bound C program, the prototype already validates the
-  libbpf-rs path, and the build/runtime cost is contained behind an optional
-  Linux-only feature. The loader should stay isolated so the backend can be
-  revisited if the BPF surface grows or the project prefers a pure-Rust eBPF
-  toolchain later.
+- Aya: Aya is a viable future alternative because `SkReuseport` and
+  `ReusePortSockArray` ship in Aya 0.14.0, released on 2026-06-24, and it would
+  provide a more Rust-native eBPF stack. This proposal keeps libbpf-rs for the
+  initial design because the selector is a small, stable UAPI-bound C program,
+  the prototype already validates the libbpf-rs path, and the build/runtime
+  cost is contained behind an optional Linux-only feature. The loader should
+  stay isolated so the backend can be revisited if the BPF surface grows or the
+  project prefers a pure-Rust eBPF toolchain later.
 
 The eBPF selector is justified when the host is multi-NUMA, the workload
 benefits from NUMA-local range selection plus per-NUMA round-robin plus a global

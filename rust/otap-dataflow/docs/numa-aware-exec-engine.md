@@ -254,7 +254,9 @@ consumer may add socket-specific fields and platform-specific behavior, but the
 execution engine remains the source of truth for topology discovery, placement
 planning, and resolved core-to-NUMA metadata. If no socket-level load balancer
 is enabled, the engine placement model is still valuable for per-core
-execution, topic placement, observability, and future live reconfiguration.
+execution, topic placement, observability, and future live reconfiguration. For
+one socket-specific consumer of this contract, see
+[NUMA-Local Reuseport Load Balancing](reuseport-ebpf-numa.md).
 
 ## Alternatives Considered
 
