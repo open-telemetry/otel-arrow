@@ -18,7 +18,7 @@ See [Full OpAMP documentation](https://opentelemetry.io/docs/specs/opamp/) for
 more information.
 
 OpAMP (Open Agent Management Protocol) is a vendor-agnostic network protocol
-existing as part of the Open-Telemetry ecosystem. It specifies a mechanism for:
+existing as part of the OpenTelemetry ecosystem. It specifies a mechanism for:
 
 - _Servers_ to configure remote _Agents_
 - Agents to report their status to the Server
