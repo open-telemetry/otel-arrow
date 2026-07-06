@@ -122,6 +122,40 @@ document](../../docs/self_tracing_architecture.md). See a sample
 configuration in
 [configs/internal-telemetry.yaml](../../configs/internal-telemetry.yaml).
 
+### Filtering internal logs by EventName
+
+The `service::telemetry::logs::level` field gates internal logs by level and
+target (crate), using a [`RUST_LOG`-style
+directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives).
+It cannot select an individual event, because a `RUST_LOG` directive has no
+syntax for an event's name.
+
+The `service::telemetry::logs::events` field adds a finer filter *on top of*
+`level`, matching each internal log by its OpenTelemetry EventName (the first
+argument to `otel_info!` and friends, e.g. `receiver.start`). An event is
+emitted only if it passes both `level` and `events`.
+
+At most one of `allow` / `deny` may be set:
+
+- `allow`: emit only EventNames matching a pattern ("zoom in").
+- `deny`: emit every EventName except those matching a pattern ("zoom out",
+  suppressing known noise).
+- neither (default): no EventName filtering.
+
+Each pattern is either an exact EventName or, with a trailing `*`, a prefix
+match over the dotted EventName hierarchy:
+
+```yaml
+engine:
+  telemetry:
+    logs:
+      level: "info"
+      events:
+        allow:
+          - "receiver.start"   # exact
+          - "channel.*"        # every channel.* event
+```
+
 ## Roadmap
 
 - Generate OpenTelemetry Semantic Registry from the schema.
