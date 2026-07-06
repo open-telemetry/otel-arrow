@@ -197,7 +197,7 @@ full state, including the following fields:
   - Reports Effective Config
   - Reports Health
   - Reports Remote Config
-  - Reports Heart Beat
+  - Reports Heartbeat
 - `health` - see section below on server health
 - `flags` - `Unset`
 - `custom_capabilities` - list capability to send full state as custom message
@@ -238,7 +238,7 @@ it should handle:
 In any case where a message is ignored (especially in error cases), appropriate
 telemetry should be emitted.
 
-##### Send periodic heart beats
+##### Send periodic heartbeats
 
 The client should send periodic heartbeats to the server at regular intervals.
 
