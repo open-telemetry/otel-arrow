@@ -27,6 +27,10 @@ pub struct Config {
     /// Endpoint for OpAMP server.
     ///
     /// e.g. http://127.0.0.1:4320/opamp/v1 or ws://127.0.0.1:4320/opamp/v1
+    ///
+    /// The URL scheme will be used to identify the transport mechanism.
+    /// Use `ws://` for [WebSocket transport](https://opentelemetry.io/docs/specs/opamp/#websocket-transport)
+    /// or `http://` for [HTTP Transport](https://opentelemetry.io/docs/specs/opamp/#plain-http-transport).
     pub endpoint: String,
 
     /// Options for backoff timeout when connecting the websocket fails and will be retried.
