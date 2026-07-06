@@ -14,7 +14,7 @@
   <link rel="stylesheet" href="/static/css/ui.css" />
 </head>
 <body class="min-h-screen text-slate-100">
-<div class="max-w-6xl mx-auto px-4 py-6">
+<div class="max-w-6xl mx-auto px-4 py-6 page-shell">
   <!-- Sticky zone: remains pinned on desktop and contains global controls + summary cards. -->
   <div id="top-panels" class="sticky-panels space-y-6">
   <!-- App header: time controls, connection, and theme toggles. -->
@@ -45,6 +45,13 @@
           <input id="toggle-zero" type="checkbox" class="sr-only" />
           <span>Hide zero activity</span>
           <span id="toggle-zero-track" class="toggle-track">
+            <span class="toggle-thumb"></span>
+          </span>
+        </label>
+        <label id="toggle-fullwidth-wrap" class="flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-slate-300 cursor-pointer">
+          <input id="toggle-fullwidth" type="checkbox" class="sr-only" />
+          <span>Full width</span>
+          <span id="toggle-fullwidth-track" class="toggle-track">
             <span class="toggle-thumb"></span>
           </span>
         </label>
