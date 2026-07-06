@@ -145,11 +145,12 @@ fn not_implemented() -> ControlPlaneError {
     }
 }
 
-/// The expected instance_uid (little-endian bytes of UUID 8be4df61-93ca-11d2-aa0d-00e098032b8c).
+/// The expected instance_uid (big-endian bytes of UUID 8be4df61-93ca-11d2-aa0d-00e098032b8c,
+/// i.e. the standard RFC 4122 byte order).
 ///
 /// This is the instance_uid used in many tests in this module.
 pub const EXPECTED_INSTANCE_UID_BYTES: [u8; 16] = [
-    97, 223, 228, 139, 202, 147, 210, 17, 170, 13, 0, 224, 152, 3, 43, 140,
+    139, 228, 223, 97, 147, 202, 17, 210, 170, 13, 0, 224, 152, 3, 43, 140,
 ];
 
 pub const EXPECTED_INSTANCE_UID_STR: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
@@ -259,9 +260,14 @@ async fn request_handler(State(state): State<ServerState>, request: Request) -> 
                     Ok(r) => r,
                 };
 
-                let Message::Binary(bytes) = request else {
+                let Message::Binary(mut bytes) = request else {
                     panic!("invalid message: {request:?}")
                 };
+
+                // Per the OpAMP spec websocket framing, each message starts with a
+                // varint-encoded header which must currently be zero.
+                let header = prost::encoding::decode_varint(&mut bytes).unwrap();
+                assert_eq!(header, 0, "expected zero websocket message header");
 
                 let agent_to_server = AgentToServer::decode(bytes).unwrap();
                 {
@@ -278,8 +284,9 @@ async fn request_handler(State(state): State<ServerState>, request: Request) -> 
 
                 match next_response {
                     Some(Some(response)) => {
-                        // serialize and send the next response
-                        let mut bytes = Vec::new();
+                        // serialize and send the next response, prefixed with the
+                        // varint-encoded zero header required by the OpAMP websocket framing
+                        let mut bytes = vec![0u8];
                         response.encode(&mut bytes).unwrap();
                         ws_sender
                             .send(Message::Binary(Bytes::from(bytes)))

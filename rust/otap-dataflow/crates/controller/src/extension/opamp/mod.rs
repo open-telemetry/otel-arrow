@@ -72,6 +72,12 @@ const CONTROL_EXTENSION_URN: &str = "urn:otel:extension:opamp";
 /// implementation containing the full pipeline status.
 const CUSTOM_CAPABILITY_STATUS: &str = "io.opentelemetry.otap-dfe.pipeline-status/v1";
 
+/// Header prepended to every OpAMP WebSocket message. Per the OpAMP spec, each WebSocket
+/// message is a varint-encoded unsigned 64 bit integer header (currently always zero)
+/// followed by the protobuf-encoded message bytes.
+/// See https://opentelemetry.io/docs/specs/opamp/#websocket-message-format
+const WS_MESSAGE_HEADER: u64 = 0;
+
 /// Factory registration of OpAMP Controller Extension
 #[allow(unsafe_code)]
 #[distributed_slice(CONTROLLER_EXTENSION_FACTORIES)]
@@ -155,7 +161,7 @@ impl SessionState {
             }
             None => Uuid::now_v7(),
         }
-        .to_bytes_le();
+        .into_bytes();
 
         Ok(Self {
             instance_uid,
@@ -430,7 +436,8 @@ where
 {
     // safety: encode will return an error if the buffer does not have sufficient capacity which
     // is not the case here because vec can always grow, so we are safe to expect
-    let mut msg_bytes = Vec::new();
+    let mut msg_bytes = Vec::with_capacity(message.encoded_len() + 1);
+    prost::encoding::encode_varint(WS_MESSAGE_HEADER, &mut msg_bytes);
     message.encode(&mut msg_bytes).expect("buffer has capacity");
 
     cancellation_token
@@ -467,17 +474,42 @@ fn handle_received_websocket_message(
     session_state: &SessionState,
 ) -> HandledMessageAction {
     match message {
-        Message::Binary(message_bytes) => match ServerToAgent::decode(message_bytes) {
-            Ok(message) => handle_server_to_agent_message(message, session_state),
-            Err(e) => {
-                otel_error!(
-                    "opamp.controller_extension.decode.error",
-                    message = "Failed to decode ServerToAgent protobuf message",
-                    error =? e,
-                );
-                HandledMessageAction::Ignore
+        Message::Binary(mut message_bytes) => {
+            // Per the OpAMP spec, each WebSocket message starts with a varint-encoded header
+            // (currently always zero) followed by the protobuf message bytes.
+            // See https://opentelemetry.io/docs/specs/opamp/#websocket-message-format
+            match prost::encoding::decode_varint(&mut message_bytes) {
+                Ok(WS_MESSAGE_HEADER) => {}
+                Ok(header) => {
+                    otel_error!(
+                        "opamp.controller_extension.decode.error",
+                        message = "Unexpected non-zero header in websocket message",
+                        header = header,
+                    );
+                    return HandledMessageAction::Ignore;
+                }
+                Err(e) => {
+                    otel_error!(
+                        "opamp.controller_extension.decode.error",
+                        message = "Failed to decode websocket message header",
+                        error =? e,
+                    );
+                    return HandledMessageAction::Ignore;
+                }
             }
-        },
+
+            match ServerToAgent::decode(message_bytes) {
+                Ok(message) => handle_server_to_agent_message(message, session_state),
+                Err(e) => {
+                    otel_error!(
+                        "opamp.controller_extension.decode.error",
+                        message = "Failed to decode ServerToAgent protobuf message",
+                        error =? e,
+                    );
+                    HandledMessageAction::Ignore
+                }
+            }
+        }
         _ => HandledMessageAction::Ignore,
     }
 }
@@ -562,8 +594,10 @@ fn handle_server_to_agent_message(
     message: ServerToAgent,
     session_state: &SessionState,
 ) -> HandledMessageAction {
-    // ensure uid matches
-    if message.instance_uid != session_state.instance_uid {
+    // ensure uid matches. An empty instance_uid is accepted: the field exists to
+    // disambiguate multiplexed connections, and servers (e.g. the opamp-go reference
+    // server) may leave it unset on server-initiated pushes over a dedicated connection.
+    if !message.instance_uid.is_empty() && message.instance_uid != session_state.instance_uid {
         otel_warn!(
             "opamp.controller_extension.message.ignored",
             message = "Ignoring ServerToAgent message due to instance_uid mismatch",
@@ -1161,10 +1195,12 @@ fn set_remote_config_status_from_observed_state(
 /// Report supported capabilities for [`AgentToServer::capabilities`] field
 fn capabilities() -> u64 {
     (AgentCapabilities::ReportsStatus as u64)
+        | (AgentCapabilities::AcceptsRemoteConfig as u64)
         | (AgentCapabilities::ReportsEffectiveConfig as u64)
         | (AgentCapabilities::ReportsHealth as u64)
         | (AgentCapabilities::ReportsRemoteConfig as u64)
         | (AgentCapabilities::ReportsHeartbeat as u64)
+        | (AgentCapabilities::AcceptsRestartCommand as u64)
 }
 
 /// Derive the health of each pipeline/group as a [`ComponentHealth`] object
@@ -1524,10 +1560,12 @@ mod test {
 
         let uid = EXPECTED_INSTANCE_UID_BYTES.to_vec();
         let expected_capabilities = (AgentCapabilities::ReportsStatus as u64)
+            | (AgentCapabilities::AcceptsRemoteConfig as u64)
             | (AgentCapabilities::ReportsEffectiveConfig as u64)
             | (AgentCapabilities::ReportsHealth as u64)
             | (AgentCapabilities::ReportsRemoteConfig as u64)
-            | (AgentCapabilities::ReportsHeartbeat as u64);
+            | (AgentCapabilities::ReportsHeartbeat as u64)
+            | (AgentCapabilities::AcceptsRestartCommand as u64);
 
         // Message 1: initial full-state
         let initial = &requests[0];
