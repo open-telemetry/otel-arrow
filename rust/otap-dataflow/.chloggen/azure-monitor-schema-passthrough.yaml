@@ -8,10 +8,10 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Make the Azure Monitor exporter `schema` config optional; when omitted, run in attribute passthrough mode that emits every log record attribute as a JSON key/value pair.
+note: Add an attribute passthrough mode to the Azure Monitor exporter. Setting `schema.log_record_mapping.attributes` to `passthrough` emits every log record attribute as-is into a single dynamic `Attributes` column, avoiding per-attribute column-name configuration and sanitization.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: []
+issues: [3407]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.

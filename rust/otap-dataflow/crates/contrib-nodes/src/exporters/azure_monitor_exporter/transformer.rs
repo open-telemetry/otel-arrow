@@ -13,7 +13,9 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::config::{Config, SchemaConfig};
+use super::config::{
+    ATTRIBUTES_PASSTHROUGH_MARKER, Config, PASSTHROUGH_ATTRIBUTES_COLUMN, SchemaConfig,
+};
 use super::error::Error;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
@@ -80,23 +82,40 @@ struct ParsedSchema {
     field_mappings: Vec<FieldMapping>,
     /// Pre-parsed attribute mappings (source attr -> pre-serialized JSON key)
     attribute_mapping: HashMap<String, Vec<u8>>,
+    /// When set (`attributes: passthrough`), all log record attributes are
+    /// emitted as-is into a single dynamic column. Holds the pre-serialized JSON
+    /// key for that column (e.g. `"Attributes":`).
+    attribute_passthrough: Option<Vec<u8>>,
 }
 
 impl ParsedSchema {
     fn from_config(schema: &SchemaConfig) -> Result<Self, Error> {
         let mut field_mappings = Vec::new();
         let mut attribute_mapping = HashMap::new();
+        let mut attribute_passthrough = None;
 
         for (key, value) in &schema.log_record_mapping {
             if key.eq_ignore_ascii_case("attributes") {
-                // Parse attribute mappings
-                if let Some(attr_map) = value.as_object() {
-                    for (attr_key, attr_dest) in attr_map {
-                        let dest = attr_dest
-                            .as_str()
-                            .map(String::from)
-                            .unwrap_or_else(|| attr_dest.to_string());
-                        _ = attribute_mapping.insert(attr_key.clone(), serialize_json_key(&dest));
+                match value {
+                    // `attributes: passthrough` emits every attribute as-is into
+                    // a single dynamic column.
+                    Value::String(s) if s == ATTRIBUTES_PASSTHROUGH_MARKER => {
+                        attribute_passthrough =
+                            Some(serialize_json_key(PASSTHROUGH_ATTRIBUTES_COLUMN));
+                    }
+                    // `attributes: { key: Column, ... }` maps specific attributes.
+                    Value::Object(attr_map) => {
+                        for (attr_key, attr_dest) in attr_map {
+                            let dest = attr_dest
+                                .as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| attr_dest.to_string());
+                            _ = attribute_mapping
+                                .insert(attr_key.clone(), serialize_json_key(&dest));
+                        }
+                    }
+                    _ => {
+                        return Err(Error::InvalidFieldMapping { field: key.clone() });
                     }
                 }
             } else {
@@ -118,6 +137,7 @@ impl ParsedSchema {
             scope_mapping: schema.scope_mapping.clone(),
             field_mappings,
             attribute_mapping,
+            attribute_passthrough,
         })
     }
 }
@@ -136,8 +156,7 @@ fn serialize_json_key(key: &str) -> Vec<u8> {
 /// Converts OTLP logs to Azure Log Analytics format
 #[derive(Debug)]
 pub struct Transformer {
-    /// Parsed schema mappings, or `None` for attribute passthrough mode.
-    schema: Option<ParsedSchema>,
+    schema: ParsedSchema,
 }
 
 impl Transformer {
@@ -152,11 +171,9 @@ impl Transformer {
 
     /// Create a new Transformer, returning an error if configuration is invalid
     pub fn try_new(config: &Config) -> Result<Self, Error> {
-        let schema = match &config.api.schema {
-            Some(schema) => Some(ParsedSchema::from_config(schema)?),
-            None => None,
-        };
-        Ok(Self { schema })
+        Ok(Self {
+            schema: ParsedSchema::from_config(&config.api.schema)?,
+        })
     }
 
     /// High-perf, single-threaded: pre-serializes resource+scope fields once per ScopeLogs,
@@ -168,14 +185,7 @@ impl Transformer {
     // allowing the caller to feed records directly into GzipBatcher
     // without the intermediate Vec allocation and second iteration pass.
     pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
-        match &self.schema {
-            Some(schema) => self.convert_mapped(logs_view, schema),
-            None => Self::convert_passthrough(logs_view),
-        }
-    }
-
-    /// Schema-driven conversion applying resource, scope, and log record mappings.
-    fn convert_mapped<T: LogsDataView>(&self, logs_view: &T, schema: &ParsedSchema) -> Vec<Bytes> {
+        let schema = &self.schema;
         let mut results = Vec::with_capacity(1024);
         let mut buf = BytesMut::with_capacity(2048);
         let mut base_map = serde_json::Map::new();
@@ -236,39 +246,6 @@ impl Transformer {
         results
     }
 
-    /// Passthrough conversion: emit every log record attribute as a JSON key/value
-    /// pair, using the attribute key as the column name. No field, resource, or
-    /// scope mappings are applied.
-    fn convert_passthrough<T: LogsDataView>(logs_view: &T) -> Vec<Bytes> {
-        let mut results = Vec::with_capacity(1024);
-        let mut record_buf = Vec::with_capacity(512);
-
-        for resource_logs in logs_view.resources() {
-            for scope_logs in resource_logs.scopes() {
-                for log_record in scope_logs.log_records() {
-                    record_buf.clear();
-                    record_buf.push(b'{');
-                    let mut has_field = false;
-                    for attr in log_record.attributes() {
-                        if let Some(val) = attr.value() {
-                            if has_field {
-                                record_buf.push(b',');
-                            }
-                            has_field = true;
-                            Self::write_json_string(attr.key(), &mut record_buf);
-                            record_buf.push(b':');
-                            Self::write_any_value_json(&val, &mut record_buf);
-                        }
-                    }
-                    record_buf.push(b'}');
-                    results.push(Bytes::copy_from_slice(&record_buf));
-                }
-            }
-        }
-
-        results
-    }
-
     /// Write log record fields directly as JSON key:value pairs (no braces) to a byte buffer.
     /// Returns true if any fields were written.
     fn write_record_fields_json<R: LogRecordView>(
@@ -303,6 +280,32 @@ impl Transformer {
                     }
                 }
             }
+        }
+
+        // Attribute passthrough: emit every log attribute as-is into a single
+        // dynamic column (`"Attributes": { ... }`). Attribute keys become JSON
+        // keys, so keys such as `service.name` need no sanitization. The column
+        // is always emitted (empty object when the record has no attributes).
+        if let Some(col_key) = &schema.attribute_passthrough {
+            if has_field {
+                out.push(b',');
+            }
+            has_field = true;
+            out.extend_from_slice(col_key);
+            out.push(b'{');
+            let mut first = true;
+            for attr in log_record.attributes() {
+                if let Some(val) = attr.value() {
+                    if !first {
+                        out.push(b',');
+                    }
+                    first = false;
+                    Self::write_json_string(attr.key(), out);
+                    out.push(b':');
+                    Self::write_any_value_json(&val, out);
+                }
+            }
+            out.push(b'}');
         }
 
         has_field
@@ -687,7 +690,7 @@ mod tests {
                 dcr_endpoint: "https://test.com".into(),
                 stream_name: "test-stream".into(),
                 dcr: "test-dcr".into(),
-                schema: Some(SchemaConfig {
+                schema: SchemaConfig {
                     resource_mapping: HashMap::from([(
                         "service.name".into(),
                         "ServiceName".into(),
@@ -698,7 +701,7 @@ mod tests {
                         ("severity_text".into(), json!("Severity")),
                         ("attributes".into(), json!({"test.attr": "TestAttr"})),
                     ]),
-                }),
+                },
                 azure_monitor_source_resourceid: None,
                 gzip_compression_level: 6,
                 user_agent: None,
@@ -775,7 +778,13 @@ mod tests {
     #[test]
     fn test_passthrough_mode() {
         let mut config = create_test_config();
-        config.api.schema = None;
+        // `attributes: passthrough` emits all log attributes into one dynamic
+        // column, with no resource/scope/field mappings.
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
         let transformer = Transformer::new(&config);
 
         let request = ExportLogsServiceRequest {
@@ -828,22 +837,59 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        // Attributes are emitted verbatim under their original keys.
-        assert_eq!(json["user.id"], "abc");
-        assert_eq!(json["http.status"], 200);
-        // No mappings applied: standard fields and resource/scope are absent.
+        // All log attributes land in a single dynamic column, keys verbatim
+        // (dotted keys are legal JSON keys inside the value).
+        assert_eq!(json["Attributes"]["user.id"], "abc");
+        assert_eq!(json["Attributes"]["http.status"], 200);
+        // Nothing else is emitted: no field/resource/scope mappings.
         assert!(json.get("Body").is_none());
         assert!(json.get("Severity").is_none());
         assert!(json.get("ServiceName").is_none());
         assert!(json.get("TimeGenerated").is_none());
-        // Only the two log record attributes are present, nothing else.
-        assert_eq!(json.as_object().unwrap().len(), 2);
+        // Only the single Attributes column is present.
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_passthrough_empty_attributes_emits_empty_object() {
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hi".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert!(json["Attributes"].as_object().unwrap().is_empty());
     }
 
     #[test]
     fn test_all_log_record_fields() {
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping = HashMap::from([
+        config.api.schema.log_record_mapping = HashMap::from([
             ("time_unix_nano".to_string(), json!("Time")),
             ("observed_time_unix_nano".to_string(), json!("ObservedTime")),
             ("trace_id".to_string(), json!("TraceId")),
@@ -974,22 +1020,16 @@ mod tests {
         _ = config
             .api
             .schema
-            .as_mut()
-            .unwrap()
             .log_record_mapping
             .insert("trace_id".into(), json!("TraceId"));
         _ = config
             .api
             .schema
-            .as_mut()
-            .unwrap()
             .log_record_mapping
             .insert("span_id".into(), json!("SpanId"));
         _ = config
             .api
             .schema
-            .as_mut()
-            .unwrap()
             .log_record_mapping
             .insert("body".into(), json!("Body"));
 
@@ -1045,8 +1085,6 @@ mod tests {
         _ = config
             .api
             .schema
-            .as_mut()
-            .unwrap()
             .log_record_mapping
             .insert("invalid_field".into(), json!("Invalid"));
 
@@ -1067,8 +1105,6 @@ mod tests {
         _ = config
             .api
             .schema
-            .as_mut()
-            .unwrap()
             .log_record_mapping
             .insert("body".into(), json!({"nested": "object"}));
 
@@ -1086,11 +1122,11 @@ mod tests {
                 dcr_endpoint: "https://test.com".into(),
                 stream_name: "test-stream".into(),
                 dcr: "test-dcr".into(),
-                schema: Some(SchemaConfig {
+                schema: SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
-                }),
+                },
                 azure_monitor_source_resourceid: None,
                 gzip_compression_level: 6,
                 user_agent: None,
@@ -1236,8 +1272,7 @@ mod tests {
     #[test]
     fn test_empty_body_string() {
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping =
-            HashMap::from([("body".into(), json!("Body"))]);
+        config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
 
         let transformer = Transformer::new(&config);
 
@@ -1280,7 +1315,7 @@ mod tests {
     #[test]
     fn test_case_insensitive_field_names() {
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping = HashMap::from([
+        config.api.schema.log_record_mapping = HashMap::from([
             ("TIME_UNIX_NANO".into(), json!("Time")),
             ("Body".into(), json!("Body")),
             ("SEVERITY_TEXT".into(), json!("Severity")),
@@ -1356,7 +1391,7 @@ mod tests {
     #[test]
     fn test_event_name_field() {
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping = HashMap::from([
+        config.api.schema.log_record_mapping = HashMap::from([
             ("event_name".into(), json!("EventName")),
             ("severity_text".into(), json!("Severity")),
         ]);
@@ -1480,7 +1515,7 @@ mod tests {
     #[test]
     fn test_utf8_multibyte_strings() {
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping = HashMap::from([
+        config.api.schema.log_record_mapping = HashMap::from([
             ("body".into(), json!("Body")),
             ("severity_text".into(), json!("Sev")),
         ]);
@@ -1623,7 +1658,7 @@ mod tests {
     fn test_null_safe_attribute_value_extraction() {
         // Test each value type mapped as a log record attribute
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping = HashMap::from([(
+        config.api.schema.log_record_mapping = HashMap::from([(
             "attributes".into(),
             json!({
                 "str_attr": "StrCol",
@@ -1776,8 +1811,7 @@ mod tests {
     #[test]
     fn test_invalid_utf8_body_produces_valid_json() {
         let mut config = create_test_config();
-        config.api.schema.as_mut().unwrap().log_record_mapping =
-            HashMap::from([("body".into(), json!("Body"))]);
+        config.api.schema.log_record_mapping = HashMap::from([("body".into(), json!("Body"))]);
 
         let transformer = Transformer::new(&config);
 

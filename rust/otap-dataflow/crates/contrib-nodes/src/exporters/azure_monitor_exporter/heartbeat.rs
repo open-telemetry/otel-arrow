@@ -347,11 +347,11 @@ mod tests {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
             dcr: "dcr-abc123".to_string(),
             stream_name: "Custom-Logs".to_string(),
-            schema: Some(super::super::config::SchemaConfig {
+            schema: super::super::config::SchemaConfig {
                 resource_mapping: HashMap::new(),
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::new(),
-            }),
+            },
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
             user_agent: None,
@@ -637,11 +637,11 @@ mod tests {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".to_string(),
             dcr: "dcr-abc123".to_string(),
             stream_name: "Custom-Logs".to_string(),
-            schema: Some(super::super::config::SchemaConfig {
+            schema: super::super::config::SchemaConfig {
                 resource_mapping: HashMap::new(),
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::new(),
-            }),
+            },
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
             user_agent: None,

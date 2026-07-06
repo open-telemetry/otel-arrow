@@ -66,11 +66,11 @@ fn create_config() -> Config {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".into(),
             stream_name: "Custom-TestTable".into(),
             dcr: "dcr-test-rule-id".into(),
-            schema: Some(SchemaConfig {
+            schema: SchemaConfig {
                 resource_mapping: HashMap::new(),
                 scope_mapping: HashMap::new(),
                 log_record_mapping: HashMap::from([("attributes".into(), attr_mapping())]),
-            }),
+            },
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
             user_agent: None,
@@ -80,11 +80,11 @@ fn create_config() -> Config {
     }
 }
 
-/// Config with no schema mapping: the transformer runs in attribute passthrough
-/// mode, emitting every log record attribute as a JSON key/value pair.
+/// Config that emits all log record attributes as-is into a single dynamic
+/// column via `attributes: passthrough`.
 fn create_passthrough_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
-        ApiConfig, AuthConfig, HeartbeatConfig,
+        ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
     };
 
     Config {
@@ -92,7 +92,11 @@ fn create_passthrough_config() -> Config {
             dcr_endpoint: "https://test.ingest.monitor.azure.com".into(),
             stream_name: "Custom-TestTable".into(),
             dcr: "dcr-test-rule-id".into(),
-            schema: None,
+            schema: SchemaConfig {
+                resource_mapping: HashMap::new(),
+                scope_mapping: HashMap::new(),
+                log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+            },
             azure_monitor_source_resourceid: None,
             gzip_compression_level: 6,
             user_agent: None,

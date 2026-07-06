@@ -682,11 +682,11 @@ mod tests {
                 dcr_endpoint: "https://example.com".to_string(),
                 stream_name: "stream".to_string(),
                 dcr: "dcr-id".to_string(),
-                schema: Some(SchemaConfig {
+                schema: SchemaConfig {
                     resource_mapping: HashMap::new(),
                     scope_mapping: HashMap::new(),
                     log_record_mapping: HashMap::new(),
-                }),
+                },
                 azure_monitor_source_resourceid: None,
                 gzip_compression_level: 6,
                 user_agent: None,

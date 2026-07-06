@@ -59,10 +59,9 @@ config:
     dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
     stream_name: "Custom-MyLogTable_CL"
     dcr: "dcr-abc123def456"
-    # Schema mapping is optional. When omitted, the exporter runs in attribute
-    # passthrough mode: every log record attribute is emitted as a JSON
-    # key/value pair using the attribute key as the column name, and no
-    # field/resource/scope mappings are applied.
+    # Schema mapping is optional. To emit all log record attributes as-is,
+    # set `log_record_mapping.attributes` to the string `passthrough`; every log
+    # attribute is then written into a single dynamic column named `Attributes`.
     schema:
       # Map OTLP resource attributes to Azure fields.
       resource_mapping:
@@ -212,6 +211,29 @@ log_record_mapping:
   "attributes":                      # Nested attribute mapping
     "user.id": "UserId"              # Specific attribute mapping
 ```
+
+### Attribute Passthrough Mode
+
+By default only the attributes you list under `log_record_mapping.attributes`
+are emitted (each to its own column). To emit **all** log record attributes
+without enumerating them, set `attributes` to the string `passthrough`:
+
+```yaml
+schema:
+  log_record_mapping:
+    attributes: passthrough
+```
+
+In this mode every log record attribute is written as-is into a single
+`dynamic` column named `Attributes`. Attribute keys become JSON keys inside that
+column's value, so keys such as `service.name` are preserved verbatim (no
+sanitization) and are never dropped at ingestion the way invalid top-level
+column names would be. Query them in KQL as `Attributes.["service.name"]`.
+
+Only log attributes are affected; resource attributes, scope attributes, and
+log-record top-level fields are still emitted only when you map them explicitly
+alongside the passthrough entry. Your DCR/custom table must define a `dynamic`
+column named `Attributes` (plus the required `TimeGenerated` column).
 
 ## Azure Setup
 

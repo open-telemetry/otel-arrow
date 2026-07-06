@@ -1,13 +1,18 @@
 # rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_monitor_exporter/otlp-ame-passthrough.yaml
 # Azure Monitor Exporter Configuration using attribute passthrough mode.
 #
-# This configuration omits the `schema` block entirely. When `schema` is not
-# provided, the exporter runs in attribute passthrough mode: every log record
-# attribute is emitted as a JSON key/value pair using the attribute key as the
-# column name. No field, resource, or scope mappings are applied.
+# This configuration sets `schema.log_record_mapping.attributes` to the string
+# `passthrough`. In this mode every log record attribute is emitted as-is into a
+# single dynamic column named `Attributes` (attribute keys become JSON keys, so
+# keys such as `service.name` need no sanitization and are never dropped).
 #
-# Use this when your DCR columns already match your OTel log record attribute
-# names and you don't need explicit mappings.
+# Only log attributes are emitted; resource attributes, scope attributes, and
+# log-record top-level fields are not included unless you add explicit mappings
+# alongside the passthrough entry.
+#
+# Your DCR/custom table must define a `dynamic` column named `Attributes` (plus
+# the required `TimeGenerated` column). Use this when you don't want to enumerate
+# every attribute as its own column.
 
 version: otel_dataflow/v1
 
@@ -41,8 +46,12 @@ groups:
                 dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
                 stream_name: "Custom-MyTable_CL"
                 dcr: "dcr-abc123"
-                # No `schema` block: passthrough mode is used. Every log record
-                # attribute is written verbatim as a JSON key/value pair.
+                # Attribute passthrough: emit all log attributes as-is into a
+                # single dynamic column named `Attributes`. No resource/scope or
+                # top-level field mappings are applied.
+                schema:
+                  log_record_mapping:
+                    attributes: passthrough
 
               # Authentication configuration for AKS
               auth:
