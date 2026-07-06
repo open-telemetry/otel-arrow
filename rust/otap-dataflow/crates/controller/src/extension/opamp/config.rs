@@ -41,12 +41,12 @@ pub struct Config {
     #[serde(default = "default_backoff")]
     pub request_retry: ExponentialBackoff,
 
-    /// Interval at which the agent sends heart beat to server. The agent during periods where
+    /// Interval at which the agent sends heartbeat to server. The agent during periods where
     /// there is no immediate stimulus to force sending messages.
     ///
     /// Default = 30s (recommended by OpAMP spec)
-    #[serde(with = "humantime_serde", default = "default_heart_beat_interval")]
-    pub heart_beat_interval: Duration,
+    #[serde(with = "humantime_serde", default = "default_heartbeat_interval")]
+    pub heartbeat_interval: Duration,
 
     /// Configuration of the agent_description.
     ///
@@ -104,7 +104,7 @@ fn default_backoff() -> ExponentialBackoff {
     ExponentialBackoff::new(Duration::from_millis(250), Duration::from_secs(15))
 }
 
-fn default_heart_beat_interval() -> Duration {
+fn default_heartbeat_interval() -> Duration {
     Duration::from_secs(30)
 }
 

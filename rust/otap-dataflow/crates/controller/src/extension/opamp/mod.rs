@@ -392,8 +392,8 @@ async fn run_websocket_request_loop(
                         }
                     }
 
-                    // periodically send heart beat
-                    _ = tokio::time::sleep(config.heart_beat_interval) => {
+                    // periodically send heartbeat
+                    _ = tokio::time::sleep(config.heartbeat_interval) => {
                         session_state.sequence_num += 1;
                          stats.messages_sent += 1;
                         let message = heartbeat_message(
@@ -1748,7 +1748,7 @@ mod test {
         let config: Config = serde_json::from_value(serde_json::json!({
             "instance_uid": EXPECTED_INSTANCE_UID_STR,
             "endpoint": "",
-            "heart_beat_interval": "200ms"
+            "heartbeat_interval": "200ms"
         }))
         .unwrap();
 
