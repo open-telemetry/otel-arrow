@@ -264,7 +264,7 @@ contract strategy-agnostic so the backend remains swappable.
 
 The proposed user-facing model is the engine policy above. For implementation
 and operator rollout, two environment variables can be used as temporary
-prototype or debug overrides until the engine configuration field exists:
+operator or debug overrides until the engine configuration field exists:
 
 - `OTAP_DF_REUSEPORT_EBPF=1` activates coordinated listener planning and
   acquisition end-to-end and, where supported, installs the eBPF selector. On
@@ -431,10 +431,10 @@ placement.
   `ReusePortSockArray` ship in Aya 0.14.0, released on 2026-06-24, and it would
   provide a more Rust-native eBPF stack. This proposal keeps libbpf-rs for the
   initial design because the selector is a small, stable UAPI-bound C program,
-  the prototype already validates the libbpf-rs path, and the build/runtime
-  cost is contained behind an optional Linux-only feature. The loader should
-  stay isolated so the backend can be revisited if the BPF surface grows or the
-  project prefers a pure-Rust eBPF toolchain later.
+  libbpf-rs directly supports the required program and attach types, and the
+  build/runtime cost is contained behind an optional Linux-only feature. The
+  loader should stay isolated so the backend can be revisited if the BPF
+  surface grows or the project prefers a pure-Rust eBPF toolchain later.
 
 The eBPF selector is justified when the host is multi-NUMA, the workload
 benefits from NUMA-local range selection plus per-NUMA round-robin plus a global
