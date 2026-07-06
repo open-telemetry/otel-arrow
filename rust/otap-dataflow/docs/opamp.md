@@ -265,7 +265,7 @@ The `AgentToServer` message contains an `instance_uid` and an
 `AgentDescription` with identifying attributes. These are used by the server
 to identify the agent.
 
-Different control plane implementation may have different mechanisms for
+Different control plane implementations may have different mechanisms for
 identifying the client depending on their unique deployment scenario. As such,
 it is not specified how agents should identify themselves nor how to compute
 agent description - these parameters will be configurable.
