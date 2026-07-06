@@ -114,13 +114,16 @@ capabilities and seccomp permissions.
 
 ## Prerequisites
 
-The selector consumes the listener-group contract described in
-[NUMA-Aware Execution Engine](numa-aware-exec-engine.md). Before attaching the
-selector, the engine must already know:
+The selector consumes the placement metadata contract described in
+[NUMA-Aware Execution Engine](numa-aware-exec-engine.md) and extends it with
+socket-specific listener-group fields. Before attaching the selector, the
+engine must already know:
 
 - which pipeline group, pipeline, and receiver node owns the listener group;
 - the effective bind address and protocol;
-- the listener id, core id, and NUMA node for each socket in the group;
+- any future logical bind-device identity;
+- the listener id, file descriptor, core id, and NUMA node for each socket in
+  the group;
 - whether the listener group was created through the coordinated listener path.
 
 The selector does not perform topology discovery or choose pipeline placement.

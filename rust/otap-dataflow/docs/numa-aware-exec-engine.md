@@ -35,8 +35,8 @@ This proposal is primarily asking for feedback on:
    engine-resolved core assignment from per-pipeline core counts.
 3. Whether the proposed abstraction is sufficient for Linux first while leaving
    room for Windows and other operating systems.
-4. Whether the listener-group contract is the right bridge to optional
-   socket-level consumers such as a reuseport eBPF selector.
+4. Whether the placement metadata contract is sufficient for engine subsystems
+   that need core and NUMA placement information.
 5. Whether the phased plan aligns with the engine configuration model and live
    reconfiguration direction.
 
@@ -63,11 +63,9 @@ This proposal is primarily asking for feedback on:
   concrete cores.
 - Support multiple pipeline groups and pipelines in one engine process, each
   with its own placement requirements.
-- Expose placement and listener-group metadata through a strategy-agnostic
-  contract so multiple balancing mechanisms can build on it.
-- Provide a listener-group placement contract that optional socket-level
-  features, including a reuseport eBPF selector, can consume without owning
-  topology discovery.
+- Expose placement metadata through a strategy-agnostic engine contract so
+  receivers, topic scheduling, admission, observability, and optional
+  load-balancing mechanisms can build on the same placement snapshot.
 
 ## Non-Goals
 
@@ -77,8 +75,8 @@ This proposal is primarily asking for feedback on:
   policy configuration model.
 - Guaranteeing NUMA locality when the host, container runtime, or scheduler
   does not provide stable CPU placement.
-- Defining the eBPF `sk_reuseport` selector itself. That companion design is
-  covered by the separate reuseport load-balancing proposal.
+- Defining socket-specific load balancing, eBPF selector behavior, kernel
+  attachment, or Linux reuseport grouping semantics.
 
 ## Background
 
@@ -107,16 +105,15 @@ The work is structured as phases that can land and be reviewed independently:
    engine-owned provider abstraction.
 2. Engine placement planning: let the controller allocate core sets for
    pipelines from requested core counts, current pipeline layout, and topology.
-3. Listener-group placement contracts: publish enough per-listener core and
-   NUMA metadata for receivers and optional socket-level load balancers.
+3. Placement metadata contracts: publish resolved core and NUMA metadata for
+   engine subsystems that need placement information.
 4. Live reconfiguration: recalculate placement for scale changes and future
    rollout operations.
 
-The first two phases are useful without eBPF. They allow dynamic core-count
+The first two phases are useful on their own. They allow dynamic core-count
 configuration, engine-resolved placement, and reduced core overlap between
-pipelines. The listener-group contract is also useful for coordinated plain
-`SO_REUSEPORT` because it gives the engine a deterministic lifecycle for shared
-ports before any selector is attached.
+pipelines. Later phases can consume the same placement snapshot without owning
+topology discovery or placement decisions.
 
 ### Topology Provider
 
@@ -208,62 +205,27 @@ change is a no-op, an in-place resize, or a replacement. The first
 implementation does not need to support arbitrary migration of running tasks;
 it only needs a design path that does not hard-code static core lists forever.
 
-### Listener-Group Contract
+### Placement Metadata Contract
 
-Some receivers need placement metadata at the socket boundary. For a shared
-receiver bind address, the controller can register a listener-group plan that
-contains:
+Engine subsystems should consume resolved placement through a controller-owned
+snapshot rather than rediscover topology independently. The snapshot should be
+stable for the lifetime of a running placement generation and should include:
 
 - pipeline group id,
 - pipeline id,
 - receiver node id,
-- bind address,
-- protocol,
-- optional bind-device identity,
-- expected listener id, core id, and NUMA node for each member.
+- placement generation id,
+- assigned core id,
+- NUMA node id,
+- placement policy,
+- whether the topology is complete, partial, or unknown.
 
-This contract is independent of eBPF. It lets coordinated plain
-`SO_REUSEPORT` create all listeners for a group in a deterministic step, avoid
-partial group construction, and fall back to independent binding if the plan is
-missing or quorum is not reached.
-
-An optional socket-level selector can consume the same contract. For example,
-the reuseport eBPF selector can populate socket-array and per-NUMA range maps
-from the listener ids, file descriptors, core ids, and NUMA node ids that the
-engine has already resolved. The selector remains a consumer of placement
-metadata, not the source of placement truth.
-
-Because Linux groups all `SO_REUSEPORT` sockets with the same effective
-`(address, protocol)` into one kernel group, the listener-group manager should
-reject conflicting logical plans that map to the same effective bind identity.
-If receiver configuration later exposes device binding, `bind_device` can
-participate in logical identity, but the kernel grouping semantics must still be
-handled explicitly.
-
-### Balancing Strategy Extensibility
-
-The listener-group contract should be strategy-agnostic. It is the API between
-controller placement and balancing mechanisms; individual strategies consume
-that metadata but do not own topology discovery or placement.
-
-Known consumers include:
-
-- the kernel's default reuseport hash, which needs no extra engine metadata;
-- a NUMA-local eBPF selector, covered by the companion reuseport
-  load-balancing proposal;
-- an engine-level policy aligned with the engine configuration model;
-- a future `sk_lookup`-based listener migration strategy.
-
-A future configuration shape could look like:
-
-```yaml
-load_balancing:
-  strategy: kernel # kernel | ebpf_numa | engine
-```
-
-This proposal does not define arbitrary third-party strategy loading. The near
-term goal is to keep the contract narrow and make the balancing backend
-swappable without changing the placement model.
+The contract should be strategy-agnostic. Receivers, topic scheduling, admission
+control, internal telemetry, and optional load-balancing mechanisms can consume
+the same placement snapshot, but they should not own topology discovery or
+pipeline placement. Socket-specific fields such as bind addresses, protocols,
+file descriptors, or kernel grouping identities belong in the consumer design
+that needs them, not in the engine placement contract.
 
 ## Operational Requirements
 
@@ -285,17 +247,14 @@ If the runtime cannot discover topology or cannot trust CPU placement, it should
 fall back to today's behavior or to topology-agnostic placement rather than
 failing startup.
 
-## Relationship to Reuseport eBPF Load Balancing
+## Relationship to Socket Load Balancing
 
-This proposal is a prerequisite for the companion NUMA-local reuseport
-load-balancing proposal, but it is not limited to that feature.
-
-The execution engine owns topology discovery, placement planning, and
-listener-group metadata. The reuseport eBPF design uses that metadata to choose
-a socket for each new connection or datagram inside one Linux
-`SO_REUSEPORT` group. If eBPF is disabled or unavailable, the engine placement
-model should still be valuable for coordinated listeners, per-core execution,
-topic placement, and future live reconfiguration.
+Socket load balancing is one consumer of the placement metadata contract. That
+consumer may add socket-specific fields and platform-specific behavior, but the
+execution engine remains the source of truth for topology discovery, placement
+planning, and resolved core-to-NUMA metadata. If no socket-level load balancer
+is enabled, the engine placement model is still valuable for per-core
+execution, topic placement, observability, and future live reconfiguration.
 
 ## Alternatives Considered
 
@@ -304,9 +263,9 @@ topic placement, and future live reconfiguration.
 - Let each receiver discover NUMA topology independently: avoids a controller
   change, but duplicates platform-specific logic and cannot optimize placement
   across pipelines.
-- Make the eBPF load balancer own NUMA discovery: useful for one Linux feature,
-  but it prevents the rest of the engine from using placement information and
-  conflicts with the goal of Windows and non-eBPF support.
+- Make a socket load balancer own NUMA discovery: useful for one consumer, but
+  it prevents the rest of the engine from using placement information and
+  conflicts with the goal of Windows and non-socket consumers.
 - Depend immediately on `libnuma` or `hwloc`: these libraries are mature, but
   they add platform and packaging decisions before the engine abstraction is
   settled. They can be reconsidered as backend implementations later.
