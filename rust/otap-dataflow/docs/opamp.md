@@ -286,7 +286,7 @@ it should handle:
 In any case where a message is ignored (especially in error cases), appropriate
 telemetry should be emitted.
 
-#### Error Handling
+##### Error Handling
 
 When errors arise during the exchange of messages, there are three categories 
 of errors and ways in which they should be handled
@@ -327,6 +327,43 @@ All other errors are considered session fatal including:
 - The client has received a WebSocket message, but the message type is not
   Binary (Opcode 0x2).
 
+##### Retry Behaviour
+
+All backoff/retry behaviour shall be configurable and have the following 
+configuration options:
+
+- The initial backoff duration (default = 250ms)
+- The maximum backoff duration (default = 15s)
+- The exponential factor (default = 2.0)
+
+The first backoff shall be the initial backoff and each subsequent shall be
+computed using the  formula: `min(last_backoff * factor, max) + jitter`
+where `jitter` is a random factor between 0.8 and 1.2.
+
+The establishing of the connection between the client and the server will be
+retried with an exponential backoff.
+
+Once the connection is established, if the a `ServerToAgent` message is 
+received with an `error_response.type` of `Unavailable`, the client will
+disconnect, then use an exponential backoff before retrying the request
+until it no-longer receives responses with this error type (e.g. until
+server availability appears restored), unless a different error occurs in
+which case the behaviour should follow that which is specified in the section
+above related to error handling.
+
+See the section on
+[WebSocket Throttling](https://opentelemetry.io/docs/specs/opamp/#throttling)
+in the OpAMP documentation for more details.
+
+In the case where there is some error sending or receive the requests, the
+client may disconnect and following this disconnection it will resume the
+exchange of messages by sending an initial message with its full state (See
+the note in the section above about how session fatal errors are handled).
+If only a single request or response was attempted before this disconnect/
+resumption, the client should also back off using the configured connection
+retry backoff. This ensures that, if every request causes a session fatal
+error that there is some backoff between requests, avoiding a flood of
+retried initial messages.
 
 ##### Send periodic heartbeats
 
@@ -348,6 +385,8 @@ Note: the heartbeat message should carry the `remote_config_status` and the
 applied configuration. This gives the server periodic confirmation that the
 agent is still running some configuration version alongside simple
 confirmation that the server is alive.
+
+
 
 ### Agent Identity
 
