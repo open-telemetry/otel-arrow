@@ -165,10 +165,24 @@ engine:
             # updates.
             delete_missing: true
 
-          # Manually specify an instance_uuid.
+          
+          # Configuration of instance UID
           #
-          # Optional - if not provided, a UUID v7 will be generated
-          instance_uuid: "..."
+          # Optional
+          instance_uid: 
+            # Manually specify an instance_uid.
+            #
+            # Optional - if not provided, a UUID v7 will be generated
+            initial_value: "..."
+
+            # Specify that the current instance UID should be persisted at some
+            # location. If this is configured, the instance will attempt to 
+            # read the initial value ofr the instance_uid from the location,
+            # providing a stable instance_uid across controller extension 
+            # restarts
+            persist:
+              # A file location in which to store the current instance_uid
+              file_path: "/tmp/instance_uid.txt"
 
           # Attributes describing agent
           #
