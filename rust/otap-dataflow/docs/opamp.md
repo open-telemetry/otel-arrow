@@ -376,6 +376,7 @@ telemetry should be emitted.
 
 When errors arise during the exchange of messages, there are three categories
 of errors and ways in which they should be handled
+
 - ignorable errors
 - notifiable errors
 - session fatal errors
@@ -480,8 +481,6 @@ Note: the heartbeat message should carry the `remote_config_status` and the
 applied configuration. This gives the server periodic confirmation that the
 agent is still running some configuration version alongside simple
 confirmation that the server is alive.
-
-
 
 ### Agent Identity
 
@@ -661,7 +660,7 @@ will use the following rules:
   `running`
 - Otherwise the group status will be `degraded`.
 
-### Custom Messages & Capabilities:
+### Custom Messages & Capabilities
 
 #### Full Pipeline Status
 
