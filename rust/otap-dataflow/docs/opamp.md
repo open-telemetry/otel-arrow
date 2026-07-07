@@ -141,11 +141,21 @@ engine:
 
           # Configuration for heartbeat timing.
           #
+          # For WebSocket transport, this controls how often heartbeat
+          # messages are sent on the open connection.
+          #
+          # For HTTP transport, this value also serves as the polling
+          # interval. The agent POSTs to the server at this interval,
+          # giving the server an opportunity to deliver messages (such as
+          # new remote configs) in the response. Per the OpAMP spec, an
+          # HTTP-based client MUST use the heartbeat interval as its
+          # polling interval.
+          #
           # Optional (default = 30s)
           heartbeat_interval: "10s"
 
-          # Options for configuring exponential backoff for initial WebSocket
-          # connection.
+          # Options for configuring exponential backoff for initial
+          # connection (WebSocket or HTTP).
           #
           # Each exponential backoff computed as
           # min(last_backoff * factor, max) + jitter
@@ -263,6 +273,41 @@ parser as a valid UUID, it is a configuration error.
 
 Step 3: If the previous steps were not able to resolve the instance_uid, a new
 instance UID will be generated from a generated UUIDv7.
+
+### Transport-Specific Behaviour
+
+The `endpoint` scheme determines the transport: `ws://` or `wss://` selects
+WebSocket; `http://` or `https://` selects plain HTTP.
+
+#### WebSocket
+
+WebSocket provides full-duplex, asynchronous communication. The server can push
+messages (including new remote configs) to the agent at any time over the open
+connection. Heartbeat messages are periodic keepalives sent on this connection.
+
+#### Plain HTTP
+
+Plain HTTP uses a synchronous, half-duplex polling model. The agent periodically
+POSTs an `AgentToServer` message to the server; the server delivers its
+`ServerToAgent` message in the HTTP response. The server can only send messages
+(including remote config updates) in response to the agent's poll, so remote
+config delivery latency is bounded by the polling interval.
+
+The `heartbeat_interval` configuration value controls both the heartbeat cadence
+and the HTTP polling interval. Per the
+[OpAMP plain HTTP transport spec](https://opentelemetry.io/docs/specs/opamp/#plain-http-transport),
+an HTTP-based client MUST use the heartbeat interval as its polling interval.
+The default is 30 seconds.
+
+If the agent has a new message to send while a prior HTTP request is still
+in-flight, it MUST wait for the response before issuing a new request. Once the
+response arrives, the next request can be sent immediately without waiting for
+the polling interval.
+
+HTTP requests MUST include the `Content-Type: application/x-protobuf` header and
+SHOULD include the `OpAMP-Instance-UID` header set to the canonical UUID string
+representation of the agent's `instance_uid`. The client MAY compress the
+request body with gzip (setting `Content-Encoding: gzip`).
 
 ### Client Behaviour and Message Flow
 
@@ -384,7 +429,7 @@ where `jitter` is a random factor between 0.8 and 1.2.
 The establishing of the connection between the client and the server will be
 retried with an exponential backoff.
 
-Once the connection is established, if the a `ServerToAgent` message is 
+Once the connection is established, if a `ServerToAgent` message is
 received with an `error_response.type` of `Unavailable`, the client will
 disconnect, then use an exponential backoff before retrying the request
 until it no-longer receives responses with this error type (e.g. until
@@ -392,9 +437,15 @@ server availability appears restored), unless a different error occurs in
 which case the behaviour should follow that which is specified in the section
 above related to error handling.
 
-See the section on
-[WebSocket Throttling](https://opentelemetry.io/docs/specs/opamp/#throttling)
-in the OpAMP documentation for more details.
+For HTTP transport, the server may also signal throttling via HTTP 503
+(Service Unavailable) or 429 (Too Many Requests) status codes. If the
+server provides a `Retry-After` header, the client SHOULD honour it.
+While backing off, the client SHOULD suspend polling (i.e., skip heartbeat/
+poll requests until the backoff period elapses).
+
+See the
+[OpAMP Throttling spec](https://opentelemetry.io/docs/specs/opamp/#throttling)
+for more details.
 
 In the case where there is some error sending or receive the requests, the
 client may disconnect and following this disconnection it will resume the
