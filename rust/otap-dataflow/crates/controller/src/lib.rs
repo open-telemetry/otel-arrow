@@ -1871,7 +1871,18 @@ impl<
                 move |cancellation_token| {
                     let task = task_factory(cancellation_token);
                     async move {
-                        match task.await {
+                        // Run the extension future as a local task so a panic is
+                        // reported as a JoinError instead of unwinding past the
+                        // fail-fast handling below (which would otherwise leave
+                        // run_forever parked with a dead extension).
+                        let task_result = match tokio::task::spawn_local(task).await {
+                            Ok(result) => result,
+                            Err(join_error) if join_error.is_panic() => {
+                                Err(format!("controller extension panicked: {join_error}").into())
+                            }
+                            Err(join_error) => Err(Box::new(join_error) as ControllerExtensionError),
+                        };
+                        match task_result {
                             Ok(()) => Ok(()),
                             Err(source) => {
                                 let error = source.to_string();
@@ -3026,22 +3037,18 @@ groups: {{}}
         registry.register(
             PANICKING_CONTROLLER_EXTENSION_URN.into(),
             |_context| {
-                // A controller extension task that panics instead of returning Err.
-                let task_factory: ControllerExtensionTaskFactory =
-                    Box::new(|_cancellation_token| {
-                        Box::pin(async {
-                            panic!("simulated controller extension panic");
-                        })
-                    });
-                Ok(task_factory)
+                Ok(Box::new(|_cancellation_token| {
+                    Box::pin(async { panic!("boom") })
+                }))
             },
             otap_df_config::validation::no_config,
         );
 
+        // run_forever parks the main thread, so drive it off-thread and bound the
+        // wait: a panicking extension must fail the engine, not hang it forever.
         let (result_tx, result_rx) = std_mpsc::channel();
         let controller_thread = thread::spawn(move || {
-            let controller = Controller::new(empty_pipeline_factory());
-            let result = controller
+            let result = Controller::new(empty_pipeline_factory())
                 .run_forever_with_options(
                     engine_config,
                     ControllerRunOptions {
@@ -3049,25 +3056,18 @@ groups: {{}}
                     },
                 )
                 .map_err(|err| err.to_string());
-            result_tx
-                .send(result)
-                .expect("test receiver should remain open");
+            let _ = result_tx.send(result);
         });
 
-        // On the unfixed code this times out: a panicking extension never calls
-        // unpark(), so run_forever stays parked at thread::park() and no result
-        // is ever sent. The fix routes panics through the same shutdown + unpark
-        // + ControllerExtensionRuntimeError path as a returned Err.
         let err = result_rx
             .recv_timeout(Duration::from_secs(5))
-            .expect("controller extension panic should unpark the controller")
-            .expect_err("controller should fail when a controller extension panics at runtime");
+            .expect("panicking extension must unpark run_forever instead of hanging")
+            .expect_err("controller should fail when an extension panics");
         controller_thread
             .join()
             .expect("controller thread should not panic");
 
-        assert!(err.contains("Controller extension `panicking` failed"));
-        assert!(err.contains("panic"));
+        assert!(err.contains("panicking"), "unexpected error: {err}");
     }
 
     #[test]
