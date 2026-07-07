@@ -206,7 +206,6 @@ engine:
             # updates.
             delete_missing: true
 
-         
           # Configuration of instance UID
           #
           # Optional
@@ -768,7 +767,7 @@ enum Command {
 
   /// Drain & Shutdown a pipeline
   Shutdown,
- 
+
   /// Delete a pipeline. It will be drained and shutdown before it is deleted.
   Delete,
 }
