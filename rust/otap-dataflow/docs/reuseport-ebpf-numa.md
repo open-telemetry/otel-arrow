@@ -30,8 +30,8 @@ This proposal is primarily asking for feedback on:
    engine's NUMA-aware placement metadata contract.
 2. Whether the first selector policy should be NUMA-local round-robin with a
    global fallback.
-3. Whether the proposed failure behavior is safe: selector attach failure logs
-   and continues unless strict mode is enabled.
+3. Whether the proposed failure behavior is safe: coordinated materialisation
+   failures log and continue unless strict mode is enabled.
 4. Whether the Linux, Docker, Kubernetes, and AKS operational constraints are
    acceptable for this feature.
 5. Whether the build and packaging approach is acceptable for an off-by-default
@@ -143,6 +143,12 @@ coordinate two logically distinct plans that map to the same effective bind
 identity rather than attach a partial selector to a shared kernel group. Such
 receivers fall back to independent binding.
 
+The same conservative rule applies when policy scopes differ. If any
+uncoordinated pipeline shares an effective bind identity with a pipeline using
+the `ebpf_numa` strategy, coordinated planning for that identity is disabled and
+all affected receivers use the independent bind path. This avoids attaching a
+selector to only part of a kernel reuseport group.
+
 ## Proposed Design
 
 ### Coordinated listener groups
@@ -155,38 +161,46 @@ listener-group manager owns the bind-address-keyed plans, and each plan lists
 the expected listener members with their listener ids, core ids, NUMA node ids,
 and socket identity.
 
-The manager creates the whole group in one coordinated step:
+The controller materialises each planned group before launching pipeline
+threads:
 
 1. Before launching receiver tasks, the controller invokes listener planning
    with the resolved placement snapshot.
-2. Each per-core receiver asks the manager for its listener during startup.
-3. The manager waits until all expected members arrive, then creates and binds
-   every socket for the group before exposing any member to the receiver.
-4. For TCP groups, the manager calls `listen()` on all sockets before
+2. The listener-group manager registers all eligible plans and rejects or
+   disables ambiguous effective bind identities before any receiver starts.
+3. For every remaining plan, the manager creates and binds all sockets for the
+   group in a single controller-side materialisation step.
+4. For TCP groups, the manager calls `listen()` on every socket before
    inserting them into `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`. For UDP groups,
    bound sockets are eligible without `listen()`.
 5. If the eBPF selector is enabled, the manager populates the socket-array,
    range, and total-count maps, then attaches the selector to the group.
-6. Once the group is ready, each receiver gets the listener assigned to its own
-   core and starts accepting on that socket.
+6. Once all planned groups are ready or have deterministically fallen back, the
+   controller starts pipeline threads.
+7. During startup, each per-core receiver performs a non-blocking claim of the
+   pre-bound listener assigned to its own core and starts accepting on that
+   socket.
 
-This lifecycle prevents partial group construction and gives the selector a
-complete socket array before the engine publishes the group as ready. TCP
-connections that arrive after `listen()` but before selector attach, and UDP
-datagrams that arrive after `bind()` but before selector attach, use the
-kernel's default reuseport hash. That fallback is correct delivery, but not
-NUMA-local selection.
+This lifecycle prevents partial group construction, keeps receiver startup
+non-blocking, and gives the selector a complete socket array before the engine
+publishes the group as ready. TCP connections that arrive after `listen()` but
+before selector attach, and UDP datagrams that arrive after `bind()` but before
+selector attach, use the kernel's default reuseport hash. That fallback is
+correct delivery, but not NUMA-local selection.
 
 Fallback must be deterministic:
 
 - If no listener-group plan covers a receiver, the receiver uses the existing
   independent bind path.
-- If not all expected members arrive within a bounded startup timeout, the
-  group permanently falls back to independent binding for that startup attempt.
-- If socket creation or selector attach fails in non-strict mode, the engine
-  logs the failure and falls back to coordinated plain `SO_REUSEPORT` when
-  possible, or independent binding otherwise.
-- If strict mode is enabled, selector attach failure aborts startup.
+- If planning detects duplicate, ambiguous, wildcard/specific, dual-stack, or
+  mixed-policy effective bind identities, the affected receivers use the
+  existing independent bind path.
+- If socket creation, `bind()`, TCP `listen()`, map population, or selector
+  attach fails, or the selector is unavailable on the platform or build, in
+  non-strict mode the engine logs the failure and falls back to coordinated
+  plain `SO_REUSEPORT` when possible, or independent binding otherwise.
+- If strict mode is enabled, any coordinated materialisation failure aborts
+  startup, including when the selector is unavailable on the platform or build.
 
 ### eBPF NUMA selector
 
@@ -212,13 +226,15 @@ future live reconfiguration work.
 
 ### Selection policy
 
-For each new connection or datagram, the selector:
+For each new TCP connection or UDP datagram, the selector:
 
 1. Reads the NUMA node of the CPU currently handling the packet.
 2. If that node owns at least one listener, picks one socket from the node's
-   contiguous sub-range using a per-NUMA round-robin counter. The counter is a
-   shared array counter advanced atomically, modulo the range length, so
-   selection is globally fair across RX CPUs rather than per-CPU.
+   contiguous sub-range using a per-NUMA round-robin counter. The counter is
+   padded to a cache line in the BPF map value layout so hot counters for
+   adjacent NUMA nodes do not false-share on the packet path. It is advanced
+   atomically, modulo the range length, so selection is globally fair across RX
+   CPUs rather than per-CPU.
 3. Otherwise falls back to a global round-robin counter modulo the total socket
    count.
 
@@ -235,61 +251,49 @@ flowchart TD
 ```
 
 Round-robin is chosen over a hash because hash collisions can leave some
-listeners idle when the working set of connections is small. The policy
-balances new connections across listeners within the local NUMA node; it does
-not rebalance requests, streams inside an existing connection, or bytes.
-Long-lived connections stay on the socket first chosen. The atomic counter
-requires Linux 5.12 or newer for BPF atomic instructions.
+listeners idle when the working set of connections is small. For TCP, the
+policy balances new connections across listeners within the local NUMA node; it
+does not rebalance requests, streams inside an existing connection, or bytes.
+Long-lived TCP connections stay on the socket first chosen. For UDP,
+`ebpf_numa` selection runs per datagram when enabled; it does not preserve
+application-level UDP flow affinity. The atomic counter requires Linux 5.12 or
+newer for BPF atomic instructions.
 
-### Engine-level policy alternative
+### Load-balancing policy
 
 The eBPF selector is one consumer of listener-group placement metadata, not the
 only possible balancing strategy. An engine-level policy can also consume the
 same controller-owned placement snapshot and remain aligned with the engine
 configuration model.
 
-The long-term configuration should be an engine policy that follows the
-existing policy hierarchy rather than a process-global switch. The exact YAML
-path should be finalized with the configuration model, but the intended shape is
-policy-scoped so top-level, group, or pipeline defaults can apply and a receiver
-can opt in or out when different bind addresses need different behavior. For
-example:
+The user-facing configuration is an engine policy that follows the standard
+policy hierarchy rather than a process-global switch. Top-level, group, or
+pipeline defaults can apply, and a narrower scope can opt in or out when
+different bind addresses need different behavior:
 
 ```yaml
 policies:
   load_balancing:
     strategy: kernel # kernel | ebpf_numa | engine
+    strict: false
 ```
 
 The `kernel` strategy leaves selection to the default Linux reuseport hash. The
-`ebpf_numa` strategy attaches the selector described here. The `engine` strategy
-is reserved for a controller-owned policy that can coordinate placement,
+`ebpf_numa` strategy enables coordinated listener planning and, where built and
+supported, attaches the selector described here. The `engine` strategy is
+reserved for a controller-owned policy that can coordinate placement,
 listener-group creation, and live reconfiguration without requiring the socket
-selector to own the configuration model.
+selector to own the configuration model. `strict: true` makes startup fail
+instead of falling back when coordinated materialisation cannot complete.
 
 This proposal does not define arbitrary third-party strategy loading. The near
 term goal is to keep the eBPF loader isolated and keep the listener-group
 contract strategy-agnostic so the backend remains swappable.
 
-### Proposed configuration
-
-The proposed user-facing model is the engine policy above. For implementation
-and operator rollout, two environment variables can be used as temporary
-operator or debug overrides until the engine configuration field exists:
-
-- `OTAP_DF_REUSEPORT_EBPF=1` activates coordinated listener planning and
-  acquisition end-to-end and, where supported, installs the eBPF selector. On
-  builds or platforms without selector support it logs once and continues with
-  coordinated plain `SO_REUSEPORT`.
-- `OTAP_DF_REUSEPORT_EBPF_STRICT=1` makes selector attach failure abort startup
-  instead of the default log-and-continue. It is meaningful only alongside the
-  switch above.
-
 The eBPF loader itself is proposed to sit behind a `reuseport-ebpf` Cargo
 feature so the default build carries no BPF toolchain or runtime dependency.
-With the policy set to `kernel` and no debug override, behavior is identical to
-today: every receiver binds independently and no coordination, planning, or
-attach occurs.
+With the policy set to `kernel`, behavior is identical to today: every receiver
+binds independently and no coordination, planning, or attach occurs.
 
 ### OTLP and OTAP / gRPC connection fan-out
 
@@ -417,7 +421,14 @@ placement.
   wildcard bind, and dual-stack sockets with IPv6-only disabled have similar
   address-family nuance. The listener-group identity and duplicate effective
   bind checks should treat these cases conservatively and fall back rather than
-  attach a selector to an ambiguous group.
+  attach a selector to an ambiguous group. Examples include `0.0.0.0:4317`
+  alongside `10.0.0.1:4317`, `[::]:4317` alongside a specific IPv6 address on
+  port `4317`, and `[::]:4317` with dual-stack behavior that can overlap IPv4
+  binds on the same port.
+- Coordinated listener groups are a startup-time materialisation for one
+  placement generation. Restarting a receiver inside an already materialised
+  group, or replacing a group without restarting the engine process, requires
+  future live-reconfiguration work.
 
 ## Alternatives Considered
 

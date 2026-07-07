@@ -133,6 +133,14 @@ The discovered topology should include:
 - the set of visible NUMA nodes,
 - whether the topology is complete, partial, or unknown.
 
+Completeness is part of the contract:
+
+- `complete`: every visible CPU has a known NUMA node and discovery did not
+  encounter degraded reads.
+- `partial`: at least one visible CPU has a known NUMA node, but discovery
+  skipped or degraded some topology, affinity, or cgroup data.
+- `unknown`: no trustworthy CPU-to-NUMA mapping is available for placement.
+
 The initial Linux backend can parse
 `/sys/devices/system/node/node*/cpulist`. That path is available on typical
 Linux hosts and does not require `libnuma` or `hwloc`. The backend should be
@@ -187,6 +195,11 @@ This follows the direction in
 [#1837](https://github.com/open-telemetry/otel-arrow/issues/1837): operators
 should be able to configure how many cores a pipeline needs, while the engine
 optimizes actual placement from the pipelines already running.
+
+During the transition, explicit-core configuration remains valid. When an
+operator names concrete cores, the controller can preserve those assignments and
+annotate them with discovered NUMA metadata rather than forcing an immediate
+move to core-count-only configuration.
 
 ### Controller Integration
 
