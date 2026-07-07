@@ -597,11 +597,18 @@ The payload here is the bytes from a JSON serialized status snapshot (e.g., the
 The controller extension implementation should produce metrics:
 
 - Count successful `AgentToServer` messages transmitted
+  - There should be a dimension on this attribute of te remote config status.
 - Count failed `AgentToServer` messages transmitted (due to TCP or HTTP errors)
 - Count `ServerToAgent` successfully handled
+  - there should be attributes for whether the remote config was actually 
+    reconciled or whether it was handled by skipping it due to unchanged
+    config hash.
 - Count `ServerToAgent` messages unsuccessfully handled (due to instance_uid
-  mismatch, invalid proto encoding, etc.)
+  mismatch, invalid proto encoding, or errors etc.). There should be an 
+  attribute for the error kind in cases where a error_response is contained in
+  the message.
 - Count remote configs successfully reconciled
+  - There should also be a counter of total time spent reconciling.
 - Count remote configs unsuccessfully reconciled
 - Count of times WebSocket connects/reconnects
 - Count of instances where WebSocket was unexpectedly closed by the server.
