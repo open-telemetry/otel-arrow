@@ -295,6 +295,12 @@ feature so the default build carries no BPF toolchain or runtime dependency.
 With the policy set to `kernel`, behavior is identical to today: every receiver
 binds independently and no coordination, planning, or attach occurs.
 
+The initial BPF map layout is intentionally bounded: one coordinated reuseport
+group can contain at most 256 sockets, and NUMA-local range metadata supports
+NUMA node ids `0..63`. If a planned group exceeds either bound, layout
+construction fails. In non-strict mode the affected group falls back to plain
+`SO_REUSEPORT` or independent binding; in strict mode startup fails.
+
 ### OTLP and OTAP / gRPC connection fan-out
 
 Because the policy balances new TCP connections, OTLP and OTAP over gRPC
