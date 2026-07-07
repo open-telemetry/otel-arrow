@@ -1252,6 +1252,173 @@ mod tests {
     }
 
     #[test]
+    fn test_passthrough_multiple_collisions_and_survivor() {
+        // Multiple attributes override mapped columns at once, a mapped field is
+        // overridden, a non-colliding attribute is emitted, and a non-overridden
+        // resource column survives.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([
+                ("service.name".into(), "Svc".into()),
+                ("host.name".into(), "Keep".into()),
+            ]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Body")),
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let str_kv = |k: &str, v: &str| KeyValue {
+            key: k.into(),
+            value: Some(AnyValue {
+                value: Some(OtelAnyValueEnum::StringValue(v.into())),
+            }),
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![
+                        str_kv("service.name", "res-svc"),
+                        str_kv("host.name", "res-host"),
+                    ],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("res-body".into())),
+                        }),
+                        attributes: vec![
+                            str_kv("Svc", "attr-svc"),   // overrides resource column
+                            str_kv("Body", "attr-body"), // overrides field column
+                            str_kv("other", "z"),        // no collision
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Svc"], "attr-svc"); // attribute wins over resource
+        assert_eq!(json["Body"], "attr-body"); // attribute wins over field
+        assert_eq!(json["other"], "z"); // non-colliding attribute
+        assert_eq!(json["Keep"], "res-host"); // surviving resource column
+        assert_eq!(json.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_passthrough_same_length_key_no_false_collision() {
+        // An attribute key with the same length as a mapped column but different
+        // bytes must not be treated as a collision (length bitmask passes, byte
+        // comparison rejects). Both columns are emitted.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Data")), // 4-byte column name
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("body-val".into())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "meta".into(), // same length (4) as "Data", different bytes
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("meta-val".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Data"], "body-val"); // mapped field survives
+        assert_eq!(json["meta"], "meta-val"); // attribute emitted
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_passthrough_value_types() {
+        // Passthrough preserves value types (string, int, double, bool).
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let kv = |k: &str, v: OtelAnyValueEnum| KeyValue {
+            key: k.into(),
+            value: Some(AnyValue { value: Some(v) }),
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            kv("s", OtelAnyValueEnum::StringValue("txt".into())),
+                            kv("i", OtelAnyValueEnum::IntValue(-7)),
+                            kv("d", OtelAnyValueEnum::DoubleValue(1.5)),
+                            kv("b", OtelAnyValueEnum::BoolValue(true)),
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["s"], "txt");
+        assert_eq!(json["i"], -7);
+        assert_eq!(json["d"], 1.5);
+        assert_eq!(json["b"], true);
+    }
+
+    #[test]
     fn test_all_log_record_fields() {
         let mut config = create_test_config();
         config.api.schema.log_record_mapping = HashMap::from([
