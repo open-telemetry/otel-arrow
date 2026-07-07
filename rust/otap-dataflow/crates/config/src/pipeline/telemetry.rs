@@ -43,6 +43,36 @@ impl TelemetryConfig {
         }
         self.metrics.validate()
     }
+
+    /// Returns a clone of this telemetry config with credential header values
+    /// redacted from every metrics reader's opaque exporter `config`, for safe
+    /// exposure through the admin/config snapshot APIs.
+    ///
+    /// Each reader's exporter `config` is a raw [`serde_json::Value`] (the same
+    /// opaque mechanism as a node's [`config`](crate::node::NodeUserConfig::config))
+    /// that is retained verbatim and re-serialized. The periodic OTLP exporter
+    /// schema (`OtlpExporterConfig`) does not reject unknown fields, so an
+    /// operator who sets a static `headers` map (e.g. an `authorization` token
+    /// for an OTLP telemetry backend) would otherwise have those values served
+    /// in cleartext. Both reader arms are masked here for defensive consistency
+    /// with pipeline nodes/extensions — even the pull/Prometheus schema, which
+    /// rejects unknown fields today, since the stored value is still opaque. The
+    /// stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> TelemetryConfig {
+        let mut redacted = self.clone();
+        for reader in &mut redacted.metrics.readers {
+            match reader {
+                metrics::readers::MetricsReaderConfig::Periodic(periodic) => {
+                    crate::node::redact_secret_headers(&mut periodic.exporter.config);
+                }
+                metrics::readers::MetricsReaderConfig::Pull(pull) => {
+                    crate::node::redact_secret_headers(&mut pull.exporter.config);
+                }
+            }
+        }
+        redacted
+    }
 }
 
 impl Default for TelemetryConfig {
@@ -66,7 +96,8 @@ const fn default_reporting_interval() -> Duration {
 }
 
 /// Attribute value types for telemetry resource attributes.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, JsonSchema)]
+#[serde(untagged)]
 pub enum AttributeValue {
     /// String type attribute value.
     String(String),
@@ -78,6 +109,21 @@ pub enum AttributeValue {
     F64(f64),
     /// Array type attribute value.
     Array(AttributeValueArray),
+}
+
+impl Serialize for AttributeValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AttributeValue::String(s) => serializer.serialize_str(s),
+            AttributeValue::Bool(b) => serializer.serialize_bool(*b),
+            AttributeValue::I64(i) => serializer.serialize_i64(*i),
+            AttributeValue::F64(f) => serializer.serialize_f64(*f),
+            AttributeValue::Array(arr) => arr.serialize(serializer),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for AttributeValue {
@@ -213,7 +259,8 @@ impl<'de> Deserialize<'de> for AttributeValue {
 }
 
 /// Array attribute value types for telemetry resource attributes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[schemars(untagged)]
 pub enum AttributeValueArray {
     /// Array of bools
     Bool(Vec<bool>),
@@ -223,6 +270,20 @@ pub enum AttributeValueArray {
     F64(Vec<f64>),
     /// Array of strings
     String(Vec<String>),
+}
+
+impl Serialize for AttributeValueArray {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AttributeValueArray::Bool(v) => v.serialize(serializer),
+            AttributeValueArray::I64(v) => v.serialize(serializer),
+            AttributeValueArray::F64(v) => v.serialize(serializer),
+            AttributeValueArray::String(v) => v.serialize(serializer),
+        }
+    }
 }
 
 impl AttributeValue {
@@ -412,6 +473,61 @@ mod tests {
             panic!("Expected service.version to be a String attribute value");
         }
         assert_eq!(config.metrics.readers.len(), 1);
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_metrics_exporter_headers() {
+        // Each metrics reader's exporter `config` is a raw JSON value that
+        // retains unknown fields (the exporter schemas ignore them), so static
+        // credential `headers` set there would otherwise be served in cleartext
+        // by the admin/config snapshot API. `redacted_for_snapshot` must mask
+        // them on both the periodic and pull reader variants.
+        let yaml_str = r#"
+            metrics:
+                readers:
+                    - periodic:
+                        exporter:
+                            type: otlp
+                            config:
+                                endpoint: "http://backend.example:4318/v1/metrics"
+                                protocol: "http/protobuf"
+                                headers:
+                                    authorization: "Bearer periodic-super-secret"
+                        interval: "10s"
+                    - pull:
+                        exporter:
+                            type: prometheus
+                            config:
+                                host: "0.0.0.0"
+                                port: 9090
+                                headers:
+                                    authorization: "Bearer pull-super-secret"
+            "#;
+        let config: TelemetryConfig =
+            serde_yaml::from_str(yaml_str).expect("telemetry config deserializes");
+        let redacted = config.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("periodic-super-secret"),
+            "periodic exporter credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("pull-super-secret"),
+            "pull exporter credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction is a copy: the stored config keeps the cleartext.
+        let original_json = serde_json::to_string(&config).expect("config serializes");
+        assert!(
+            original_json.contains("periodic-super-secret")
+                && original_json.contains("pull-super-secret"),
+            "original telemetry config must retain the cleartext credentials: {original_json}"
+        );
     }
 
     #[test]
@@ -671,8 +787,8 @@ mod tests {
     fn test_telemetry_attribute_serialize_bare() {
         let attr = TelemetryAttribute::new(AttributeValue::String("test".to_string()));
         let json = serde_json::to_string(&attr).unwrap();
-        // Without brief, serializes as just the value (with enum tagging)
-        assert_eq!(json, r#"{"String":"test"}"#);
+        // Without brief, serializes as just the plain value
+        assert_eq!(json, r#""test""#);
     }
 
     #[test]
@@ -682,7 +798,172 @@ mod tests {
             "A test attribute",
         );
         let json = serde_json::to_string(&attr).unwrap();
-        assert!(json.contains(r#""value":{"String":"test"}"#));
+        assert!(json.contains(r#""value":"test""#));
         assert!(json.contains(r#""brief":"A test attribute""#));
+    }
+
+    #[test]
+    fn test_attribute_value_yaml_roundtrip_scalars() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("s".into(), AttributeValue::String("hello".into())),
+            ("b".into(), AttributeValue::Bool(true)),
+            ("i".into(), AttributeValue::I64(-42)),
+            ("f".into(), AttributeValue::F64(1.5)),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        let back: HashMap<String, AttributeValue> =
+            serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_yaml_roundtrip_arrays() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            (
+                "strings".into(),
+                AttributeValue::Array(AttributeValueArray::String(vec!["a".into(), "b".into()])),
+            ),
+            (
+                "bools".into(),
+                AttributeValue::Array(AttributeValueArray::Bool(vec![true, false])),
+            ),
+            (
+                "ints".into(),
+                AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3])),
+            ),
+            (
+                "floats".into(),
+                AttributeValue::Array(AttributeValueArray::F64(vec![1.5, 2.5])),
+            ),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        let back: HashMap<String, AttributeValue> =
+            serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_json_roundtrip() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("s".into(), AttributeValue::String("hello".into())),
+            ("b".into(), AttributeValue::Bool(true)),
+            ("i".into(), AttributeValue::I64(-42)),
+            ("f".into(), AttributeValue::F64(1.5)),
+            (
+                "arr".into(),
+                AttributeValue::Array(AttributeValueArray::I64(vec![10, 20])),
+            ),
+        ]);
+
+        let json = serde_json::to_string(&attrs).expect("serialize to JSON");
+        let back: HashMap<String, AttributeValue> =
+            serde_json::from_str(&json).expect("deserialize from JSON");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_serializes_plain_scalars_yaml() {
+        // Verify that serialized YAML uses plain scalars, not
+        // externally-tagged enum wrappers like `!String`.
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("name".into(), AttributeValue::String("svc".into())),
+            ("count".into(), AttributeValue::I64(7)),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        assert!(
+            !yaml.contains("!String"),
+            "YAML should not contain enum tags, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("!I64"),
+            "YAML should not contain enum tags, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_telemetry_config_yaml_roundtrip() {
+        let resource = HashMap::from([
+            (
+                "service.name".to_string(),
+                AttributeValue::String("my-svc".to_string()),
+            ),
+            ("enabled".to_string(), AttributeValue::Bool(true)),
+            ("replica".to_string(), AttributeValue::I64(3)),
+        ]);
+
+        let config = TelemetryConfig {
+            resource,
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).expect("serialize to YAML");
+        let back: TelemetryConfig = serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(config.resource, back.resource);
+    }
+
+    #[test]
+    fn test_attribute_value_json_schema_is_untagged() {
+        // The JSON schema for AttributeValue should describe the actual
+        // serialized format (plain scalars and arrays), not an externally-tagged
+        // enum like {"String": "value"} or {"Bool": true}.
+        let schema = schemars::schema_for!(AttributeValue);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // An externally-tagged enum schema would contain variant names as
+        // property keys. The untagged schema should use oneOf with primitive types.
+        assert!(
+            !json.contains(r#""String""#),
+            "Schema should not contain externally-tagged 'String' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""Bool""#),
+            "Schema should not contain externally-tagged 'Bool' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""I64""#),
+            "Schema should not contain externally-tagged 'I64' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""F64""#),
+            "Schema should not contain externally-tagged 'F64' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""Array""#),
+            "Schema should not contain externally-tagged 'Array' variant.\nSchema:\n{json}"
+        );
+
+        // Should have anyOf/oneOf for the union of types
+        assert!(
+            json.contains("anyOf") || json.contains("oneOf"),
+            "Schema should use anyOf/oneOf for untagged union.\nSchema:\n{json}"
+        );
+    }
+
+    #[test]
+    fn test_attribute_value_array_json_schema_is_untagged() {
+        // Same check for AttributeValueArray — schema should describe bare
+        // arrays of primitives, not externally-tagged objects like {"Bool": [...]}.
+        let schema = schemars::schema_for!(AttributeValueArray);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // Externally-tagged schemas use "required": ["Bool"] etc. as object
+        // property wrappers. The untagged schema should have none of these.
+        assert!(
+            !json.contains(r#""required""#),
+            "Schema should not contain 'required' property keys from tagged variants.\nSchema:\n{json}"
+        );
+
+        // For an untagged array enum, we expect anyOf/oneOf with array types
+        assert!(
+            json.contains("anyOf") || json.contains("oneOf"),
+            "Schema should use anyOf/oneOf for untagged union.\nSchema:\n{json}"
+        );
     }
 }

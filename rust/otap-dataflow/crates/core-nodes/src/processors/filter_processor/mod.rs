@@ -24,7 +24,7 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
@@ -157,6 +157,12 @@ impl FilterProcessor {
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The filter processor drops signal items, so it records
+        // `signals.dropped` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -261,6 +267,11 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                             .add(signals_consumed.saturating_sub(signals_filtered));
                     }
                 }
+
+                // Record the drop flow-metric. A no-op unless this node is
+                // a decision node in a flow that enables `signals.dropped`.
+                // `signals_filtered` is the dropped count.
+                effect_handler.record_flow_signals_dropped(signals_filtered);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(

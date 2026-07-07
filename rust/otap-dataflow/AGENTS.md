@@ -121,6 +121,8 @@ Required fields: `change_type` (one of `breaking`, `deprecation`,
 Skip the entry only when the change is not user-facing. In that case include
 `chore` in the PR title.
 
+Doc-only PRs are also excluded from the changelog requirement.
+
 See [`.chloggen/README.md`](.chloggen/README.md) for full details.
 
 ## Before finalizing changes

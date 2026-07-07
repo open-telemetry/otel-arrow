@@ -61,7 +61,7 @@ use super::synthetic_signal::static_otlp_logs_with_config;
 use prost::Message;
 use weaver_common::{result::WResult, vdir::VirtualDirectoryPath};
 use weaver_forge::registry::ResolvedRegistry;
-use weaver_resolver::SchemaResolver;
+use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 
 /// OTel SDK default batch size for log/span/metric exporters.
@@ -107,16 +107,20 @@ fn load_semconv_registry() -> ResolvedRegistry {
     let mut semconv_errors = Vec::new();
     let registry_repo = RegistryRepo::try_new(None, &registry_path, &mut semconv_errors)
         .expect("semantic convention registry");
-    let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
-        WResult::Ok(registry) | WResult::OkWithNFEs(registry, _) => registry,
-        WResult::FatalErr(err) => panic!("failed to load semantic convention registry: {err}"),
+    let resolver_config = WeaverResolverConfig {
+        include_unreferenced: true,
+        ..WeaverResolverConfig::default()
     };
-    let resolved_schema = match SchemaResolver::resolve(registry, true) {
-        WResult::Ok(schema) | WResult::OkWithNFEs(schema, _) => schema,
-        WResult::FatalErr(err) => {
-            panic!("failed to resolve semantic convention registry: {err}");
+    let mut resolver = WeaverResolver::new(resolver_config);
+    let resolved_schema =
+        match resolver.load_and_resolve_schema(registry_repo, DefaultSchemaVisitor) {
+            WResult::Ok(schema) | WResult::OkWithNFEs(schema, _) => schema,
+            WResult::FatalErr(err) => {
+                panic!("failed to resolve semantic convention registry: {err}");
+            }
         }
-    };
+        .into_v1()
+        .expect("semantic convention registry uses v1 schema");
 
     ResolvedRegistry::try_from_resolved_registry(
         &resolved_schema.registry,

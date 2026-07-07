@@ -123,7 +123,7 @@ pub enum Error {
     ChannelRecv(#[source] otap_df_channel::error::RecvError),
 
     /// Failed to create auth handler.
-    #[error("Failed to create auth handler")]
+    #[error("Failed to create auth handler: {0}")]
     AuthHandlerCreation(#[source] Box<Error>),
 
     /// Client pool initialization failed.
@@ -574,7 +574,10 @@ mod tests {
     fn test_auth_handler_creation_message() {
         let inner = Error::Config("test".to_string());
         let error = Error::AuthHandlerCreation(Box::new(inner));
-        assert_eq!(error.to_string(), "Failed to create auth handler");
+        assert_eq!(
+            error.to_string(),
+            "Failed to create auth handler: Configuration error: test"
+        );
         assert!(error.source().is_some());
     }
 
