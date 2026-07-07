@@ -1,7 +1,7 @@
 # OpAMP Controller Extension
 
 This document describes the mechanism through which dataflow engine can be
-configured via an embedded [OpAMP](https://opentelemetry.io/docs/specs/opamp/) 
+configured via an embedded [OpAMP](https://opentelemetry.io/docs/specs/opamp/)
 Agent, implemented as a controller extension.
 
 ## Problem
@@ -200,26 +200,26 @@ engine:
             delete_timeout_secs: 10
 
             # Whether to delete any pipelines that are missing from the config
-            # received from the server. When `true`, any currently running 
-            # pipeline not in the received config is drained/deleted. When 
+            # received from the server. When `true`, any currently running
+            # pipeline not in the received config is drained/deleted. When
             # `false` received remote configs are treated as additive/partial
             # updates.
             delete_missing: true
 
-          
+         
           # Configuration of instance UID
           #
           # Optional
-          instance_uid: 
+          instance_uid:
             # Manually specify an instance_uid.
             #
             # Optional - if not provided, a UUID v7 will be generated
             initial_value: "..."
 
             # Specify that the current instance UID should be persisted at some
-            # location. If this is configured, the instance will attempt to 
+            # location. If this is configured, the instance will attempt to
             # read the initial value ofr the instance_uid from the location,
-            # providing a stable instance_uid across controller extension 
+            # providing a stable instance_uid across controller extension
             # restarts
             persist:
               # A file location in which to store the current instance_uid
@@ -261,9 +261,9 @@ accepts from the remote server, can be toggled via configuration.
 
 The initial value `instance_uid` field will be resolved as follows:
 
-Step 1: If the config value `instance_uid.persist` is configured, the 
+Step 1: If the config value `instance_uid.persist` is configured, the
 implementation will attempt to read the previously persisted value from the
-configured store. (e.g., from a file). If the config value cannot be read (e.g. 
+configured store. (e.g., from a file). If the config value cannot be read (e.g.
 if the file does not exist), proceed to the next step.
 
 Step 2: If an initial value for the `instance_uid` is configured at (using the
@@ -374,7 +374,7 @@ telemetry should be emitted.
 
 ##### Error Handling
 
-When errors arise during the exchange of messages, there are three categories 
+When errors arise during the exchange of messages, there are three categories
 of errors and ways in which they should be handled
 - ignorable errors
 - notifiable errors
@@ -385,7 +385,7 @@ continue receiving messages on the same connection.
 
 Notifiable errors generally occur when the server sends some invalid/
 unprocessable configuration. The agent should send an `AgentToServer` message
-to the server with `remote_config_status.status` of `Failed` with an 
+to the server with `remote_config_status.status` of `Failed` with an
 `error_message` explaining why the message could not be handled as well as the
 config hash.
 
@@ -395,18 +395,21 @@ on Initial Message for what to include). In these cases, the client will not res
 the sequence_num to 0.
 
 The following errors are considered ignorable:
-- The response contains an `instance_uid` that does not match the agent's 
+
+- The response contains an `instance_uid` that does not match the agent's
   instance uid.
 - `ServerToAgent` messages containing `error_response.type` of anything other
   than `Unavailable`.
 
 Notifiable errors include:
+
 - The client receives a valid `ServerToAgent` message, but the remote_config
   did not contain the config at the expected key, the config is not encoded
   in a supported format (e.g. `application/json`), or the config could not be
   decoded as the format identified in the config file content type.
 
 All other errors are considered session fatal including:
+
 - TCP/http errors, including non-200 HTTP responses and unexpected closure of
   TCP connection
 - The client has received a message, but it has invalid protobuf encoding
@@ -415,7 +418,7 @@ All other errors are considered session fatal including:
 
 ##### Retry Behaviour
 
-All backoff/retry behaviour shall be configurable and have the following 
+All backoff/retry behaviour shall be configurable and have the following
 configuration options:
 
 - The initial backoff duration (default = 250ms)
@@ -562,10 +565,10 @@ message with a `remote_config_status` containing a `FAILED` status.
 
 If deserialization of the new remote_config succeeds, the agent will immediately
 reply to the server with an `AgentToServer` message with a `remote_config_status`
-containing an `APPLYING` status. This message should be sent before using the DFE 
+containing an `APPLYING` status. This message should be sent before using the DFE
 `ControlPlane` to reconcile the engine config.
 
-The agent will then call `ControlPlane::reconcile_engine_config` which takes as 
+The agent will then call `ControlPlane::reconcile_engine_config` which takes as
 arguments various timeouts and options which will be exposed as configuration
 on the controller extension.
 
@@ -658,7 +661,7 @@ will use the following rules:
   `running`
 - Otherwise the group status will be `degraded`.
 
-### Custom Messages & Capabilities: 
+### Custom Messages & Capabilities:
 
 #### Full Pipeline Status
 
@@ -739,7 +742,7 @@ struct Operation {
   /// ID of pipeline on which to perform the command
   pipeline_id: String,
 
-  /// ID of group to which the pipeline being acted upon 
+  /// ID of group to which the pipeline being acted upon
   pipeline_group_id: String,
 
   /// timeout for this operation
@@ -766,7 +769,7 @@ enum Command {
 
   /// Drain & Shutdown a pipeline
   Shutdown,
-  
+ 
   /// Delete a pipeline. It will be drained and shutdown before it is deleted.
   Delete,
 }
@@ -788,11 +791,11 @@ The controller extension implementation should produce metrics:
   - There should be a dimension on this attribute of te remote config status.
 - Count failed `AgentToServer` messages transmitted (due to TCP or HTTP errors)
 - Count `ServerToAgent` successfully handled
-  - there should be attributes for whether the remote config was actually 
+  - there should be attributes for whether the remote config was actually
     reconciled or whether it was handled by skipping it due to unchanged
     config hash.
 - Count `ServerToAgent` messages unsuccessfully handled (due to instance_uid
-  mismatch, invalid proto encoding, or errors etc.). There should be an 
+  mismatch, invalid proto encoding, or errors etc.). There should be an
   attribute for the error kind in cases where a error_response is contained in
   the message.
 - Count remote configs successfully reconciled
