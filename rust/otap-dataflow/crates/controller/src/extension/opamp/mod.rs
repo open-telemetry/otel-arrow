@@ -50,11 +50,11 @@ use crate::extension::opamp::consts::health_status;
 use crate::extension::opamp::error::Error;
 use crate::extension::opamp::proto::opamp::v1::server_error_response::Details;
 use crate::extension::opamp::proto::opamp::v1::{
-    AgentCapabilities, AgentConfigFile, AgentConfigMap, AgentDescription, AgentIdentification,
-    AgentToServer, AgentToServerFlags, CommandType, ComponentHealth, ConnectionSettingsStatus,
-    ConnectionSettingsStatuses, CustomCapabilities, CustomMessage, EffectiveConfig, KeyValue,
-    OpAmpConnectionSettings, RemoteConfigStatus, RemoteConfigStatuses, ServerErrorResponseType,
-    ServerToAgent, ServerToAgentFlags,
+    AgentCapabilities, AgentConfigFile, AgentConfigMap, AgentDescription, AgentDisconnect,
+    AgentIdentification, AgentToServer, AgentToServerFlags, CommandType, ComponentHealth,
+    ConnectionSettingsStatus, ConnectionSettingsStatuses, CustomCapabilities, CustomMessage,
+    EffectiveConfig, KeyValue, OpAmpConnectionSettings, RemoteConfigStatus, RemoteConfigStatuses,
+    ServerErrorResponseType, ServerToAgent, ServerToAgentFlags,
 };
 use crate::extension::opamp::util::ExponentialBackoff;
 use crate::{
@@ -360,7 +360,12 @@ async fn run_websocket_request_loop(
             Phase::ExchangeMessages => {
                 tokio::select! {
                     _ = cancellation_token.cancelled() => {
-                        try_send_close_message(&mut ws_sender, config.shutdown_timeout).await;
+                        send_websocket_disconnect_and_close(
+                            session_state,
+                            context,
+                            &mut ws_sender,
+                            config.shutdown_timeout
+                        ).await;
                         return stats;
                     }
 
@@ -471,33 +476,97 @@ fn is_message_send_success<E: std::fmt::Debug>(
     }
 }
 
-/// Attempts close message on the websocket within the deadline.
-async fn try_send_close_message<T, E>(ws_sender: &mut T, deadline: Duration)
-where
+/// Attempts send message to the server with the agent_disconnect flag set, then sends a websocket
+/// close frame. This is the shutdown behaviour in the OpAMP spec. The deadline argument is how
+/// long the operation has to complete before it will be abandoned, so that shutdown is not blocked
+/// indefinitely by slow network and/or server
+async fn send_websocket_disconnect_and_close<T, E>(
+    session_state: &SessionState,
+    context: &ControllerExtensionContext,
+    ws_sender: &mut T,
+    deadline: Duration,
+) where
     T: SinkExt<Message, Error = E> + Unpin,
     E: std::fmt::Debug,
 {
+    let cancellation_token = CancellationToken::new();
     tokio::select! {
-        result = ws_sender.send(Message::Close(Some(CloseFrame {
-            code: CloseCode::Normal,
-            reason: "Agent shutting down".into()
-        }))) => {
-            if let Err(e) = result {
-                otel_error!(
-                    "opamp.controller_extension.shutdown_close_ws.timeout",
-                    message = "Error sending close frame",
-                    error =? e
-                )
-            }
+        _ = send_disconnect_message_and_close_frame(
+            session_state,
+            context,
+            cancellation_token.clone(),
+            ws_sender,
+        ) => {
+            // success
         }
 
         _ = tokio::time::sleep(deadline) => {
+            cancellation_token.cancel();
+        }
+    };
+}
+
+async fn send_disconnect_message_and_close_frame<T, E>(
+    session_state: &SessionState,
+    context: &ControllerExtensionContext,
+    shutdown_cancellation_token: CancellationToken,
+    ws_sender: &mut T,
+) where
+    T: SinkExt<Message, Error = E> + Unpin,
+    E: std::fmt::Debug,
+{
+    // end the final AgentToServer message with agent_disconnect set
+    let mut last_message = heartbeat_message(session_state, context);
+    last_message.agent_disconnect = Some(AgentDisconnect::default());
+    match send_message(&last_message, &shutdown_cancellation_token, ws_sender).await {
+        Some(Err(e)) => {
+            otel_error!(
+                "opamp.controller_extension.shutdown_message.error",
+                message = "Error sending final AgentToServer message frame",
+                error =? e
+            );
+
+            return;
+        }
+        None => {
+            // timed out
+            otel_warn!(
+                "opamp.controller_extension.shutdown_message.timeout",
+                message = "Unable to send final AgentToServer message before shutdown timeout"
+            );
+            return;
+        }
+        _ => {
+            // success
+        }
+    }
+
+    // send the final WebSocket Close frame
+    let shutdown_send_result = shutdown_cancellation_token
+        .run_until_cancelled(ws_sender.send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "Agent shutting down".into(),
+        }))))
+        .await;
+
+    match shutdown_send_result {
+        Some(Err(e)) => {
+            otel_error!(
+                "opamp.controller_extension.shutdown_close_ws.error",
+                message = "Error sending close frame",
+                error =? e
+            );
+        }
+        None => {
             otel_warn!(
                 "opamp.controller_extension.shutdown_close_ws.timeout",
                 message = "Unable to send WebSocket Close message before timeout"
             )
         }
-    };
+        _ => {
+            // success
+        }
+    }
 }
 
 /// Decide what must be done with a websocket message received from OpAMP server
