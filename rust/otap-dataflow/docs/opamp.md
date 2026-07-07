@@ -244,7 +244,8 @@ in plaintext.
 
 ### Capability Configuration
 
-
+Capabilities which control including what the agent sends and what fields it
+accepts from the remote server, can be toggled via configuration.
 
 ### Instance UID resolution
 
@@ -264,6 +265,11 @@ Step 3: If the previous steps were not able to resolve the instance_uid, a new
 instance UID will be generated from a generated UUIDv7.
 
 ### Client Behaviour and Message Flow
+
+Note - this section is written in such a way as to assume that all capabilities
+are enabled In each section, if certain capabilities controlling which fields
+a message should contain, the field should be omitted/ignored in the sent/
+received message unless otherwise stated.
 
 #### 1. Initial Message
 
@@ -601,7 +607,9 @@ will use the following rules:
   `running`
 - Otherwise the group status will be `degraded`.
 
-### Custom Messages & Capabilities: Full Pipeline Status
+### Custom Messages & Capabilities: 
+
+#### Full Pipeline Status
 
 The implementation will advertise a custom capability representing its ability
 to provide the full configuration status via a custom message.
@@ -624,6 +632,94 @@ AgentToServer {
 The payload here is the bytes from a JSON serialized status snapshot (e.g., the
 `HashMap<PipelineKey, PipelineStatus>` returned from
 `ObservedStateHandle::status_snapshot`).
+
+#### Imperative Configuration Commands
+
+The primary mechanism for the server pass configuration to the agent will be as
+described above which is to pass the entire configuration declaratively in the
+`remote_config` config map.
+
+However, there may be instances where the server wishes to change the engine
+configuration using imperative commands such as starting, stopping, updating
+or reconfiguring specific pipelines.
+
+For this, a custom message will be supported that can contain multiple
+operations to perform on certain pipelines.
+
+Proposed capability FQDN: `io.open-telemetry.arrow-dfe.operations/v1`
+
+Custom message structure
+
+```rs
+ServerToAgent {
+  custom_message: CustomMessage {
+    capability: "io.open-telemetry.arrow-dfe.operations/v1",
+    r#type: "operations",
+    data: [...]
+  }
+}
+```
+
+The data will will be a serialized message with the following structure:
+
+```rs
+struct Operations {
+  /// Set of operations to apply
+  operations: Vec<Operation>
+
+  /// timeout for set of operations
+  timeout: Option<Duration>
+}
+
+struct Operation {
+  /// Unique identifier of the request. Can be used for observability purposes
+  /// and the reply to the server will contain the request ID.
+  request_id: Vec<u8>,
+
+  /// The command to perform
+  command: Command,
+
+  /// ID of pipeline on which to perform the command
+  pipeline_id: String,
+
+  /// ID of group to which the pipeline being acted upon 
+  pipeline_group_id: String,
+
+  /// timeout for this operation
+  timeout: Option<Duration>
+}
+
+/// The command to perform
+enum Command {
+  /// Start an existing pipeline
+  Start,
+
+  /// Create (and possibly start) a new pipeline
+  Create {
+    config: PipelineConfig,
+
+    /// whether to start the pipeline after it has been created
+    start: bool,
+  },
+
+  /// Update configuration of a pipeline
+  Update {
+    config: PipelineConfig
+  },
+
+  /// Drain & Shutdown a pipeline
+  Shutdown,
+  
+  /// Delete a pipeline. It will be drained and shutdown before it is deleted.
+  Delete,
+}
+```
+
+After attempting agent should reply with a message containing the request ID
+as well as the information about the result of the operation application,
+including whether the operation was able to be successfully applied, and
+if not, a description of the error that prevented the operation from being
+successful.
 
 ## Telemetry
 
@@ -669,15 +765,6 @@ authentication between the agent and server, using inspiration from the OpAMP
 spec (
 [this section](https://opentelemetry.io/docs/specs/opamp/#connection-settings-management)
 ). A followup design can be created for this.
-
-### Imperative Command Capability
-
-This design assumes the server will specify the remote configuration in full.
-E.g. the agent expects to receive the config declaratively.
-
-However, in the future we may want to expose a mechanism for servers to trigger
-the ad-hoc creation/reconfiguration/deletion of some pipeline. This could be
-supported through a custom agent capability / custom server message.
 
 ### Packages
 
