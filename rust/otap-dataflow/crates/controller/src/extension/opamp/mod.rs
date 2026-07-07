@@ -924,7 +924,7 @@ where
                             step_timeout_secs: config.reconcile.step_timeout_secs,
                             drain_timeout_secs: config.reconcile.drain_timeout_secs,
                             delete_timeout_secs: config.reconcile.delete_timeout_secs,
-                            delete_missing: true,
+                            delete_missing: config.reconcile.delete_missing,
                         });
 
                 session_state.sequence_num += 1;

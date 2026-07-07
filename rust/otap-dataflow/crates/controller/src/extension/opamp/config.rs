@@ -122,6 +122,7 @@ fn default_reconcile_config() -> EngineReconcileConfig {
         step_timeout_secs: default_reconcile_timeout(),
         drain_timeout_secs: default_reconcile_timeout(),
         delete_timeout_secs: default_reconcile_timeout(),
+        delete_missing: default_reconcile_delete_missing(),
     }
 }
 
@@ -139,10 +140,20 @@ pub struct EngineReconcileConfig {
     /// timeout for pipeline delete
     #[serde(default = "default_reconcile_timeout")]
     pub delete_timeout_secs: u64,
+
+    /// Whether to delete any pipelines that are missing from the config received from the server.
+    /// When `true`, any currently running pipeline not in the received config is drained/deleted.
+    /// When `false` received remote configs are treated as additive/partial updates.
+    #[serde(default = "default_reconcile_delete_missing")]
+    pub delete_missing: bool,
 }
 
 fn default_reconcile_timeout() -> u64 {
     10
+}
+
+const fn default_reconcile_delete_missing() -> bool {
+    true
 }
 
 /// Configuration for agent description
