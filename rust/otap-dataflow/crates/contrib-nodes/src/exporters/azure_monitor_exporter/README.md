@@ -225,10 +225,11 @@ schema:
 ```
 
 In this mode every log record attribute is written as-is as a top-level
-`"<key>": <value>` pair, using the attribute key as the column name. Attributes
-already mapped explicitly are skipped so they are not duplicated. Passthrough
+`"<key>": <value>` pair, using the attribute key as the column name. Passthrough
 composes with resource, scope, and top-level field mappings, which continue to
-emit their own columns.
+emit their own columns. If an attribute key collides with a mapped column name,
+the attribute value wins (the innermost/most-specific value), and the column is
+emitted only once.
 
 Note: Azure Log Analytics only ingests columns that exist in the DCR stream
 schema and whose names satisfy the column-naming rules (letters, digits, and

@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add an attribute passthrough mode to the Azure Monitor exporter. Setting `schema.log_record_mapping.attributes` to `passthrough` emits every log record attribute as-is as its own top-level `"key": value` column (the attribute key is the column name), avoiding per-attribute mapping configuration.
+note: Add an attribute passthrough mode to the Azure Monitor exporter. Setting `schema.log_record_mapping.attributes` to `passthrough` emits every log record attribute as-is as its own top-level `"key": value` column (the attribute key is the column name), avoiding per-attribute mapping configuration. Passthrough composes with resource, scope, and top-level field mappings; when an attribute key collides with a mapped column, the attribute value wins and the column is emitted once.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3407]

@@ -23,6 +23,8 @@ const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
 struct FieldMapping {
     /// The source field name (e.g., "time_unix_nano", "body")
     source: LogRecordField,
+    /// Destination column name (e.g. `TimeGenerated`).
+    dest_name: String,
     /// Pre-serialized JSON key with quotes and colon, e.g. `"TimeGenerated":`
     dest_key_json: Vec<u8>,
 }
@@ -84,6 +86,19 @@ struct ParsedSchema {
     /// emitted as-is as a top-level `"<key>": <value>` pair (the attribute key
     /// becomes the column name).
     attribute_passthrough: bool,
+    /// All destination column names produced by explicit mappings (resource,
+    /// scope, and log-record fields). Used only in attribute-passthrough mode to
+    /// detect when an attribute key collides with a mapped column, compared
+    /// against `attr.key()` bytes via `as_bytes()` (no allocation). Empty when no
+    /// explicit mappings are configured (e.g. pure passthrough). Kept as a small
+    /// `Vec` and gated by [`Self::reserved_len_mask`] so most attributes are
+    /// rejected on length alone, without a byte comparison.
+    reserved_columns: Vec<String>,
+    /// Bitmask of the byte-lengths present in `reserved_columns` (bit `n` set if
+    /// some reserved name has length `n`; lengths >= 63 map to bit 63). An
+    /// attribute whose key length is absent here cannot collide, so the byte
+    /// comparison is skipped entirely.
+    reserved_len_mask: u64,
 }
 
 impl ParsedSchema {
@@ -124,8 +139,27 @@ impl ParsedSchema {
                     .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?;
                 field_mappings.push(FieldMapping {
                     source,
+                    dest_name: dest.to_string(),
                     dest_key_json: serialize_json_key(dest),
                 });
+            }
+        }
+
+        let mut reserved_columns: Vec<String> = Vec::new();
+        let mut reserved_len_mask: u64 = 0;
+        if attribute_passthrough {
+            let mut push = |name: &str| {
+                reserved_len_mask |= 1u64 << (name.len().min(63) as u64);
+                reserved_columns.push(name.to_string());
+            };
+            for dest in schema.resource_mapping.values() {
+                push(dest);
+            }
+            for dest in schema.scope_mapping.values() {
+                push(dest);
+            }
+            for fm in &field_mappings {
+                push(&fm.dest_name);
             }
         }
 
@@ -135,7 +169,20 @@ impl ParsedSchema {
             field_mappings,
             attribute_mapping,
             attribute_passthrough,
+            reserved_columns,
+            reserved_len_mask,
         })
+    }
+
+    /// Returns true if `key` matches a reserved (mapped) column name. Rejects most
+    /// keys on length alone via `reserved_len_mask` before any byte comparison.
+    #[inline]
+    fn is_reserved_column(&self, key: &[u8]) -> bool {
+        let bit = 1u64 << (key.len().min(63) as u64);
+        if self.reserved_len_mask & bit == 0 {
+            return false;
+        }
+        self.reserved_columns.iter().any(|c| c.as_bytes() == key)
     }
 }
 
@@ -187,6 +234,9 @@ impl Transformer {
         let mut buf = BytesMut::with_capacity(2048);
         let mut base_map = serde_json::Map::new();
         let mut record_buf = Vec::with_capacity(512);
+        // Reused scratch for the combined (passthrough + mappings) path.
+        let mut overridden: Vec<String> = Vec::new();
+        let mut scratch = Vec::new();
 
         for resource_logs in logs_view.resources() {
             base_map.clear();
@@ -208,30 +258,84 @@ impl Transformer {
                 // Strip trailing '}' to allow appending record fields
                 let base_prefix = &base_json[..base_json.len() - 1];
 
+                // Passthrough combined with explicit mappings needs collision
+                // handling (innermost/attributes win); pure passthrough and pure
+                // mapped records stay on the fast raw path. Records are built in a
+                // reused Vec and bulk-copied into `buf` — benchmarks show one
+                // amortized memcpy beats many small writes straight into BytesMut.
+                let combined =
+                    schema.attribute_passthrough && (has_base || !schema.field_mappings.is_empty());
+
                 for log_record in scope_logs.log_records() {
-                    record_buf.clear();
-
-                    let has_record =
-                        Self::write_record_fields_json(schema, &log_record, &mut record_buf);
-
                     buf.clear();
-                    match (has_base, has_record) {
-                        (true, true) => {
-                            buf.extend_from_slice(base_prefix);
-                            buf.put_u8(b',');
+
+                    if combined {
+                        record_buf.clear();
+                        overridden.clear();
+                        // Emit innermost-first: attributes, then fields; record
+                        // which mapped columns an attribute overrides.
+                        let has_record = Self::write_passthrough_record_inner(
+                            schema,
+                            &log_record,
+                            &mut record_buf,
+                            &mut overridden,
+                        );
+
+                        buf.put_u8(b'{');
+                        let mut has = has_record;
+                        if has_record {
                             buf.extend_from_slice(&record_buf);
-                            buf.put_u8(b'}');
                         }
-                        (true, false) => {
-                            buf.extend_from_slice(&base_json);
+                        // Append resource/scope columns, dropping any overridden
+                        // by an attribute so keys stay unique.
+                        if overridden.is_empty() {
+                            if has_base {
+                                if has {
+                                    buf.put_u8(b',');
+                                }
+                                // base_json inner content (strip both braces)
+                                buf.extend_from_slice(&base_json[1..base_json.len() - 1]);
+                            }
+                        } else {
+                            for (k, v) in &scope_map {
+                                if overridden.contains(k) {
+                                    continue;
+                                }
+                                if has {
+                                    buf.put_u8(b',');
+                                }
+                                has = true;
+                                scratch.clear();
+                                Self::write_json_string(k.as_bytes(), &mut scratch);
+                                scratch.push(b':');
+                                let _ = serde_json::to_writer(&mut scratch, v);
+                                buf.extend_from_slice(&scratch);
+                            }
                         }
-                        (false, true) => {
-                            buf.put_u8(b'{');
-                            buf.extend_from_slice(&record_buf);
-                            buf.put_u8(b'}');
-                        }
-                        (false, false) => {
-                            buf.extend_from_slice(b"{}");
+                        buf.put_u8(b'}');
+                    } else {
+                        record_buf.clear();
+                        let has_record =
+                            Self::write_record_fields_json(schema, &log_record, &mut record_buf);
+
+                        match (has_base, has_record) {
+                            (true, true) => {
+                                buf.extend_from_slice(base_prefix);
+                                buf.put_u8(b',');
+                                buf.extend_from_slice(&record_buf);
+                                buf.put_u8(b'}');
+                            }
+                            (true, false) => {
+                                buf.extend_from_slice(&base_json);
+                            }
+                            (false, true) => {
+                                buf.put_u8(b'{');
+                                buf.extend_from_slice(&record_buf);
+                                buf.put_u8(b'}');
+                            }
+                            (false, false) => {
+                                buf.extend_from_slice(b"{}");
+                            }
                         }
                     }
 
@@ -241,6 +345,52 @@ impl Transformer {
         }
 
         results
+    }
+
+    /// Combined passthrough emit: write log attributes (innermost) first, then the
+    /// mapped log-record fields, skipping any field whose column an attribute
+    /// already emitted. Records attribute keys that collide with a mapped column
+    /// (resource/scope/field) in `overridden` so the caller can drop those base
+    /// columns. Returns true if anything was written.
+    fn write_passthrough_record_inner<R: LogRecordView>(
+        schema: &ParsedSchema,
+        log_record: &R,
+        out: &mut Vec<u8>,
+        overridden: &mut Vec<String>,
+    ) -> bool {
+        let mut has = false;
+        let check_reserved = !schema.reserved_columns.is_empty();
+
+        for attr in log_record.attributes() {
+            if let Some(val) = attr.value() {
+                if has {
+                    out.push(b',');
+                }
+                has = true;
+                Self::write_json_string(attr.key(), out);
+                out.push(b':');
+                Self::write_any_value_json(&val, out);
+                // Reject most attribute keys on length alone (no hashing); only
+                // an actual collision (rare) materializes the key as a String.
+                if check_reserved && schema.is_reserved_column(attr.key()) {
+                    overridden.push(String::from_utf8_lossy(attr.key()).into_owned());
+                }
+            }
+        }
+
+        for fm in &schema.field_mappings {
+            if !overridden.is_empty() && overridden.contains(&fm.dest_name) {
+                continue;
+            }
+            if has {
+                out.push(b',');
+            }
+            has = true;
+            out.extend_from_slice(&fm.dest_key_json);
+            Self::write_field_value_json(fm.source, log_record, out);
+        }
+
+        has
     }
 
     /// Write log record fields directly as JSON key:value pairs (no braces) to a byte buffer.
@@ -281,17 +431,10 @@ impl Transformer {
 
         // Attribute passthrough: emit every log attribute as-is as a top-level
         // `"<key>": <value>` pair (the attribute key becomes the column name).
-        // Attributes already emitted via an explicit mapping are skipped so they
-        // aren't duplicated.
+        // Mutually exclusive with `attribute_mapping` (the `attributes` config is
+        // either the `passthrough` marker or an explicit mapping object).
         if schema.attribute_passthrough {
-            let has_explicit = !schema.attribute_mapping.is_empty();
             for attr in log_record.attributes() {
-                if has_explicit {
-                    let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-                    if schema.attribute_mapping.contains_key(attr_key.as_ref()) {
-                        continue;
-                    }
-                }
                 if let Some(val) = attr.value() {
                     if has_field {
                         out.push(b',');
@@ -448,7 +591,6 @@ impl Transformer {
     /// Write hex-encoded bytes as a JSON string directly.
     #[inline]
     fn write_json_hex(bytes: &[u8], out: &mut Vec<u8>) {
-        out.reserve(bytes.len() * 2 + 2);
         out.push(b'"');
         for &byte in bytes {
             out.push(HEX_CHARS[(byte >> 4) as usize]);
@@ -514,8 +656,6 @@ impl Transformer {
     /// Avoids String allocation since RFC3339 contains no JSON-special characters.
     #[inline]
     fn write_timestamp_json(time_unix_nano: u64, out: &mut Vec<u8>) {
-        out.reserve(32); // enough for full timestamp with quotes
-
         if time_unix_nano == 0 {
             let ts = chrono::Utc::now().to_rfc3339();
             Self::write_json_string(ts.as_bytes(), out);
@@ -956,6 +1096,159 @@ mod tests {
         // Log attribute emitted as its own top-level column.
         assert_eq!(json["user.id"], "abc");
         assert_eq!(json.as_object().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn test_passthrough_attribute_overrides_resource_column() {
+        // Innermost wins: a log attribute whose key equals a mapped resource
+        // column overrides it, and no duplicate key is emitted.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("service.name".into(), "Shared".into())]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("from-resource".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "Shared".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Shared"], "from-attr");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_passthrough_attribute_overrides_scope_column() {
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::from([("scope.name".into(), "Shared".into())]),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "s".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-scope".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "Shared".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Shared"], "from-attr");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_passthrough_attribute_overrides_field_column() {
+        // A log attribute whose key equals a mapped top-level field column wins.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Body")),
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("from-field".into())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "Body".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "from-attr");
+        assert_eq!(json.as_object().unwrap().len(), 1);
     }
 
     #[test]

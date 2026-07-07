@@ -221,6 +221,39 @@ fn make_request(
     request.encode_to_vec()
 }
 
+/// Config that combines explicit resource/scope/field mappings with
+/// `attributes: passthrough`, exercising the collision-aware combined path.
+fn create_combined_config() -> Config {
+    use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
+        ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
+    };
+
+    Config {
+        api: ApiConfig {
+            dcr_endpoint: "https://test.ingest.monitor.azure.com".into(),
+            stream_name: "Custom-TestTable".into(),
+            dcr: "dcr-test-rule-id".into(),
+            schema: SchemaConfig {
+                resource_mapping: HashMap::from([
+                    ("service.name".into(), "ServiceName".into()),
+                    ("host.name".into(), "HostName".into()),
+                ]),
+                scope_mapping: HashMap::from([("scope.name".into(), "ScopeLibrary".into())]),
+                log_record_mapping: HashMap::from([
+                    ("time_unix_nano".into(), json!("TimeGenerated")),
+                    ("body".into(), json!("Body")),
+                    ("attributes".into(), json!("passthrough")),
+                ]),
+            },
+            azure_monitor_source_resourceid: None,
+            gzip_compression_level: 6,
+            user_agent: None,
+        },
+        auth: AuthConfig::default(),
+        heartbeat: HeartbeatConfig::default(),
+    }
+}
+
 fn bench_transform(c: &mut Criterion) {
     let mut group = c.benchmark_group("transformer");
 
@@ -236,7 +269,17 @@ fn bench_transform(c: &mut Criterion) {
         .expect("passthrough config should be valid");
     let passthrough = Transformer::new(&passthrough_config);
 
-    let modes: [(&str, &Transformer); 2] = [("mapped", &mapped), ("passthrough", &passthrough)];
+    let combined_config = create_combined_config();
+    combined_config
+        .validate()
+        .expect("combined config should be valid");
+    let combined = Transformer::new(&combined_config);
+
+    let modes: [(&str, &Transformer); 3] = [
+        ("mapped", &mapped),
+        ("passthrough", &passthrough),
+        ("combined", &combined),
+    ];
 
     // Varying record counts: 1 ResourceLogs, 1 ScopeLogs, N records
     for num_records in [10, 100, 1000] {
