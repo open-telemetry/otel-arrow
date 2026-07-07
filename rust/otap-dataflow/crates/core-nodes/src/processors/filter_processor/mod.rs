@@ -181,12 +181,15 @@ impl local::Processor<OtapPdata> for FilterProcessor {
             }
             Message::PData(pdata) => {
                 let signal = pdata.signal_type();
+                // Record path metrics before conversion/decode so `*_batches_seen`
+                // and the configured-path counters reflect batches received by this
+                // processor, including any that later fail conversion or decode.
+                self.record_batch_path_metrics(signal);
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
                 let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
-                self.record_batch_path_metrics(signal);
 
                 let (filtered_arrow_records, signals_consumed, signals_filtered): (
                     OtapArrowRecords,
@@ -2091,7 +2094,10 @@ mod tests {
                     assert_eq!(include_configured, 0, "log.include.configured.batches");
                     assert_eq!(exclude_configured, 0, "log.exclude.configured.batches");
                     assert!(consumed >= 1, "log.signals.consumed should be >= 1");
-                    assert_eq!(filtered, 0, "log.signals.filtered must be 0 in pass-through");
+                    assert_eq!(
+                        filtered, 0,
+                        "log.signals.filtered must be 0 in pass-through"
+                    );
                     assert_eq!(
                         kept, consumed,
                         "log.signals.kept must equal consumed in pass-through"
@@ -2180,6 +2186,78 @@ mod tests {
                     assert_eq!(consumed, 0, "metric.signals.consumed");
                     assert_eq!(kept, 0, "metric.signals.kept");
                     assert_eq!(filtered, 0, "metric.signals.filtered");
+                })
+            });
+    }
+
+    #[test]
+    fn test_filter_processor_counts_batch_seen_when_processing_fails() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        // No include/exclude filters configured: every record would be kept.
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    // Malformed OTLP proto bytes that fail during processing. Because
+                    // `batches_seen` is recorded on receipt (before conversion/decode
+                    // and filtering), the batch is still counted even though it is
+                    // never successfully filtered and no signals are consumed/kept.
+                    let bad_bytes = vec![0x00_u8];
+                    let otlp_logs_bytes = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(bad_bytes.into()).into(),
+                    );
+                    let result = ctx.process(Message::PData(otlp_logs_bytes)).await;
+                    assert!(
+                        result.is_err(),
+                        "malformed OTLP proto bytes should fail to process"
+                    );
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    // `batches_seen` is recorded on receipt (before conversion/decode
+                    // and filtering), so a batch that fails to process is still counted
+                    // as received, while no signals are consumed/kept/filtered.
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "log.batches.seen");
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "log.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.filtered");
+
+                    assert_eq!(batches_seen, 1, "log.batches.seen");
+                    assert_eq!(consumed, 0, "log.signals.consumed");
+                    assert_eq!(kept, 0, "log.signals.kept");
+                    assert_eq!(filtered, 0, "log.signals.filtered");
                 })
             });
     }

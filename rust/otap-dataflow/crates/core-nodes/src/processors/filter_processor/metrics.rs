@@ -9,51 +9,66 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "processor.filter.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct FilterPdataMetrics {
-    /// Number of log batches seen by the filter processor
+    /// Number of log batches received by the filter processor.
+    ///
+    /// Counted on receipt, before conversion/decode, so batches that later
+    /// fail conversion or decode are still included.
     #[metric(unit = "{batch}")]
     pub log_batches_seen: Counter<u64>,
-    /// Number of metric batches seen by the filter processor
+    /// Number of metric batches received by the filter processor.
+    ///
+    /// Counted on receipt, before conversion/decode, so batches that later
+    /// fail conversion or decode are still included.
     #[metric(unit = "{batch}")]
     pub metric_batches_seen: Counter<u64>,
-    /// Number of span batches seen by the filter processor
+    /// Number of span batches received by the filter processor.
+    ///
+    /// Counted on receipt, before conversion/decode, so batches that later
+    /// fail conversion or decode are still included.
     #[metric(unit = "{batch}")]
     pub span_batches_seen: Counter<u64>,
 
-    /// Number of log batches that went through a configured include path.
+    /// Number of log batches received while an include filter was configured.
     ///
-    /// This counts batches processed while an include filter was configured;
-    /// it does not mean records matched the include rule.
+    /// Counted on receipt alongside `log_batches_seen`, before conversion/decode
+    /// and filtering. It does not imply filtering ran successfully or that any
+    /// records matched the include rule.
     #[metric(unit = "{batch}")]
     pub log_include_configured_batches: Counter<u64>,
-    /// Number of metric batches that went through a configured include path.
+    /// Number of metric batches received while an include filter was configured.
     ///
-    /// This counts batches processed while an include filter was configured;
-    /// it does not mean records matched the include rule.
+    /// Counted on receipt alongside `metric_batches_seen`, before conversion/decode
+    /// and filtering. It does not imply filtering ran successfully or that any
+    /// records matched the include rule.
     #[metric(unit = "{batch}")]
     pub metric_include_configured_batches: Counter<u64>,
-    /// Number of span batches that went through a configured include path.
+    /// Number of span batches received while an include filter was configured.
     ///
-    /// This counts batches processed while an include filter was configured;
-    /// it does not mean records matched the include rule.
+    /// Counted on receipt alongside `span_batches_seen`, before conversion/decode
+    /// and filtering. It does not imply filtering ran successfully or that any
+    /// records matched the include rule.
     #[metric(unit = "{batch}")]
     pub span_include_configured_batches: Counter<u64>,
 
-    /// Number of log batches that went through a configured exclude path.
+    /// Number of log batches received while an exclude filter was configured.
     ///
-    /// This counts batches processed while an exclude filter was configured;
-    /// it does not mean records matched the exclude rule.
+    /// Counted on receipt alongside `log_batches_seen`, before conversion/decode
+    /// and filtering. It does not imply filtering ran successfully or that any
+    /// records matched the exclude rule.
     #[metric(unit = "{batch}")]
     pub log_exclude_configured_batches: Counter<u64>,
-    /// Number of metric batches that went through a configured exclude path.
+    /// Number of metric batches received while an exclude filter was configured.
     ///
-    /// This counts batches processed while an exclude filter was configured;
-    /// it does not mean records matched the exclude rule.
+    /// Counted on receipt alongside `metric_batches_seen`, before conversion/decode
+    /// and filtering. It does not imply filtering ran successfully or that any
+    /// records matched the exclude rule.
     #[metric(unit = "{batch}")]
     pub metric_exclude_configured_batches: Counter<u64>,
-    /// Number of span batches that went through a configured exclude path.
+    /// Number of span batches received while an exclude filter was configured.
     ///
-    /// This counts batches processed while an exclude filter was configured;
-    /// it does not mean records matched the exclude rule.
+    /// Counted on receipt alongside `span_batches_seen`, before conversion/decode
+    /// and filtering. It does not imply filtering ran successfully or that any
+    /// records matched the exclude rule.
     #[metric(unit = "{batch}")]
     pub span_exclude_configured_batches: Counter<u64>,
 

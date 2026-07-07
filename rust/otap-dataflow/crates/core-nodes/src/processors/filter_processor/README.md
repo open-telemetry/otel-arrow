@@ -156,21 +156,21 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.filter.pdata.log.batches.seen` | `{batch}` | Number of log batches seen by the filter processor. |
-| `processor.filter.pdata.log.include.configured.batches` | `{batch}` | Number of log batches that went through a configured include path. Counts batches processed while an include filter was configured; it does not mean records matched the include rule. |
-| `processor.filter.pdata.log.exclude.configured.batches` | `{batch}` | Number of log batches that went through a configured exclude path. Counts batches processed while an exclude filter was configured; it does not mean records matched the exclude rule. |
+| `processor.filter.pdata.log.batches.seen` | `{batch}` | Number of log batches received by the filter processor. Counted on receipt, before conversion/decode, so batches that later fail conversion or decode are still included. |
+| `processor.filter.pdata.log.include.configured.batches` | `{batch}` | Number of log batches received while an include filter was configured. Counted on receipt alongside `log.batches.seen`, before conversion/decode and filtering. It does not imply filtering ran successfully or that any records matched the include rule. |
+| `processor.filter.pdata.log.exclude.configured.batches` | `{batch}` | Number of log batches received while an exclude filter was configured. Counted on receipt alongside `log.batches.seen`, before conversion/decode and filtering. It does not imply filtering ran successfully or that any records matched the exclude rule. |
 | `processor.filter.pdata.log.signals.consumed` | `{log}` | Number of log signals consumed. |
 | `processor.filter.pdata.log.signals.kept` | `{log}` | Number of log signals kept (consumed minus filtered). |
 | `processor.filter.pdata.log.signals.filtered` | `{log}` | Number of log signals filtered. |
-| `processor.filter.pdata.metric.batches.seen` | `{batch}` | Number of metric batches seen by the filter processor. |
-| `processor.filter.pdata.metric.include.configured.batches` | `{batch}` | Number of metric batches that went through a configured include path. Counts batches processed while an include filter was configured; it does not mean records matched the include rule. |
-| `processor.filter.pdata.metric.exclude.configured.batches` | `{batch}` | Number of metric batches that went through a configured exclude path. Counts batches processed while an exclude filter was configured; it does not mean records matched the exclude rule. |
+| `processor.filter.pdata.metric.batches.seen` | `{batch}` | Number of metric batches received by the filter processor. Counted on receipt, before conversion/decode, so batches that later fail conversion or decode are still included. |
+| `processor.filter.pdata.metric.include.configured.batches` | `{batch}` | Number of metric batches received while an include filter was configured. Counted on receipt alongside `metric.batches.seen`, before conversion/decode and filtering. It does not imply filtering ran successfully or that any records matched the include rule. |
+| `processor.filter.pdata.metric.exclude.configured.batches` | `{batch}` | Number of metric batches received while an exclude filter was configured. Counted on receipt alongside `metric.batches.seen`, before conversion/decode and filtering. It does not imply filtering ran successfully or that any records matched the exclude rule. |
 | `processor.filter.pdata.metric.signals.consumed` | `{metric}` | Number of metric signals consumed. |
 | `processor.filter.pdata.metric.signals.kept` | `{metric}` | Number of metric signals kept (consumed minus filtered). |
 | `processor.filter.pdata.metric.signals.filtered` | `{metric}` | Number of metric signals filtered. |
-| `processor.filter.pdata.span.batches.seen` | `{batch}` | Number of span batches seen by the filter processor. |
-| `processor.filter.pdata.span.include.configured.batches` | `{batch}` | Number of span batches that went through a configured include path. Counts batches processed while an include filter was configured; it does not mean records matched the include rule. |
-| `processor.filter.pdata.span.exclude.configured.batches` | `{batch}` | Number of span batches that went through a configured exclude path. Counts batches processed while an exclude filter was configured; it does not mean records matched the exclude rule. |
+| `processor.filter.pdata.span.batches.seen` | `{batch}` | Number of span batches received by the filter processor. Counted on receipt, before conversion/decode, so batches that later fail conversion or decode are still included. |
+| `processor.filter.pdata.span.include.configured.batches` | `{batch}` | Number of span batches received while an include filter was configured. Counted on receipt alongside `span.batches.seen`, before conversion/decode and filtering. It does not imply filtering ran successfully or that any records matched the include rule. |
+| `processor.filter.pdata.span.exclude.configured.batches` | `{batch}` | Number of span batches received while an exclude filter was configured. Counted on receipt alongside `span.batches.seen`, before conversion/decode and filtering. It does not imply filtering ran successfully or that any records matched the exclude rule. |
 | `processor.filter.pdata.span.signals.consumed` | `{span}` | Number of span signals consumed. |
 | `processor.filter.pdata.span.signals.kept` | `{span}` | Number of span signals kept (consumed minus filtered). |
 | `processor.filter.pdata.span.signals.filtered` | `{span}` | Number of span signals filtered. |
