@@ -30,12 +30,12 @@ go run ./server -no-tls
 > `internal/examples/server/data/agent.go` (in `calcRemoteConfig`):
 >
 > ```diff
-> -	cfg.Config.ConfigMap[""] = &protobufs.AgentConfigFile{
-> -		Body: []byte(agent.CustomInstanceConfig),
-> +	cfg.Config.ConfigMap["desired_state"] = &protobufs.AgentConfigFile{
-> +		Body:        []byte(agent.CustomInstanceConfig),
-> +		ContentType: "application/json",
-> 	}
+> - cfg.Config.ConfigMap[""] = &protobufs.AgentConfigFile{
+> -   Body: []byte(agent.CustomInstanceConfig),
+> + cfg.Config.ConfigMap["desired_state"] = &protobufs.AgentConfigFile{
+> +   Body:        []byte(agent.CustomInstanceConfig),
+> +   ContentType: "application/json",
+>   }
 > ```
 
 ### 2. Configure and run the engine
