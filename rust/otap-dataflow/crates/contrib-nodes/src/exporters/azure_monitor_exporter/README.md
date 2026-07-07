@@ -61,7 +61,7 @@ config:
     dcr: "dcr-abc123def456"
     # Schema mapping is optional. To emit all log record attributes as-is,
     # set `log_record_mapping.attributes` to the string `passthrough`; every log
-    # attribute is then written into a single dynamic column named `Attributes`.
+    # attribute is then emitted as its own top-level "key": value column.
     schema:
       # Map OTLP resource attributes to Azure fields.
       resource_mapping:
@@ -224,16 +224,17 @@ schema:
     attributes: passthrough
 ```
 
-In this mode every log record attribute is written as-is into a single
-`dynamic` column named `Attributes`. Attribute keys become JSON keys inside that
-column's value, so keys such as `service.name` are preserved verbatim (no
-sanitization) and are never dropped at ingestion the way invalid top-level
-column names would be. Query them in KQL as `Attributes.["service.name"]`.
+In this mode every log record attribute is written as-is as a top-level
+`"<key>": <value>` pair, using the attribute key as the column name. Attributes
+already mapped explicitly are skipped so they are not duplicated. Passthrough
+composes with resource, scope, and top-level field mappings, which continue to
+emit their own columns.
 
-Only log attributes are affected; resource attributes, scope attributes, and
-log-record top-level fields are still emitted only when you map them explicitly
-alongside the passthrough entry. Your DCR/custom table must define a `dynamic`
-column named `Attributes` (plus the required `TimeGenerated` column).
+Note: Azure Log Analytics only ingests columns that exist in the DCR stream
+schema and whose names satisfy the column-naming rules (letters, digits, and
+underscores; must start with a letter or underscore). Attribute keys are emitted
+verbatim, so a key such as `service.name` must have a matching column defined in
+your DCR; attributes without a matching, valid column are dropped at ingestion.
 
 ## Azure Setup
 

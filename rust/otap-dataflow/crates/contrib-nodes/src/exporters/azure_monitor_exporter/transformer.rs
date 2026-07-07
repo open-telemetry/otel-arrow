@@ -13,9 +13,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::config::{
-    ATTRIBUTES_PASSTHROUGH_MARKER, Config, PASSTHROUGH_ATTRIBUTES_COLUMN, SchemaConfig,
-};
+use super::config::{ATTRIBUTES_PASSTHROUGH_MARKER, Config, SchemaConfig};
 use super::error::Error;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
@@ -82,26 +80,25 @@ struct ParsedSchema {
     field_mappings: Vec<FieldMapping>,
     /// Pre-parsed attribute mappings (source attr -> pre-serialized JSON key)
     attribute_mapping: HashMap<String, Vec<u8>>,
-    /// When set (`attributes: passthrough`), all log record attributes are
-    /// emitted as-is into a single dynamic column. Holds the pre-serialized JSON
-    /// key for that column (e.g. `"Attributes":`).
-    attribute_passthrough: Option<Vec<u8>>,
+    /// When true (`attributes: passthrough`), every log record attribute is
+    /// emitted as-is as a top-level `"<key>": <value>` pair (the attribute key
+    /// becomes the column name).
+    attribute_passthrough: bool,
 }
 
 impl ParsedSchema {
     fn from_config(schema: &SchemaConfig) -> Result<Self, Error> {
         let mut field_mappings = Vec::new();
         let mut attribute_mapping = HashMap::new();
-        let mut attribute_passthrough = None;
+        let mut attribute_passthrough = false;
 
         for (key, value) in &schema.log_record_mapping {
             if key.eq_ignore_ascii_case("attributes") {
                 match value {
-                    // `attributes: passthrough` emits every attribute as-is into
-                    // a single dynamic column.
+                    // `attributes: passthrough` emits every attribute as-is as a
+                    // top-level key/value pair.
                     Value::String(s) if s == ATTRIBUTES_PASSTHROUGH_MARKER => {
-                        attribute_passthrough =
-                            Some(serialize_json_key(PASSTHROUGH_ATTRIBUTES_COLUMN));
+                        attribute_passthrough = true;
                     }
                     // `attributes: { key: Column, ... }` maps specific attributes.
                     Value::Object(attr_map) => {
@@ -282,30 +279,29 @@ impl Transformer {
             }
         }
 
-        // Attribute passthrough: emit every log attribute as-is into a single
-        // dynamic column (`"Attributes": { ... }`). Attribute keys become JSON
-        // keys, so keys such as `service.name` need no sanitization. The column
-        // is always emitted (empty object when the record has no attributes).
-        if let Some(col_key) = &schema.attribute_passthrough {
-            if has_field {
-                out.push(b',');
-            }
-            has_field = true;
-            out.extend_from_slice(col_key);
-            out.push(b'{');
-            let mut first = true;
+        // Attribute passthrough: emit every log attribute as-is as a top-level
+        // `"<key>": <value>` pair (the attribute key becomes the column name).
+        // Attributes already emitted via an explicit mapping are skipped so they
+        // aren't duplicated.
+        if schema.attribute_passthrough {
+            let has_explicit = !schema.attribute_mapping.is_empty();
             for attr in log_record.attributes() {
+                if has_explicit {
+                    let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
+                    if schema.attribute_mapping.contains_key(attr_key.as_ref()) {
+                        continue;
+                    }
+                }
                 if let Some(val) = attr.value() {
-                    if !first {
+                    if has_field {
                         out.push(b',');
                     }
-                    first = false;
+                    has_field = true;
                     Self::write_json_string(attr.key(), out);
                     out.push(b':');
                     Self::write_any_value_json(&val, out);
                 }
             }
-            out.push(b'}');
         }
 
         has_field
@@ -837,21 +833,20 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        // All log attributes land in a single dynamic column, keys verbatim
-        // (dotted keys are legal JSON keys inside the value).
-        assert_eq!(json["Attributes"]["user.id"], "abc");
-        assert_eq!(json["Attributes"]["http.status"], 200);
+        // Each log attribute is emitted as its own top-level column, key verbatim.
+        assert_eq!(json["user.id"], "abc");
+        assert_eq!(json["http.status"], 200);
         // Nothing else is emitted: no field/resource/scope mappings.
+        assert!(json.get("Attributes").is_none());
         assert!(json.get("Body").is_none());
-        assert!(json.get("Severity").is_none());
         assert!(json.get("ServiceName").is_none());
         assert!(json.get("TimeGenerated").is_none());
-        // Only the single Attributes column is present.
-        assert_eq!(json.as_object().unwrap().len(), 1);
+        // Only the two attribute columns are present.
+        assert_eq!(json.as_object().unwrap().len(), 2);
     }
 
     #[test]
-    fn test_passthrough_empty_attributes_emits_empty_object() {
+    fn test_passthrough_no_attributes_emits_empty_row() {
         let mut config = create_test_config();
         config.api.schema = SchemaConfig {
             resource_mapping: HashMap::new(),
@@ -883,7 +878,84 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        assert!(json["Attributes"].as_object().unwrap().is_empty());
+        // No attributes and no mappings -> empty row.
+        assert!(json.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_passthrough_composed_with_mappings() {
+        // `attributes: passthrough` composes with resource, scope, and top-level
+        // field mappings: the mapped columns plus each attribute as its own
+        // top-level column are all emitted.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("service.name".into(), "ServiceName".into())]),
+            scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Body")),
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("svc".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "s".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("scp".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hello".into())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "user.id".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("abc".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // Mapped columns.
+        assert_eq!(json["ServiceName"], "svc");
+        assert_eq!(json["ScopeName"], "scp");
+        assert_eq!(json["Body"], "hello");
+        // Log attribute emitted as its own top-level column.
+        assert_eq!(json["user.id"], "abc");
+        assert_eq!(json.as_object().unwrap().len(), 4);
     }
 
     #[test]

@@ -2,17 +2,17 @@
 # Azure Monitor Exporter Configuration using attribute passthrough mode.
 #
 # This configuration sets `schema.log_record_mapping.attributes` to the string
-# `passthrough`. In this mode every log record attribute is emitted as-is into a
-# single dynamic column named `Attributes` (attribute keys become JSON keys, so
-# keys such as `service.name` need no sanitization and are never dropped).
+# `passthrough`. In this mode every log record attribute is emitted as-is as its
+# own top-level "key": value column (the attribute key is the column name).
 #
-# Only log attributes are emitted; resource attributes, scope attributes, and
-# log-record top-level fields are not included unless you add explicit mappings
-# alongside the passthrough entry.
+# Attributes already mapped explicitly are skipped so they are not duplicated.
+# Passthrough composes with resource, scope, and top-level field mappings.
 #
-# Your DCR/custom table must define a `dynamic` column named `Attributes` (plus
-# the required `TimeGenerated` column). Use this when you don't want to enumerate
-# every attribute as its own column.
+# Azure Log Analytics only ingests columns defined in the DCR stream schema whose
+# names follow the column-naming rules (letters, digits, underscores; must start
+# with a letter or underscore). Since attribute keys are emitted verbatim, a key
+# such as "service.name" must have a matching column in your DCR, otherwise that
+# attribute is dropped at ingestion.
 
 version: otel_dataflow/v1
 
@@ -46,9 +46,9 @@ groups:
                 dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
                 stream_name: "Custom-MyTable_CL"
                 dcr: "dcr-abc123"
-                # Attribute passthrough: emit all log attributes as-is into a
-                # single dynamic column named `Attributes`. No resource/scope or
-                # top-level field mappings are applied.
+                # Attribute passthrough: emit each log attribute as-is as its own
+                # top-level "key": value column. No resource/scope or top-level
+                # field mappings are applied here.
                 schema:
                   log_record_mapping:
                     attributes: passthrough

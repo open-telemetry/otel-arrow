@@ -10,13 +10,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 /// Marker value for `log_record_mapping.attributes` that enables attribute
-/// passthrough: every log record attribute is emitted as-is into a single
-/// dynamic column (see [`PASSTHROUGH_ATTRIBUTES_COLUMN`]).
+/// passthrough: every log record attribute is emitted as-is as a top-level
+/// `"<key>": <value>` pair, using the attribute key as the column name.
 pub(crate) const ATTRIBUTES_PASSTHROUGH_MARKER: &str = "passthrough";
-
-/// Name of the dynamic column that holds all log record attributes when
-/// attribute passthrough is enabled.
-pub(crate) const PASSTHROUGH_ATTRIBUTES_COLUMN: &str = "Attributes";
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
@@ -207,9 +203,9 @@ pub struct ApiConfig {
     ///
     /// When omitted, no mappings are applied (rows are emitted empty). To emit
     /// all log record attributes as-is, set `log_record_mapping.attributes` to
-    /// the string `passthrough`; every log attribute is then written into a
-    /// single dynamic column named `Attributes` as a JSON object (attribute keys
-    /// become JSON keys, so keys such as `service.name` need no sanitization).
+    /// the string `passthrough`; every log attribute is then emitted as its own
+    /// top-level `"<key>": <value>` column (the attribute key is the column
+    /// name).
     #[serde(default)]
     pub schema: SchemaConfig,
 
@@ -325,13 +321,10 @@ impl Config {
         for (key, value) in &schema.log_record_mapping {
             if key == "attributes" {
                 match value {
-                    // `attributes: passthrough` emits all attributes into a
-                    // single dynamic column.
-                    Value::String(s) if s == ATTRIBUTES_PASSTHROUGH_MARKER => {
-                        if !seen.insert(PASSTHROUGH_ATTRIBUTES_COLUMN.to_string()) {
-                            _ = duplicates.insert(PASSTHROUGH_ATTRIBUTES_COLUMN.to_string());
-                        }
-                    }
+                    // `attributes: passthrough` emits each attribute as its own
+                    // top-level column named by the attribute key; those column
+                    // names are runtime data, so there is nothing to check here.
+                    Value::String(s) if s == ATTRIBUTES_PASSTHROUGH_MARKER => {}
                     // `attributes: { key: Column, ... }` maps specific attributes.
                     Value::Object(map) => {
                         for v in map.values() {
@@ -737,28 +730,28 @@ mod tests {
     }
 
     #[test]
-    fn test_attributes_passthrough_column_conflict_rejected() {
+    fn test_attributes_passthrough_composes_with_mappings() {
+        // Passthrough emits each attribute as its own top-level column, so it no
+        // longer reserves a fixed column name and composes with other mappings.
         let config = Config {
             api: ApiConfig {
                 schema: SchemaConfig {
-                    resource_mapping: HashMap::from([("service.name".into(), "Attributes".into())]),
-                    scope_mapping: HashMap::new(),
-                    log_record_mapping: HashMap::from([(
-                        "attributes".into(),
-                        json!("passthrough"),
+                    resource_mapping: HashMap::from([(
+                        "service.name".into(),
+                        "ServiceName".into(),
                     )]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        ("attributes".into(), json!("passthrough")),
+                    ]),
                 },
                 ..test_api_config()
             },
             ..test_config()
         };
 
-        match config.validate().unwrap_err() {
-            Error::ConfigDuplicateColumns { columns } => {
-                assert!(columns.contains(&"Attributes".to_string()));
-            }
-            other => panic!("Expected ConfigDuplicateColumns, got {:?}", other),
-        }
+        assert!(config.validate().is_ok());
     }
 
     #[test]
