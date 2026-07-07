@@ -2021,8 +2021,16 @@ impl<
                         .expect("failed to create signal-handler runtime");
 
                     rt.block_on(async {
+                        // Register the termination-signal streams once and reuse
+                        // them for both the first (graceful) and second (force-exit)
+                        // wait. Recreating them between the two waits would open a
+                        // window during the drain where a second signal is lost:
+                        // tokio only delivers a signal to streams that already
+                        // exist when it arrives.
+                        let mut signals = TerminationSignals::register();
+
                         // ── First signal: graceful shutdown ─────────────────
-                        let signal_name = Self::recv_termination_signal().await;
+                        let signal_name = signals.recv().await;
 
                         otel_info!(
                             "shutdown.signal_received",
@@ -2068,7 +2076,7 @@ impl<
                         }
 
                         // ── Second signal: force exit ───────────────────────
-                        let signal_name = Self::recv_termination_signal().await;
+                        let signal_name = signals.recv().await;
                         raw_error!(
                             "shutdown.force_exit",
                             signal = signal_name,
@@ -2079,48 +2087,6 @@ impl<
                 })
                 .expect("failed to spawn signal-handler thread"),
         );
-    }
-
-    /// Awaits the first OS termination signal and returns its name.
-    ///
-    /// On Unix this listens for both SIGINT and SIGTERM.
-    /// On other platforms only Ctrl-C (SIGINT equivalent) is supported.
-    async fn recv_termination_signal() -> &'static str {
-        #[cfg(unix)]
-        {
-            use tokio::signal::unix::{SignalKind, signal};
-
-            let mut sigterm =
-                signal(SignalKind::terminate()).expect("failed to register SIGTERM handler");
-            let mut sigint =
-                signal(SignalKind::interrupt()).expect("failed to register SIGINT handler");
-
-            tokio::select! {
-                _ = sigterm.recv() => "SIGTERM",
-                _ = sigint.recv() => "SIGINT",
-            }
-        }
-
-        #[cfg(windows)]
-        {
-            use tokio::signal::windows::{ctrl_break, ctrl_c};
-
-            let mut sigint = ctrl_c().expect("failed to register Ctrl-C handler");
-            let mut sigterm = ctrl_break().expect("failed to register Ctrl-Break handler");
-
-            tokio::select! {
-                _ = sigterm.recv() => "CTRL_BREAK",
-                _ = sigint.recv() => "CTRL_C",
-            }
-        }
-
-        #[cfg(not(any(unix, windows)))]
-        {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("failed to listen for Ctrl-C");
-            "Ctrl-C"
-        }
     }
 
     /// Selects which CPU cores to use based on the given allocation.
@@ -2604,6 +2570,86 @@ impl<
                     }
                 })
         })
+    }
+}
+
+/// OS termination-signal streams registered once and reused across waits.
+///
+/// The streams are created a single time and held for the lifetime of the
+/// signal handler so the same registration serves both the first (graceful
+/// shutdown) and second (force-exit) signal. Recreating them between waits
+/// would drop a signal delivered while the shutdown request is in flight,
+/// because tokio only delivers a signal to streams that already exist when it
+/// arrives — which would defeat the "second signal forces exit" escape hatch.
+struct TerminationSignals {
+    #[cfg(unix)]
+    sigterm: tokio::signal::unix::Signal,
+    #[cfg(unix)]
+    sigint: tokio::signal::unix::Signal,
+    #[cfg(windows)]
+    ctrl_c: tokio::signal::windows::CtrlC,
+    #[cfg(windows)]
+    ctrl_break: tokio::signal::windows::CtrlBreak,
+}
+
+impl TerminationSignals {
+    /// Registers the platform's termination-signal streams.
+    ///
+    /// On Unix this listens for both SIGINT and SIGTERM; on Windows for Ctrl-C
+    /// and Ctrl-Break; elsewhere only Ctrl-C (SIGINT equivalent) is supported.
+    fn register() -> Self {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+
+            Self {
+                sigterm: signal(SignalKind::terminate())
+                    .expect("failed to register SIGTERM handler"),
+                sigint: signal(SignalKind::interrupt()).expect("failed to register SIGINT handler"),
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use tokio::signal::windows::{ctrl_break, ctrl_c};
+
+            Self {
+                ctrl_c: ctrl_c().expect("failed to register Ctrl-C handler"),
+                ctrl_break: ctrl_break().expect("failed to register Ctrl-Break handler"),
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            Self {}
+        }
+    }
+
+    /// Awaits the next OS termination signal and returns its name.
+    async fn recv(&mut self) -> &'static str {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = self.sigterm.recv() => "SIGTERM",
+                _ = self.sigint.recv() => "SIGINT",
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            tokio::select! {
+                _ = self.ctrl_break.recv() => "CTRL_BREAK",
+                _ = self.ctrl_c.recv() => "CTRL_C",
+            }
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("failed to listen for Ctrl-C");
+            "Ctrl-C"
+        }
     }
 }
 
