@@ -758,43 +758,45 @@ fn handle_server_to_agent_message(
 
     if let Some(remote_config) = message.remote_config {
         if let Some(config) = remote_config.config {
-            // we expect to find remote a key called "desired_state" in the remote config_map.
-            // All other keys within the config_map will be ignored...
+            if Some(&remote_config.config_hash) != session_state.last_config_hash.as_ref() {
+                // we expect to find remote a key called "desired_state" in the remote config_map.
+                // All other keys within the config_map will be ignored...
 
-            if let Some(config_file) = config.config_map.get("desired_state") {
-                if config_file.content_type == "application/json" {
-                    match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
-                        Ok(engine_config) => {
-                            updates.engine_config = Some(EngineConfigUpdate {
-                                engine_config,
-                                config_hash: remote_config.config_hash,
-                            })
+                if let Some(config_file) = config.config_map.get("desired_state") {
+                    if config_file.content_type == "application/json" {
+                        match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
+                            Ok(engine_config) => {
+                                updates.engine_config = Some(EngineConfigUpdate {
+                                    engine_config,
+                                    config_hash: remote_config.config_hash,
+                                })
+                            }
+                            Err(e) => {
+                                let message =
+                                    "Could not deserialize JSON encoded engine config".to_string();
+                                otel_error!(
+                                    "opamp.controller_extension.message.invalid_config_json",
+                                    message = message,
+                                    error =? e,
+                                );
+                                reply.reply_error = Some(ReplyError {
+                                    message,
+                                    config_hash: remote_config.config_hash,
+                                })
+                            }
                         }
-                        Err(e) => {
-                            let message =
-                                "Could not deserialize JSON encoded engine config".to_string();
-                            otel_error!(
-                                "opamp.controller_extension.message.invalid_config_json",
-                                message = message,
-                                error =? e,
-                            );
-                            reply.reply_error = Some(ReplyError {
-                                message,
-                                config_hash: remote_config.config_hash,
-                            })
-                        }
+                    } else {
+                        let message = "Invalid content type. expected application/json".to_string();
+                        otel_error!(
+                            "opamp.controller_extension.message.invalid_serialized_config",
+                            message = message,
+                            received = config_file.content_type,
+                        );
+                        reply.reply_error = Some(ReplyError {
+                            message,
+                            config_hash: remote_config.config_hash,
+                        })
                     }
-                } else {
-                    let message = "Invalid content type. expected application/json".to_string();
-                    otel_error!(
-                        "opamp.controller_extension.message.invalid_serialized_config",
-                        message = message,
-                        received = config_file.content_type,
-                    );
-                    reply.reply_error = Some(ReplyError {
-                        message,
-                        config_hash: remote_config.config_hash,
-                    })
                 }
             } else {
                 otel_warn!(
@@ -1881,7 +1883,8 @@ mod test {
                 instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
                 ..Default::default()
             }),
-            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            // send a new config after restart
+            Some(server_to_agent_with_config(&test_config(), vec![4, 1, 8])),
             None,
             None,
         ];
