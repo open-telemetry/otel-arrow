@@ -10,8 +10,8 @@
 
 ## Overview
 
-The filter processor drops logs or traces according to configured include and
-exclude rules. Metrics currently pass through unchanged.
+The filter processor drops metrics, logs, or traces according to configured
+include and exclude rules.
 
 For reference, compare the Go Collector
 [filter processor](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/processor/filterprocessor/README.md).
@@ -156,10 +156,24 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.filter.pdata.log_signals_consumed` | `{log}` | Number of log signals consumed. |
-| `processor.filter.pdata.span_signals_consumed` | `{span}` | Number of span signals consumed. |
-| `processor.filter.pdata.log_signals_filtered` | `{log}` | Number of log signals filtered. |
-| `processor.filter.pdata.span_signals_filtered` | `{span}` | Number of span signals filtered. |
+| `processor.filter.pdata.log.batches.seen` | `{batch}` | Number of log batches seen by the filter processor. |
+| `processor.filter.pdata.log.include.configured.batches` | `{batch}` | Number of log batches that went through a configured include path. Counts batches processed while an include filter was configured; it does not mean records matched the include rule. |
+| `processor.filter.pdata.log.exclude.configured.batches` | `{batch}` | Number of log batches that went through a configured exclude path. Counts batches processed while an exclude filter was configured; it does not mean records matched the exclude rule. |
+| `processor.filter.pdata.log.signals.consumed` | `{log}` | Number of log signals consumed. |
+| `processor.filter.pdata.log.signals.kept` | `{log}` | Number of log signals kept (consumed minus filtered). |
+| `processor.filter.pdata.log.signals.filtered` | `{log}` | Number of log signals filtered. |
+| `processor.filter.pdata.metric.batches.seen` | `{batch}` | Number of metric batches seen by the filter processor. |
+| `processor.filter.pdata.metric.include.configured.batches` | `{batch}` | Number of metric batches that went through a configured include path. Counts batches processed while an include filter was configured; it does not mean records matched the include rule. |
+| `processor.filter.pdata.metric.exclude.configured.batches` | `{batch}` | Number of metric batches that went through a configured exclude path. Counts batches processed while an exclude filter was configured; it does not mean records matched the exclude rule. |
+| `processor.filter.pdata.metric.signals.consumed` | `{metric}` | Number of metric signals consumed. |
+| `processor.filter.pdata.metric.signals.kept` | `{metric}` | Number of metric signals kept (consumed minus filtered). |
+| `processor.filter.pdata.metric.signals.filtered` | `{metric}` | Number of metric signals filtered. |
+| `processor.filter.pdata.span.batches.seen` | `{batch}` | Number of span batches seen by the filter processor. |
+| `processor.filter.pdata.span.include.configured.batches` | `{batch}` | Number of span batches that went through a configured include path. Counts batches processed while an include filter was configured; it does not mean records matched the include rule. |
+| `processor.filter.pdata.span.exclude.configured.batches` | `{batch}` | Number of span batches that went through a configured exclude path. Counts batches processed while an exclude filter was configured; it does not mean records matched the exclude rule. |
+| `processor.filter.pdata.span.signals.consumed` | `{span}` | Number of span signals consumed. |
+| `processor.filter.pdata.span.signals.kept` | `{span}` | Number of span signals kept (consumed minus filtered). |
+| `processor.filter.pdata.span.signals.filtered` | `{span}` | Number of span signals filtered. |
 
 ### Events
 
@@ -169,7 +183,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ## Limits
 
-- Metric filtering is not currently supported.
 - Include and exclude semantics depend on the signal-specific filter type in
   `otap-df-pdata`.
 

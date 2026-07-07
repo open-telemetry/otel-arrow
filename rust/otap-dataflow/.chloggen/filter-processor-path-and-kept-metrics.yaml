@@ -17,8 +17,9 @@ issues: [3053]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Adds `log/metric/span_signals_kept`, `log/metric/span_batches_seen`, and
-  `log/metric/span_include_configured_batches` / `log/metric/span_exclude_configured_batches`
-  counters to the `processor.filter.pdata` metric set. The configured-batch
-  counters indicate that a batch went through a configured include/exclude path,
-  not that records matched the rule.
+  Adds counters to the `processor.filter.pdata` metric set, each emitted per
+  signal type with a `log.`, `metric.`, or `span.` prefix. The log variants are
+  `log.signals.kept`, `log.batches.seen`, `log.include.configured.batches`, and
+  `log.exclude.configured.batches`; the `metric.*` and `span.*` variants follow
+  the same pattern. The configured-batch counters indicate that a batch went
+  through a configured include/exclude path, not that records matched the rule.
