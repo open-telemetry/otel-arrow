@@ -33,6 +33,8 @@ use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_state::phase::PipelinePhase;
 use prost::Message as _;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
@@ -358,6 +360,7 @@ async fn run_websocket_request_loop(
             Phase::ExchangeMessages => {
                 tokio::select! {
                     _ = cancellation_token.cancelled() => {
+                        try_send_close_message(&mut ws_sender, config.shutdown_timeout).await;
                         return stats;
                     }
 
@@ -466,6 +469,35 @@ fn is_message_send_success<E: std::fmt::Debug>(
         // cancelled before send completed
         None => false,
     }
+}
+
+/// Attempts close message on the websocket within the deadline.
+async fn try_send_close_message<T, E>(ws_sender: &mut T, deadline: Duration)
+where
+    T: SinkExt<Message, Error = E> + Unpin,
+    E: std::fmt::Debug,
+{
+    tokio::select! {
+        result = ws_sender.send(Message::Close(Some(CloseFrame {
+            code: CloseCode::Normal,
+            reason: "Agent shutting down".into()
+        }))) => {
+            if let Err(e) = result {
+                otel_error!(
+                    "opamp.controller_extension.shutdown_close_ws.timeout",
+                    message = "Error sending close frame",
+                    error =? e
+                )
+            }
+        }
+
+        _ = tokio::time::sleep(deadline) => {
+            otel_warn!(
+                "opamp.controller_extension.shutdown_close_ws.timeout",
+                message = "Unable to send WebSocket Close message before timeout"
+            )
+        }
+    };
 }
 
 /// Decide what must be done with a websocket message received from OpAMP server

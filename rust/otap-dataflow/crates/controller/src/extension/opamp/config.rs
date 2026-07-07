@@ -41,6 +41,11 @@ pub struct Config {
     #[serde(default = "default_backoff")]
     pub request_retry: ExponentialBackoff,
 
+    /// Duration in which the controller extension will perform shutdown procedures, such as
+    /// sending close frame on its WebSocket connection.
+    #[serde(default = "default_shutdown_timeout")]
+    pub shutdown_timeout: Duration,
+
     /// Interval at which the agent sends heartbeat to server. The agent during periods where
     /// there is no immediate stimulus to force sending messages.
     ///
@@ -106,6 +111,10 @@ fn default_backoff() -> ExponentialBackoff {
 
 fn default_heartbeat_interval() -> Duration {
     Duration::from_secs(30)
+}
+
+fn default_shutdown_timeout() -> Duration {
+    Duration::from_secs(2)
 }
 
 fn default_reconcile_config() -> EngineReconcileConfig {
