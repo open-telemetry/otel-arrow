@@ -211,6 +211,23 @@ in plaintext.
 
 ## Protocol Implementation
 
+### Instance UID resolution
+
+The initial value `instance_uid` field will be resolved as follows:
+
+Step 1: If the config value `instance_uid.persist` is configured, the 
+implementation will attempt to read the previously persisted value from the
+configured store. (e.g., from a file). If the config value cannot be read (e.g. 
+if the file does not exist), proceed to the next step.
+
+Step 2: If an initial value for the `instance_uid` is configured at (using the
+`instance_uid.initial_value`) option, an attempt will be made to parse a UUID
+from this value and use this as the instance_uid. If the config value cannot be
+parser as a valid UUID, it is a configuration error.
+
+Step 3: If the previous steps were not able to resolve the instance_uid, a new
+instance UID will be generated from a generated UUIDv7.
+
 ### Client Behaviour and Message Flow
 
 #### 1. Initial Message
