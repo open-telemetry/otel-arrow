@@ -107,6 +107,37 @@ engine:
             cert_file: "./my-certs/client.crt"
             key_file: "./my-certs/client.key"
 
+          # Flags for enabling agent capabilities
+          capabilities:
+            # whether the agent should report its status
+            #
+            # Optional (default = true)
+            reports_status: true
+
+            # whether the agent should report its current effective config
+            #
+            # Optional (default = true)
+            reports_effective_config: true
+
+            # whether the agent should report its health
+            #
+            # Optional (default = true)
+            reports_health: true
+
+            # whether the agent should send periodic heartbeats
+            #
+            # Optional (default = true)
+            reports_heartbeat: true
+
+            # whether the agent should accept a restart command from the server
+            #
+            # Optional (default = false)
+            accepts_restart_command: true
+
+            # whether the agent should accept new configurations from the server
+            #
+            # Optional (default = false)
+            accepts_remote_config: true
 
           # Configuration for heartbeat timing.
           #
@@ -211,6 +242,10 @@ in plaintext.
 
 ## Protocol Implementation
 
+### Capability Configuration
+
+
+
 ### Instance UID resolution
 
 The initial value `instance_uid` field will be resolved as follows:
@@ -238,7 +273,7 @@ full state, including the following fields:
 - `instance_uid` - from config if present, otherwise generated
 - `sequence_num` - zero if first message in sequence
 - `agent_description` - from configuration if present, otherwise omit
-- `capabilities` - list of supported capabilities:
+- `capabilities` - list of supported, enabled capabilities including:
   - Reports status
   - Reports Effective Config
   - Reports Health
