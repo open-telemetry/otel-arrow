@@ -2016,6 +2016,91 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_processor_logs_pass_through_kept_metrics() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        // Neither include nor exclude configured: the payload passes through
+        // untouched. The kept metric must reflect all forwarded signals and
+        // filtered must be 0. Regression test for the pass-through branch that
+        // previously reported every signal as filtered (kept == 0).
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    let mut bytes = vec![];
+                    build_logs_1()
+                        .encode(&mut bytes)
+                        .expect("failed to encode log data into bytes");
+                    let otlp_logs_bytes = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(bytes.into()).into(),
+                    );
+                    ctx.process(Message::PData(otlp_logs_bytes))
+                        .await
+                        .expect("failed to process");
+                    let _ = ctx.drain_pdata().await;
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    // The CollectTelemetry control message above is processed
+                    // asynchronously; give the collection loop time to drain.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "log.batches.seen");
+                    let include_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.include.configured.batches",
+                    );
+                    let exclude_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.exclude.configured.batches",
+                    );
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "log.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.filtered");
+
+                    assert_eq!(batches_seen, 1, "log.batches.seen");
+                    assert_eq!(include_configured, 0, "log.include.configured.batches");
+                    assert_eq!(exclude_configured, 0, "log.exclude.configured.batches");
+                    assert!(consumed >= 1, "log.signals.consumed should be >= 1");
+                    assert_eq!(filtered, 0, "log.signals.filtered must be 0 in pass-through");
+                    assert_eq!(
+                        kept, consumed,
+                        "log.signals.kept must equal consumed in pass-through"
+                    );
+                })
+            });
+    }
+
+    #[test]
     fn test_filter_processor_records_path_metrics_when_filtering_fails() {
         let test_runtime = TestRuntime::new();
         let telemetry_registry = test_runtime.metrics_registry();

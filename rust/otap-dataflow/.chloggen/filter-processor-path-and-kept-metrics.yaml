@@ -21,5 +21,4 @@ subtext: |
   `log/metric/span_include_configured_batches` / `log/metric/span_exclude_configured_batches`
   counters to the `processor.filter.pdata` metric set. The configured-batch
   counters indicate that a batch went through a configured include/exclude path,
-  not that records matched the rule. Existing `*_signals_filtered` counters are
-  unchanged.
+  not that records matched the rule.

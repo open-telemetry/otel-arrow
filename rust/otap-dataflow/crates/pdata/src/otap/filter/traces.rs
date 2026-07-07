@@ -174,14 +174,15 @@ impl TraceFilter {
         {
             include_config.create_filters(&traces_payload, false)?
         } else {
-            // both include and exclude is none
+            // both include and exclude is none: pass the payload through
+            // untouched. Every row is forwarded, so nothing is filtered out.
             let num_rows = traces_payload
                 .get(ArrowPayloadType::Spans)
                 .ok_or_else(|| Error::RecordBatchNotFound {
                     payload_type: ArrowPayloadType::Spans,
                 })?
                 .num_rows() as u64;
-            return Ok((traces_payload, num_rows, num_rows));
+            return Ok((traces_payload, num_rows, 0));
         };
 
         let (span_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -775,6 +776,49 @@ mod test {
             resource_spans: vec![ResourceSpans {
                 scope_spans: vec![ScopeSpans {
                     spans: spans[0..2].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    #[test]
+    fn test_filter_pass_through_reports_nothing_filtered() {
+        // No include/exclude configured: the payload passes through untouched.
+        // Every span is forwarded, so spans_filtered must be 0 (regression
+        // test: the pass-through branch previously reported all rows filtered).
+        let filter = TraceFilter::new(None, None);
+
+        let spans = vec![
+            Span::build().name("span_name_1").finish(),
+            Span::build().name("span_name_2").finish(),
+            Span::build().name("span_name_3").finish(),
+            Span::build().name("span_name_4").finish(),
+        ];
+
+        let traces_data = TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: spans.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Traces(traces_data));
+        let (result, spans_consumed, spans_filtered) = filter.filter(input).unwrap();
+
+        assert_eq!(spans_consumed, 4);
+        assert_eq!(spans_filtered, 0);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans,
                     ..Default::default()
                 }],
                 ..Default::default()
