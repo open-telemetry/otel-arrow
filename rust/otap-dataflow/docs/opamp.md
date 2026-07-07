@@ -49,8 +49,9 @@ See [#3263](https://github.com/open-telemetry/otel-arrow/issues/3263) and
 
 ## Scope
 
-This design document only covers the implementation of OpAMP for exchanging
-engine configuration and pipeline status.
+This design document covers the implementation of an OpAMP Agent that receives
+configuration from a remote server in `ServerToAgent` messages, and also sends
+reports its health and status to the remote server in `AgentToServer` messages.
 
 OpAMP has additional capabilities such as server directed management of
 connection/credential settings and package management (which could be used
