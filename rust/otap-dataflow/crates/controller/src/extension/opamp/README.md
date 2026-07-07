@@ -20,10 +20,10 @@ cd opamp-go/internal/examples
 go run ./server -no-tls
 ```
 
-- OpAMP endpoint: `ws://127.0.0.1:4320/v1/opamp` — web UI: <http://localhost:4321>
+- OpAMP endpoint: `ws://127.0.0.1:4320/v1/opamp` - web UI: <http://localhost:4321>
 - `-no-tls` is required because this extension currently supports `ws://` only.
 
-> **Caveat — remote config key:** the example server sends remote config under
+> **Caveat - remote config key:** the example server sends remote config under
 > the empty-string key in `config_map` and sets no content type, while this
 > extension currently expects the key `desired_state` with content type
 > `application/json`. Until that is reconciled, apply this local patch to
@@ -69,7 +69,7 @@ cargo build --bin df_engine
 ```
 
 The agent appears on <http://localhost:4321> within a heartbeat interval:
-instance `8be4df61-…`, health `Up`, and its effective config visible on the
+instance `8be4df61-...`, health `Up`, and its effective config visible on the
 agent page.
 
 ### 3. Push an engine config from the server
