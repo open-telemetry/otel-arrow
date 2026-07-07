@@ -1,0 +1,15 @@
+change_type: enhancement
+
+component: engine
+
+note: Add the `BearerTokenProvider` capability (with `BearerToken` and `CapabilityError`) so extensions can hand OAuth bearer tokens to data-path nodes.
+
+issues: [3356]
+
+subtext: |
+  Defines the engine-side capability surface: the `#[capability]`-generated
+  `BearerTokenProvider` trait (`get_token` and `token_stream`), the
+  secret-redacting `BearerToken` type, and `CapabilityError` /
+  `CapabilityErrorSource` for attributing runtime capability failures to the
+  failing `(extension, capability)` pair. No provider implementation is
+  included.

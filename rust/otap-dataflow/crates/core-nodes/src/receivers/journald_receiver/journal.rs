@@ -3,13 +3,211 @@
 
 //! Linux `sd-journal` reader abstraction.
 
+#[cfg(any(target_os = "linux", test))]
+use crate::receivers::journald_receiver::config::StartAt;
+#[cfg(any(target_os = "linux", test))]
+use std::ffi::c_int;
+
+/// Minimal seam over the `sd-journal` seek/step calls used to position a freshly
+/// opened journal when no checkpoint cursor exists. Abstracting the three raw
+/// FFI calls lets [`position_for_fresh_start`] — including its empty-journal
+/// handling — be unit-tested without a live `sd-journal`. Each method returns
+/// the raw libsystemd code (`>= 0` on success, `< 0` is `-errno`).
+#[cfg(any(target_os = "linux", test))]
+trait JournalSeek {
+    /// `sd_journal_seek_head`: position before the first entry.
+    fn seek_head(&mut self) -> c_int;
+    /// `sd_journal_seek_tail`: position after the most recent entry.
+    fn seek_tail(&mut self) -> c_int;
+    /// `sd_journal_previous`: step to the previous entry. Returns `1` when an
+    /// entry is now current, `0` when there is none, `< 0` on error.
+    fn previous(&mut self) -> c_int;
+}
+
+/// Positions a freshly opened journal (no checkpoint cursor) for `start_at`.
+///
+/// `StartAt::Beginning` seeks the head; the worker's `next()` then iterates
+/// forward from the first entry (the documented `SD_JOURNAL_FOREACH` idiom).
+///
+/// `StartAt::End` is subtle. `sd_journal_seek_tail()` parks the read head
+/// *after* the most recent entry without making any entry current. From there a
+/// bare `sd_journal_next()` advances toward a *following* entry, finds none, and
+/// returns `0` (the documented EOF marker) without anchoring — so a plain
+/// `next()`/`wait()` follow loop started at the raw tail never advances onto
+/// entries appended after startup (verified against real journald). (It is
+/// `sd_journal_step_one()`, not `sd_journal_next()`, that libsystemd documents as
+/// behaving like `sd_journal_previous()` at the tail.) So we step back once with
+/// `previous()` — documented to seek the closest *preceding* entry — to anchor on
+/// the last existing entry; the worker's first `next()` then steps forward onto
+/// genuinely new entries.
+///
+/// When the journal is empty — or a filter matches none of the existing
+/// entries — `previous()` returns `0` and anchors nothing, leaving the read head
+/// parked at the tail where `next()` keeps returning `0` even after `wait()`
+/// reports appends (the same permanent stall the tail branch exists to avoid,
+/// verified against real journald). In that case we reposition to the head with
+/// `seek_head()` so the follow loop can make progress. This does not replay
+/// history: `sd-journal` merges *all* open journal files (active plus
+/// rotated/archived) into a single view, and with the receiver's matches
+/// installed a well-behaved `previous()` returns `0` only when no matching entry
+/// exists in ANY of them yet — so `seek_head()` + `next()` land on the first
+/// matching entry appended *after* startup, with nothing older to replay. Replay
+/// would require `seek_tail()` + `previous()` to spuriously report `0` while
+/// matching entries actually exist (the multi-file positioning bug of the
+/// systemd#17662 class noted below); on such an old/buggy libsystemd it would
+/// replay that history once at startup (not observed on modern systemd). Bounding
+/// replay even under that bug would need a durable tail-boundary guard, which
+/// `start_at: end` deliberately omits (see the resume-anchor note below).
+///
+/// Returns `Err((operation, rc))` with the failing call's name and its negative
+/// return code. `seek_tail`/`seek_head` return `0` on success; `previous`
+/// returning `0` is the empty/no-match case above, not an error.
+///
+/// `seek_tail()` + `previous()` is the accepted best-effort idiom (see
+/// systemd/systemd#17662, coreos/go-systemd `sdjournal`). Across rotated or
+/// multi-file journals the tail position is approximate, and an entry appended
+/// in the race window between `seek_tail()` and `previous()` may be anchored and
+/// skipped — acceptable under `start_at: end`, which has no durable resume
+/// anchor until the first checkpoint commit.
+#[cfg(any(target_os = "linux", test))]
+fn position_for_fresh_start<J: JournalSeek>(
+    seek: &mut J,
+    start_at: StartAt,
+) -> Result<(), (&'static str, c_int)> {
+    fn require_nonneg(rc: c_int, operation: &'static str) -> Result<(), (&'static str, c_int)> {
+        if rc < 0 { Err((operation, rc)) } else { Ok(()) }
+    }
+
+    match start_at {
+        StartAt::Beginning => require_nonneg(seek.seek_head(), "sd_journal_seek_head"),
+        StartAt::End => {
+            require_nonneg(seek.seek_tail(), "sd_journal_seek_tail")?;
+            let anchored = seek.previous();
+            require_nonneg(anchored, "sd_journal_previous")?;
+            if anchored == 0 {
+                require_nonneg(seek.seek_head(), "sd_journal_seek_head")?;
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod fresh_start_tests {
+    use super::{JournalSeek, position_for_fresh_start};
+    use crate::receivers::journald_receiver::config::StartAt;
+    use std::ffi::c_int;
+
+    #[derive(Default)]
+    struct RecordingSeek {
+        calls: Vec<&'static str>,
+        seek_head_rc: c_int,
+        seek_tail_rc: c_int,
+        previous_rc: c_int,
+    }
+
+    impl JournalSeek for RecordingSeek {
+        fn seek_head(&mut self) -> c_int {
+            self.calls.push("seek_head");
+            self.seek_head_rc
+        }
+        fn seek_tail(&mut self) -> c_int {
+            self.calls.push("seek_tail");
+            self.seek_tail_rc
+        }
+        fn previous(&mut self) -> c_int {
+            self.calls.push("previous");
+            self.previous_rc
+        }
+    }
+
+    #[test]
+    fn beginning_seeks_head_only() {
+        let mut seek = RecordingSeek::default();
+        assert!(position_for_fresh_start(&mut seek, StartAt::Beginning).is_ok());
+        assert_eq!(seek.calls, ["seek_head"]);
+    }
+
+    #[test]
+    fn end_with_existing_entries_anchors_with_previous() {
+        // previous() finds the last existing entry (rc = 1): tail + previous and
+        // NO seek_head — rewinding to the head would replay historical records.
+        let mut seek = RecordingSeek {
+            previous_rc: 1,
+            ..Default::default()
+        };
+        assert!(position_for_fresh_start(&mut seek, StartAt::End).is_ok());
+        assert_eq!(seek.calls, ["seek_tail", "previous"]);
+    }
+
+    #[test]
+    fn end_on_empty_journal_repositions_to_head() {
+        // Regression guard for the empty/no-match permanent stall: previous()
+        // returns 0 (nothing to anchor), so the read head must be unparked with
+        // seek_head() or the next()/wait() loop never advances onto new entries.
+        let mut seek = RecordingSeek {
+            previous_rc: 0,
+            ..Default::default()
+        };
+        assert!(position_for_fresh_start(&mut seek, StartAt::End).is_ok());
+        assert_eq!(seek.calls, ["seek_tail", "previous", "seek_head"]);
+    }
+
+    #[test]
+    fn end_propagates_previous_error() {
+        let mut seek = RecordingSeek {
+            previous_rc: -5,
+            ..Default::default()
+        };
+        let err = position_for_fresh_start(&mut seek, StartAt::End).unwrap_err();
+        assert_eq!(err, ("sd_journal_previous", -5));
+        assert_eq!(seek.calls, ["seek_tail", "previous"]);
+    }
+
+    #[test]
+    fn end_propagates_seek_tail_error_without_stepping() {
+        let mut seek = RecordingSeek {
+            seek_tail_rc: -1,
+            ..Default::default()
+        };
+        let err = position_for_fresh_start(&mut seek, StartAt::End).unwrap_err();
+        assert_eq!(err, ("sd_journal_seek_tail", -1));
+        assert_eq!(seek.calls, ["seek_tail"]);
+    }
+
+    #[test]
+    fn end_propagates_seek_head_recovery_error() {
+        // On the empty path (previous() == 0) a failing recovery seek_head()
+        // surfaces as a seek_head error, distinct from seek_tail/previous.
+        let mut seek = RecordingSeek {
+            previous_rc: 0,
+            seek_head_rc: -22,
+            ..Default::default()
+        };
+        let err = position_for_fresh_start(&mut seek, StartAt::End).unwrap_err();
+        assert_eq!(err, ("sd_journal_seek_head", -22));
+        assert_eq!(seek.calls, ["seek_tail", "previous", "seek_head"]);
+    }
+
+    #[test]
+    fn beginning_propagates_seek_head_error() {
+        let mut seek = RecordingSeek {
+            seek_head_rc: -1,
+            ..Default::default()
+        };
+        let err = position_for_fresh_start(&mut seek, StartAt::Beginning).unwrap_err();
+        assert_eq!(err, ("sd_journal_seek_head", -1));
+        assert_eq!(seek.calls, ["seek_head"]);
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod imp {
     #![allow(unsafe_code)]
 
     use crate::receivers::journald_receiver::arrow_records_encoder::{JournalEntry, JournalField};
     use crate::receivers::journald_receiver::config::{
-        ExtractionConfig, LargeFieldPolicy, RuntimeConfig, StartAt,
+        ExtractionConfig, LargeFieldPolicy, RuntimeConfig,
     };
 
     use libc::{RTLD_NOW, c_char, c_int, c_void, size_t};
@@ -28,6 +226,7 @@ mod imp {
     type OpenDirectoryFn = unsafe extern "C" fn(*mut *mut SdJournal, *const c_char, c_int) -> c_int;
     type CloseFn = unsafe extern "C" fn(*mut SdJournal);
     type NextFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
+    type PreviousFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type WaitFn = unsafe extern "C" fn(*mut SdJournal, u64) -> c_int;
     type SeekHeadFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
     type SeekTailFn = unsafe extern "C" fn(*mut SdJournal) -> c_int;
@@ -86,6 +285,7 @@ mod imp {
         open_directory: OpenDirectoryFn,
         close: CloseFn,
         next: NextFn,
+        previous: PreviousFn,
         wait: WaitFn,
         seek_head: SeekHeadFn,
         seek_tail: SeekTailFn,
@@ -136,6 +336,7 @@ mod imp {
                 open_directory: sym!("sd_journal_open_directory", OpenDirectoryFn),
                 close: sym!("sd_journal_close", CloseFn),
                 next: sym!("sd_journal_next", NextFn),
+                previous: sym!("sd_journal_previous", PreviousFn),
                 wait: sym!("sd_journal_wait", WaitFn),
                 seek_head: sym!("sd_journal_seek_head", SeekHeadFn),
                 seek_tail: sym!("sd_journal_seek_tail", SeekTailFn),
@@ -234,16 +435,12 @@ mod imp {
 
             self.configure_matches(config)?;
 
-            match config.start_at {
-                StartAt::Beginning => check(
-                    unsafe { (self.lib.seek_head)(self.journal.as_ptr()) },
-                    "sd_journal_seek_head",
-                ),
-                StartAt::End => check(
-                    unsafe { (self.lib.seek_tail)(self.journal.as_ptr()) },
-                    "sd_journal_seek_tail",
-                ),
-            }
+            // Position the read head for a fresh (no-checkpoint) start. For
+            // `StartAt::End` this anchors past existing entries (and unparks an
+            // empty journal from the tail) so the worker's next()/wait() loop
+            // follows only newly appended records; see `position_for_fresh_start`.
+            super::position_for_fresh_start(self, config.start_at)
+                .map_err(|(operation, rc)| JournalError::SystemdCall { operation, rc })
         }
 
         fn configure_matches(&mut self, config: &RuntimeConfig) -> Result<(), JournalError> {
@@ -484,6 +681,18 @@ mod imp {
             .saturating_add(FIELD_NAME_THRESHOLD_HEADROOM_BYTES)
             .min(extraction.max_entry_bytes)
             .max(1)
+    }
+
+    impl super::JournalSeek for SdJournalReader {
+        fn seek_head(&mut self) -> c_int {
+            unsafe { (self.lib.seek_head)(self.journal.as_ptr()) }
+        }
+        fn seek_tail(&mut self) -> c_int {
+            unsafe { (self.lib.seek_tail)(self.journal.as_ptr()) }
+        }
+        fn previous(&mut self) -> c_int {
+            unsafe { (self.lib.previous)(self.journal.as_ptr()) }
+        }
     }
 
     impl Drop for SdJournalReader {
