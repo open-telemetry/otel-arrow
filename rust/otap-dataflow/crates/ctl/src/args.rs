@@ -110,7 +110,9 @@ impl Cli {
     {
         Self::command_branded(branding)
             .try_get_matches_from(itr)
-            .and_then(|m| Self::from_arg_matches(&m))
+        Self::command_branded(branding)
+            .try_get_matches_from(itr)
+            .and_then(|m| Self::from_arg_matches_with_effective_defaults(&m))
     }
 
     fn from_arg_matches_with_effective_defaults(matches: &ArgMatches) -> Result<Self, clap::Error> {
