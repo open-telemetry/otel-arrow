@@ -58,14 +58,15 @@ use std::collections::hash_map::Entry;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc as std_mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
 use one_collect::etw::tdh::TdhDecoder;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
-use otap_df_telemetry::{otel_error, otel_info};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
@@ -563,6 +564,23 @@ pub(super) struct SessionWideMetrics {
     pub dropped_slow_worker: AtomicU64,
     /// Events whose TDH decode failed (`received_events_invalid`).
     pub decode_failed: AtomicU64,
+    /// Kernel-side ETW events lost (buffer overrun) before `one_collect` ever
+    /// saw them, from `TraceStats::events_lost`. A background poller converts
+    /// the cumulative session counter into per-interval deltas and
+    /// `fetch_add`s them here. Published as `received_events_lost_kernel`.
+    /// Distinct from `dropped_slow_worker`, which is our own downstream loss.
+    pub kernel_events_lost: AtomicU64,
+    /// Real-time delivery buffers lost (consumer too slow to drain the ETW
+    /// real-time buffers), from `TraceStats::real_time_buffers_lost`.
+    /// Published as `kernel_real_time_buffers_lost`.
+    pub kernel_real_time_buffers_lost: AtomicU64,
+    /// Log buffers that could not be flushed, from
+    /// `TraceStats::log_buffers_lost`. Published as `kernel_log_buffers_lost`.
+    pub kernel_log_buffers_lost: AtomicU64,
+    /// Total ETW buffers written by the session, from
+    /// `TraceStats::buffers_written`. A throughput/health denominator rather
+    /// than a loss signal. Published as `kernel_buffers_written`.
+    pub kernel_buffers_written: AtomicU64,
 }
 
 // ── Per-session state ────────────────────────────────────────────────────────
@@ -580,6 +598,157 @@ struct SessionEntry {
     /// Shared atomic counters bridging the `!Send` `ProcessTrace` callback to
     /// the async receivers. Cloned to every per-core subscriber.
     telemetry: Arc<SessionWideMetrics>,
+}
+
+/// Snapshot of ETW cumulative trace counters returned by `query_stats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TraceStatsSnapshot {
+    events_lost: u64,
+    real_time_buffers_lost: u64,
+    log_buffers_lost: u64,
+    buffers_written: u64,
+}
+
+/// Per-poller baseline state used to compute monotonic deltas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct PollerBaselines {
+    handle: u64,
+    events_lost: u64,
+    real_time_buffers_lost: u64,
+    log_buffers_lost: u64,
+    buffers_written: u64,
+    query_failed_logged: bool,
+}
+
+impl PollerBaselines {
+    /// Reset per-counter baselines when the ETW handle changes.
+    fn rotate_handle(&mut self, handle: u64) {
+        self.handle = handle;
+        self.events_lost = 0;
+        self.real_time_buffers_lost = 0;
+        self.log_buffers_lost = 0;
+        self.buffers_written = 0;
+        self.query_failed_logged = false;
+    }
+
+    /// Mark a query failure and report whether the caller should emit a warn.
+    fn on_query_failed(&mut self) -> bool {
+        if self.query_failed_logged {
+            return false;
+        }
+        self.query_failed_logged = true;
+        true
+    }
+
+    /// Mark a successful query and report whether the caller should emit
+    /// a single recovery info log.
+    fn on_query_recovered(&mut self) -> bool {
+        if !self.query_failed_logged {
+            return false;
+        }
+        self.query_failed_logged = false;
+        true
+    }
+}
+
+/// Convert cumulative ETW stats into per-interval deltas and publish to the
+/// shared session atomics.
+fn publish_trace_stats_delta(
+    telemetry: &SessionWideMetrics,
+    baselines: &mut PollerBaselines,
+    stats: TraceStatsSnapshot,
+) {
+    let events_lost = stats.events_lost.saturating_sub(baselines.events_lost);
+    baselines.events_lost = stats.events_lost;
+    if events_lost > 0 {
+        let _ = telemetry
+            .kernel_events_lost
+            .fetch_add(events_lost, Ordering::Relaxed);
+    }
+
+    let rt_lost = stats
+        .real_time_buffers_lost
+        .saturating_sub(baselines.real_time_buffers_lost);
+    baselines.real_time_buffers_lost = stats.real_time_buffers_lost;
+    if rt_lost > 0 {
+        let _ = telemetry
+            .kernel_real_time_buffers_lost
+            .fetch_add(rt_lost, Ordering::Relaxed);
+    }
+
+    let log_lost = stats
+        .log_buffers_lost
+        .saturating_sub(baselines.log_buffers_lost);
+    baselines.log_buffers_lost = stats.log_buffers_lost;
+    if log_lost > 0 {
+        let _ = telemetry
+            .kernel_log_buffers_lost
+            .fetch_add(log_lost, Ordering::Relaxed);
+    }
+
+    let written = stats
+        .buffers_written
+        .saturating_sub(baselines.buffers_written);
+    baselines.buffers_written = stats.buffers_written;
+    if written > 0 {
+        let _ = telemetry
+            .kernel_buffers_written
+            .fetch_add(written, Ordering::Relaxed);
+    }
+}
+
+fn run_trace_stats_poller_loop<F>(
+    handle_slot: Arc<AtomicU64>,
+    telemetry: Arc<SessionWideMetrics>,
+    poll_stop: Arc<AtomicBool>,
+    poll_interval: Duration,
+    poll_session_name: &str,
+    mut query_stats: F,
+) where
+    F: FnMut(u64) -> Result<TraceStatsSnapshot, String>,
+{
+    let mut baselines = PollerBaselines::default();
+
+    while !poll_stop.load(Ordering::Relaxed) {
+        std::thread::sleep(poll_interval);
+
+        let handle = handle_slot.load(Ordering::SeqCst);
+        if handle == 0 {
+            continue; // session not started yet
+        }
+
+        // Reset all baselines on session (re)start / handle rotation so we
+        // never emit a bogus giant delta against a fresh cumulative counter.
+        if handle != baselines.handle {
+            baselines.rotate_handle(handle);
+        }
+
+        match query_stats(handle) {
+            Ok(stats) => {
+                if baselines.on_query_recovered() {
+                    otel_info!(
+                        "etw.query_stats.recovered",
+                        session_name = poll_session_name,
+                        handle = handle,
+                        message = "ETW trace-stats polling recovered",
+                    );
+                }
+
+                publish_trace_stats_delta(&telemetry, &mut baselines, stats);
+            }
+            Err(e) => {
+                if baselines.on_query_failed() {
+                    otel_warn!(
+                        "etw.query_stats.failed",
+                        session_name = poll_session_name,
+                        handle = handle,
+                        error = %e,
+                        message = "Failed to query ETW trace stats; kernel loss metrics will stall until polling recovers",
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Process-global session registry.  Keyed by `session_name` so that:
@@ -625,6 +794,7 @@ fn spawn_etw_session(
         .collect::<Result<Vec<_>, Error>>()?;
 
     let session_name = config.session_name.clone();
+    let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
 
     // Detach the session thread; it runs for the lifetime of the process.
     let _ = std::thread::Builder::new()
@@ -814,11 +984,85 @@ fn spawn_etw_session(
                 session.add_event(wide_event, None);
             }
 
-            // `parse_until` blocks on `ProcessTrace`.  We never signal stop,
+            // Capture the live ETW session handle so a background poller can
+            // query kernel-side loss counters while `parse_until` blocks. The
+            // handle is only valid for the running session; 0 means the
+            // session has not started yet.
+            //
+            // The started_callback fires when the ETW session is ACTUALLY
+            // started (inside parse_until), not when the thread is initialized.
+            // This is where we signal readiness to the caller: the session is
+            // now live, the handle is valid, and event delivery is beginning.
+            let handle_slot = Arc::new(AtomicU64::new(0));
+            {
+                let handle_slot = handle_slot.clone();
+                let ready_tx_for_started = ready_tx.clone();
+                session.add_started_callback(move |ctx| {
+                    handle_slot.store(ctx.handle(), Ordering::SeqCst);
+
+                    // Signal to the caller that the ETW session is actually
+                    // ready: the handle is now populated, the poller can
+                    // query stats, and event callbacks are active.
+                    let _ = ready_tx_for_started.send(Ok(()));
+                });
+            }
+
+            // Background poller: `query_stats` returns cumulative, monotonic
+            // counters for the running session. We convert each into a
+            // per-interval delta and `fetch_add` into the shared atomics, which
+            // the async side then claims via the existing `swap(0)` model. The
+            // poller lives for the duration of `parse_until` and is stopped and
+            // joined immediately after it returns.
+            let poll_stop = Arc::new(AtomicBool::new(false));
+            let poller = {
+                let handle_slot = handle_slot.clone();
+                let telemetry = Arc::clone(&telemetry);
+                let poll_stop = poll_stop.clone();
+                let poll_session_name = session_name.clone();
+                match std::thread::Builder::new()
+                    .name("etw-drop-poller".into())
+                    .spawn(move || {
+                        run_trace_stats_poller_loop(
+                            handle_slot,
+                            telemetry,
+                            poll_stop,
+                            Duration::from_secs(1),
+                            poll_session_name.as_str(),
+                            |handle| {
+                                etw::query_stats(handle)
+                                    .map(|stats| TraceStatsSnapshot {
+                                        events_lost: stats.events_lost,
+                                        real_time_buffers_lost: stats.real_time_buffers_lost,
+                                        log_buffers_lost: stats.log_buffers_lost,
+                                        buffers_written: stats.buffers_written,
+                                    })
+                                    .map_err(|e| e.to_string())
+                            },
+                        );
+                    }) {
+                    Ok(handle) => Some(handle),
+                    Err(e) => {
+                        let _ = ready_tx
+                            .send(Err(format!("failed to spawn ETW trace-stats poller: {e}")));
+                        return;
+                    }
+                }
+            };
+
+            // `parse_until` blocks on `ProcessTrace`, which also triggers the
+            // started_callback where we signal readiness. We never signal stop,
             // so the session runs until the process exits.
             // TODO: Surface startup failures via a oneshot readiness channel
             // once the one-collect API stabilizes (TDH decoding work).
             let result = session.parse_until(&session_name, || false);
+
+            // Session ended: stop the poller and join it so the thread is torn
+            // down within one poll interval.
+            poll_stop.store(true, Ordering::Relaxed);
+            if let Some(poller) = poller {
+                let _ = poller.join();
+            }
+
             if let Err(ref e) = result {
                 otel_error!(
                     "etw.parse_until.failed",
@@ -834,6 +1078,13 @@ fn spawn_etw_session(
         .map_err(|e| Error::InternalError {
             message: format!("failed to spawn ETW session thread: {e}"),
         })?;
+
+    ready_rx
+        .recv()
+        .map_err(|e| Error::InternalError {
+            message: format!("ETW session startup signal failed: {e}"),
+        })?
+        .map_err(|message| Error::InternalError { message })?;
 
     Ok(())
 }
@@ -1390,5 +1641,135 @@ mod tests {
         assert_eq!(fields[0].value, EtwAttributeValue::Str("hello".to_string()));
         assert_eq!(fields[1].name, "n");
         assert_eq!(fields[1].value, EtwAttributeValue::Int(123));
+    }
+
+    // ── Trace-stats poller edge cases ──────────────
+
+    #[test]
+    fn trace_stats_first_poll_after_start_publishes_full_sample() {
+        let telemetry = SessionWideMetrics::default();
+        let mut baselines = PollerBaselines::default();
+
+        // Simulate started_callback setting the first live handle.
+        baselines.rotate_handle(42);
+
+        publish_trace_stats_delta(
+            &telemetry,
+            &mut baselines,
+            TraceStatsSnapshot {
+                events_lost: 7,
+                real_time_buffers_lost: 3,
+                log_buffers_lost: 2,
+                buffers_written: 11,
+            },
+        );
+
+        assert_eq!(telemetry.kernel_events_lost.load(Ordering::Relaxed), 7);
+        assert_eq!(
+            telemetry
+                .kernel_real_time_buffers_lost
+                .load(Ordering::Relaxed),
+            3
+        );
+        assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 2);
+        assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 11);
+    }
+
+    #[test]
+    fn trace_stats_handle_rotation_resets_baselines() {
+        let telemetry = SessionWideMetrics::default();
+        let mut baselines = PollerBaselines::default();
+
+        baselines.rotate_handle(1001);
+        publish_trace_stats_delta(
+            &telemetry,
+            &mut baselines,
+            TraceStatsSnapshot {
+                events_lost: 10,
+                real_time_buffers_lost: 4,
+                log_buffers_lost: 1,
+                buffers_written: 20,
+            },
+        );
+
+        // New ETW handle should reset baselines so a lower cumulative value is
+        // treated as a fresh full sample, not clamped to zero forever.
+        baselines.rotate_handle(1002);
+        publish_trace_stats_delta(
+            &telemetry,
+            &mut baselines,
+            TraceStatsSnapshot {
+                events_lost: 3,
+                real_time_buffers_lost: 1,
+                log_buffers_lost: 0,
+                buffers_written: 5,
+            },
+        );
+
+        assert_eq!(telemetry.kernel_events_lost.load(Ordering::Relaxed), 13);
+        assert_eq!(
+            telemetry
+                .kernel_real_time_buffers_lost
+                .load(Ordering::Relaxed),
+            5
+        );
+        assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 1);
+        assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 25);
+    }
+
+    #[test]
+    fn trace_stats_query_failure_then_recovery_is_one_shot() {
+        let mut baselines = PollerBaselines::default();
+
+        // First failure should log.
+        assert!(baselines.on_query_failed());
+        // Repeated failures should be suppressed.
+        assert!(!baselines.on_query_failed());
+        // First success after failure should log recovery.
+        assert!(baselines.on_query_recovered());
+        // Repeated successes should be suppressed.
+        assert!(!baselines.on_query_recovered());
+    }
+
+    #[test]
+    fn trace_stats_poller_loop_stops_and_joins() {
+        let handle_slot = Arc::new(AtomicU64::new(77));
+        let telemetry = Arc::new(SessionWideMetrics::default());
+        let poll_stop = Arc::new(AtomicBool::new(false));
+        let query_calls = Arc::new(AtomicU64::new(0));
+
+        let query_calls_clone = Arc::clone(&query_calls);
+        let poller = std::thread::spawn({
+            let handle_slot = Arc::clone(&handle_slot);
+            let telemetry = Arc::clone(&telemetry);
+            let poll_stop = Arc::clone(&poll_stop);
+            move || {
+                run_trace_stats_poller_loop(
+                    handle_slot,
+                    telemetry,
+                    poll_stop,
+                    Duration::from_millis(5),
+                    "test-session",
+                    |handle| {
+                        let _ = query_calls_clone.fetch_add(1, Ordering::Relaxed);
+                        Ok(TraceStatsSnapshot {
+                            events_lost: handle,
+                            real_time_buffers_lost: 0,
+                            log_buffers_lost: 0,
+                            buffers_written: 0,
+                        })
+                    },
+                )
+            }
+        });
+
+        std::thread::sleep(Duration::from_millis(25));
+        poll_stop.store(true, Ordering::Relaxed);
+
+        poller.join().expect("poller thread should join cleanly");
+        assert!(
+            query_calls.load(Ordering::Relaxed) > 0,
+            "poller should have executed at least one query before stop",
+        );
     }
 }
