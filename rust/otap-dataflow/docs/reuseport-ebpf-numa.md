@@ -1,8 +1,5 @@
 # NUMA-Local Reuseport Load Balancing: Design Proposal
 
-> Status: Proposed. This is a design proposal for review. It describes a
-> plan and intended behavior; it does not assume any of it is built yet.
-
 ## Motivation
 
 The df-engine runs receiver pipelines on dedicated cores, and those receivers
@@ -23,14 +20,14 @@ chooses sockets for new connections and datagrams using listener placement
 metadata resolved by the engine. It is the socket-level companion to
 [NUMA-Aware Execution Engine](numa-aware-exec-engine.md), which covers topology
 discovery, controller-owned placement, dynamic core-count configuration, and the
-listener-group contract consumed here.
+placement metadata contract consumed here.
 
 ## Review Focus
 
 This proposal is primarily asking for feedback on:
 
 1. Whether the eBPF selector should remain an optional consumer of the
-   engine's NUMA-aware listener-group contract.
+   engine's NUMA-aware placement metadata contract.
 2. Whether the first selector policy should be NUMA-local round-robin with a
    global fallback.
 3. Whether the proposed failure behavior is safe: selector attach failure logs
@@ -48,8 +45,8 @@ This proposal is primarily asking for feedback on:
 - Keep new connections NUMA-local when possible on multi-socket Linux hosts.
 - Support both TCP and UDP receivers, for example OTLP/gRPC, OTLP/HTTP, OTAP,
   and syslog/CEF.
-- Integrate with engine-controller listener-group planning rather than
-  discovering placement independently.
+- Integrate with engine-controller placement metadata and socket-specific
+  listener-group planning rather than discovering placement independently.
 - Support multiple pipeline groups and pipelines, each producing its own
   listener-group plans and, therefore, multiple `SO_REUSEPORT` socket groups.
 - Leave room for live reconfiguration by treating selector attachment as a
@@ -152,24 +149,33 @@ receivers fall back to independent binding.
 
 A coordinated listener-group manager owns the lifecycle for each planned
 `SO_REUSEPORT` group. It is the socket-specific consumer of the placement
-metadata contract: the controller registers one plan per shared receiver bind
-address, and the plan lists the expected listener members with their listener
-ids, core ids, NUMA node ids, and socket identity.
+metadata contract: before launching receiver tasks, the controller provides the
+current placement snapshot and invokes socket-specific listener planning. The
+listener-group manager owns the bind-address-keyed plans, and each plan lists
+the expected listener members with their listener ids, core ids, NUMA node ids,
+and socket identity.
 
 The manager creates the whole group in one coordinated step:
 
-1. Before launching receiver tasks, the controller registers a listener-group
-   plan for each shared bind address.
+1. Before launching receiver tasks, the controller invokes listener planning
+   with the resolved placement snapshot.
 2. Each per-core receiver asks the manager for its listener during startup.
-3. The manager waits until all expected members arrive, then binds every socket
-   for the group before any member begins listening.
-4. If the eBPF selector is enabled, the manager populates the BPF maps and
-   attaches the selector after bind and before listen.
-5. Once the group is ready, each receiver gets the listener assigned to its own
+3. The manager waits until all expected members arrive, then creates and binds
+   every socket for the group before exposing any member to the receiver.
+4. For TCP groups, the manager calls `listen()` on all sockets before
+   inserting them into `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`. For UDP groups,
+   bound sockets are eligible without `listen()`.
+5. If the eBPF selector is enabled, the manager populates the socket-array,
+   range, and total-count maps, then attaches the selector to the group.
+6. Once the group is ready, each receiver gets the listener assigned to its own
    core and starts accepting on that socket.
 
 This lifecycle prevents partial group construction and gives the selector a
-complete socket array before traffic can enter the group.
+complete socket array before the engine publishes the group as ready. TCP
+connections that arrive after `listen()` but before selector attach, and UDP
+datagrams that arrive after `bind()` but before selector attach, use the
+kernel's default reuseport hash. That fallback is correct delivery, but not
+NUMA-local selection.
 
 Fallback must be deterministic:
 
@@ -186,12 +192,11 @@ Fallback must be deterministic:
 
 When enabled and supported, the manager attaches a
 `BPF_PROG_TYPE_SK_REUSEPORT` selector to each eligible group exactly once,
-after all sockets are bound and before any socket calls `listen()`. The
-userspace side populates per-group BPF maps describing the socket array and the
-per-NUMA contiguous ranges, then attaches the program to the group with
-`setsockopt(SO_ATTACH_REUSEPORT_EBPF)`. Attaching before `listen()` avoids a
-window where the kernel could complete handshakes into accept queues using the
-default reuseport hash.
+after the group sockets are eligible for `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`.
+For TCP, eligibility means `bind()` plus `listen()`; for UDP, eligibility means
+`bind()`. The userspace side populates per-group BPF maps describing the socket
+array and the per-NUMA contiguous ranges, then attaches the program to the group
+with `setsockopt(SO_ATTACH_REUSEPORT_EBPF)`.
 
 The selector is intentionally tiny and never drops traffic: any helper failure
 leaves the kernel free to apply its default hash.
@@ -234,7 +239,7 @@ listeners idle when the working set of connections is small. The policy
 balances new connections across listeners within the local NUMA node; it does
 not rebalance requests, streams inside an existing connection, or bytes.
 Long-lived connections stay on the socket first chosen. The atomic counter
-requires BPF ISA v3 and therefore Linux 5.12 or newer.
+requires Linux 5.12 or newer for BPF atomic instructions.
 
 ### Engine-level policy alternative
 
@@ -243,11 +248,17 @@ only possible balancing strategy. An engine-level policy can also consume the
 same controller-owned placement snapshot and remain aligned with the engine
 configuration model.
 
-The long-term configuration should be an engine policy, for example:
+The long-term configuration should be an engine policy that follows the
+existing policy hierarchy rather than a process-global switch. The exact YAML
+path should be finalized with the configuration model, but the intended shape is
+policy-scoped so top-level, group, or pipeline defaults can apply and a receiver
+can opt in or out when different bind addresses need different behavior. For
+example:
 
 ```yaml
-load_balancing:
-  strategy: kernel # kernel | ebpf_numa | engine
+policies:
+  load_balancing:
+    strategy: kernel # kernel | ebpf_numa | engine
 ```
 
 The `kernel` strategy leaves selection to the default Linux reuseport hash. The
@@ -317,7 +328,8 @@ proposed to compile the feature so the BPF build and loader stay green.
 
 - Linux with `BPF_PROG_TYPE_SK_REUSEPORT` and
   `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`.
-- Kernel 5.12 or newer for the atomic round-robin counter (BPF ISA v3).
+- Kernel 5.12 or newer for the BPF atomic instructions used by the
+  round-robin counter.
 - Loading and attaching the selector require `CAP_BPF` plus `CAP_NET_ADMIN` on
   newer kernels, or `CAP_SYS_ADMIN` on older ones. The coordinated plain
   `SO_REUSEPORT` path needs no special privilege.
@@ -427,20 +439,20 @@ placement.
   the normal socket listener path. It could be explored as a separate future
   ingestion architecture, but it does not fit this design's goal of preserving
   the standard `TcpListener` / `UdpSocket` receiver model.
-- Aya: Aya is a viable future alternative because `SkReuseport` and
-  `ReusePortSockArray` ship in Aya 0.14.0, released on 2026-06-24, and it would
-  provide a more Rust-native eBPF stack. This proposal keeps libbpf-rs for the
-  initial design because the selector is a small, stable UAPI-bound C program,
-  libbpf-rs directly supports the required program and attach types, and the
-  build/runtime cost is contained behind an optional Linux-only feature. The
-  loader should stay isolated so the backend can be revisited if the BPF
-  surface grows or the project prefers a pure-Rust eBPF toolchain later.
+- Aya: Aya is a viable future alternative because recent releases include
+  `SkReuseport` and `ReusePortSockArray`, and it would provide a more
+  Rust-native eBPF stack. This proposal keeps libbpf-rs for the initial design
+  because the selector is a small, stable UAPI-bound C program, libbpf-rs
+  directly supports the required program and attach types, and the build/runtime
+  cost is contained behind an optional Linux-only feature. The loader should
+  stay isolated so the backend can be revisited if the BPF surface grows or the
+  project prefers a pure-Rust eBPF toolchain later.
 
 The eBPF selector is justified when the host is multi-NUMA, the workload
 benefits from NUMA-local range selection plus per-NUMA round-robin plus a global
-fallback, and a future migration phase is desired. Realistic gains from
-locality-aware reuseport are in the single-digit-percent range on representative
-ingestion workloads; this design does not change that ceiling.
+fallback, and a future migration phase is desired. Expected gains are modest and
+workload-dependent; representative ingestion benchmarks should validate the
+benefit before enabling the selector broadly.
 
 ## Future Work -- listener migration
 

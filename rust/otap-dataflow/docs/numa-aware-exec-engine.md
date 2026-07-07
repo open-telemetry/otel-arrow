@@ -1,23 +1,22 @@
 # NUMA-Aware Execution Engine: Design Proposal
 
-> Status: Proposed. This is a design proposal for review. It describes a
-> long-term execution-engine direction and intended behavior; it does not
-> assume any of it is built yet.
-
 ## Motivation
 
 The df-engine is designed around explicit pipeline topology, bounded resources,
 and a thread-per-core execution model. That model gives the controller enough
 information to reason about where pipeline instances run, but today the
-placement model is still mostly expressed as fixed core assignment.
+placement model supports core counts and explicit core sets without
+NUMA-aware placement.
 
-On multi-socket hosts, fixed placement can leave performance on the table. A
-pipeline instance may allocate memory on one NUMA node while a receiver,
-processor, exporter, topic hop, or network interrupt executes on another. That
-cross-node traffic increases latency and memory bandwidth pressure. The same
-problem appears during scaling and live reconfiguration: if configuration names
-specific cores, the operator has to understand the host topology and the engine
-has less room to avoid overlap with pipelines that are already running.
+On multi-socket hosts, topology-agnostic placement can leave performance on the
+table. The current controller chooses cores without NUMA topology, so pipeline
+instances and topic-connected pipelines can be placed across NUMA nodes
+unintentionally. That cross-node traffic increases latency and memory bandwidth
+pressure, especially when it interacts poorly with operator-configured NIC RSS
+and IRQ affinity. The same problem appears during scaling and live
+reconfiguration: if configuration names specific cores, the operator has to
+understand the host topology and the engine has less room to avoid overlap with
+pipelines that are already running.
 
 This proposal introduces NUMA topology discovery and a controller-owned
 placement model. Configuration should express the requested execution shape,
@@ -51,7 +50,8 @@ This proposal is primarily asking for feedback on:
 - Evaluate
   [`numaperf`](https://github.com/Skelf-Research/numaperf)
   as a candidate multi-OS discovery layer before committing to a custom backend
-  on every supported platform.
+  on every supported platform, if it exposes the CPU-to-NUMA-node topology the
+  engine needs and not only profiling data.
 - Allow configuration to specify the number of cores per pipeline while the
   engine resolves actual placement dynamically, following the direction in
   [#2155](https://github.com/open-telemetry/otel-arrow/issues/2155) and
@@ -154,8 +154,8 @@ Discovery must degrade safely:
 Windows support is an explicit goal for the abstraction. A Windows backend
 should use the operating system's processor-group and NUMA APIs rather than
 Linux-shaped sysfs concepts. The project should also evaluate `numaperf` as a
-possible shared discovery layer if it can represent the engine's placement
-needs without forcing a Linux-only model.
+possible shared discovery layer if it exposes CPU-to-NUMA topology and can
+represent the engine's placement needs without forcing a Linux-only model.
 
 ### Placement Model
 
@@ -166,7 +166,8 @@ not exact core ids. For example, a pipeline policy can say that a pipeline needs
 - the topology provider output,
 - cores already assigned to other running pipelines,
 - group and pipeline policy scope,
-- node and connection topology,
+- pipeline graph, topic relationships, and inter-pipeline communication
+  topology,
 - live reconfiguration rollout constraints,
 - optional placement preferences such as same-node, spread-across-nodes, or
   automatic.
@@ -176,8 +177,10 @@ the controller can prefer compact placement within one NUMA node when that
 reduces cross-node traffic. For multiple independent pipelines or groups, it can
 spread placements across NUMA nodes to avoid hot spots. For pipeline graphs that
 communicate through topics, the placement planner can keep strongly coupled
-ingest and processing stages on the same node when that is more efficient than
-spreading them.
+topic-connected ingest and processing pipelines on the same node when that is
+more efficient than spreading them. Nodes inside one pipeline instance already
+co-reside on that instance's assigned core; the placement problem here is where
+the controller places pipeline instances and topic-connected pipelines.
 
 This follows the direction in
 [#2155](https://github.com/open-telemetry/otel-arrow/issues/2155) and
@@ -213,7 +216,7 @@ stable for the lifetime of a running placement generation and should include:
 
 - pipeline group id,
 - pipeline id,
-- receiver node id,
+- pipeline node id or component id, when applicable,
 - placement generation id,
 - assigned core id,
 - NUMA node id,
@@ -275,8 +278,8 @@ one socket-specific consumer of this contract, see
 ## Future Work
 
 - Add Windows topology discovery and validate processor-group behavior.
-- Evaluate `numaperf` against the provider abstraction and the engine's
-  topology needs.
+- Evaluate whether `numaperf` exposes the CPU-to-NUMA topology required by the
+  provider abstraction and the engine's placement needs.
 - Add placement preferences to resource policies after the core-count model is
   established.
 - Extend live reconfiguration so scale changes can recalculate placement and
