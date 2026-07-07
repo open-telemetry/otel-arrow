@@ -233,8 +233,8 @@ engine:
 The configuration in the `tls` block will use the structure defined in [`otap_df_config::tls::TlsClientConfig`](
 https://github.com/open-telemetry/otel-arrow/blob/f45dc00642f0187020a4a46de796a07bf368d443/rust/otap-dataflow/crates/config/src/tls.rs#L49-L92)
 
-If the key is supplied without the certificate, or the certificate is 
-configured without the key, configuration will be considered invalid at 
+If the key is supplied without the certificate, or the certificate is
+configured without the key, configuration will be considered invalid at
 startup.
 
 If the `tls` section of the config is not supplied, messages will be exchanged
@@ -611,7 +611,13 @@ will use the following rules:
 
 #### Full Pipeline Status
 
-The implementation will advertise a custom capability representing its ability
+The component health module presents an aggregate view of the health of each
+group and pipeline, but the detailed pipeline status contains additional
+information including specifically in which phase each instance of each
+pipeline is in.
+
+For servers that need this level of insight into the status of the pipelines
+the implementation will advertise a custom capability representing its ability
 to provide the full configuration status via a custom message.
 
 Proposed capability FQDN: `io.open-telemetry.arrow-dfe.pipeline-status/v1`.
