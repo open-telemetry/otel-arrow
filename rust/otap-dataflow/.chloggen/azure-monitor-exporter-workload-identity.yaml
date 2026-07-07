@@ -8,19 +8,20 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Preserve `OtapPdata::peer_addr` across merging processors (`batch_processor`, `temporal_reaggregation_processor`) by merging contributing inputs' peer addresses via the new `Context::merge_peer_addr` helper.
+note: Add Workload Identity Federation authentication support to the Azure Monitor exporter
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3228]
+issues: [3336]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Adds `Context::merge_peer_addr`, which returns `Some(addr)` only when every
-  contributing input observed the same peer address and `None` otherwise.
-  `batch_processor` and `temporal_reaggregation_processor` - the two processors
-  that rebuild `OtapPdata` with a fresh `Context` when merging multiple inputs
-  - now apply this helper so single-peer streams retain the receiver-observed
-  peer address end-to-end, while multi-peer merges keep `peer_addr` as `None`
-  to avoid misattribution.
+  Adds a new `workload_identity` (aliases: `wif`, `workload_identity`) auth
+  method that exchanges a projected federated ServiceAccount token with Entra
+  ID for an access token. New optional `tenant_id` and `token_file_path`
+  config fields fall back to the `AZURE_TENANT_ID` and
+  `AZURE_FEDERATED_TOKEN_FILE` environment variables, and `client_id` falls
+  back to `AZURE_CLIENT_ID`. This enables Azure Monitor export from Kubernetes
+  workloads that do not have a managed identity (e.g. self-hosted or
+  non-AKS clusters using Workload Identity Federation).

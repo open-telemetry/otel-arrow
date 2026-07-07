@@ -155,6 +155,8 @@ mod tests {
 
     #[test]
     fn test_configure_http_binary_exporter() {
+        crate::ensure_test_crypto_provider();
+
         let sdk_meter_builder = SdkMeterProvider::builder();
         let otlp_config = OtlpExporterConfig {
             protocol: OtlpProtocol::HttpBinary,
@@ -173,6 +175,8 @@ mod tests {
 
     #[test]
     fn test_configure_http_json_exporter() {
+        crate::ensure_test_crypto_provider();
+
         let sdk_meter_builder = SdkMeterProvider::builder();
         let otlp_config = OtlpExporterConfig {
             protocol: OtlpProtocol::HttpJson,

@@ -106,6 +106,7 @@ impl AzureMonitorExporter {
     fn sync_gauges(&self) {
         let mut m = self.metrics.borrow_mut();
         m.set_in_flight_exports(self.in_flight_exports.len() as u64);
+        m.set_in_flight_log_records(self.in_flight_exports.queued_rows());
         m.set_batch_to_msg_count(self.state.batch_to_msg.len() as u64);
         m.set_msg_to_batch_count(self.state.msg_to_batch.len() as u64);
         m.set_msg_to_data_count(self.state.msg_to_data.len() as u64);
