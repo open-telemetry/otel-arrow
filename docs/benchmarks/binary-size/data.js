@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783298615581,
+  "lastUpdate": 1783385050074,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5794,6 +5794,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 111.78,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Pritish Nahar",
+            "username": "pritishnahar95",
+            "email": "pritishnahar@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "1a3f044400083b1ad84ac35fd1039781372d12bc",
+          "message": "feat(engine): add BearerTokenProvider capability (#3372)\n\n# Change Summary\n\nIntroduce the engine-side capability surface for the Azure Identity Auth\nextension:\n\n- BearerTokenProvider trait (via #[capability]) with get_token() and\ntoken_stream(), plus the secret-redacting BearerToken data type.\n- CapabilityError + CapabilityErrorSource to attribute runtime\ncapability failures to the failing (extension, capability) pair.\n- Re-export the local/shared trait variants from\n{local,shared}::capability.\n\n## What issue does this PR close?\n\n* Related to #3356\n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\nNo\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-07-06T18:35:42Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/1a3f044400083b1ad84ac35fd1039781372d12bc"
+        },
+        "date": 1783385039091,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.8,
             "unit": "MB"
           },
           {
