@@ -36,9 +36,28 @@ time (e.g., SaaS customer account and signed-in user). Sometimes
 multitenancy is applied at multiple levels (e.g., both thread-local
 and global rate limits).
 
+## Scope
+
+This document covers the design for tenant identity and a framework
+with two basic categories of limiter. In scope are:
+
+- Configuration model for tenant identity
+- Configuration model for limiter extensions
+- Isolation model for multiple tenants
+- Conditional limiter behavior.
+
+This document leaves a lot out of scope:
+
+- How to configure operating system-specific isolation mechanisms
+  (e.g., cgroups, job objects).
+- How to track fine-grain memory allocations in the telemetry
+  pipeline.
+- Feasability checking of memory configuration (e.g., can we estimate
+  memory usage from tenant configuration to avoid out-of-memory?).
+
 ## Request and tenant context
 
-System operators require multiple tenants to share a pipeline
+System operators require multiple tenants to share pipeline
 resources, with fine-grained limits configured to achieve isolation
 and fairness between tenants. Tenant identification depends on the
 use-case and what is being shared. How the engine identifies a tenant
@@ -59,7 +78,7 @@ custom contexts can be defined as long as a tenant descriptor can be
 stored.
 
 Tenant descriptors are multi-dimensional to enable tenant assignment
-in logically independent ways with user control ove rcardinality. For
+in logically independent ways with user control over cardinality. For
 example, a request may be accompanied by an environment name, a
 project name, and a user name for three forms of tenancy. Choosing
 three forms means a single limiter table with three-dimensions.
@@ -85,6 +104,11 @@ of condition entries defined in the engine. Later in the pipeline,
 these precomputed table-lookup keys will be used to evaluate limiter
 conditions in **O(1)** time.
 
+To evaluate which limiter bucket a given request falls in to, the
+sequence of conditions is applied in order. For a context to match a
+condition, all its entries must match for all tenant descriptor values
+to qualify.
+
 ### Model terms and request flow
 
 The model uses the following terms, which are developed in more detail below.
@@ -103,7 +127,7 @@ Descriptor actions are evaluated and the matching results are placed
 in the request context where it passes with the request data in a
 pipeline where individual nodes will apply specific limiters.
 
-![A flow diagram showing how tenant descriptor values are computed and flow through the pipeline](./agent-multitenancy-diagram.svg)
+![A flow diagram showing how tenant descriptor values are computed and flow through the pipeline](./multitenancy-diagram.svg)
 
 ### Tenant descriptor actions
 
@@ -182,13 +206,19 @@ groups:
   # ... pipeline groups reference the descriptors above ...
 ```
 
+### Engine tenancy support
+
 The Dataflow Engine's pipeline data type (`OtapPdata`) will be
-modified to propagate tenant descriptors in the context. The interface
-used by receivers (and processors) to construct new contexts from
-headers will be extended to evaluate the list of descriptors. Every
-descriptor is evaluated for every request context. When all conditions
-succeed for a descriptor and request, the resulting descriptor value
-is entered into the context.
+modified to propagate tenant descriptors in the context. Receivers and
+processors that create new contexts will be upgraded to evaluate the
+applicable tenant descriptors actions based on their request headers.
+When all action conditions succeed for a descriptor and request, the
+resulting tenant descriptor value is entered into the context.
+
+Any kind of node can apply a limit. Nodes where limits are applicable
+will bind limiter extensions when the engine starts. The engine will
+also provide helpers to apply limiters in a standard way, as a shared
+implementation.
 
 ### Resource-level tenants
 
@@ -601,6 +631,18 @@ priority_semaphore:
   # mode applies within levels.
   mode: lifo
 ```
+
+### Cardinality limits
+
+The common limiter configuration includes a cardinality limit, which
+places a hard limit on the number of buckets. This is the point at
+which isolation between limiters has to break somehow. When the number
+of distinct limiter instances is reached, we expect several
+configurable behaviors:
+
+- Block new tenants, hard error
+- Try using least-recently-used or random limiter
+- Block the heaviest user.
 
 ## Implementation details
 
