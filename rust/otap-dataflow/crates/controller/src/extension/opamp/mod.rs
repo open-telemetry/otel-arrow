@@ -616,7 +616,7 @@ fn handle_received_websocket_message(
 }
 
 /// Action to take in response to the received [`ServerToAgent`] message
-/// 
+///
 /// TODO: more actions may be added in the future, such as `Restart` to handle server pushed
 /// restart command
 #[derive(Debug)]
