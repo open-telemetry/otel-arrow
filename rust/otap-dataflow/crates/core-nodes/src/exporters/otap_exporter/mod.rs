@@ -1,4 +1,4 @@
-﻿// Copyright The OpenTelemetry Authors
+// Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementation of the OTAP exporter node
@@ -375,9 +375,18 @@ impl OTAPExporter {
                         }
                         Message::Control(NodeControlMsg::Shutdown { deadline, reason }) => {
                             if let Some((pdata, _)) = pending.take() {
-                                effect_handler.notify_nack(NackMsg::new("exporter shutting down", pdata)).await?;
+                                effect_handler
+                                    .notify_nack(NackMsg::new("exporter shutting down", pdata))
+                                    .await?;
                             }
                             return Ok(EnqueueResult::Shutdown { deadline, reason });
+                        }
+                        // NACK any pdata that arrives while we are waiting for queue
+                        // space — the exporter is shutting down so we won't forward it.
+                        Message::PData(data) => {
+                            effect_handler
+                                .notify_nack(NackMsg::new("exporter shutting down", data))
+                                .await?;
                         }
                         _ => {}
                     }
@@ -875,12 +884,25 @@ async fn stream_arrow_batches<T: StreamingArrowService>(
                 let connect_res = tokio::select! {
                     res = req_fut => res,
                     _ = shutdown_rx.changed() => {
+                        // Drop the sender so the correlation receiver sees EOF,
+                        // then drain any pdata already queued before we got here.
                         drop(correlation_tx);
-                        _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(
-                            signal_type,
-                            first_pdata_fallback,
-                            None,
-                        )).await;
+                        let mut drained = false;
+                        while let Ok(correlated) = correlation_rx.try_recv() {
+                            drained = true;
+                            _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(
+                                signal_type,
+                                correlated.pdata,
+                                Some(elapsed_nanos(correlated.sent_at)),
+                            )).await;
+                        }
+                        if !drained {
+                            _ = pdata_metrics_tx.send(PDataMetricsUpdate::IncFailed(
+                                signal_type,
+                                first_pdata_fallback,
+                                None,
+                            )).await;
+                        }
                         break;
                     }
                 };
