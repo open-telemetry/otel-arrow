@@ -235,8 +235,19 @@ impl KafkaReceiver {
     /// implementation, so this only performs regex compilation.
     pub fn new(
         pipeline_ctx: PipelineContext,
-        config: KafkaReceiverConfig,
+        mut config: KafkaReceiverConfig,
     ) -> Result<Self, ConfigError> {
+        // Kafka static membership requires each consumer-group member to have a
+        // unique group.instance.id. On a multi-core pipeline every core would
+        // otherwise share the configured ID and fence one another, so suffix it
+        // with the pipeline core ID.
+        if pipeline_ctx.num_cores() > 1 {
+            if let Some(base_id) = config.group_instance_id() {
+                let resolved = format!("{base_id}-{}", pipeline_ctx.core_id());
+                config.set_group_instance_id(resolved);
+            }
+        }
+
         // Warn about consumer_config keys that may be overwritten by first-class fields.
         for key in config.overridden_consumer_config_keys() {
             otap_df_telemetry::otel_warn!(
@@ -1639,9 +1650,64 @@ mod tests {
     // ---- KafkaReceiver::new() unit tests ----
 
     fn make_pipeline_ctx() -> PipelineContext {
+        make_pipeline_ctx_with(0, 1)
+    }
+
+    fn make_pipeline_ctx_with(core_id: usize, num_cores: usize) -> PipelineContext {
         let registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry);
-        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0)
+        controller_ctx.pipeline_context_with(
+            "grp".into(),
+            "pipeline".into(),
+            core_id,
+            num_cores,
+            0,
+        )
+    }
+
+    fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {
+        KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new("unused:9092", "g", "c")
+                .with_traces(SignalConfig::new(vec!["t".to_string()]))
+                .with_group_instance_id(instance_id),
+        )
+        .expect("test config should be valid")
+    }
+
+    #[test]
+    fn new_suffixes_group_instance_id_with_core_id_when_multi_core() {
+        let cfg = make_config_with_group_instance_id("instance-1");
+        let ctx = make_pipeline_ctx_with(3, 4);
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+        assert_eq!(
+            receiver.config.group_instance_id(),
+            Some("instance-1-3"),
+            "multi-core pipeline should suffix group.instance.id with core id"
+        );
+    }
+
+    #[test]
+    fn new_keeps_group_instance_id_unchanged_when_single_core() {
+        let cfg = make_config_with_group_instance_id("instance-1");
+        let ctx = make_pipeline_ctx_with(0, 1);
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+        assert_eq!(
+            receiver.config.group_instance_id(),
+            Some("instance-1"),
+            "single-core pipeline should leave group.instance.id unchanged"
+        );
+    }
+
+    #[test]
+    fn new_leaves_group_instance_id_absent_when_unset() {
+        let cfg = make_config(&["t"], &["m"], &["l"], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx_with(2, 4);
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("receiver should build");
+        assert_eq!(
+            receiver.config.group_instance_id(),
+            None,
+            "unset group.instance.id should remain absent"
+        );
     }
 
     #[test]

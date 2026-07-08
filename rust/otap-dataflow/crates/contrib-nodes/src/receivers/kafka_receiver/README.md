@@ -6,7 +6,7 @@
 
 - Type: `receiver:kafka` (`urn:otel:receiver:kafka`)
 - Feature gate: `kafka-receiver` (also enabled by `contrib-receivers`)
-- Stability: Experimental
+- Stability: Experimental (not performance-optimized)
 
 ## Overview
 
@@ -41,7 +41,7 @@ config:
 | `brokers` | string | **required** | Comma-separated list of Kafka broker addresses. |
 | `group_id` | string | **required** | Kafka consumer group ID. |
 | `client_id` | string | **required** | Kafka client ID. |
-| `group_instance_id` | string | *none* | Static group instance ID for Kafka static membership. |
+| `group_instance_id` | string | *none* | Static group instance ID for Kafka static membership. On a multi-core pipeline the configured value is automatically suffixed with the pipeline core ID (e.g. `instance-1` becomes `instance-1-0`, `instance-1-1`, ...) so each core is a distinct static member. |
 | `auth` | object | *none* | Authentication configuration (see [Authentication](#authentication)). |
 | `tls` | object | *none* | TLS configuration for broker connections (see [TLS Configuration](#tls-configuration)). |
 | `traces` | object | `{}` | Per-signal config for traces (see [Per-Signal Configuration](#per-signal-configuration)). |

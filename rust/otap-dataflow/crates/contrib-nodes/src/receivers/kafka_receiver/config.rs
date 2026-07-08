@@ -881,6 +881,17 @@ impl KafkaReceiverConfig {
         &self.0.client_id
     }
 
+    /// Get the static group instance ID, if configured.
+    #[must_use]
+    pub fn group_instance_id(&self) -> Option<&str> {
+        self.0.group_instance_id.as_deref()
+    }
+
+    /// Set the static group instance ID.
+    pub fn set_group_instance_id(&mut self, id: String) {
+        self.0.group_instance_id = Some(id);
+    }
+
     /// Get the traces signal configuration.
     #[must_use]
     pub fn traces(&self) -> &SignalConfig {
