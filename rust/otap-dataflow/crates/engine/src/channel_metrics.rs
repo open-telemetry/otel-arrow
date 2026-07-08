@@ -95,6 +95,15 @@ pub struct ConsumedMetrics {
     /// Consumed requests refused, also known as permanent failures.
     #[metric(name = "consumed.refused", unit = "{requests}")]
     pub consumed_refused: Counter<u64>,
+    /// Consumed log records (per-signal item count, all outcomes).
+    #[metric(name = "consumed.log_records", unit = "{log_record}")]
+    pub consumed_log_records: Counter<u64>,
+    /// Consumed metric points (per-signal item count, all outcomes).
+    #[metric(name = "consumed.metric_points", unit = "{data_point}")]
+    pub consumed_metric_points: Counter<u64>,
+    /// Consumed spans (per-signal item count, all outcomes).
+    #[metric(name = "consumed.spans", unit = "{span}")]
+    pub consumed_spans: Counter<u64>,
 }
 
 /// Ack/nack metrics for produced requests, owned exclusively by the runtime control manager.
@@ -119,6 +128,15 @@ pub struct ProducedMetrics {
     /// Produced requests refused, also known as permanent failures.
     #[metric(name = "produced.refused", unit = "{requests}")]
     pub produced_refused: Counter<u64>,
+    /// Produced log records (per-signal item count, all outcomes).
+    #[metric(name = "produced.log_records", unit = "{log_record}")]
+    pub produced_log_records: Counter<u64>,
+    /// Produced metric points (per-signal item count, all outcomes).
+    #[metric(name = "produced.metric_points", unit = "{data_point}")]
+    pub produced_metric_points: Counter<u64>,
+    /// Produced spans (per-signal item count, all outcomes).
+    #[metric(name = "produced.spans", unit = "{span}")]
+    pub produced_spans: Counter<u64>,
 }
 
 pub(crate) const CHANNEL_KIND_CONTROL: &str = "control";

@@ -637,6 +637,8 @@ mod tests {
                     node_id,
                     interests: Interests::ACKS,
                     route: RouteData::default(),
+                    produced_items: 0,
+                    consumed_items: 0,
                 }],
             }
         }
@@ -647,6 +649,8 @@ mod tests {
                     node_id,
                     interests: Interests::NACKS,
                     route: RouteData::default(),
+                    produced_items: 0,
+                    consumed_items: 0,
                 }],
             }
         }
@@ -659,6 +663,10 @@ mod tests {
 
         fn pop_frame(&mut self) -> Option<Frame> {
             self.frames.pop()
+        }
+
+        fn signal(&self) -> Option<otap_df_config::SignalType> {
+            None
         }
 
         fn drop_payload(&mut self) {}

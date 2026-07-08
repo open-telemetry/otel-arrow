@@ -31,6 +31,7 @@ use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::MetricLevel;
+use otap_df_config::SignalType;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
@@ -361,6 +362,17 @@ pub trait Unwindable {
     /// Remove and return the top frame.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
+    /// Signal type of the payload, used to attribute per-signal produced /
+    /// consumed item counts during unwinding. Returns `None` when unknown or
+    /// not applicable.
+    ///
+    /// Signal is a property of the whole pdata batch (a batch is homogeneous),
+    /// so it is stored once on the pdata context rather than per frame. It is
+    /// captured on the forward path while the payload is live and survives
+    /// [`Unwindable::drop_payload`], so it remains readable throughout
+    /// unwinding.
+    fn signal(&self) -> Option<SignalType>;
+
     /// Drop the retained payload unless RETURN_DATA is set.
     fn drop_payload(&mut self);
 }
@@ -372,6 +384,9 @@ impl Unwindable for () {
     fn pop_frame(&mut self) -> Option<control::Frame> {
         None
     }
+    fn signal(&self) -> Option<SignalType> {
+        None
+    }
     fn drop_payload(&mut self) {}
 }
 
@@ -380,6 +395,9 @@ impl Unwindable for String {
         false
     }
     fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn signal(&self) -> Option<SignalType> {
         None
     }
     fn drop_payload(&mut self) {}

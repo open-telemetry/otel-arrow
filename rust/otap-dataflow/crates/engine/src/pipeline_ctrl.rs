@@ -28,6 +28,7 @@ use crate::pipeline_metrics::PipelineMetricsMonitor;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::MetricLevel;
+use otap_df_config::SignalType;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
@@ -997,6 +998,9 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         node_id: usize,
         interests: Interests,
         route: &RouteData,
+        signal: Option<SignalType>,
+        produced_items: u32,
+        consumed_items: u32,
         outcome: RequestOutcome,
         now_ns: u64,
     ) {
@@ -1008,6 +1012,20 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         RequestOutcome::Success => input.consumed_success.inc(),
                         RequestOutcome::Failure => input.consumed_failure.inc(),
                         RequestOutcome::Refused => input.consumed_refused.inc(),
+                    }
+                    if consumed_items > 0 {
+                        match signal {
+                            Some(SignalType::Logs) => {
+                                input.consumed_log_records.add(consumed_items as u64)
+                            }
+                            Some(SignalType::Metrics) => {
+                                input.consumed_metric_points.add(consumed_items as u64)
+                            }
+                            Some(SignalType::Traces) => {
+                                input.consumed_spans.add(consumed_items as u64)
+                            }
+                            None => {}
+                        }
                     }
                     if route.entry_time_ns > 0 && now_ns > 0 {
                         let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
@@ -1022,6 +1040,20 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         RequestOutcome::Success => output.produced_success.inc(),
                         RequestOutcome::Failure => output.produced_failure.inc(),
                         RequestOutcome::Refused => output.produced_refused.inc(),
+                    }
+                    if produced_items > 0 {
+                        match signal {
+                            Some(SignalType::Logs) => {
+                                output.produced_log_records.add(produced_items as u64)
+                            }
+                            Some(SignalType::Metrics) => {
+                                output.produced_metric_points.add(produced_items as u64)
+                            }
+                            Some(SignalType::Traces) => {
+                                output.produced_spans.add(produced_items as u64)
+                            }
+                            None => {}
+                        }
                     }
                     if !interests.contains(Interests::CONSUMER_METRICS)
                         && route.entry_time_ns > 0
@@ -1120,6 +1152,10 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         outcome: RequestOutcome,
         interest: Interests,
     ) -> (Option<(usize, RouteData)>, usize) {
+        // Signal is a pdata-level property (one per homogeneous batch) stored on
+        // the pdata context, so read it once and attribute every frame's
+        // per-signal item counts to it. It survives payload drop.
+        let signal = pdata.signal();
         let mut unwind_depth = 0usize;
         loop {
             match pdata.pop_frame() {
@@ -1135,6 +1171,9 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
                             frame.node_id,
                             frame.interests,
                             &frame.route,
+                            signal,
+                            frame.produced_items,
+                            frame.consumed_items,
                             outcome,
                             now_ns,
                         );
@@ -2968,11 +3007,15 @@ mod tests {
     #[derive(Debug, Clone)]
     struct TestPData {
         frames: Vec<Frame>,
+        signal: Option<SignalType>,
     }
 
     impl TestPData {
         fn new() -> Self {
-            Self { frames: Vec::new() }
+            Self {
+                frames: Vec::new(),
+                signal: None,
+            }
         }
 
         fn push_frame(&mut self, frame: Frame) {
@@ -2986,6 +3029,9 @@ mod tests {
         }
         fn pop_frame(&mut self) -> Option<Frame> {
             self.frames.pop()
+        }
+        fn signal(&self) -> Option<SignalType> {
+            self.signal
         }
         fn drop_payload(&mut self) {}
     }
@@ -3230,11 +3276,17 @@ mod tests {
     const CONSUMER_SUCCESS: usize = 1;
     const CONSUMER_FAILURE: usize = 2;
     const CONSUMER_REFUSED: usize = 3;
+    const CONSUMER_LOG_RECORDS: usize = 4;
+    const CONSUMER_METRIC_POINTS: usize = 5;
+    const CONSUMER_SPANS: usize = 6;
     // ProducedMetrics field indices:
     const PRODUCER_DURATION: usize = 0;
     const PRODUCER_SUCCESS: usize = 1;
     const PRODUCER_FAILURE: usize = 2;
     const PRODUCER_REFUSED: usize = 3;
+    const PRODUCER_LOG_RECORDS: usize = 4;
+    const PRODUCER_METRIC_POINTS: usize = 5;
+    const PRODUCER_SPANS: usize = 6;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
@@ -3608,8 +3660,12 @@ mod tests {
     /// receiver(node0) → processor(node1) → exporter(node2).
     ///
     /// Frames are pushed bottom-to-top (receiver first, exporter last on top).
+    /// Frames carry per-signal item counts (Logs): the receiver produces 10,
+    /// the processor consumes 10 and produces 7 (simulating a filtering drop),
+    /// and the exporter consumes 7.
     fn build_3node_pdata(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
         let mut pdata = TestPData::new();
+        pdata.signal = Some(SignalType::Logs);
 
         // Node 0 (receiver): producer metrics + acks/nacks (receives the ack back)
         pdata.push_frame(Frame {
@@ -3620,6 +3676,8 @@ mod tests {
                 entry_time_ns: 0,
                 output_port_index: 0,
             },
+            produced_items: 10,
+            consumed_items: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics + acks/nacks
@@ -3640,6 +3698,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 7,
+            consumed_items: 10,
         });
 
         // Node 2 (exporter): consumer metrics only (no acks subscription — terminal node)
@@ -3656,6 +3716,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 0,
+            consumed_items: 7,
         });
 
         pdata
@@ -3667,6 +3729,7 @@ mod tests {
     /// including the receiver's producer-only frame.
     fn build_3node_pdata_no_subscribers(nodes: &[NodeId], with_timestamp: bool) -> TestPData {
         let mut pdata = TestPData::new();
+        pdata.signal = Some(SignalType::Logs);
 
         // Node 0 (receiver): producer metrics only — no ACKS/NACKS, no CONSUMER_METRICS.
         let entry_time_ns = if with_timestamp {
@@ -3682,6 +3745,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 10,
+            consumed_items: 0,
         });
 
         // Node 1 (processor): consumer + producer metrics, no ACKS/NACKS.
@@ -3700,6 +3765,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 7,
+            consumed_items: 10,
         });
 
         // Node 2 (exporter): consumer metrics only.
@@ -3716,6 +3783,8 @@ mod tests {
                 entry_time_ns,
                 output_port_index: 0,
             },
+            produced_items: 0,
+            consumed_items: 7,
         });
 
         pdata
@@ -3956,6 +4025,48 @@ mod tests {
         );
     }
 
+    /// Verify per-signal produced/consumed item counts are recorded on the
+    /// existing node.producer / node.consumer metric sets for every node kind.
+    ///
+    /// Uses the no-subscriber pipeline so all frames (including the receiver's
+    /// producer-only frame) are unwound in a single pass. The builders stamp
+    /// Logs frames: receiver produces 10, processor consumes 10 and produces 7,
+    /// exporter consumes 7.
+    #[tokio::test]
+    async fn test_per_signal_item_counts() {
+        let harness = setup_test_manager_with_metrics();
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        // Receiver produced: 10 log records, no other signal.
+        let recv_p = &snapshots[&MetricLabel::RecvProduced];
+        assert_u64(recv_p, PRODUCER_LOG_RECORDS, 10, "Receiver produced logs");
+        assert_u64(
+            recv_p,
+            PRODUCER_METRIC_POINTS,
+            0,
+            "Receiver produced points",
+        );
+        assert_u64(recv_p, PRODUCER_SPANS, 0, "Receiver produced spans");
+
+        // Processor consumed 10, produced 7 (filtering drop of 3).
+        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
+        assert_u64(proc_c, CONSUMER_LOG_RECORDS, 10, "Processor consumed logs");
+        assert_u64(proc_c, CONSUMER_SPANS, 0, "Processor consumed spans");
+        let proc_p = &snapshots[&MetricLabel::ProcProduced];
+        assert_u64(proc_p, PRODUCER_LOG_RECORDS, 7, "Processor produced logs");
+
+        // Exporter consumed 7 log records.
+        let exp = &snapshots[&MetricLabel::ExpConsumed];
+        assert_u64(exp, CONSUMER_LOG_RECORDS, 7, "Exporter consumed logs");
+        assert_u64(exp, CONSUMER_METRIC_POINTS, 0, "Exporter consumed points");
+    }
+
     /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
     #[tokio::test]
     async fn test_produced_duration_not_recorded_without_timestamp() {
@@ -4100,6 +4211,8 @@ mod tests {
                     entry_time_ns: nanos_since_birth(),
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             let mut ack2 = AckMsg::new(pdata_recv_only);
             ack2.unwind.return_time_ns = nanos_since_birth();
@@ -5885,6 +5998,8 @@ mod tests {
                     entry_time_ns: 0,
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             pdata
         }
@@ -6014,6 +6129,8 @@ mod tests {
                     entry_time_ns: 0,
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             pdata
         }
@@ -6148,6 +6265,8 @@ mod tests {
                     entry_time_ns: 0,
                     output_port_index: 0,
                 },
+                produced_items: 0,
+                consumed_items: 0,
             });
             pdata
         }

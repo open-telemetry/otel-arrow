@@ -1,0 +1,96 @@
+# Demonstrates the per-signal produced/consumed item counts that every node
+# emits on its `node.producer` / `node.consumer` metric sets.
+#
+#   receiver -> sampler -> noop
+#
+# The traffic generator emits a mix of all three signals (logs, metrics,
+# traces). Each pdata batch is homogeneous (exactly one signal), and the
+# per-signal counts are stamped on the batch as it flows forward, then recorded
+# on each node during ack/nack unwinding. Because these counts extend the
+# existing produced/consumed metric sets, ALL nodes get them uniformly --
+# receivers, processors and exporters alike.
+#
+# Metrics emitted per node (gated on `runtime_metrics: normal`, which enables
+# the PIPELINE_METRICS interest):
+#   node.producer:  produced.log_records   {log_record}
+#                   produced.metric_points {data_point}
+#                   produced.spans         {span}
+#   node.consumer:  consumed.log_records   {log_record}
+#                   consumed.metric_points {data_point}
+#                   consumed.spans         {span}
+#
+# Mapping to the customer-facing goal (Collector universal-telemetry RFC):
+#   receiver_accepted_<signal> == the receiver's node.producer.produced.<signal>
+#   (the items the receiver emitted into the pipeline).
+#
+# What to look for:
+#   - receiver `node.producer.produced.{log_records,metric_points,spans}` is the
+#     per-signal accepted volume the traffic generator injected.
+#   - sampler `node.consumer.consumed.*` equals the receiver's produced counts
+#     (everything the sampler received), while sampler
+#     `node.producer.produced.log_records` is LOWER because the sampler keeps
+#     only ~1/3 of log records; metric_points and spans pass through
+#     unchanged (sampling only targets logs). This shows the per-signal
+#     accounting isolating the affected signal.
+#   - noop `node.consumer.consumed.*` reflects the surviving per-signal volume.
+#
+# Query metrics while running:
+#   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[] | select(.name == "node.producer" or .name == "node.consumer")]'
+#
+# Run with:
+#   cargo run -- --config configs/trafficgen-per-signal-metrics-demo.yaml
+
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: normal
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                # Emit all three signals in roughly equal proportion so the
+                # per-signal breakdown on every node is populated.
+                log_weight: 50
+                metric_weight: 30
+                trace_weight: 20
+              # Synthetic data source emits deterministic log records. The
+              # sampler below keeps a predictable fraction of LOG records;
+              # metrics and traces are unaffected.
+              data_source: synthetic
+
+          # Keeps ~1/3 of log records and drops the rest. Only logs are affected,
+          # so the sampler's produced.log_records is lower than its
+          # consumed.log_records, while produced/consumed metric_points and spans
+          # stay equal.
+          sampler:
+            type: processor:log_sampling
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: sampler
+          - from: sampler
+            to: noop
