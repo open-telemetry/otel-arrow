@@ -161,29 +161,34 @@ listener-group manager owns the bind-address-keyed plans, and each plan lists
 the expected listener members with their listener ids, core ids, NUMA node ids,
 and socket identity.
 
-The controller materialises each planned group before launching pipeline
-threads:
+The controller preflights and registers each planned group before launching
+pipeline threads. Sockets are then materialised lazily by receiver startup:
 
 1. Before launching receiver tasks, the controller invokes listener planning
    with the resolved placement snapshot.
 2. The listener-group manager registers all eligible plans and rejects or
    disables ambiguous effective bind identities before any receiver starts.
-3. For every remaining plan, the manager creates and binds all sockets for the
-   group in a single controller-side materialisation step.
-4. For TCP groups, the manager calls `listen()` on every socket before
+3. The controller starts pipeline threads.
+4. During startup, each per-core receiver calls `acquire()` for its listener
+   group and blocks until all expected members reach quorum or the startup
+   timeout elapses. The current timeout is a fixed 5 seconds; making it
+   configurable is future work.
+5. When all expected receivers arrive before timeout, the last arrival creates
+   and binds all sockets for the group in one materialisation step.
+6. For TCP groups, the manager calls `listen()` on every socket before
    inserting them into `BPF_MAP_TYPE_REUSEPORT_SOCKARRAY`. For UDP groups,
    bound sockets are eligible without `listen()`.
-5. If the eBPF selector is enabled, the manager populates the socket-array,
+7. If the eBPF selector is enabled, the manager populates the socket-array,
    range, and total-count maps, then attaches the selector to the group.
-6. Once all planned groups are ready or have deterministically fallen back, the
-   controller starts pipeline threads.
-7. During startup, each per-core receiver performs a non-blocking claim of the
-   pre-bound listener assigned to its own core and starts accepting on that
-   socket.
+8. The manager wakes the waiting receivers, and each receiver receives the
+   socket assigned to its own core and starts accepting on that socket.
 
-This lifecycle prevents partial group construction, keeps receiver startup
-non-blocking, and gives the selector a complete socket array before the engine
-publishes the group as ready. TCP connections that arrive after `listen()` but
+Lazy quorum materialisation is intentional. Eager controller-side
+materialisation would bind a socket for every planned core up front, so a
+receiver that never starts or stalls before it can accept would leave an orphan
+socket in the kernel reuseport group with no accept loop. Lazy quorum only binds
+once every expected receiver has arrived, so no socket is published for a
+receiver that never shows up. TCP connections that arrive after `listen()` but
 before selector attach, and UDP datagrams that arrive after `bind()` but before
 selector attach, use the kernel's default reuseport hash. That fallback is
 correct delivery, but not NUMA-local selection.
@@ -195,12 +200,19 @@ Fallback must be deterministic:
 - If planning detects duplicate, ambiguous, wildcard/specific, dual-stack, or
   mixed-policy effective bind identities, the affected receivers use the
   existing independent bind path.
-- If socket creation, `bind()`, TCP `listen()`, map population, or selector
-  attach fails, or the selector is unavailable on the platform or build, in
-  non-strict mode the engine logs the failure and falls back to coordinated
-  plain `SO_REUSEPORT` when possible, or independent binding otherwise.
-- If strict mode is enabled, any coordinated materialisation failure aborts
-  startup, including when the selector is unavailable on the platform or build.
+- If quorum is not reached before the startup timeout, or if socket creation,
+  `bind()`, TCP `listen()`, map population, or selector attach fails, or the
+  selector is unavailable on the platform or build, in non-strict mode the
+  engine logs the failure and falls back to independent binding.
+- If strict mode is enabled, registration conflicts fail during controller
+  preflight before pipeline threads launch. Quorum timeout, bind/listen failure,
+  map population failure, selector attach failure, or selector unavailability
+  surface from the acquiring receiver thread during startup and must fail the
+  pipeline startup.
+
+Lifecycle telemetry includes `plan_registered` from controller preflight and,
+from the lazy materialisation path, `group_ready`, `selector_attached`,
+`selector_fallback`, `fallback`, and `materialisation_failed`.
 
 ### eBPF NUMA selector
 
@@ -431,10 +443,10 @@ placement.
   alongside `10.0.0.1:4317`, `[::]:4317` alongside a specific IPv6 address on
   port `4317`, and `[::]:4317` with dual-stack behavior that can overlap IPv4
   binds on the same port.
-- Coordinated listener groups are a startup-time materialisation for one
-  placement generation. Restarting a receiver inside an already materialised
-  group, or replacing a group without restarting the engine process, requires
-  future live-reconfiguration work.
+- Coordinated listener groups are registered for one placement generation and
+  materialised during receiver startup quorum. Restarting a receiver inside an
+  already materialised group, or replacing a group without restarting the engine
+  process, requires future live-reconfiguration work.
 
 ## Alternatives Considered
 
