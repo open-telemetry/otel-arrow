@@ -1,4 +1,4 @@
-# OTel Arrow Dataflow Engine
+# OTel-Arrow Dataflow Engine
 
 ## Usage
 
