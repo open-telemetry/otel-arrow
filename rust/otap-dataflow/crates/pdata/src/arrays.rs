@@ -335,17 +335,21 @@ where
 /// Wrapper around various arrays that may return a byte slice. Note that
 /// this delegates to the underlying NullableArrayAccessor implementation
 /// for the Arrow array which copies the bytes when value_at is called
-pub(crate) enum ByteArrayAccessor<'a> {
+pub enum ByteArrayAccessor<'a> {
+    /// Binary or dictionary-encoded binary array accessor.
     Binary(MaybeDictArrayAccessor<'a, BinaryArray>),
+    /// Fixed-size binary or dictionary-encoded fixed-size binary array accessor.
     FixedSizeBinary(MaybeDictArrayAccessor<'a, FixedSizeBinaryArray>),
 }
 
 impl<'a> ByteArrayAccessor<'a> {
     #[allow(dead_code)]
+    /// Create a byte array accessor for a named record batch column.
     pub fn try_new_for_column(record_batch: &'a RecordBatch, column_name: &str) -> Result<Self> {
         Self::try_new(get_required_array(record_batch, column_name)?)
     }
 
+    /// Create a byte array accessor for a binary-like array.
     pub fn try_new(arr: &'a ArrayRef) -> Result<Self> {
         match arr.data_type() {
             DataType::Binary => {
@@ -401,6 +405,8 @@ impl NullableArrayAccessor for ByteArrayAccessor<'_> {
 }
 
 impl<'a> ByteArrayAccessor<'a> {
+    /// Return the byte slice at `idx`, or `None` when that row is null.
+    #[must_use]
     pub fn slice_at(&self, idx: usize) -> Option<&[u8]> {
         match self {
             Self::Binary(b) => b.slice_at(idx),

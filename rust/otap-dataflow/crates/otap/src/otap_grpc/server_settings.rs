@@ -313,7 +313,14 @@ const fn default_wait_for_result() -> bool {
 impl Default for GrpcServerSettings {
     fn default() -> Self {
         Self {
-            listening_addr: ([0, 0, 0, 0], 0).into(),
+            // Loopback ephemeral port by default. This default is only reached
+            // via `..Default::default()` in Rust (tests/builders): production
+            // sets `listening_addr` from config, a required field with no serde
+            // default. Binding loopback (not the all-interfaces `0.0.0.0`) keeps
+            // tests/examples from tripping the Windows Defender Firewall prompt
+            // (see CONTRIBUTING, "Test and example server bind addresses").
+            // Servers that must serve external traffic set an explicit address.
+            listening_addr: ([127, 0, 0, 1], 0).into(),
             request_compression: None,
             response_compression: None,
             max_concurrent_requests: default_max_concurrent_requests(),
@@ -392,5 +399,24 @@ mod tests {
         let (req, resp) = settings.compression_encodings();
         assert!(req.is_enabled(CompressionEncoding::Deflate));
         assert!(resp.is_enabled(CompressionEncoding::Deflate));
+    }
+
+    #[test]
+    fn default_listening_addr_is_loopback() {
+        // Regression guard against the Windows firewall recurrence: any
+        // test/builder that reaches this default must bind loopback, never an
+        // all-interfaces address (0.0.0.0 / [::]). The port must also stay
+        // ephemeral (0) so parallel tests don't collide on a fixed port. See
+        // CONTRIBUTING, "Test and example server bind addresses".
+        let addr = GrpcServerSettings::default().listening_addr;
+        assert!(
+            addr.ip().is_loopback(),
+            "default listening_addr must be loopback, got {addr}"
+        );
+        assert_eq!(
+            addr.port(),
+            0,
+            "default listening_addr must use an ephemeral port (0), got {addr}"
+        );
     }
 }
