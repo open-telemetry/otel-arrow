@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783385050074,
+  "lastUpdate": 1783471165536,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -5831,6 +5831,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 99.16,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "albertlockett",
+            "username": "albertlockett",
+            "email": "a.lockett@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "3d4c518f866d0e7dcebcc43ed1fe04b9f3941602",
+          "message": "docs: opamp design doc (#3388)\n\n# Change Summary\n\n<!--Replace with a brief summary of the change in this PR-->\n\nAdds a design document discussing initial implementation of OpAMP Agent\ncontroller extension which can be used to receive configuration from a\nremote OpAMP server and provide status status to the remote server.\n\nThe purpose of the document is mostly to align on the overall initial\nimplementation and specifically align on structure of the configuration\n& messages plus how health/status information is derived.\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Relates to #3387\n\n## How are these changes tested?\n\nn/a\n\n## Are there any user-facing changes?\n\nno\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [ ] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [x] This is a documentation-only PR.",
+          "timestamp": "2026-07-07T23:52:57Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/3d4c518f866d0e7dcebcc43ed1fe04b9f3941602"
+        },
+        "date": 1783471154372,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 112.09,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.28,
             "unit": "MB"
           }
         ]
