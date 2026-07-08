@@ -48,8 +48,7 @@ exporter
 - Every node reports `node.producer.produced.{log_records,metric_points,spans}`
   and `node.consumer.consumed.{log_records,metric_points,spans}` (requires
   `runtime_metrics: normal`).
-- A receiver's `node.producer.produced.<signal>` is the customer-facing
-  `receiver_accepted_<signal>`; the sampler keeps ~1/3 of log records so its
+- A receiver's `node.producer.produced.<signal>` is the per-signal volume the traffic generator injected; the sampler keeps ~1/3 of log records so its
   produced/consumed log counts differ while metrics and traces stay equal.
 - View metrics at:
   `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json`
