@@ -23,49 +23,11 @@ go run ./server -no-tls
 - OpAMP endpoint: `ws://127.0.0.1:4320/v1/opamp` - web UI: <http://localhost:4321>
 - `-no-tls` is required because this extension currently supports `ws://` only.
 
-> **Caveat - remote config key:** the example server sends remote config under
-> the empty-string key in `config_map` and sets no content type, while this
-> extension currently expects the key `desired_state` with content type
-> `application/json`. Until that is reconciled, apply this local patch to
-> `internal/examples/server/data/agent.go` (in `calcRemoteConfig`):
->
-> ```diff
-> - cfg.Config.ConfigMap[""] = &protobufs.AgentConfigFile{
-> -   Body: []byte(agent.CustomInstanceConfig),
-> + cfg.Config.ConfigMap["desired_state"] = &protobufs.AgentConfigFile{
-> +   Body:        []byte(agent.CustomInstanceConfig),
-> +   ContentType: "application/json",
->   }
-> ```
-
-### 2. Configure and run the engine
-
-Save as `opamp.yaml`:
-
-```yaml
-version: otel_dataflow/v1
-
-engine:
-  controller:
-    extensions:
-      opamp:
-        type: "urn:otel:extension:opamp"
-        config:
-          endpoint: "ws://127.0.0.1:4320/v1/opamp"
-          # Fixed UUID so the agent is easy to find in the UI. Omit to
-          # generate a fresh UUIDv7 on each start.
-          instance_uid: "8be4df61-93ca-11d2-aa0d-00e098032b8c"
-          heart_beat_interval: "5s"
-          agent_description:
-            identifying_attributes:
-              service.name: "otap-df-engine"
-
-groups: {}
-```
+### 2. Run the engine
 
 ```sh
 cargo build --bin df_engine
-./target/debug/df_engine --config opamp.yaml --num-cores 1
+./target/debug/df_engine --config configs/opamp-controller-extension.yaml --num-cores 1
 ```
 
 The agent appears on <http://localhost:4321> within a heartbeat interval:

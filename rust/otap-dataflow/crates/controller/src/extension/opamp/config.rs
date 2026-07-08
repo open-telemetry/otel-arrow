@@ -64,6 +64,12 @@ pub struct Config {
     /// config is received from the OpAMP server
     #[serde(default = "default_reconcile_config")]
     pub reconcile: EngineReconcileConfig,
+
+    /// The key in the remote config map which will be expected to contain the remote config.
+    /// Different servers may use different keys to send the config, such as "desired_state" or
+    /// may omit the key and simply send an empty string.
+    #[serde(default)]
+    pub remote_config_key: String,
 }
 
 impl Config {
@@ -160,10 +166,10 @@ const fn default_reconcile_delete_missing() -> bool {
 #[derive(Deserialize, Debug, PartialEq, Serialize)]
 pub struct AgentIdentityConfig {
     /// Defines identifying attributes
-    pub identifying_attributes: BTreeMap<String, AgentDescriptionAttribute>,
+    pub identifying_attributes: Option<BTreeMap<String, AgentDescriptionAttribute>>,
 
     /// Defines non-identifying attributes
-    pub non_identifying_attributes: BTreeMap<String, AgentDescriptionAttribute>,
+    pub non_identifying_attributes: Option<BTreeMap<String, AgentDescriptionAttribute>>,
 }
 
 /// Config definition of a value of an attribute used in the agent description.

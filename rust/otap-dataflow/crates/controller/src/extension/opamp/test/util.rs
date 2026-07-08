@@ -176,7 +176,7 @@ pub fn server_to_agent_with_config(
             config_hash,
             config: Some(AgentConfigMap {
                 config_map: HashMap::from_iter([(
-                    "desired_state".into(),
+                    "".into(),
                     AgentConfigFile {
                         content_type: "application/json".into(),
                         body: serde_json::to_vec(config).unwrap(),

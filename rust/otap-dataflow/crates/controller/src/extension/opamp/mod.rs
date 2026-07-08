@@ -391,7 +391,11 @@ async fn run_websocket_request_loop(
                         };
 
                         stats.messages_received += 1;
-                        let action = handle_received_websocket_message(message, session_state);
+                        let action = handle_received_websocket_message(
+                            message,
+                            session_state,
+                            config,
+                        );
                         let do_continue = process_handled_message_action(
                             action,
                             cancellation_token,
@@ -573,6 +577,7 @@ async fn send_disconnect_message_and_close_frame<T, E>(
 fn handle_received_websocket_message(
     message: Message,
     session_state: &SessionState,
+    config: &Config,
 ) -> HandledMessageAction {
     match message {
         Message::Binary(mut message_bytes) => {
@@ -600,7 +605,7 @@ fn handle_received_websocket_message(
             }
 
             match ServerToAgent::decode(message_bytes) {
-                Ok(message) => handle_server_to_agent_message(message, session_state),
+                Ok(message) => handle_server_to_agent_message(message, session_state, config),
                 Err(e) => {
                     otel_error!(
                         "opamp.controller_extension.decode.error",
@@ -691,6 +696,7 @@ struct ReplyError {
 fn handle_server_to_agent_message(
     message: ServerToAgent,
     session_state: &SessionState,
+    config: &Config,
 ) -> HandledMessageAction {
     // ensure uid matches. An empty instance_uid is accepted: the field exists to
     // disambiguate multiplexed connections, and servers (e.g. the opamp-go reference
@@ -824,13 +830,16 @@ fn handle_server_to_agent_message(
     }
 
     if let Some(remote_config) = message.remote_config {
-        if let Some(config) = remote_config.config {
+        if let Some(remote_config_config) = remote_config.config {
             if Some(&remote_config.config_hash) != session_state.last_config_hash.as_ref() {
-                // we expect to find remote a key called "desired_state" in the remote config_map.
-                // All other keys within the config_map will be ignored...
-
-                if let Some(config_file) = config.config_map.get("desired_state") {
-                    if config_file.content_type == "application/json" {
+                if let Some(config_file) = remote_config_config
+                    .config_map
+                    .get(&config.remote_config_key)
+                {
+                    // assume empty content type to be JSON
+                    if config_file.content_type == "application/json"
+                        || config_file.content_type.is_empty()
+                    {
                         match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
                             Ok(engine_config) => {
                                 updates.engine_config = Some(EngineConfigUpdate {
@@ -864,18 +873,24 @@ fn handle_server_to_agent_message(
                             config_hash: remote_config.config_hash,
                         })
                     }
+                } else {
+                    otel_warn!(
+                        "opamp.controller_extension.message.missing_config_key",
+                        message = "No key config key found in remote_config.config.config_map",
+                        expected_key = config.remote_config_key
+                    );
                 }
             } else {
-                otel_warn!(
-                    "opamp.controller_extension.message.missing_config",
-                    message = "No key \"desired_state\" found in remote_config.config.config_map"
+                otel_debug!(
+                    "opamp.controller_extension.message.skip_update_config",
+                    message = "Skipping config update because config hash matches last applied config hash"
                 )
             }
 
             // emit logs about the ignored config
-            if config.config_map.len() > 1 {
-                for key in config.config_map.keys() {
-                    if key == "desired_state" {
+            if remote_config_config.config_map.len() > 1 {
+                for key in remote_config_config.config_map.keys() {
+                    if key == &config.remote_config_key {
                         continue;
                     }
 
@@ -1177,20 +1192,30 @@ fn agent_description(config: &Config) -> Option<AgentDescription> {
         .map(|agent_description_config| AgentDescription {
             identifying_attributes: agent_description_config
                 .identifying_attributes
-                .iter()
-                .map(|(k, v)| KeyValue {
-                    key: k.clone(),
-                    value: Some(v.into()),
+                .as_ref()
+                .map(|attrs| {
+                    attrs
+                        .iter()
+                        .map(|(k, v)| KeyValue {
+                            key: k.clone(),
+                            value: Some(v.into()),
+                        })
+                        .collect()
                 })
-                .collect(),
+                .unwrap_or_default(),
             non_identifying_attributes: agent_description_config
                 .non_identifying_attributes
-                .iter()
-                .map(|(k, v)| KeyValue {
-                    key: k.clone(),
-                    value: Some(v.into()),
+                .as_ref()
+                .map(|attrs| {
+                    attrs
+                        .iter()
+                        .map(|(k, v)| KeyValue {
+                            key: k.clone(),
+                            value: Some(v.into()),
+                        })
+                        .collect()
                 })
-                .collect(),
+                .unwrap_or_default(),
         })
 }
 
@@ -1562,8 +1587,7 @@ mod test {
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
 
     use crate::extension::opamp::proto::opamp::v1::{
-        AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, ServerToAgentCommand,
-        any_value::Value,
+        AgentRemoteConfig, AnyValue, RetryInfo, ServerErrorResponse, any_value::Value,
     };
     use crate::extension::opamp::test::util::{
         EXPECTED_INSTANCE_UID_BYTES, EXPECTED_INSTANCE_UID_STR, MockControlPlane,
@@ -1835,7 +1859,7 @@ mod test {
                     config_hash: vec![0, 1, 2],
                     config: Some(AgentConfigMap {
                         config_map: HashMap::from_iter([(
-                            "desired_state".into(),
+                            "".into(),
                             AgentConfigFile {
                                 content_type: "application/json".into(),
                                 body: "not valid json".to_string().encode_to_vec(),
