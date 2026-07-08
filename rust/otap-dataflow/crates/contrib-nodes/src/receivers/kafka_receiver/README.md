@@ -6,7 +6,7 @@
 
 - Type: `receiver:kafka` (`urn:otel:receiver:kafka`)
 - Feature gate: `kafka-receiver` (also enabled by `contrib-receivers`)
-- Stability: Experimental (not performance-optimized)
+- Stability: Experimental (pending performance optimization)
 
 ## Overview
 
