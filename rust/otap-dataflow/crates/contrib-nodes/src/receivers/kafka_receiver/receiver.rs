@@ -1656,13 +1656,7 @@ mod tests {
     fn make_pipeline_ctx_with(core_id: usize, num_cores: usize) -> PipelineContext {
         let registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(registry);
-        controller_ctx.pipeline_context_with(
-            "grp".into(),
-            "pipeline".into(),
-            core_id,
-            num_cores,
-            0,
-        )
+        controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), core_id, num_cores, 0)
     }
 
     fn make_config_with_group_instance_id(instance_id: &str) -> KafkaReceiverConfig {
