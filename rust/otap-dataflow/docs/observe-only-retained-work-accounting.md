@@ -41,6 +41,22 @@ Before anyone can safely isolate, reject, or backpressure a source, they need to
 know who is actually holding memory and where. The first step is visibility, not
 rejection. Get attribution right, validate it, and only then consider control.
 
+## Relationship to the process-wide limiter
+
+The process-wide memory limiter (`memory-limiter-phase1.md`) remains the outer
+safety guard: it samples real process or cgroup memory and sheds ingress under
+`Hard` pressure. This document designs the attribution layer beneath it - the
+"`MemoryTicket` ownership on retained work items" and "queue and topic byte
+accounting" items that the Phase 1 document explicitly deferred to later
+phases.
+
+The two layers measure different things and are complements, not alternatives.
+The process limiter sees every resident byte, including allocator overhead, but
+cannot attribute any of it. Retained-work accounting attributes admitted
+telemetry precisely, but does not see allocator slack or non-pdata state.
+Neither number replaces the other, and later enforcement layers are expected to
+keep the process limiter as the final backstop.
+
 ## A minimal mental model
 
 The OTAP dataflow engine moves telemetry through a small set of roles. A
@@ -240,6 +256,43 @@ interval ended. Clones must not accidentally duplicate ownership; failed sends
 must return or release the original owner; and terminal paths must release
 ownership without acquiring new budget.
 
+This constraint has a cost worth stating plainly: because a local ticket cannot
+travel inside the payload, every retaining component holds its owner beside its
+own retained state, and coverage is added site by site. A site that is not
+instrumented simply does not appear in the accounting. The design accepts this
+deliberately. The unknown-size and abandoned-ownership dimensions exist
+precisely so that partial coverage and ownership drift show up as data rather
+than as silent error, and debug builds should assert that local owners are
+released on the runtime that created them.
+
+Two placement rules follow from this. First, a component should receive its
+accounting handle explicitly when it is constructed, the same way it receives
+its configuration and metrics; if the handle is instead picked up from ambient
+runtime state, a missing handle silently disables accounting at that site
+instead of failing at startup. Second, when engine infrastructure retains an
+item on a component's behalf - a delay scheduler or timer holding a payload for
+later redelivery - the retained entry should carry or return the owner itself,
+so that release is tied to the item's identity rather than reconstructed by
+matching deadlines or sizes.
+
+### Clones, fanout, and broadcast
+
+Accounting charges per retained logical owner, not per underlying allocation.
+Arrow and `Bytes` payloads can be shallow-cloned, so several retained branches
+may share one physical buffer. The accounting deliberately reports one charge
+per retained branch in that case: a fanout with N retained branches accounts up
+to N times the payload bytes, and logical retained bytes can exceed resident
+bytes. That is intentional - the number answers "who is holding admitted work",
+not "what does the allocator hold".
+
+Broadcast topics are the one place this rule needs care. The current broadcast
+broker stores one shared payload per ring slot and delivers that slot to every
+subscriber. The ring slot is the retained owner: the charge is taken when the
+slot is occupied and released on eviction, overwrite, disconnect, or topic
+close. It is not multiplied by subscriber count. A subscriber that retains the
+payload beyond delivery starts a new retention interval and creates its own
+local owner for it.
+
 ### Abandoned ownership
 
 If ownership is dropped without a normal release path, the bytes should not
@@ -260,6 +313,7 @@ small, low-cardinality set of dimensions.
 | Runtime retained bytes | Shows which worker or runtime is holding admitted work. |
 | Retention site | Shows whether memory is in a queue, batcher, retry buffer, exporter, topic, or processor state. |
 | Component identity | Connects retained work to the receiver, processor, topic, or exporter. |
+| Pipeline group / pipeline | Connects retained work to the owning pipeline group and pipeline - the scope that later group or tenant budgets will aggregate over. |
 | Shared-boundary ownership | Shows work retained outside a single runtime. |
 | Unknown-size count | Shows where accounting could not estimate bytes precisely. |
 | Abandoned ownership | Highlights possible leaks or incomplete terminal paths. |
@@ -268,6 +322,16 @@ small, low-cardinality set of dimensions.
 These dimensions are intentionally coarse. They are meant to point an operator at
 the right runtime, the right kind of buffer, and the right component, not to
 track individual items.
+
+Group and pipeline attribution should be carried on ownership scope from the
+first implementation, as interned or compact ids rather than per-item strings.
+The engine already knows the pipeline group and pipeline identity at node
+construction, so this dimension is cheap and low-cardinality - and retrofitting
+it later would mean revisiting every charge site. Attribution should be a
+required input when an ownership scope is created, not an optional field that
+defaults to empty: the engine always knows the identity, and optional
+attribution decays into unattributed accounting. It should be stored once on the
+scope that owners reference, not copied into every owner.
 
 ## Applying the model
 
@@ -301,6 +365,30 @@ This keeps the design consistent across node kinds without requiring every node
 to use the same internal data structure. The rule is about ownership of retained
 work, not about forcing a specific queue, buffer, or scheduler implementation.
 
+### What counts as retained size
+
+Charged size is a declared logical size for the retained payload: stable, cheap
+to obtain, and known at the moment retention starts. Good sources are the
+encoded payload byte length, a retained buffer's length, or a component-specific
+estimate that the component documents.
+
+Charged size is never derived from the allocator or the operating system.
+`size_of_val`, allocator usable-size queries, jemalloc statistics, and RSS or
+cgroup deltas are all unsuitable as ticket sizes: they measure residency rather
+than retention, they include memory the component does not own, and they change
+underneath the accounting. A site that cannot produce a size for a retained item
+reports it as unknown-size rather than guessing, so the gap is visible in the
+unknown-size dimension instead of silently skewing totals.
+
+The engine's two payload forms do not make this equally easy. An encoded OTLP
+payload has an exact byte length. A columnar record-batch payload has no single
+encoded length, and if the native payload type declares no size, every charge on
+the engine's main data path lands in the unknown-size dimension and the totals
+stop being meaningful. Defining a documented estimate for the columnar form -
+for example, the sum of its constituent buffer lengths, computed once when
+retention starts and reused unchanged - is therefore part of the first
+implementation slice, not an optional refinement.
+
 ## Initial observe-only scope
 
 The first level should cover the places where retained work commonly
@@ -328,6 +416,9 @@ These are explicit non-goals:
 - No traffic rejection.
 - No tenant isolation enforcement.
 - No policy tree for group, pipeline, or tenant budgets.
+- No budget sizing configuration. Observe-only accounting has no floors, lease
+  sizes, or overshoot allowances to configure; the only configuration is whether
+  it is enabled. Sizing vocabulary enters the design only when budgets do.
 - No silent data dropping.
 - No attempt to make every allocator byte match logical retained bytes.
 - No high-cardinality labels.
