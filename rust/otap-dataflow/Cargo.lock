@@ -3247,7 +3247,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=66bfea4e84253996965c708c23a6eb38b0d848aa#66bfea4e84253996965c708c23a6eb38b0d848aa"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=c0a28d7541afd51dc763b7dea3458ebb3aee4d52#c0a28d7541afd51dc763b7dea3458ebb3aee4d52"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -3262,7 +3262,7 @@ dependencies = [
  "reqwest 0.12.28",
  "rustls",
  "rustls-native-certs",
- "rustls-pemfile",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
@@ -8254,15 +8254,6 @@ dependencies = [
  "openssl-sys",
  "rustls",
  "zeroize",
-]
-
-[[package]]
-name = "rustls-pemfile"
-version = "2.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dce314e5fee3f39953d46bb63bb8a46d40c2f8fb7cc5a3b6cab2bde9721d6e50"
-dependencies = [
- "rustls-pki-types",
 ]
 
 [[package]]
