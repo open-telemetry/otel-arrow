@@ -19,10 +19,6 @@
 #                   consumed.metric_points {data_point}
 #                   consumed.spans         {span}
 #
-# Mapping to the customer-facing goal (Collector universal-telemetry RFC):
-#   receiver_accepted_<signal> == the receiver's node.producer.produced.<signal>
-#   (the items the receiver emitted into the pipeline).
-#
 # What to look for:
 #   - receiver `node.producer.produced.{log_records,metric_points,spans}` is the
 #     per-signal accepted volume the traffic generator injected.

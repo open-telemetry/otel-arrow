@@ -43,7 +43,8 @@ Demonstrates metric-name filtering:
 
 Demonstrates the per-signal produced/consumed item counts emitted by every node:
 
-- Generates a mix of logs, metrics and traces -> log-sampling processor -> noop exporter
+- Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
+exporter
 - Every node reports `node.producer.produced.{log_records,metric_points,spans}`
   and `node.consumer.consumed.{log_records,metric_points,spans}` (requires
   `runtime_metrics: normal`).
