@@ -225,6 +225,52 @@ One proposed observe-only shape uses a small set of ownership primitives:
 - `SharedEnvelope<T>` would pair a sendable payload with an escrow owner after a
   local owner has been converted at a shared boundary.
 
+In code terms, the primitives would look roughly like this. The sketch fixes
+the ownership and transfer semantics, not the final names or signatures.
+
+```rust
+/// Declared logical size of a retained payload. `None` means the site reports
+/// into the unknown-size dimension instead of guessing.
+pub trait RetainedSize {
+    fn retained_size(&self) -> Option<u64>;
+}
+
+/// Owns a retained-byte charge on one pinned runtime. Intentionally not
+/// `Send`: it refunds through runtime-local accounting state on release or
+/// drop.
+pub struct LocalMemoryTicket { /* scope handle + charged size */ }
+
+impl LocalMemoryTicket {
+    /// Convert local ownership to sendable escrow ownership at a shared
+    /// boundary. On failure the local ticket is returned unchanged, so
+    /// ownership is never lost mid-transfer.
+    pub fn try_into_escrow(
+        self,
+        boundary: &EscrowScope,
+    ) -> Result<EscrowTicket, LocalMemoryTicket>;
+}
+
+/// Sendable ownership of the same charge while work waits in a shared queue,
+/// topic, or crosses runtimes. Releases exactly once on delivery, eviction,
+/// close, failed-send cleanup, or drop.
+pub struct EscrowTicket { /* boundary handle + charged size */ }
+
+/// Queue-slot form of escrow ownership, stored beside the retained payload so
+/// every slot-exit path releases the charge uniformly.
+pub struct EscrowSlot { /* escrow ticket, released on vacate */ }
+
+/// Sendable payload paired with the escrow owner for its current retention
+/// interval.
+pub struct SharedEnvelope<T> {
+    pub payload: T,
+    escrow: EscrowSlot,
+}
+```
+
+Every ticket type releases on drop, so the failure path and the success path
+refund through the same mechanism. The payload's declared size is read once,
+when retention starts, and carried on the ticket unchanged.
+
 The important split is that local tickets do not go inside `PData` or any
 shared/topic envelope. `PData`-shaped messages are `Send` in several engine
 paths, while a local ticket is not. For runtime-local retained work, the ticket
