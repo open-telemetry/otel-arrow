@@ -6,7 +6,7 @@
 
 - Type: `exporter:kafka` (`urn:otel:exporter:kafka`)
 - Feature gate: `kafka-exporter` (also enabled by `contrib-exporters`)
-- Stability: Experimental
+- Stability: Experimental (pending performance optimization)
 
 ## Overview
 
