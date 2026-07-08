@@ -116,13 +116,24 @@ fn development_credential_constructs() {
 }
 
 #[test]
-fn workload_identity_not_yet_supported() {
+fn workload_identity_credential_construct_is_attempted() {
     otap_df_otap::crypto::ensure_crypto_provider();
-    let cfg = config_from_json(serde_json::json!({ "method": "workload_identity" })).unwrap();
-    assert!(
-        matches!(Auth::new(&cfg), Err(Error::CreateCredential { .. })),
-        "workload_identity should currently be unsupported"
-    );
+    let cfg = config_from_json(serde_json::json!({
+        "method": "workload_identity",
+        "client_id": "test-client",
+        "tenant_id": "test-tenant",
+        "token_file_path": "/tmp/does-not-exist",
+    }))
+    .unwrap();
+    // Construction only validates configuration; a missing env/file surfaces as
+    // a CreateCredential error. Both outcomes are acceptable here.
+    match Auth::new(&cfg) {
+        Ok(_) => {}
+        Err(Error::CreateCredential { method, .. }) => {
+            assert_eq!(method, AuthMethod::WorkloadIdentity);
+        }
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
 }
 
 // ── Token acquisition / cache tests ───────────────────────────

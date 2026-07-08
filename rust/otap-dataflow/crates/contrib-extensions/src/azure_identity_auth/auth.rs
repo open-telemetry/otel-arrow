@@ -10,7 +10,8 @@ use azure_core::credentials::{TokenCredential, TokenRequestOptions};
 use azure_core::time::OffsetDateTime;
 use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
-    ManagedIdentityCredentialOptions, UserAssignedId,
+    ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
+    WorkloadIdentityCredentialOptions,
 };
 use otap_df_engine::capability::BearerToken;
 
@@ -91,13 +92,20 @@ fn create_credential(config: &Config) -> Result<Arc<dyn TokenCredential>, Error>
                     })?;
             Ok(cred)
         }
-        // Implemented in a later change.
-        method @ AuthMethod::WorkloadIdentity => Err(Error::CreateCredential {
-            method,
-            source: azure_core::error::Error::with_message(
-                azure_core::error::ErrorKind::Other,
-                "auth method not yet supported",
-            ),
-        }),
+        AuthMethod::WorkloadIdentity => {
+            let options = WorkloadIdentityCredentialOptions {
+                client_id: config.client_id.clone(),
+                tenant_id: config.tenant_id.clone(),
+                token_file_path: config.token_file_path.clone(),
+                ..Default::default()
+            };
+            let cred = WorkloadIdentityCredential::new(Some(options)).map_err(|source| {
+                Error::CreateCredential {
+                    method: AuthMethod::WorkloadIdentity,
+                    source,
+                }
+            })?;
+            Ok(cred)
+        }
     }
 }
