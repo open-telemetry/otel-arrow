@@ -24,6 +24,10 @@ placement metadata contract consumed here.
 
 ## Review Focus
 
+Status: this proposal was refined during implementation prototyping and VM
+validation. This revision reflects the validated lazy-quorum listener model,
+not the earlier controller-side eager materialisation sketch.
+
 This proposal is primarily asking for feedback on:
 
 1. Whether the eBPF selector should remain an optional consumer of the
@@ -207,12 +211,22 @@ Fallback must be deterministic:
 - If strict mode is enabled, registration conflicts fail during controller
   preflight before pipeline threads launch. Quorum timeout, bind/listen failure,
   map population failure, selector attach failure, or selector unavailability
-  surface from the acquiring receiver thread during startup and must fail the
-  pipeline startup.
+  surface from the acquiring receiver thread during startup and must fail engine
+  startup with a non-zero process exit.
 
 Lifecycle telemetry includes `plan_registered` from controller preflight and,
 from the lazy materialisation path, `group_ready`, `selector_attached`,
 `selector_fallback`, `fallback`, and `materialisation_failed`.
+
+The strict startup watcher currently waits for the fixed 5-second quorum timeout
+plus a 1-second grace window. During that window, the implementation observes the
+first pipeline runtime error through shared controller state. This enforces the
+strict fail-fast contract, but it is intentionally documented as an implementation
+limitation: while any strict `ebpf_numa` listener group is present, any pipeline
+runtime error reported during the strict listener startup window is treated as
+fatal. Narrowing the fatal path to only the specific strict listener-group error
+requires carrying structured error provenance from the receiver thread and is
+left as follow-up work.
 
 ### eBPF NUMA selector
 
@@ -447,6 +461,10 @@ placement.
   materialised during receiver startup quorum. Restarting a receiver inside an
   already materialised group, or replacing a group without restarting the engine
   process, requires future live-reconfiguration work.
+- Strict startup fail-fast is currently enforced by observing the first pipeline
+  runtime error during the strict listener startup window. This is broader than
+  the design contract, which is specifically about strict listener-group setup
+  failures, and can be narrowed once runtime errors carry structured provenance.
 
 ## Alternatives Considered
 
@@ -458,6 +476,12 @@ placement.
 - Coordinated `SO_REUSEPORT` without eBPF: this is the proposed foundation and
   fallback. It controls listener creation but still leaves placement to the
   kernel hash, so it is not NUMA-aware on its own.
+- Eager controller-side materialisation: this was considered and rejected. It
+  would bind sockets for all planned receivers before those receiver tasks have
+  reached startup. If a receiver never arrives or stalls before accepting, the
+  kernel reuseport group can contain a socket with no accept loop, so traffic can
+  be routed to a dead receiver. Lazy quorum avoids publishing sockets for
+  receivers that have not arrived.
 - Classic BPF (`SO_ATTACH_REUSEPORT_CBPF`): a tiny RX-CPU-index selector gives
   per-CPU fairness on a single-NUMA host with no BTF, no `vmlinux.h`, no
   `CAP_BPF`, and no 5.12 floor. It cannot express NUMA-local range selection
@@ -482,6 +506,20 @@ benefits from NUMA-local range selection plus per-NUMA round-robin plus a global
 fallback, and a future migration phase is desired. Expected gains are modest and
 workload-dependent; representative ingestion benchmarks should validate the
 benefit before enabling the selector broadly.
+
+## Open Items and Validation
+
+- Multi-NUMA locality still needs validation on a host with at least two NUMA
+  nodes and aligned RSS / IRQ affinity. Single-NUMA VM testing validates build,
+  attach, fallback, strict fail-fast, and per-core selection mechanics, but it
+  cannot prove cross-node locality.
+- The 5-second quorum timeout and the 1-second strict startup grace window are
+  implementation constants in the initial design. Making them configurable should
+  be considered if operators need slower receiver startup envelopes.
+- Strict fail-fast currently treats any pipeline runtime error during the strict
+  listener startup window as fatal when at least one strict `ebpf_numa` group is
+  present. This is safe and operationally loud, but narrower provenance-based
+  aborts are a possible follow-up.
 
 ## Future Work -- listener migration
 
