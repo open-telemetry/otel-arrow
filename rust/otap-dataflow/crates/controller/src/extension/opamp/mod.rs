@@ -616,6 +616,9 @@ fn handle_received_websocket_message(
 }
 
 /// Action to take in response to the received [`ServerToAgent`] message
+/// 
+/// TODO: more actions may be added in the future, such as `Restart` to handle server pushed
+/// restart command
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
 enum HandledMessageAction {
@@ -629,12 +632,6 @@ enum HandledMessageAction {
     /// backoff strategy must be used. For more details, see
     /// https://opentelemetry.io/docs/specs/opamp/#throttling
     DisconnectAndRetry(Option<u64>),
-
-    /// The server may send a command to the agent, and currently the only variant of this command
-    /// is simply Restart. It's unclear from the specification what Restart means generally, but we
-    /// consider it to mean basically restarting the logic of this controller extension's session
-    /// with the server.
-    Restart,
 
     /// Update the configuration of the engine and/or the state of the client, and send a reply to
     /// the server with the updated status and whatever else it has requested via flags.
@@ -750,18 +747,19 @@ fn handle_server_to_agent_message(
     if let Some(command) = message.command {
         return match CommandType::try_from(command.r#type).ok() {
             Some(CommandType::Restart) => {
-                otel_info!(
-                    "opamp.controller_extension.message.command",
-                    message = "ServerToAgent message contained command",
+                // TODO - handle this differently once Restart command supported
+                otel_warn!(
+                    "opamp.controller_extension.message.command_ignored",
+                    message = "ServerToAgent message contained command which is not yet supported.",
                     command =? "Restart"
                 );
-                HandledMessageAction::Restart
+                HandledMessageAction::Ignore
             }
             None => {
                 otel_info!(
                     "opamp.controller_extension.message.command",
                     message = "ServerToAgent message contained command",
-                    command =? "Unknown"
+                    command_type =? command.r#type
                 );
                 HandledMessageAction::Ignore
             }
@@ -927,14 +925,6 @@ where
                 }
                 session_state.retry_backoff_ns = Some(backoff.next_delay().as_nanos() as u64);
             }
-
-            false
-        }
-        HandledMessageAction::Restart => {
-            // reset all the state, then restart to disconnect
-            session_state.sequence_num = 0;
-            session_state.phase = Phase::Initiating;
-            session_state.retry_backoff_ns = None;
 
             false
         }
@@ -1303,7 +1293,6 @@ fn capabilities() -> u64 {
         | (AgentCapabilities::ReportsHealth as u64)
         | (AgentCapabilities::ReportsRemoteConfig as u64)
         | (AgentCapabilities::ReportsHeartbeat as u64)
-        | (AgentCapabilities::AcceptsRestartCommand as u64)
 }
 
 /// Derive the health of each pipeline/group as a [`ComponentHealth`] object
@@ -1667,8 +1656,7 @@ mod test {
             | (AgentCapabilities::ReportsEffectiveConfig as u64)
             | (AgentCapabilities::ReportsHealth as u64)
             | (AgentCapabilities::ReportsRemoteConfig as u64)
-            | (AgentCapabilities::ReportsHeartbeat as u64)
-            | (AgentCapabilities::AcceptsRestartCommand as u64);
+            | (AgentCapabilities::ReportsHeartbeat as u64);
 
         // Message 1: initial full-state
         let initial = &requests[0];
@@ -1937,42 +1925,6 @@ mod test {
         assert_eq!(requests[0].sequence_num, 0);
         assert_eq!(requests[1].sequence_num, 0);
         assert_eq!(requests[0], requests[1]);
-    }
-
-    #[tokio::test]
-    async fn test_server_restart_causes_connect_and_new_initial_message() {
-        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
-        let responses = vec![
-            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
-            None,
-            Some(ServerToAgent {
-                command: Some(ServerToAgentCommand {
-                    r#type: CommandType::Restart as i32,
-                }),
-                instance_uid: EXPECTED_INSTANCE_UID_BYTES.to_vec(),
-                ..Default::default()
-            }),
-            // send a new config after restart
-            Some(server_to_agent_with_config(&test_config(), vec![4, 1, 8])),
-            None,
-            None,
-        ];
-
-        let config: Config = serde_json::from_value(serde_json::json!({
-            "instance_uid": EXPECTED_INSTANCE_UID_STR,
-            "endpoint": ""
-        }))
-        .unwrap();
-        let requests = run_web_socket_test_with_config(responses, control_plane, 6, config).await;
-        assert_eq!(requests.len(), 6);
-
-        // assert that after the first message was received, we
-        assert_eq!(requests[0].sequence_num, 0);
-        assert_eq!(requests[1].sequence_num, 1);
-        assert_eq!(requests[2].sequence_num, 2);
-        assert_eq!(requests[3].sequence_num, 0);
-        assert_eq!(requests[4].sequence_num, 1);
-        assert_eq!(requests[5].sequence_num, 2);
     }
 
     #[tokio::test]
