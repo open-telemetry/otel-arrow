@@ -8,7 +8,10 @@ use std::time::{Duration, Instant};
 
 use azure_core::credentials::{TokenCredential, TokenRequestOptions};
 use azure_core::time::OffsetDateTime;
-use azure_identity::{ManagedIdentityCredential, ManagedIdentityCredentialOptions, UserAssignedId};
+use azure_identity::{
+    DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
+    ManagedIdentityCredentialOptions, UserAssignedId,
+};
 use otap_df_engine::capability::BearerToken;
 
 use super::config::{AuthMethod, Config};
@@ -79,15 +82,22 @@ fn create_credential(config: &Config) -> Result<Arc<dyn TokenCredential>, Error>
             })?;
             Ok(cred)
         }
-        // Implemented in later changes.
-        method @ (AuthMethod::Development | AuthMethod::WorkloadIdentity) => {
-            Err(Error::CreateCredential {
-                method,
-                source: azure_core::error::Error::with_message(
-                    azure_core::error::ErrorKind::Other,
-                    "auth method not yet supported",
-                ),
-            })
+        AuthMethod::Development => {
+            let cred =
+                DeveloperToolsCredential::new(Some(DeveloperToolsCredentialOptions::default()))
+                    .map_err(|source| Error::CreateCredential {
+                        method: AuthMethod::Development,
+                        source,
+                    })?;
+            Ok(cred)
         }
+        // Implemented in a later change.
+        method @ AuthMethod::WorkloadIdentity => Err(Error::CreateCredential {
+            method,
+            source: azure_core::error::Error::with_message(
+                azure_core::error::ErrorKind::Other,
+                "auth method not yet supported",
+            ),
+        }),
     }
 }

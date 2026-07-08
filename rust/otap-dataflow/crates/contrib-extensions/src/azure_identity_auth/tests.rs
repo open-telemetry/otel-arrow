@@ -109,15 +109,20 @@ fn managed_identity_user_assigned_credential_constructs() {
 }
 
 #[test]
-fn unsupported_methods_error_for_now() {
+fn development_credential_constructs() {
     otap_df_otap::crypto::ensure_crypto_provider();
-    for method in ["development", "workload_identity"] {
-        let cfg = config_from_json(serde_json::json!({ "method": method })).unwrap();
-        assert!(
-            matches!(Auth::new(&cfg), Err(Error::CreateCredential { .. })),
-            "method `{method}` should currently be unsupported"
-        );
-    }
+    let cfg = config_from_json(serde_json::json!({ "method": "development" })).unwrap();
+    assert!(Auth::new(&cfg).is_ok());
+}
+
+#[test]
+fn workload_identity_not_yet_supported() {
+    otap_df_otap::crypto::ensure_crypto_provider();
+    let cfg = config_from_json(serde_json::json!({ "method": "workload_identity" })).unwrap();
+    assert!(
+        matches!(Auth::new(&cfg), Err(Error::CreateCredential { .. })),
+        "workload_identity should currently be unsupported"
+    );
 }
 
 // ── Token acquisition / cache tests ───────────────────────────
