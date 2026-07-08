@@ -205,9 +205,11 @@ Fallback must be deterministic:
   mixed-policy effective bind identities, the affected receivers use the
   existing independent bind path.
 - If quorum is not reached before the startup timeout, or if socket creation,
-  `bind()`, TCP `listen()`, map population, or selector attach fails, or the
-  selector is unavailable on the platform or build, in non-strict mode the
+  `bind()`, TCP `listen()`, or map population fails, in non-strict mode the
   engine logs the failure and falls back to independent binding.
+- If sockets are bound and eligible but selector attach fails, or the selector
+  is unavailable on the platform or build, in non-strict mode the receivers keep
+  the coordinated plain `SO_REUSEPORT` sockets and run without the selector.
 - If strict mode is enabled, registration conflicts fail during controller
   preflight before pipeline threads launch. Quorum timeout, bind/listen failure,
   map population failure, selector attach failure, or selector unavailability
