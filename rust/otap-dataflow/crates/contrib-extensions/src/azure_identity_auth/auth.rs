@@ -48,7 +48,10 @@ impl Auth {
             .map_err(|source| Error::TokenAcquisition { source })?;
 
         let expires_on = instant_from_unix_expiry(access.expires_on);
-        Ok(BearerToken::new(access.token.secret().to_owned(), expires_on))
+        Ok(BearerToken::new(
+            access.token.secret().to_owned(),
+            expires_on,
+        ))
     }
 
     /// Builds an `Auth` from an already-constructed credential. Test-only.

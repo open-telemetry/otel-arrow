@@ -11,12 +11,15 @@ use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::shared::capability::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_telemetry::registry::TelemetryRegistryHandle;
+use otap_df_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
 
 use super::auth::Auth;
 use super::config::{AuthMethod, Config};
 use super::error::Error;
 use super::extension::AzureIdentityAuthExtension;
+use super::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
 use super::*;
 
 // ── Config tests ───────────────────────────────────────────
@@ -180,7 +183,13 @@ impl TokenCredential for FailingCredential {
 fn make_extension(credential: Arc<dyn TokenCredential>) -> AzureIdentityAuthExtension {
     let auth = Auth::from_credential(credential, "test_scope".to_string());
     let (tx, _rx) = watch::channel(None);
-    AzureIdentityAuthExtension::new("test-ext", auth, tx)
+    AzureIdentityAuthExtension::new("test-ext", auth, tx, make_tracker())
+}
+
+fn make_tracker() -> AzureIdentityAuthMetricsTracker {
+    let registry = TelemetryRegistryHandle::new();
+    let metric_set = registry.register_metric_set::<AzureIdentityAuthMetrics>(EmptyAttributes());
+    AzureIdentityAuthMetricsTracker::new(metric_set)
 }
 
 #[tokio::test]

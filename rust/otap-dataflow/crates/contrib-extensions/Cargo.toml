@@ -17,6 +17,8 @@ workspace = true
 otap-df-config = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-otap = { workspace = true }
+otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 
 async-trait.workspace = true
 futures.workspace = true

@@ -5,7 +5,7 @@
 //! `BearerTokenProvider` capability implementation, and the background refresh
 //! loop driven by the active `Extension::start()` task.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -24,6 +24,7 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
 use super::auth::Auth;
+use super::metrics::AzureIdentityAuthMetricsTracker;
 
 /// Refresh this many seconds before `expires_on`.
 const TOKEN_EXPIRY_BUFFER_SECS: u64 = 299;
@@ -55,6 +56,9 @@ struct Inner {
     cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     /// Coalesces concurrent slow-path fetches onto one in-flight request.
     fetch_lock: tokio::sync::Mutex<()>,
+    /// Metric tracker. Its critical sections are short and never span an
+    /// `.await`, so a `std` `Mutex` is appropriate.
+    metrics: Mutex<AzureIdentityAuthMetricsTracker>,
 }
 
 impl AzureIdentityAuthExtension {
@@ -64,6 +68,7 @@ impl AzureIdentityAuthExtension {
         name: &str,
         auth: Auth,
         tx: watch::Sender<Option<BearerToken>>,
+        metrics: AzureIdentityAuthMetricsTracker,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
@@ -71,6 +76,7 @@ impl AzureIdentityAuthExtension {
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
+                metrics: Mutex::new(metrics),
             }),
         }
     }
@@ -100,12 +106,29 @@ impl Inner {
 
     /// Acquires a token and publishes it to consumers.
     async fn refresh_once(&self) -> Result<BearerToken, super::error::Error> {
-        let token = self.auth.get_token().await?;
-        // Publish the token to consumers and update the cache. Using
-        // `send_replace` (rather than `send`) ensures the cache is updated even
-        // when no receivers are currently subscribed.
-        let _ = self.tx.send_replace(Some(token.clone()));
-        Ok(token)
+        let start = Instant::now();
+        match self.auth.get_token().await {
+            Ok(token) => {
+                let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
+                if let Ok(mut metrics) = self.metrics.lock() {
+                    metrics.record_success(latency_ms);
+                }
+                // Publish the token to consumers and update the cache. Using
+                // `send_replace` (rather than `send`) ensures the cache is
+                // updated even when no receivers are currently subscribed.
+                let _ = self.tx.send_replace(Some(token.clone()));
+                if let Ok(mut metrics) = self.metrics.lock() {
+                    metrics.record_publish();
+                }
+                Ok(token)
+            }
+            Err(err) => {
+                if let Ok(mut metrics) = self.metrics.lock() {
+                    metrics.record_failure();
+                }
+                Err(err)
+            }
+        }
     }
 
     /// Computes the next refresh instant from a freshly acquired token.
@@ -179,8 +202,11 @@ impl SharedExtension for AzureIdentityAuthExtension {
                         // Refresh cadence is governed by token lifetime; live
                         // reconfiguration is a no-op in v1.
                         Ok(ExtensionControlMsg::Config { .. }) => {}
-                        // Telemetry is wired in a later change.
-                        Ok(ExtensionControlMsg::CollectTelemetry { .. }) => {}
+                        Ok(ExtensionControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            if let Ok(mut metrics) = inner.metrics.lock() {
+                                let _ = metrics.report(&mut metrics_reporter);
+                            }
+                        }
                     }
                 }
                 _ = tokio::time::sleep_until(next_refresh) => {

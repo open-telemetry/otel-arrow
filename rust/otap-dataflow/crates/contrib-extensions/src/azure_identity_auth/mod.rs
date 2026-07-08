@@ -7,10 +7,11 @@
 //! nodes through the `BearerTokenProvider` capability. See
 //! `docs/azure-identity-auth-extension.md` for the design.
 
+mod auth;
 pub mod config;
 pub mod error;
-mod auth;
 mod extension;
+mod metrics;
 
 #[cfg(test)]
 mod tests;
@@ -24,6 +25,7 @@ use otap_df_engine::ExtensionFactory;
 use otap_df_engine::capability::BearerTokenProvider;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::ExtensionContext;
+use otap_df_engine::extension::wrapper::ExtensionVariant;
 use otap_df_engine::extension::{ExtensionBundle, ExtensionWrapper};
 use otap_df_engine::extension_capabilities;
 use otap_df_otap::OTAP_EXTENSION_FACTORIES;
@@ -32,6 +34,7 @@ use tokio::sync::watch;
 use self::auth::Auth;
 use self::config::Config;
 use self::extension::AzureIdentityAuthExtension;
+use self::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
 
 /// URN under which this extension is registered.
 pub const AZURE_IDENTITY_AUTH_URN: &str = "urn:microsoft:extension:azure_identity_auth";
@@ -55,7 +58,7 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
 
 /// Builds an `AzureIdentityAuthExtension` bundle.
 fn create(
-    _ext_ctx: &ExtensionContext,
+    ext_ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     ext_config: Arc<ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -63,16 +66,19 @@ fn create(
     // Validate config now so a bad config fails fast at wiring time.
     let config = parse_config(&ext_config.config)?;
 
-    // Placeholder credential for now; the Azure-backed implementation lands in
-    // a later change.
     let auth = Auth::new(&config).map_err(|e| ConfigError::InvalidUserConfig {
         error: format!("failed to initialize Azure credential: {e}"),
     })?;
 
+    // Register a dedicated entity + metric set for this extension instance.
+    let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
+    let metric_set = ext_ctx.register_metric_set_for_entity::<AzureIdentityAuthMetrics>(entity_key);
+    let tracker = AzureIdentityAuthMetricsTracker::new(metric_set);
+
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
 
-    let extension = AzureIdentityAuthExtension::new(&name, auth, tx);
+    let extension = AzureIdentityAuthExtension::new(&name, auth, tx, tracker);
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
