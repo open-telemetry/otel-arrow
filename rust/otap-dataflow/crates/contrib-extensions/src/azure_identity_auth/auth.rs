@@ -46,6 +46,12 @@ impl Auth {
         let expires_on = instant_from_unix_expiry(access.expires_on);
         Ok(BearerToken::new(access.token.secret().to_owned(), expires_on))
     }
+
+    /// Builds an `Auth` from an already-constructed credential. Test-only.
+    #[cfg(test)]
+    pub(crate) fn from_credential(credential: Arc<dyn TokenCredential>, scope: String) -> Self {
+        Self { credential, scope }
+    }
 }
 
 /// Converts an absolute UNIX expiry timestamp into a monotonic [`Instant`]
