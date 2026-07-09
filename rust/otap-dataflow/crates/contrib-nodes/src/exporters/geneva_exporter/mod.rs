@@ -57,7 +57,7 @@ use std::time::Instant;
 // Geneva uploader dependencies
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
+use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig, LogMethod, SpanMethod};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
@@ -68,6 +68,20 @@ use otap_df_otap::pdata::OtapPdata;
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
+
+/// Log table configuration
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct LogConfig {
+    /// Default event name (table name) for logs sent to Geneva
+    pub default_event_name: Option<String>,
+}
+
+/// Span table configuration
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct SpanConfig {
+    /// Default event name (table name) for spans sent to Geneva
+    pub default_event_name: Option<String>,
+}
 
 /// Configuration for the Geneva Exporter
 #[derive(Debug, Deserialize, Clone)]
@@ -93,6 +107,12 @@ pub struct Config {
     pub role_instance: String,
     /// Authentication configuration
     pub auth: AuthConfig,
+    /// Log table configuration
+    #[serde(default)]
+    pub logs: LogConfig,
+    /// Span table configuration
+    #[serde(default)]
+    pub spans: SpanConfig,
     /// Maximum buffer size before forcing flush (default: 1000)
     /// Note: This field is currently reserved for future use and does not affect runtime behavior.
     #[serde(default = "default_buffer_size")]
@@ -297,6 +317,14 @@ impl GenevaExporter {
             AuthConfig::Certificate { .. } => None,
         };
 
+        // Create LogMethod and SpanMethod from the configuration
+        let log_method = LogMethod {
+            default_event_name: config.logs.default_event_name.clone(),
+        };
+        let span_method = SpanMethod {
+            default_event_name: config.spans.default_event_name.clone(),
+        };
+
         // Create GenevaClient configuration
         let client_config = GenevaClientConfig {
             endpoint: config.endpoint.clone(),
@@ -310,6 +338,8 @@ impl GenevaExporter {
             role_name: config.role_name.clone(),
             role_instance: config.role_instance.clone(),
             msi_resource,
+            logs: log_method,
+            spans: span_method,
             obo_event_map: None,
         };
 
@@ -568,7 +598,7 @@ impl GenevaExporter {
                         let encode_start = Instant::now();
                         let batches = self
                             .geneva_client
-                            .encode_and_compress_spans(&traces_request.resource_spans)
+                            .encode_and_compress_spans(&traces_request.resource_spans[..])
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
                         self.metrics.trace_encode_duration.record(encode_ms);
@@ -645,7 +675,7 @@ impl GenevaExporter {
                         let encode_start = Instant::now();
                         let batches = self
                             .geneva_client
-                            .encode_and_compress_spans(&traces_request.resource_spans)
+                            .encode_and_compress_spans(&traces_request.resource_spans[..])
                             .map_err(|e| format!("Failed to encode spans: {}", e))?;
                         let encode_ms = encode_start.elapsed().as_secs_f64() * 1000.0;
                         self.metrics.trace_encode_duration.record(encode_ms);
@@ -708,6 +738,8 @@ impl Exporter<OtapPdata> for GenevaExporter {
             endpoint = self.config.endpoint,
             namespace = self.config.namespace,
             account = self.config.account,
+            role_name = self.config.role_name,
+            role_instance = self.config.role_instance,
             message = "Geneva exporter starting"
         );
 
@@ -930,6 +962,12 @@ mod tests {
             "tenant": "test-tenant",
             "role_name": "test-role",
             "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "OtlpLogs"
+            },
+            "spans": {
+                "default_event_name": "OtlpSpans"
+            },
             "auth": {
                 "type": "systemmanagedidentity",
                 "msi_resource": "https://example.com"
@@ -1084,6 +1122,12 @@ mod tests {
             "tenant": "test-tenant",
             "role_name": "test-role",
             "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "OtlpLogs"
+            },
+            "spans": {
+                "default_event_name": "OtlpSpans"
+            },
             "auth": {
                 "type": "certificate",
                 "path": "/path/to/cert.p12",
@@ -1103,6 +1147,7 @@ mod tests {
         assert_eq!(config.tenant, "test-tenant");
         assert_eq!(config.role_name, "test-role");
         assert_eq!(config.role_instance, "test-instance");
+        assert_eq!(config.logs.default_event_name, Some("OtlpLogs".to_string()));
         assert_eq!(config.max_buffer_size, 1000); // default
         assert_eq!(config.max_concurrent_uploads, 4); // default
 
@@ -1186,6 +1231,12 @@ mod tests {
             "tenant": "test-tenant",
             "role_name": "test-role",
             "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "OtlpLogs"
+            },
+            "spans": {
+                "default_event_name": "OtlpSpans"
+            },
             "auth": {
                 "type": "usermanagedidentitybyarmresourceid",
                 "resource_id": "/subscriptions/sub1/resourceGroups/rg1/providers/Microsoft.Kubernetes/extensions/ext1",

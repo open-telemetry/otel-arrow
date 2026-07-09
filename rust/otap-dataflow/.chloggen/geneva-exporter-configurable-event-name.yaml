@@ -1,0 +1,17 @@
+# Changelog entry for Geneva exporter configurable event name feature
+
+change_type: enhancement
+
+component: pipeline
+
+note: "Geneva exporter now supports separate, configurable event names for logs and spans. Use `logs.default_event_name` and `spans.default_event_name` to control which Geneva tables telemetry is routed to. Defaults to 'Log' for logs and 'Span' for spans if not specified."
+
+issues: []
+
+subtext: |
+  The configuration now accepts separate `logs` and `spans` blocks with independent `default_event_name` settings:
+    logs:
+      default_event_name: "CustomLogTable"
+    spans:
+      default_event_name: "CustomSpanTable"
+  Each field is optional and will default to "Log" or "Span" respectively if omitted. This replaces the previous unified `event_name` configuration, providing clearer separation of concerns between log and trace signal types.
