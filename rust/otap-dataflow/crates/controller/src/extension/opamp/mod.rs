@@ -1980,13 +1980,17 @@ mod test {
         // applied config has failed
         let applied_result_msg = &requests[2];
         let first_remote_config_status = applied_result_msg.remote_config_status.as_ref().unwrap();
-        assert_eq!(first_remote_config_status.status, RemoteConfigStatuses::Failed as i32);
-        
+        assert_eq!(
+            first_remote_config_status.status,
+            RemoteConfigStatuses::Failed as i32
+        );
 
         // also expect that the heartbeat following this message has status failed
         let heartbeat = &requests[3];
         let heartbeat_remote_config_status = heartbeat.remote_config_status.as_ref().unwrap();
-        assert_eq!(heartbeat_remote_config_status.status, RemoteConfigStatuses::Failed as i32);
-        
+        assert_eq!(
+            heartbeat_remote_config_status.status,
+            RemoteConfigStatuses::Failed as i32
+        );
     }
 }
