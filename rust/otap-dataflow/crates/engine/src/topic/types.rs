@@ -706,9 +706,7 @@ impl TrackedPublishEntry {
         match &mut *state {
             TrackedPublishState::Resolved(_) => AckFromResult::NotTracked,
             TrackedPublishState::Pending(PendingKind::First) => AckFromResult::NotTracked,
-            TrackedPublishState::Pending(PendingKind::All {
-                members, acked, ..
-            }) => {
+            TrackedPublishState::Pending(PendingKind::All { members, acked, .. }) => {
                 if !members.contains(&subscriber_id) {
                     return AckFromResult::StillPending;
                 }
