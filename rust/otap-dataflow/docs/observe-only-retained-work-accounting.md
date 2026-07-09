@@ -57,6 +57,35 @@ telemetry precisely, but does not see allocator slack or non-pdata state.
 Neither number replaces the other, and later enforcement layers are expected to
 keep the process limiter as the final backstop.
 
+## Future tenant and priority attribution
+
+This observe-only phase does not enforce tenant limits, reserve memory for
+internal telemetry, or preempt already-admitted work. It only establishes the
+retained-work ownership model needed to make those policies possible later.
+
+Future tenant-aware enforcement may need to distinguish protected internal
+telemetry, pipeline groups, tenants, or other policy-defined classes. The
+ownership model should therefore allow tickets, escrow, and shared-boundary
+owners to carry an optional stable work-owner attribution key.
+
+That attribution key may come from a tenant descriptor, pipeline group,
+internal-telemetry classification, or another policy source. Tenant descriptor
+design remains separate: it defines how the engine identifies the work owner;
+this document defines how retained bytes are owned and released.
+
+A later enforcement phase can use this attribution to reserve capacity for
+agent internal telemetry, cap lower-priority tenants, reject or backpressure
+lower-priority work first, and account shared queues or topics by tenant or
+policy class. Dynamic reclaim or preemption of already-admitted lower-priority
+work is separate future work and is not part of this observe-only phase.
+
+Future hierarchical budgeting may add parent-child budget scopes such as
+engine, internal telemetry, pipeline group, pipeline, runtime, and tenant or
+policy class. This observe-only phase does not define that budget tree or its
+enforcement rules. It only requires retained-work ownership to carry stable
+scope attribution so later budgeting layers can aggregate and enforce without
+changing the ownership model.
+
 ## A minimal mental model
 
 The OTAP dataflow engine moves telemetry through a small set of roles. A
@@ -537,3 +566,9 @@ makes sure the measurement layer leaves enforcement on solid ground.
 - Shared boundaries need sendable ownership in place before they can be enforced.
 - Tenant or pipeline isolation needs scoped attribution before any budget can be
   applied to it.
+- Tenant-aware and priority-aware enforcement, including reserved capacity for
+  agent internal telemetry, per-tenant or per-policy-class admission caps, and
+  future reclaim or preemption rules for already-admitted lower-priority work.
+- Hierarchical budgeting, including scoped budget configuration, parent-child
+  budget validation, and enforcement across engine, internal telemetry, group,
+  pipeline, runtime, and tenant or policy-class scopes.
