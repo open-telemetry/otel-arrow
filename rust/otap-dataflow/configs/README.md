@@ -41,16 +41,16 @@ Demonstrates metric-name filtering:
 
 ### `trafficgen-per-signal-metrics-demo.yaml`
 
-Demonstrates the per-signal produced/consumed item counts emitted by every node:
+Demonstrates the opt-in per-signal produced/consumed item counts a node can
+emit:
 
 - Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
   exporter
 - Every node reports `node.producer.produced.{log_records,metric_points,spans}`
-  and `node.consumer.consumed.{log_records,metric_points,spans}` (requires
-  `runtime_metrics: normal`).
-- A receiver's `node.producer.produced.<signal>` is the per-signal volume the
-  traffic generator injected; the sampler keeps ~1/3 of log records so its
-  produced/consumed log counts differ while metrics and traces stay equal.
+  and `node.consumer.consumed.{log_records,metric_points,spans}` when opted in
+  (per-node `telemetry.produced_consumed_item_counts: true`, or globally via
+  `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
+  higher.
 - View metrics at:
   `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json`
 

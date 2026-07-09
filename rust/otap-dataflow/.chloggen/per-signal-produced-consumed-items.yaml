@@ -17,10 +17,11 @@ issues: [3300, 3436]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Every pipeline node now records per-signal item counts alongside the existing
-  request-outcome counters: `produced.{log_records,metric_points,spans}` on
-  `node.producer` and `consumed.{log_records,metric_points,spans}` on
-  `node.consumer`. Counts are stamped on the pdata frame at send/receive time
-  (only when the node has the relevant metrics interest) and recorded during
-  ack/nack unwinding, so they are emitted for receivers, processors, and
-  exporters uniformly.
+  Every pipeline node can now record per-signal item counts alongside the
+  existing request-outcome counters: `produced.{log_records,metric_points,spans}`
+  on `node.producer` and `consumed.{log_records,metric_points,spans}` on
+  `node.consumer`. Because counting items is expensive, the counts are opt-in: 
+  enable them for all nodes with `telemetry.runtime_metrics: detailed`, 
+  or per node with `telemetry.produced_consumed_item_counts: true`. Counts are 
+  stamped on the pdata frame at send/receive time and recorded during ack/nack unwinding,
+  so they are emitted for receivers, processors, and exporters uniformly.

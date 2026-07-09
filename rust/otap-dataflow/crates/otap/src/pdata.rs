@@ -298,7 +298,7 @@ impl Context {
 
     /// Record the per-signal item count produced by the current node at send
     /// time onto the top frame, and remember the pdata's signal on the context.
-    /// Called only when the node has `PRODUCER_METRICS` interest.
+    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
     pub(crate) fn stamp_produced_items(&mut self, items: u32, signal: SignalType) {
         self.signal = Some(signal);
         if let Some(top) = self.stack.last_mut() {
@@ -308,7 +308,7 @@ impl Context {
 
     /// Record the per-signal item count consumed by the current node at receive
     /// time onto the top frame, and remember the pdata's signal on the context.
-    /// Called only when the node has `CONSUMER_METRICS` interest.
+    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
     pub(crate) fn stamp_consumed_items(&mut self, items: u32, signal: SignalType) {
         self.signal = Some(signal);
         if let Some(top) = self.stack.last_mut() {
@@ -733,7 +733,12 @@ impl OtapPdata {
                 node_id,
                 node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
             );
-            if node_interests.contains(Interests::PRODUCER_METRICS) {
+            // Produced counts are only recorded under PRODUCER_METRICS, so only
+            // pay the num_items() parse when that interest is also present
+            // (e.g. avoid it for a source-tagging-only frame).
+            if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
+                && node_interests.contains(Interests::PRODUCER_METRICS)
+            {
                 let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
                 let signal = self.signal_type();
                 self.context.stamp_produced_items(items, signal);
@@ -1019,7 +1024,12 @@ impl_message_source_ext!(
 impl otap_df_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
-        if node_interests.contains(Interests::CONSUMER_METRICS) {
+        // Consumed counts are only recorded under CONSUMER_METRICS, so only pay
+        // the num_items() parse when that interest is also present (e.g. avoid
+        // it for a per-node opt-in below the `normal` metric level).
+        if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
+            && node_interests.contains(Interests::CONSUMER_METRICS)
+        {
             let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
             let signal = self.signal_type();
             self.context.stamp_consumed_items(items, signal);
@@ -1701,19 +1711,29 @@ mod test {
     fn test_received_at_node_stamps_consumed_items() {
         use otap_df_engine::ReceivedAtNode;
 
-        // With CONSUMER_METRICS: entry frame carries per-signal consumed count.
+        // CONSUMER_METRICS + item counts: entry frame carries consumed count.
         let mut pdata = create_test_pdata();
         let n = pdata.num_items() as u32;
         assert!(n > 0);
-        pdata.received_at_node(42, Interests::CONSUMER_METRICS);
+        pdata.received_at_node(
+            42,
+            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+        );
         let frames = pdata.context.frames();
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].node_id, 42);
         assert_eq!(frames[0].consumed_items, n);
         assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
 
-        // ENTRY_TIMESTAMP only (no CONSUMER_METRICS): frame pushed, but no
-        // consumed count is stamped (num_items not consulted).
+        // CONSUMER_METRICS without item-count interest: no consumed count stamped.
+        let mut pdata_cm = create_test_pdata();
+        pdata_cm.received_at_node(43, Interests::CONSUMER_METRICS);
+        let f_cm = pdata_cm.context.frames();
+        assert_eq!(f_cm.len(), 1);
+        assert_eq!(f_cm[0].consumed_items, 0);
+        assert_eq!(pdata_cm.context.signal(), None);
+
+        // ENTRY_TIMESTAMP only (no CONSUMER_METRICS): no consumed count stamped.
         let mut pdata2 = create_test_pdata();
         pdata2.received_at_node(7, Interests::ENTRY_TIMESTAMP);
         let f2 = pdata2.context.frames();
@@ -1725,27 +1745,59 @@ mod test {
         let mut pdata3 = create_test_pdata();
         pdata3.received_at_node(9, Interests::empty());
         assert_eq!(pdata3.context.frames().len(), 0);
+
+        // Opt-in bit alone (e.g. per-node opt-in below the `normal` level):
+        // no frame, no stamp, and no num_items() parse.
+        let mut pdata4 = create_test_pdata();
+        pdata4.received_at_node(11, Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
+        assert_eq!(pdata4.context.frames().len(), 0);
+        assert_eq!(pdata4.context.signal(), None);
     }
 
     #[test]
     fn test_prepare_source_send_stamps_produced_items() {
-        // With PRODUCER_METRICS: source frame carries per-signal produced count.
+        // PRODUCER_METRICS | PRODUCED_CONSUMED_ITEM_COUNTS: source frame carries
+        // the produced count.
         let mut pdata = create_test_pdata();
         let n = pdata.num_items() as u32;
         assert!(n > 0);
-        pdata.prepare_source_send(Interests::PRODUCER_METRICS, 5);
+        pdata.prepare_source_send(
+            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            5,
+        );
         let frame = pdata.context.frames().last().expect("source frame");
         assert_eq!(frame.node_id, 5);
         assert_eq!(frame.produced_items, n);
         assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
 
-        // SOURCE_TAGGING only (no PRODUCER_METRICS): frame pushed, but no
-        // produced count is stamped (num_items not consulted).
+        // PRODUCER_METRICS without the opt-in bit: no produced count stamped.
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 7);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.produced_items, 0);
+
+        // SOURCE_TAGGING only (no PRODUCER_METRICS): no produced count stamped.
         let mut pdata2 = create_test_pdata();
         pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6);
         let frame2 = pdata2.context.frames().last().expect("source frame");
         assert_eq!(frame2.produced_items, 0);
         assert_eq!(pdata2.context.signal(), None);
+
+        // SOURCE_TAGGING | opt-in bit but no PRODUCER_METRICS (e.g. a tagging
+        // receiver opting in below the `normal` level): a frame is pushed for
+        // tagging, but no produced count is stamped and no num_items() parse.
+        let mut pdata3 = create_test_pdata();
+        pdata3.prepare_source_send(
+            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            8,
+        );
+        let frame3 = pdata3.context.frames().last().expect("source frame");
+        assert_eq!(frame3.produced_items, 0);
+        assert_eq!(pdata3.context.signal(), None);
     }
 
     #[test]

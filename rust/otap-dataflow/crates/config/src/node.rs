@@ -156,6 +156,30 @@ pub struct NodeUserConfig {
     /// configuration error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header_propagation: Option<HeaderPropagationPolicy>,
+
+    /// Node-level telemetry policy override.
+    ///
+    /// Like the `header_capture` / `header_propagation` node overrides, this
+    /// exposes only the telemetry knobs honored per node (not the full
+    /// pipeline-scope `TelemetryPolicy`). When absent, the node inherits the
+    /// resolved pipeline telemetry policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry: Option<NodeTelemetryPolicy>,
+}
+
+/// Node-level telemetry policy override (only the node-honored knobs).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodeTelemetryPolicy {
+    /// Opt this node into per-signal produced/consumed item counts on its
+    /// `node.producer` / `node.consumer` metric sets.
+    ///
+    /// Off by default because counting items requires inspecting each batch,
+    /// which is expensive for OTLP payloads. Only recorded when the resolved
+    /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
+    /// enables it for every node without this flag.
+    #[serde(default)]
+    pub produced_consumed_item_counts: bool,
 }
 
 /// Node kinds
@@ -205,6 +229,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            telemetry: None,
         }
     }
 
@@ -224,6 +249,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            telemetry: None,
         }
     }
 
@@ -243,6 +269,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            telemetry: None,
         }
     }
 
@@ -259,6 +286,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            telemetry: None,
         }
     }
 

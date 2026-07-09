@@ -253,7 +253,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let RuntimePipeline {
-            config: _config,
+            config: pipeline_config,
             receivers,
             processors,
             exporters,
@@ -264,7 +264,18 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let node_interests = Interests::from_metric_level(metric_level);
+        let base_node_interests = Interests::from_metric_level(metric_level);
+        // Nodes opting in via `node.telemetry.produced_consumed_item_counts`
+        // get the counts without requiring the `detailed` metric level.
+        let item_count_optin: HashSet<&str> = pipeline_config
+            .node_iter()
+            .filter(|(_, cfg)| {
+                cfg.telemetry
+                    .as_ref()
+                    .is_some_and(|t| t.produced_consumed_item_counts)
+            })
+            .map(|(node_id, _)| node_id.as_ref())
+            .collect();
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
@@ -361,7 +372,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         // Build edge list from pipeline connections for flow metric
         // interleaving detection.
-        let pipeline_connections = connection_edges(_config.connection_iter(), &node_name_to_index);
+        let pipeline_connections =
+            connection_edges(pipeline_config.connection_iter(), &node_name_to_index);
 
         // Build flow_metric state and per-node role assignments up front.
         let flow_metric_state = build_flow_metric_state(
@@ -376,6 +388,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -433,6 +450,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -531,6 +553,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,

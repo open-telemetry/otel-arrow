@@ -1,17 +1,29 @@
-# Demonstrates the per-signal produced/consumed item counts that every node
-# emits on its `node.producer` / `node.consumer` metric sets.
+# Demonstrates the per-signal produced/consumed item counts that a node emits
+# on its `node.producer` / `node.consumer` metric sets.
 #
-#   receiver -> sampler -> noop
+# Two pipelines in the same engine, each running: receiver -> sampler -> noop
+#   - `full`:    ALL three nodes opt in -> every node emits per-signal counts.
+#   - `partial`: only the `sampler` opts in -> only the sampler emits per-signal
+#                counts; the receiver and noop do not.
+# Distinguish them by the `pipeline.id` attribute on each metric set.
 #
 # The traffic generator emits a mix of all three signals (logs, metrics,
 # traces). Each pdata batch is homogeneous (exactly one signal), and the
 # per-signal counts are stamped on the batch as it flows forward, then recorded
 # on each node during ack/nack unwinding. Because these counts extend the
-# existing produced/consumed metric sets, ALL nodes get them uniformly --
-# receivers, processors and exporters alike.
+# existing produced/consumed metric sets, they are available uniformly on ALL
+# node kinds -- receivers, processors and exporters alike.
 #
-# Metrics emitted per node (gated on `runtime_metrics: normal`, which enables
-# the PIPELINE_METRICS interest):
+# Opt-in: counting items is cheap for the Arrow-native representation but
+# expensive for OTLP-encoded payloads (which must be parsed), so it is NOT on by
+# default. A node emits per-signal counts only when either:
+#   - the pipeline's `telemetry.runtime_metrics` is `detailed` (enables it for
+#     every node), or
+#   - the node sets `telemetry.produced_consumed_item_counts: true` (per-node
+#     opt-in, shown below). The counts still require `runtime_metrics: normal`
+#     or higher, since they extend the produced/consumed metric sets.
+#
+# Metrics emitted per opted-in node:
 #   node.producer:  produced.log_records   {log_record}
 #                   produced.metric_points {data_point}
 #                   produced.spans         {span}
@@ -20,6 +32,9 @@
 #                   consumed.spans         {span}
 #
 # What to look for:
+#   - In `full`, every node reports per-signal counts. In `partial`, only the
+#     sampler does -- the receiver and noop have no per-signal counts because
+#     they did not opt in.
 #   - receiver `node.producer.produced.{log_records,metric_points,spans}` is the
 #     per-signal accepted volume the traffic generator injected.
 #   - sampler `node.consumer.consumed.*` equals the receiver's produced counts
@@ -30,7 +45,8 @@
 #     accounting isolating the affected signal.
 #   - noop `node.consumer.consumed.*` reflects the surviving per-signal volume.
 #
-# Query metrics while running:
+# Query metrics while running (add `.attributes["pipeline.id"]` to tell the two
+# pipelines apart):
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
 #     | jq '[.metric_sets[] | select(.name == "node.producer" or .name == "node.consumer")]'
 #
@@ -42,7 +58,7 @@ engine: {}
 groups:
   default:
     pipelines:
-      main:
+      full:
         policies:
           channel_capacity:
             control:
@@ -50,7 +66,8 @@ groups:
               pipeline: 100
             pdata: 128
           telemetry:
-            runtime_metrics: normal
+            # Detailed runtime metrics enables per-signal produced/consumed item counts for every node in the pipeline.
+            runtime_metrics: detailed
 
         nodes:
           receiver:
@@ -83,6 +100,54 @@ groups:
 
           noop:
             type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: sampler
+          - from: sampler
+            to: noop
+
+      # Same topology, but only the sampler opts in. The receiver and noop do
+      # NOT set `produced_consumed_item_counts`, so they emit the request-outcome
+      # produced/consumed counters but no per-signal item counts.
+      partial:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: normal
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            # No `telemetry` block: this node does not opt in.
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 30
+                log_weight: 50
+                metric_weight: 30
+                trace_weight: 20
+              data_source: synthetic
+
+          sampler:
+            type: processor:log_sampling
+            # Only this node opts in.
+            telemetry:
+              produced_consumed_item_counts: true
+            config:
+              policy:
+                ratio:
+                  emit: 1
+                  out_of: 3
+
+          noop:
+            type: exporter:noop
+            # No `telemetry` block: this node does not opt in.
             config:
 
         connections:
