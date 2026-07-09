@@ -613,9 +613,9 @@ fn parse_human_duration(value: &str) -> Option<Duration> {
         } else if let Some(number) = token.strip_suffix('m') {
             total_seconds += number.parse::<f64>().ok()? * 60.0;
         } else {
-             let number = token.strip_suffix('h')?;
-             total_seconds += number.parse::<f64>().ok()? * 3_600.0;
-         }
+            let number = token.strip_suffix('h')?;
+            total_seconds += number.parse::<f64>().ok()? * 3_600.0;
+        }
     }
 
     Some(duration_from_seconds(total_seconds))
