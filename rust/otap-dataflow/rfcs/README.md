@@ -8,12 +8,12 @@ comments") process is for.
 
 An RFC is a short design document that captures the motivation, the proposed
 design, the alternatives considered, and the open questions for a substantial
-change — reviewed as a pull request so the whole SIG can comment before code is
+change -- reviewed as a pull request so the whole SIG can comment before code is
 written.
 
 ## When you need an RFC
 
-Open an RFC when a change is cross-cutting or hard to reverse. Rough guidance —
+Open an RFC when a change is cross-cutting or hard to reverse. Rough guidance --
 use judgment, and ask a maintainer if unsure:
 
 - A new public API, trait, or macro used across crates.
@@ -47,7 +47,7 @@ first and let a maintainer tell you whether it warrants an RFC.
    of the PR number.** The first RFC is `0001`; the next is `0002`, and so on.
    Rename the file from `0000-my-proposal.md` to `NNNN-my-proposal.md`.
 5. **Merge on acceptance.** When a maintainer (or the SIG, for larger changes)
-   approves, the PR is merged. A merged RFC is "accepted" — it records a
+   approves, the PR is merged. A merged RFC is "accepted" -- it records a
    decision, not necessarily shipped code.
 6. **File a brief tracking issue** that links back to the merged RFC and tracks
    the implementation work. Keep the issue short: the RFC holds the detail.
@@ -73,7 +73,7 @@ implementation PRs.
 
 A merged RFC is a decision record, not a guarantee. An RFC may later be
 superseded or amended by another RFC; when that happens, add a note to the top
-of the old RFC pointing at the new one. RFCs are not deleted — the history is
+of the old RFC pointing at the new one. RFCs are not deleted -- the history is
 valuable.
 
 ## Prior art

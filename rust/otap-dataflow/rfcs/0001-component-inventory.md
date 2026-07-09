@@ -1,9 +1,13 @@
-- Proposal Name: component-inventory
-- Start Date: 2026-07-08
-- RFC PR: [open-telemetry/otel-arrow#0000](https://github.com/open-telemetry/otel-arrow/pull/0000)
-- Tracking Issue: [open-telemetry/otel-arrow#0000](https://github.com/open-telemetry/otel-arrow/issues/0000)
+---
+Proposal Name: component-inventory
+Start Date: 2026-07-08
+RFC PR: open-telemetry/otel-arrow#3434
+Tracking Issue: open-telemetry/otel-arrow#3435
+---
 
-# Summary
+# RFC 0001: Component Inventory
+
+## Summary
 
 Add a `#[component_inventory]` attribute macro to the `otap-dataflow`
 workspace that annotates security-relevant components (receivers, processors,
@@ -15,21 +19,21 @@ This enables automated component tracking for threat modeling, documentation
 coverage, and security review.
 
 The macro lands in the **existing `otap-df-engine-macros` crate** alongside the
-already-shipped `#[pipeline_factory]` and `#[capability]` attribute macros — no
+already-shipped `#[pipeline_factory]` and `#[capability]` attribute macros -- no
 new proc-macro crate is required. A small `ComponentMeta` struct + a
 `COMPONENT_INVENTORY` distributed slice in `otap-df-engine` is the only new
-runtime surface, mirroring the existing `#[capability]` → `KNOWN_CAPABILITIES`
+runtime surface, mirroring the existing `#[capability]` -> `KNOWN_CAPABILITIES`
 mechanism.
 
 > **Scope note:** Drafted against the current workspace layout (~35 components
 > across `core-nodes`, `contrib-nodes`, `admin`, `controller`, and `ctl`, with
 > ~53 factory registrations). Counts and crate names are approximate.
 
-# Motivation
+## Motivation
 
 The `otap-dataflow` engine is designed to be embedded as a library in telemetry
-pipeline products. Downstream consumers build threat models — using formats
-like [OTM (Open Threat Model)](https://github.com/iriusrisk/OpenThreatModel) —
+pipeline products. Downstream consumers build threat models -- using formats
+like [OTM (Open Threat Model)](https://github.com/iriusrisk/OpenThreatModel) --
 that inventory the engine's components and analyze their security properties.
 
 The engine has 35+ components and the count keeps growing. Recent releases
@@ -48,7 +52,7 @@ processors (~53 registrations, driven by `#[pipeline_factory(...)]`). This
 proposal extends that established pattern with security-relevant metadata that
 tooling can extract and diff against an external inventory.
 
-## Use cases
+### Use cases
 
 - **Threat-model drift detection.** A new receiver fails the CI baseline check,
   surfacing it for security review.
@@ -59,9 +63,9 @@ tooling can extract and diff against an external inventory.
 - **Downstream automation.** Consumers diff the engine inventory against their
   threat-model files (OTM, STRIDE, or any format) to find gaps.
 
-# Guide-level explanation
+## Guide-level explanation
 
-## Adding a component: the common case (a factory node)
+### Adding a component: the common case (a factory node)
 
 If you are adding a receiver, processor, exporter, or extension, you already
 write a factory `static` annotated with `#[distributed_slice(OTAP_*_FACTORIES)]`
@@ -85,7 +89,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
 };
 ```
 
-You do **not** write an `id`. The component's identity **is its URN** — the
+You do **not** write an `id`. The component's identity **is its URN** -- the
 macro reads the `name` field of the factory static and uses that as the `id`.
 Nor do you type `"receiver"` as a string: `category` is a **`Category` enum
 value** (`Receiver`, `Exporter`, `Processor`, `Extension`, ...), so a
@@ -93,9 +97,9 @@ misspelling like `Reciever` is a compile error, not a silent bad entry. The
 macro also checks the enum against the URN's category segment
 (`urn:otel:`**`receiver`**`:otlp`) and errors on a mismatch.
 
-## Adding a component: the fallback case (no URN)
+### Adding a component: the fallback case (no URN)
 
-A few security-relevant pieces are not URN-addressable pipeline nodes — the
+A few security-relevant pieces are not URN-addressable pipeline nodes -- the
 admin HTTP server, the controller, the `dfctl` CLI, the memory limiter. These
 have no factory `static` and no `name` URN, so the macro **requires** an
 explicit `id`. To keep one uniform identity scheme, that id is a
@@ -115,15 +119,15 @@ pub struct AdminServer { /* ... */ }
 Suggested synthetic URNs for the current non-factory components:
 `urn:otel:admin:http_server`, `urn:otel:controller:main`,
 `urn:otel:cli:dfctl`, `urn:otel:safety:memory_limiter`. There is **no
-colon-replacement or kebab-case duplication anywhere** — every id, factory or
+colon-replacement or kebab-case duplication anywhere** -- every id, factory or
 not, is a URN.
 
-## What the tooling does
+### What the tooling does
 
 ```console
-$ cargo xtask component-inventory                # human table
-$ cargo xtask component-inventory --format json  # machine-readable
-$ cargo xtask component-inventory --check components-baseline.json
+cargo xtask component-inventory                # human table
+cargo xtask component-inventory --format json  # machine-readable
+cargo xtask component-inventory --check components-baseline.json
 ```
 
 When you add a factory without the annotation, `cargo xtask check` fails with
@@ -132,7 +136,7 @@ the exact `file:line`, because every factory static is required to carry a
 `cargo xtask component-inventory --update-baseline`; commit both the code and
 the regenerated baseline so reviewers see the new component in the diff.
 
-## What this does NOT do
+### What this does NOT do
 
 - **Does not generate threat models.** STRIDE/DREAD analysis stays a human
   activity. The macro provides inventory data, not risk assessment.
@@ -146,12 +150,12 @@ the regenerated baseline so reviewers see the new component in the diff.
 - **Does not prescribe a threat-model format.** JSON/YAML output feeds OTM,
   STRIDE templates, or anything else.
 
-# Reference-level explanation
+## Reference-level explanation
 
-## Where the pieces live
+### Where the pieces live
 
 | Change | Crate | Notes |
-|--------|-------|-------|
+| --- | --- | --- |
 | `#[component_inventory]` attribute macro | **existing** `otap-df-engine-macros` (`crates/engine-macros/`) | Third macro alongside `pipeline_factory` and `capability`; new `component_inventory.rs` module + a `#[proc_macro_attribute]` in `lib.rs`. |
 | `ComponentMeta` + `Category` + `COMPONENT_INVENTORY` slice | **existing** `otap-df-engine` (`crates/engine/`) | New `inventory` module; owns the distributed slice exactly as `capability` owns `KNOWN_CAPABILITIES`. |
 | `component-inventory` subcommand | **existing** `xtask` | New task arm in the hand-rolled dispatch + `print_help`; a source scanner like `structure_check`. |
@@ -162,7 +166,7 @@ into `KNOWN_CAPABILITIES` (`crates/engine/src/capability/mod.rs`). We copy that
 shape, including the required `#[allow(unsafe_code)]` and
 `#[linkme(crate = ::linkme)]` on the generated entry.
 
-## The `Category` enum
+### The `Category` enum
 
 ```rust
 /// Component category. The macro accepts a bare identifier (e.g. `Receiver`)
@@ -186,7 +190,7 @@ For factory components the macro validates `category` against the URN's middle
 segment; a `category = Exporter` on a `urn:otel:receiver:...` static is a
 compile error.
 
-## The `ComponentMeta` struct
+### The `ComponentMeta` struct
 
 ```rust
 /// Inventory metadata for one security-relevant component.
@@ -221,7 +225,7 @@ pub struct ComponentMeta {
 }
 ```
 
-## Collection mechanism
+### Collection mechanism
 
 ```rust
 // otap_df_engine::inventory
@@ -255,13 +259,13 @@ already covers the pattern; the macro introduces no unsafe code of its own.
 Feature-gated components inherit their `#[cfg(...)]`: the emitted entry carries
 the same `#[cfg(feature = "...")]` as the annotated item, so the inventory
 reflects exactly what was compiled. A Linux-only build that does not compile
-`contrib-nodes` simply has no ETW/`user_events` entries — the drift check
+`contrib-nodes` simply has no ETW/`user_events` entries -- the drift check
 treats them as out-of-scope, not "missing".
 
-## The xtask command
+### The xtask command
 
 ```console
-$ cargo xtask component-inventory --check components-baseline.json
+cargo xtask component-inventory --check components-baseline.json
 
 NEW (annotated in code, not in baseline):
   + urn:otel:receiver:host_metrics  (crates/core-nodes/.../host_metrics_receiver.rs:27)
@@ -289,13 +293,13 @@ single mandatory registration point, so a pattern scanner flags known
 security-relevant constructs (`TcpListener::bind`, new `axum::Router`/`.route(`,
 `reqwest::Client`, K8s `Api::<T>::create`) that lack an annotation.
 
-## CI enforcement
+### CI enforcement
 
 `component-inventory --check` is added to the existing `check_all` in
 `xtask/src/main.rs`, alongside `structure-check`, `fmt`, `clippy`, and `test`.
 From then on, every PR adding a factory static must include its annotation.
 
-## Consumer motivation (why the format looks the way it does)
+### Consumer motivation (why the format looks the way it does)
 
 The primary consumers are downstream embedders that build threat models over
 both engine components and their own additions. An embedder reusing the engine
@@ -308,20 +312,20 @@ here, but it is why the format must be machine-readable, extensible via
 free-form attributes, and carry enough context (`file:line`, category) to
 automate comparison.
 
-## Implementation plan
+### Implementation plan
 
-- **Phase 1 — macro + metadata module** (1 PR): add `#[component_inventory]` to
+- **Phase 1 -- macro + metadata module** (1 PR): add `#[component_inventory]` to
   `otap-df-engine-macros`; add `ComponentMeta` + `Category` + `COMPONENT_INVENTORY`
   to `otap-df-engine`; unit tests for macro expansion.
-- **Phase 2 — annotate existing components** (1 PR): annotate the ~30 factory
+- **Phase 2 -- annotate existing components** (1 PR): annotate the ~30 factory
   statics and the non-factory components; generate the initial
   `components-baseline.json`; add the contributor guide
   (`docs/component-inventory.md`).
-- **Phase 3 — xtask command** (1 PR): `component-inventory` with
+- **Phase 3 -- xtask command** (1 PR): `component-inventory` with
   `--format json|yaml|table`, `--check`, `--update-baseline`.
-- **Phase 4 — CI enforcement** (1 PR): wire `--check` into `xtask check`.
+- **Phase 4 -- CI enforcement** (1 PR): wire `--check` into `xtask check`.
 
-# Drawbacks
+## Drawbacks
 
 - **Annotation burden.** Every new factory needs one extra attribute. Mitigated
   by the CI check giving an exact `file:line` and by `id`/`category` being
@@ -334,9 +338,9 @@ automate comparison.
   the tool share one checklist, but it is not a proof.
 - **A little more macro machinery** in a crate that is already central.
 
-# Rationale and alternatives
+## Rationale and alternatives
 
-- **Why reuse `otap-df-engine-macros` and `linkme`?** The `#[capability]` →
+- **Why reuse `otap-df-engine-macros` and `linkme`?** The `#[capability]` ->
   `KNOWN_CAPABILITIES` mechanism is the exact precedent, already accepted and
   shipping. Reusing it means no new crates, no new dependency, and a pattern
   maintainers already know.
@@ -346,10 +350,10 @@ automate comparison.
   nothing. (An earlier draft proposed explicit kebab-case ids; investigation of
   the codebase showed the URNs are already unique per factory, making the
   separate id redundant.)
- - **Why a `Category` enum instead of a string?** Compile-time rejection of
-   misspellings (`Reciever`), and it can be cross-checked against the URN
-   segment. Requested by maintainers to avoid silent bad entries.
- - **Rejected: two new crates** (`otap-df-component-inventory` +
+- **Why a `Category` enum instead of a string?** Compile-time rejection of
+  misspellings (`Reciever`), and it can be cross-checked against the URN
+  segment. Requested by maintainers to avoid silent bad entries.
+- **Rejected: two new crates** (`otap-df-component-inventory` +
   `-macros`). Unnecessary: `otap-df-engine-macros` already exists as the home
   for engine attribute macros.
 - **Rejected: a runtime registry/CLI-at-runtime.** The data is only needed by
@@ -357,11 +361,11 @@ automate comparison.
 - **Impact of not doing this:** component/threat-model drift stays a manual,
   error-prone, after-the-fact chore for every embedder.
 
-# Prior art
+## Prior art
 
 - The repo's own `#[capability]` macro + `KNOWN_CAPABILITIES` distributed slice
-  — the direct template for this design.
-- `#[pipeline_factory]` and the `OTAP_*_FACTORIES` slices — the established
+  -- the direct template for this design.
+- `#[pipeline_factory]` and the `OTAP_*_FACTORIES` slices -- the established
   link-time registration pattern this extends.
 - The [Rust RFC process](https://github.com/rust-lang/rfcs) and
   [OpenDAL RFCs](https://github.com/apache/opendal/tree/main/core/core/src/docs/rfcs)
@@ -369,7 +373,7 @@ automate comparison.
 - [OTM](https://github.com/iriusrisk/OpenThreatModel) as one example downstream
   threat-model format the inventory feeds.
 
-# Unresolved questions
+## Unresolved questions
 
 - **How much to type the `attributes` map.** `attributes` is free-form
   `&[(&str, &str)]` today. Well-known keys (`port`, `protocol`, `auth`, ...)
@@ -378,26 +382,26 @@ automate comparison.
   strongly to type them without losing the "any component can express any
   property" flexibility the free-form map was chosen for. Three options:
 
-  - **Option A — key constants, values free.** Keep `attributes:
+  - **Option A -- key constants, values free.** Keep `attributes:
     &[(&str, &str)]`. Provide `pub mod attrs { pub const PORT: &str = "port";
     ... }` that contributors are encouraged to use, and have `xtask` warn on
     unknown keys. Simplest; fully flexible; only catches typos if the author
     opts into the constants.
-  - **Option B — typed well-known fields + a string overflow map.** Give
+  - **Option B -- typed well-known fields + a string overflow map.** Give
     `ComponentAttributes` optional typed fields for the well-known attributes
     (`protocol: Option<Protocol>`, `auth: Option<Auth>`, `port:
     Option<&str>`, ...) plus `extra: &[(&str, &str)]` for the long tail.
     Strongest compile-time safety; but downstream consumers must flatten typed
     fields + `extra` back into a uniform map for threat-model diffing, which
     cuts against the machine-readable/uniform goal.
-  - **Option C — flat string map, but macro-validate the values of known
+  - **Option C -- flat string map, but macro-validate the values of known
     keys.** Keep the runtime struct as a flat `&[(&str, &str)]` map (so the
     serialized form stays uniform and simple), but have the *macro* reject an
     out-of-set value for security-relevant keys (`auth`, `protocol`) at compile
     time. Gets the typo-safety where it matters without the flatten cost of B.
 
   **Recommendation: Option C for values (`auth`/`protocol` validated against a
-  known set at macro time) plus Option A key constants for keys** — typo-safety
+  known set at macro time) plus Option A key constants for keys** -- typo-safety
   on the security-relevant fields, a uniform flat map downstream, and novel
   keys still allowed. To be settled with the SIG.
 - **Synthetic URNs for non-factory components.** Are
@@ -408,7 +412,7 @@ automate comparison.
   root vs. under `rust/otap-dataflow/`), and whether YAML should also be
   supported for the baseline itself.
 
-# Future possibilities
+## Future possibilities
 
 - **Auto-derive `category` and `id` entirely from the factory** so the common
   case needs only `#[component_inventory]` with no arguments.
