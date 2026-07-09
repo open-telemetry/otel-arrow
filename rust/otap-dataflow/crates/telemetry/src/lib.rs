@@ -104,6 +104,15 @@ where
     }
 }
 
+#[cfg(test)]
+pub(crate) fn ensure_test_crypto_provider() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+    INIT.call_once(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 // Re-export _private module from internal_events for macro usage.
 // This allows the otel_info!, otel_warn!, etc. macros to work in other crates
 // without requiring them to add tracing as a direct dependency.
