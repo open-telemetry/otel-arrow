@@ -210,6 +210,11 @@ impl SharedExtension for AzureIdentityAuthExtension {
                     }
                 }
                 _ = tokio::time::sleep_until(next_refresh) => {
+                    // Take the same `fetch_lock` the slow-path `get_token` uses,
+                    // so a scheduled refresh and a concurrent cache-miss fetch
+                    // coalesce onto one in-flight credential call instead of
+                    // both hitting the token endpoint.
+                    let _guard = inner.fetch_lock.lock().await;
                     match inner.refresh_once().await {
                         Ok(token) => {
                             next_refresh = inner.schedule_next(&token);
