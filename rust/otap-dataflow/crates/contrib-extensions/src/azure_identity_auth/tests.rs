@@ -299,6 +299,46 @@ async fn get_token_error_maps_to_capability_error() {
 }
 
 #[tokio::test]
+async fn clones_share_one_token_cache() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let credential = Arc::new(MockCredential {
+        token: "shared".to_string(),
+        expires_in: AzureDuration::minutes(60),
+        call_count: Arc::clone(&calls),
+    });
+
+    // The engine hands the capability to each consumer as a clone of the same
+    // extension; model that with two clones sharing one `Arc<Inner>`.
+    let consumer_a = make_extension(credential);
+    let consumer_b = consumer_a.clone();
+
+    // Consumer A's first call takes the slow path and fetches exactly once.
+    let a = consumer_a.get_token().await.expect("A acquires");
+    assert_eq!(a.expose_secret(), "shared");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    // Consumer B (a separate clone) sees the same cached token on the fast
+    // path -- no second credential call. This proves clones share one cache
+    // and refresh loop rather than each keeping its own.
+    let b = consumer_b.get_token().await.expect("B acquires");
+    assert_eq!(b.expose_secret(), "shared");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "clones must share one cache; B must not re-fetch"
+    );
+
+    // A token published through one clone is also visible via another clone's
+    // stream subscription (shared watch channel).
+    let mut stream_b = consumer_b.token_stream();
+    let streamed = stream_b
+        .next()
+        .await
+        .expect("stream yields the shared token");
+    assert_eq!(streamed.expose_secret(), "shared");
+}
+
+#[tokio::test]
 async fn get_token_throttles_after_recent_failure() {
     let calls = Arc::new(AtomicUsize::new(0));
     let ext = make_extension(Arc::new(FailingCredential {
