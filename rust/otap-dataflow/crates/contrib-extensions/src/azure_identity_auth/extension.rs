@@ -20,6 +20,7 @@ use otap_df_engine::extension::EffectHandler;
 use otap_df_engine::shared::capability::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_telemetry::otel_warn;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
@@ -143,14 +144,13 @@ impl Inner {
         match self.auth.get_token().await {
             Ok(token) => {
                 let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
-                if let Ok(mut metrics) = self.metrics.lock() {
-                    metrics.record_success(latency_ms);
-                }
                 // Publish the token to consumers and update the cache. Using
                 // `send_replace` (rather than `send`) ensures the cache is
                 // updated even when no receivers are currently subscribed.
                 let _ = self.tx.send_replace(Some(token.clone()));
+                // Record success + publish under a single metrics lock.
                 if let Ok(mut metrics) = self.metrics.lock() {
+                    metrics.record_success(latency_ms);
                     metrics.record_publish();
                 }
                 // Clear the negative cache: acquisitions are healthy again.
@@ -249,7 +249,17 @@ impl SharedExtension for AzureIdentityAuthExtension {
             tokio::select! {
                 ctrl_msg = ctrl.recv() => {
                     match ctrl_msg {
-                        Ok(ExtensionControlMsg::Shutdown { .. }) | Err(_) => break,
+                        // Graceful shutdown: return the final metric snapshot in
+                        // the terminal state (the same contract nodes follow).
+                        Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
+                            let snapshot = inner.metrics.lock().ok().map(|m| m.snapshot());
+                            return Ok(match snapshot {
+                                Some(snapshot) => TerminalState::new(deadline, [snapshot]),
+                                None => TerminalState::default(),
+                            });
+                        }
+                        // Control channel closed: exit without a snapshot.
+                        Err(_) => break,
                         // Refresh cadence is governed by token lifetime; live
                         // reconfiguration is a no-op in v1.
                         Ok(ExtensionControlMsg::Config { .. }) => {}
@@ -275,9 +285,9 @@ impl SharedExtension for AzureIdentityAuthExtension {
                             }
                         }
                         Err(error) => {
-                            tracing::warn!(
-                                %error,
-                                "azure_identity_auth: token refresh failed; retrying"
+                            otel_warn!(
+                                "azure_identity_auth.token_refresh_failed",
+                                error = %error
                             );
                             next_refresh = tokio::time::Instant::now()
                                 + Duration::from_secs(TOKEN_REFRESH_RETRY_SECS);

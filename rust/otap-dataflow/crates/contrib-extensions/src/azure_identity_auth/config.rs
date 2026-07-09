@@ -74,11 +74,38 @@ pub struct Config {
 impl Config {
     /// Validates the configuration beyond what deserialization checks.
     ///
-    /// Rejects an empty or whitespace-only `scope`.
+    /// Rejects an empty/whitespace-only `scope` and any per-method field that
+    /// does not apply to the selected [`AuthMethod`].
     pub fn validate(&self) -> Result<(), String> {
         if self.scope.trim().is_empty() {
             return Err("`scope` must not be empty".to_string());
         }
+
+        // `tenant_id` and `token_file_path` are Workload Identity Federation
+        // inputs; they are meaningless for the other methods.
+        if self.method != AuthMethod::WorkloadIdentity {
+            if self.tenant_id.is_some() {
+                return Err(format!(
+                    "`tenant_id` is only valid for the `workload_identity` method, not `{}`",
+                    self.method
+                ));
+            }
+            if self.token_file_path.is_some() {
+                return Err(format!(
+                    "`token_file_path` is only valid for the `workload_identity` method, not `{}`",
+                    self.method
+                ));
+            }
+        }
+
+        // `client_id` selects a user-assigned Managed Identity or the WIF
+        // application id; it has no meaning for developer tooling.
+        if self.method == AuthMethod::Development && self.client_id.is_some() {
+            return Err(
+                "`client_id` is not valid for the `development` method".to_string(),
+            );
+        }
+
         Ok(())
     }
 }

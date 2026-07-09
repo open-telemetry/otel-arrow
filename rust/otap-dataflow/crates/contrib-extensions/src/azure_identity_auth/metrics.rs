@@ -5,7 +5,7 @@
 
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 
@@ -48,6 +48,13 @@ impl AzureIdentityAuthMetricsTracker {
     /// Flushes the metric set to the telemetry reporter.
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter.report(&mut self.metrics)
+    }
+
+    /// Returns a point-in-time snapshot of the metric set, e.g. to attach to
+    /// the terminal state on shutdown.
+    #[must_use]
+    pub fn snapshot(&self) -> MetricSetSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Records a successful acquisition with its latency in milliseconds.

@@ -74,6 +74,40 @@ fn unknown_fields_are_rejected() {
 }
 
 #[test]
+fn per_method_fields_are_validated() {
+    // `tenant_id` / `token_file_path` only apply to workload_identity.
+    assert!(
+        config_from_json(serde_json::json!({ "method": "managed_identity", "tenant_id": "t" }))
+            .is_err()
+    );
+    assert!(
+        config_from_json(
+            serde_json::json!({ "method": "development", "token_file_path": "/tmp/x" })
+        )
+        .is_err()
+    );
+    // `client_id` is not valid for developer tooling.
+    assert!(
+        config_from_json(serde_json::json!({ "method": "development", "client_id": "c" }))
+            .is_err()
+    );
+    // Valid combinations still pass.
+    assert!(
+        config_from_json(serde_json::json!({ "method": "managed_identity", "client_id": "c" }))
+            .is_ok()
+    );
+    assert!(
+        config_from_json(serde_json::json!({
+            "method": "workload_identity",
+            "tenant_id": "t",
+            "token_file_path": "/tmp/x",
+            "client_id": "c",
+        }))
+        .is_ok()
+    );
+}
+
+#[test]
 fn validate_config_hook_accepts_valid_config() {
     assert!(validate_config(&serde_json::json!({ "method": "managed_identity" })).is_ok());
 }

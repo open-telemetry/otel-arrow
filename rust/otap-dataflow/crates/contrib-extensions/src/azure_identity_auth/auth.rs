@@ -4,10 +4,8 @@
 //! Azure credential construction and token acquisition.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
 use azure_core::credentials::{TokenCredential, TokenRequestOptions};
-use azure_core::time::OffsetDateTime;
 use azure_identity::{
     DeveloperToolsCredential, DeveloperToolsCredentialOptions, ManagedIdentityCredential,
     ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
@@ -47,10 +45,11 @@ impl Auth {
             .await
             .map_err(|source| Error::TokenAcquisition { source })?;
 
-        let expires_on = instant_from_unix_expiry(access.expires_on);
-        Ok(BearerToken::new(
+        // Let the capability crate centralize the absolute-expiry -> monotonic
+        // `Instant` conversion so every provider handles it the same way.
+        Ok(BearerToken::from_absolute_expiry(
             access.token.secret().to_owned(),
-            expires_on,
+            access.expires_on.into(),
         ))
     }
 
@@ -59,15 +58,6 @@ impl Auth {
     pub(crate) fn from_credential(credential: Arc<dyn TokenCredential>, scope: String) -> Self {
         Self { credential, scope }
     }
-}
-
-/// Converts an absolute UNIX expiry timestamp into a monotonic [`Instant`]
-/// anchored at "now". After this single conversion the schedule is immune to
-/// wall-clock jumps. Saturates at zero for already-expired timestamps.
-fn instant_from_unix_expiry(expires_on: OffsetDateTime) -> Option<Instant> {
-    let now_unix = OffsetDateTime::now_utc().unix_timestamp();
-    let secs_until_expiry = expires_on.unix_timestamp().saturating_sub(now_unix).max(0);
-    Some(Instant::now() + Duration::from_secs(secs_until_expiry as u64))
 }
 
 /// Constructs an Azure credential for the configured authentication method.
