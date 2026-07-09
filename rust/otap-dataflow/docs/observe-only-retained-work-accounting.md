@@ -66,7 +66,9 @@ retained-work ownership model needed to make those policies possible later.
 Future tenant-aware enforcement may need to distinguish protected internal
 telemetry, pipeline groups, tenants, or other policy-defined classes. The
 ownership model should therefore allow tickets, escrow, and shared-boundary
-owners to carry an optional stable work-owner attribution key.
+owners to carry an optional stable work-owner attribution key. That key should
+be a small, stable value such as an interned id or compact numeric handle, not a
+per-item string. Human-readable names can be resolved when metrics are exported.
 
 That attribution key may come from a tenant descriptor, pipeline group,
 internal-telemetry classification, or another policy source. Tenant descriptor
@@ -79,12 +81,19 @@ lower-priority work first, and account shared queues or topics by tenant or
 policy class. Dynamic reclaim or preemption of already-admitted lower-priority
 work is separate future work and is not part of this observe-only phase.
 
+Internal telemetry should eventually be modeled as a protected owner class, not
+as ordinary tenant work. Enforcement can then fund that class from a reserved
+budget before admitting other tenant work, and startup validation can fail fast
+when the configured process budget cannot fund the internal telemetry floor.
+Observe-only accounting does not enforce that reservation; it only leaves room
+for the owner attribution needed to add it later.
+
 Future hierarchical budgeting may add parent-child budget scopes such as
 engine, internal telemetry, pipeline group, pipeline, runtime, and tenant or
 policy class. This observe-only phase does not define that budget tree or its
 enforcement rules. It only requires retained-work ownership to carry stable
-scope attribution so later budgeting layers can aggregate and enforce without
-changing the ownership model.
+scope attribution so later budgeting layers can aggregate over prefixes of that
+scope and enforce without changing the ownership model.
 
 ## A minimal mental model
 
@@ -408,6 +417,14 @@ defaults to empty: the engine always knows the identity, and optional
 attribution decays into unattributed accounting. It should be stored once on the
 scope that owners reference, not copied into every owner.
 
+For per-pipeline-instance visibility, the ownership scope should identify the
+deployed runtime, not just the logical pipeline. At minimum, the scope should
+include the pipeline group id, pipeline id, runtime or core id, and runtime
+deployment generation. A pipeline instance's retained memory is the sum of active
+local tickets and shared-boundary owners carrying that scope. This is logical
+retained memory attributed to that pipeline instance, not exact allocator RSS for
+that pipeline instance.
+
 ## Applying the model
 
 Observe-only accounting is added where a component starts retaining admitted
@@ -459,10 +476,21 @@ The engine's two payload forms do not make this equally easy. An encoded OTLP
 payload has an exact byte length. A columnar record-batch payload has no single
 encoded length, and if the native payload type declares no size, every charge on
 the engine's main data path lands in the unknown-size dimension and the totals
-stop being meaningful. Defining a documented estimate for the columnar form -
-for example, the sum of its constituent buffer lengths, computed once when
-retention starts and reused unchanged - is therefore part of the first
-implementation slice, not an optional refinement.
+stop being complete. Observe-only can begin by reporting those records as
+unknown-size, because that makes the coverage gap visible. However, the
+unknown-size state should not be the long-term answer for the main OTAP-native
+path. Before retained-byte totals are treated as complete, or before
+enforcement uses them for capacity decisions, the columnar form needs a
+documented estimate - for example, the sum of its constituent buffer or
+record-batch memory sizes, computed once when retention starts and reused
+unchanged.
+
+That estimate is still a logical retained size, not allocator ownership. Shared
+Arrow buffers, sliced arrays, and fanout can cause the same underlying memory to
+be charged once per retaining owner. That is acceptable for this accounting
+model: logical retained bytes answer "who is holding admitted work", and may be
+larger than process RSS. The process-wide limiter remains responsible for real
+residency.
 
 ## Initial observe-only scope
 
