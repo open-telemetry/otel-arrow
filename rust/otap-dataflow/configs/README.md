@@ -205,6 +205,13 @@ python loadgen.py \
 > **Note:** The default `syslog-perf.yaml` config only enables UDP.
 > To also accept TCP, add a `tcp` section under `protocol` in the config.
 
+### `opamp-controller-extension.yaml`
+
+Example demonstrating how to configure the Dataflow Engine to receive its
+configuration from a remote OpAMP server. See the
+[documentation](../crates/controller/src/extension/opamp/README.md)
+for more details about how to run this example.
+
 ## Usage
 
 You can use these configurations with the following CLI command:
