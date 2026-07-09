@@ -282,17 +282,23 @@ impl TrackedPublishTracker {
         message_id: u64,
         subscriber_id: BroadcastSubscriberId,
     ) -> AckFromResult {
-        let mut entries = self.inner.entries.lock();
-        let Some(entry) = entries.get(&message_id).cloned() else {
-            return AckFromResult::NotTracked;
+        // Hold the global entries lock only long enough to look the entry up and
+        // clone its `Arc`; the per-entry ack bookkeeping then runs without the
+        // global lock so acks to different messages do not serialize on it. The
+        // entry's own state mutex remains the single linearization point for
+        // terminal resolution. Message ids are monotonic and never reused, so
+        // re-locking to remove by id after resolution cannot hit a different
+        // entry.
+        let entry = {
+            let entries = self.inner.entries.lock();
+            let Some(entry) = entries.get(&message_id).cloned() else {
+                return AckFromResult::NotTracked;
+            };
+            entry
         };
         let result = entry.resolve_ack_from(subscriber_id);
-        let resolved = matches!(result, AckFromResult::Resolved);
-        if resolved {
-            let _ = entries.remove(&message_id);
-        }
-        drop(entries);
-        if resolved {
+        if matches!(result, AckFromResult::Resolved) {
+            let _ = self.inner.entries.lock().remove(&message_id);
             self.inner.wakeups.notify_one();
         }
         result
@@ -490,12 +496,11 @@ impl TrackedPublishTracker {
     fn resolve_expired(&self, now: Instant) {
         let expired = {
             let mut entries = self.inner.entries.lock();
-            let expired_ids = entries
+            let expired_ids: Vec<u64> = entries
                 .iter()
-                .filter_map(|(id, entry)| {
-                    (entry.is_pending() && entry.deadline() <= now).then_some(*id)
-                })
-                .collect::<Vec<_>>();
+                .filter(|(_, entry)| entry.is_pending() && entry.deadline() <= now)
+                .map(|(id, _)| *id)
+                .collect();
             expired_ids
                 .into_iter()
                 .filter_map(|id| entries.remove(&id))
