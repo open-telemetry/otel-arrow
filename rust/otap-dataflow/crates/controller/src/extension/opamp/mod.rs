@@ -846,25 +846,28 @@ fn handle_server_to_agent_message(
                     if config_file.content_type == "application/json"
                         || config_file.content_type.is_empty()
                     {
-                        match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
-                            Ok(engine_config) => {
-                                updates.engine_config = Some(EngineConfigUpdate {
-                                    engine_config,
-                                    config_hash: remote_config.config_hash,
-                                })
-                            }
-                            Err(e) => {
-                                let message =
-                                    "Could not deserialize JSON encoded engine config".to_string();
-                                otel_error!(
-                                    "opamp.controller_extension.message.invalid_config_json",
-                                    message = message,
-                                    error =? e,
-                                );
-                                reply.reply_error = Some(ReplyError {
-                                    message,
-                                    config_hash: remote_config.config_hash,
-                                })
+                        if !config_file.body.is_empty() {
+                            match serde_json::from_slice::<OtelDataflowSpec>(&config_file.body) {
+                                Ok(engine_config) => {
+                                    updates.engine_config = Some(EngineConfigUpdate {
+                                        engine_config,
+                                        config_hash: remote_config.config_hash,
+                                    })
+                                }
+                                Err(e) => {
+                                    let message =
+                                        "Could not deserialize JSON encoded engine config"
+                                            .to_string();
+                                    otel_error!(
+                                        "opamp.controller_extension.message.invalid_config_json",
+                                        message = message,
+                                        error =? e,
+                                    );
+                                    reply.reply_error = Some(ReplyError {
+                                        message,
+                                        config_hash: remote_config.config_hash,
+                                    })
+                                }
                             }
                         }
                     } else {
