@@ -10,7 +10,7 @@ engine:
           # Fixed UUID so the agent is easy to find in the UI. Omit to
           # generate a fresh UUIDv7 on each start.
           instance_uid: "8be4df61-93ca-11d2-aa0d-00e098032b8c"
-          heart_beat_interval: "5s"
+          heartbeat_interval: "5s"
           agent_description:
             identifying_attributes:
               service.name: "otap-df-engine"
