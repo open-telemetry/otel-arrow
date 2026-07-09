@@ -101,8 +101,7 @@ fn per_method_fields_are_validated() {
     );
     // `client_id` is not valid for developer tooling.
     assert!(
-        config_from_json(serde_json::json!({ "method": "development", "client_id": "c" }))
-            .is_err()
+        config_from_json(serde_json::json!({ "method": "development", "client_id": "c" })).is_err()
     );
     // Valid combinations still pass.
     assert!(
@@ -333,4 +332,87 @@ async fn token_stream_yields_published_token() {
     let _ = ext.get_token().await.expect("token acquired");
     let published = stream.next().await.expect("stream yields a value");
     assert_eq!(published.expose_secret(), "streamed");
+}
+
+#[tokio::test]
+async fn token_stream_skips_initial_none() {
+    use std::time::Duration;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let credential = Arc::new(MockCredential {
+        token: "streamed".to_string(),
+        expires_in: AzureDuration::minutes(60),
+        call_count: Arc::clone(&calls),
+    });
+    let ext = make_extension(credential);
+
+    let mut stream = ext.token_stream();
+    // The cache starts as `None`; the stream must filter it out and stay
+    // pending rather than yielding a spurious value.
+    let before = tokio::time::timeout(Duration::from_millis(50), stream.next()).await;
+    assert!(
+        before.is_err(),
+        "stream must not yield before a token is published"
+    );
+
+    // Once a token is published, the stream yields it.
+    let _ = ext.get_token().await.expect("token acquired");
+    let published = tokio::time::timeout(Duration::from_millis(200), stream.next())
+        .await
+        .expect("stream yields after publish")
+        .expect("stream is not closed");
+    assert_eq!(published.expose_secret(), "streamed");
+}
+
+// ── schedule_next timing tests ────────────────────────────────
+
+#[tokio::test]
+async fn schedule_next_refreshes_before_expiry() {
+    use otap_df_engine::capability::BearerToken;
+    use std::time::{Duration, Instant};
+
+    let token = BearerToken::new(
+        "t".to_owned(),
+        Some(Instant::now() + Duration::from_secs(3600)),
+    );
+    let refresh_at = extension::schedule_next(&token);
+    let secs = refresh_at
+        .saturating_duration_since(tokio::time::Instant::now())
+        .as_secs_f64();
+    // 3600 - TOKEN_EXPIRY_BUFFER_SECS (299) = 3301, allowing execution slack.
+    assert!((secs - 3301.0).abs() < 5.0, "expected ~3301s, got {secs}");
+}
+
+#[tokio::test]
+async fn schedule_next_floors_near_expiry() {
+    use otap_df_engine::capability::BearerToken;
+    use std::time::{Duration, Instant};
+
+    // Expires in 5s: the refresh target underflows past `now`, so the
+    // MIN_TOKEN_REFRESH_INTERVAL_SECS (10s) floor applies.
+    let token = BearerToken::new(
+        "t".to_owned(),
+        Some(Instant::now() + Duration::from_secs(5)),
+    );
+    let refresh_at = extension::schedule_next(&token);
+    let secs = refresh_at
+        .saturating_duration_since(tokio::time::Instant::now())
+        .as_secs_f64();
+    assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
+}
+
+#[tokio::test]
+async fn schedule_next_pushes_non_expiring_far_out() {
+    use otap_df_engine::capability::BearerToken;
+
+    let token = BearerToken::new("t".to_owned(), None);
+    let refresh_at = extension::schedule_next(&token);
+    let secs = refresh_at
+        .saturating_duration_since(tokio::time::Instant::now())
+        .as_secs();
+    // Non-expiring tokens push the refresh ~1 year out.
+    assert!(
+        secs > 300 * 24 * 60 * 60,
+        "expected far-future refresh, got {secs}s"
+    );
 }

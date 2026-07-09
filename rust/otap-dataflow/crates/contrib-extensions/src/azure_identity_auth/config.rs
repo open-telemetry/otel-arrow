@@ -121,9 +121,7 @@ impl Config {
         // `client_id` selects a user-assigned Managed Identity or the WIF
         // application id; it has no meaning for developer tooling.
         if self.method == AuthMethod::Development && self.client_id.is_some() {
-            return Err(
-                "`client_id` is not valid for the `development` method".to_string(),
-            );
+            return Err("`client_id` is not valid for the `development` method".to_string());
         }
 
         Ok(())

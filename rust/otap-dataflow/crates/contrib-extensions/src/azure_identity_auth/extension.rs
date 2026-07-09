@@ -131,9 +131,7 @@ impl Inner {
         // is still within the cooldown window; otherwise (no failure recorded)
         // we are not throttling.
         match *guard {
-            Some(failed_at) => {
-                failed_at.elapsed() < Duration::from_secs(TOKEN_REFRESH_RETRY_SECS)
-            }
+            Some(failed_at) => failed_at.elapsed() < Duration::from_secs(TOKEN_REFRESH_RETRY_SECS),
             None => false,
         }
     }
@@ -172,20 +170,25 @@ impl Inner {
             }
         }
     }
+}
 
-    /// Computes the next refresh instant from a freshly acquired token.
-    fn schedule_next(&self, token: &BearerToken) -> tokio::time::Instant {
-        let now = tokio::time::Instant::now();
-        let min_next = now + Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS);
-        match token.expires_on() {
-            Some(expires_on) => {
-                let target = tokio::time::Instant::from_std(expires_on)
-                    .checked_sub(Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS))
-                    .unwrap_or(now);
-                target.max(min_next)
-            }
-            None => now + Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
+/// Computes the next refresh instant from a freshly acquired token.
+///
+/// Refreshes `TOKEN_EXPIRY_BUFFER_SECS` before expiry, but never sooner than
+/// `MIN_TOKEN_REFRESH_INTERVAL_SECS` from now; a non-expiring token pushes the
+/// next refresh far into the future (the loop is still woken by control
+/// messages in the meantime).
+pub(crate) fn schedule_next(token: &BearerToken) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    let min_next = now + Duration::from_secs(MIN_TOKEN_REFRESH_INTERVAL_SECS);
+    match token.expires_on() {
+        Some(expires_on) => {
+            let target = tokio::time::Instant::from_std(expires_on)
+                .checked_sub(Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS))
+                .unwrap_or(now);
+            target.max(min_next)
         }
+        None => now + Duration::from_secs(NON_EXPIRING_REFRESH_SECS),
     }
 }
 
@@ -278,7 +281,7 @@ impl SharedExtension for AzureIdentityAuthExtension {
                     let _guard = inner.fetch_lock.lock().await;
                     match inner.refresh_once().await {
                         Ok(token) => {
-                            next_refresh = inner.schedule_next(&token);
+                            next_refresh = schedule_next(&token);
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;
