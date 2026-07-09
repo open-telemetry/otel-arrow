@@ -1949,6 +1949,414 @@ mod test {
         assert_eq!(requests.len(), 2);
     }
 
+    /// Helper: create an ObservedStateStore, spawn its consumer loop, send engine events to
+    /// transition pipelines into the desired phases, wait for propagation, then return a snapshot
+    /// of the pipeline statuses along with a cleanup handle.
+    ///
+    /// Each entry in `pipelines` is (group_id, pipeline_id, events_to_send) where events_to_send
+    /// is a list of EngineEvent factory closures applied to the pipeline's DeployedPipelineKey.
+    async fn build_status_snapshot(
+        pipelines: Vec<(
+            &str,
+            &str,
+            Vec<
+                Box<
+                    dyn FnOnce(
+                        otap_df_config::DeployedPipelineKey,
+                    ) -> otap_df_telemetry::event::EngineEvent,
+                >,
+            >,
+        )>,
+    ) -> HashMap<PipelineKey, PipelineStatus> {
+        use otap_df_config::observed_state::ObservedStateSettings;
+        use otap_df_state::store::ObservedStateStore;
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::default();
+        let store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), telemetry_registry_handle);
+        let handle = store.handle();
+        let reporter = store.engine_reporter(Default::default());
+
+        let cancel = CancellationToken::new();
+        let store_clone = store.clone();
+        let cancel_clone = cancel.clone();
+        let consumer = tokio::spawn(async move { store_clone.run(cancel_clone).await });
+
+        for (group_id, pipeline_id, events) in pipelines {
+            let pipeline_key = PipelineKey::new(
+                Cow::Owned(group_id.to_owned()),
+                Cow::Owned(pipeline_id.to_owned()),
+            );
+            store.set_pipeline_active_generation(pipeline_key.clone(), 0);
+            store.set_pipeline_active_cores(pipeline_key, [0]);
+            store.set_pipeline_serving_generation(
+                PipelineKey::new(
+                    Cow::Owned(group_id.to_owned()),
+                    Cow::Owned(pipeline_id.to_owned()),
+                ),
+                0,
+                0,
+            );
+
+            for event_fn in events {
+                let deployed_key = otap_df_config::DeployedPipelineKey {
+                    pipeline_group_id: Cow::Owned(group_id.to_owned()),
+                    pipeline_id: Cow::Owned(pipeline_id.to_owned()),
+                    core_id: 0,
+                    deployment_generation: 0,
+                };
+                reporter.report(event_fn(deployed_key));
+            }
+        }
+
+        // Wait for events to propagate through the consumer loop
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let snapshot = handle.snapshot();
+        cancel.cancel();
+        let _ = consumer.await;
+        snapshot
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_health_running() {
+        use otap_df_telemetry::event::EngineEvent;
+
+        let snapshot = build_status_snapshot(vec![(
+            "group1",
+            "pipeline1",
+            vec![
+                Box::new(|k| EngineEvent::admitted(k, None)),
+                Box::new(|k| EngineEvent::ready(k, None)),
+            ],
+        )])
+        .await;
+
+        assert_eq!(snapshot.len(), 1);
+        let status = snapshot.values().next().unwrap();
+        let health = pipeline_health(status);
+        assert!(health.healthy);
+        assert_eq!(health.status, health_status::RUNNING);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_health_failed() {
+        use otap_df_telemetry::event::{EngineEvent, ErrorSummary};
+
+        let snapshot = build_status_snapshot(vec![(
+            "group1",
+            "pipeline1",
+            vec![
+                Box::new(|k| EngineEvent::admitted(k, None)),
+                Box::new(|k| EngineEvent::ready(k, None)),
+                Box::new(|k| {
+                    EngineEvent::pipeline_runtime_error(
+                        k,
+                        "boom",
+                        ErrorSummary::Pipeline {
+                            error_kind: "test".into(),
+                            message: "test error".into(),
+                            source: None,
+                        },
+                    )
+                }),
+            ],
+        )])
+        .await;
+
+        assert_eq!(snapshot.len(), 1);
+        let status = snapshot.values().next().unwrap();
+        let health = pipeline_health(status);
+        assert!(!health.healthy);
+        assert_eq!(health.status, health_status::FAILED);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_health_stopped() {
+        use otap_df_telemetry::event::EngineEvent;
+
+        let snapshot = build_status_snapshot(vec![(
+            "group1",
+            "pipeline1",
+            vec![
+                Box::new(|k| EngineEvent::admitted(k, None)),
+                Box::new(|k| EngineEvent::ready(k, None)),
+                Box::new(|k| EngineEvent::shutdown_requested(k, None)),
+                Box::new(|k| EngineEvent::drained(k, None)),
+            ],
+        )])
+        .await;
+
+        assert_eq!(snapshot.len(), 1);
+        let status = snapshot.values().next().unwrap();
+        let health = pipeline_health(status);
+        assert!(!health.healthy);
+        assert_eq!(health.status, health_status::STOPPED);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_health_starting() {
+        use otap_df_telemetry::event::EngineEvent;
+
+        // Only send admitted (not ready) -- pipeline is in Starting phase
+        let snapshot = build_status_snapshot(vec![(
+            "group1",
+            "pipeline1",
+            vec![Box::new(|k| EngineEvent::admitted(k, None))],
+        )])
+        .await;
+
+        assert_eq!(snapshot.len(), 1);
+        let status = snapshot.values().next().unwrap();
+        let health = pipeline_health(status);
+        assert!(!health.healthy);
+        assert_eq!(health.status, health_status::STARTING);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_health_stopping() {
+        use otap_df_telemetry::event::EngineEvent;
+
+        // admitted -> ready -> shutdown_requested puts it into Draining
+        let snapshot = build_status_snapshot(vec![(
+            "group1",
+            "pipeline1",
+            vec![
+                Box::new(|k| EngineEvent::admitted(k, None)),
+                Box::new(|k| EngineEvent::ready(k, None)),
+                Box::new(|k| EngineEvent::shutdown_requested(k, None)),
+            ],
+        )])
+        .await;
+
+        assert_eq!(snapshot.len(), 1);
+        let status = snapshot.values().next().unwrap();
+        let health = pipeline_health(status);
+        assert!(!health.healthy);
+        assert_eq!(health.status, health_status::STOPPING);
+    }
+
+    #[tokio::test]
+    async fn test_component_health_empty_snapshot() {
+        let session_state = SessionState::try_new(
+            &serde_json::from_value::<Config>(serde_json::json!({
+                "endpoint": "ws://127.0.0.1:4320"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let snapshot = HashMap::new();
+        let health = component_health(&session_state, &snapshot);
+
+        // With no pipelines, agent-level health is vacuously "running"
+        assert!(health.healthy);
+        assert_eq!(health.status, health_status::RUNNING);
+        assert!(health.component_health_map.is_empty());
+        assert!(health.start_time_unix_nano > 0);
+        assert!(health.status_time_unix_nano > 0);
+    }
+
+    #[tokio::test]
+    async fn test_component_health_aggregates_pipeline_groups() {
+        use otap_df_telemetry::event::{EngineEvent, ErrorSummary};
+
+        let snapshot = build_status_snapshot(vec![
+            (
+                "group_a",
+                "pipeline1",
+                vec![
+                    Box::new(|k| EngineEvent::admitted(k, None)),
+                    Box::new(|k| EngineEvent::ready(k, None)),
+                ],
+            ),
+            (
+                "group_a",
+                "pipeline2",
+                vec![
+                    Box::new(|k| EngineEvent::admitted(k, None)),
+                    Box::new(|k| EngineEvent::ready(k, None)),
+                    Box::new(|k| {
+                        EngineEvent::pipeline_runtime_error(
+                            k,
+                            "boom",
+                            ErrorSummary::Pipeline {
+                                error_kind: "test".into(),
+                                message: "test error".into(),
+                                source: None,
+                            },
+                        )
+                    }),
+                ],
+            ),
+            (
+                "group_b",
+                "pipeline3",
+                vec![
+                    Box::new(|k| EngineEvent::admitted(k, None)),
+                    Box::new(|k| EngineEvent::ready(k, None)),
+                ],
+            ),
+        ])
+        .await;
+
+        let session_state = SessionState::try_new(
+            &serde_json::from_value::<Config>(serde_json::json!({
+                "endpoint": "ws://127.0.0.1:4320"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let health = component_health(&session_state, &snapshot);
+
+        // Agent level: has a failed child in group_a, so not fully healthy
+        assert!(!health.healthy);
+
+        // Two groups
+        assert_eq!(health.component_health_map.len(), 2);
+
+        // group_a has one running and one failed pipeline -> degraded
+        let group_a = &health.component_health_map["group_a"];
+        assert_eq!(group_a.component_health_map.len(), 2);
+        assert!(!group_a.healthy);
+        assert_eq!(group_a.status, health_status::DEGRADED);
+
+        let p1 = &group_a.component_health_map["pipeline1"];
+        assert!(p1.healthy);
+        assert_eq!(p1.status, health_status::RUNNING);
+
+        let p2 = &group_a.component_health_map["pipeline2"];
+        assert!(!p2.healthy);
+        assert_eq!(p2.status, health_status::FAILED);
+
+        // group_b has one running pipeline -> healthy
+        let group_b = &health.component_health_map["group_b"];
+        assert_eq!(group_b.component_health_map.len(), 1);
+        assert!(group_b.healthy);
+        assert_eq!(group_b.status, health_status::RUNNING);
+    }
+
+    #[tokio::test]
+    async fn test_set_health_and_status_from_components_all_running() {
+        let mut parent = ComponentHealth {
+            component_health_map: HashMap::from_iter([
+                (
+                    "a".into(),
+                    ComponentHealth {
+                        healthy: true,
+                        status: health_status::RUNNING.into(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "b".into(),
+                    ComponentHealth {
+                        healthy: true,
+                        status: health_status::RUNNING.into(),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        set_health_and_status_from_components(&mut parent);
+        assert!(parent.healthy);
+        assert_eq!(parent.status, health_status::RUNNING);
+    }
+
+    #[tokio::test]
+    async fn test_set_health_and_status_from_components_mixed() {
+        let mut parent = ComponentHealth {
+            component_health_map: HashMap::from_iter([
+                (
+                    "a".into(),
+                    ComponentHealth {
+                        healthy: true,
+                        status: health_status::RUNNING.into(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "b".into(),
+                    ComponentHealth {
+                        healthy: false,
+                        status: health_status::FAILED.into(),
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+        set_health_and_status_from_components(&mut parent);
+        assert!(!parent.healthy);
+        assert_eq!(parent.status, health_status::DEGRADED);
+    }
+
+    #[tokio::test]
+    async fn test_set_health_and_status_from_components_all_stopped() {
+        let mut parent = ComponentHealth {
+            component_health_map: HashMap::from_iter([(
+                "a".into(),
+                ComponentHealth {
+                    healthy: false,
+                    status: health_status::STOPPED.into(),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        set_health_and_status_from_components(&mut parent);
+        assert!(!parent.healthy);
+        assert_eq!(parent.status, health_status::STOPPED);
+    }
+
+    #[test]
+    fn test_validate_config_accepts_valid() {
+        let config_value = serde_json::json!({
+            "endpoint": "ws://127.0.0.1:4320/v1/opamp"
+        });
+        assert!(validate_config(&config_value).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_rejects_invalid_json_structure() {
+        // Missing required "endpoint" field
+        let config_value = serde_json::json!({
+            "not_a_real_field": "hello"
+        });
+        let err = validate_config(&config_value).unwrap_err();
+        assert!(
+            err.to_string().contains("endpoint"),
+            "expected error about missing endpoint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_config_rejects_invalid_endpoint() {
+        let config_value = serde_json::json!({
+            "endpoint": "ftp://nope.invalid:1234"
+        });
+        let err = validate_config(&config_value).unwrap_err();
+        assert!(
+            err.to_string().contains("ftp"),
+            "expected error mentioning invalid scheme, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_config_rejects_invalid_instance_uid() {
+        let config_value = serde_json::json!({
+            "endpoint": "ws://127.0.0.1:4320",
+            "instance_uid": "not-a-uuid"
+        });
+        let err = validate_config(&config_value).unwrap_err();
+        assert!(
+            err.to_string().contains("invalid"),
+            "expected error about invalid UUID, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn test_presents_consistent_view_of_last_applied_status() {
         let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
