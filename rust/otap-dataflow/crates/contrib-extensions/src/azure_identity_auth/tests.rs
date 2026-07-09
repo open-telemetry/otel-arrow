@@ -36,6 +36,19 @@ fn config_defaults_apply() {
     assert!(cfg.client_id.is_none());
     assert!(cfg.tenant_id.is_none());
     assert!(cfg.token_file_path.is_none());
+    assert_eq!(cfg.startup_timeout, std::time::Duration::from_secs(30));
+}
+
+#[test]
+fn startup_timeout_parses_and_rejects_zero() {
+    let cfg = config_from_json(serde_json::json!({ "startup_timeout": "45s" }))
+        .expect("human-readable duration parses");
+    assert_eq!(cfg.startup_timeout, std::time::Duration::from_secs(45));
+
+    assert!(
+        config_from_json(serde_json::json!({ "startup_timeout": "0s" })).is_err(),
+        "zero startup_timeout must be rejected"
+    );
 }
 
 #[test]

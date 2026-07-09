@@ -6219,6 +6219,7 @@ dependencies = [
  "azure_core 1.0.0",
  "azure_identity 1.0.0",
  "futures",
+ "humantime-serde",
  "linkme",
  "otap-df-config",
  "otap-df-engine",
@@ -6230,7 +6231,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
- "tracing",
 ]
 
 [[package]]

@@ -82,7 +82,7 @@ fn create(
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
-        .with_readiness_probe()
+        .with_readiness_probe_timeout_override(config.startup_timeout)
         .shared::<AzureIdentityAuthExtension>(extension)
         .build()
         .map_err(|e| ConfigError::InvalidUserConfig {
