@@ -2781,6 +2781,37 @@ async fn consensus_duplicate_ack_does_not_complete() {
     );
 }
 
+// An ack from a subscriber that was never eligible must not count toward
+// consensus: it leaves the entry pending and cannot falsely satisfy the
+// `acked == members` completion check by inflating the acked set.
+#[tokio::test]
+async fn consensus_ack_from_non_member_does_not_advance() {
+    let tracker = TrackedPublishTracker::new();
+    let _receipt = tracker.register_consensus(
+        1,
+        Duration::from_secs(30),
+        consensus_permit(),
+        subscriber_set([1, 2]),
+        1,
+    );
+
+    // A non-member ack is a no-op and does not advance consensus.
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(99)),
+        AckFromResult::StillPending
+    );
+
+    // Both genuine members must still ack for the entry to resolve.
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(1)),
+        AckFromResult::StillPending
+    );
+    assert_eq!(
+        tracker.resolve_ack_from(1, BroadcastSubscriberId(2)),
+        AckFromResult::Resolved
+    );
+}
+
 // A Nack from a subscriber that still requires the message resolves the entry as
 // Nack; a Nack from one that has already acked (left the pending set) is a no-op
 // and reported as `NotRequired`, and an unknown message id is `NotTracked`.

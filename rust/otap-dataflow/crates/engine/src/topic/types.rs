@@ -216,25 +216,26 @@ impl TrackedPublishTracker {
         message_id: u64,
         timeout: Duration,
         permit: TrackedPublishPermit,
-        pending: HashSet<BroadcastSubscriberId>,
+        members: impl Into<Arc<HashSet<BroadcastSubscriberId>>>,
         seq: u64,
     ) -> TrackedPublishReceipt {
+        let members = members.into();
         if self.inner.closed.load(Ordering::Acquire) {
             let entry = Arc::new(TrackedPublishEntry::new_consensus(
                 Instant::now(),
                 permit,
-                pending,
+                members,
                 seq,
             ));
             let _resolved = entry.resolve(TrackedPublishOutcome::TopicClosed);
             return TrackedPublishReceipt::new(message_id, entry);
         }
 
-        if pending.is_empty() {
+        if members.is_empty() {
             let entry = Arc::new(TrackedPublishEntry::new_consensus(
                 Instant::now(),
                 permit,
-                pending,
+                members,
                 seq,
             ));
             let _resolved = entry.resolve(TrackedPublishOutcome::Ack);
@@ -245,7 +246,7 @@ impl TrackedPublishTracker {
         let entry = Arc::new(TrackedPublishEntry::new_consensus(
             Instant::now() + timeout,
             permit,
-            pending,
+            members,
             seq,
         ));
         let replaced = self
@@ -327,7 +328,7 @@ impl TrackedPublishTracker {
         let Some(entry) = entries.get(&message_id).cloned() else {
             return NackFromResult::NotTracked;
         };
-        if entry.nack_if_requires(subscriber_id, reason) {
+        if entry.nack_if_requires(subscriber_id, &reason) {
             let _ = entries.remove(&message_id);
             drop(entries);
             self.inner.wakeups.notify_one();
@@ -353,7 +354,7 @@ impl TrackedPublishTracker {
             .iter()
             .filter_map(|(id, entry)| {
                 entry
-                    .nack_if_requires(subscriber_id, Arc::clone(&reason))
+                    .nack_if_requires(subscriber_id, &reason)
                     .then_some(*id)
             })
             .collect();
@@ -387,7 +388,7 @@ impl TrackedPublishTracker {
             .iter()
             .filter_map(|(id, entry)| {
                 entry
-                    .nack_if_requires_before(subscriber_id, seq_threshold, Arc::clone(&reason))
+                    .nack_if_requires_before(subscriber_id, seq_threshold, &reason)
                     .then_some(*id)
             })
             .collect();
@@ -612,8 +613,15 @@ enum PendingKind {
     /// in `pending` has acked. Any Nack or required-subscriber disappearance
     /// resolves it as Nack.
     All {
-        /// Subscribers eligible at publish time that have not yet acked.
-        pending: HashSet<BroadcastSubscriberId>,
+        /// Immutable set of subscribers eligible at publish time. Shared via
+        /// `Arc` so publishing only bumps a refcount instead of deep-copying the
+        /// registry's membership on every tracked publish (copy-on-write lives on
+        /// the rarer subscribe/disconnect paths).
+        members: Arc<HashSet<BroadcastSubscriberId>>,
+        /// Subscribers that have acked so far. The entry resolves as Ack once
+        /// `acked` covers every member. Grows lazily as acks arrive, so no
+        /// upfront per-message allocation proportional to the member count.
+        acked: HashSet<BroadcastSubscriberId>,
         /// Broadcast ring sequence at which this message was published. Used to
         /// nack a lagging subscriber that skipped this message (its ring slot was
         /// overwritten before it read the message), so it can never ack it.
@@ -648,12 +656,13 @@ impl TrackedPublishEntry {
     pub(crate) fn new_consensus(
         deadline: Instant,
         permit: TrackedPublishPermit,
-        pending: HashSet<BroadcastSubscriberId>,
+        members: Arc<HashSet<BroadcastSubscriberId>>,
         seq: u64,
     ) -> Self {
         Self {
             state: Mutex::new(TrackedPublishState::Pending(PendingKind::All {
-                pending,
+                members,
+                acked: HashSet::new(),
                 seq,
             })),
             deadline,
@@ -697,9 +706,14 @@ impl TrackedPublishEntry {
         match &mut *state {
             TrackedPublishState::Resolved(_) => AckFromResult::NotTracked,
             TrackedPublishState::Pending(PendingKind::First) => AckFromResult::NotTracked,
-            TrackedPublishState::Pending(PendingKind::All { pending, .. }) => {
-                let _ = pending.remove(&subscriber_id);
-                if pending.is_empty() {
+            TrackedPublishState::Pending(PendingKind::All {
+                members, acked, ..
+            }) => {
+                if !members.contains(&subscriber_id) {
+                    return AckFromResult::StillPending;
+                }
+                let _ = acked.insert(subscriber_id);
+                if acked.len() == members.len() {
                     *state = TrackedPublishState::Resolved(TrackedPublishOutcome::Ack);
                     drop(state);
                     _ = self.permit.lock().take();
@@ -717,22 +731,26 @@ impl TrackedPublishEntry {
     ///
     /// Used when a required subscriber disappears (lag-disconnect or drop/close)
     /// before acking. No-op for `First`-kind, already-resolved, or unrelated
-    /// entries.
+    /// entries. `reason` is only cloned when the entry actually resolves, so
+    /// scanning many entries that do not require the subscriber is allocation
+    /// free.
     pub(crate) fn nack_if_requires(
         &self,
         subscriber_id: BroadcastSubscriberId,
-        reason: Arc<str>,
+        reason: &Arc<str>,
     ) -> bool {
         let mut state = self.state.lock();
         let requires = matches!(
             &*state,
-            TrackedPublishState::Pending(PendingKind::All { pending, .. })
-                if pending.contains(&subscriber_id)
+            TrackedPublishState::Pending(PendingKind::All { members, acked, .. })
+                if members.contains(&subscriber_id) && !acked.contains(&subscriber_id)
         );
         if !requires {
             return false;
         }
-        *state = TrackedPublishState::Resolved(TrackedPublishOutcome::Nack { reason });
+        *state = TrackedPublishState::Resolved(TrackedPublishOutcome::Nack {
+            reason: Arc::clone(reason),
+        });
         drop(state);
         _ = self.permit.lock().take();
         self.notify.notify_waiters();
@@ -746,23 +764,28 @@ impl TrackedPublishEntry {
     /// Used when a subscriber lags under `DropOldest`: only the messages it
     /// skipped (published before the new read position) are nacked; messages it
     /// can still read are left pending. No-op for `First`-kind, already-resolved,
-    /// or unrelated entries.
+    /// or unrelated entries. `reason` is only cloned when the entry actually
+    /// resolves.
     pub(crate) fn nack_if_requires_before(
         &self,
         subscriber_id: BroadcastSubscriberId,
         seq_threshold: u64,
-        reason: Arc<str>,
+        reason: &Arc<str>,
     ) -> bool {
         let mut state = self.state.lock();
         let requires = matches!(
             &*state,
-            TrackedPublishState::Pending(PendingKind::All { pending, seq })
-                if *seq < seq_threshold && pending.contains(&subscriber_id)
+            TrackedPublishState::Pending(PendingKind::All { members, acked, seq })
+                if *seq < seq_threshold
+                    && members.contains(&subscriber_id)
+                    && !acked.contains(&subscriber_id)
         );
         if !requires {
             return false;
         }
-        *state = TrackedPublishState::Resolved(TrackedPublishOutcome::Nack { reason });
+        *state = TrackedPublishState::Resolved(TrackedPublishOutcome::Nack {
+            reason: Arc::clone(reason),
+        });
         drop(state);
         _ = self.permit.lock().take();
         self.notify.notify_waiters();

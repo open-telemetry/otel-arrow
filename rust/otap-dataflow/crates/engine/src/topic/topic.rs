@@ -598,14 +598,14 @@ impl<T: Send + Sync + 'static> BalancedOnlyTopic<T> {
 /// call back into the registry.
 struct BroadcastSubscriberRegistry {
     next_subscriber_id: AtomicU64,
-    subscribers: Mutex<HashSet<BroadcastSubscriberId>>,
+    subscribers: Mutex<Arc<HashSet<BroadcastSubscriberId>>>,
 }
 
 impl BroadcastSubscriberRegistry {
     fn new() -> Self {
         Self {
             next_subscriber_id: AtomicU64::new(1),
-            subscribers: Mutex::new(HashSet::new()),
+            subscribers: Mutex::new(Arc::new(HashSet::new())),
         }
     }
 
@@ -683,14 +683,16 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
 
         // `all` mode: snapshot the eligible subscriber set and reserve the ring
         // sequence atomically under the registry lock so the consensus
-        // membership exactly matches who will receive this message. The heavier
+        // membership exactly matches who will receive this message. Membership
+        // is stored copy-on-write behind an `Arc`, so the snapshot is an O(1)
+        // refcount bump rather than a deep copy of the whole set. The heavier
         // slot write plus waker fan-out happen after releasing the lock.
         //
         // Lock order is registry -> tracker (`register_consensus` locks the
         // tracker); the tracker must never call back into the registry.
         if let Some(registry) = &self.registry {
             let subscribers = registry.subscribers.lock();
-            let snapshot = subscribers.clone();
+            let snapshot = Arc::clone(&subscribers);
             let seq = self.broadcast_ring.reserve_seq();
             let receipt = self
                 .outcomes
@@ -741,7 +743,7 @@ impl<T: Send + Sync + 'static> BroadcastOnlyTopic<T> {
                 let mut subscribers = registry.subscribers.lock();
                 let start_seq = self.broadcast_ring.current_seq() + 1;
                 let subscriber_id = registry.allocate_id();
-                let _ = subscribers.insert(subscriber_id);
+                let _ = Arc::make_mut(&mut subscribers).insert(subscriber_id);
                 (start_seq, Some(subscriber_id))
             }
             None => (self.broadcast_ring.current_seq() + 1, None),
@@ -1262,7 +1264,7 @@ impl<T: Send + Sync + 'static> BroadcastSub<T> {
             return;
         }
         let mut subscribers = registry.subscribers.lock();
-        let _ = subscribers.remove(&subscriber_id);
+        let _ = Arc::make_mut(&mut subscribers).remove(&subscriber_id);
         self.ack_state
             .outcomes
             .nack_pending_for_subscriber(subscriber_id, reason);
