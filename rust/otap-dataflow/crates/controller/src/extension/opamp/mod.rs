@@ -134,6 +134,11 @@ struct SessionState {
     /// [`RemoteConfigStatus::last_remote_config_hash`].
     last_config_hash: Option<Vec<u8>>,
 
+    /// The result the attempt to reconcile the previous configuration sent from the server.
+    /// This will be used by the agent when replying to the server to fill in
+    /// [`RemoteConfigStats::status`] and any associated errors.
+    last_reconcile_result: Option<Result<EngineConfigReconcileStatus, ControlPlaneError>>,
+
     /// Phase of message exchange. When connected, the client runs a simple loop and this
     /// phase determines the behaviour of each iteration. See [`Phase`] enum.
     phase: Phase,
@@ -171,6 +176,7 @@ impl SessionState {
             phase: Phase::Initiating,
             last_sent_message: None,
             last_config_hash: None,
+            last_reconcile_result: None,
             retry_backoff_ns: None,
             start_time_unix_nano: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1005,7 +1011,7 @@ where
 
                 session_state.sequence_num += 1;
                 let reconcile_result_message = applied_result_message(
-                    reconcile_result,
+                    &reconcile_result,
                     session_state,
                     &engine_config.config_hash,
                     context,
@@ -1017,6 +1023,7 @@ where
                     return false;
                 }
                 session_state.last_sent_message = Some(reconcile_result_message);
+                session_state.last_reconcile_result = Some(reconcile_result);
                 session_state.last_config_hash = Some(engine_config.config_hash.clone());
 
                 session_state.phase = Phase::ExchangeMessages
@@ -1139,37 +1146,16 @@ fn applying_message(
 /// Generate a reply to the server after we have attempted to reconcile the config it has sent us
 /// reporting state from the result of the reconciliation
 fn applied_result_message(
-    result: Result<EngineConfigReconcileStatus, ControlPlaneError>,
+    result: &Result<EngineConfigReconcileStatus, ControlPlaneError>,
     session_state: &SessionState,
     config_hash: &[u8],
     context: &ControllerExtensionContext,
 ) -> AgentToServer {
-    let remote_config_status = match result {
-        Ok(status) => match status.state {
-            EngineConfigReconcileState::Succeeded => RemoteConfigStatus {
-                status: RemoteConfigStatuses::Applied as i32,
-                last_remote_config_hash: config_hash.to_vec(),
-                ..Default::default()
-            },
-            EngineConfigReconcileState::Running | EngineConfigReconcileState::Pending => {
-                RemoteConfigStatus {
-                    status: RemoteConfigStatuses::Applying as i32,
-                    last_remote_config_hash: config_hash.to_vec(),
-                    ..Default::default()
-                }
-            }
-            EngineConfigReconcileState::Failed => RemoteConfigStatus {
-                status: RemoteConfigStatuses::Failed as i32,
-                last_remote_config_hash: config_hash.to_vec(),
-                error_message: status.failure_reason.clone().unwrap_or_default(),
-            },
-        },
-        Err(e) => RemoteConfigStatus {
-            status: RemoteConfigStatuses::Failed as i32,
-            error_message: format!("Reconciliation failed with control plane error: {e:?}"),
-            last_remote_config_hash: config_hash.to_vec(),
-        },
+    let mut remote_config_status = RemoteConfigStatus {
+        last_remote_config_hash: config_hash.to_vec(),
+        ..Default::default()
     };
+    set_remote_config_status_from_reconcile_result(&mut remote_config_status, Some(result));
     let status_snapshot = context.observed_state.snapshot();
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
@@ -1231,7 +1217,10 @@ fn full_state_reply_message(
         last_remote_config_hash: session_state.last_config_hash.clone().unwrap_or_default(),
         ..Default::default()
     };
-    set_remote_config_status_from_observed_state(&mut remote_config_status, &status_snapshot);
+    set_remote_config_status_from_reconcile_result(
+        &mut remote_config_status,
+        session_state.last_reconcile_result.as_ref(),
+    );
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
@@ -1259,7 +1248,10 @@ fn heartbeat_message(
         last_remote_config_hash: session_state.last_config_hash.clone().unwrap_or_default(),
         ..Default::default()
     };
-    set_remote_config_status_from_observed_state(&mut remote_config_status, &status_snapshot);
+    set_remote_config_status_from_reconcile_result(
+        &mut remote_config_status,
+        session_state.last_reconcile_result.as_ref(),
+    );
     AgentToServer {
         instance_uid: session_state.instance_uid.to_vec(),
         sequence_num: session_state.sequence_num,
@@ -1271,42 +1263,30 @@ fn heartbeat_message(
     }
 }
 
-fn set_remote_config_status_from_observed_state(
+fn set_remote_config_status_from_reconcile_result(
     remote_config_status: &mut RemoteConfigStatus,
-    status_snapshot: &HashMap<PipelineKey, PipelineStatus>,
+    reconcile_result: Option<&Result<EngineConfigReconcileStatus, ControlPlaneError>>,
 ) {
-    for pipeline_status in status_snapshot.values() {
-        for instance_status in pipeline_status.per_instance().values() {
-            match instance_status.phase() {
-                PipelinePhase::Starting
-                | PipelinePhase::Pending
-                | PipelinePhase::Updating
-                | PipelinePhase::Deleting(_)
-                | PipelinePhase::Draining
-                | PipelinePhase::RollingBack => {
-                    // if any is pipeline is currently applying, consider the overall status
-                    // is applying and return early
-                    remote_config_status.status = RemoteConfigStatuses::Applying as i32;
-                    return;
-                }
-
-                PipelinePhase::Failed(reason) => {
-                    // if any pipeline has failed, consider the overall status
-                    // failed and return early with the first error reason we find.
-                    remote_config_status.status = RemoteConfigStatuses::Failed as i32;
-                    remote_config_status.error_message = format!("{reason:?}");
-                    return;
-                }
-                PipelinePhase::Rejected(rejected_reason) => {
-                    remote_config_status.status = RemoteConfigStatuses::Failed as i32;
-                    remote_config_status.error_message = format!("{rejected_reason:?}");
-                    return;
-                }
-                _ => {
-                    remote_config_status.status = RemoteConfigStatuses::Applied as i32;
-                }
+    match reconcile_result {
+        Some(Ok(status)) => match status.state {
+            EngineConfigReconcileState::Succeeded => {
+                remote_config_status.status = RemoteConfigStatuses::Applied as i32;
             }
+            EngineConfigReconcileState::Pending | EngineConfigReconcileState::Running => {
+                remote_config_status.status = RemoteConfigStatuses::Applying as i32;
+            }
+            EngineConfigReconcileState::Failed => {
+                remote_config_status.status = RemoteConfigStatuses::Failed as i32;
+                remote_config_status.error_message =
+                    status.failure_reason.clone().unwrap_or_default();
+            }
+        },
+        Some(Err(e)) => {
+            remote_config_status.status = RemoteConfigStatuses::Failed as i32;
+            remote_config_status.error_message =
+                format!("Reconciliation failed with control plane error: {e:?}");
         }
+        None => remote_config_status.status = RemoteConfigStatuses::Unset as i32,
     }
 }
 
@@ -1967,5 +1947,46 @@ mod test {
         .unwrap();
         let requests = run_web_socket_test_with_config(responses, control_plane, 2, config).await;
         assert_eq!(requests.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_presents_consistent_view_of_last_applied_status() {
+        let control_plane = Arc::new(MockControlPlane::new(empty_engine_config()));
+        let mut reconcile_status = EngineConfigReconcileStatus::new(
+            "test".into(),
+            EngineConfigReconcileState::Failed,
+            None,
+            "2026-06-01T00:00:00Z".into(),
+        );
+        reconcile_status.failure_reason = Some("failed to apply config".into());
+        control_plane.set_reconcile_result(Ok(reconcile_status));
+
+        let responses = vec![
+            Some(server_to_agent_with_config(&test_config(), vec![5, 1, 4])),
+            None,
+            None,
+        ];
+
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "instance_uid": EXPECTED_INSTANCE_UID_STR,
+            "endpoint": "",
+            "heartbeat_interval": "200ms"
+        }))
+        .unwrap();
+        let requests = run_web_socket_test_with_config(responses, control_plane, 4, config).await;
+        assert_eq!(requests.len(), 4);
+
+        // expect that the 3rd message (the one w/ the applying status) has presented that the last
+        // applied config has failed
+        let applied_result_msg = &requests[2];
+        let first_remote_config_status = applied_result_msg.remote_config_status.as_ref().unwrap();
+        assert_eq!(first_remote_config_status.status, RemoteConfigStatuses::Failed as i32);
+        
+
+        // also expect that the heartbeat following this message has status failed
+        let heartbeat = &requests[3];
+        let heartbeat_remote_config_status = heartbeat.remote_config_status.as_ref().unwrap();
+        assert_eq!(heartbeat_remote_config_status.status, RemoteConfigStatuses::Failed as i32);
+        
     }
 }
