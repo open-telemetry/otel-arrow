@@ -28,6 +28,13 @@ use super::metrics::AzureIdentityAuthMetricsTracker;
 
 /// Refresh this many seconds before `expires_on`.
 const TOKEN_EXPIRY_BUFFER_SECS: u64 = 299;
+/// Safety margin before actual expiry within which a cached token is treated as
+/// no longer usable. Deliberately much smaller than `TOKEN_EXPIRY_BUFFER_SECS`:
+/// the background loop refreshes ~5 min early, but if that refresh is failing a
+/// still-valid token should keep being served (not treated as unusable 5 min
+/// early), which also avoids stampeding the token endpoint during a transient
+/// outage.
+const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
@@ -56,6 +63,9 @@ struct Inner {
     cap_err: CapabilityErrorSource<BearerTokenProviderCap>,
     /// Coalesces concurrent slow-path fetches onto one in-flight request.
     fetch_lock: tokio::sync::Mutex<()>,
+    /// Instant of the most recent failed acquisition (negative cache). Used to
+    /// throttle slow-path retries so a failing token endpoint is not stampeded.
+    last_failure: Mutex<Option<Instant>>,
     /// Metric tracker. Its critical sections are short and never span an
     /// `.await`, so a `std` `Mutex` is appropriate.
     metrics: Mutex<AzureIdentityAuthMetricsTracker>,
@@ -76,6 +86,7 @@ impl AzureIdentityAuthExtension {
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
                 fetch_lock: tokio::sync::Mutex::new(()),
+                last_failure: Mutex::new(None),
                 metrics: Mutex::new(metrics),
             }),
         }
@@ -83,8 +94,8 @@ impl AzureIdentityAuthExtension {
 }
 
 impl Inner {
-    /// Returns the cached token if it is present and not within the
-    /// refresh-skew window of its expiry. Non-expiring tokens are always fresh.
+    /// Returns the cached token if it is present and still comfortably before
+    /// its expiry (outside the usability safety margin).
     fn current_fresh_token(&self) -> Option<BearerToken> {
         // The token lives inside the watch channel behind a temporary read
         // guard; clone it out so we can return an owned value (and release the
@@ -93,14 +104,36 @@ impl Inner {
         let token = self.tx.borrow().clone()?;
         match token.expires_on() {
             Some(expires_on) => {
-                let skew = Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS);
-                if Instant::now() + skew < expires_on {
+                let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
+                if Instant::now() + margin < expires_on {
                     Some(token)
                 } else {
                     None
                 }
             }
             None => Some(token),
+        }
+    }
+
+    /// Returns true if the most recent acquisition failed within the retry
+    /// cooldown window. Used as a negative cache to throttle slow-path retries.
+    fn recently_failed(&self) -> bool {
+        // Open the shared box holding the last-failure timestamp. If the lock
+        // is somehow poisoned, treat it as "no recent failure" and allow a
+        // retry rather than failing here.
+        let guard = match self.last_failure.lock() {
+            Ok(guard) => guard,
+            Err(_) => return false,
+        };
+
+        // If a failure timestamp is recorded, we are throttling only while it
+        // is still within the cooldown window; otherwise (no failure recorded)
+        // we are not throttling.
+        match *guard {
+            Some(failed_at) => {
+                failed_at.elapsed() < Duration::from_secs(TOKEN_REFRESH_RETRY_SECS)
+            }
+            None => false,
         }
     }
 
@@ -120,11 +153,20 @@ impl Inner {
                 if let Ok(mut metrics) = self.metrics.lock() {
                     metrics.record_publish();
                 }
+                // Clear the negative cache: acquisitions are healthy again.
+                if let Ok(mut f) = self.last_failure.lock() {
+                    *f = None;
+                }
                 Ok(token)
             }
             Err(err) => {
                 if let Ok(mut metrics) = self.metrics.lock() {
                     metrics.record_failure();
+                }
+                // Record the failure instant so the slow path can throttle
+                // further attempts until the cooldown elapses.
+                if let Ok(mut f) = self.last_failure.lock() {
+                    *f = Some(Instant::now());
                 }
                 Err(err)
             }
@@ -161,6 +203,15 @@ impl SharedBearerTokenProvider for AzureIdentityAuthExtension {
         let _guard = self.inner.fetch_lock.lock().await;
         if let Some(token) = self.inner.current_fresh_token() {
             return Ok(token);
+        }
+        // Negative cache: if the most recent acquisition failed within the
+        // cooldown window, surface the throttle instead of hitting the token
+        // endpoint again. The background loop keeps retrying on its own cadence.
+        if self.inner.recently_failed() {
+            return Err(self
+                .inner
+                .cap_err
+                .error("token acquisition throttled after recent failure"));
         }
         self.inner
             .refresh_once()

@@ -164,7 +164,9 @@ impl TokenCredential for MockCredential {
 }
 
 #[derive(Debug)]
-struct FailingCredential;
+struct FailingCredential {
+    call_count: Arc<AtomicUsize>,
+}
 
 #[async_trait::async_trait]
 impl TokenCredential for FailingCredential {
@@ -173,6 +175,7 @@ impl TokenCredential for FailingCredential {
         _scopes: &[&str],
         _options: Option<TokenRequestOptions<'_>>,
     ) -> azure_core::Result<AccessToken> {
+        let _ = self.call_count.fetch_add(1, Ordering::SeqCst);
         Err(azure_core::error::Error::with_message(
             azure_core::error::ErrorKind::Credential,
             "mock credential failure",
@@ -219,10 +222,10 @@ async fn get_token_slow_path_then_fast_path_caches() {
 #[tokio::test]
 async fn near_expiry_token_is_refreshed() {
     let calls = Arc::new(AtomicUsize::new(0));
-    // Expiry well inside the refresh-skew window -> always treated as stale.
+    // Expiry inside the usability safety margin -> always treated as stale.
     let credential = Arc::new(MockCredential {
         token: "tok".to_string(),
-        expires_in: AzureDuration::seconds(30),
+        expires_in: AzureDuration::seconds(5),
         call_count: Arc::clone(&calls),
     });
     let ext = make_extension(credential);
@@ -238,13 +241,34 @@ async fn near_expiry_token_is_refreshed() {
 
 #[tokio::test]
 async fn get_token_error_maps_to_capability_error() {
-    let ext = make_extension(Arc::new(FailingCredential));
+    let ext = make_extension(Arc::new(FailingCredential {
+        call_count: Arc::new(AtomicUsize::new(0)),
+    }));
     let err = ext
         .get_token()
         .await
         .expect_err("failing credential errors");
     assert_eq!(err.capability, "bearer_token_provider");
     assert_eq!(err.extension, "test-ext");
+}
+
+#[tokio::test]
+async fn get_token_throttles_after_recent_failure() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let ext = make_extension(Arc::new(FailingCredential {
+        call_count: Arc::clone(&calls),
+    }));
+
+    // First miss actually hits the credential and fails.
+    let _ = ext.get_token().await.expect_err("first attempt fails");
+    // Second miss within the cooldown is throttled by the negative cache: it
+    // errors without a further credential call.
+    let _ = ext.get_token().await.expect_err("second attempt throttled");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "recent failure must throttle the next slow-path fetch"
+    );
 }
 
 #[tokio::test]
