@@ -11,7 +11,9 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
-use arrow::array::{Array, ArrayRef, BooleanArray, StructArray, UInt8Array, make_comparator};
+use arrow::array::{
+    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, StructArray, UInt8Array, make_comparator,
+};
 use arrow::buffer::{BooleanBuffer, MutableBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::DataType;
@@ -25,7 +27,7 @@ use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::schema::consts;
 use otap_df_query_engine_languages::opl::parser::OplParser;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::parser::default_parser_options;
 use crate::pipeline::Pipeline;
 use crate::pipeline::expr::ScopedExpr;
@@ -136,8 +138,11 @@ impl PartitionValue {
             ScalarValue::Struct(s) => {
                 if is_any_value_data_type(&DataType::Struct(s.fields().clone())) {
                     // safety: we've checked the type is struct array
-                    let anyvalue_arr = s.as_any().downcast_ref::<StructArray>().expect("is struct array");
-                    return Self::try_from_anyvalue_struct_arr(anyvalue_arr, 0)
+                    let anyvalue_arr = s
+                        .as_any()
+                        .downcast_ref::<StructArray>()
+                        .expect("is struct array");
+                    return Self::try_from_anyvalue_struct_arr(anyvalue_arr, 0);
                 }
 
                 todo!("handle invalid struct")
@@ -167,8 +172,11 @@ impl PartitionValue {
     fn try_from_array_value(arr: &dyn Array, index: usize) -> Result<Self> {
         if is_any_value_data_type(arr.data_type()) {
             // safety: we've checked the type is struct array
-            let anyvalue_arr = arr.as_any().downcast_ref::<StructArray>().expect("is struct array");
-            return Self::try_from_anyvalue_struct_arr(anyvalue_arr, index)
+            let anyvalue_arr = arr
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("is struct array");
+            return Self::try_from_anyvalue_struct_arr(anyvalue_arr, index);
         }
 
         let scalar_at_index = ScalarValue::try_from_array(arr, index)?;
@@ -186,7 +194,7 @@ impl PartitionValue {
 
         let type_encoded = type_col.values()[index];
         let Ok(attr_type) = AttributeValueType::try_from(type_encoded) else {
-            todo!("invalid type")   
+            todo!("invalid type")
         };
 
         let values_col = match attr_type {
@@ -194,20 +202,16 @@ impl PartitionValue {
             AttributeValueType::Bytes => arr.column_by_name(consts::ATTRIBUTE_BYTES),
             AttributeValueType::Double => arr.column_by_name(consts::ATTRIBUTE_DOUBLE),
             AttributeValueType::Int => arr.column_by_name(consts::ATTRIBUTE_INT),
-            AttributeValueType::Map | AttributeValueType::Slice => arr.column_by_name(consts::ATTRIBUTE_SER),
-            AttributeValueType::Str => arr.column_by_name(consts::ATTRIBUTE_STR),
-            AttributeValueType::Empty => {
-                return Ok(Self::Null)
+            AttributeValueType::Map | AttributeValueType::Slice => {
+                arr.column_by_name(consts::ATTRIBUTE_SER)
             }
+            AttributeValueType::Str => arr.column_by_name(consts::ATTRIBUTE_STR),
+            AttributeValueType::Empty => return Ok(Self::Null),
         };
 
         match values_col {
-            Some(col) => {
-                Self::try_from_array_value(col.as_ref(), index)
-            },
-            None => {
-                Ok(Self::Null)
-            }
+            Some(col) => Self::try_from_array_value(col.as_ref(), index),
+            None => Ok(Self::Null),
         }
     }
 }
@@ -349,6 +353,8 @@ fn partition_simple_array(
     id_bitmap_pool: &mut IdBitmapPool,
 ) -> Result<()> {
     let num_rows = array.len();
+
+    // TODO - should use the logic from distinct here?
     let cmp = make_comparator(&array, &array, SortOptions::default())?;
     let boundaries: BooleanBuffer = (0..array.len() - 1)
         .map(|i| !cmp(i, i + 1).is_eq())
@@ -370,6 +376,77 @@ fn partition_simple_array(
     }
 
     Ok(())
+}
+
+fn partition_anyvalue_struct_array(array: &StructArray) -> Result<()> {
+    let num_rows = array.len();
+    let Some(type_col) = array.column_by_name(consts::ATTRIBUTE_TYPE) else {
+        todo!("missing type col")
+    };
+
+    let Some(type_col) = type_col.as_any().downcast_ref::<UInt8Array>() else {
+        todo!("invalid type col")
+    };
+    let type_cmp = make_comparator(type_col, type_col, SortOptions::default())?;
+    let mut values_comparators = [None, None, None, None, None, None, None, None, None, None];
+    let mut all_null = [false, false, false, false, false, false, false, false];
+    let mut curr_type_eq_range_start = 0;
+    let mut i = 1;
+
+    let mut boundaries_builder = MutableBuffer::from_len_zeroed(num_rows);
+
+    let mut update_boundaries = move |range: Range<usize>| {
+        let type_encoded = type_col.values()[range.start];
+        let Ok(attr_type) = AttributeValueType::try_from(type_encoded) else {
+            todo!("invalid type")
+        };
+
+        if values_comparators[type_encoded as usize].is_none() && !all_null[type_encoded as usize] {
+            let col = match attr_type {
+                AttributeValueType::Str => array.column_by_name(consts::ATTRIBUTE_STR),
+                _ => {
+                    todo!()
+                }
+            };
+
+            match col {
+                Some(col) => {
+                    values_comparators[type_encoded as usize] =
+                        Some(make_comparator(col, col, SortOptions::default())?);
+                }
+                None => all_null[type_encoded as usize] = true,
+            }
+        }
+
+        if all_null[type_encoded as usize] {
+            set_range_bits(curr_type_eq_range_start..i, &mut boundaries_builder);
+        } else {
+            let val_cmp = values_comparators[type_encoded as usize].as_ref().unwrap();
+            let mut val_eq_range_start = curr_type_eq_range_start;
+            let mut j = val_eq_range_start + 1;
+            while j < i {
+                if val_cmp(val_eq_range_start, j).is_ne() {
+                    set_range_bits(val_eq_range_start..j, &mut boundaries_builder);
+                    val_eq_range_start = j;
+                }
+                j += 1;
+            }
+        }
+
+        Ok::<(), Error>(())
+    };
+
+    while i < num_rows {
+        if type_cmp(curr_type_eq_range_start, i).is_ne() {
+            update_boundaries(curr_type_eq_range_start..i)?;
+            curr_type_eq_range_start = i;
+        }
+        i += 1;
+    }
+
+    update_boundaries(curr_type_eq_range_start..i)?;
+
+    todo!()
 }
 
 struct PartitionRangeCoalescer {
@@ -469,6 +546,11 @@ fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
 
 #[cfg(test)]
 mod test {
+    use std::sync::Arc;
+
+    use arrow::array::{BooleanArray, UInt8Array};
+    use arrow::buffer::BooleanBuffer;
+    use arrow::compute::kernels::cmp::distinct;
     use datafusion::logical_expr::col;
     use otap_df_pdata::otap::filter::IdBitmapPool;
     use otap_df_pdata::proto::OtlpProtoMessage;
@@ -624,6 +706,7 @@ mod test {
         };
 
         let mut partitions = Vec::new();
+
         partition(
             otap,
             &session_ctx,
@@ -673,5 +756,33 @@ mod test {
         assert_eq!(partition_summaries[0].1, vec![vec![1u8; 8], vec![3u8; 8]]);
         assert_eq!(partition_summaries[1].0, "op-b");
         assert_eq!(partition_summaries[1].1, vec![vec![2u8; 8], vec![4u8; 8]]);
+    }
+
+    #[test]
+    fn test_partition_anyvalue_struct_array() {
+        /// Returns a mask with bits set whenever the value or nullability changes
+        fn find_boundaries(v: &dyn arrow::array::Array) -> BooleanBuffer {
+            let slice_len = v.len() - 1;
+            let v1 = v.slice(0, slice_len);
+            let v2 = v.slice(1, slice_len);
+
+            distinct(&v1, &v2).unwrap().values().clone()
+
+            // if supports_distinct(v.data_type()) {
+            //     return Ok(distinct(&v1, &v2)?.values().clone());
+            // }
+            // // Given that we're only comparing values, null ordering in the input or
+            // // sort options do not matter.
+            // let cmp = make_comparator(&v1, &v2, SortOptions::default())?;
+            // Ok((0..slice_len).map(|i| !cmp(i, i).is_eq()).collect())
+        }
+
+        let test_referenec = UInt8Array::from_iter_values([0, 0, 1, 1, 1, 2, 2, 2, 0, 1, 2, 2]);
+        // let result = arrow::compute::partition(&[Arc::new(test_referenec)]).unwrap();
+        let result = find_boundaries(&test_referenec);
+        println!("ref result {result:?}");
+
+        let ba = BooleanArray::new(result, None);
+        println!("ref result {ba:?}");
     }
 }

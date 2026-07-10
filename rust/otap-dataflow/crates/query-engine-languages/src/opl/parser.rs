@@ -6,9 +6,9 @@
 use std::vec;
 
 use ::pest::{Parser as _, iterators::Pair};
-use data_engine_expressions::QueryLocation;
+use data_engine_expressions::{PipelineFunction, QueryLocation, ScalarExpression};
 use data_engine_parser_abstractions::{
-    Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
+    Parser, ParserError, ParserOptions, ParserResult, ParserScope, ParserState, to_query_location,
 };
 
 mod assignment;
@@ -26,7 +26,10 @@ mod pest {
 
 pub(crate) use pest::Rule;
 
-use crate::opl::parser::pipeline::parse_pipeline;
+use crate::opl::parser::{
+    expression::parse_expression,
+    pipeline::{InnerPipelineBuilder, RootPipelineBuilder, parse_pipeline},
+};
 
 /// Parser for OPL programs.
 pub struct OplParser;
@@ -65,6 +68,41 @@ impl Parser for OplParser {
         }
 
         Ok(ParserResult::new(state.build()?))
+    }
+}
+
+impl OplParser {
+    /// Parse the expression into a [`ScalarExpression`]
+    pub fn parse_expr_with_options(
+        expr: &str,
+        options: ParserOptions,
+    ) -> Result<(ScalarExpression, Vec<PipelineFunction>), ParserError> {
+        let mut parse_result = match pest::OplPestParser::parse(Rule::expression, expr) {
+            Ok(rules) => rules,
+            Err(pest_error) => {
+                todo!("handle syntax error {pest_error:?}")
+            }
+        };
+
+        let rule = match parse_result.next() {
+            Some(rule) => rule,
+            None => {
+                todo!("handle no rules -- or if there are multiple I guess?")
+            }
+        };
+
+        // TODO - the way we access the pipeline functions is a bit hokey here
+        let mut state = ParserState::new_with_options(expr, options);
+        let mut pipeline_builder = RootPipelineBuilder::new(&mut state);
+        let result = parse_expression(rule, &mut pipeline_builder)?;
+        let pipeline = match state.build() {
+            Ok(pipeline) => pipeline,
+            Err(e) => {
+                todo!("handle pipeline build error {e:?}")
+            }
+        };
+
+        Ok((result.into(), pipeline.get_functions().to_vec()))
     }
 }
 
