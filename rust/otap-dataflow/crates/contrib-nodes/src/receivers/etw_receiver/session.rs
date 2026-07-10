@@ -176,7 +176,7 @@ pub enum EtwAttributeValue {
 /// During the `ProcessTrace` callback the raw `EVENT_RECORD` is still valid,
 /// so we interpret each field's bytes into an owned [`EtwAttributeValue`]
 /// before sending the event across the channel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DecodedField {
     /// Field name (e.g. `"ProcessId"`, or `"Parent.ChildField"` for nested structs).
     pub name: String,
@@ -606,18 +606,35 @@ fn extract_decoded_fields(
     format: &one_collect::event::EventFormat,
     event_data: &[u8],
 ) -> Vec<DecodedField> {
+    cache_and_read(cache, schema_id, MAX_CACHED_SCHEMAS, format, event_data)
+}
+
+/// Cache-and-read policy, generic over the cache key and cap.
+///
+/// Kept generic so it can be unit-tested without constructing a `SchemaId`
+/// (whose inner value is private) and without inserting `MAX_CACHED_SCHEMAS`
+/// real entries: tests pass a stand-in key and a small cap.
+///
+/// - Hit: reuse the cached readers.
+/// - Miss under `max_cached`: build once, insert, and reuse thereafter.
+/// - Miss at/over `max_cached`: build throwaway readers for this event only, so
+///   the map cannot grow without bound. This costs the same as the pre-cache
+///   path, so it is correct and no worse than before.
+fn cache_and_read<K: Eq + std::hash::Hash + Copy>(
+    cache: &mut HashMap<K, SchemaReader>,
+    key: K,
+    max_cached: usize,
+    format: &one_collect::event::EventFormat,
+    event_data: &[u8],
+) -> Vec<DecodedField> {
     // Fast path: readers for this schema are already cached.
-    if let Some(schema_reader) = cache.get_mut(&schema_id) {
+    if let Some(schema_reader) = cache.get_mut(&key) {
         return read_fields(schema_reader, event_data);
     }
 
-    // Miss. Cache the schema only while under the cap; otherwise build throwaway
-    // readers for just this event so the map cannot grow without bound. The
-    // uncached path costs the same as the pre-cache code (build a closure per
-    // field, then read), so it is correct and no worse than before.
-    if cache.len() < MAX_CACHED_SCHEMAS {
+    if cache.len() < max_cached {
         let schema_reader = cache
-            .entry(schema_id)
+            .entry(key)
             .or_insert_with(|| build_schema_reader(format));
         read_fields(schema_reader, event_data)
     } else {
@@ -1434,5 +1451,82 @@ mod tests {
             etw::LEVEL_INFORMATION
         );
         assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
+    }
+
+    // ── Reader cache policy ─────────────────
+
+    /// Builds an all-fixed-size `u32` schema with the given field names.
+    fn u32_schema(names: &[&str]) -> one_collect::event::EventFormat {
+        use one_collect::event::{EventField, EventFormat, LocationType};
+        let mut format = EventFormat::new();
+        for (i, name) in names.iter().enumerate() {
+            format.add_field(EventField::new(
+                (*name).to_string(),
+                "u32".to_string(),
+                LocationType::Static,
+                i * 4,
+                4,
+            ));
+        }
+        format
+    }
+
+    #[test]
+    fn cache_hit_reuses_and_returns_identical() {
+        let format = u32_schema(&["a", "b"]);
+        let mut data = Vec::new();
+        data.extend_from_slice(&1u32.to_ne_bytes());
+        data.extend_from_slice(&2u32.to_ne_bytes());
+
+        let mut cache: HashMap<u64, SchemaReader> = HashMap::new();
+
+        // First event of the schema: inserted under the cap.
+        let first = cache_and_read(&mut cache, 7, 8, &format, &data);
+        assert_eq!(cache.len(), 1);
+
+        // Second event, same key: cache hit, no new entry, identical output.
+        let second = cache_and_read(&mut cache, 7, 8, &format, &data);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(first, second);
+
+        assert_eq!(first[0].name, "a");
+        assert_eq!(first[0].value, EtwAttributeValue::Int(1));
+        assert_eq!(first[1].value, EtwAttributeValue::Int(2));
+    }
+
+    #[test]
+    fn cache_miss_under_cap_inserts() {
+        let format = u32_schema(&["x"]);
+        let data = 9u32.to_ne_bytes();
+
+        let mut cache: HashMap<u64, SchemaReader> = HashMap::new();
+
+        let r1 = cache_and_read(&mut cache, 1, 4, &format, &data);
+        let r2 = cache_and_read(&mut cache, 2, 4, &format, &data);
+
+        // Both distinct schemas inserted (under the cap).
+        assert_eq!(cache.len(), 2);
+        assert!(cache.contains_key(&1));
+        assert!(cache.contains_key(&2));
+        assert_eq!(r1[0].value, EtwAttributeValue::Int(9));
+        assert_eq!(r2[0].value, EtwAttributeValue::Int(9));
+    }
+
+    #[test]
+    fn cache_over_cap_falls_back_without_inserting() {
+        let format = u32_schema(&["v"]);
+        let data = 42u32.to_ne_bytes();
+
+        let mut cache: HashMap<u64, SchemaReader> = HashMap::new();
+
+        // Fill the cache to the cap (cap = 1).
+        let _ = cache_and_read(&mut cache, 1, 1, &format, &data);
+        assert_eq!(cache.len(), 1);
+
+        // New schema over the cap: still decodes correctly, but is not cached.
+        let over = cache_and_read(&mut cache, 2, 1, &format, &data);
+        assert_eq!(cache.len(), 1);
+        assert!(!cache.contains_key(&2));
+        assert_eq!(over[0].value, EtwAttributeValue::Int(42));
     }
 }
