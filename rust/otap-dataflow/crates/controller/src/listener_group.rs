@@ -23,6 +23,9 @@ const KNOWN_RECEIVER_URNS: &[&str] = &[
 ];
 
 fn parse_listening_addr(value: &serde_json::Value) -> Option<SocketAddr> {
+    // Listener groups only describe concrete socket bind identities. Hostnames
+    // can resolve differently over time, so they are left to future resolver
+    // integration instead of being guessed here.
     value
         .get("listening_addr")
         .and_then(serde_json::Value::as_str)
@@ -72,13 +75,7 @@ pub(crate) fn snapshot_for_pipeline(
         .map(|(idx, core)| ListenerGroupMember {
             listener_id: idx as u32,
             core_id: core.core_id.id,
-            numa_node_id: if core.topology_completeness
-                == otap_df_engine::topology::TopologyCompleteness::Unknown
-            {
-                None
-            } else {
-                Some(core.numa_node_id)
-            },
+            numa_node_id: core.known_numa_node_id,
         })
         .collect::<Vec<_>>();
 
@@ -127,11 +124,13 @@ mod tests {
                 CorePlacement {
                     core_id: CoreId { id: 2 },
                     numa_node_id: 0,
+                    known_numa_node_id: Some(0),
                     topology_completeness: TopologyCompleteness::Complete,
                 },
                 CorePlacement {
                     core_id: CoreId { id: 3 },
                     numa_node_id: 1,
+                    known_numa_node_id: Some(1),
                     topology_completeness: TopologyCompleteness::Complete,
                 },
             ],
@@ -255,6 +254,7 @@ nodes:
         let mut placement = placement();
         for core in &mut placement.cores {
             core.topology_completeness = TopologyCompleteness::Unknown;
+            core.known_numa_node_id = None;
         }
         let pipeline = resolved_pipeline(
             r#"
@@ -269,6 +269,28 @@ nodes:
         let snapshot = snapshot_for_pipeline(&pipeline, &placement, 0);
 
         assert_eq!(snapshot.plans[0].expected_members[0].numa_node_id, None);
+        assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, None);
+    }
+
+    #[test]
+    fn partial_topology_keeps_unmapped_member_numa_node_unknown() {
+        let mut placement = placement();
+        placement.cores[1].topology_completeness = TopologyCompleteness::Partial;
+        placement.cores[1].numa_node_id = 0;
+        placement.cores[1].known_numa_node_id = None;
+        let pipeline = resolved_pipeline(
+            r#"
+nodes:
+  otap:
+    type: "urn:otel:receiver:otap"
+    config:
+      listening_addr: "127.0.0.1:9000"
+"#,
+        );
+
+        let snapshot = snapshot_for_pipeline(&pipeline, &placement, 0);
+
+        assert_eq!(snapshot.plans[0].expected_members[0].numa_node_id, Some(0));
         assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, None);
     }
 }

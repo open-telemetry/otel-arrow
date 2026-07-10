@@ -3439,6 +3439,31 @@ groups: {{}}
     }
 
     #[test]
+    fn preflight_reserves_core_count_across_pipelines() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation("g1", "p1", CoreAllocation::core_count(5)),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(5)),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect_err("core_count allocations should not oversubscribe implicit cores");
+
+        match err {
+            Error::InvalidCoreAllocation { message, .. } => {
+                assert!(
+                    message.contains("Requested 5 cores but only 3 unreserved cores available"),
+                    "unexpected message: {message}"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn declare_topics_accepts_default_and_explicit_in_memory_backend() {
         let yaml = r#"
 version: otel_dataflow/v1

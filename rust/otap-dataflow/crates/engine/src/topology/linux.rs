@@ -167,6 +167,9 @@ fn discover_sysfs_topology(root: &Path) -> DiscoveryResult {
                 continue;
             }
         };
+        if cpulist.trim().is_empty() {
+            continue;
+        }
         let cpus = match parse_cpu_list(&cpulist) {
             Ok(cpus) => cpus,
             Err(_) => {
@@ -352,6 +355,25 @@ mod tests {
         assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
         assert_eq!(topology.numa_node_or_zero(99), 0);
+    }
+
+    #[test]
+    fn ignores_empty_cpu_less_node_cpulist() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let cgroup = tempfile::tempdir().unwrap();
+        write_node(sysfs.path(), 0, "0-3");
+        write_node(sysfs.path(), 1, "");
+
+        let provider = LinuxNumaTopologyProvider::for_test(
+            sysfs.path().to_path_buf(),
+            cgroup.path().to_path_buf(),
+            affinity_0_to_3,
+        );
+        let topology = provider.discover();
+
+        assert_eq!(topology.completeness(), TopologyCompleteness::Complete);
+        assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
+        assert_eq!(topology.visible_nodes(), &BTreeSet::from([0]));
     }
 
     #[test]

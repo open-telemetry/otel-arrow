@@ -53,6 +53,8 @@ pub struct CorePlacement {
     pub core_id: CoreId,
     /// NUMA node for `core_id`; unknown topology falls back to `0`.
     pub numa_node_id: usize,
+    /// NUMA node for `core_id`, when topology discovery mapped it.
+    pub known_numa_node_id: Option<usize>,
     /// Completeness of the topology used for this placement.
     pub topology_completeness: TopologyCompleteness,
 }
@@ -61,9 +63,13 @@ impl CorePlacement {
     /// Creates a core placement using the controller-owned topology snapshot.
     #[must_use]
     pub fn from_core_id(core_id: CoreId, topology: &NumaTopology) -> Self {
+        let known_numa_node_id = topology
+            .numa_node(core_id.id as u32)
+            .map(|node| node as usize);
         Self {
             core_id,
-            numa_node_id: topology.numa_node_or_zero(core_id.id as u32) as usize,
+            numa_node_id: known_numa_node_id.unwrap_or(0),
+            known_numa_node_id,
             topology_completeness: topology.completeness(),
         }
     }
