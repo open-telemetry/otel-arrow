@@ -8276,11 +8276,13 @@ mod test {
                 let event_name = format!("evt{i}");
                 let mut builder = LogRecord::build().event_name(event_name.clone());
                 if *has_err {
-                    builder = builder
-                        .attributes(vec![KeyValue::new("error", AnyValue::new_string("E"))]);
+                    builder =
+                        builder.attributes(vec![KeyValue::new("error", AnyValue::new_string("E"))]);
                 }
                 ScopeLogs::new(
-                    InstrumentationScope::build().name(format!("scope{i}")).finish(),
+                    InstrumentationScope::build()
+                        .name(format!("scope{i}"))
+                        .finish(),
                     vec![builder.finish()],
                 )
             })
@@ -8302,8 +8304,7 @@ mod test {
         for rl in &result.resource_logs {
             for sl in &rl.scope_logs {
                 for lr in &sl.log_records {
-                    let keys: Vec<String> =
-                        lr.attributes.iter().map(|kv| kv.key.clone()).collect();
+                    let keys: Vec<String> = lr.attributes.iter().map(|kv| kv.key.clone()).collect();
                     let _ = by_event.insert(lr.event_name.clone(), keys);
                 }
             }

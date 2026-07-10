@@ -1077,13 +1077,13 @@ impl SortedBatchCursor {
     ) where
         T::Native: PartialOrd,
     {
-        self.curr_index = self
-            .sorted_indices
-            .partition_point(|&idx| match parent_id_col.value_at(idx) {
-                Some(v) => v < target,
-                // nulls sort last, so treat them as `>= target` (never part of a match range)
-                None => false,
-            });
+        self.curr_index =
+            self.sorted_indices
+                .partition_point(|&idx| match parent_id_col.value_at(idx) {
+                    Some(v) => v < target,
+                    // nulls sort last, so treat them as `>= target` (never part of a match range)
+                    None => false,
+                });
     }
 }
 
