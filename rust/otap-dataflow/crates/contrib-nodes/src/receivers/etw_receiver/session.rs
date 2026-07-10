@@ -1029,12 +1029,18 @@ fn spawn_etw_session(
                             Duration::from_secs(1),
                             poll_session_name.as_str(),
                             |handle| {
+                                // `one_collect` exposes the native ETW counters
+                                // as `u32`; widen to `u64` here at the consumer
+                                // boundary so the shared atomics can accumulate
+                                // deltas without overflow.
                                 etw::query_stats(handle)
                                     .map(|stats| TraceStatsSnapshot {
-                                        events_lost: stats.events_lost,
-                                        real_time_buffers_lost: stats.real_time_buffers_lost,
-                                        log_buffers_lost: stats.log_buffers_lost,
-                                        buffers_written: stats.buffers_written,
+                                        events_lost: u64::from(stats.events_lost),
+                                        real_time_buffers_lost: u64::from(
+                                            stats.real_time_buffers_lost,
+                                        ),
+                                        log_buffers_lost: u64::from(stats.log_buffers_lost),
+                                        buffers_written: u64::from(stats.buffers_written),
                                     })
                                     .map_err(|e| e.to_string())
                             },
