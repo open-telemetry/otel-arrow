@@ -691,6 +691,74 @@ mod test {
     }
 
     #[test]
+    fn test_proto_encode_missing_root_no_payloads_returns_ok() {
+        // A missing root Logs payload is semantically equivalent to 0 rows: encode
+        // should succeed and produce an empty result rather than erroring.
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let mut result_buf = ProtoBuffer::default();
+        let mut encoder = LogsProtoBytesEncoder::new();
+
+        let result = encoder.encode(&mut otap_batch, &mut result_buf);
+
+        assert!(result.is_ok(), "encode should succeed: {result:?}");
+        assert!(
+            result_buf.is_empty(),
+            "nothing should be encoded when the root is missing"
+        );
+        let decoded = LogsData::decode(result_buf.as_ref()).unwrap();
+        assert!(decoded.resource_logs.is_empty());
+    }
+
+    #[test]
+    fn test_proto_encode_missing_root_with_child_payloads_returns_ok() {
+        // Even when non-root child payloads are present, a missing root Logs
+        // payload should still encode to an empty result.
+        let attrs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 1])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["ka", "ka", "kb"])),
+                Arc::new(StringArray::from_iter_values(vec!["va", "va", "vb"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        // Set child payloads but deliberately omit the root Logs payload.
+        otap_batch
+            .set(ArrowPayloadType::LogAttrs, attrs_record_batch.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ResourceAttrs, attrs_record_batch.clone())
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, attrs_record_batch)
+            .unwrap();
+
+        let mut result_buf = ProtoBuffer::default();
+        let mut encoder = LogsProtoBytesEncoder::new();
+
+        let result = encoder.encode(&mut otap_batch, &mut result_buf);
+
+        assert!(result.is_ok(), "encode should succeed: {result:?}");
+        assert!(
+            result_buf.is_empty(),
+            "nothing should be encoded when the root is missing"
+        );
+        let decoded = LogsData::decode(result_buf.as_ref()).unwrap();
+        assert!(decoded.resource_logs.is_empty());
+    }
+
+    #[test]
     fn test_proto_encode_without_id_column() {
         // Test encoding logs that have no attributes, which means no
         // ID column is encoded or decoded.
