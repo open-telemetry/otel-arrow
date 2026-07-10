@@ -2100,7 +2100,7 @@ mod tests {
             let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
                 panic!(
                     "invalid JSON for input {test_str:?}: {e}\nraw bytes: {:?}",
-                    &results[0]
+                    results[0]
                 )
             });
 

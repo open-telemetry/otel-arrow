@@ -97,7 +97,10 @@ impl<T> SharedSender<T> {
             SharedSenderInner::Mpsc(sender) => {
                 sender.send(msg).await.map_err(|e| SendError::Closed(e.0))
             }
-            SharedSenderInner::Mpmc(sender) => sender.send(msg).map_err(|e| SendError::Closed(e.0)),
+            SharedSenderInner::Mpmc(sender) => sender
+                .send_async(msg)
+                .await
+                .map_err(|e| SendError::Closed(e.0)),
         };
 
         if let Some(metrics) = &self.metrics {
@@ -217,7 +220,9 @@ impl<T> SharedReceiver<T> {
     pub async fn recv(&mut self) -> Result<T, RecvError> {
         let result = match &mut self.inner {
             SharedReceiverInner::Mpsc(receiver) => receiver.recv().await.ok_or(RecvError::Closed),
-            SharedReceiverInner::Mpmc(receiver) => receiver.recv().map_err(|_| RecvError::Closed),
+            SharedReceiverInner::Mpmc(receiver) => {
+                receiver.recv_async().await.map_err(|_| RecvError::Closed)
+            }
         };
 
         if let Some(metrics) = &self.metrics {
@@ -326,5 +331,47 @@ mod tests {
             matches!(result, Err(RecvError::Closed)),
             "expected Closed, got {result:?}"
         );
+    }
+
+    /// Regression test for https://github.com/open-telemetry/otel-arrow/issues/1704.
+    #[test]
+    fn test_mpmc_recv_send_do_not_block_runtime_thread() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (done_tx, done_rx) = mpsc::channel();
+
+        let worker = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("failed to build current-thread runtime");
+
+            let outcome = rt.block_on(async {
+                let (tx, rx) = flume::bounded::<String>(1);
+                let mut receiver = SharedReceiver::mpmc(rx);
+                let sender = SharedSender::mpmc(tx);
+
+                // On a single-threaded runtime `recv` is polled first and must
+                // yield (Pending) so `send` can make progress on the same thread.
+                // A blocking flume `recv()` would deadlock here.
+                tokio::join!(async { receiver.recv().await }, async {
+                    sender.send("hello".to_owned()).await
+                },)
+            });
+
+            let _ = done_tx.send(outcome);
+        });
+
+        match done_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok((received, sent)) => {
+                worker.join().expect("worker thread panicked");
+                assert!(sent.is_ok(), "send failed: {sent:?}");
+                assert_eq!(received.expect("recv failed"), "hello");
+            }
+            Err(_) => panic!(
+                "shared MPMC recv()/send() blocked the runtime thread; flume's \
+                 sync interface must not be used inside async fns (issue #1704)"
+            ),
+        }
     }
 }

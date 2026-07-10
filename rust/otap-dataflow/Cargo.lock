@@ -6283,8 +6283,11 @@ dependencies = [
 name = "otap-df-controller"
 version = "0.49.0"
 dependencies = [
+ "axum",
+ "bytes",
  "chrono",
  "core_affinity",
+ "futures-util",
  "humantime-serde",
  "linkme",
  "miette",
@@ -6294,13 +6297,18 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "portpicker",
+ "prost",
  "serde",
  "serde_json",
  "smallvec",
  "sysinfo",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -6351,6 +6359,7 @@ dependencies = [
  "portpicker",
  "pretty_assertions",
  "prost",
+ "prost-types",
  "rand 0.10.1",
  "regex",
  "reqwest 0.13.4",
