@@ -47,6 +47,7 @@ use serde::Deserialize;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::Arc;
+use tonic::Code;
 use tonic::codec::CompressionEncoding;
 use tonic::metadata::{MetadataKey, MetadataMap, MetadataValue};
 use tonic::transport::Channel;
@@ -445,13 +446,21 @@ async fn route_export_result<T>(
             Ok(())
         }
         Err(e) => {
+            let retryable = is_retryable_grpc_status(&e);
             let error_msg = e.to_string();
-            effect_handler
-                .notify_nack(NackMsg::new(
-                    &error_msg,
-                    OtapPdata::new(context, saved_payload),
-                ))
-                .await?;
+
+            // TODO(https://github.com/open-telemetry/otel-arrow/issues/3404):
+            // NackMsg has no structured retry-after field yet, so we fold the
+            // server's advisory RetryInfo delay into the human-readable reason.
+            // Replace this with a structured field once #3404 lands.
+            let mut reason = error_msg.clone();
+            if let Some(delay) = retry_after(&e) {
+                reason.push_str(&format!(" (retry after {})", format_retry_delay(&delay)));
+            }
+
+            let mut nack = NackMsg::new(&reason, OtapPdata::new(context, saved_payload));
+            nack.permanent = !retryable;
+            effect_handler.notify_nack(nack).await?;
             let source_detail = format_error_sources(&e);
             Err(Error::ExporterError {
                 exporter: effect_handler.exporter_id(),
@@ -461,6 +470,109 @@ async fn route_export_result<T>(
             })
         }
     }
+}
+
+/// Prost-generated struct for `google.rpc.Status`.
+///
+/// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/status.proto>
+///
+/// According to the OTLP spec, servers may attach `google.rpc.Status` details for certain
+/// failures. In particular, `RESOURCE_EXHAUSTED` may include a `google.rpc.RetryInfo` entry.
+///
+/// See: <https://opentelemetry.io/docs/specs/otlp/#failures>
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct RpcStatus {
+    #[prost(int32, tag = "1")]
+    pub code: i32,
+    #[prost(string, tag = "2")]
+    pub message: String,
+    #[prost(message, repeated, tag = "3")]
+    pub details: Vec<prost_types::Any>,
+}
+
+/// The `type.googleapis.com` URL for `google.rpc.RetryInfo`.
+const RETRY_INFO_TYPE_URL: &str = "type.googleapis.com/google.rpc.RetryInfo";
+
+/// Prost-generated struct for `google.rpc.RetryInfo` (subset).
+///
+/// Servers may attach this detail to signal how long the client should wait
+/// before retrying. The hint is advisory.
+///
+/// See: <https://github.com/googleapis/googleapis/blob/master/google/rpc/error_details.proto>
+#[derive(Clone, PartialEq, ::prost::Message)]
+struct RetryInfo {
+    #[prost(message, optional, tag = "1")]
+    pub retry_delay: Option<prost_types::Duration>,
+}
+
+/// Determines whether a gRPC status represents a retryable error according to
+/// the OTLP specification.
+///
+/// The retryability mapping follows the table at
+/// <https://opentelemetry.io/docs/specs/otlp/#otlpgrpc-response>.
+///
+/// `RESOURCE_EXHAUSTED` is always treated as retryable. The `google.rpc.RetryInfo`
+/// detail the server may attach is advisory only, so callers are not required to
+/// honor it and its absence must not turn the failure permanent. See
+/// [`retry_after`], which surfaces that advisory delay to callers.
+///
+/// `UNKNOWN` is treated as retryable because the generated gRPC client maps
+/// temporary client-side readiness and transport failures, such as a channel
+/// that is still reconnecting, to `UNKNOWN` before the RPC is sent. Treating
+/// that as permanent would drop payloads that could succeed on retry.
+fn is_retryable_grpc_status(status: &tonic::Status) -> bool {
+    match status.code() {
+        // Retryable per the OTLP spec, plus RESOURCE_EXHAUSTED (advisory
+        // RetryInfo) and UNKNOWN (client-side readiness/transport failures).
+        Code::Cancelled
+        | Code::DeadlineExceeded
+        | Code::Aborted
+        | Code::OutOfRange
+        | Code::Unavailable
+        | Code::DataLoss
+        | Code::ResourceExhausted
+        | Code::Unknown => true,
+
+        // All other codes (INVALID_ARGUMENT, NOT_FOUND, ALREADY_EXISTS,
+        // PERMISSION_DENIED, UNAUTHENTICATED, FAILED_PRECONDITION,
+        // UNIMPLEMENTED, INTERNAL, OK) are not retryable.
+        _ => false,
+    }
+}
+
+/// Extracts the server-suggested retry delay from a `google.rpc.RetryInfo`
+/// detail carried in the status `grpc-status-details-bin` trailer, if present.
+///
+/// The details bytes are a serialized `google.rpc.Status` message whose
+/// `details` field is a `repeated google.protobuf.Any`. We decode this, locate
+/// the `RetryInfo` entry, and return its `retry_delay`.
+///
+/// This advisory hint is not consulted for the retry/permanent decision, which
+/// is driven solely by the status code in [`is_retryable_grpc_status`].
+fn retry_after(status: &tonic::Status) -> Option<prost_types::Duration> {
+    use prost::Message;
+
+    let detail_bytes = status.details();
+    if detail_bytes.is_empty() {
+        return None;
+    }
+
+    let rpc_status = RpcStatus::decode(detail_bytes).ok()?;
+    rpc_status
+        .details
+        .iter()
+        .find(|any| any.type_url == RETRY_INFO_TYPE_URL)
+        .and_then(|any| RetryInfo::decode(any.value.as_slice()).ok())
+        .and_then(|info| info.retry_delay)
+}
+
+/// Formats a `google.rpc.RetryInfo` retry delay as a compact, human-readable
+/// duration for inclusion in a NACK reason string.
+fn format_retry_delay(delay: &prost_types::Duration) -> String {
+    // Normalize to whole seconds plus fractional milliseconds; RetryInfo delays
+    // are advisory and typically coarse, so millisecond precision is sufficient.
+    let millis = delay.seconds * 1_000 + (delay.nanos as i64) / 1_000_000;
+    format!("{}ms", millis)
 }
 
 struct EncodedExport {
@@ -599,8 +711,10 @@ async fn notify_prepare_error(
         saved_payload,
     } = *error;
 
+    // Encoding failures are permanent: the data is malformed and retrying the
+    // same payload will not succeed.
     effect_handler
-        .notify_nack(NackMsg::new(
+        .notify_nack(NackMsg::new_permanent(
             error.to_string(),
             OtapPdata::new(context, saved_payload),
         ))
@@ -1675,6 +1789,493 @@ mod tests {
         tokio_rt
             .block_on(server_handle)
             .expect("server shutdown success");
+    }
+
+    /// Helper builds a [`tonic::Status`] with the given code, no details.
+    fn status_with_code(code: Code) -> tonic::Status {
+        tonic::Status::new(code, "test error")
+    }
+
+    /// Helper builds a [`tonic::Status`] carrying a `RetryInfo` in its
+    /// `grpc-status-details-bin` trailer, as a real server would.
+    fn status_with_retry_info(code: Code) -> tonic::Status {
+        let retry_info = RetryInfo {
+            retry_delay: Some(prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+        };
+        let mut retry_info_bytes = Vec::new();
+        retry_info
+            .encode(&mut retry_info_bytes)
+            .expect("encode RetryInfo");
+
+        let any = prost_types::Any {
+            type_url: RETRY_INFO_TYPE_URL.to_string(),
+            value: retry_info_bytes,
+        };
+        let rpc_status = RpcStatus {
+            code: code as i32,
+            message: "resource exhausted".to_string(),
+            details: vec![any],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        tonic::Status::with_details(code, "resource exhausted", detail_bytes.into())
+    }
+
+    #[test]
+    fn test_retryable_grpc_codes() {
+        // These codes MUST be retryable per the OTLP spec table, plus
+        // RESOURCE_EXHAUSTED (advisory RetryInfo) and UNKNOWN (client-side
+        // readiness/transport failures).
+        let retryable_codes = [
+            Code::Cancelled,
+            Code::DeadlineExceeded,
+            Code::Aborted,
+            Code::OutOfRange,
+            Code::Unavailable,
+            Code::DataLoss,
+            Code::ResourceExhausted,
+            Code::Unknown,
+        ];
+
+        for code in retryable_codes {
+            let status = status_with_code(code);
+            assert!(
+                is_retryable_grpc_status(&status),
+                "expected code {code:?} to be retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_non_retryable_grpc_codes() {
+        // These codes MUST NOT be retryable per the OTLP spec table.
+        let non_retryable_codes = [
+            Code::InvalidArgument,
+            Code::NotFound,
+            Code::AlreadyExists,
+            Code::PermissionDenied,
+            Code::Unauthenticated,
+            Code::FailedPrecondition,
+            Code::Unimplemented,
+            Code::Internal,
+        ];
+
+        for code in non_retryable_codes {
+            let status = status_with_code(code);
+            assert!(
+                !is_retryable_grpc_status(&status),
+                "expected code {code:?} to be non-retryable"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resource_exhausted_is_retryable_without_retry_info() {
+        // RESOURCE_EXHAUSTED is always retryable; the RetryInfo detail is only
+        // advisory, so its absence must not make the failure permanent.
+        let status = status_with_code(Code::ResourceExhausted);
+        assert!(
+            retry_after(&status).is_none(),
+            "status carries no RetryInfo detail"
+        );
+        assert!(
+            is_retryable_grpc_status(&status),
+            "RESOURCE_EXHAUSTED without RetryInfo should still be retryable"
+        );
+    }
+
+    #[test]
+    fn test_resource_exhausted_is_retryable_with_retry_info() {
+        let status = status_with_retry_info(Code::ResourceExhausted);
+        assert_eq!(
+            retry_after(&status),
+            Some(prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            "status carries a RetryInfo detail with the expected delay"
+        );
+        assert!(
+            is_retryable_grpc_status(&status),
+            "RESOURCE_EXHAUSTED with RetryInfo should be retryable"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_none_for_empty_details() {
+        // Details bytes present but contain an RpcStatus with no Any entries.
+        let rpc_status = RpcStatus {
+            code: Code::ResourceExhausted as i32,
+            message: "exhausted".to_string(),
+            details: vec![],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        let status =
+            tonic::Status::with_details(Code::ResourceExhausted, "exhausted", detail_bytes.into());
+        assert!(
+            retry_after(&status).is_none(),
+            "empty details should not report a RetryInfo hint"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_none_for_non_retry_info_detail() {
+        use prost::Message;
+
+        // Details bytes contain an Any with a different type URL.
+        let any = prost_types::Any {
+            type_url: "type.googleapis.com/google.rpc.BadRequest".to_string(),
+            value: vec![],
+        };
+        let rpc_status = RpcStatus {
+            code: Code::ResourceExhausted as i32,
+            message: "exhausted".to_string(),
+            details: vec![any],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        let status =
+            tonic::Status::with_details(Code::ResourceExhausted, "exhausted", detail_bytes.into());
+        assert!(
+            retry_after(&status).is_none(),
+            "a non-RetryInfo detail should not report a RetryInfo hint"
+        );
+    }
+
+    #[test]
+    fn test_retry_after_none_for_malformed_details() {
+        // Feed garbage bytes as details - should not crash, should report no hint.
+        let status = tonic::Status::with_details(
+            Code::ResourceExhausted,
+            "exhausted",
+            Bytes::from_static(b"not valid protobuf"),
+        );
+        assert!(
+            retry_after(&status).is_none(),
+            "malformed details should not report a RetryInfo hint"
+        );
+    }
+
+    #[test]
+    fn test_ok_code_is_not_retryable() {
+        let status = status_with_code(Code::Ok);
+        assert!(
+            !is_retryable_grpc_status(&status),
+            "OK should not be retryable"
+        );
+    }
+
+    #[test]
+    fn test_format_retry_delay() {
+        assert_eq!(
+            format_retry_delay(&prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+            "5000ms"
+        );
+        assert_eq!(
+            format_retry_delay(&prost_types::Duration {
+                seconds: 0,
+                nanos: 250_000_000,
+            }),
+            "250ms"
+        );
+        assert_eq!(
+            format_retry_delay(&prost_types::Duration {
+                seconds: 1,
+                nanos: 500_000_000,
+            }),
+            "1500ms"
+        );
+    }
+
+    /// A mock `LogsService` that always returns the configured gRPC error.
+    struct ErrorLogsServiceMock {
+        code: Code,
+        message: String,
+        /// Optional serialized `google.rpc.Status` details bytes for
+        /// `grpc-status-details-bin`.
+        detail_bytes: Option<Bytes>,
+    }
+
+    #[tonic::async_trait]
+    impl otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsService
+        for ErrorLogsServiceMock
+    {
+        async fn export(
+            &self,
+            _request: tonic::Request<ExportLogsServiceRequest>,
+        ) -> Result<
+            tonic::Response<
+                otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse,
+            >,
+            tonic::Status,
+        > {
+            if let Some(details) = &self.detail_bytes {
+                Err(tonic::Status::with_details(
+                    self.code,
+                    &self.message,
+                    details.clone(),
+                ))
+            } else {
+                Err(tonic::Status::new(self.code, &self.message))
+            }
+        }
+    }
+
+    /// Runs an integration test that sends a logs payload to the gRPC exporter
+    /// backed by a mock server returning the given status code. Returns the
+    /// `NackMsg.permanent` value observed.
+    fn run_grpc_error_status_test(code: Code, detail_bytes: Option<Bytes>) -> bool {
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer;
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+
+        let tokio_rt = Runtime::new().unwrap();
+
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTLP_EXPORTER_URN));
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let node_id = test_node(test_runtime.config().name.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut exporter = ExporterWrapper::local(
+            OTLPExporter {
+                config: Config {
+                    grpc: GrpcClientSettings {
+                        grpc_endpoint: grpc_endpoint.clone(),
+                        connect_timeout: Duration::from_millis(500),
+                        ..Default::default()
+                    },
+                    max_in_flight: 1,
+                    num_connections: default_num_connections(),
+                },
+                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+            },
+            node_id.clone(),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let control_sender = exporter.control_sender();
+        let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(1);
+        let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+        let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+        let (runtime_ctrl_msg_tx, _runtime_ctrl_msg_rx) = runtime_ctrl_msg_channel(2);
+        let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
+            pipeline_completion_msg_channel(2);
+        exporter
+            .set_pdata_receiver(node_id.clone(), pdata_rx)
+            .expect("Failed to set PData Receiver");
+
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let _ = metrics_rx; // not inspected in this test
+
+        // Start the mock server that always returns the given error code.
+        let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+        let mock_service = ErrorLogsServiceMock {
+            code,
+            message: format!("mock error: {code:?}"),
+            detail_bytes,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+        let server_handle = tokio_rt.spawn(async move {
+            let tcp_listener = TcpListener::bind(listening_addr).await.unwrap();
+            let tcp_stream = TcpListenerStream::new(tcp_listener);
+            Server::builder()
+                .add_service(LogsServiceServer::new(mock_service))
+                .serve_with_incoming_shutdown(tcp_stream, async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .expect("server failed");
+        });
+
+        async fn start_exporter(
+            exporter: ExporterWrapper<OtapPdata>,
+            runtime_ctrl_msg_tx: RuntimeCtrlMsgSender<OtapPdata>,
+            pipeline_completion_msg_tx: PipelineCompletionMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter,
+        ) -> Result<(), Error> {
+            exporter
+                .start(
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                    Interests::empty(),
+                )
+                .await
+                .map(|_| ())
+        }
+
+        async fn drive_test(
+            pdata_tx: Sender<OtapPdata>,
+            control_sender: Sender<NodeControlMsg<OtapPdata>>,
+            mut pipeline_completion_msg_rx: otap_df_engine::control::PipelineCompletionMsgReceiver<
+                OtapPdata,
+            >,
+            shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        ) -> bool {
+            use prost::Message;
+
+            // Give the server a moment to bind.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            // Send a logs payload.
+            let req = ExportLogsServiceRequest::default();
+            let mut req_bytes = vec![];
+            req.encode(&mut req_bytes).unwrap();
+            let pdata = OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(req_bytes)),
+            ))
+            .test_subscribe_to(
+                Interests::ACKS | Interests::NACKS,
+                TestCallData::default().into(),
+                123,
+            );
+            pdata_tx.send(pdata).await.unwrap();
+
+            // Wait for the NACK.
+            let permanent = timeout(Duration::from_secs(5), async {
+                match pipeline_completion_msg_rx.recv().await {
+                    Ok(PipelineCompletionMsg::DeliverNack { nack }) => nack.permanent,
+                    Ok(PipelineCompletionMsg::DeliverAck { .. }) => {
+                        panic!("expected NACK but got ACK");
+                    }
+                    Err(_) => panic!("pipeline completion channel closed"),
+                }
+            })
+            .await
+            .expect("timed out waiting for NACK");
+
+            // Shut everything down.
+            control_sender
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_millis(100),
+                    reason: "test done".into(),
+                })
+                .await
+                .unwrap();
+            shutdown_tx.send(()).unwrap();
+
+            permanent
+        }
+
+        let (_, permanent) = tokio_rt.block_on(async move {
+            tokio::join!(
+                start_exporter(
+                    exporter,
+                    runtime_ctrl_msg_tx,
+                    pipeline_completion_msg_tx,
+                    metrics_reporter,
+                ),
+                drive_test(
+                    pdata_tx,
+                    control_sender,
+                    pipeline_completion_msg_rx,
+                    shutdown_tx,
+                )
+            )
+        });
+
+        tokio_rt.block_on(server_handle).expect("server join");
+        permanent
+    }
+
+    #[test]
+    fn test_unavailable_produces_non_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Unavailable, None);
+        assert!(
+            !permanent,
+            "UNAVAILABLE should produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    #[test]
+    fn test_invalid_argument_produces_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::InvalidArgument, None);
+        assert!(
+            permanent,
+            "INVALID_ARGUMENT should produce a permanent NACK"
+        );
+    }
+
+    #[test]
+    fn test_internal_produces_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Internal, None);
+        assert!(permanent, "INTERNAL should produce a permanent NACK");
+    }
+
+    #[test]
+    fn test_cancelled_produces_non_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::Cancelled, None);
+        assert!(
+            !permanent,
+            "CANCELLED should produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    #[test]
+    fn test_resource_exhausted_without_retry_info_produces_non_permanent_nack() {
+        let permanent = run_grpc_error_status_test(Code::ResourceExhausted, None);
+        assert!(
+            !permanent,
+            "RESOURCE_EXHAUSTED without RetryInfo should still produce a non-permanent (retryable) NACK"
+        );
+    }
+
+    #[test]
+    fn test_resource_exhausted_with_retry_info_produces_non_permanent_nack() {
+        let retry_info = RetryInfo {
+            retry_delay: Some(prost_types::Duration {
+                seconds: 5,
+                nanos: 0,
+            }),
+        };
+        let mut retry_info_bytes = Vec::new();
+        retry_info
+            .encode(&mut retry_info_bytes)
+            .expect("encode RetryInfo");
+
+        let any = prost_types::Any {
+            type_url: RETRY_INFO_TYPE_URL.to_string(),
+            value: retry_info_bytes,
+        };
+        let rpc_status = RpcStatus {
+            code: Code::ResourceExhausted as i32,
+            message: "resource exhausted".to_string(),
+            details: vec![any],
+        };
+        let mut detail_bytes = Vec::new();
+        rpc_status
+            .encode(&mut detail_bytes)
+            .expect("encode RpcStatus");
+
+        let permanent =
+            run_grpc_error_status_test(Code::ResourceExhausted, Some(detail_bytes.into()));
+        assert!(
+            !permanent,
+            "RESOURCE_EXHAUSTED with RetryInfo should produce a non-permanent (retryable) NACK"
+        );
     }
 
     // ---- build_grpc_metadata unit tests ----------------------------------------

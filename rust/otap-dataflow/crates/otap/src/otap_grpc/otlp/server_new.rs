@@ -187,8 +187,20 @@ fn pipeline_send_status<E: Display>(err: E) -> Status {
     Status::internal(format!("Failed to send to pipeline: {err}"))
 }
 
+/// Converts a pipeline [`NackMsg`] into a [`tonic::Status`] for the gRPC
+/// response.
+///
+/// Permanent NACKs are mapped to `INTERNAL` (non-retryable) and transient
+/// NACKs to `UNAVAILABLE` (retryable), following the OTLP gRPC status code
+/// conventions defined in
+/// <https://opentelemetry.io/docs/specs/otlp/#otlpgrpc-response>.
 fn nack_to_status(nack: NackMsg<OtapPdata>) -> Status {
-    Status::unavailable(format!("Pipeline processing failed: {}", nack.reason))
+    let message = format!("Pipeline processing failed: {}", nack.reason);
+    if nack.permanent {
+        Status::internal(message)
+    } else {
+        Status::unavailable(message)
+    }
 }
 
 fn response_channel_closed_status() -> Status {
@@ -452,8 +464,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 match rx.await {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
-                        // TODO: Use more specific status codes based on nack reason/type
-                        // when more detailed error information is available from the pipeline
                         return Err(nack_to_status(nack));
                     }
                     Err(_) => {
@@ -681,4 +691,54 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
 
 impl NamedService for TraceServiceServer {
     const NAME: &'static str = super::TRACE_SERVICE_NAME;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_pdata::OtlpProtoBytes;
+    use tonic::Code;
+
+    fn make_nack(permanent: bool) -> NackMsg<OtapPdata> {
+        let pdata = OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into());
+        if permanent {
+            NackMsg::new_permanent("permanent failure", pdata)
+        } else {
+            NackMsg::new("transient failure", pdata)
+        }
+    }
+
+    #[test]
+    fn test_nack_to_status_permanent_returns_internal() {
+        let nack = make_nack(true);
+        let status = nack_to_status(nack);
+        assert_eq!(status.code(), Code::Internal);
+        assert!(
+            status.message().contains("Pipeline processing failed"),
+            "message: {}",
+            status.message()
+        );
+        assert!(
+            status.message().contains("permanent failure"),
+            "message: {}",
+            status.message()
+        );
+    }
+
+    #[test]
+    fn test_nack_to_status_transient_returns_unavailable() {
+        let nack = make_nack(false);
+        let status = nack_to_status(nack);
+        assert_eq!(status.code(), Code::Unavailable);
+        assert!(
+            status.message().contains("Pipeline processing failed"),
+            "message: {}",
+            status.message()
+        );
+        assert!(
+            status.message().contains("transient failure"),
+            "message: {}",
+            status.message()
+        );
+    }
 }

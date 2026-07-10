@@ -470,7 +470,7 @@ fn build_log_record_schema(
                 {
                     return Err(ParserError::SchemaError(format!(
                         "'{key_name}' key cannot be declared as '{}' type",
-                        &removed
+                        removed
                     )));
                 }
             }

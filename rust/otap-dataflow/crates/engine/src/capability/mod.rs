@@ -12,9 +12,18 @@
 //! re-exported from [`local::capability`](crate::local::capability) and
 //! [`shared::capability`](crate::shared::capability).
 
-pub mod factory;
+// These modules are crate-private: nothing outside the crate needs the raw
+// module path, and every public item is re-exported at `capability::` (below)
+// or via `{local,shared}::capability`. Keeping them `pub(crate)` collapses each
+// item to a single canonical public path. `registry` stays `pub` because
+// `registry::Capabilities` is not re-exported at the root.
+pub(crate) mod bearer_token_provider;
+pub(crate) mod error;
+pub(crate) mod factory;
 pub mod registry;
 
+pub use bearer_token_provider::{BearerToken, BearerTokenProvider, TokenStream};
+pub use error::{CapabilityError, CapabilityErrorSource};
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
 
 // ── Sealed ExtensionCapability trait ─────────────────────────────────────────
@@ -100,10 +109,6 @@ pub trait ExtensionCapability: private::Sealed + 'static {
 /// inside this crate, so external crates still can't reach `Sealed` to
 /// forge an `ExtensionCapability` impl.
 #[doc(hidden)]
-// Suppressed until the first `#[capability]` invocation lands alongside
-// its first consumer (PR4+). Until then no generated code references the
-// re-export and rustc would otherwise warn.
-#[allow(unused_imports)]
 pub(crate) use private::Sealed as CapabilitySealed;
 
 // ── KNOWN_CAPABILITIES (link-time registration) ──────────────────────────────
