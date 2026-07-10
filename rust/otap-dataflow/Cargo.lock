@@ -6297,7 +6297,7 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
- "portpicker",
+ "otap-df-test-net",
  "prost",
  "serde",
  "serde_json",
