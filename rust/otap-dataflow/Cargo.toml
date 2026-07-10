@@ -57,6 +57,7 @@ otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
+otap-df-test-net = { path = "crates/otap-test-net" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 otap-df-telemetry = { path = "crates/telemetry" }
@@ -146,7 +147,6 @@ paste = "1"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
-portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 prometheus = "0.14.0"

@@ -12,7 +12,7 @@ use crate::template::render_jinja;
 use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::context;
-use portpicker::pick_unused_port;
+use otap_df_test_net::try_pick_unused_loopback_tcp_port;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -215,13 +215,13 @@ impl Scenario {
     /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
         // Track ports already handed out so that back-to-back
-        // `pick_unused_port()` calls (which only probe availability)
-        // cannot return the same port twice (TOCTOU race).
+        // `try_pick_unused_loopback_tcp_port()` calls (which only probe
+        // availability) cannot return the same port twice (TOCTOU race).
         let allocated = RefCell::new(HashSet::<u16>::new());
         let pick_port = |context: &str| -> Result<u16, ValidationError> {
             let mut set = allocated.borrow_mut();
             for _ in 0..64 {
-                if let Some(port) = pick_unused_port() {
+                if let Ok(port) = try_pick_unused_loopback_tcp_port() {
                     if set.insert(port) {
                         return Ok(port);
                     }
