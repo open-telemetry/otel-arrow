@@ -265,10 +265,13 @@ groups:
 | `tenant_id` | `string?` | *none* | Entra tenant ID. Only for `workload_identity`; falls back to `AZURE_TENANT_ID`. |
 | `token_file_path` | `string?` (path) | *none* | Path to the projected federated token file. Only for `workload_identity`; falls back to `AZURE_FEDERATED_TOKEN_FILE`. |
 | `scope` | `string` | `https://monitor.azure.com/.default` | OAuth scope to request tokens for. Must be non-empty. |
+| `startup_timeout` | duration | `30s` | How long the engine holds data-path node startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Accepts human-readable durations (e.g. `30s`, `1m`); must be non-zero. Larger than the engine's 5 s readiness default to accommodate Azure cold-start plus a retry. |
 
 The config struct uses `#[serde(deny_unknown_fields)]` and is validated by the
 factory's `validate_config` hook before the pipeline starts. Validation rejects
-an empty/whitespace `scope`.
+an empty/whitespace `scope`, a zero `startup_timeout`, and any per-method field
+that does not apply to the selected method (`tenant_id`/`token_file_path` are
+`workload_identity`-only; `client_id` is not valid for `development`).
 
 ### Auth methods
 
@@ -397,10 +400,13 @@ Metrics are recorded in both the background refresh loop and the slow-path
    publishes a token onto the `watch` channel, then calls
    `EffectHandler::signal_ready()`.
 3. The engine holds data-path node spawning on the extension's readiness probe
-   (`wait_all_ready`) until that signal fires, bounded by the probe timeout
-   (default 5s; override via `with_readiness_probe_timeout_override`). If the
-   first token is not acquired in time, startup aborts with a readiness-timeout
-   error rather than starting nodes without a token.
+   (`wait_all_ready`) until that signal fires, bounded by the probe timeout. The
+   extension sets this via `with_readiness_probe_timeout_override` from the
+   `startup_timeout` config field (default `30s`, larger than the engine's 5 s
+   default because Azure cold-start plus the ~10 s failure-retry cadence needs
+   room for a retry inside the gate). If the first token is not acquired in
+   time, startup aborts with a readiness-timeout error rather than starting
+   nodes without a token.
 4. Data-path nodes then start. Each consumer resolves the capability once at
    construction (`require_local()` / `require_shared()`) and holds the typed
    handle for its lifetime - no capability resolution on the hot path. Because
