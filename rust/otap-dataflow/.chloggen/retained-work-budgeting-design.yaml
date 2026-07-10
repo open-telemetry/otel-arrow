@@ -1,4 +1,0 @@
-change_type: enhancement
-component: engine
-note: Document observe-only retained-work memory accounting and ownership shapes.
-issues: [3272]
