@@ -91,6 +91,7 @@ pub mod shared;
 pub mod terminal_state;
 pub mod testing;
 pub mod topic;
+pub mod topology;
 pub mod wiring_contract;
 pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};

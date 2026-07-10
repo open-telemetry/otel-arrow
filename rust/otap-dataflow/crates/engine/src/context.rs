@@ -12,6 +12,7 @@ use crate::attributes::{
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
+use crate::topology::NumaTopology;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
@@ -105,7 +106,6 @@ pub struct ControllerContext {
     host_id: Cow<'static, str>,
     /// Container identifier, when available (e.g. Docker or containerd container ID).
     container_id: Cow<'static, str>,
-    numa_node_id: usize,
     memory_pressure_state: MemoryPressureState,
 }
 
@@ -123,6 +123,8 @@ pub struct PipelineContextParams {
     pub num_cores: usize,
     /// Thread ID for the current pipeline execution context.
     pub thread_id: usize,
+    /// NUMA node ID resolved for the current pipeline execution context.
+    pub numa_node_id: usize,
 }
 
 /// A lightweight/cloneable pipeline context.
@@ -158,7 +160,6 @@ impl ControllerContext {
             process_instance_id: PROCESS_INSTANCE_ID.clone(),
             host_id: HOST_ID.clone(),
             container_id: CONTAINER_ID.clone(),
-            numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
             memory_pressure_state: MemoryPressureState::default(),
         }
     }
@@ -180,7 +181,6 @@ impl ControllerContext {
             process_instance_id: process_instance_id.into(),
             host_id: host_id.into(),
             container_id: container_id.into(),
-            numa_node_id: 0,
             memory_pressure_state: MemoryPressureState::default(),
         }
     }
@@ -225,9 +225,42 @@ impl ControllerContext {
                 core_id,
                 num_cores,
                 thread_id,
+                numa_node_id: 0,
             },
             deployment_generation,
         )
+    }
+
+    /// Returns a new pipeline context with explicit NUMA placement metadata.
+    #[must_use]
+    pub fn pipeline_context_with_placement(
+        &self,
+        pipeline_group_id: PipelineGroupId,
+        pipeline_id: PipelineId,
+        core_id: usize,
+        num_cores: usize,
+        thread_id: usize,
+        deployment_generation: u64,
+        numa_node_id: usize,
+    ) -> PipelineContext {
+        PipelineContext::new_with_generation(
+            self.clone(),
+            PipelineContextParams {
+                pipeline_group_id,
+                pipeline_id,
+                core_id,
+                num_cores,
+                thread_id,
+                numa_node_id,
+            },
+            deployment_generation,
+        )
+    }
+
+    /// Returns the topology detected for this controller process.
+    #[must_use]
+    pub fn topology(&self) -> NumaTopology {
+        NumaTopology::detect()
     }
 
     /// Registers the engine-level entity for engine-wide metrics with no scope attributes.
@@ -523,7 +556,7 @@ impl PipelineContext {
     fn engine_attribute_set(&self) -> EngineAttributeSet {
         EngineAttributeSet {
             core_id: self.pipeline_context_params.core_id,
-            numa_node_id: self.controller_context.numa_node_id,
+            numa_node_id: self.pipeline_context_params.numa_node_id,
         }
     }
 
@@ -795,5 +828,24 @@ mod tests {
             ctx.resource_attributes(),
             vec![("service.instance.id".to_string(), "proc-123".to_string())]
         );
+    }
+
+    #[test]
+    fn pipeline_context_uses_resolved_numa_node_for_engine_attrs() {
+        let ctx = ControllerContext::new(TelemetryRegistryHandle::new())
+            .pipeline_context_with_placement(
+                PipelineGroupId::from("g"),
+                PipelineId::from("p"),
+                4,
+                1,
+                0,
+                0,
+                2,
+            );
+
+        let attrs = ctx.pipeline_attribute_set();
+
+        assert_eq!(attrs.engine_attrs.core_id, 4);
+        assert_eq!(attrs.engine_attrs.numa_node_id, 2);
     }
 }

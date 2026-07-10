@@ -98,7 +98,7 @@ use otap_df_telemetry::{
     otel_info_span, otel_warn, self_tracing::LogContext,
 };
 use smallvec::smallvec;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -119,6 +119,7 @@ pub mod error;
 pub mod extension;
 
 mod live_control;
+mod placement;
 /// Reusable startup helpers (validation, CLI overrides, system info).
 pub mod startup;
 /// Utilities to spawn async tasks on dedicated threads with graceful shutdown.
@@ -133,6 +134,7 @@ use live_control::{
     ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
     RuntimeInstanceExit,
 };
+use placement::{CorePlacement, PlacementPlanner, PlacementSnapshot};
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -1517,8 +1519,9 @@ impl<
                 pipeline.policies.health.clone(),
             );
         }
-        let planned_core_assignments =
-            Self::preflight_pipeline_core_allocations(&pipelines, &all_cores)?;
+        let topology = controller_ctx.topology();
+        let placement_snapshot =
+            Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
 
         let runtime = Arc::new(ControllerRuntime::new(
             self.pipeline_factory,
@@ -1674,9 +1677,11 @@ impl<
             runtime.register_launched_instance(launched);
         }
 
-        for (pipeline_entry, requested_cores) in pipelines.iter().zip(planned_core_assignments) {
+        for (pipeline_entry, pipeline_placement) in
+            pipelines.iter().zip(placement_snapshot.pipelines.iter())
+        {
             runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
-            let num_cores = requested_cores.len();
+            let num_cores = pipeline_placement.core_count();
 
             let core_allocation = pipeline_entry
                 .policies
@@ -1691,7 +1696,7 @@ impl<
                 core_allocation = core_allocation
             );
 
-            for core_id in &requested_cores {
+            for placement in &pipeline_placement.cores {
                 // Pass a Weak runtime handle into each pipeline thread. The thread upgrades it
                 // only when it needs to report Success/Error/Panic on exit, and silently skips
                 // that late report if shutdown has already dropped the runtime.
@@ -1700,10 +1705,11 @@ impl<
                     DeployedPipelineKey {
                         pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
                         pipeline_id: pipeline_entry.pipeline_id.clone(),
-                        core_id: core_id.id,
-                        deployment_generation: 0,
+                        core_id: placement.core_id.id,
+                        deployment_generation: placement_snapshot.generation,
                     },
-                    *core_id,
+                    placement.core_id,
+                    placement.numa_node_id,
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
@@ -1978,10 +1984,42 @@ impl<
     }
 
     /// Selects which CPU cores to use based on the given allocation.
+    fn process_visible_core_ids(
+        available_core_ids: &[CoreId],
+        topology: &otap_df_engine::topology::NumaTopology,
+    ) -> Vec<CoreId> {
+        let mut visible: Vec<_> = if topology.is_unknown() {
+            available_core_ids.to_vec()
+        } else {
+            available_core_ids
+                .iter()
+                .copied()
+                .filter(|core| topology.visible_cpus().contains(&(core.id as u32)))
+                .collect()
+        };
+        visible.sort_by_key(|core| core.id);
+        visible
+    }
+
     fn select_cores_for_allocation(
-        mut available_core_ids: Vec<CoreId>,
+        available_core_ids: Vec<CoreId>,
         core_allocation: &CoreAllocation,
     ) -> Result<Vec<CoreId>, Error> {
+        Self::select_cores_for_allocation_with_placement(
+            available_core_ids,
+            core_allocation,
+            &otap_df_engine::topology::NumaTopology::unknown(),
+            &BTreeSet::new(),
+        )
+    }
+
+    fn select_cores_for_allocation_with_placement(
+        mut available_core_ids: Vec<CoreId>,
+        core_allocation: &CoreAllocation,
+        topology: &otap_df_engine::topology::NumaTopology,
+        reserved_core_ids: &BTreeSet<usize>,
+    ) -> Result<Vec<CoreId>, Error> {
+        available_core_ids = Self::process_visible_core_ids(&available_core_ids, topology);
         available_core_ids.sort_by_key(|c| c.id);
 
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
@@ -2003,7 +2041,24 @@ impl<
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         })
                     } else {
-                        Ok(available_core_ids.into_iter().take(count).collect())
+                        let selected = PlacementPlanner::new(topology).select_core_count(
+                            &available_core_ids,
+                            reserved_core_ids,
+                            count,
+                        );
+                        if selected.len() == count {
+                            Ok(selected)
+                        } else {
+                            Err(Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message: format!(
+                                    "Requested {} cores but only {} unreserved cores available on this system",
+                                    count,
+                                    selected.len()
+                                ),
+                                available: available_core_ids.iter().map(|c| c.id).collect(),
+                            })
+                        }
                     }
                 }
                 None => Ok(available_core_ids),
@@ -2092,19 +2147,61 @@ impl<
     /// Pre-resolves core assignments for all regular pipelines.
     ///
     /// This validates the full pipeline set before any pipeline thread is spawned.
+    fn preflight_pipeline_placement(
+        pipelines: &[ResolvedPipelineConfig],
+        available_core_ids: &[CoreId],
+        topology: &otap_df_engine::topology::NumaTopology,
+    ) -> Result<PlacementSnapshot, Error> {
+        let mut reserved_core_ids = BTreeSet::new();
+        let mut placements = Vec::with_capacity(pipelines.len());
+
+        for pipeline_entry in pipelines {
+            let selected = Self::select_cores_for_allocation_with_placement(
+                available_core_ids.to_vec(),
+                &pipeline_entry.policies.resources.core_allocation,
+                topology,
+                &reserved_core_ids,
+            )?;
+            if matches!(
+                pipeline_entry.policies.resources.core_allocation.strategy,
+                CoreAllocationStrategy::CoreCount
+            ) {
+                reserved_core_ids.extend(selected.iter().map(|core| core.id));
+            }
+            placements.push(placement::PipelinePlacement {
+                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                pipeline_id: pipeline_entry.pipeline_id.clone(),
+                cores: selected
+                    .into_iter()
+                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
+                    .collect(),
+            });
+        }
+
+        Ok(PlacementSnapshot::from_assignments(0, placements))
+    }
+
+    /// Pre-resolves core assignments for compatibility tests.
+    #[cfg(test)]
     fn preflight_pipeline_core_allocations(
         pipelines: &[ResolvedPipelineConfig],
         available_core_ids: &[CoreId],
     ) -> Result<Vec<Vec<CoreId>>, Error> {
-        pipelines
-            .iter()
-            .map(|pipeline_entry| {
-                Self::select_cores_for_allocation(
-                    available_core_ids.to_vec(),
-                    &pipeline_entry.policies.resources.core_allocation,
-                )
-            })
-            .collect()
+        Ok(Self::preflight_pipeline_placement(
+            pipelines,
+            available_core_ids,
+            &otap_df_engine::topology::NumaTopology::unknown(),
+        )?
+        .pipelines
+        .into_iter()
+        .map(|placement| {
+            placement
+                .cores
+                .into_iter()
+                .map(|core| core.core_id)
+                .collect()
+        })
+        .collect())
     }
 
     fn internal_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
@@ -2127,6 +2224,7 @@ impl<
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
+        numa_node_id: usize,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -2147,13 +2245,14 @@ impl<
             std_mpsc::SyncSender<Result<(), EngineError>>,
         )>,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
-        let mut pipeline_ctx = controller_ctx.pipeline_context_with_generation(
+        let mut pipeline_ctx = controller_ctx.pipeline_context_with_placement(
             pipeline_key.pipeline_group_id.clone(),
             pipeline_key.pipeline_id.clone(),
             pipeline_key.core_id,
             num_cores,
             thread_id,
             pipeline_key.deployment_generation,
+            numa_node_id,
         );
         let topic_set = Self::build_pipeline_topic_set(
             config,
@@ -2293,6 +2392,7 @@ impl<
             pipeline_factory,
             its_key,
             its_core,
+            0,
             1,
             internal_config,
             channel_capacity_policy,
@@ -2467,6 +2567,8 @@ mod tests {
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
+    use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
+    use std::collections::BTreeMap;
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2483,6 +2585,16 @@ mod tests {
 
     fn to_ids(v: &[CoreId]) -> Vec<usize> {
         v.iter().map(|c| c.id).collect()
+    }
+
+    fn synthetic_topology(entries: &[(u32, u32)]) -> NumaTopology {
+        NumaTopology::new(
+            entries
+                .iter()
+                .map(|(cpu, node)| (*cpu, *node))
+                .collect::<BTreeMap<_, _>>(),
+            TopologyCompleteness::Complete,
+        )
     }
 
     fn minimal_pipeline_config() -> PipelineConfig {
@@ -2695,6 +2807,89 @@ groups: {{}}
             .map(|c| c.id)
             .collect();
         assert_eq!(to_ids(&result), expected_ids);
+    }
+
+    #[test]
+    fn select_core_count_prefers_single_numa_node() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+            (6, 2),
+            (7, 2),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(3),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn select_core_count_falls_back_across_nodes_deterministically() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 1),
+            (3, 1),
+            (4, 2),
+            (5, 2),
+            (6, 3),
+            (7, 3),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(5),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn select_core_count_avoids_reserved_cores() {
+        let topology = synthetic_topology(&[
+            (0, 0),
+            (1, 0),
+            (2, 0),
+            (3, 0),
+            (4, 1),
+            (5, 1),
+            (6, 1),
+            (7, 1),
+        ]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(3),
+            &topology,
+            &BTreeSet::from([0, 1]),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn select_filters_to_topology_visible_cpus() {
+        let topology = synthetic_topology(&[(2, 0), (3, 0), (6, 1), (7, 1)]);
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::all_cores(),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3, 6, 7]);
     }
 
     #[test]

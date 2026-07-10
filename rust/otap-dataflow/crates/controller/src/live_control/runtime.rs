@@ -49,6 +49,7 @@ impl<
             self.pipeline_factory,
             deployed_key.clone(),
             CoreId { id: core_id },
+            0,
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),

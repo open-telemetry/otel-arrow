@@ -44,7 +44,7 @@ data-encoding = { workspace = true }
 prost = { workspace = true }
 cpu-time = { workspace = true }
 memory-stats = { workspace = true }
-nix = { workspace = true, features = ["resource"] }
+nix = { workspace = true, features = ["resource", "sched"] }
 parking_lot = { workspace = true }
 futures-core = { workspace = true }
 async-channel = { workspace = true }
@@ -59,6 +59,7 @@ async-trait = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
+tempfile = { workspace = true }
 
 [target.'cfg(not(windows))'.dev-dependencies]
 tikv-jemallocator = { workspace = true }
