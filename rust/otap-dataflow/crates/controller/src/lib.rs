@@ -80,6 +80,7 @@ use otap_df_engine::entity_context::{
     node_entity_key, pipeline_entity_key, set_pipeline_entity_key,
 };
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::listener_group::ListenerGroupSnapshot;
 use otap_df_engine::memory_limiter::{
     EffectiveMemoryLimiter, MemoryLimiterTick, MemoryPressureBehaviorConfig, MemoryPressureChanged,
     MemoryPressureLevel,
@@ -118,6 +119,7 @@ pub mod error;
 /// Available controller extensions.
 pub mod extension;
 
+mod listener_group;
 mod live_control;
 mod placement;
 /// Reusable startup helpers (validation, CLI overrides, system info).
@@ -1710,6 +1712,11 @@ impl<
                     },
                     placement.core_id,
                     placement.numa_node_id,
+                    listener_group::snapshot_for_pipeline(
+                        pipeline_entry,
+                        pipeline_placement,
+                        placement_snapshot.generation,
+                    ),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
@@ -2225,6 +2232,7 @@ impl<
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
         numa_node_id: usize,
+        listener_group_snapshot: ListenerGroupSnapshot,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -2262,6 +2270,7 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
+        pipeline_ctx.set_listener_group_snapshot(listener_group_snapshot);
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2393,6 +2402,7 @@ impl<
             its_key,
             its_core,
             0,
+            ListenerGroupSnapshot::empty(),
             1,
             internal_config,
             channel_capacity_policy,

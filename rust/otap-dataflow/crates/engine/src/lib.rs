@@ -77,6 +77,7 @@ pub mod engine_metrics;
 pub mod entity_context;
 pub mod flow_metrics;
 pub(crate) mod indexed_min_heap;
+pub mod listener_group;
 pub mod local;
 pub mod memory_limiter;
 pub mod node;

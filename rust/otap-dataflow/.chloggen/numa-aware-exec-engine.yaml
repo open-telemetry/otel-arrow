@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add NUMA-aware topology discovery and controller-owned pipeline core placement metadata.
+note: Add NUMA-aware topology discovery, controller-owned core placement, and listener-group placement metadata.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: []

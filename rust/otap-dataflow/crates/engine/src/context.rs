@@ -10,6 +10,7 @@ use crate::attributes::{
     NodeWithTopicAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
+use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
 use crate::topology::NumaTopology;
@@ -150,6 +151,7 @@ pub struct PipelineContext {
     /// Optional pipeline-scoped topic set injected by the controller.
     /// ToDo: Make PipelineContext generic over a TopicSet type to avoid dynamic typing here.
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
+    listener_group_snapshot: Arc<ListenerGroupSnapshot>,
 }
 
 impl ControllerContext {
@@ -335,6 +337,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
+            listener_group_snapshot: Arc::new(ListenerGroupSnapshot::empty()),
         }
     }
 
@@ -405,6 +408,17 @@ impl PipelineContext {
         topic_set: crate::topic::TopicSet<T>,
     ) {
         self.topic_set = Some(Arc::new(topic_set));
+    }
+
+    /// Sets the controller-resolved listener-group placement snapshot.
+    pub fn set_listener_group_snapshot(&mut self, snapshot: ListenerGroupSnapshot) {
+        self.listener_group_snapshot = Arc::new(snapshot);
+    }
+
+    /// Returns the controller-resolved listener-group placement snapshot.
+    #[must_use]
+    pub fn listener_group_snapshot(&self) -> Arc<ListenerGroupSnapshot> {
+        Arc::clone(&self.listener_group_snapshot)
     }
 
     /// Returns the pipeline-scoped topic set, if one was injected.
@@ -668,6 +682,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
+            listener_group_snapshot: Arc::clone(&self.listener_group_snapshot),
         }
     }
 }
@@ -847,5 +862,49 @@ mod tests {
 
         assert_eq!(attrs.engine_attrs.core_id, 4);
         assert_eq!(attrs.engine_attrs.numa_node_id, 2);
+    }
+
+    #[test]
+    fn pipeline_context_preserves_listener_group_snapshot_across_node_context() {
+        let addr = "127.0.0.1:4317".parse().unwrap();
+        let mut ctx = ControllerContext::new(TelemetryRegistryHandle::new()).pipeline_context_with(
+            Default::default(),
+            Default::default(),
+            0,
+            1,
+            0,
+        );
+        ctx.set_listener_group_snapshot(ListenerGroupSnapshot::new(
+            3,
+            vec![crate::listener_group::ListenerGroupPlan {
+                key: crate::listener_group::ListenerGroupKey::new(
+                    "group".into(),
+                    "pipeline".into(),
+                    "receiver".into(),
+                    addr,
+                    crate::listener_group::ListenerProtocol::Tcp,
+                ),
+                expected_members: Vec::new(),
+            }],
+        ));
+
+        let node_ctx = ctx.with_node_context(
+            "receiver".into(),
+            "urn:otel:receiver:otlp".into(),
+            NodeKind::Receiver,
+            HashMap::new(),
+        );
+
+        assert_eq!(node_ctx.listener_group_snapshot().generation, 3);
+        assert!(
+            node_ctx
+                .listener_group_snapshot()
+                .plan_for(
+                    "receiver",
+                    addr,
+                    crate::listener_group::ListenerProtocol::Tcp
+                )
+                .is_some()
+        );
     }
 }
