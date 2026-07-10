@@ -165,7 +165,7 @@ sequenceDiagram
     Node->>Budget: charge site and size
     Budget-->>Node: local ticket
     Node->>Node: keep ticket with retained work
-    Node->>Budget: drop or resize ticket
+    Node->>Budget: complete or resize ticket
 ```
 
 Local ownership is the lowest-overhead case. A node keeps a local ticket beside
@@ -488,15 +488,15 @@ that pipeline instance.
 
 Observe-only accounting is added where a component starts retaining admitted
 work, not where bytes happen to be allocated. For each waiting item, the design
-should identify who owns it until it moves again.
+should identify which data structure owns the current retention interval.
 
 Each node or boundary follows the same pattern:
 
 1. Estimate the logical size of the retained work.
 2. Create local or shared ownership for that size.
-3. Keep the owner with the retained payload.
-4. Move, resize, or release the owner when the payload moves, changes size, or
-   leaves the system.
+3. Keep the owner with the retaining entry.
+4. Transfer, resize, or release the owner when the retaining entry's ownership
+   moves, changes size, or reaches the end of its interval.
 5. Publish coarse metrics from runtime or boundary snapshots.
 
 <!-- markdownlint-disable MD013 -->
@@ -508,7 +508,7 @@ Each node or boundary follows the same pattern:
 | Batch and retry | Keep ownership beside pending batches or delayed retry payloads. If retry state is split between a ticket and a scheduler payload, the design should avoid pretending that dropping only the ticket frees retained work. |
 | Routers and fanout | Carry ownership for parked routes or in-flight fanout work until all downstream paths complete or the original work is released. Failed fanout should unwind any ownership it created. |
 | Exporters | Account for pending encoded requests and in-flight sends while they wait for completion, retry, timeout, or shutdown cleanup. Completion should release the owner with no new budget acquisition. |
-| Extensions, plugins, and WASM | Treat optional capability or custom-node boundaries like any other retaining component. If they buffer admitted telemetry, ownership should enter the boundary with the payload and leave when the payload returns, is forwarded, or is dropped. |
+| Extensions, plugins, and WASM | Treat optional capability or custom-node boundaries like any other retaining component. If they buffer admitted telemetry, ownership should enter the boundary with the retained work and settle when that boundary no longer retains it. |
 | Shared runtime boundaries | Convert local ownership to sendable ownership before crossing the boundary. The sendable owner is responsible for release while the work is outside the local runtime. |
 <!-- markdownlint-enable MD013 -->
 
@@ -616,9 +616,10 @@ Observe-only accounting should be simple enough to reason about during review.
 
 - Each retained telemetry item should have one accounting owner.
 - Accounting should start when work is admitted or retained.
-- Accounting ownership should move with the telemetry data.
-- Accounting should end once the retained work is delivered, dropped, drained,
-  or otherwise no longer held.
+- Accounting ownership should stay with the data structure responsible for the
+  current retention interval and transfer explicitly when that ownership moves.
+- Accounting should end when the current retention interval ends, according to
+  that boundary's actual lifetime.
 - Failed transfers should not lose or duplicate ownership.
 - Updating an estimated size should not corrupt the previous accounting value.
 - Shared owners should settle according to the boundary's actual lifetime:
