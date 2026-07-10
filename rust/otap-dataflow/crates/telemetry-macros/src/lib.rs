@@ -730,6 +730,16 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
     let enum_ident = input.ident.clone();
     let generics = input.generics.clone();
 
+    if !generics.params.is_empty() {
+        return syn::Error::new(
+            generics.span(),
+            "AttributeEnum cannot be derived for generic enums; it is intended for simple \
+             closed-set (unit-only) enums",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     let data = match &input.data {
         Data::Enum(e) => e,
         _ => {
@@ -784,7 +794,7 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
     };
 
     let generated = quote! {
-        impl #generics #attr_enum_path for #enum_ident #generics {
+        impl #attr_enum_path for #enum_ident {
             const CARDINALITY: usize = #cardinality;
             const VARIANTS: &'static [&'static str] = &[ #( #variant_strings ),* ];
             fn variant_index(self) -> usize {

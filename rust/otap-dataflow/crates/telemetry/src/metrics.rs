@@ -394,6 +394,12 @@ impl<M: MetricSetHandler + Default, D: DynamicAttributeSet> DynamicMetricSet<M, 
 
     /// Produces one snapshot per touched bucket and clears the touched set and
     /// per-bucket values. Returns an empty vector when nothing was recorded.
+    ///
+    /// Reporting is intentionally **event-driven**: only buckets recorded into
+    /// since the last drain are exported. So an `always_flush` instrument (e.g.
+    /// `Gauge`/`Observe*`) in a dynamic set is exported only for intervals in
+    /// which its combination was recorded, not every cycle. A plain (non-dynamic)
+    /// set is usually the better fit for continuously-sampled values.
     pub(crate) fn drain_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut out = Vec::new();
         for bucket in 0..self.buckets.len() {
@@ -892,7 +898,14 @@ fn decode_bucket_datapoint_attrs<'a>(
     }
     let mut rem = bucket;
     for d in dynamic {
-        let radix = d.variants.len().max(1);
+        debug_assert!(
+            !d.variants.is_empty(),
+            "dynamic attribute descriptor must have at least one variant"
+        );
+        if d.variants.is_empty() {
+            continue;
+        }
+        let radix = d.variants.len();
         let vidx = rem % radix;
         rem /= radix;
         out.push((d.key, d.variants[vidx]));

@@ -272,7 +272,7 @@ fixed attribute is implicit, and the set has a single bucket:
 
 ```rust
 let mut journald = pipeline_ctx.register_metrics_with_static_attributes::<JournaldMetrics>(
-    SignalAttributes { signal: Signal::Logs },
+    &SignalAttributes { signal: Signal::Logs },
 );
 
 journald.consumed.add(n);            // exported with signal=logs
