@@ -4,7 +4,9 @@
 //! Interface defining a collection of attributes (pairs of key -> value) associated with a
 //! [`metrics::MetricSet`].
 
-use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
+use crate::descriptor::{
+    AttributeField, AttributeValueType, AttributesDescriptor, DynamicAttributeDescriptor,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -137,6 +139,45 @@ pub trait AttributeSetHandler {
             .collect::<Vec<_>>()
             .join(" ")
     }
+}
+
+/// A closed-set (`enum`) attribute value whose variants render to stable strings.
+///
+/// Implemented via `#[derive(AttributeEnum)]`. Because the value space is closed,
+/// the total number of variants ([`AttributeEnum::CARDINALITY`]) and each
+/// variant's ordinal ([`AttributeEnum::variant_index`]) are known at compile
+/// time, enabling dense mixed-radix bucketing of per-datapoint attributes and a
+/// compile-time cardinality bound.
+pub trait AttributeEnum: Copy {
+    /// Number of variants in the enum.
+    const CARDINALITY: usize;
+    /// Ordered string forms of every variant (declaration order).
+    const VARIANTS: &'static [&'static str];
+    /// Returns the ordinal (declaration order) of this value.
+    fn variant_index(self) -> usize;
+    /// Returns the string form of this value.
+    fn as_str(self) -> &'static str {
+        Self::VARIANTS[self.variant_index()]
+    }
+}
+
+/// An [`AttributeSetHandler`] whose fields are all [`AttributeEnum`]s and whose
+/// values vary per recorded datapoint.
+///
+/// The set maps to a dense mixed-radix bucket space: the first declared field is
+/// the low-order digit. [`CARDINALITY`](Self::CARDINALITY) is the product of the
+/// fields' variant counts and equals the number of buckets a dynamic metric set
+/// allocates.
+pub trait DynamicAttributeSet: AttributeSetHandler + Copy {
+    /// Total number of attribute combinations (product of field variant counts).
+    const CARDINALITY: usize;
+    /// Per-field descriptors (key + ordered variant strings), declaration order.
+    const DESCRIPTORS: &'static [DynamicAttributeDescriptor];
+    /// Computes the dense bucket index for this attribute combination.
+    ///
+    /// The first declared field is the low-order digit:
+    /// `index = sum(field_i.variant_index() * radix_0 * .. * radix_{i-1})`.
+    fn bucket_index(&self) -> usize;
 }
 
 /// Represents a single attribute value that can be of different types.

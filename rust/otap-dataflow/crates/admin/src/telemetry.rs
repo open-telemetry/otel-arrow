@@ -3603,6 +3603,7 @@ mod tests {
         // Accumulate some metric values
         registry.accumulate_metric_set_snapshot(
             metric_set.metric_set_key(),
+            0,
             &[
                 MetricValue::U64(42),   // http_requests counter
                 MetricValue::F64(1.25), // http_request_duration counter (seconds)
@@ -3740,6 +3741,7 @@ mod tests {
 
         registry.accumulate_metric_set_snapshot(
             ms1.metric_set_key(),
+            0,
             &[
                 MetricValue::U64(100),
                 MetricValue::F64(1.0),
@@ -3748,6 +3750,7 @@ mod tests {
         );
         registry.accumulate_metric_set_snapshot(
             ms2.metric_set_key(),
+            0,
             &[
                 MetricValue::U64(200),
                 MetricValue::F64(2.0),

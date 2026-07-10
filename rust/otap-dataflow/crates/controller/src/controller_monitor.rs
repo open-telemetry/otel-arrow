@@ -276,8 +276,11 @@ impl ControllerMonitor {
             .set(telemetry_metric_sets);
 
         let snapshot = self.metrics.snapshot();
-        self.telemetry_registry
-            .accumulate_metric_set_snapshot(snapshot.key(), snapshot.get_metrics());
+        self.telemetry_registry.accumulate_metric_set_snapshot(
+            snapshot.key(),
+            snapshot.bucket(),
+            snapshot.get_metrics(),
+        );
 
         if self.config.log_snapshots {
             otel_info!(

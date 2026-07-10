@@ -271,7 +271,7 @@ The value is supplied once at registration and recording is unchanged - the
 fixed attribute is implicit, and the set has a single bucket:
 
 ```rust
-let mut journald = pipeline_ctx.register_metrics_with_static_attributes::<JournaldMetrics>(
+let mut journald = pipeline_ctx.register_static_metrics::<JournaldMetrics>(
     SignalAttributes { signal: Signal::Logs },
 );
 

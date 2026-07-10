@@ -407,6 +407,13 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         )
     };
 
+    // Path to the AttributeEnum trait, used for enum-typed attribute fields.
+    let attr_enum_path = if is_telemetry_crate {
+        quote!(crate::attributes::AttributeEnum)
+    } else {
+        quote!(::otap_df_telemetry::attributes::AttributeEnum)
+    };
+
     // Collect attribute fields and composed attribute sets
     let mut attr_field_idents = Vec::new();
     let mut attr_field_keys = Vec::new();
@@ -516,20 +523,25 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                                         quote!(#attr_value_path::String(self.#ident.to_string())),
                                     )
                                 } else {
-                                    return syn::Error::new(
-                                        seg.ident.span(),
-                                        format!("Unsupported attribute field type: {ident_ty}"),
+                                    // Any other path type is treated as an `AttributeEnum`
+                                    // (a closed-set enum attribute). Its string form is
+                                    // produced via `AttributeEnum::as_str`; a non-enum type
+                                    // yields a trait-bound error at the use site.
+                                    (
+                                        quote!(#value_type_path::String),
+                                        quote!(#attr_value_path::String(
+                                            #attr_enum_path::as_str(self.#ident).to_string()
+                                        )),
                                     )
-                                    .to_compile_error()
-                                    .into();
                                 }
                             } else {
-                                return syn::Error::new(
-                                    seg.ident.span(),
-                                    format!("Unsupported attribute field type: {ident_ty}"),
+                                // Bare path type (e.g. an enum `Signal`): treat as AttributeEnum.
+                                (
+                                    quote!(#value_type_path::String),
+                                    quote!(#attr_value_path::String(
+                                        #attr_enum_path::as_str(self.#ident).to_string()
+                                    )),
                                 )
-                                .to_compile_error()
-                                .into();
                             }
                         }
                     }
@@ -680,6 +692,112 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Converts a `CamelCase`/`PascalCase` identifier to `snake_case`.
+fn to_snake_case(ident: &str) -> String {
+    let mut out = String::with_capacity(ident.len() + 4);
+    let mut prev_lower_or_digit = false;
+    for ch in ident.chars() {
+        if ch.is_uppercase() {
+            if prev_lower_or_digit {
+                out.push('_');
+            }
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
+            prev_lower_or_digit = false;
+        } else {
+            out.push(ch);
+            prev_lower_or_digit = ch.is_lowercase() || ch.is_ascii_digit();
+        }
+    }
+    out
+}
+
+/// Derive implementation of `otap_df_telemetry::attributes::AttributeEnum` for a
+/// unit-only enum.
+///
+/// Each variant's string form defaults to the `snake_case` of its identifier and
+/// can be overridden per variant with `#[attribute_value = "..."]`.
+///
+/// ```ignore
+/// #[derive(Debug, Clone, Copy, AttributeEnum)]
+/// pub enum Signal { Logs, Metrics, Traces }
+/// // Signal::Logs.as_str() == "logs"; Signal::CARDINALITY == 3
+/// ```
+#[proc_macro_derive(AttributeEnum, attributes(attribute_value))]
+pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let enum_ident = input.ident.clone();
+    let generics = input.generics.clone();
+
+    let data = match &input.data {
+        Data::Enum(e) => e,
+        _ => {
+            return syn::Error::new(input.span(), "AttributeEnum can only be derived for enums")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let mut variant_idents = Vec::new();
+    let mut variant_strings = Vec::new();
+    for variant in &data.variants {
+        if !matches!(variant.fields, Fields::Unit) {
+            return syn::Error::new(
+                variant.span(),
+                "AttributeEnum can only be derived for enums with unit variants",
+            )
+            .to_compile_error()
+            .into();
+        }
+
+        // Optional `#[attribute_value = "..."]` override for the variant string.
+        let mut override_val: Option<String> = None;
+        for attr in &variant.attrs {
+            if attr.path().is_ident("attribute_value") {
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) = &nv.value
+                    {
+                        override_val = Some(s.value());
+                    }
+                }
+            }
+        }
+
+        let value = override_val.unwrap_or_else(|| to_snake_case(&variant.ident.to_string()));
+        variant_idents.push(variant.ident.clone());
+        variant_strings.push(value);
+    }
+
+    let cardinality = variant_idents.len();
+    let indices: Vec<usize> = (0..cardinality).collect();
+
+    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+    let is_telemetry_crate = crate_name == "otap-df-telemetry";
+    let attr_enum_path = if is_telemetry_crate {
+        quote!(crate::attributes::AttributeEnum)
+    } else {
+        quote!(::otap_df_telemetry::attributes::AttributeEnum)
+    };
+
+    let generated = quote! {
+        impl #generics #attr_enum_path for #enum_ident #generics {
+            const CARDINALITY: usize = #cardinality;
+            const VARIANTS: &'static [&'static str] = &[ #( #variant_strings ),* ];
+            fn variant_index(self) -> usize {
+                match self {
+                    #( #enum_ident::#variant_idents => #indices, )*
+                }
+            }
+        }
+    };
+
+    generated.into()
+}
+
 /// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive
 /// and descriptor name via a container attribute.
 /// Usage:
@@ -687,17 +805,29 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 ///   pub struct MyMetrics { #[metric(name = "x", unit = "{unit}")] x: Counter<u64>, ... }
 #[proc_macro_attribute]
 pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse name argument
+    // Parse arguments: `name = "..."` plus optional
+    // `static_attributes = Path` / `dynamic_attributes = Path`.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
+    let mut static_attrs: Option<syn::Type> = None;
+    let mut dynamic_attrs: Option<syn::Type> = None;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
                 let _: syn::Token![=] = input.parse()?;
-                let lit: LitStr = input.parse()?;
                 if ident == "name" {
+                    let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
+                } else if ident == "static_attributes" {
+                    static_attrs = Some(input.parse()?);
+                } else if ident == "dynamic_attributes" {
+                    dynamic_attrs = Some(input.parse()?);
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown metric_set argument `{ident}`"),
+                    ));
                 }
                 if input.peek(syn::Token![,]) {
                     let _: syn::Token![,] = input.parse()?;
@@ -722,6 +852,15 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
+    if static_attrs.is_some() && dynamic_attrs.is_some() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "metric_set cannot specify both `static_attributes` and `dynamic_attributes`",
+        )
+        .to_compile_error()
+        .into();
+    }
+
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
 
@@ -742,7 +881,39 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let metrics_attr: Attribute = parse_quote!(#[metrics(name = #metrics_name)]);
     s.attrs.push(metrics_attr);
 
-    quote!( #s ).into()
+    let struct_ident = s.ident.clone();
+
+    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+    let is_telemetry_crate = crate_name == "otap-df-telemetry";
+    let crate_root = if is_telemetry_crate {
+        quote!(crate)
+    } else {
+        quote!(::otap_df_telemetry)
+    };
+
+    let marker_impl = if let Some(ty) = &static_attrs {
+        quote! {
+            impl #crate_root::metrics::StaticMetricSetHandler for #struct_ident {
+                type Attributes = #ty;
+            }
+        }
+    } else if let Some(ty) = &dynamic_attrs {
+        quote! {
+            impl #crate_root::metrics::DynamicMetricSetHandler for #struct_ident {
+                type Attributes = #ty;
+            }
+
+            // Compile-time cardinality budget check: hard build error when the
+            // dynamic attribute set's cardinality exceeds the budget.
+            const _: () = #crate_root::metrics::check_cardinality(
+                <#ty as #crate_root::attributes::DynamicAttributeSet>::CARDINALITY,
+            );
+        }
+    } else {
+        quote!()
+    };
+
+    quote!( #s #marker_impl ).into()
 }
 
 /// Attribute macro that injects `#[derive(AttributeSetHandler)]` and wires up the AttributeSetHandler derive
@@ -752,17 +923,25 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   pub struct MyAttributes { #[attribute(key = "custom.key")] field: String, ... }
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse name argument
+    // Parse arguments: `name = "..."` plus an optional bare `dynamic` flag.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
+    let mut is_dynamic = false;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
-                let _: syn::Token![=] = input.parse()?;
-                let lit: LitStr = input.parse()?;
-                if ident == "name" {
+                if ident == "dynamic" {
+                    is_dynamic = true;
+                } else if ident == "name" {
+                    let _: syn::Token![=] = input.parse()?;
+                    let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown attribute_set argument `{ident}`"),
+                    ));
                 }
                 if input.peek(syn::Token![,]) {
                     let _: syn::Token![,] = input.parse()?;
@@ -799,7 +978,100 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attributes_attr: Attribute = parse_quote!(#[attributes(name = #attributes_name)]);
     s.attrs.push(attributes_attr);
 
-    quote!( #s ).into()
+    let dynamic_impl = if is_dynamic {
+        match build_dynamic_attribute_set_impl(&s) {
+            Ok(ts) => ts,
+            Err(err) => return err.to_compile_error().into(),
+        }
+    } else {
+        quote!()
+    };
+
+    quote!( #s #dynamic_impl ).into()
+}
+
+/// Builds the `DynamicAttributeSet` trait implementation for a `dynamic`
+/// attribute set. The bucket index is a dense mixed-radix encoding where the
+/// first declared field is the low-order digit.
+fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
+    let struct_ident = s.ident.clone();
+
+    let fields = match &s.fields {
+        Fields::Named(named) => &named.named,
+        _ => {
+            return Err(syn::Error::new(
+                s.span(),
+                "dynamic attribute_set requires named fields",
+            ));
+        }
+    };
+
+    let mut field_idents = Vec::new();
+    let mut field_keys = Vec::new();
+    let mut field_types = Vec::new();
+    for field in fields {
+        // Skip composed fields; dynamic sets are flat enum-attribute structs.
+        if field.attrs.iter().any(|a| a.path().is_ident("compose")) {
+            continue;
+        }
+        if !field.attrs.iter().any(|a| a.path().is_ident("attribute")) {
+            continue;
+        }
+        let ident = field.ident.clone().expect("named field must have an ident");
+        let mut key_attr: Option<String> = None;
+        for attr in &field.attrs {
+            if let Some(key) = parse_attribute_field_attr(attr) {
+                key_attr = Some(key);
+            }
+        }
+        let key = key_attr.unwrap_or_else(|| ident.to_string().replace('_', "."));
+        field_keys.push(key);
+        field_types.push(field.ty.clone());
+        field_idents.push(ident);
+    }
+
+    if field_idents.is_empty() {
+        return Err(syn::Error::new(
+            s.span(),
+            "dynamic attribute_set requires at least one `#[attribute]` enum field",
+        ));
+    }
+
+    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+    let is_telemetry_crate = crate_name == "otap-df-telemetry";
+    let crate_root = if is_telemetry_crate {
+        quote!(crate)
+    } else {
+        quote!(::otap_df_telemetry)
+    };
+
+    Ok(quote! {
+        impl #crate_root::attributes::DynamicAttributeSet for #struct_ident {
+            const CARDINALITY: usize = 1usize
+                #( * <#field_types as #crate_root::attributes::AttributeEnum>::CARDINALITY )*;
+
+            const DESCRIPTORS: &'static [#crate_root::descriptor::DynamicAttributeDescriptor] = &[
+                #(
+                    #crate_root::descriptor::DynamicAttributeDescriptor {
+                        key: #field_keys,
+                        variants: <#field_types as #crate_root::attributes::AttributeEnum>::VARIANTS,
+                    },
+                )*
+            ];
+
+            fn bucket_index(&self) -> usize {
+                let mut idx = 0usize;
+                let mut stride = 1usize;
+                #(
+                    idx += #crate_root::attributes::AttributeEnum::variant_index(self.#field_idents)
+                        * stride;
+                    stride *= <#field_types as #crate_root::attributes::AttributeEnum>::CARDINALITY;
+                )*
+                let _ = stride;
+                idx
+            }
+        }
+    })
 }
 
 fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
