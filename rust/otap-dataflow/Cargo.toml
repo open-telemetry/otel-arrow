@@ -31,6 +31,7 @@ path = "src/main.rs"
 
 [dependencies]
 otap-df-config.workspace = true
+otap-df-contrib-extensions.workspace = true
 otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
@@ -50,6 +51,7 @@ otap-df-admin-types = { path = "crates/admin-types" }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
+otap-df-contrib-extensions = { path = "crates/contrib-extensions" }
 otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-control-channel = { path = "crates/control-channel" }
 otap-df-controller = { path = "crates/controller" }
@@ -300,6 +302,9 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib extensions (opt-in) - in contrib-extensions
+contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
+azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
