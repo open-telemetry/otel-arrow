@@ -840,7 +840,7 @@ dependencies = [
  "otap-df-pdata",
  "otap-df-pdata-views",
  "otap-df-telemetry",
- "portpicker",
+ "otap-df-test-net",
  "prost",
  "roaring",
  "serde_json",
@@ -6183,6 +6183,7 @@ dependencies = [
  "dhat",
  "mimalloc",
  "otap-df-config",
+ "otap-df-contrib-extensions",
  "otap-df-contrib-nodes",
  "otap-df-controller",
  "otap-df-core-nodes",
@@ -6274,6 +6275,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-contrib-extensions"
+version = "0.49.0"
+dependencies = [
+ "async-trait",
+ "azure_core 1.0.0",
+ "azure_identity 1.0.0",
+ "futures",
+ "humantime-serde",
+ "linkme",
+ "otap-df-config",
+ "otap-df-engine",
+ "otap-df-otap",
+ "otap-df-telemetry",
+ "otap-df-telemetry-macros",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "otap-df-contrib-nodes"
 version = "0.49.0"
 dependencies = [
@@ -6346,8 +6369,11 @@ dependencies = [
 name = "otap-df-controller"
 version = "0.49.0"
 dependencies = [
+ "axum",
+ "bytes",
  "chrono",
  "core_affinity",
+ "futures-util",
  "humantime-serde",
  "linkme",
  "miette",
@@ -6357,13 +6383,18 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
+ "prost",
  "serde",
  "serde_json",
  "smallvec",
  "sysinfo",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -6408,10 +6439,10 @@ dependencies = [
  "otap-df-quiver",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
  "otap-df-test-tls-certs",
  "parking_lot",
  "parquet",
- "portpicker",
  "pretty_assertions",
  "prost",
  "prost-types",
@@ -6548,9 +6579,9 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
  "otap-df-test-tls-certs",
  "parking_lot",
- "portpicker",
  "pretty_assertions",
  "prost",
  "prost-types",
@@ -6603,8 +6634,8 @@ dependencies = [
  "otap-df-pdata-otlp-macros",
  "otap-df-pdata-otlp-model",
  "otap-df-pdata-views",
+ "otap-df-test-net",
  "paste",
- "portpicker",
  "pretty_assertions",
  "prost",
  "rand 0.10.1",
@@ -6807,6 +6838,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-test-net"
+version = "0.49.0"
+
+[[package]]
 name = "otap-df-test-tls-certs"
 version = "0.49.0"
 dependencies = [
@@ -6830,8 +6865,8 @@ dependencies = [
  "otap-df-pdata",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
  "otap-df-test-tls-certs",
- "portpicker",
  "prost",
  "serde",
  "serde_json",
@@ -7295,15 +7330,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
 dependencies = [
  "portable-atomic",
-]
-
-[[package]]
-name = "portpicker"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be97d76faf1bfab666e1375477b23fde79eccf0276e9b63b92a39d676a889ba9"
-dependencies = [
- "rand 0.8.6",
 ]
 
 [[package]]
