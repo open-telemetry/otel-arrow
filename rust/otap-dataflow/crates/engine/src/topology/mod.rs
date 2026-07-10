@@ -117,9 +117,30 @@ impl NumaTopology {
     #[must_use]
     pub fn new(cpu_to_node: BTreeMap<u32, u32>, completeness: TopologyCompleteness) -> Self {
         let visible_cpus = cpu_to_node.keys().copied().collect();
-        let visible_nodes = cpu_to_node.values().copied().collect();
+        Self::with_visible_cpus(cpu_to_node, visible_cpus, completeness)
+    }
+
+    /// Creates a topology with explicit process-visible CPUs.
+    ///
+    /// `cpu_to_node` may be a partial mapping. CPUs present in `visible_cpus`
+    /// but absent from `cpu_to_node` are still usable, but their NUMA node is
+    /// unknown.
+    #[must_use]
+    pub fn with_visible_cpus(
+        cpu_to_node: BTreeMap<u32, u32>,
+        visible_cpus: BTreeSet<u32>,
+        completeness: TopologyCompleteness,
+    ) -> Self {
+        let visible_nodes = visible_cpus
+            .iter()
+            .filter_map(|cpu| cpu_to_node.get(cpu).copied())
+            .collect();
         let completeness = if cpu_to_node.is_empty() {
-            TopologyCompleteness::Unknown
+            if visible_cpus.is_empty() {
+                TopologyCompleteness::Unknown
+            } else {
+                TopologyCompleteness::Partial
+            }
         } else {
             completeness
         };
@@ -275,5 +296,19 @@ mod tests {
         assert_eq!(topology.completeness(), TopologyCompleteness::Unknown);
         assert!(topology.visible_cpus().is_empty());
         assert_eq!(topology.numa_node_or_zero(42), 0);
+    }
+
+    #[test]
+    fn topology_can_keep_visible_cpus_without_numa_mapping() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::from([2, 3]),
+            TopologyCompleteness::Partial,
+        );
+
+        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.visible_cpus(), &BTreeSet::from([2, 3]));
+        assert!(topology.visible_nodes().is_empty());
+        assert_eq!(topology.numa_node(2), None);
     }
 }

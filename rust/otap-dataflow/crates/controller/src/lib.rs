@@ -1684,6 +1684,11 @@ impl<
         {
             runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
             let num_cores = pipeline_placement.core_count();
+            let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+                pipeline_entry,
+                pipeline_placement,
+                placement_snapshot.generation,
+            ));
 
             let core_allocation = pipeline_entry
                 .policies
@@ -1712,11 +1717,7 @@ impl<
                     },
                     placement.core_id,
                     placement.numa_node_id,
-                    listener_group::snapshot_for_pipeline(
-                        pipeline_entry,
-                        pipeline_placement,
-                        placement_snapshot.generation,
-                    ),
+                    Arc::clone(&listener_group_snapshot),
                     num_cores,
                     pipeline_entry.pipeline.clone(),
                     pipeline_entry.policies.channel_capacity.clone(),
@@ -2160,9 +2161,36 @@ impl<
         topology: &otap_df_engine::topology::NumaTopology,
     ) -> Result<PlacementSnapshot, Error> {
         let mut reserved_core_ids = BTreeSet::new();
-        let mut placements = Vec::with_capacity(pipelines.len());
+        let mut placements = vec![None; pipelines.len()];
 
-        for pipeline_entry in pipelines {
+        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
+            if !matches!(
+                pipeline_entry.policies.resources.core_allocation.strategy,
+                CoreAllocationStrategy::CoreSet
+            ) {
+                continue;
+            }
+            let selected = Self::select_cores_for_allocation_with_placement(
+                available_core_ids.to_vec(),
+                &pipeline_entry.policies.resources.core_allocation,
+                topology,
+                &BTreeSet::new(),
+            )?;
+            reserved_core_ids.extend(selected.iter().map(|core| core.id));
+            placements[idx] = Some(placement::PipelinePlacement {
+                pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
+                pipeline_id: pipeline_entry.pipeline_id.clone(),
+                cores: selected
+                    .into_iter()
+                    .map(|core_id| CorePlacement::from_core_id(core_id, topology))
+                    .collect(),
+            });
+        }
+
+        for (idx, pipeline_entry) in pipelines.iter().enumerate() {
+            if placements[idx].is_some() {
+                continue;
+            }
             let selected = Self::select_cores_for_allocation_with_placement(
                 available_core_ids.to_vec(),
                 &pipeline_entry.policies.resources.core_allocation,
@@ -2175,7 +2203,7 @@ impl<
             ) {
                 reserved_core_ids.extend(selected.iter().map(|core| core.id));
             }
-            placements.push(placement::PipelinePlacement {
+            placements[idx] = Some(placement::PipelinePlacement {
                 pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
                 pipeline_id: pipeline_entry.pipeline_id.clone(),
                 cores: selected
@@ -2185,7 +2213,13 @@ impl<
             });
         }
 
-        Ok(PlacementSnapshot::from_assignments(0, placements))
+        Ok(PlacementSnapshot::from_assignments(
+            0,
+            placements
+                .into_iter()
+                .map(|placement| placement.expect("every pipeline placement is resolved"))
+                .collect(),
+        ))
     }
 
     /// Pre-resolves core assignments for compatibility tests.
@@ -2232,7 +2266,7 @@ impl<
         pipeline_key: DeployedPipelineKey,
         core_id: CoreId,
         numa_node_id: usize,
-        listener_group_snapshot: ListenerGroupSnapshot,
+        listener_group_snapshot: Arc<ListenerGroupSnapshot>,
         num_cores: usize,
         pipeline_config: PipelineConfig,
         channel_capacity_policy: ChannelCapacityPolicy,
@@ -2270,7 +2304,7 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
-        pipeline_ctx.set_listener_group_snapshot(listener_group_snapshot);
+        pipeline_ctx.set_listener_group_snapshot_arc(listener_group_snapshot);
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =
@@ -2402,7 +2436,7 @@ impl<
             its_key,
             its_core,
             0,
-            ListenerGroupSnapshot::empty(),
+            Arc::new(ListenerGroupSnapshot::empty()),
             1,
             internal_config,
             channel_capacity_policy,
@@ -2578,7 +2612,7 @@ mod tests {
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     fn available_core_ids() -> Vec<CoreId> {
         vec![
@@ -2886,6 +2920,24 @@ groups: {{}}
         .unwrap();
 
         assert_eq!(to_ids(&result), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn partial_topology_keeps_unmapped_visible_cores_usable() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::from([(0, 0), (1, 0)]),
+            BTreeSet::from([0, 1, 2, 3]),
+            TopologyCompleteness::Partial,
+        );
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_set(vec![CoreRange { start: 2, end: 2 }]),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2]);
     }
 
     #[test]
@@ -3461,6 +3513,46 @@ groups: {{}}
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn preflight_reserves_explicit_core_set_before_later_core_count() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(2)),
+        ];
+
+        let placement = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[0]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![0, 1, 2, 3]
+        );
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[1]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![4, 5]
+        );
     }
 
     #[test]

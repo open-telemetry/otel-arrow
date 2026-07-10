@@ -415,6 +415,11 @@ impl PipelineContext {
         self.listener_group_snapshot = Arc::new(snapshot);
     }
 
+    /// Sets a shared controller-resolved listener-group placement snapshot.
+    pub fn set_listener_group_snapshot_arc(&mut self, snapshot: Arc<ListenerGroupSnapshot>) {
+        self.listener_group_snapshot = snapshot;
+    }
+
     /// Returns the controller-resolved listener-group placement snapshot.
     #[must_use]
     pub fn listener_group_snapshot(&self) -> Arc<ListenerGroupSnapshot> {

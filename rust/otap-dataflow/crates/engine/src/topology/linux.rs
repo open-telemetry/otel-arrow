@@ -82,19 +82,19 @@ impl NumaTopologyProvider for LinuxNumaTopologyProvider {
             }
         };
 
-        if let Some(allowed) = allowed {
+        let visible_cpus = if let Some(allowed) = allowed {
             cpu_to_node.retain(|cpu, _| allowed.contains(cpu));
-            if cpu_to_node.is_empty() {
-                return NumaTopology::new(BTreeMap::new(), TopologyCompleteness::Partial);
-            }
-        }
+            allowed
+        } else {
+            cpu_to_node.keys().copied().collect()
+        };
 
         let completeness = if partial {
             TopologyCompleteness::Partial
         } else {
             TopologyCompleteness::Complete
         };
-        NumaTopology::new(cpu_to_node, completeness)
+        NumaTopology::with_visible_cpus(cpu_to_node, visible_cpus, completeness)
     }
 }
 
@@ -355,6 +355,26 @@ mod tests {
         assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
         assert_eq!(topology.numa_node_or_zero(99), 0);
+    }
+
+    #[test]
+    fn partial_sysfs_keeps_allowed_unmapped_cpus_visible() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let cgroup = tempfile::tempdir().unwrap();
+        write_node(sysfs.path(), 0, "0-1");
+        write_node(sysfs.path(), 1, "not-a-cpulist");
+
+        let provider = LinuxNumaTopologyProvider::for_test(
+            sysfs.path().to_path_buf(),
+            cgroup.path().to_path_buf(),
+            affinity_0_to_3,
+        );
+        let topology = provider.discover();
+
+        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
+        assert_eq!(topology.visible_nodes(), &BTreeSet::from([0]));
+        assert_eq!(topology.numa_node(2), None);
     }
 
     #[test]
