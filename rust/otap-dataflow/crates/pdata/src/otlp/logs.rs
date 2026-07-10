@@ -212,9 +212,8 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
 
         // Check if logs table exists - if not, num_items() == 0 (empty batch)
         // Return early with empty result (valid per OTLP spec)
-        let logs_rb = match otap_batch.get(ArrowPayloadType::Logs) {
-            Some(rb) => rb,
-            None => return Ok(()), // Empty batch, nothing to encode
+        let Some(logs_rb) = otap_batch.get(ArrowPayloadType::Logs) else {
+            return Ok(());
         };
 
         let logs_data_arrays = LogsDataArrays::try_from(&*otap_batch)?;
