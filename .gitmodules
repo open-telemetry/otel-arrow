@@ -1,3 +1,6 @@
 [submodule "proto/opentelemetry-proto"]
 	path = proto/opentelemetry-proto
 	url = https://github.com/open-telemetry/opentelemetry-proto.git
+[submodule "proto/opamp-spec"]
+	path = proto/opamp-spec
+	url = https://github.com/open-telemetry/opamp-spec.git

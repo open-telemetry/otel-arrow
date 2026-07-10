@@ -78,7 +78,7 @@ arrow-select = { version = "58.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
-axum = "0.8.4"
+axum = { version = "0.8.4", features = ["ws"] }
 base64 = "0.22.1"
 bitflags = "2.10"
 bytes = "1.11.1"
@@ -100,6 +100,7 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
+futures-util = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
@@ -185,6 +186,7 @@ thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
 tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process"] }
+tokio-tungstenite = { version = "0.29.0" }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
 tonic = { version = "0.14", default-features = false, features = [
@@ -208,11 +210,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "351d5e5430b1e12a045a8b48fe112b3457ef2770" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -257,7 +259,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "48529c24bde22947b386b87f4b379d21fc4237bc" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "66bfea4e84253996965c708c23a6eb38b0d848aa" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
