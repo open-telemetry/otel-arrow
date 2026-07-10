@@ -23,8 +23,8 @@
   <rect x="0" y="0" width="1100" height="952" fill="#ffffff"/>
 
   <!-- Title -->
-  <text x="546" y="32" text-anchor="middle" class="title">Tenant descriptor model: request and limiter flow</text>
-  <text x="546" y="54" text-anchor="middle" class="sub">A receiver resolves tenant descriptors, precomputes lookup keys, and limiters probe them in O(1) across the pipeline</text>
+  <text x="546" y="32" text-anchor="middle" class="title">Tenant token model: request and limiter flow</text>
+  <text x="546" y="54" text-anchor="middle" class="sub">A receiver resolves tenant tokens, precomputes lookup keys, and limiters probe them in O(1) across the pipeline</text>
 
   <!-- ===================== RECEIVER CONTAINER ===================== -->
   <rect x="20" y="78" width="700" height="616" rx="12" fill="#fafbfd" stroke="#c3ccdb" stroke-width="1.5" stroke-dasharray="5 3"/>
@@ -41,12 +41,12 @@
 
   <line x1="360" y1="212" x2="360" y2="234" stroke="#2d3748" stroke-width="2" marker-end="url(#mFlow)"/>
 
-  <!-- Step 2: apply descriptor action lists -->
+  <!-- Step 2: apply token extractor lists -->
   <rect x="44" y="234" width="632" height="162" rx="8" fill="#eaf2fd" stroke="#4a82c4" stroke-width="1.5"/>
   <circle cx="66" cy="254" r="12" fill="#2d3748"/>
   <text x="66" y="258" text-anchor="middle" class="num">2</text>
-  <text x="86" y="258" class="stage">Receiver applies its tenant descriptor action lists</text>
-  <text x="88" y="278" class="ital">every descriptor is evaluated; one resolves only when all its keys are present and match</text>
+  <text x="86" y="258" class="stage">Receiver applies its tenant token extractor lists</text>
+  <text x="88" y="278" class="ital">every token is evaluated; one resolves only when all its keys are present and match</text>
 
   <text x="88" y="299" class="body" font-weight="700">enduser_tenant_modern</text>
   <rect x="470" y="288" width="86" height="15" rx="7" fill="#d8efd8" stroke="#4FAE5A"/>
@@ -56,7 +56,7 @@
   <text x="88" y="334" class="body" font-weight="700">enduser_tenant_legacy</text>
   <rect x="470" y="323" width="92" height="15" rx="7" fill="#ececec" stroke="#b0b0b0"/>
   <text x="516" y="334" text-anchor="middle" class="pill" fill="#777777">unresolved</text>
-  <text x="104" y="349" class="monos">requires request_header_match x-protocol-version = very-old  (header absent)</text>
+  <text x="104" y="349" class="monos">requires transport_header_match x-protocol-version = very-old  (header absent)</text>
 
   <text x="88" y="369" class="body" font-weight="700">onbehalfof_tenant</text>
   <rect x="470" y="358" width="86" height="15" rx="7" fill="#d8efd8" stroke="#4FAE5A"/>
@@ -70,7 +70,7 @@
   <circle cx="66" cy="438" r="12" fill="#2d3748"/>
   <text x="66" y="442" text-anchor="middle" class="num">3</text>
   <text x="86" y="442" class="stage">Precompute lookup keys &amp; place them in the request context</text>
-  <text x="88" y="464" class="body">Take the union of the resolved descriptors' key:values.</text>
+  <text x="88" y="464" class="body">Take the union of the resolved tokens' key:values.</text>
   <text x="88" y="482" class="body">Precompute one fixed-size table-lookup key per reachable limiter condition.</text>
   <text x="88" y="500" class="body">Cost is paid once here  =&gt;  O(1) probe at every downstream limiter.</text>
 
@@ -81,9 +81,9 @@
   <circle cx="66" cy="564" r="12" fill="#2d3748"/>
   <text x="66" y="568" text-anchor="middle" class="num">4</text>
   <text x="86" y="568" class="stage">Limiters applied in the receiver</text>
-  <text x="88" y="588" class="ital">bound limiters are evaluated in ascending numeric order; all must grant or the request fails</text>
-  <text x="104" y="607" class="mono">rate_limit/0 = obo_rate      (req onbehalfof_tenant)</text>
-  <text x="104" y="623" class="mono">rate_limit/1 = customer_rate  (opt modern / legacy)</text>
+  <text x="88" y="588" class="ital">listed limits are evaluated in order; all must grant or the request fails</text>
+  <text x="104" y="607" class="mono">rate_limits[0] = obo_rate      (req onbehalfof_tenant)</text>
+  <text x="104" y="623" class="mono">rate_limits[1] = customer_rate  (opt modern / legacy)</text>
   <rect x="486" y="596" width="170" height="16" rx="8" fill="#ecf8ec" stroke="#4FAE5A"/>
   <text x="571" y="608" text-anchor="middle" class="pill" fill="#2f7a3a">all grant  -&gt;  proceed</text>
   <rect x="486" y="618" width="170" height="16" rx="8" fill="#fdeee8" stroke="#d2603a"/>
@@ -123,9 +123,9 @@
   <text x="756" y="140" class="lane">REQUEST CONTEXT</text>
   <text x="756" y="158" class="small">carried with the request data; erased when out of scope</text>
 
-  <!-- Resolved descriptor values -->
+  <!-- Resolved token values -->
   <rect x="756" y="176" width="300" height="132" rx="6" fill="#ffffff" stroke="#cbb6e3"/>
-  <text x="768" y="196" class="body" font-weight="700" fill="#6b3fa0">Resolved descriptor values</text>
+  <text x="768" y="196" class="body" font-weight="700" fill="#6b3fa0">Resolved token values</text>
   <text x="768" y="216" class="mono">enduser_tenant_modern</text>
   <text x="768" y="232" class="mono">  customer_id=acme  workspace_id=ws-42</text>
   <text x="768" y="248" class="mono">  tier=premium</text>

@@ -42,7 +42,7 @@ This document covers the design for tenant identity and a framework
 with two basic categories of limiter. In scope are:
 
 - Configuration model for tenant identity
-- Configuration model for limiter extensions
+- Configuration model for limiter policies
 - Isolation model for multiple tenants
 - Conditional limiter behavior.
 
@@ -67,206 +67,207 @@ specific tenants in whole terms. As an example, by giving each tenant
 a dedicated port and pipeline, they can physically separate tenants
 without the use of specific multi-tenant features. By isolating
 whole-ports, whole CPUs, or whole threads to a single tenant or tenant
-group, the operator may be able to avoid using tenant descriptors
+group, the operator may be able to avoid using tenant tokens
 entirely.
 
 However, where there are context-specific attributes used for
-limiting, a **tenant descriptor** will be used. A tenant descriptor is
+limiting, a **tenant token** will be used. A tenant token is
 a small vector of key:value identifiers which represent the current
 tenant in some context. Usually, the context is a request, however,
-custom contexts can be defined as long as a tenant descriptor can be
+custom contexts can be defined as long as a tenant token can be
 stored.
 
-Tenant descriptors are multi-dimensional to enable tenant assignment
+Tenant tokens are multi-dimensional to enable tenant assignment
 in logically independent ways with user control over cardinality. For
 example, a request may be accompanied by an environment name, a
 project name, and a user name for three forms of tenancy. Choosing
 three forms means a single limiter table with three-dimensions.
 
-Multiple tenant descriptors per request are supported, enabling
+Multiple tenant tokens per request are supported, enabling
 multiple independent limiters with lower dimensions. For example, a
 request may be accompanied by both an end-user tenant identifier and
 an acting-on-behalf-of tenant identifier. These are logically
 independent, two single-dimensional limiters.
 
-Multiple tenant descriptors can be used to express various forms of a
+Multiple tenant tokens can be used to express various forms of a
 single tenant identity. When there are multiple sets of header
 conventions that describe a tenant (e.g., "modern" and "legacy"), they
 are listed as alternatives. Generally, the alternatives should be
 non-overlapping, but the behavior is well-defined either way: all
-descriptors of the request must match all the conditions of the
+tokens of the request must match all the conditions of the
 limiter.
 
-To create a new request context, tenant descriptor actions are
+To create a new request context, tenant token extractors are
 applied; we take the union of key:values of the resolved tenant
-descriptors and precompute a table lookup key for every distinct set
+tokens and precompute a table lookup key for every distinct set
 of condition entries defined in the engine. Later in the pipeline,
 these precomputed table-lookup keys will be used to evaluate limiter
 conditions in **O(1)** time.
 
 To evaluate which limiter bucket a given request falls in to, the
 sequence of conditions is applied in order. For a context to match a
-condition, all its entries must match for all tenant descriptor values
+condition, all its entries must match for all tenant token values
 to qualify.
 
 ### Model terms and request flow
 
 The model uses the following terms, which are developed in more detail below.
 
-| Term              | Definition                                                                                                                                         |
-|-------------------|----------------------------------------------------------------------------------------------------------------------------------------------------|
-| Tenant descriptor | A list of actions, possibly conditional, that determine a resolved descriptor value. These can be defined at several levels for restricted access. |
-| Descriptor action | A configured rule that extracts and/or matches one descriptor key from a request.                                                                  |
-| Descriptor value  | The set of keys and values forming a resolved descriptor, with a number of associated table lookup keys.                                           |
-| Key / value       | A single dimension of a tenant descriptor value.                                                                                                   |
-| Entry             | A single `{ key, value }` term within a condition; no `value` means wildcard.                                                                      |
-| Condition         | An ordered list of entries selecting a bucket; the first matching condition wins.                                                                  |
-| Bucket            | Contains one distinct limiter instance per distinct set of entry keys for the matching condition, up to the cardinality limit.                     |
+| Term            | Definition                                                                                                                                       |
+|-----------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| Tenant token    | A list of extractors, possibly conditional, that determine a resolved token value. These can be defined at several levels for restricted access. |
+| Token extractor | A configured rule that extracts and/or matches one token key from a request.                                                                     |
+| Token value     | The set of keys and values forming a resolved token, with a number of associated table lookup keys.                                              |
+| Key / value     | A single dimension of a tenant token value.                                                                                                      |
+| Entry           | A single `{ key, value }` term within a condition; no `value` means wildcard.                                                                    |
+| Condition       | An ordered list of entries selecting a bucket; the first matching condition wins.                                                                |
+| Bucket          | Contains one distinct limiter instance per distinct set of entry keys for the matching condition, up to the cardinality limit.                   |
 
-Descriptor actions are evaluated and the matching results are placed
+Token extractors are evaluated and the matching results are placed
 in the request context where it passes with the request data in a
 pipeline where individual nodes will apply specific limiters.
 
-![A flow diagram showing how tenant descriptor values are computed and flow through the pipeline](./multitenancy-diagram.svg)
+![A flow diagram showing how tenant token values are computed and flow through the pipeline](./multitenancy-diagram.svg)
 
-### Tenant descriptor actions
+### Tenant token extractors
 
-Tenant descriptors originate in a series of actions, configured at the
+Tenant tokens originate in a series of extractors, configured at the
 top level, group-level, and pipeline-level of the dataflow engine
 configuration, since these definitions are shared across pipeline
-groups. Descriptor values refer to one or more tenant associations,
+groups. Token values refer to one or more tenant associations,
 each association consisting of multiple keys and values and used as a
-lookup key for evaluating limiter conditions. Tenant descriptor values
+lookup key for evaluating limiter conditions. Tenant token values
 must be erased when they go out of scope to avoid leaking sensitive
 data across unintended boundaries.
 
-Request actions are applied by receivers (or processors) when they
-originate new request contexts. Descriptor actions support attribute
+Token extractors are applied by receivers (or processors) when they
+originate new request contexts. They support attribute
 extraction in a variety of ways, for example,
 
 - `receiver_id`, `source_node_id`: the first node or preceding node traversed by the request.
 - `remote_address`, `masked_remote_address`: origin network address, optionally CIDR-masked.
 - `generic_key`: a static, hard-coded key-value.
-- `request_header`: copy a request header value into a descriptor key.
-- `request_header_match`: descriptor key value must match a condition.
+- `transport_header`: copy a transport header value into a token key.
+- `transport_header_match`: token key value must match a condition.
 
-Here, the term _request header_ is generic. Although we model these as
+Here, the term _transport header_ is generic. Although we model these as
 HTTP headers, receivers for other protocols are responsible for
 deriving headers according to the protocol that is in use, using
-semantic conventions as needed. The engine reserves the descriptor key
+semantic conventions as needed. The engine reserves the token key
 `signal` to identify the type of signal in the request (e.g., "logs").
 
-### Tenant descriptor examples
+### Tenant token examples
 
-Here is an example of a single descriptor action list based on the
-client address, a hard-coded value, and an extracted request header as
+Here is an example of a single token extractor list based on the
+client address, a hard-coded value, and an extracted transport header as
 the keys:
 
 ```yaml
-actions:
+extractors:
 - key: client_address
   remote_address: {}     # use the network peer's socket address as the value
 - key: route_name
   generic_key: http/otlp
 - key: user_id
-  request_header: x-user-id
+  transport_header: x-user-id
 ```
 
 Here is an example engine configuration defining three tenant
-descriptors: two end-user forms (modern and legacy) and one
-acting-on-behalf-of service descriptor.
+tokens: two end-user forms (modern and legacy) and one
+acting-on-behalf-of service token.
 
 ```yaml
-# Engine top-level descriptors, shared across all pipeline groups.
-descriptors:
+# Engine top-level tenant tokens, shared across all pipeline groups.
+tenant_tokens:
   enduser_tenant_modern:
-    actions:
+    extractors:
     - key: customer_id
-      request_header: x-customer-id
+      transport_header: x-customer-id
     - key: workspace_id
-      request_header: x-workspace-id
+      transport_header: x-workspace-id
     - key: tier
-      request_header: x-customer-tier
+      transport_header: x-customer-tier
   enduser_tenant_legacy:
-    actions:
+    extractors:
     - key: customer_id
-      request_header: x-legacy-customer-id
+      transport_header: x-legacy-customer-id
     - key: workspace_id
-      request_header: x-legacy-workspace-id
+      transport_header: x-legacy-workspace-id
     # legacy tenants are identified by a version header
-    - request_header_match: x-protocol-version
+    - transport_header_match: x-protocol-version
       value: "very-old"
   onbehalfof_tenant:
-    actions:
+    extractors:
     - key: service_id
-      request_header: x-service-id
+      transport_header: x-service-id
     - key: subscription_id
-      request_header: x-subscription-id
+      transport_header: x-subscription-id
 groups:
-  # ... pipeline groups reference the descriptors above ...
+  # ... pipeline groups reference the tokens above ...
 ```
 
 ### Engine tenancy support
 
 The Dataflow Engine's pipeline data type (`OtapPdata`) will be
-modified to propagate tenant descriptors in the context. Receivers and
+modified to propagate tenant tokens in the context. Receivers and
 processors that create new contexts will be upgraded to evaluate the
-applicable tenant descriptors actions based on their request headers.
-When all action conditions succeed for a descriptor and request, the
-resulting tenant descriptor value is entered into the context.
+applicable tenant token extractors based on their transport headers.
+When all extractor conditions succeed for a token and request, the
+resulting tenant token value is entered into the context.
 
-Any kind of node can apply a limit. Nodes where limits are applicable
-will bind limiter extensions when the engine starts. The engine will
-also provide helpers to apply limiters in a standard way, as a shared
-implementation.
+Any kind of node can apply a limit. When the engine starts, it applies
+the resolved limit policies at the nodes and chokepoints where they
+take effect. The engine implements the standard limits itself and
+provides helpers to apply them in a uniform way, so most limits require
+no custom code.
 
 ### Resource-level tenants
 
 At the top of the OpenTelemetry data model, the Resource value
 describes a single producer of telemetry. When a pipeline request
 contains data for a single resource, as typically produced by an OpenTelemetry SDK,
-the request's resource attributes can be made to act like request headers as the input
-for tenant descriptor actions.
+the request's resource attributes can be made to act like transport headers as the input
+for tenant token extractors.
 
 Receivers for non-HTTP telemetry protocols that convey single-resource
-requests may apply descriptor actions directly to resource
+requests may apply token extractors directly to resource
 attributes. Limiters that are applied in those contexts may refer to
-single-resource descriptor actions `resource_key` and
-`resource_key_match` to extract or conditionally extract tenancy
-information. These actions can only be applied in single-resource
+single-resource token extractors `resource_attribute` and
+`resource_attribute_match` to extract or conditionally extract tenancy
+information. These extractors can only be applied in single-resource
 contexts. For example to extract a `service_name` tenant for the
 production namespace in a single-resource context:
 
 ```yaml
-actions:
+extractors:
 - key: service_name
-  resource_key: service.name
-- resource_key_match: service.namespace
+  resource_attribute: service.name
+- resource_attribute_match: service.namespace
   value: production
 ```
 
-These actions do not apply in contexts where multiple resources are
+These extractors do not apply in contexts where multiple resources are
 present. Under this proposal, the options for handling multi-resource
-requests with these resource descriptor actions are:
+requests with these resource token extractors are:
 
 - Nack the request.
 - Reject the configuration: callers asserts single-reource context or else
   invalid configuration.
-- Do not resolve the action, the descriptor will be unresolved; receivers
-  and limiters that require this descriptor will reject, otherwise these
+- Do not resolve the extractor, the token will be unresolved; receivers
+  and limiters that require this token will reject, otherwise these
   requests will not match conditions and take the default limit.
 
-Routing and batching by tenant descriptor based on resource keys
+Routing and batching by tenant token based on resource attributes
 generalizes in useful ways. Telemetry collection agents are sometimes
-required to aggregate by both tenant-descriptor property and
+required to aggregate by both tenant-token property and
 sub-characteristic such as metric name or TraceId. In general, the
 engine must add support splitting requests in these ways to enable
-routing, shuffling, grouping and load balancing by tenant descriptor.
+routing, shuffling, grouping and load balancing by tenant token.
 
 ### Tenant trust
 
 Pipeline operators are responsible for secure tenant
-configurations. Tenant descriptors can be defined at multiple levels
+configurations. Tenant tokens can be defined at multiple levels
 of the engine configuration (e.g., global, pipeline group, pipeline)
 to avoid leaking tenant details outside their scope. The dataflow
 engine is responsible for enforcing this discipline automatically.
@@ -277,17 +278,17 @@ headers.
 Pipeline operators are advised to configure sensible cardinality
 limits to protect the pipeline.
 
-### Routing/batching by tenant descriptor
+### Routing/batching by tenant token
 
 Processors (e.g., fanout) and exporters (e.g., topic) will be
-configurable to route by descriptor condition.
+configurable to route by token condition.
 
 ```yaml
 nodes:
   tenant_split:
     type: processor:tenant_router
     config:
-      optional_descriptors: [enduser_tenant_modern, enduser_tenant_legacy]
+      optional_tenant_tokens: [enduser_tenant_modern, enduser_tenant_legacy]
 
       # first-match wins
       routes:
@@ -315,22 +316,22 @@ nodes:
 ```
 
 The same applies to the batch processor specifically. Note that
-[OpenTelemetry Collector supports batching by selected request headers
+[OpenTelemetry Collector supports batching by selected transport headers
 using
 `sending_queue::batch::partition::metadata_keys`](https://github.com/open-telemetry/opentelemetry-collector/blob/main/exporter/exporterhelper/README.md#sending-queue-batch-settings)
-and a configurable cardinality limit. Tenant descriptors and batching
+and a configurable cardinality limit. Tenant tokens and batching
 conditions will be used to this effect in the dataflow engine.
 
-### Load balancing by tenant descriptor
+### Load balancing by tenant token
 
 The example above shows to isolate a small number of routes in static
-configuration based on the tenant descriptor. Engines running on
+configuration based on the tenant token. Engines running on
 multiple cores are also required to route and load balance when the
-number of descriptors is large.
+number of tokens is large.
 
-Load balancing by tenant descriptor will be organized using the
+Load balancing by tenant token will be organized using the
 dataflow engine's topic broker infrastructure based using tenant
-descriptors and conditions to compute a hash value, and then to use
+tokens and conditions to compute a hash value, and then to use
 (hash-value % N) to distribute the request to one of N topic
 receivers. The design of the load balancing mechanism is out of scope
 for this document and part of a larger scope. Often, there is a
@@ -340,82 +341,95 @@ TraceId. In both cases, the dataflow engine requires a mechanism to
 create multi-tenant, multi-request batches destined for a single
 consumer.
 
-## Limiter extensions
+## Limiter policies
 
-Limiter objects are configured in the dataflow as extensions, in
-two distinct categories:
+Limits are declared as policies under `policies.resources`, alongside
+the process-wide `memory_limiter`. Because policies are already
+hierarchical, every limit inherits the engine's policy resolution:
+top-level defaults are overridden by pipeline-group policies, which are
+in turn overridden by pipeline policies, with precedence applied by
+family. The policy hierarchy and its resolution rules are defined in
+[configuration-model.md](configuration-model.md). Limits come in two
+categories, held in two policy families:
 
-- Rate limits are used to count resources that are limited as a
-  function of time. When the resource is not available, the caller can
-  choose to wait a definite amount of time, provided they hold a
-  reservation. These resources are consumed immediately and not
-  returned by the caller.
-- Resource limits are used to count resources that are limited by a
-  current total. When the resource is not available, the caller can
-  choose to wait indefinitely for the resource to be returned. These
-  can be applied anywhere in the engine there is a resource that is
-  held in-use by ongoing work anywhere in the engine such as queues,
+- **Rate limits**, under `policies.resources.rate_limits`, count
+  resources that are limited as a function of time. When the resource
+  is not available, the caller can choose to wait a definite amount of
+  time, provided they hold a reservation. These resources are consumed
+  immediately and not returned by the caller.
+- **Resource limits**, under `policies.resources.resource_limits`,
+  count resources that are limited by a current total. When the
+  resource is not available, the caller can choose to wait indefinitely
+  for the resource to be returned. These apply anywhere in the engine
+  there is a resource held in-use by ongoing work, such as queues,
   batches, and topics.
 
-Both kinds of limits can be used with different weight measures, for
+Both kinds of limit can be used with different weight measures, for
 example we can limit by request count, by in-memory bytes count, by
 compressed bytes count, or by items of telemetry. Rate and resource
-limiters have distinct extension interfaces, and implementations will
-of course use different configuration; however, they generally use the
-same model for multitenancy and share common configuration structs:
+limits have distinct runtime interfaces, and of course use different
+configuration; however, they generally use the same model for
+multitenancy and share a common policy schema:
 
 - **unit**: Describes the units of weight being limited. For rate
-  limiters this must end with "/second" (e.g., `request_count/second`,
-  `memory_bytes/second`). For resource limiters omit the rate suffix (e.g., `memory_bytes`). In the yaml configuration, this gives the
-  raw numbers meaning; in the code, a verification step ensures that
-  each limiter is used to limit the correct category of weight.
-- **optional_descriptors**: Optional, a list of the tenant descriptors
-  used by the limiter. These descriptor values are extracted from the
+  limits this must end with "/second", for example
+  `request_count/second` or `memory_bytes/second`. For resource limits,
+  omit the rate suffix, for example `memory_bytes`. In the yaml
+  configuration, this gives the raw numbers meaning; in the code, a
+  verification step ensures that each limit is applied to the correct
+  category of weight.
+- **optional_tenant_tokens**: Optional, a list of the tenant tokens
+  used by the limiter. These token values are extracted from the
   request and used to evaluate conditions.
-- **required_descriptors**: Optional, a list of the tenant descriptors
+- **required_tenant_tokens**: Optional, a list of the tenant tokens
   used by the limiter that must be present, otherwise the request is
-  immediately failed. These descriptor values are extracted from the
+  immediately failed. These token values are extracted from the
   request and used to evaluate conditions.
 - **conditions**: A list of conditions, each of them defined by a name
   and a list of entries with a bucket-specific limit. When all the entries
-  are satisfied for all the input descriptors, the conditional limit
+  are satisfied for all the input tokens, the conditional limit
   is chosen. The first matching condition is selected, otherwise a
   default is used.
 - **cardinality**: Determines the limit of unique combinations for
   buckets in the limiter and what happens when the number is exceeded.
 
-Users may provide one or both of `optional_descriptors` and
-`required_descriptors`.
+Users may provide one or both of `optional_tenant_tokens` and
+`required_tenant_tokens`.
 
-The general form of a limiter extension configuration exposes these
-fields, one specific setting per condition, and one default
-value. Generally, the name of the limiter matches the name of its
-specific configuration field, so `token_bucket_limiter` has a
-configuration named `token_bucket`. For example:
+The engine provides a built-in implementation for each category, so
+the common case needs no custom code: a token bucket for rate limits
+and a semaphore for resource limits. A policy selects the built-in by
+naming its specific configuration block, so a `token_bucket` block
+selects the token-bucket rate limiter and a `semaphore` block selects
+the semaphore resource limiter. The general form exposes the shared
+schema, one specific setting per condition, and one default value. For
+example:
 
 ```yaml
-some_rate_limiter:
-  type: extension:specific_limiter
-  config:
-    unit: request_items/second
-    optional_descriptors: [tenant_form_a, tenant_form_b]
-    conditions:
-    - name: first
-      entries: { ... }
-      specific: { ... } # first condition specifics
-      cardinality: { ... }
-    - name: second
-      entries: { ... }
-      specific: { ... } # second condition specifics
-      cardinality: { ... }
-    specific: { ... }   # default condition specifics
-    cardinality: { ... }
+policies:
+  resources:
+    rate_limits:
+      some_rate_limit:
+        unit: request_items/second
+        optional_tenant_tokens: [tenant_form_a, tenant_form_b]
+        conditions:
+        - name: first
+          entries: { ... }
+          token_bucket: { ... } # first condition specifics
+          cardinality: { ... }
+        - name: second
+          entries: { ... }
+          token_bucket: { ... } # second condition specifics
+          cardinality: { ... }
+        token_bucket: { ... }   # default condition specifics
+        cardinality: { ... }
 ```
 
-Multiple implementations of each extension type will be defined, and
-for each of the two interfaces, a standard thread-local implementation is
-provided: `token_bucket_limiter` for rate limits and
-`semaphore_limiter` for resource limits.
+The engine applies each limit policy at the enforcement points that
+handle its declared weight, within the policy's scope. Where a specific
+node must be selected, a node references a named policy directly, as
+shown in the examples below. Limits that exceed the built-ins are
+supplied as policy extensions, described under Shared limiters.
 
 ### Resource limiters
 
@@ -445,10 +459,10 @@ assume responsibility for resources, and special nodes (e.g., topic
 exporter and receiver) will require an explicit mechanisms to transfer
 resource holds across threads and CPUs.
 
-The resource limiter extension interface also gives limiters control
-over the total number of waiters and/or the total amount of pending
-weight through its reservation interface. The built-in semaphore
-limiter's specific configuration, for example:
+The resource limiter interface also controls the total number of
+waiters and/or the total amount of pending weight through its
+reservation interface. The built-in semaphore limiter's specific
+configuration, for example:
 
 ```yaml
 semaphore:
@@ -479,115 +493,112 @@ token_bucket:
 
 ### Shared limiters
 
-Sharing limiter extensions at the pipeline-group and engine scope
-(i.e., across threads or CPUs) in the dataflow engine requires careful
-attention to avoid synchronization costs.  The built-in token bucket
-and semaphore limiters support thread-local use only, so they are
-defined with pipeline-scope. The dataflow engine extension mechanism
-supports requesting shared extensions at wider scopes generally, so
-limiter scope can be thread-local (pipeline), CPU-local (pipeline
-group), global (engine) and eventually NUMA-regional.
+Sharing a limit at the pipeline-group or engine scope, meaning across
+threads or CPUs, requires careful attention to avoid synchronization
+costs. The engine's built-in token bucket and semaphore limiters
+support thread-local use only, so they resolve at pipeline scope. Wider
+scopes are served by **policy extensions**: the policy machinery lets a
+limit request a shared implementation at CPU-local (pipeline group),
+global (engine), and eventually NUMA-regional scope.
 
-For performance reasons, shared limiter extensions should separate
-their hot and cold paths. Commonly, this is done using aggregate
-requests in the background and asynchronous or relaxed-memory
+For performance reasons, a shared limiter policy extension should
+separate its hot and cold paths. Commonly, this is done by aggregating
+requests in the background and using asynchronous or relaxed-memory
 mechanisms to refresh hot-path limiter state.
 
 Among open-source global rate limit solutions, Envoy implements the
 [gRPC Global Rate Limit
 service](https://github.com/envoyproxy/ratelimit); another popular
 solution is
-[Gubernator](https://github.com/gubernator-io/gubernator). Global rate
-limit extensions will support mapping fields of the tenant descriptor
+[Gubernator](https://github.com/gubernator-io/gubernator). A global
+rate limit policy extension will map fields of the tenant token
 into rate-limit requests on systems such as these.
 
-Shared resource limiters may be implemented using conventional
-synchronization primitives, for example limiters with Mutex-wrapped
-internal state, but as with shared rate limiter, these implementations
-should try to leverage thread-local state and separate their hot and
-cold paths to avoid interference with the dataflow engine.
+Shared resource limits may be implemented using conventional
+synchronization primitives, for example a policy extension with
+Mutex-wrapped internal state, but as with a shared rate limit, these
+implementations should leverage thread-local state and separate their
+hot and cold paths to avoid interference with the dataflow engine.
 
-The limiters described in previous examples have been declared in
-thread-local scope, making limits per-tenant and per-pipeline. To
-implement engine-wide or group-wide limits on a per-tenant bases,
-there are two options:
+The limits described in previous examples resolve at thread-local
+scope, making them per-tenant and per-pipeline. To implement
+engine-wide or group-wide limits on a per-tenant basis, there are two
+options:
 
-1. Use a group- or engine-shared limiter instance.
-2. Route the data by tenant descriptor to a single pipeline, then use a thread-local limiter instance.
+1. Use a group- or engine-shared limiter instance, supplied as a policy
+   extension.
+2. Route the data by tenant token to a single pipeline, then use
+   the built-in thread-local limiter.
 
 Both are reasonable options.
 
 ### Example limiter yaml
 
-Completing the example started above, we can use the three descriptors
-declared above to implement two rate limiters.
+Completing the example started above, we can use the three tokens
+declared above to implement two rate limit policies.
 
 ```yaml
-descriptors: { ... }
+tenant_tokens: { ... }
 groups:
   main-group:
-    # Extensions defined at pipeline-group level are shared
     pipelines:
       main-pipe:
-        extensions:
-          # Extensions defined at pipeline level are thread-local.
-          # The first rate limit applies to the customer.
-          customer_rate:
-            type: extension:token_bucket_limiter
-            config:
-              unit: network_bytes/second
-              optional_descriptors: [enduser_tenant_modern, enduser_tenant_legacy]
-              conditions:
-              # This gives each workspace with customer_id=bigfish more allowance.
-              - name: bigfish
-                entries:
-                - key: workspace_id
-                - key: customer_id
-                  value: bigfish
-                token_bucket:
-                  allow: 50_000   # 50KB/s allowance per pipeline PER CORE
-                  burst: 100_000  # 100KB maximum size PER CORE
+        # Limit policies at pipeline scope resolve thread-local, per core.
+        policies:
+          resources:
+            rate_limits:
+              # The first rate limit applies to the customer.
+              customer_rate:
+                unit: network_bytes/second
+                optional_tenant_tokens: [enduser_tenant_modern, enduser_tenant_legacy]
+                conditions:
+                # This gives each workspace with customer_id=bigfish more allowance.
+                - name: bigfish
+                  entries:
+                  - key: workspace_id
+                  - key: customer_id
+                    value: bigfish
+                  token_bucket:
+                    allow: 50_000   # 50KB/s allowance per pipeline PER CORE
+                    burst: 100_000  # 100KB maximum size PER CORE
+                  cardinality:
+                    max_count: 1000 # Up to 1000 workspaces (single customer)
+                # Every combination of { customer_id != bigfish, workspace_id }
+                # uses this limit PER CORE.
+                token_bucket: { allow: 25_000, burst: 50_000 }
+                # Limit to 10000 buckets, the point where isolation breaks down.
                 cardinality:
-                  max_count: 1000 # Up to 1000 workspaces (single customer)
-              # Every combination of { customer_id != bigfish, workspace_id }
-              # uses this limit PER CORE.
-              token_bucket: { allow: 25_000, burst: 50_000 }
-              # Limit to 10000 buckets, the point where isolation breaks down.
-              cardinality:
-                max_count: 10000
-                # When the limit is reached, choose to "break" isolation
-                # or else choose to "reject" the tenant.
-                failure_mode: break
+                  max_count: 10000
+                  # When the limit is reached, choose to "break" isolation
+                  # or else choose to "reject" the tenant.
+                  failure_mode: break
 
-          # Second rate limit applies to the OBO service
-          obo_rate:
-            type: extension:token_bucket_limiter
-            config:
-              unit: network_bytes/second
-              required_descriptors: [onbehalfof_tenant]
-              # ...
+              # Second rate limit applies to the OBO service
+              obo_rate:
+                unit: network_bytes/second
+                required_tenant_tokens: [onbehalfof_tenant]
+                # ...
 
         nodes:
           otlp:
             type: receiver:otlp
-            capabilities:
-              # Multiple rate limiters are listed with numeric sorting key "/N".
-              rate_limit/0: obo_rate
-              rate_limit/1: customer_rate
+            # The engine applies ingress rate-limit policies at this receiver.
+            # Listed order is the evaluation order; all must grant to proceed.
+            rate_limits: [obo_rate, customer_rate]
             config:
-              # determine which tenant descriptors are evaluated
-              descriptors: [enduser_tenant_modern, enduser_tenant_legacy, onbehalfof_tenant]
+              # determine which tenant tokens are evaluated
+              tenant_tokens: [enduser_tenant_modern, enduser_tenant_legacy, onbehalfof_tenant]
               protocols:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
 ```
 
-In this example, where multiple limiters are bound to a node as with
-`rate_limit/0` and `rate_limit/1` above, they are evaluated in
-ascending numeric order and all must grant for the request to proceed.
-If a limiter failure causes the request to short-circuit, the granted
-requests will be cancelled. Specific implementation details are
-out-of-scope, see open questions.
+In this example, where multiple limits are listed for a node as with
+`rate_limits: [obo_rate, customer_rate]` above, they are evaluated in
+listed order and all must grant for the request to proceed. If a limit
+failure causes the request to short-circuit, the granted reservations
+are cancelled. Specific implementation details are out-of-scope, see
+open questions.
 
 ### Limiter fairness
 
@@ -604,12 +615,12 @@ interface. This is the only valid mode setting in cases where the
 caller is unable to block. See blocking and queuing implementation
 details below.
 
-In addition to queueing mode, limiter extensions can be implemented to
-take advantage of tenant descriptor fields. As an example, a tenant
-descriptor might be used to implement a notion of priority among
-waiters. As a hypothetical example, a `priority_semaphore` component
-could allow higher-priority requests to jump ahead of lower-priority
-requests using this configuration:
+In addition to queueing mode, a policy extension can take advantage of
+tenant token fields. As an example, a tenant token might be
+used to implement a notion of priority among waiters. A hypothetical
+`priority_semaphore` policy extension could allow higher-priority
+requests to jump ahead of lower-priority requests using this
+configuration:
 
 ```yaml
 priority_semaphore:
@@ -653,7 +664,7 @@ these structures, the algorithm reduces to O(1) work per condition. We
 assume the use of a fixed-size hash function over ordered key:values,
 as in a database group-by hash-join operation.
 
-### Compile descriptors and conditions
+### Compile tokens and conditions
 
 When loading the engine configuration, produce static data
 structures to accelerate the two steps that follow. First, from
@@ -661,69 +672,69 @@ the pipeline graph structure, determine a reachability mapping
 for all nodes, indicating whether a context created at any given
 node can reach any other limiter in the engine.
 
-Next, partition the descriptor actions into two groups. Conditional
-actions are those whose key is tested by some reachable condition;
-their presence and value will resolve the descriptors, and they are
-indexed here. Wildcard actions that require a key without a specific
-value are indexed to accept all values. Remaining actions are deferred
-until the matching descriptors are known.
+Next, partition the token extractors into two groups. Conditional
+extractors are those whose key is tested by some reachable condition;
+their presence and value will resolve the tokens, and they are
+indexed here. Wildcard extractors that require a key without a specific
+value are indexed to accept all values. Remaining extractors are deferred
+until the matching tokens are known.
 
 The index is a map by header key; any-value cases are resolved here,
 then a second map by header value. The any-value and specific-value
-cases are identical, each a list of _(descriptor, action)_ slots that the
+cases are identical, each a list of _(token, extractor)_ slots that the
 corresponding header satisfies.
 
-Finally, precompute the descriptor-by-condition cross-product: for
-every descriptor and every reachable condition (the conditions of
+Finally, precompute the token-by-condition cross-product: for
+every token and every reachable condition (the conditions of
 limiters reachable from the node), the projection that yields that
 condition's table-lookup key.
 
 ### Context creation step
 
-Using the structures above, a receiver builds the descriptor values
+Using the structures above, a receiver builds the token values
 for a request:
 
-- Take the union of descriptors over the applicable limiters. Initialize a
-  candidate vector indexed by descriptor, each entry a bit-vector with a
-  1-bit for every unsatisfied descriptor key.
+- Take the union of tokens over the applicable limiters. Initialize a
+  candidate vector indexed by token, each entry a bit-vector with a
+  1-bit for every unsatisfied token key.
 - For each header key/value on the request, look up the key, consider
-  any-value case, then the specific case. For each (descriptor,
-  action) slot listed, clear that descriptor's corresponding bit.
-- A descriptor whose bit-vector reaches 0 has all keys present and
+  any-value case, then the specific case. For each (token,
+  extractor) slot listed, clear that token's corresponding bit.
+- A token whose bit-vector reaches 0 has all keys present and
   matching: construct its value, and with it the precomputed lookup
-  key for each reachable condition that references it. A descriptor
+  key for each reachable condition that references it. A token
   that never reaches 0 is unresolved for this request.
 
 ### Limiter lookup step
 
-The context value carries, for each resolved descriptor, a precomputed
+The context value carries, for each resolved token, a precomputed
 lookup key per reachable condition. When a request arrives, each
 limiter scans its conditions and performs one table lookup per
-condition, per bound descriptor, using the precomputed keys.
+condition, per bound token, using the precomputed keys.
 
 ### Algorithm Analysis
 
-Let `D_recv` be the number of descriptors in the node, `C_reachable`
+Let `D_recv` be the number of tokens in the node, `C_reachable`
 the reachable limiter conditions from that node, `H` the header count,
-and `k_d`, `k_c` the descriptor and condition key counts. A condition
-applies to a descriptor only when the descriptor's schema covers the
-condition's keys. Let `P` be the number of applicable (descriptor,
+and `k_d`, `k_c` the token and condition key counts. A condition
+applies to a token only when the token's schema covers the
+condition's keys. Let `P` be the number of applicable (token,
 condition) pairs: `C_reachable <= P <= D_recv * C_reachable`, the
 upper bound reached only when a limiter binds multiple same-schema
-descriptors.
+tokens.
 
 The space used in this approach:
 
-- resolved descriptor values: `O(D_recv * k_d)`
+- resolved token values: `O(D_recv * k_d)`
 - precomputed lookup keys: one fixed-size fingerprint per applicable pair,
   total size `O(P)`.
 
 The time used in this approach:
 
-- context creation: `O(H + D_recv * k_d)` to resolve descriptors and
+- context creation: `O(H + D_recv * k_d)` to resolve tokens and
   materialize values, plus `O(P * k_c)` to project and hash one lookup
   key per applicable pair
-- limiter lookup: one `O(1)` table probe per applicable (descriptor,
+- limiter lookup: one `O(1)` table probe per applicable (token,
   condition) pair, `O(P)` total, independent of `k_d` and `k_c`,
   because projection and hashing cost were paid at context creation.
 
@@ -757,10 +768,10 @@ Additional common metrics are supported at varying levels of detail:
 
 The two forms of limiter interface have many applications. They can be
 thread-local or shared through pipeline-group, NUMA-regional and
-global-level limiter extensions. The set of weights is not fixed;
+global-level policy extensions. The set of weights is not fixed;
 however, it is well known. Limiter units determine the mechanism being
 limited, and the code and the configuration must agree on what is
-being limited when the extension is bound, so that the limiter is
+being limited when the policy is applied, so that the limit is
 applied to the correct weight.
 
 So far, examples have illustrated the use of several weight names:
@@ -778,58 +789,57 @@ As an example, consider extending the Durable Buffer processor with
 per-tenant rate and storage limits.
 
 ```yaml
- descriptors: { ... }   # enduser_tenant_modern / _legacy, as defined earlier
+tenant_tokens: { ... }   # enduser_tenant_modern / _legacy, as defined earlier
 
- groups:
-   main-group:
-     pipelines:
-       main-pipe:
-         extensions:
+groups:
+  main-group:
+    pipelines:
+      main-pipe:
+        policies:
+          resources:
 
-           # Per-tenant disk space quota: a semaphore over bytes resident on disk.
-           disk_space:
-             type: extension:semaphore_limiter
-             config:
-               unit: storage_bytes
-               optional_descriptors: [enduser_tenant_modern, enduser_tenant_legacy]
-               conditions:
-               - name: bigfish
-                 entries:
-                 - key: workspace_id
-                 - key: customer_id
-                   value: bigfish
-                 semaphore: { admitted: 1_000_000_000, waiting: 100_000_000, waiters: 64, mode: lifo }
-                 cardinality: { max_count: 1000 }
-               semaphore: { admitted: 100_000_000, waiting: 10_000_000, waiters: 64, mode: lifo }
-               cardinality: { max_count: 10000, failure_mode: break }
+            resource_limits:
+              # Per-tenant disk space quota: a semaphore over bytes resident on disk.
+              disk_space:
+                unit: storage_bytes
+                optional_tenant_tokens: [enduser_tenant_modern, enduser_tenant_legacy]
+                conditions:
+                - name: bigfish
+                  entries:
+                  - key: workspace_id
+                  - key: customer_id
+                    value: bigfish
+                  semaphore: { admitted: 1_000_000_000, waiting: 100_000_000, waiters: 64, mode: lifo }
+                  cardinality: { max_count: 1000 }
+                semaphore: { admitted: 100_000_000, waiting: 10_000_000, waiters: 64, mode: lifo }
+                cardinality: { max_count: 10000, failure_mode: break }
 
-           # Per-tenant disk limit: a token bucket over disk ops/second.
-           disk_iops:
-             type: extension:token_bucket_limiter
-             config:
-               unit: storage_ops/second
-               optional_descriptors: [enduser_tenant_modern, enduser_tenant_legacy]
-               conditions:
-               - name: bigfish
-                 entries:
-                 - key: workspace_id
-                 - key: customer_id
-                   value: bigfish
-                 token_bucket: { allow: 2_000, burst: 4_000, interval: 1s }
-                 cardinality: { max_count: 1000 }
-               token_bucket: { allow: 500, burst: 1_000, interval: 1s, mode: fifo }
-               cardinality: { max_count: 10000, failure_mode: break }
+            rate_limits:
+              # Per-tenant disk limit: a token bucket over disk ops/second.
+              disk_iops:
+                unit: storage_ops/second
+                optional_tenant_tokens: [enduser_tenant_modern, enduser_tenant_legacy]
+                conditions:
+                - name: bigfish
+                  entries:
+                  - key: workspace_id
+                  - key: customer_id
+                    value: bigfish
+                  token_bucket: { allow: 2_000, burst: 4_000, interval: 1s }
+                  cardinality: { max_count: 1000 }
+                token_bucket: { allow: 500, burst: 1_000, interval: 1s, mode: fifo }
+                cardinality: { max_count: 10000, failure_mode: break }
 
-         nodes:
-           durable_buffer:
-             type: processor:durable_buffer
-             capabilities:
-               resource_limit/0: disk_space
-               rate_limit/0:     disk_iops
-             config:
-               path: /var/lib/otap/buffer
-               retention_size_cap: 10 GiB
-               size_cap_policy: backpressure
+        nodes:
+          durable_buffer:
+            type: processor:durable_buffer
+            # The engine applies these named limit policies at the durable buffer.
+            resource_limits: [disk_space]
+            rate_limits: [disk_iops]
+            config:
+              path: /var/lib/otap/buffer
+              retention_size_cap: 10 GiB
+              size_cap_policy: backpressure
 ```
 
 ### Observability limits
@@ -838,37 +848,38 @@ The dataflow engine's internal telemetry system can be configured to
 rate-limit log records by tenant, as an example below. First, the
 codebase would have to be extended to make its logging macros
 optionally context-specific. In locations where a log event is
-associated with a request context, its tenant descriptors would be
+associated with a request context, its tenant tokens would be
 used to locate a limiter before evaluating the log statement.
 
 ```yaml
- engine:
-   telemetry:
-     logs:
-       level: info
-       rate_limit: tenant_log_rate
-   descriptors: { ... }
-   observability:
-     pipeline:
-       extensions:
-         tenant_log_rate:
-           type: extension:token_bucket_limiter
-           config:
-             unit: log_records/second
-             required_descriptors: [ ... ]
-             conditions: { ... }
-             token_bucket: { allow: 5, burst: 10, interval: 1s, mode: nonblocking }
-       nodes:
-         itr:
-           type: receiver:internal_telemetry
-           config: {}
-         otlp_out:
-           type: exporter:otlp_grpc
-           config:
-             grpc_endpoint: "http://127.0.0.1:4317"
-       connections:
-         - from: itr
-           to: otlp_out
+policies:
+  resources:
+    rate_limits:
+      tenant_log_rate:
+        unit: log_records/second
+        required_tenant_tokens: [ ... ]
+        conditions: { ... }
+        token_bucket: { allow: 5, burst: 10, interval: 1s, mode: nonblocking }
+
+engine:
+  telemetry:
+    logs:
+      level: info
+      rate_limit: tenant_log_rate
+  tenant_tokens: { ... }
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: receiver:internal_telemetry
+          config: {}
+        otlp_out:
+          type: exporter:otlp_grpc
+          config:
+            grpc_endpoint: "http://127.0.0.1:4317"
+      connections:
+        - from: itr
+          to: otlp_out
 ```
 
 ### Rust async blocking and queueing
@@ -891,7 +902,7 @@ to coordinate with the limiter.
 
 These things have been considered out of scope:
 
-- Live reconfiguration of tenant descriptor and limiter extensions
+- Live reconfiguration of tenant token and limiter policies
   has not been considered.
 - Rust mechanics for holding resource reservations, thread-shared and
   thread-local cases; this should align with the retained-work
@@ -904,16 +915,16 @@ These things have been considered out of scope:
   subsequent limiter fails. An efficient reserve-and-commit interface
   may be required.
 - The topic exporter/receiver will be potentially responsible for
-  erasing and/or recomputing tenant descriptors as they cross scope
+  erasing and/or recomputing tenant tokens as they cross scope
   boundaries. This was not covered above.
 - Multi-valued limiter requests (e.g., map of key:value to weight) to
-  support resource descriptor actions in multi-resource contexts. Could
+  support resource token extractors in multi-resource contexts. Could
   we add a helper to acquire many limits at once?
 - Some forms of limiter are applied independent of request context,
   before headers are incomplete or unknown, where isolation is
   required to separate tenant groups. For example, receiver connection
   limits, pipeline cpu limits, these are outside of request context
-  and resource/request-header descriptors do not apply. However they
-  still can define tenant descriptors and limit on descriptor actions
+  and resource/request-header tokens do not apply. However they
+  still can define tenant tokens and limit on token extractors
   as appropriate; for example, the rate of new connections could be
   limited in terms of source-address.
