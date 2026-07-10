@@ -1087,7 +1087,12 @@ impl SortedBatchCursor {
         // (value_at == None) fall through to the search, as does the very first seek of a batch.
         if self.curr_index > 0 {
             if let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1]) {
-                if !(target < prev) {
+                // `target >= prev`: forward scan suffices. Incomparable values (partial_cmp ==
+                // None) fall through to the search as a safe default.
+                if matches!(
+                    target.partial_cmp(&prev),
+                    Some(Ordering::Greater | Ordering::Equal)
+                ) {
                     return;
                 }
             }
