@@ -574,7 +574,7 @@ fn write_diagnostics(
             if let Some(nested_diagnostics) = message.get_nested_diagnostics() {
                 let nested = write_diagnostics(query, nested_diagnostics, false);
                 for line in nested.lines() {
-                    diagnostics.push((column, format!("{}|    {line}", &" ".repeat(column + 7))));
+                    diagnostics.push((column, format!("{}|    {line}", " ".repeat(column + 7))));
                 }
             }
         }

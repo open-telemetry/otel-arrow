@@ -356,13 +356,13 @@ impl ViewMarshaler for DetailedViewMarshaler {
         let mut report = String::new();
 
         _ = writeln!(&mut report, "Metric #{index}",);
-        _ = writeln!(&mut report, "   -> Name: {name}", name = &metric.name);
+        _ = writeln!(&mut report, "   -> Name: {name}", name = metric.name);
         _ = writeln!(
             &mut report,
             "   -> Description: {description}",
-            description = &metric.description
+            description = metric.description
         );
-        _ = writeln!(&mut report, "   -> Unit: {unit}", unit = &metric.unit);
+        _ = writeln!(&mut report, "   -> Unit: {unit}", unit = metric.unit);
         if let Some(data) = &metric.data {
             write_datapoints_detailed(&mut report, data, "   ");
         }
