@@ -32,16 +32,29 @@ use otap_df_pdata_views::views::resource::ResourceView;
 
 /// Zero-copy view over OTAP logs Arrow RecordBatches
 pub struct OtapLogsView<'a> {
-    columns: LogsArrays<'a>,                       // ~220 bytes
+    // Cached root (Logs) columns. `None` when the root Logs payload is missing.
+    // Per the OTAP spec, a missing root payload is semantically equivalent to one
+    // with 0 rows, so when this is `None` the view simply emits 0 rows (the
+    // hierarchy maps below are empty).
+    columns: Option<LogsArrays<'a>>, // ~220 bytes when present
+
     resource_attrs: Option<Attribute16Arrays<'a>>, // ~168 bytes when present
     scope_attrs: Option<Attribute16Arrays<'a>>,    // ~168 bytes when present
     log_attrs: Option<Attribute16Arrays<'a>>,      // ~168 bytes when present
 
-    // Pre-computed indices for hierarchy reconstruction and attribute matching.
+    // Pre-computed indices for hierarchy reconstruction. Empty when the root
+    // payload is missing (0 rows).
     //
     // These are built once at construction to avoid O(N*M) scans during iteration.
     // Without these, we'd need to scan the entire logs batch for each resource/scope
-    // to find matching rows, and scan all attributes for each log record.
+    // to find matching rows.
+    //
+    // Resource ID -> List of rows (RowGroup)
+    resource_groups: Vec<(u16, RowGroup)>,
+    // Resource ID -> List of (Scope ID, RowGroup)
+    scope_groups_map: BTreeMap<u16, Vec<(u16, RowGroup)>>,
+
+    // Pre-computed attribute matching indices.
     //
     // Memory allocation: Stores IDs and row indices only, not actual data.
     // Example: 1000 logs with 4 log attributes each allocates ~50 KB for these
@@ -64,10 +77,6 @@ pub struct OtapLogsView<'a> {
     // justify the memory cost. Requires measuring typical log count and attributes-
     // per-log in production workloads.
     //
-    // Resource ID -> List of rows (RowGroup)
-    resource_groups: Vec<(u16, RowGroup)>,
-    // Resource ID -> List of (Scope ID, RowGroup)
-    scope_groups_map: BTreeMap<u16, Vec<(u16, RowGroup)>>,
     // Parent ID -> List of attribute row indices (for O(log n) attribute lookup)
     resource_attrs_map: BTreeMap<u16, Vec<usize>>,
     scope_attrs_map: BTreeMap<u16, Vec<usize>>,
@@ -78,22 +87,25 @@ impl<'a> OtapLogsView<'a> {
     /// Create a new OTAP logs view from Arrow RecordBatches
     #[inline]
     pub(crate) fn new(
-        logs_batch: &'a RecordBatch,
+        logs_batch: Option<&'a RecordBatch>,
         resource_attrs: Option<&'a RecordBatch>,
         scope_attrs: Option<&'a RecordBatch>,
         log_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
-        // 1. Cache columns for O(1) access
-        let columns = LogsArrays::try_from(logs_batch)?;
+        // 1. Cache root columns for O(1) access. A missing root batch is
+        //    semantically equivalent to 0 rows.
+        let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
 
-        // 2. Pre-compute resource grouping
-        let resource_groups = group_by_resource_id(logs_batch);
-
-        // 3. Pre-compute scope grouping per resource
+        // 2. Pre-compute resource/scope grouping. When the root batch is missing
+        //    these stay empty, so iteration yields 0 rows.
+        let mut resource_groups = Vec::new();
         let mut scope_groups_map = BTreeMap::new();
-        for (resource_id, row_indices) in &resource_groups {
-            let scope_groups = group_by_scope_id(logs_batch, row_indices);
-            let _ = scope_groups_map.insert(*resource_id, scope_groups);
+        if let Some(logs_batch) = logs_batch {
+            resource_groups = group_by_resource_id(logs_batch);
+            for (resource_id, row_indices) in &resource_groups {
+                let scope_groups = group_by_scope_id(logs_batch, row_indices);
+                let _ = scope_groups_map.insert(*resource_id, scope_groups);
+            }
         }
 
         // 4. Pre-compute attribute mappings
@@ -135,11 +147,7 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapLogsView<'a> {
     type Error = Error;
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
-        let logs_batch = records
-            .get(ArrowPayloadType::Logs)
-            .ok_or(Error::RecordBatchNotFound {
-                payload_type: ArrowPayloadType::Logs,
-            })?;
+        let logs_batch = records.get(ArrowPayloadType::Logs);
 
         let resource_attrs = records.get(ArrowPayloadType::ResourceAttrs);
         let scope_attrs = records.get(ArrowPayloadType::ScopeAttrs);
@@ -175,7 +183,8 @@ pub struct OtapResourceLogsIter<'a> {
 impl<'a> OtapResourceLogsIter<'a> {
     #[inline]
     fn new(view: &'a OtapLogsView<'a>) -> Self {
-        // Iterate over pre-computed resource groups stored in the view
+        // Iterate over pre-computed resource groups stored in the view. When the
+        // root batch is missing there are no groups, so the iterator is empty.
         Self {
             view,
             resource_groups: view.resource_groups.iter(),
@@ -251,7 +260,8 @@ pub struct OtapScopeLogsIter<'a> {
 impl<'a> OtapScopeLogsIter<'a> {
     #[inline]
     fn new(resource_view: &'a OtapResourceLogsView<'a>) -> Self {
-        // Use pre-computed scope groups for this resource
+        // Use pre-computed scope groups for this resource. If the root batch is
+        // missing there are no groups (empty iterator).
         let scope_groups = resource_view
             .view
             .scope_groups_map
@@ -379,7 +389,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn time_unix_nano(&self) -> Option<u64> {
-        self.view.columns.time_unix_nano.as_ref().and_then(|col| {
+        self.columns()?.time_unix_nano.as_ref().and_then(|col| {
             if col.is_valid(self.row_idx) {
                 Some(col.value(self.row_idx) as u64)
             } else {
@@ -390,8 +400,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn observed_time_unix_nano(&self) -> Option<u64> {
-        self.view
-            .columns
+        self.columns()?
             .observed_time_unix_nano
             .as_ref()
             .and_then(|col| {
@@ -405,8 +414,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn severity_number(&self) -> Option<i32> {
-        self.view
-            .columns
+        self.columns()?
             .severity_number
             .as_ref()
             .and_then(|col| col.value_at(self.row_idx))
@@ -414,8 +422,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn severity_text(&self) -> Option<Str<'_>> {
-        self.view
-            .columns
+        self.columns()?
             .severity_text
             .as_ref()
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
@@ -424,8 +431,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
     #[inline]
     fn body(&self) -> Option<Self::Body<'_>> {
         // Extract body value from the cached body columns
-        self.view
-            .columns
+        self.columns()?
             .body
             .as_ref()
             .and_then(|cols| get_body_from_struct(cols, self.row_idx))
@@ -433,7 +439,9 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn attributes(&self) -> Self::AttributeIter<'_> {
-        let log_id = get_log_id(self.view.columns.id, self.row_idx);
+        let log_id = self
+            .columns()
+            .and_then(|columns| get_log_id(columns.id, self.row_idx));
         let matching_rows = log_id
             .and_then(|id| self.view.log_attrs_map.get(&id))
             .map(|v| v.as_slice())
@@ -448,10 +456,8 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        self.view
-            .columns
-            .dropped_attributes_count
-            .as_ref()
+        self.columns()
+            .and_then(|columns| columns.dropped_attributes_count.as_ref())
             .map(|col| {
                 if col.is_valid(self.row_idx) {
                     col.value(self.row_idx)
@@ -464,7 +470,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn flags(&self) -> Option<u32> {
-        self.view.columns.flags.as_ref().and_then(|col| {
+        self.columns()?.flags.as_ref().and_then(|col| {
             if col.is_valid(self.row_idx) {
                 Some(col.value(self.row_idx))
             } else {
@@ -475,7 +481,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn trace_id(&self) -> Option<&TraceId> {
-        self.view.columns.trace_id.as_ref().and_then(|col| {
+        self.columns()?.trace_id.as_ref().and_then(|col| {
             col.slice_at(self.row_idx)
                 .and_then(|bytes| bytes.try_into().ok())
         })
@@ -483,7 +489,7 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn span_id(&self) -> Option<&SpanId> {
-        self.view.columns.span_id.as_ref().and_then(|col| {
+        self.columns()?.span_id.as_ref().and_then(|col| {
             col.slice_at(self.row_idx)
                 .and_then(|bytes| bytes.try_into().ok())
         })
@@ -491,11 +497,22 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
     #[inline]
     fn event_name(&self) -> Option<Str<'_>> {
-        self.view
-            .columns
+        self.columns()?
             .event_name
             .as_ref()
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
+    }
+}
+
+impl<'a> OtapLogRecordView<'a> {
+    /// Cached root columns for the view, if the root batch is present.
+    ///
+    /// A record view is only ever produced while iterating a non-empty root
+    /// batch, so in practice this is always `Some`, but the guard keeps the
+    /// missing-root case sound.
+    #[inline]
+    fn columns(&self) -> Option<&'a LogsArrays<'a>> {
+        self.view.columns.as_ref()
     }
 }
 
@@ -874,7 +891,7 @@ mod tests {
 
         // Create view
         let logs_view = OtapLogsView::new(
-            &logs_batch,
+            Some(&logs_batch),
             Some(&resource_attrs),
             None, // no scope attrs
             Some(&log_attrs),
@@ -969,17 +986,54 @@ mod tests {
     }
 
     #[test]
-    fn test_try_from_requires_logs_batch() {
-        // Empty OtapArrowRecords without logs batch
+    fn test_try_from_missing_logs_batch_yields_empty_view() {
+        // Per the OTAP spec, a missing root payload is semantically equivalent to
+        // one with 0 rows. An OtapArrowRecords without a Logs batch should build a
+        // valid view that iterates over 0 resources/scopes/records.
         let otap_records = OtapArrowRecords::Logs(Default::default());
 
-        // Should fail with RecordBatchNotFound error
-        let result = OtapLogsView::try_from(&otap_records);
+        let logs_view =
+            OtapLogsView::try_from(&otap_records).expect("missing root should yield an empty view");
 
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(matches!(err, Error::RecordBatchNotFound { .. }));
+        assert!(logs_view.columns.is_none(), "columns should be None (no root)");
+        assert!(logs_view.resource_groups.is_empty());
+        assert!(logs_view.scope_groups_map.is_empty());
+
+        let mut resource_count = 0;
+        let mut scope_count = 0;
+        let mut log_count = 0;
+        for resource_logs in logs_view.resources() {
+            resource_count += 1;
+            for scope_logs in resource_logs.scopes() {
+                scope_count += 1;
+                for _log in scope_logs.log_records() {
+                    log_count += 1;
+                }
+            }
         }
+
+        assert_eq!(resource_count, 0, "Expected 0 resources");
+        assert_eq!(scope_count, 0, "Expected 0 scopes");
+        assert_eq!(log_count, 0, "Expected 0 log records");
+    }
+
+    #[test]
+    fn test_new_with_missing_root_batch() {
+        // Constructing directly with None root batch should also yield an empty view.
+        let log_attrs = create_test_log_attrs();
+        let logs_view = OtapLogsView::new(None, None, None, Some(&log_attrs)).unwrap();
+
+        assert!(logs_view.columns.is_none());
+
+        let mut log_count = 0;
+        for resource_logs in logs_view.resources() {
+            for scope_logs in resource_logs.scopes() {
+                for _log in scope_logs.log_records() {
+                    log_count += 1;
+                }
+            }
+        }
+        assert_eq!(log_count, 0, "Expected 0 log records with missing root");
     }
 
     #[test]
@@ -997,7 +1051,7 @@ mod tests {
             .as_ptr();
 
         // Create view
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, None).unwrap();
+        let logs_view = OtapLogsView::new(Some(&logs_batch), None, None, None).unwrap();
 
         // Iterate through view and access data
         for resource_logs in logs_view.resources() {
@@ -1071,7 +1125,7 @@ mod tests {
         )
         .unwrap();
 
-        let view = OtapLogsView::new(&batch, None, None, None).unwrap();
+        let view = OtapLogsView::new(Some(&batch), None, None, None).unwrap();
 
         // Verify resource grouping
         let resource_groups = &view.resource_groups;
@@ -1144,7 +1198,7 @@ mod tests {
             RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(resource_struct)])
                 .unwrap();
 
-        let logs_view = OtapLogsView::new(&batch, None, None, None).unwrap();
+        let logs_view = OtapLogsView::new(Some(&batch), None, None, None).unwrap();
 
         // Should have 1 group, Contiguous(0..100)
         assert_eq!(logs_view.resource_groups.len(), 1);
@@ -1271,7 +1325,8 @@ mod tests {
         .unwrap();
 
         // Create view with log attributes
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, Some(&log_attrs_batch)).unwrap();
+        let logs_view =
+            OtapLogsView::new(Some(&logs_batch), None, None, Some(&log_attrs_batch)).unwrap();
 
         // Iterate and verify attributes
         let mut attr_count = 0;
@@ -1341,7 +1396,7 @@ mod tests {
         let logs_batch = create_test_logs_batch_no_id();
 
         // Create view with no attributes
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, None).unwrap();
+        let logs_view = OtapLogsView::new(Some(&logs_batch), None, None, None).unwrap();
 
         let mut log_count = 0;
         for resource_logs in logs_view.resources() {
@@ -1492,7 +1547,7 @@ mod tests {
         .unwrap();
 
         // Create view with dictionary-encoded IDs
-        let logs_view = OtapLogsView::new(&logs_batch, None, None, None)
+        let logs_view = OtapLogsView::new(Some(&logs_batch), None, None, None)
             .expect("Should create view with dictionary-encoded IDs");
 
         // Verify correct grouping by resource

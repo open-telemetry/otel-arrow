@@ -50,9 +50,14 @@ use crate::views::otap::common::{
 /// This struct holds references to the Arrow RecordBatches and pre-computed indices
 /// for efficient hierarchical traversal of the trace data.
 pub struct OtapTracesView<'a> {
-    columns: SpansArrays<'a>,
-    resource_columns: ResourceArrays<'a>,
-    scope_columns: ScopeArrays<'a>,
+    // Cached root (Spans) columns. `None` when the root Spans payload is missing.
+    // Per the OTAP spec, a missing root payload is semantically equivalent to one
+    // with 0 rows, so when these are `None` the view emits 0 rows (the hierarchy
+    // maps below are empty).
+    columns: Option<SpansArrays<'a>>,
+    resource_columns: Option<ResourceArrays<'a>>,
+    scope_columns: Option<ScopeArrays<'a>>,
+
     event_columns: Option<SpanEventArrays<'a>>,
     link_columns: Option<SpanLinkArrays<'a>>,
 
@@ -62,7 +67,8 @@ pub struct OtapTracesView<'a> {
     event_attrs: Option<Attribute32Arrays<'a>>,
     link_attrs: Option<Attribute32Arrays<'a>>,
 
-    // Pre-computed indices for hierarchy reconstruction
+    // Pre-computed indices for hierarchy reconstruction. Empty when the root
+    // payload is missing (0 rows).
     resource_groups: Vec<(u16, RowGroup)>,
     scope_groups_map: BTreeMap<u16, Vec<(u16, RowGroup)>>,
 
@@ -93,7 +99,7 @@ impl<'a> OtapTracesView<'a> {
     /// * `link_attrs` - Optional link attributes batch
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        spans_batch: &'a RecordBatch,
+        spans_batch: Option<&'a RecordBatch>,
         resource_attrs: Option<&'a RecordBatch>,
         scope_attrs: Option<&'a RecordBatch>,
         span_attrs: Option<&'a RecordBatch>,
@@ -102,19 +108,22 @@ impl<'a> OtapTracesView<'a> {
         links_batch: Option<&'a RecordBatch>,
         link_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
-        // 1. Cache columns for O(1) access
-        let columns = SpansArrays::try_from(spans_batch)?;
-        let resource_columns = ResourceArrays::try_from(spans_batch)?;
-        let scope_columns = ScopeArrays::try_from(spans_batch)?;
+        // 1. Cache root columns for O(1) access. A missing root batch is
+        //    semantically equivalent to 0 rows.
+        let columns = spans_batch.map(SpansArrays::try_from).transpose()?;
+        let resource_columns = spans_batch.map(ResourceArrays::try_from).transpose()?;
+        let scope_columns = spans_batch.map(ScopeArrays::try_from).transpose()?;
 
-        // 2. Pre-compute resource grouping
-        let resource_groups = group_by_resource_id(spans_batch);
-
-        // 3. Pre-compute scope grouping per resource
+        // 2. Pre-compute resource/scope grouping. When the root batch is missing
+        //    these stay empty, so iteration yields 0 rows.
+        let mut resource_groups = Vec::new();
         let mut scope_groups_map = BTreeMap::new();
-        for (resource_id, row_indices) in &resource_groups {
-            let scope_groups = group_by_scope_id(spans_batch, row_indices);
-            let _ = scope_groups_map.insert(*resource_id, scope_groups);
+        if let Some(spans_batch) = spans_batch {
+            resource_groups = group_by_resource_id(spans_batch);
+            for (resource_id, row_indices) in &resource_groups {
+                let scope_groups = group_by_scope_id(spans_batch, row_indices);
+                let _ = scope_groups_map.insert(*resource_id, scope_groups);
+            }
         }
 
         // 4. Pre-compute attribute mappings
@@ -172,12 +181,8 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapTracesView<'a> {
     type Error = Error;
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
-        let spans_batch =
-            records
-                .get(ArrowPayloadType::Spans)
-                .ok_or(Error::RecordBatchNotFound {
-                    payload_type: ArrowPayloadType::Spans,
-                })?;
+        // A missing root Spans payload is semantically equivalent to 0 rows.
+        let spans_batch = records.get(ArrowPayloadType::Spans);
 
         let resource_attrs = records.get(ArrowPayloadType::ResourceAttrs);
         let scope_attrs = records.get(ArrowPayloadType::ScopeAttrs);
@@ -292,6 +297,7 @@ impl<'a> ResourceSpansView for OtapResourceSpansView<'a> {
         let first_row = self.row_indices.iter().next()?;
         self.view
             .resource_columns
+            .as_ref()?
             .schema_url
             .as_ref()
             .and_then(|c| c.str_at(first_row))
@@ -379,6 +385,7 @@ impl<'a> ScopeSpansView for OtapScopeSpansView<'a> {
         let first_row = self.row_indices.iter().next()?;
         self.view
             .columns
+            .as_ref()?
             .schema_url
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
@@ -462,7 +469,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn trace_id(&self) -> Option<&TraceId> {
-        self.view.columns.trace_id.as_ref().and_then(|col| {
+        self.columns()?.trace_id.as_ref().and_then(|col| {
             col.slice_at(self.row_idx)
                 .and_then(|bytes: &[u8]| bytes.try_into().ok())
         })
@@ -470,7 +477,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn span_id(&self) -> Option<&SpanId> {
-        self.view.columns.span_id.as_ref().and_then(|col| {
+        self.columns()?.span_id.as_ref().and_then(|col| {
             col.slice_at(self.row_idx)
                 .and_then(|bytes: &[u8]| bytes.try_into().ok())
         })
@@ -478,8 +485,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn trace_state(&self) -> Option<Str<'_>> {
-        self.view
-            .columns
+        self.columns()?
             .trace_state
             .as_ref()
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
@@ -487,7 +493,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn parent_span_id(&self) -> Option<&SpanId> {
-        self.view.columns.parent_span_id.as_ref().and_then(|col| {
+        self.columns()?.parent_span_id.as_ref().and_then(|col| {
             col.slice_at(self.row_idx)
                 .and_then(|bytes: &[u8]| bytes.try_into().ok())
         })
@@ -495,7 +501,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn flags(&self) -> Option<u32> {
-        self.view.columns.flags.as_ref().and_then(|col| {
+        self.columns()?.flags.as_ref().and_then(|col| {
             if col.is_valid(self.row_idx) {
                 Some(col.value(self.row_idx))
             } else {
@@ -506,8 +512,7 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn name(&self) -> Option<Str<'_>> {
-        self.view
-            .columns
+        self.columns()?
             .name
             .as_ref()
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
@@ -515,18 +520,15 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn kind(&self) -> i32 {
-        self.view
-            .columns
-            .kind
-            .as_ref()
+        self.columns()
+            .and_then(|columns| columns.kind.as_ref())
             .and_then(|col| col.value_at(self.row_idx))
             .unwrap_or(0)
     }
 
     #[inline]
     fn start_time_unix_nano(&self) -> Option<u64> {
-        self.view
-            .columns
+        self.columns()?
             .start_time_unix_nano
             .as_ref()
             .and_then(|col| {
@@ -564,10 +566,8 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn dropped_attributes_count(&self) -> u32 {
-        self.view
-            .columns
-            .dropped_attributes_count
-            .as_ref()
+        self.columns()
+            .and_then(|columns| columns.dropped_attributes_count.as_ref())
             .map(|col| {
                 if col.is_valid(self.row_idx) {
                     col.value(self.row_idx)
@@ -595,10 +595,8 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn dropped_events_count(&self) -> u32 {
-        self.view
-            .columns
-            .dropped_events_count
-            .as_ref()
+        self.columns()
+            .and_then(|columns| columns.dropped_events_count.as_ref())
             .map(|col| {
                 if col.is_valid(self.row_idx) {
                     col.value(self.row_idx)
@@ -626,10 +624,8 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
     #[inline]
     fn dropped_links_count(&self) -> u32 {
-        self.view
-            .columns
-            .dropped_links_count
-            .as_ref()
+        self.columns()
+            .and_then(|columns| columns.dropped_links_count.as_ref())
             .map(|col| {
                 if col.is_valid(self.row_idx) {
                     col.value(self.row_idx)
@@ -643,9 +639,10 @@ impl<'a> SpanView for OtapSpanView<'a> {
     #[inline]
     fn status(&self) -> Option<Self::Status<'_>> {
         // Return a status view if we have status columns
-        if self.view.columns.status.is_some() {
+        let columns = self.columns()?;
+        if columns.status.is_some() {
             Some(OtapStatusView {
-                view: self.view,
+                columns,
                 row_idx: self.row_idx,
             })
         } else {
@@ -655,10 +652,20 @@ impl<'a> SpanView for OtapSpanView<'a> {
 }
 
 impl<'a> OtapSpanView<'a> {
+    /// Cached root columns for the view, if the root batch is present.
+    ///
+    /// A span view is only ever produced while iterating a non-empty root batch,
+    /// so in practice this is always `Some`, but the guard keeps the missing-root
+    /// case sound.
+    #[inline]
+    fn columns(&self) -> Option<&'a SpansArrays<'a>> {
+        self.view.columns.as_ref()
+    }
+
     /// Get the span's row ID from the "id" column (used for attribute/event/link matching)
     #[inline]
     fn get_span_row_id(&self) -> Option<u16> {
-        let array = &self.view.columns.id;
+        let array = &self.columns()?.id;
         if array.is_valid(self.row_idx) {
             Some(array.value(self.row_idx))
         } else {
@@ -669,8 +676,7 @@ impl<'a> OtapSpanView<'a> {
     /// Get the duration in nanoseconds from the duration column
     #[inline]
     fn get_duration_nanos(&self) -> Option<i64> {
-        self.view
-            .columns
+        self.columns()?
             .duration_time_unix_nano
             .as_ref()
             .and_then(|col| col.value_at(self.row_idx))
@@ -948,15 +954,14 @@ impl<'a> Iterator for OtapLinksIter<'a> {
 /// View of a Span's Status in OTAP format.
 /// Status is stored as a struct column with "code" and "status_message" sub-fields.
 pub struct OtapStatusView<'a> {
-    view: &'a OtapTracesView<'a>,
+    columns: &'a SpansArrays<'a>,
     row_idx: usize,
 }
 
 impl<'a> StatusView for OtapStatusView<'a> {
     #[inline]
     fn message(&self) -> Option<Str<'_>> {
-        self.view
-            .columns
+        self.columns
             .status
             .as_ref()
             .and_then(|s| s.message.as_ref())
@@ -965,8 +970,7 @@ impl<'a> StatusView for OtapStatusView<'a> {
 
     #[inline]
     fn status_code(&self) -> i32 {
-        self.view
-            .columns
+        self.columns
             .status
             .as_ref()
             .and_then(|s| s.code.as_ref())
@@ -1015,8 +1019,8 @@ impl<'a> ResourceView for OtapTraceResourceView<'a> {
         let first_row = self.find_first_row_for_resource().unwrap_or(0);
         self.view
             .resource_columns
-            .dropped_attributes_count
             .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
                 if col.is_valid(first_row) {
                     col.value(first_row)
@@ -1063,6 +1067,7 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
         let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
+            .as_ref()?
             .name
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
@@ -1073,6 +1078,7 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
         let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
+            .as_ref()?
             .version
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
@@ -1099,8 +1105,8 @@ impl<'a> InstrumentationScopeView for OtapTraceInstrumentationScopeView<'a> {
         let first_row = self.find_first_row_for_scope().unwrap_or(0);
         self.view
             .scope_columns
-            .dropped_attributes_count
             .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
                 if col.is_valid(first_row) {
                     col.value(first_row)
@@ -1238,7 +1244,7 @@ mod tests {
     fn test_create_otap_traces_view() {
         let spans_batch = create_test_spans_batch();
         let view =
-            OtapTracesView::new(&spans_batch, None, None, None, None, None, None, None).unwrap();
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None).unwrap();
 
         let mut resource_count = 0;
         let mut scope_count = 0;
@@ -1270,7 +1276,7 @@ mod tests {
     fn test_span_fields() {
         let spans_batch = create_test_spans_batch();
         let view =
-            OtapTracesView::new(&spans_batch, None, None, None, None, None, None, None).unwrap();
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None).unwrap();
 
         let resources: Vec<_> = view.resources().collect();
 
@@ -1367,7 +1373,7 @@ mod tests {
         )
         .unwrap();
 
-        let view = OtapTracesView::new(&batch, None, None, None, None, None, None, None).unwrap();
+        let view = OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
 
         for resource_spans in view.resources() {
             for scope_spans in resource_spans.scopes() {
@@ -1425,7 +1431,7 @@ mod tests {
         )
         .unwrap();
 
-        let view = OtapTracesView::new(&batch, None, None, None, None, None, None, None).unwrap();
+        let view = OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
 
         for resource_spans in view.resources() {
             for scope_spans in resource_spans.scopes() {
@@ -1479,7 +1485,7 @@ mod tests {
         .unwrap();
 
         let view = OtapTracesView::new(
-            &spans_batch,
+            Some(&spans_batch),
             None,
             None,
             None,
@@ -1561,7 +1567,7 @@ mod tests {
         .unwrap();
 
         let view = OtapTracesView::new(
-            &spans_batch,
+            Some(&spans_batch),
             resource_attrs,
             scope_attrs,
             None,
@@ -1591,5 +1597,56 @@ mod tests {
         assert_eq!(span_count, 3);
         assert_eq!(event_count, 1);
         assert_eq!(link_count, 1);
+    }
+
+    #[test]
+    fn test_missing_root_spans_batch_yields_empty_view() {
+        // Per the OTAP spec, a missing root payload is semantically equivalent to
+        // one with 0 rows. An OtapArrowRecords without a Spans batch should build a
+        // valid view that iterates over 0 resources/scopes/spans.
+        let otap_records = OtapArrowRecords::Traces(Default::default());
+
+        let view = OtapTracesView::try_from(&otap_records)
+            .expect("missing root should yield an empty view");
+
+        assert!(view.columns.is_none(), "columns should be None (no root)");
+        assert!(view.resource_groups.is_empty());
+        assert!(view.scope_groups_map.is_empty());
+
+        let mut resource_count = 0;
+        let mut scope_count = 0;
+        let mut span_count = 0;
+        for resource_spans in view.resources() {
+            resource_count += 1;
+            for scope_spans in resource_spans.scopes() {
+                scope_count += 1;
+                for _span in scope_spans.spans() {
+                    span_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(resource_count, 0, "Expected 0 resources");
+        assert_eq!(scope_count, 0, "Expected 0 scopes");
+        assert_eq!(span_count, 0, "Expected 0 spans");
+    }
+
+    #[test]
+    fn test_new_with_missing_root_batch() {
+        // Constructing directly with a None root batch should also yield an empty view.
+        let view =
+            OtapTracesView::new(None, None, None, None, None, None, None, None).unwrap();
+
+        assert!(view.columns.is_none());
+
+        let mut span_count = 0;
+        for resource_spans in view.resources() {
+            for scope_spans in resource_spans.scopes() {
+                for _span in scope_spans.spans() {
+                    span_count += 1;
+                }
+            }
+        }
+        assert_eq!(span_count, 0, "Expected 0 spans with missing root");
     }
 }
