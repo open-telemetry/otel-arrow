@@ -1054,6 +1054,37 @@ impl SortedBatchCursor {
     pub const fn finished(&self) -> bool {
         self.curr_index >= self.sorted_indices.len()
     }
+
+    /// Position the cursor at the first sorted index whose parent-id value is `>= target`.
+    ///
+    /// The cursor's `sorted_indices` are ordered by the child's parent-id column (ascending,
+    /// with nulls sorted last), so this seeks to the start of `target`'s equal-range. Seeking
+    /// by absolute binary search — rather than relying on the cursor's prior forward position —
+    /// makes child attribute lookups independent of the order in which parents request their
+    /// children.
+    ///
+    /// This matters because the root record visitation order is `(resource_id, scope_id, id)`,
+    /// which is not necessarily ascending in `id` alone: e.g. after `extend attributes[...]`
+    /// fills null root ids with `max + 1`, an earlier-visited scope can carry a *larger* id than
+    /// a later-visited one. A purely forward cursor would then skip (permanently consume) the
+    /// later, lower-id parent's child rows, silently dropping all of its attributes. Re-seeking
+    /// per parent avoids that. Each parent id is queried at most once per batch, so re-seeking
+    /// never re-yields rows for an already-emitted parent.
+    fn seek_to_parent<T: ArrowPrimitiveType>(
+        &mut self,
+        target: T::Native,
+        parent_id_col: &MaybeDictArrayAccessor<'_, PrimitiveArray<T>>,
+    ) where
+        T::Native: PartialOrd,
+    {
+        self.curr_index = self
+            .sorted_indices
+            .partition_point(|&idx| match parent_id_col.value_at(idx) {
+                Some(v) => v < target,
+                // nulls sort last, so treat them as `>= target` (never part of a match range)
+                None => false,
+            });
+    }
 }
 
 /// This is used to initialize the [`SortedBatchCursor`]. It does this by sorting the IDs and then
@@ -1249,12 +1280,16 @@ pub(crate) struct ChildIndexIter<'a, T: ArrowPrimitiveType> {
 impl<'a, T> ChildIndexIter<'a, T>
 where
     T: ArrowPrimitiveType,
+    T::Native: PartialOrd,
 {
-    pub const fn new(
+    pub fn new(
         parent_id: T::Native,
         parent_id_col: &'a MaybeDictArrayAccessor<'a, PrimitiveArray<T>>,
         cursor: &'a mut SortedBatchCursor,
     ) -> Self {
+        // Seek to the start of this parent's child rows via binary search, so that lookups do
+        // not depend on parents being visited in ascending-id order. See `seek_to_parent`.
+        cursor.seek_to_parent(parent_id, parent_id_col);
         Self {
             parent_id,
             parent_id_col,
@@ -1347,6 +1382,41 @@ mod test {
             // check we don't try to iterate past the end
             let mut id_3_iter = ChildIndexIter::new(3, &parent_ids, &mut cursor);
             assert_eq!(id_3_iter.next(), None)
+        }
+    }
+
+    /// Regression test: parents may be visited in *non-ascending* id order against a shared
+    /// cursor. The root visitation order is `(resource_id, scope_id, id)`, so `id` alone is not
+    /// always ascending (e.g. after `extend attributes[...]` fills null root ids with `max + 1`).
+    /// A purely forward cursor would consume rows for a lower id while seeking a higher one and
+    /// then return nothing for the lower id, silently dropping its attributes. Each parent must
+    /// find its own child rows regardless of visitation order.
+    #[test]
+    fn test_child_index_iter_non_monotonic_parent_order() {
+        let mut cursor = SortedBatchCursor::new();
+        // rows: parent_id 0 -> row0, parent_id 2 -> row1, parent_id 1 -> row2, parent_id 2 -> row3
+        let tmp = UInt16Array::from_iter_values(vec![0, 2, 1, 2]);
+        let parent_ids = MaybeDictArrayAccessor::Native(&tmp);
+        BatchSorter::new().init_cursor_for_u16_id_column(&parent_ids, &mut cursor);
+
+        // Visit parents in the order 0, 2, 1 (mirrors the `[0, 2, 1]` root-id sequence produced
+        // by null-id fill). The middle visit (id 2) must not consume id 1's row.
+        {
+            let mut id_0_iter = ChildIndexIter::<UInt16Type>::new(0, &parent_ids, &mut cursor);
+            assert_eq!(id_0_iter.next(), Some(0));
+            assert_eq!(id_0_iter.next(), None);
+        }
+        {
+            let mut id_2_iter = ChildIndexIter::<UInt16Type>::new(2, &parent_ids, &mut cursor);
+            assert_eq!(id_2_iter.next(), Some(1));
+            assert_eq!(id_2_iter.next(), Some(3));
+            assert_eq!(id_2_iter.next(), None);
+        }
+        {
+            // Before the fix this returned None because id 2's visit consumed past row2.
+            let mut id_1_iter = ChildIndexIter::<UInt16Type>::new(1, &parent_ids, &mut cursor);
+            assert_eq!(id_1_iter.next(), Some(2));
+            assert_eq!(id_1_iter.next(), None);
         }
     }
 

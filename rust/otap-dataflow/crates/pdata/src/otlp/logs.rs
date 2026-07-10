@@ -893,4 +893,164 @@ mod test {
         )]);
         assert_eq!(result, expected);
     }
+
+    #[test]
+    fn test_proto_encode_when_scope_ids_non_monotonic_across_resources() {
+        let res_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+        ]);
+        let scope_struct_fields = Fields::from(vec![
+            Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+            Field::new(consts::NAME, DataType::Utf8, true),
+        ]);
+        let body_struct_fields = Fields::from(vec![
+            Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+            Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+        ]);
+
+        let logs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(
+                    consts::RESOURCE,
+                    DataType::Struct(res_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(
+                    consts::SCOPE,
+                    DataType::Struct(scope_struct_fields.clone()),
+                    true,
+                ),
+                Field::new(consts::ID, DataType::UInt16, true).with_plain_encoding(),
+                Field::new(
+                    consts::TIME_UNIX_NANO,
+                    DataType::Timestamp(TimeUnit::Nanosecond, None),
+                    false,
+                ),
+                Field::new(consts::SEVERITY_TEXT, DataType::Utf8, true),
+                Field::new(
+                    consts::BODY,
+                    DataType::Struct(body_struct_fields.clone()),
+                    true,
+                ),
+            ])),
+            vec![
+                Arc::new(StructArray::new(
+                    res_struct_fields.clone(),
+                    vec![Arc::new(UInt16Array::from_iter_values([0, 1, 1]))],
+                    None,
+                )),
+                Arc::new(StructArray::new(
+                    scope_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt16Array::from_iter_values([5, 2, 3])),
+                        Arc::new(StringArray::from_iter_values(vec![
+                            "scope5", "scope2", "scope3",
+                        ])),
+                    ],
+                    None,
+                )),
+                Arc::new(UInt16Array::from_iter_values(vec![0, 1, 2])),
+                Arc::new(TimestampNanosecondArray::from_iter_values([1, 2, 3])),
+                Arc::new(StringArray::from_iter_values(vec![
+                    "ERROR", "INFO", "DEBUG",
+                ])),
+                Arc::new(StructArray::new(
+                    body_struct_fields.clone(),
+                    vec![
+                        Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                            AttributeValueType::Str as u8,
+                            3,
+                        ))),
+                        Arc::new(StringArray::from_iter_values(vec!["a", "b", "c"])),
+                    ],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+
+        // ScopeAttrs parent IDs stored sorted ascending: parent 2 -> "v2", 3 -> "v3", 5 -> "v5".
+        let scope_attrs_record_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new(consts::PARENT_ID, DataType::UInt16, false),
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_KEY, DataType::Utf8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ])),
+            vec![
+                Arc::new(UInt16Array::from_iter_values(vec![2, 3, 5])),
+                Arc::new(UInt8Array::from_iter_values(std::iter::repeat_n(
+                    AttributeValueType::Str as u8,
+                    3,
+                ))),
+                Arc::new(StringArray::from_iter_values(vec!["k", "k", "k"])),
+                Arc::new(StringArray::from_iter_values(vec!["v2", "v3", "v5"])),
+            ],
+        )
+        .unwrap();
+
+        let mut otap_batch = OtapArrowRecords::Logs(Logs::default());
+        otap_batch
+            .set(ArrowPayloadType::Logs, logs_record_batch)
+            .unwrap();
+        otap_batch
+            .set(ArrowPayloadType::ScopeAttrs, scope_attrs_record_batch)
+            .unwrap();
+        let mut result_buf = ProtoBuffer::default();
+        let mut encoder = LogsProtoBytesEncoder::new();
+        encoder.encode(&mut otap_batch, &mut result_buf).unwrap();
+        let result = LogsData::decode(result_buf.as_ref()).unwrap();
+
+        let expected = LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::build()
+                        .name("scope5")
+                        .attributes(vec![KeyValue::new("k", AnyValue::new_string("v5"))])
+                        .finish(),
+                    vec![
+                        LogRecord::build()
+                            .time_unix_nano(1u64)
+                            .severity_text("ERROR")
+                            .body(AnyValue::new_string("a"))
+                            .finish(),
+                    ],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::default(),
+                vec![
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("scope2")
+                            .attributes(vec![KeyValue::new("k", AnyValue::new_string("v2"))])
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(2u64)
+                                .severity_text("INFO")
+                                .body(AnyValue::new_string("b"))
+                                .finish(),
+                        ],
+                    ),
+                    ScopeLogs::new(
+                        InstrumentationScope::build()
+                            .name("scope3")
+                            .attributes(vec![KeyValue::new("k", AnyValue::new_string("v3"))])
+                            .finish(),
+                        vec![
+                            LogRecord::build()
+                                .time_unix_nano(3u64)
+                                .severity_text("DEBUG")
+                                .body(AnyValue::new_string("c"))
+                                .finish(),
+                        ],
+                    ),
+                ],
+            ),
+        ]);
+
+        assert_eq!(result, expected);
+    }
 }
