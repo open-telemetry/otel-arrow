@@ -531,6 +531,14 @@ struct SchemaReader {
 /// readers once per schema and reuse them, making per-event extraction an O(n)
 /// pass with no per-field allocations.
 ///
+/// Reuse is sound because a cached reader is only ever applied to payloads of
+/// the same [`SchemaId`], and each closure recomputes any offset that sits
+/// behind variable-length data from the payload on every call (only all-fixed
+/// prefixes are offset-baked, where offsets are invariant). The load-bearing
+/// invariant is therefore purely one of schema identity: a given [`SchemaId`]
+/// maps to exactly one field layout for the lifetime of its cache entry. The
+/// decoder never recycles an id for a different layout.
+///
 /// The cache is owned by the single ETW decode (`ProcessTrace`) thread and is
 /// never accessed from any other thread. That is why it uses `Rc`/`RefCell`
 /// rather than `Arc`/`Mutex` and adds no cross-core synchronization. (The
