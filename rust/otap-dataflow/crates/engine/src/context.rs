@@ -477,20 +477,28 @@ impl PipelineContext {
     /// and attached to every datapoint of the set
     /// (see `#[metric_set(static_attributes = ...)]`).
     #[must_use]
-    pub fn register_static_metrics<M: StaticMetricSetHandler + Debug + Send + Sync>(
+    pub fn register_metrics_with_static_attributes<
+        M: StaticMetricSetHandler + Debug + Send + Sync,
+    >(
         &self,
         static_attrs: &M::Attributes,
     ) -> MetricSet<M> {
         self.register_scoped_metrics(
             |handle, entity_key| {
-                handle.register_static_metric_set_for_entity::<M>(entity_key, static_attrs)
+                handle.register_metric_set_with_static_attributes_for_entity::<M>(
+                    entity_key,
+                    static_attrs,
+                )
             },
             MetricSet::metric_set_key,
             |ctx, handle| {
                 if ctx.node_telemetry_attrs.is_empty() {
-                    handle.register_static_metric_set::<M>(ctx.node_attribute_set(), static_attrs)
+                    handle.register_metric_set_with_static_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        static_attrs,
+                    )
                 } else {
-                    handle.register_static_metric_set::<M>(
+                    handle.register_metric_set_with_static_attributes::<M>(
                         ctx.node_with_custom_attribute_set(),
                         static_attrs,
                     )
@@ -504,17 +512,24 @@ impl PipelineContext {
     /// (see `#[metric_set(dynamic_attributes = ...)]`). Record into a bucket with
     /// [`DynamicMetricSet::with`].
     #[must_use]
-    pub fn register_dynamic_metrics<M: DynamicMetricSetHandler + Debug + Send + Sync>(
+    pub fn register_metrics_with_dynamic_attributes<
+        M: DynamicMetricSetHandler + Debug + Send + Sync,
+    >(
         &self,
     ) -> DynamicMetricSet<M, M::Attributes> {
         self.register_scoped_metrics(
-            |handle, entity_key| handle.register_dynamic_metric_set_for_entity::<M>(entity_key),
+            |handle, entity_key| {
+                handle.register_metric_set_with_dynamic_attributes_for_entity::<M>(entity_key)
+            },
             DynamicMetricSet::metric_set_key,
             |ctx, handle| {
                 if ctx.node_telemetry_attrs.is_empty() {
-                    handle.register_dynamic_metric_set::<M>(ctx.node_attribute_set())
+                    handle
+                        .register_metric_set_with_dynamic_attributes::<M>(ctx.node_attribute_set())
                 } else {
-                    handle.register_dynamic_metric_set::<M>(ctx.node_with_custom_attribute_set())
+                    handle.register_metric_set_with_dynamic_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                    )
                 }
             },
         )

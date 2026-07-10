@@ -124,7 +124,7 @@ fn dynamic_metric_set_export_carries_datapoint_attributes() {
     let scope = ScopeAttributes {
         node: "durable_buffer".to_string(),
     };
-    let mut loss = registry.register_dynamic_metric_set::<LossMetrics>(scope);
+    let mut loss = registry.register_metric_set_with_dynamic_attributes::<LossMetrics>(scope);
 
     // Record into two distinct buckets, one of them twice to check aggregation.
     loss.with(LossAttributes {
@@ -207,7 +207,8 @@ fn static_metric_set_export_carries_fixed_attributes() {
     let static_attrs = SignalAttributes {
         signal: Signal::Logs,
     };
-    let mut journald = registry.register_static_metric_set::<JournaldMetrics>(scope, &static_attrs);
+    let mut journald = registry
+        .register_metric_set_with_static_attributes::<JournaldMetrics>(scope, &static_attrs);
 
     journald.records.add(42);
     reporter.report(&mut journald).unwrap();

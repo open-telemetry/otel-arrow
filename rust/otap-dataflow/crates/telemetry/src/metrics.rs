@@ -313,7 +313,7 @@ pub trait MetricSetHandler {
 /// The associated [`Attributes`](Self::Attributes) type identifies the
 /// [`DynamicAttributeSet`] whose variants address the set's buckets, so callers
 /// only need to name the metric-set type when registering
-/// (`register_dynamic_metrics::<MySet>()`).
+/// (`register_metrics_with_dynamic_attributes::<MySet>()`).
 pub trait DynamicMetricSetHandler: MetricSetHandler + Default {
     /// The dynamic attribute set whose combinations index this set's datapoints.
     type Attributes: DynamicAttributeSet;
@@ -469,7 +469,7 @@ impl MetricsEntry {
 
     /// Creates a metrics entry carrying fixed static datapoint attributes.
     #[must_use]
-    pub fn new_static(
+    pub fn new_with_static_attributes(
         metrics_descriptor: &'static MetricsDescriptor,
         metric_values: Vec<MetricValue>,
         entity_key: EntityKey,
@@ -489,7 +489,7 @@ impl MetricsEntry {
     /// per-datapoint enum attribute descriptors. The value vector is pre-sized to
     /// `bucket_count * fields` zeroed slots.
     #[must_use]
-    pub fn new_dynamic(
+    pub fn new_with_dynamic_attributes(
         metrics_descriptor: &'static MetricsDescriptor,
         zeroed_bucket: &[MetricValue],
         entity_key: EntityKey,
@@ -638,7 +638,9 @@ impl MetricSetRegistry {
 
     /// Registers a metric set carrying fixed static datapoint attributes captured
     /// once at registration.
-    pub(crate) fn register_static<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    pub(crate) fn register_with_static_attributes<
+        T: MetricSetHandler + Default + Debug + Send + Sync,
+    >(
         &mut self,
         entity_key: EntityKey,
         static_attributes: Vec<(String, String)>,
@@ -646,12 +648,14 @@ impl MetricSetRegistry {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
 
-        let metrics_key = self.metrics.insert(MetricsEntry::new_static(
-            descriptor,
-            metrics.snapshot_values(),
-            entity_key,
-            static_attributes,
-        ));
+        let metrics_key = self
+            .metrics
+            .insert(MetricsEntry::new_with_static_attributes(
+                descriptor,
+                metrics.snapshot_values(),
+                entity_key,
+                static_attributes,
+            ));
 
         MetricSet {
             key: metrics_key,
@@ -661,7 +665,10 @@ impl MetricSetRegistry {
     }
 
     /// Registers a dynamic metric set with one bucket per attribute combination.
-    pub(crate) fn register_dynamic<M, D>(&mut self, entity_key: EntityKey) -> DynamicMetricSet<M, D>
+    pub(crate) fn register_with_dynamic_attributes<M, D>(
+        &mut self,
+        entity_key: EntityKey,
+    ) -> DynamicMetricSet<M, D>
     where
         M: MetricSetHandler + Default + Debug + Send + Sync,
         D: DynamicAttributeSet,
@@ -669,13 +676,15 @@ impl MetricSetRegistry {
         let zeroed_bucket = M::default().snapshot_values();
         let descriptor = M::default().descriptor();
 
-        let metrics_key = self.metrics.insert(MetricsEntry::new_dynamic(
-            descriptor,
-            &zeroed_bucket,
-            entity_key,
-            D::CARDINALITY,
-            D::DESCRIPTORS,
-        ));
+        let metrics_key = self
+            .metrics
+            .insert(MetricsEntry::new_with_dynamic_attributes(
+                descriptor,
+                &zeroed_bucket,
+                entity_key,
+                D::CARDINALITY,
+                D::DESCRIPTORS,
+            ));
 
         DynamicMetricSet::new(metrics_key, entity_key)
     }

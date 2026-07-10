@@ -183,7 +183,7 @@ variants through a generated `with(...)` that takes the attribute struct and
 returns a bound view of the whole set:
 
 ```rust
-let mut loss = pipeline_ctx.register_dynamic_metrics::<DurableBufferLossMetrics>();
+let mut loss = pipeline_ctx.register_metrics_with_dynamic_attributes::<DurableBufferLossMetrics>();
 
 loss.with(DurableBufferLossAttributes {
         signal: Signal::Logs,
@@ -271,7 +271,7 @@ The value is supplied once at registration and recording is unchanged - the
 fixed attribute is implicit, and the set has a single bucket:
 
 ```rust
-let mut journald = pipeline_ctx.register_static_metrics::<JournaldMetrics>(
+let mut journald = pipeline_ctx.register_metrics_with_static_attributes::<JournaldMetrics>(
     SignalAttributes { signal: Signal::Logs },
 );
 

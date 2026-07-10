@@ -132,7 +132,9 @@ impl TelemetryRegistryHandle {
     /// Registers a metric set type carrying fixed static datapoint attributes,
     /// captured from `static_attrs` at registration and attached to every
     /// datapoint of the set (see `#[metric_set(static_attributes = ...)]`).
-    pub fn register_static_metric_set<M: StaticMetricSetHandler + Debug + Send + Sync>(
+    pub fn register_metric_set_with_static_attributes<
+        M: StaticMetricSetHandler + Debug + Send + Sync,
+    >(
         &self,
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
         static_attrs: &M::Attributes,
@@ -142,13 +144,13 @@ impl TelemetryRegistryHandle {
         let outcome = registry.entities.register(scope_attrs);
         registry
             .metrics
-            .register_static(outcome.key(), static_attributes)
+            .register_with_static_attributes(outcome.key(), static_attributes)
     }
 
     /// Registers a metric set type carrying static datapoint attributes for an
     /// existing entity key.
     #[must_use]
-    pub fn register_static_metric_set_for_entity<
+    pub fn register_metric_set_with_static_attributes_for_entity<
         M: StaticMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
@@ -161,13 +163,15 @@ impl TelemetryRegistryHandle {
         debug_assert!(retained, "entity key must be registered before metrics");
         registry
             .metrics
-            .register_static(entity_key, static_attributes)
+            .register_with_static_attributes(entity_key, static_attributes)
     }
 
     /// Registers a dynamic metric set, allocating one datapoint bucket per
     /// combination of the set's dynamic enum attributes (see
     /// `#[metric_set(dynamic_attributes = ...)]`).
-    pub fn register_dynamic_metric_set<M: DynamicMetricSetHandler + Debug + Send + Sync>(
+    pub fn register_metric_set_with_dynamic_attributes<
+        M: DynamicMetricSetHandler + Debug + Send + Sync,
+    >(
         &self,
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
     ) -> DynamicMetricSet<M, M::Attributes> {
@@ -175,12 +179,12 @@ impl TelemetryRegistryHandle {
         let outcome = registry.entities.register(scope_attrs);
         registry
             .metrics
-            .register_dynamic::<M, M::Attributes>(outcome.key())
+            .register_with_dynamic_attributes::<M, M::Attributes>(outcome.key())
     }
 
     /// Registers a dynamic metric set for an existing entity key.
     #[must_use]
-    pub fn register_dynamic_metric_set_for_entity<
+    pub fn register_metric_set_with_dynamic_attributes_for_entity<
         M: DynamicMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
@@ -191,7 +195,7 @@ impl TelemetryRegistryHandle {
         debug_assert!(retained, "entity key must be registered before metrics");
         registry
             .metrics
-            .register_dynamic::<M, M::Attributes>(entity_key)
+            .register_with_dynamic_attributes::<M, M::Attributes>(entity_key)
     }
 
     /// Unregisters a metric set by key.
