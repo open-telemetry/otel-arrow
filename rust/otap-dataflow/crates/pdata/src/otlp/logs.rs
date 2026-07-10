@@ -210,9 +210,7 @@ impl ProtoBytesEncoder for LogsProtoBytesEncoder {
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
 
-        // Check if logs table exists - if not, num_items() == 0 (empty batch)
-        // Return early with empty result (valid per OTLP spec)
-        let Some(logs_rb) = otap_batch.get(ArrowPayloadType::Logs) else {
+        let Some(logs_rb) = otap_batch.root_record_batch() else {
             return Ok(());
         };
 

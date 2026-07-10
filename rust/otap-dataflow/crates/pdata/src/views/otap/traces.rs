@@ -653,10 +653,6 @@ impl<'a> SpanView for OtapSpanView<'a> {
 
 impl<'a> OtapSpanView<'a> {
     /// Cached root columns for the view, if the root batch is present.
-    ///
-    /// A span view is only ever produced while iterating a non-empty root batch,
-    /// so in practice this is always `Some`, but the guard keeps the missing-root
-    /// case sound.
     #[inline]
     fn columns(&self) -> Option<&'a SpansArrays<'a>> {
         self.view.columns.as_ref()
@@ -1244,7 +1240,8 @@ mod tests {
     fn test_create_otap_traces_view() {
         let spans_batch = create_test_spans_batch();
         let view =
-            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None).unwrap();
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None)
+                .unwrap();
 
         let mut resource_count = 0;
         let mut scope_count = 0;
@@ -1276,7 +1273,8 @@ mod tests {
     fn test_span_fields() {
         let spans_batch = create_test_spans_batch();
         let view =
-            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None).unwrap();
+            OtapTracesView::new(Some(&spans_batch), None, None, None, None, None, None, None)
+                .unwrap();
 
         let resources: Vec<_> = view.resources().collect();
 
@@ -1373,7 +1371,8 @@ mod tests {
         )
         .unwrap();
 
-        let view = OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
+        let view =
+            OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
 
         for resource_spans in view.resources() {
             for scope_spans in resource_spans.scopes() {
@@ -1431,7 +1430,8 @@ mod tests {
         )
         .unwrap();
 
-        let view = OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
+        let view =
+            OtapTracesView::new(Some(&batch), None, None, None, None, None, None, None).unwrap();
 
         for resource_spans in view.resources() {
             for scope_spans in resource_spans.scopes() {
@@ -1634,8 +1634,7 @@ mod tests {
     #[test]
     fn test_new_with_missing_root_batch() {
         // Constructing directly with a None root batch should also yield an empty view.
-        let view =
-            OtapTracesView::new(None, None, None, None, None, None, None, None).unwrap();
+        let view = OtapTracesView::new(None, None, None, None, None, None, None, None).unwrap();
 
         assert!(view.columns.is_none());
 

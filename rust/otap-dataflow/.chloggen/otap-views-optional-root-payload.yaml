@@ -8,7 +8,7 @@ change_type: enhancement
 component: pdata
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: OTAP logs/metrics/traces views now accept a missing root payload and emit 0 rows instead of erroring, matching the updated spec where a missing payload is semantically equivalent to one with 0 rows.
+note: OTAP logs/metrics/traces views and OTLP encoders now accept a missing root payload and produce 0 rows / an empty result instead of erroring, matching the updated spec where a missing payload is semantically equivalent to one with 0 rows.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3444]

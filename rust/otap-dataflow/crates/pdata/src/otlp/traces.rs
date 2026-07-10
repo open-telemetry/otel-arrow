@@ -121,14 +121,16 @@ impl ProtoBytesEncoder for TracesProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
+
+        let Some(spans_rb) = otap_batch.root_record_batch() else {
+            return Ok(());
+        };
+
         let traces_data_arrays = TracesDataArrays::try_from(&*otap_batch)?;
 
         self.reset();
 
         // get the list of indices from the root record batch to visit in order
-        let spans_rb = otap_batch
-            .get(ArrowPayloadType::Spans)
-            .ok_or(Error::SpanRecordNotFound)?;
         self.batch_sorter
             .init_cursor_for_root_batch(spans_rb, &mut self.root_cursor)?;
 

@@ -92,8 +92,7 @@ impl<'a> OtapLogsView<'a> {
         scope_attrs: Option<&'a RecordBatch>,
         log_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
-        // 1. Cache root columns for O(1) access. A missing root batch is
-        //    semantically equivalent to 0 rows.
+        // 1. Cache root columns for O(1) access.
         let columns = logs_batch.map(LogsArrays::try_from).transpose()?;
 
         // 2. Pre-compute resource/scope grouping. When the root batch is missing
@@ -506,10 +505,6 @@ impl<'a> LogRecordView for OtapLogRecordView<'a> {
 
 impl<'a> OtapLogRecordView<'a> {
     /// Cached root columns for the view, if the root batch is present.
-    ///
-    /// A record view is only ever produced while iterating a non-empty root
-    /// batch, so in practice this is always `Some`, but the guard keeps the
-    /// missing-root case sound.
     #[inline]
     fn columns(&self) -> Option<&'a LogsArrays<'a>> {
         self.view.columns.as_ref()
@@ -995,7 +990,10 @@ mod tests {
         let logs_view =
             OtapLogsView::try_from(&otap_records).expect("missing root should yield an empty view");
 
-        assert!(logs_view.columns.is_none(), "columns should be None (no root)");
+        assert!(
+            logs_view.columns.is_none(),
+            "columns should be None (no root)"
+        );
         assert!(logs_view.resource_groups.is_empty());
         assert!(logs_view.scope_groups_map.is_empty());
 

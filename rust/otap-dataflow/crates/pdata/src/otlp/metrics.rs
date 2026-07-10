@@ -281,14 +281,15 @@ impl ProtoBytesEncoder for MetricsProtoBytesEncoder {
         result_buf: &mut ProtoBuffer,
     ) -> Result<()> {
         otap_batch.decode_transport_optimized_ids()?;
+
+        let Some(metrics_rb) = otap_batch.root_record_batch() else {
+            return Ok(());
+        };
+
         let metrics_data_arrays = MetricsDataArrays::try_from(&*otap_batch)?;
 
         self.reset();
 
-        let metrics_rb = otap_batch
-            .get(ArrowPayloadType::UnivariateMetrics)
-            .or_else(|| otap_batch.get(ArrowPayloadType::MultivariateMetrics))
-            .ok_or(Error::MetricRecordNotFound)?;
         self.batch_sorter
             .init_cursor_for_root_batch(metrics_rb, &mut self.root_cursor)?;
 
