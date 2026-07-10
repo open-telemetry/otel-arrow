@@ -338,6 +338,43 @@ async fn clones_share_one_token_cache() {
     assert_eq!(streamed.expose_secret(), "shared");
 }
 
+// ── Metrics tracker tests ─────────────────────────────────────
+
+#[test]
+fn metrics_tracker_records_snapshots_and_reports() {
+    let mut tracker = make_tracker();
+
+    // Debug formatting is exercised for observability tooling.
+    assert!(format!("{tracker:?}").contains("AzureIdentityAuthMetricsTracker"));
+
+    // A fresh tracker snapshots to all-zero values.
+    let before = tracker.snapshot();
+    assert!(
+        before.get_metrics().iter().all(|m| m.is_zero()),
+        "a new tracker starts at zero"
+    );
+
+    tracker.record_success(12.5);
+    tracker.record_failure();
+    tracker.record_publish();
+
+    // Every metric is non-zero once each counter/latency has been recorded.
+    let after = tracker.snapshot();
+    assert!(
+        after.get_metrics().iter().all(|m| !m.is_zero()),
+        "every metric is non-zero after recording"
+    );
+
+    // Reporting flushes the recorded metrics to the telemetry channel.
+    let (rx, mut reporter) =
+        otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
+    tracker.report(&mut reporter).expect("report succeeds");
+    assert!(
+        rx.try_recv().is_ok(),
+        "reporter received the metric snapshot"
+    );
+}
+
 #[tokio::test]
 async fn get_token_throttles_after_recent_failure() {
     let calls = Arc::new(AtomicUsize::new(0));
