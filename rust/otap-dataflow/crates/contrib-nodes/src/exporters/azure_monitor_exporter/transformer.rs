@@ -560,8 +560,10 @@ impl Transformer {
         out.push(b'"');
         let mut start = 0;
         for (i, &b) in s.iter().enumerate() {
-            let needs_escape =
-                b == b'"' || b == b'\\' || b == b'\n' || b == b'\r' || b == b'\t' || b < 0x20;
+            // `\n`, `\r`, `\t` are all `< 0x20`, so `b < 0x20` already covers them;
+            // only `"` and `\` need explicit checks. The escape arms below still
+            // emit the short `\n`/`\r`/`\t` forms, so output is unchanged.
+            let needs_escape = b == b'"' || b == b'\\' || b < 0x20;
             if needs_escape {
                 if start < i {
                     out.extend_from_slice(&s[start..i]);
