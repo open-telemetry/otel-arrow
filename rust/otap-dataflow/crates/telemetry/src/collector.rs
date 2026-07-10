@@ -79,10 +79,12 @@ impl InternalCollector {
             biased;
 
             _ = cancel.cancelled() => {
-                // Shutdown requested; cancel the collection loop by dropping its future.
+                // Preserve snapshots already queued before shutdown so a final
+                // registry drain can export them.
+                self.collect_pending();
                 Ok(())
             }
-            res = self.run_collection_loop() => {
+            res = self.clone().run_collection_loop() => {
                 res
             }
         }
@@ -337,5 +339,36 @@ mod tests {
 
         drop(reporter);
         handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_aggregates_snapshots_already_in_the_channel() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(7u64), MetricValue::from(9u64)],
+            ))
+            .expect("snapshot fits in the reporting channel");
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        Arc::new(collector)
+            .run(cancel)
+            .await
+            .expect("collector shuts down cleanly");
+
+        let batch = telemetry_registry.drain_metric_export_batch();
+        assert_eq!(batch.metric_sets.len(), 1);
+        assert_eq!(
+            batch.metric_sets[0].values,
+            vec![MetricValue::from(7u64), MetricValue::from(9u64)]
+        );
     }
 }

@@ -10,9 +10,14 @@
 
 ## Overview
 
-The internal telemetry receiver consumes internal engine log events from the
-pipeline context and emits them as OTLP log pdata. It is intended for the engine
-observability pipeline rather than normal user ingest.
+The internal telemetry receiver consumes the engine's own logs and aggregated
+metrics from the pipeline context and emits them as OTLP pdata. It is intended
+for the engine observability pipeline rather than normal user ingest.
+
+For metrics, the receiver projects each multivariate metric set into standard
+univariate OTLP metrics. Normal OTLP and OTAP exporters can consume that pdata.
+This bridge is transitional pending native multivariate metric-set support in
+OTAP.
 
 ## Getting Started
 
@@ -23,8 +28,22 @@ inside a user pipeline group, so it is owned by the engine and cannot be
 referenced from groups.
 
 ```yaml
-type: receiver:internal_telemetry
-config: {}
+engine:
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        internal:
+          type: receiver:internal_telemetry
+          config: {}
+        console:
+          type: exporter:console
+          config: {}
+      connections:
+        - from: internal
+          to: console
 ```
 
 ## Configuration
@@ -60,8 +79,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - The receiver requires internal telemetry settings in the pipeline context.
 - It is normally used under `engine.observability.pipeline`.
-- It emits internal logs; metric export is configured separately through engine
-  telemetry settings.
+- The `its` metrics provider requires exactly one internal telemetry receiver
+  in the observability pipeline.
+- Internal metric batches are emitted on `engine.telemetry.reporting_interval`.
+- The receiver drains an export-specific registry view; admin endpoint reads
+  and resets do not consume its pending metrics.
 
 ## Related Docs
 

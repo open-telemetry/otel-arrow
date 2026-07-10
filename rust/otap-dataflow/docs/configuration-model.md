@@ -357,6 +357,50 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
+### Engine Telemetry
+
+Internal telemetry settings are declared at `engine.telemetry`. The
+`reporting_interval` controls how often internal metric snapshots are collected
+and, when ITS is selected, emitted to the observability pipeline.
+
+`engine.telemetry.metrics.provider` selects the internal metrics export path:
+
+- `opentelemetry` (default): export through OpenTelemetry SDK readers. The
+  `readers` and `views` fields are available only in this mode.
+- `its`: emit registry-backed metrics as OTLP through the engine observability
+  pipeline. This mode requires an observability pipeline containing exactly one
+  `receiver:internal_telemetry`; SDK `readers` and `views` are rejected.
+- `none`: disable periodic internal metric export. Registry-backed metrics
+  remain available to the admin metrics endpoint.
+
+For example, this routes internal metrics into the observability pipeline:
+
+```yaml
+engine:
+  telemetry:
+    reporting_interval: 1s
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        internal:
+          type: receiver:internal_telemetry
+          config: {}
+        console:
+          type: exporter:console
+          config: {}
+      connections:
+        - from: internal
+          to: console
+```
+
+The admin metrics endpoint uses an independent registry view, so reading or
+resetting that endpoint does not consume snapshots waiting for ITS export.
+The ITS bridge projects each multivariate metric set into standard univariate
+OTLP metrics, which normal OTLP and OTAP exporters can consume. This projection
+is transitional pending native multivariate metric-set support in OTAP.
+
 ### Observability Pipeline
 
 Internal telemetry pipeline wiring is declared at:

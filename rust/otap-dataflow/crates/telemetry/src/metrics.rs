@@ -8,10 +8,11 @@
 //! here.
 
 pub mod dispatcher;
+pub mod otlp;
 
 use crate::attributes::AttributeSetHandler;
 use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality};
-use crate::entity::EntityRegistry;
+use crate::entity::{EntityAttributeSet, EntityRegistry};
 use crate::instrument::MmscSnapshot;
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
@@ -20,6 +21,8 @@ use slotmap::SlotMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Numeric metric value — a scalar integer or float, or a pre-aggregated MMSC summary.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -265,6 +268,41 @@ pub trait MetricSetHandler {
     fn needs_flush(&self) -> bool;
 }
 
+/// An owned collection of metric sets drained from the export accumulator.
+///
+/// The registry lock is released before this value is returned, so callers can
+/// encode it or wait for downstream capacity without blocking collection.
+#[derive(Debug, Clone)]
+pub struct MetricExportBatch {
+    /// Collection timestamp shared by every data point in the batch.
+    pub time_unix_nano: u64,
+    /// Metric sets included in this collection cycle.
+    pub metric_sets: Vec<MetricSetExport>,
+}
+
+impl MetricExportBatch {
+    /// Returns `true` when the batch contains no metric sets.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.metric_sets.is_empty()
+    }
+}
+
+/// An owned metric set ready for protocol encoding.
+#[derive(Debug, Clone)]
+pub struct MetricSetExport {
+    /// Static schema describing the values in descriptor order.
+    pub descriptor: &'static MetricsDescriptor,
+    /// Entity attributes attached to the OTLP instrumentation scope.
+    pub attributes: Arc<EntityAttributeSet>,
+    /// Metric values in descriptor order.
+    pub values: Vec<MetricValue>,
+    /// Start of the delta collection window.
+    pub delta_start_time_unix_nano: u64,
+    /// Time at which this metric set was registered.
+    pub cumulative_start_time_unix_nano: u64,
+}
+
 /// A registered metrics entry containing all necessary information for metrics aggregation.
 pub struct MetricsEntry {
     /// The static descriptor describing the metrics structure
@@ -272,8 +310,23 @@ pub struct MetricsEntry {
     /// Current snapshot values stored as a vector
     pub metric_values: Vec<MetricValue>,
 
+    /// Process-lifetime/resettable values used by non-destructive admin readers.
+    pub admin_metric_values: Vec<MetricValue>,
+
     /// Entity key for the associated attribute set
     pub entity_key: EntityKey,
+
+    /// Wall-clock timestamp at registration, used by cumulative OTLP sums.
+    registered_at_unix_nano: u64,
+
+    /// Start of the current delta export window.
+    delta_start_time_unix_nano: u64,
+
+    /// Whether at least one producer snapshot has updated the export accumulator.
+    export_dirty: bool,
+
+    /// Whether at least one producer snapshot has updated the admin accumulator.
+    pub(crate) admin_observed: bool,
 }
 
 impl Debug for MetricsEntry {
@@ -281,7 +334,10 @@ impl Debug for MetricsEntry {
         f.debug_struct("MetricsEntry")
             .field("metrics_descriptor", &self.metrics_descriptor)
             .field("metric_values", &self.metric_values)
+            .field("admin_metric_values", &self.admin_metric_values)
             .field("entity_key", &self.entity_key)
+            .field("export_dirty", &self.export_dirty)
+            .field("admin_observed", &self.admin_observed)
             .finish()
     }
 }
@@ -289,17 +345,32 @@ impl Debug for MetricsEntry {
 impl MetricsEntry {
     /// Creates a new metrics entry
     #[must_use]
-    pub const fn new(
+    pub fn new(
         metrics_descriptor: &'static MetricsDescriptor,
         metric_values: Vec<MetricValue>,
         entity_key: EntityKey,
     ) -> Self {
+        let registered_at_unix_nano = unix_time_nanos();
         Self {
             metrics_descriptor,
+            admin_metric_values: metric_values.clone(),
             metric_values,
             entity_key,
+            registered_at_unix_nano,
+            delta_start_time_unix_nano: registered_at_unix_nano,
+            export_dirty: false,
+            admin_observed: false,
         }
     }
+}
+
+pub(crate) fn unix_time_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .try_into()
+        .unwrap_or(u64::MAX)
 }
 
 /// Lightweight iterator over metrics (no heap allocs).
@@ -440,39 +511,57 @@ impl MetricSetRegistry {
                 "descriptor.metrics and snapshot values length must match"
             );
 
-            entry
-                .metric_values
-                .iter_mut()
-                .zip(metrics_values)
-                .zip(entry.metrics_descriptor.metrics.iter())
-                .for_each(|((current, incoming), field)| match field.instrument {
-                    Instrument::Gauge => {
-                        // Gauges report absolute values; replace.
-                        *current = *incoming;
-                    }
-                    Instrument::Histogram | Instrument::Mmsc => {
-                        // Histograms and MMSC instruments report per-interval changes.
-                        current.add_in_place(*incoming);
-                    }
-                    Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
-                        Some(Temporality::Delta) => {
-                            // Delta sums report per-interval changes => accumulate.
-                            current.add_in_place(*incoming);
-                        }
-                        Some(Temporality::Cumulative) => {
-                            // Cumulative sums report the current value => replace.
-                            *current = *incoming;
-                        }
-                        None => {
-                            debug_assert!(false, "sum-like instrument must have a temporality");
-                            // Prefer replacing to avoid runaway accumulation if misconfigured.
-                            *current = *incoming;
-                        }
-                    },
-                });
+            Self::accumulate_values(
+                &mut entry.metric_values,
+                metrics_values,
+                entry.metrics_descriptor.metrics,
+            );
+            Self::accumulate_values(
+                &mut entry.admin_metric_values,
+                metrics_values,
+                entry.metrics_descriptor.metrics,
+            );
+            entry.export_dirty = true;
+            entry.admin_observed = true;
         } else {
             // TODO: consider logging missing key
         }
+    }
+
+    fn accumulate_values(
+        current_values: &mut [MetricValue],
+        incoming_values: &[MetricValue],
+        fields: &'static [MetricsField],
+    ) {
+        current_values
+            .iter_mut()
+            .zip(incoming_values)
+            .zip(fields)
+            .for_each(|((current, incoming), field)| match field.instrument {
+                Instrument::Gauge => {
+                    // Gauges report absolute values; replace.
+                    *current = *incoming;
+                }
+                Instrument::Histogram | Instrument::Mmsc => {
+                    // Histograms and MMSC instruments report per-interval changes.
+                    current.add_in_place(*incoming);
+                }
+                Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
+                    Some(Temporality::Delta) => {
+                        // Delta sums report per-interval changes => accumulate.
+                        current.add_in_place(*incoming);
+                    }
+                    Some(Temporality::Cumulative) => {
+                        // Cumulative sums report the current value => replace.
+                        *current = *incoming;
+                    }
+                    None => {
+                        debug_assert!(false, "sum-like instrument must have a temporality");
+                        // Prefer replacing to avoid runaway accumulation if misconfigured.
+                        *current = *incoming;
+                    }
+                },
+            });
     }
 
     pub(crate) fn unregister(&mut self, metrics_key: MetricSetKey) -> Option<EntityKey> {
@@ -499,7 +588,7 @@ impl MetricSetRegistry {
     {
         for entry in self.metrics.values_mut() {
             let values = &mut entry.metric_values;
-            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
+            if keep_all_zeroes || entry.export_dirty || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 if let Some(attrs) = entities.get(entry.entity_key) {
                     f(desc, attrs, MetricsIterator::new(desc.metrics, values));
@@ -507,6 +596,86 @@ impl MetricSetRegistry {
 
                 // Zero after reporting.
                 values.iter_mut().for_each(MetricValue::reset);
+                entry.export_dirty = false;
+            }
+        }
+    }
+
+    /// Copies the pending export accumulator into an owned batch.
+    pub(crate) fn drain_export_batch(
+        &mut self,
+        entities: &EntityRegistry,
+        requested_time_unix_nano: u64,
+    ) -> MetricExportBatch {
+        let time_unix_nano = self
+            .metrics
+            .values()
+            .fold(requested_time_unix_nano, |time, entry| {
+                time.max(entry.registered_at_unix_nano)
+                    .max(entry.delta_start_time_unix_nano)
+            });
+        let mut metric_sets = Vec::new();
+
+        for entry in self.metrics.values_mut() {
+            if entry.export_dirty
+                && let Some(attributes) = entities.get_shared(entry.entity_key)
+            {
+                metric_sets.push(MetricSetExport {
+                    descriptor: entry.metrics_descriptor,
+                    attributes,
+                    values: entry.metric_values.clone(),
+                    delta_start_time_unix_nano: entry.delta_start_time_unix_nano,
+                    cumulative_start_time_unix_nano: entry.registered_at_unix_nano,
+                });
+
+                for (field, value) in entry
+                    .metrics_descriptor
+                    .metrics
+                    .iter()
+                    .zip(&mut entry.metric_values)
+                {
+                    let is_delta_sum = matches!(
+                        field.instrument,
+                        Instrument::Counter | Instrument::UpDownCounter
+                    ) && field.temporality == Some(Temporality::Delta);
+                    if is_delta_sum
+                        || matches!(field.instrument, Instrument::Histogram | Instrument::Mmsc)
+                    {
+                        value.reset();
+                    }
+                }
+                entry.export_dirty = false;
+            }
+
+            // Empty collection intervals still delimit the next delta window.
+            entry.delta_start_time_unix_nano = time_unix_nano;
+        }
+
+        MetricExportBatch {
+            time_unix_nano,
+            metric_sets,
+        }
+    }
+
+    /// Visits the admin accumulator and resets it without consuming export data.
+    pub(crate) fn visit_admin_metrics_and_reset<F>(
+        &mut self,
+        entities: &EntityRegistry,
+        mut f: F,
+        keep_all_zeroes: bool,
+    ) where
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
+        for entry in self.metrics.values_mut() {
+            let values = &mut entry.admin_metric_values;
+            if keep_all_zeroes || entry.admin_observed || values.iter().any(|&v| !v.is_zero()) {
+                let desc = entry.metrics_descriptor;
+                if let Some(attrs) = entities.get(entry.entity_key) {
+                    f(desc, attrs, MetricsIterator::new(desc.metrics, values));
+                }
+                values.iter_mut().for_each(MetricValue::reset);
+                entry.admin_observed = false;
             }
         }
     }
@@ -621,6 +790,80 @@ mod tests {
 
         fn needs_flush(&self) -> bool {
             self.values.iter().any(|&v| !v.is_zero())
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockMixedMetricSet {
+        values: Vec<MetricValue>,
+    }
+
+    impl Default for MockMixedMetricSet {
+        fn default() -> Self {
+            Self {
+                values: vec![
+                    MetricValue::U64(0),
+                    MetricValue::U64(0),
+                    MetricValue::U64(0),
+                    MetricValue::U64(0),
+                ],
+            }
+        }
+    }
+
+    static MOCK_MIXED_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test_mixed_metrics",
+        metrics: &[
+            MetricsField {
+                name: "delta_counter",
+                unit: "1",
+                brief: "Test delta counter",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "cumulative_counter",
+                unit: "1",
+                brief: "Test cumulative counter",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "gauge",
+                unit: "1",
+                brief: "Test gauge",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "histogram",
+                unit: "1",
+                brief: "Test histogram",
+                instrument: Instrument::Histogram,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+        ],
+    };
+
+    impl MetricSetHandler for MockMixedMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &MOCK_MIXED_METRICS_DESCRIPTOR
+        }
+
+        fn snapshot_values(&self) -> Vec<MetricValue> {
+            self.values.clone()
+        }
+
+        fn clear_values(&mut self) {
+            self.values.iter_mut().for_each(MetricValue::reset);
+        }
+
+        fn needs_flush(&self) -> bool {
+            self.values.iter().any(|&value| !value.is_zero())
         }
     }
 
@@ -826,6 +1069,154 @@ mod tests {
         );
 
         assert_eq!(visit_count, 0);
+    }
+
+    #[test]
+    fn test_drain_export_batch_resets_delta_and_retains_current_values() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+        let metric_set: MetricSet<MockMixedMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+        let registered_at = metrics
+            .metrics
+            .get(metrics_key)
+            .expect("metric set entry")
+            .registered_at_unix_nano;
+
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[
+                MetricValue::U64(3),
+                MetricValue::U64(10),
+                MetricValue::U64(7),
+                MetricValue::U64(2),
+            ],
+        );
+
+        let first_time = registered_at + 10;
+        let first_batch = metrics.drain_export_batch(&entities, first_time);
+        assert_eq!(first_batch.time_unix_nano, first_time);
+        assert_eq!(first_batch.metric_sets.len(), 1);
+        let first_set = &first_batch.metric_sets[0];
+        assert_eq!(first_set.descriptor.name, "test_mixed_metrics");
+        assert_eq!(
+            first_set.values,
+            vec![
+                MetricValue::U64(3),
+                MetricValue::U64(10),
+                MetricValue::U64(7),
+                MetricValue::U64(2),
+            ]
+        );
+        assert_eq!(first_set.delta_start_time_unix_nano, registered_at);
+        assert_eq!(first_set.cumulative_start_time_unix_nano, registered_at);
+
+        let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
+        assert_eq!(
+            entry.metric_values,
+            vec![
+                MetricValue::U64(0),
+                MetricValue::U64(10),
+                MetricValue::U64(7),
+                MetricValue::U64(0),
+            ]
+        );
+
+        // An empty collection still advances the start of the next delta window.
+        let empty_time = first_time + 10;
+        let empty_batch = metrics.drain_export_batch(&entities, empty_time);
+        assert!(empty_batch.is_empty());
+        assert_eq!(empty_batch.time_unix_nano, empty_time);
+
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[
+                MetricValue::U64(4),
+                MetricValue::U64(12),
+                MetricValue::U64(0),
+                MetricValue::U64(5),
+            ],
+        );
+        let second_time = empty_time + 10;
+        let second_batch = metrics.drain_export_batch(&entities, second_time);
+        let second_set = &second_batch.metric_sets[0];
+        assert_eq!(
+            second_set.values,
+            vec![
+                MetricValue::U64(4),
+                MetricValue::U64(12),
+                MetricValue::U64(0),
+                MetricValue::U64(5),
+            ]
+        );
+        assert_eq!(second_set.delta_start_time_unix_nano, empty_time);
+        assert_eq!(second_set.cumulative_start_time_unix_nano, registered_at);
+
+        // A collected all-zero snapshot is a real transition and must not be omitted.
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[
+                MetricValue::U64(0),
+                MetricValue::U64(0),
+                MetricValue::U64(0),
+                MetricValue::U64(0),
+            ],
+        );
+        let zero_batch = metrics.drain_export_batch(&entities, second_time + 10);
+        assert_eq!(zero_batch.metric_sets.len(), 1);
+        assert_eq!(
+            zero_batch.metric_sets[0].values,
+            vec![
+                MetricValue::U64(0),
+                MetricValue::U64(0),
+                MetricValue::U64(0),
+                MetricValue::U64(0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_export_and_admin_drains_are_isolated() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+        let metric_set: MetricSet<MockMixedMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        let first_values = [
+            MetricValue::U64(5),
+            MetricValue::U64(11),
+            MetricValue::U64(7),
+            MetricValue::U64(3),
+        ];
+        metrics.accumulate_snapshot(metrics_key, &first_values);
+        let _ = metrics.drain_export_batch(&entities, u64::MAX);
+
+        let mut admin_values = Vec::new();
+        metrics.visit_admin_metrics_and_reset(
+            &entities,
+            |_descriptor, _attributes, values| admin_values.extend(values.map(|(_, value)| value)),
+            false,
+        );
+        assert_eq!(admin_values, first_values);
+
+        let second_values = [
+            MetricValue::U64(2),
+            MetricValue::U64(13),
+            MetricValue::U64(0),
+            MetricValue::U64(4),
+        ];
+        metrics.accumulate_snapshot(metrics_key, &second_values);
+        metrics.visit_admin_metrics_and_reset(&entities, |_, _, _| {}, false);
+
+        let export_batch = metrics.drain_export_batch(&entities, u64::MAX);
+        assert_eq!(export_batch.metric_sets.len(), 1);
+        assert_eq!(export_batch.metric_sets[0].values, second_values);
+
+        let mut admin_visit_count = 0;
+        metrics.visit_admin_metrics_and_reset(&entities, |_, _, _| admin_visit_count += 1, false);
+        assert_eq!(admin_visit_count, 0);
     }
 
     #[test]

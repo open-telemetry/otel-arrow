@@ -780,6 +780,120 @@ groups:
     }
 
     #[test]
+    fn from_yaml_accepts_its_metrics_with_one_internal_telemetry_receiver() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml).expect("ITS metrics config should parse");
+        assert!(config.engine.telemetry.metrics.uses_its_provider());
+    }
+
+    #[test]
+    fn from_yaml_rejects_its_metrics_without_observability_pipeline() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("ITS metrics without an observability pipeline must be rejected");
+        assert!(
+            err.to_string()
+                .contains("requires engine.observability.pipeline"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_yaml_rejects_its_metrics_without_internal_telemetry_receiver() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        source:
+          type: "urn:test:receiver:example"
+          config: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: source
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("ITS metrics without an internal receiver must be rejected");
+        assert!(
+            err.to_string().contains("found 0"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_yaml_rejects_its_metrics_with_multiple_internal_telemetry_receivers() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        itr_a:
+          type: "receiver:internal_telemetry"
+          config: {}
+        itr_b:
+          type: "urn:otel:receiver:internal_telemetry"
+          config: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr_a
+          to: sink
+        - from: itr_b
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("ITS metrics with multiple receivers must be rejected");
+        assert!(
+            err.to_string().contains("found 2"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
     fn from_yaml_accepts_custom_config() {
         let yaml = r#"
 version: otel_dataflow/v1

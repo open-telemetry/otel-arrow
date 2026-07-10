@@ -8,7 +8,7 @@ use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
-    MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
+    MetricExportBatch, MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
 };
 use crate::otel_debug;
 use crate::semconv::SemConvRegistry;
@@ -181,6 +181,43 @@ impl TelemetryRegistryHandle {
         metrics.visit_metrics_and_reset(entities, f, keep_all_zeroes);
     }
 
+    /// Atomically drains the pending metrics export accumulator into an owned batch.
+    ///
+    /// Encoding and downstream waits can safely happen after this method returns;
+    /// neither holds the registry mutex.
+    #[must_use]
+    pub fn drain_metric_export_batch(&self) -> MetricExportBatch {
+        self.drain_metric_export_batch_at(crate::metrics::unix_time_nanos())
+    }
+
+    pub(crate) fn drain_metric_export_batch_at(&self, time_unix_nano: u64) -> MetricExportBatch {
+        let mut reg = self.registry.lock();
+        let TelemetryRegistry { entities, metrics } = &mut *reg;
+        metrics.drain_export_batch(entities, time_unix_nano)
+    }
+
+    /// Visits the admin metrics accumulator, then resets only that accumulator.
+    ///
+    /// This does not consume data pending for ITS or the OpenTelemetry SDK.
+    pub fn visit_admin_metrics_and_reset<F>(&self, f: F)
+    where
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
+        self.visit_admin_metrics_and_reset_with_zeroes(f, false);
+    }
+
+    /// Visits and resets the admin accumulator, optionally retaining zero-valued sets.
+    pub fn visit_admin_metrics_and_reset_with_zeroes<F>(&self, f: F, keep_all_zeroes: bool)
+    where
+        for<'a> F:
+            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+    {
+        let mut reg = self.registry.lock();
+        let TelemetryRegistry { entities, metrics } = &mut *reg;
+        metrics.visit_admin_metrics_and_reset(entities, f, keep_all_zeroes);
+    }
+
     /// Generates a SemConvRegistry from the current MetricSetRegistry.
     /// AttributeFields are deduplicated based on their key.
     #[must_use]
@@ -208,8 +245,8 @@ impl TelemetryRegistryHandle {
     {
         let reg = self.registry.lock();
         for entry in reg.metrics.metrics.values() {
-            let values = &entry.metric_values;
-            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
+            let values = &entry.admin_metric_values;
+            if keep_all_zeroes || entry.admin_observed || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
                 if let Some(attrs) = reg.entities.get(entry.entity_key) {
                     f(desc, attrs, MetricsIterator::new(desc.metrics, values));

@@ -507,7 +507,7 @@ fn aggregate_metric_groups(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
@@ -1079,7 +1079,7 @@ fn collect_metrics_snapshot_and_reset(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_metrics_and_reset_with_zeroes(
+    telemetry_registry.visit_admin_metrics_and_reset_with_zeroes(
         |descriptor, attributes, metrics_iter| {
             let mut metrics = Vec::new();
 
@@ -1144,7 +1144,7 @@ fn collect_compact_snapshot_and_reset(
 ) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_admin_metrics_and_reset(|descriptor, attributes, metrics_iter| {
         let mut metrics = HashMap::new();
         for (field, value) in metrics_iter {
             let _ = metrics.insert(field.name.to_string(), value);
@@ -1253,7 +1253,7 @@ fn format_line_protocol(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
@@ -1328,7 +1328,7 @@ fn format_prometheus_text(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }

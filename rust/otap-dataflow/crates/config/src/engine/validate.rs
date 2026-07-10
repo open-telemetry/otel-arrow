@@ -45,6 +45,30 @@ impl OtelDataflowSpec {
             errors.push(e);
         }
 
+        if self.engine.telemetry.metrics.uses_its_provider() {
+            const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
+            match self.engine.observability.pipeline.as_ref() {
+                Some(pipeline) => {
+                    let receiver_count = pipeline
+                        .nodes
+                        .iter()
+                        .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
+                        .count();
+                    if receiver_count != 1 {
+                        errors.push(Error::InvalidUserConfig {
+                            error: format!(
+                                "engine.telemetry.metrics.provider 'its' requires exactly one internal telemetry receiver in engine.observability.pipeline; found {receiver_count}"
+                            ),
+                        });
+                    }
+                }
+                None => errors.push(Error::InvalidUserConfig {
+                    error: "engine.telemetry.metrics.provider 'its' requires engine.observability.pipeline"
+                        .to_owned(),
+                }),
+            }
+        }
+
         if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
             if let Some(policies) = &observability_pipeline.policies {
                 errors.extend(

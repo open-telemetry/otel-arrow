@@ -168,6 +168,7 @@ mod tests {
                 interval: Duration::from_millis(10),
             })],
             views: Vec::new(),
+            ..MetricsConfig::default()
         };
 
         let config = TelemetryConfig {

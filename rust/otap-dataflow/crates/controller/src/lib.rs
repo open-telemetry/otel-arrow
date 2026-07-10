@@ -1571,10 +1571,7 @@ impl<
         // TODO: This should be validated somewhere, that engine observability pipeline is
         // defined when ITS is requested. Possibly we could fill in a default.
         let has_internal_pipeline = internal_pipeline_handle.is_some();
-        match (
-            has_internal_pipeline,
-            telemetry_config.logs.providers.uses_its_provider(),
-        ) {
+        match (has_internal_pipeline, telemetry_config.uses_its_provider()) {
             (false, true) => {
                 otel_warn!(
                     "controller.its_provider_without_pipeline",
@@ -1605,7 +1602,9 @@ impl<
         )?;
 
         // Start the metrics dispatcher only if there are metric readers configured.
-        let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
+        let metrics_dispatcher_handle = if telemetry_config.metrics.uses_opentelemetry_provider()
+            && telemetry_config.metrics.has_readers()
+        {
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
                 admin_tracing_setup.clone(),

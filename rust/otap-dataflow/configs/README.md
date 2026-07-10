@@ -13,6 +13,14 @@ future.
 
 ## Available Configurations
 
+### `internal-telemetry.yaml`
+
+Routes the engine's own logs and metrics through the Internal Telemetry System:
+
+- Uses the dedicated engine observability pipeline
+- Receives internal OTLP logs and metrics with `receiver:internal_telemetry`
+- Exports both signals through the configured console exporter
+
 ### `trafficgen-batch-debug-noop.yaml`
 
 Demonstrates the batch processor:
