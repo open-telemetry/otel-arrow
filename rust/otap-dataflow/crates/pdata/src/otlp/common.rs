@@ -1058,18 +1058,23 @@ impl SortedBatchCursor {
     /// Position the cursor at the first sorted index whose parent-id value is `>= target`.
     ///
     /// The cursor's `sorted_indices` are ordered by the child's parent-id column (ascending,
-    /// with nulls sorted last), so this seeks to the start of `target`'s equal-range. Seeking
-    /// by absolute binary search — rather than relying on the cursor's prior forward position —
-    /// makes child attribute lookups independent of the order in which parents request their
-    /// children.
+    /// with nulls sorted last), so this seeks to the start of `target`'s equal-range.
     ///
-    /// This matters because the root record visitation order is `(resource_id, scope_id, id)`,
-    /// which is not necessarily ascending in `id` alone: e.g. after `extend attributes[...]`
-    /// fills null root ids with `max + 1`, an earlier-visited scope can carry a *larger* id than
-    /// a later-visited one. A purely forward cursor would then skip (permanently consume) the
-    /// later, lower-id parent's child rows, silently dropping all of its attributes. Re-seeking
-    /// per parent avoids that. Each parent id is queried at most once per batch, so re-seeking
-    /// never re-yields rows for an already-emitted parent.
+    /// Seeking makes child attribute lookups independent of the order in which parents request
+    /// their children. This matters because the root record visitation order is
+    /// `(resource_id, scope_id, id)`, which is not necessarily ascending in `id` alone: e.g. after
+    /// `extend attributes[...]` fills null root ids with `max + 1`, an earlier-visited scope can
+    /// carry a *larger* id than a later-visited one. A purely forward cursor would then skip
+    /// (permanently consume) the later, lower-id parent's child rows, silently dropping all of its
+    /// attributes. Each parent id is queried at most once per batch, so re-seeking never re-yields
+    /// rows for an already-emitted parent.
+    ///
+    /// Fast path: parents are *usually* visited in ascending id order, in which case the cursor is
+    /// already at (or before) `target`'s range and [`ChildIndexIter::next`] can scan forward to it
+    /// without a search. We therefore only pay for the `O(log n)` binary search when a *backward*
+    /// jump is required - i.e. `target` is smaller than a parent we have already passed - which is
+    /// exactly the non-monotonic case the seek exists to handle. This keeps the common,
+    /// already-sorted case at the same cost as a plain forward cursor.
     fn seek_to_parent<T: ArrowPrimitiveType>(
         &mut self,
         target: T::Native,
@@ -1077,6 +1082,17 @@ impl SortedBatchCursor {
     ) where
         T::Native: PartialOrd,
     {
+        // If the most recently consumed row's parent id is `<= target`, then `target`'s rows (if
+        // any) are at or after `curr_index`, so a forward scan suffices — no search needed. Nulls
+        // (value_at == None) fall through to the search, as does the very first seek of a batch.
+        if self.curr_index > 0 {
+            if let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1]) {
+                if !(target < prev) {
+                    return;
+                }
+            }
+        }
+
         self.curr_index =
             self.sorted_indices
                 .partition_point(|&idx| match parent_id_col.value_at(idx) {
