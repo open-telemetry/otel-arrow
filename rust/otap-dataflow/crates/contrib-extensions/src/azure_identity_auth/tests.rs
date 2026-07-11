@@ -493,3 +493,21 @@ async fn schedule_next_pushes_non_expiring_far_out() {
         "expected far-future refresh, got {secs}s"
     );
 }
+
+// ── retry backoff tests ───────────────────────────────────────
+
+#[test]
+fn retry_backoff_grows_exponentially_and_caps() {
+    // Zero prior failures starts at the base retry interval (10s).
+    assert_eq!(extension::retry_backoff_secs(0), 10);
+    // Each consecutive failure doubles the base delay.
+    assert_eq!(extension::retry_backoff_secs(1), 20);
+    assert_eq!(extension::retry_backoff_secs(2), 40);
+    assert_eq!(extension::retry_backoff_secs(3), 80);
+    assert_eq!(extension::retry_backoff_secs(4), 160);
+    // Growth is clamped at the max (300s) and stays there.
+    assert_eq!(extension::retry_backoff_secs(5), 300);
+    assert_eq!(extension::retry_backoff_secs(6), 300);
+    // A very large failure count must not overflow the shift.
+    assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
+}
