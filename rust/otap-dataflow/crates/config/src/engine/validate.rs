@@ -49,17 +49,33 @@ impl OtelDataflowSpec {
             const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
             match self.engine.observability.pipeline.as_ref() {
                 Some(pipeline) => {
-                    let receiver_count = pipeline
+                    let receivers = pipeline
                         .nodes
                         .iter()
                         .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
-                        .count();
+                        .map(|(node_id, _)| node_id)
+                        .collect::<Vec<_>>();
+                    let receiver_count = receivers.len();
                     if receiver_count != 1 {
                         errors.push(Error::InvalidUserConfig {
                             error: format!(
                                 "engine.telemetry.metrics.provider 'its' requires exactly one internal telemetry receiver in engine.observability.pipeline; found {receiver_count}"
                             ),
                         });
+                    } else {
+                        let mut pruned_pipeline = pipeline.clone().into_pipeline_config();
+                        let removed_nodes = pruned_pipeline.remove_unconnected_nodes();
+                        if removed_nodes
+                            .iter()
+                            .any(|(node_id, _)| node_id == receivers[0])
+                        {
+                            errors.push(Error::InvalidUserConfig {
+                                error: format!(
+                                    "engine.telemetry.metrics.provider 'its' requires internal telemetry receiver '{}' to remain connected to a valid downstream path in engine.observability.pipeline",
+                                    receivers[0]
+                                ),
+                            });
+                        }
                     }
                 }
                 None => errors.push(Error::InvalidUserConfig {

@@ -163,6 +163,17 @@ impl EngineMetricsMonitor {
     pub fn report(&mut self) -> Result<(), otap_df_telemetry::error::Error> {
         self.reporter.report(&mut self.metrics)
     }
+
+    /// Samples and reliably hands off the final engine-wide metric values.
+    ///
+    /// The collector barrier completes before this monitor unregisters its
+    /// metric-set key, preventing an accepted terminal snapshot from arriving
+    /// after the registry entry has been removed.
+    pub async fn finish_reporting(&mut self) -> Result<(), otap_df_telemetry::error::Error> {
+        self.update();
+        let _ = self.reporter.report_reliably(&mut self.metrics).await?;
+        self.reporter.flush().await
+    }
 }
 
 /// Returns the current process-wide RSS (Resident Set Size) in bytes.

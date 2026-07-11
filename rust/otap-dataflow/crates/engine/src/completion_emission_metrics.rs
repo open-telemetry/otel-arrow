@@ -11,7 +11,7 @@ use crate::entity_context::NodeTelemetryHandle;
 use otap_df_config::MetricLevel;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 use std::sync::{Arc, Mutex};
@@ -52,6 +52,10 @@ impl CompletionEmissionMetricsState {
         metrics_reporter: &mut MetricsReporter,
     ) -> Result<(), TelemetryError> {
         metrics_reporter.report(&mut self.metrics)
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<MetricSetSnapshot> {
+        (!self.metrics.is_empty()).then(|| self.metrics.snapshot())
     }
 
     #[cfg(test)]

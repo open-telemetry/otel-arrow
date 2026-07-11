@@ -30,6 +30,8 @@
 //! registry maintain the value-kind/instrument pairing. Sum-like descriptors
 //! must also declare a [`Temporality`]; a missing temporality is reported as
 //! [`Error::MissingTemporality`] instead of emitting an ambiguous OTLP sum.
+//! The encoder validates these invariants as well, so malformed batches fail
+//! explicitly instead of silently truncating or substituting values.
 //!
 //! # Output hierarchy
 //!
@@ -97,6 +99,7 @@
 
 use crate::attributes::{AttributeSetHandler, AttributeValue};
 use crate::descriptor::{Instrument, MetricsField, Temporality};
+use crate::entity::EntityAttributeSet;
 use crate::metrics::{MetricExportBatch, MetricSetExport, MetricValue};
 use bytes::Bytes;
 use otap_df_pdata::OtlpProtoBytes;
@@ -107,6 +110,10 @@ use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     ResourceMetrics, ScopeMetrics, Sum,
 };
 use prost::Message;
+use smallvec::SmallVec;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// Errors produced while encoding registry metrics as OTLP.
 #[derive(Debug, thiserror::Error)]
@@ -121,13 +128,144 @@ pub enum Error {
         /// Metric name from the descriptor.
         metric: &'static str,
     },
+
+    /// A metric set's value vector did not match its descriptor's field count.
+    #[error(
+        "metric set '{metric_set}' contains {actual} values, but its descriptor defines {expected} fields"
+    )]
+    ValueCountMismatch {
+        /// Metric-set descriptor name.
+        metric_set: &'static str,
+        /// Number of fields declared by the descriptor.
+        expected: usize,
+        /// Number of values supplied by the export batch.
+        actual: usize,
+    },
+
+    /// A metric value did not match the kind declared by its descriptor.
+    #[error("metric '{metric}' expected a {expected} value, but received {actual}")]
+    ValueKindMismatch {
+        /// Metric name from the descriptor.
+        metric: &'static str,
+        /// Value kind required by the descriptor and instrument.
+        expected: &'static str,
+        /// Value kind found in the export batch.
+        actual: &'static str,
+    },
+
+    /// Views mapped two source fields to the same OTLP metric stream name.
+    #[error(
+        "instrumentation scope '{scope_name}' maps fields '{first_metric}' ('{first_name}') and '{second_metric}' ('{second_name}') to case-insensitively conflicting OTLP metric names"
+    )]
+    MetricNameCollision {
+        /// Instrumentation scope containing both projected streams.
+        scope_name: String,
+        /// First source metric field that claimed the output name.
+        first_metric: &'static str,
+        /// Output name produced for the first field.
+        first_name: String,
+        /// Second source metric field that produced the collision.
+        second_metric: &'static str,
+        /// Output name produced for the second field.
+        second_name: String,
+    },
+}
+
+/// A supported subset of an OpenTelemetry SDK metric view.
+///
+/// A metric field can match more than one view. Each matching view produces an
+/// OTLP metric stream, while a field that matches no views retains its
+/// descriptor-defined stream. Identical results for one source field are
+/// deduplicated using a case-insensitive name and exact description. Mapping
+/// different source fields in the same effective scope to the same
+/// case-insensitive name is rejected when at least one stream was produced by
+/// a view, because their already-aggregated data cannot be merged safely.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetricView {
+    /// Selects the metric fields to which the stream overrides apply.
+    pub selector: MetricViewSelector,
+    /// Overrides stream metadata for matching metric fields.
+    pub stream: MetricViewStream,
+}
+
+/// Exact-match selectors supported by [`MetricView`].
+///
+/// An omitted selector matches every value for that dimension. `scope_name`
+/// matches the metric-set descriptor name and `instrument_name` matches a
+/// field name within that metric set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetricViewSelector {
+    /// Exact metric-set/instrumentation-scope name to match.
+    pub scope_name: Option<String>,
+    /// Exact metric field/instrument name to match.
+    pub instrument_name: Option<String>,
+}
+
+/// Stream metadata overrides supported by [`MetricView`].
+///
+/// Omitted values fall back to the corresponding metric field descriptor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MetricViewStream {
+    /// OTLP metric name override.
+    pub name: Option<String>,
+    /// OTLP metric description override.
+    pub description: Option<String>,
 }
 
 /// Reusable OTLP encoder holding the process resource prototype.
 #[derive(Debug, Clone)]
 pub struct MetricsOtlpEncoder {
     resource_metrics: ResourceMetrics,
+    views: Vec<MetricView>,
 }
+
+/// Provenance retained while checking projected stream-name collisions.
+#[derive(Clone, Copy)]
+struct ProjectedStream<'a> {
+    source_field: &'static MetricsField,
+    output_name: &'a str,
+    view_applied: bool,
+}
+
+/// Registry identity corresponding to one effective OTLP instrumentation scope.
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct ScopeIdentity {
+    name: &'static str,
+    attributes: Arc<EntityAttributeSet>,
+}
+
+/// Borrowed, allocation-free case-insensitive metric-name key.
+#[derive(Clone, Copy)]
+struct CaseInsensitiveName<'a>(&'a str);
+
+impl PartialEq for CaseInsensitiveName<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(other.0)
+    }
+}
+
+impl Eq for CaseInsensitiveName<'_> {}
+
+impl Hash for CaseInsensitiveName<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.len().hash(state);
+        for byte in self.0.bytes() {
+            byte.to_ascii_lowercase().hash(state);
+        }
+    }
+}
+
+/// Lightweight output metadata resolved before protobuf construction.
+#[derive(Clone, Copy)]
+struct ResolvedStream<'a> {
+    name: &'a str,
+    description: &'a str,
+    view_applied: bool,
+}
+
+type ProjectedSources<'a> = SmallVec<[ProjectedStream<'a>; 1]>;
+type ScopeStreams<'a> = HashMap<CaseInsensitiveName<'a>, ProjectedSources<'a>>;
+type CollisionIndex<'a> = HashMap<ScopeIdentity, ScopeStreams<'a>>;
 
 impl MetricsOtlpEncoder {
     /// Creates an encoder from the resource fragment shared with internal logs.
@@ -136,17 +274,48 @@ impl MetricsOtlpEncoder {
     /// `resource` and `schema_url`, so the pre-encoded fragment is valid for
     /// either message type.
     pub fn new(resource_fragment: &[u8]) -> Result<Self, Error> {
+        Self::new_with_views(resource_fragment, Vec::new())
+    }
+
+    /// Creates an encoder with metric views applied during OTLP projection.
+    ///
+    /// Matching follows SDK view semantics for the supported subset: optional
+    /// selectors are exact matches, all matching views produce streams, and
+    /// the descriptor-defined stream is emitted only when no view matches.
+    /// Views must not map different source fields in one effective
+    /// instrumentation scope to the same case-insensitive output name;
+    /// [`Self::encode`] reports an [`Error::MetricNameCollision`] when that
+    /// occurs. This includes fields supplied by separate metric-set exports
+    /// whose scope names and entity attributes are equal.
+    pub fn new_with_views(resource_fragment: &[u8], views: Vec<MetricView>) -> Result<Self, Error> {
         Ok(Self {
             resource_metrics: ResourceMetrics::decode(resource_fragment)?,
+            views,
         })
     }
 
     /// Encodes a registry export batch. Empty batches produce no pdata.
     pub fn encode(&self, batch: &MetricExportBatch) -> Result<Option<OtlpProtoBytes>, Error> {
         let mut scope_metrics = Vec::with_capacity(batch.metric_sets.len());
-        for metric_set in &batch.metric_sets {
-            if let Some(scope) = encode_metric_set(metric_set, batch.time_unix_nano)? {
-                scope_metrics.push(scope);
+        if self.views.is_empty() {
+            for metric_set in &batch.metric_sets {
+                if let Some(scope) =
+                    encode_metric_set_without_views(metric_set, batch.time_unix_nano)?
+                {
+                    scope_metrics.push(scope);
+                }
+            }
+        } else {
+            let mut collisions = CollisionIndex::with_capacity(batch.metric_sets.len());
+            for metric_set in &batch.metric_sets {
+                if let Some(scope) = encode_metric_set_with_views(
+                    metric_set,
+                    batch.time_unix_nano,
+                    &self.views,
+                    &mut collisions,
+                )? {
+                    scope_metrics.push(scope);
+                }
             }
         }
 
@@ -163,17 +332,24 @@ impl MetricsOtlpEncoder {
     }
 }
 
-/// Expands one metric set into a scope containing one OTLP metric per field.
-///
-/// `None` is returned when every field is omitted, which currently occurs for
-/// a metric set containing only empty `Mmsc` summaries.
-fn encode_metric_set(
+/// Expands one metric set without paying any view-resolution bookkeeping.
+fn encode_metric_set_without_views(
     metric_set: &MetricSetExport,
     time_unix_nano: u64,
 ) -> Result<Option<ScopeMetrics>, Error> {
+    validate_value_count(metric_set)?;
+
     let mut metrics = Vec::with_capacity(metric_set.values.len());
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
-        if let Some(metric) = encode_metric(field, *value, metric_set, time_unix_nano)? {
+        validate_value_kind(field, *value)?;
+        if let Some(metric) = encode_metric(
+            field,
+            *value,
+            metric_set,
+            time_unix_nano,
+            field.name,
+            field.brief,
+        )? {
             metrics.push(metric);
         }
     }
@@ -181,7 +357,68 @@ fn encode_metric_set(
     if metrics.is_empty() {
         return Ok(None);
     }
+    Ok(Some(build_scope_metrics(metric_set, metrics)))
+}
 
+/// Expands one metric set after resolving views and checking stream collisions.
+fn encode_metric_set_with_views<'a>(
+    metric_set: &MetricSetExport,
+    time_unix_nano: u64,
+    views: &'a [MetricView],
+    collisions: &mut CollisionIndex<'a>,
+) -> Result<Option<ScopeMetrics>, Error> {
+    validate_value_count(metric_set)?;
+
+    let mut metrics = Vec::with_capacity(metric_set.values.len());
+    let scope_streams = collisions
+        .entry(ScopeIdentity {
+            name: metric_set.descriptor.name,
+            attributes: metric_set.attributes.clone(),
+        })
+        .or_insert_with(|| HashMap::with_capacity(metric_set.values.len()));
+    for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
+        validate_value_kind(field, *value)?;
+        for stream in resolve_views(metric_set.descriptor.name, field, views) {
+            if let Some(metric) = encode_metric(
+                field,
+                *value,
+                metric_set,
+                time_unix_nano,
+                stream.name,
+                stream.description,
+            )? {
+                register_projected_stream(
+                    scope_streams,
+                    metric_set.descriptor.name,
+                    field,
+                    stream,
+                )?;
+                metrics.push(metric);
+            }
+        }
+    }
+
+    if metrics.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(build_scope_metrics(metric_set, metrics)))
+}
+
+fn validate_value_count(metric_set: &MetricSetExport) -> Result<(), Error> {
+    let expected = metric_set.descriptor.metrics.len();
+    let actual = metric_set.values.len();
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::ValueCountMismatch {
+            metric_set: metric_set.descriptor.name,
+            expected,
+            actual,
+        })
+    }
+}
+
+fn build_scope_metrics(metric_set: &MetricSetExport, metrics: Vec<Metric>) -> ScopeMetrics {
     let attributes: Vec<KeyValue> = metric_set
         .attributes
         .iter_attributes()
@@ -191,7 +428,83 @@ fn encode_metric_set(
         .name(metric_set.descriptor.name)
         .attributes(attributes)
         .finish();
-    Ok(Some(ScopeMetrics::new(scope, metrics)))
+    ScopeMetrics::new(scope, metrics)
+}
+
+/// Adds one stream to the collision index for its effective scope.
+fn register_projected_stream<'a>(
+    scope_streams: &mut ScopeStreams<'a>,
+    scope_name: &'static str,
+    source_field: &'static MetricsField,
+    stream: ResolvedStream<'a>,
+) -> Result<(), Error> {
+    let sources = scope_streams
+        .entry(CaseInsensitiveName(stream.name))
+        .or_default();
+
+    if let Some(previous) = sources.iter().find(|previous| {
+        !std::ptr::eq(previous.source_field, source_field)
+            && (previous.view_applied || stream.view_applied)
+    }) {
+        return Err(Error::MetricNameCollision {
+            scope_name: scope_name.to_owned(),
+            first_metric: previous.source_field.name,
+            first_name: previous.output_name.to_owned(),
+            second_metric: source_field.name,
+            second_name: stream.name.to_owned(),
+        });
+    }
+
+    sources.push(ProjectedStream {
+        source_field,
+        output_name: stream.name,
+        view_applied: stream.view_applied,
+    });
+    Ok(())
+}
+
+/// Resolves and deduplicates lightweight metadata before protobuf construction.
+fn resolve_views<'a>(
+    scope_name: &str,
+    field: &'static MetricsField,
+    views: &'a [MetricView],
+) -> SmallVec<[ResolvedStream<'a>; 1]> {
+    let mut matched = false;
+    let mut streams = SmallVec::new();
+
+    for view in views.iter().filter(|view| {
+        view.selector
+            .scope_name
+            .as_deref()
+            .is_none_or(|selector| selector == scope_name)
+            && view
+                .selector
+                .instrument_name
+                .as_deref()
+                .is_none_or(|selector| selector == field.name)
+    }) {
+        matched = true;
+        let stream = ResolvedStream {
+            name: view.stream.name.as_deref().unwrap_or(field.name),
+            description: view.stream.description.as_deref().unwrap_or(field.brief),
+            view_applied: true,
+        };
+        if !streams.iter().any(|existing: &ResolvedStream<'_>| {
+            existing.name.eq_ignore_ascii_case(stream.name)
+                && existing.description == stream.description
+        }) {
+            streams.push(stream);
+        }
+    }
+
+    if !matched {
+        streams.push(ResolvedStream {
+            name: field.name,
+            description: field.brief,
+            view_applied: false,
+        });
+    }
+    streams
 }
 
 /// Projects one multivariate metric field into its univariate OTLP data type.
@@ -200,6 +513,8 @@ fn encode_metric(
     value: MetricValue,
     metric_set: &MetricSetExport,
     time_unix_nano: u64,
+    name: &str,
+    description: &str,
 ) -> Result<Option<Metric>, Error> {
     let data = match field.instrument {
         Instrument::Counter | Instrument::UpDownCounter => {
@@ -235,22 +550,23 @@ fn encode_metric(
         }
         Instrument::Mmsc => {
             let MetricValue::Mmsc(snapshot) = value else {
-                debug_assert!(false, "MMSC descriptor must have an MMSC value");
-                return Ok(None);
+                unreachable!("metric value kind was validated before encoding")
             };
             if snapshot.count == 0 {
                 return Ok(None);
             }
-            let point = HistogramDataPoint::build()
+            let mut point = HistogramDataPoint::build()
                 .start_time_unix_nano(metric_set.delta_start_time_unix_nano)
                 .time_unix_nano(time_unix_nano)
                 .count(snapshot.count)
-                .sum(snapshot.sum)
                 .min(snapshot.min)
                 .max(snapshot.max)
                 .bucket_counts(Vec::<u64>::new())
-                .explicit_bounds(Vec::<f64>::new())
-                .finish();
+                .explicit_bounds(Vec::<f64>::new());
+            if snapshot.min >= 0.0 {
+                point = point.sum(snapshot.sum);
+            }
+            let point = point.finish();
             otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Histogram(
                 Histogram::new(AggregationTemporality::Delta, vec![point]),
             )
@@ -258,12 +574,38 @@ fn encode_metric(
     };
 
     Ok(Some(Metric {
-        name: field.name.to_owned(),
-        description: field.brief.to_owned(),
+        name: name.to_owned(),
+        description: description.to_owned(),
         unit: field.unit.to_owned(),
         metadata: Vec::new(),
         data: Some(data),
     }))
+}
+
+/// Validates the descriptor/value pairing before any lossy projection occurs.
+fn validate_value_kind(field: &MetricsField, value: MetricValue) -> Result<(), Error> {
+    let expected = match field.instrument {
+        Instrument::Mmsc => "mmsc",
+        _ => match field.value_type {
+            crate::descriptor::MetricValueType::U64 => "u64",
+            crate::descriptor::MetricValueType::F64 => "f64",
+        },
+    };
+    let actual = match value {
+        MetricValue::U64(_) => "u64",
+        MetricValue::F64(_) => "f64",
+        MetricValue::Mmsc(_) => "mmsc",
+    };
+
+    if expected == actual {
+        Ok(())
+    } else {
+        Err(Error::ValueKindMismatch {
+            metric: field.name,
+            expected,
+            actual,
+        })
+    }
 }
 
 /// Creates a scalar OTLP point, saturating unsigned values to OTLP's signed range.
@@ -278,10 +620,7 @@ fn number_data_point(
     match value {
         MetricValue::U64(value) => builder.value_int(saturating_i64(value)).finish(),
         MetricValue::F64(value) => builder.value_double(value).finish(),
-        MetricValue::Mmsc(_) => {
-            debug_assert!(false, "number data point cannot contain MMSC data");
-            builder.value_double(0.0).finish()
-        }
+        MetricValue::Mmsc(_) => unreachable!("metric value kind was validated before encoding"),
     }
 }
 
@@ -303,10 +642,7 @@ fn scalar_histogram_data_point(
     let value = match value {
         MetricValue::U64(value) => value as f64,
         MetricValue::F64(value) => value,
-        MetricValue::Mmsc(_) => {
-            debug_assert!(false, "scalar histogram cannot contain MMSC data");
-            0.0
-        }
+        MetricValue::Mmsc(_) => unreachable!("metric value kind was validated before encoding"),
     };
     let bucket = DEFAULT_BOUNDS
         .iter()
@@ -315,16 +651,18 @@ fn scalar_histogram_data_point(
     let mut bucket_counts = vec![0; DEFAULT_BOUNDS.len() + 1];
     bucket_counts[bucket] = 1;
 
-    HistogramDataPoint::build()
+    let mut point = HistogramDataPoint::build()
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano)
         .count(1u64)
-        .sum(value)
         .min(value)
         .max(value)
         .bucket_counts(bucket_counts)
-        .explicit_bounds(DEFAULT_BOUNDS.to_vec())
-        .finish()
+        .explicit_bounds(DEFAULT_BOUNDS.to_vec());
+    if value >= 0.0 {
+        point = point.sum(value);
+    }
+    point.finish()
 }
 
 const fn encode_temporality(temporality: Temporality) -> AggregationTemporality {
@@ -374,7 +712,16 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
+    use otap_df_pdata::views::otap::OtapMetricsView;
     use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
+    use otap_df_pdata_views::views::common::{
+        AnyValueView, AttributeView, InstrumentationScopeView,
+    };
+    use otap_df_pdata_views::views::metrics::{
+        DataView, MetricView as PdataMetricView, MetricsView, NumberDataPointView,
+        ResourceMetricsView, ScopeMetricsView, SumView, Value,
+    };
+    use otap_df_pdata_views::views::resource::ResourceView;
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
@@ -456,6 +803,98 @@ mod tests {
             brief: "Sum without temporality",
             instrument: Instrument::Counter,
             temporality: None,
+            value_type: MetricValueType::U64,
+        }],
+    };
+
+    static F64_GAUGE_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.f64_gauge",
+        metrics: &[MetricsField {
+            name: "gauge.f64",
+            unit: "1",
+            brief: "Floating-point gauge",
+            instrument: Instrument::Gauge,
+            temporality: None,
+            value_type: MetricValueType::F64,
+        }],
+    };
+
+    static TWO_FIELD_VIEW_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.view_collision",
+        metrics: &[
+            MetricsField {
+                name: "gauge.first",
+                unit: "1",
+                brief: "First gauge",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                value_type: MetricValueType::F64,
+            },
+            MetricsField {
+                name: "gauge.second",
+                unit: "1",
+                brief: "Second gauge",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                value_type: MetricValueType::F64,
+            },
+        ],
+    };
+
+    static NO_VIEW_COLLISION_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.no_view_collision",
+        metrics: &[
+            MetricsField {
+                name: "existing.name",
+                unit: "1",
+                brief: "First pre-existing stream",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                value_type: MetricValueType::F64,
+            },
+            MetricsField {
+                name: "EXISTING.NAME",
+                unit: "1",
+                brief: "Second pre-existing stream",
+                instrument: Instrument::Gauge,
+                temporality: None,
+                value_type: MetricValueType::F64,
+            },
+        ],
+    };
+
+    static SHARED_SCOPE_FIRST_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.shared_view_collision",
+        metrics: &[MetricsField {
+            name: "gauge.shared_first",
+            unit: "1",
+            brief: "First shared-scope gauge",
+            instrument: Instrument::Gauge,
+            temporality: None,
+            value_type: MetricValueType::F64,
+        }],
+    };
+
+    static SHARED_SCOPE_SECOND_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.shared_view_collision",
+        metrics: &[MetricsField {
+            name: "gauge.shared_second",
+            unit: "1",
+            brief: "Second shared-scope gauge",
+            instrument: Instrument::Gauge,
+            temporality: None,
+            value_type: MetricValueType::F64,
+        }],
+    };
+
+    static U64_HISTOGRAM_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.u64_histogram",
+        metrics: &[MetricsField {
+            name: "histogram.u64",
+            unit: "By",
+            brief: "Unsigned histogram",
+            instrument: Instrument::Histogram,
+            temporality: Some(Temporality::Delta),
             value_type: MetricValueType::U64,
         }],
     };
@@ -587,6 +1026,263 @@ mod tests {
     }
 
     #[test]
+    fn unmatched_views_preserve_the_descriptor_defined_stream() {
+        let views = vec![MetricView {
+            selector: MetricViewSelector {
+                scope_name: Some("another.scope".to_owned()),
+                instrument_name: Some("gauge.f64".to_owned()),
+            },
+            stream: MetricViewStream {
+                name: Some("renamed.gauge".to_owned()),
+                description: Some("A renamed gauge".to_owned()),
+            },
+        }];
+        let encoder =
+            MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views)
+                .expect("valid resource fragment");
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &F64_GAUGE_DESCRIPTOR,
+                empty_attributes(),
+                vec![MetricValue::F64(3.5)],
+            )],
+        };
+
+        let request = decode_request(
+            encoder
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("non-empty request"),
+        );
+        let scope = only_scope(&request);
+        let [metric] = scope.metrics.as_slice() else {
+            panic!("expected one default metric stream")
+        };
+        assert_eq!(metric.name, "gauge.f64");
+        assert_eq!(metric.description, "Floating-point gauge");
+        assert_eq!(metric.unit, "1");
+    }
+
+    #[test]
+    fn matching_views_deduplicate_names_case_insensitively_with_description_identity() {
+        let renamed_stream = MetricViewStream {
+            name: Some("viewed.gauge".to_owned()),
+            description: None,
+        };
+        let views = vec![
+            // A partial selector matches every instrument in this scope.
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.f64_gauge".to_owned()),
+                    instrument_name: None,
+                },
+                stream: renamed_stream.clone(),
+            },
+            // A different partial selector produces the same final stream.
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: None,
+                    instrument_name: Some("gauge.f64".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("VIEWED.GAUGE".to_owned()),
+                    description: None,
+                },
+            },
+            // Omitting both selectors matches every metric, but this duplicate
+            // result must still be emitted only once.
+            MetricView {
+                selector: MetricViewSelector::default(),
+                stream: renamed_stream,
+            },
+            // A different description makes this a distinct stream even
+            // though its name is equal ignoring ASCII case.
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.f64_gauge".to_owned()),
+                    instrument_name: Some("gauge.f64".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("Viewed.Gauge".to_owned()),
+                    description: Some("Viewed gauge description".to_owned()),
+                },
+            },
+        ];
+        let encoder =
+            MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views)
+                .expect("valid resource fragment");
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &F64_GAUGE_DESCRIPTOR,
+                empty_attributes(),
+                vec![MetricValue::F64(3.5)],
+            )],
+        };
+
+        let request = decode_request(
+            encoder
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("non-empty request"),
+        );
+        let scope = only_scope(&request);
+        assert_eq!(scope.scope.as_ref().expect("scope").name, "test.f64_gauge");
+        assert_eq!(scope.metrics.len(), 2);
+
+        let renamed = metric_named(scope, "viewed.gauge");
+        assert_eq!(renamed.description, "Floating-point gauge");
+        assert_eq!(renamed.unit, "1");
+        assert!(renamed.metadata.is_empty());
+
+        let description_only = metric_named(scope, "Viewed.Gauge");
+        assert_eq!(description_only.description, "Viewed gauge description");
+        assert_eq!(description_only.unit, "1");
+        assert_eq!(description_only.metadata, renamed.metadata);
+        assert_eq!(description_only.data, renamed.data);
+
+        let Some(metric::Data::Gauge(gauge)) = renamed.data.as_ref() else {
+            panic!("expected gauge data")
+        };
+        let [point] = gauge.data_points.as_slice() else {
+            panic!("expected one gauge point")
+        };
+        assert_eq!(point.time_unix_nano, COLLECTION_TIME);
+        assert_eq!(point.value, Some(number_data_point::Value::AsDouble(3.5)));
+    }
+
+    #[test]
+    fn rejects_view_name_collisions_between_fields_in_one_metric_set() {
+        let views = vec![
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.view_collision".to_owned()),
+                    instrument_name: Some("gauge.first".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("Process.Value".to_owned()),
+                    description: None,
+                },
+            },
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.view_collision".to_owned()),
+                    instrument_name: Some("gauge.second".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("process.value".to_owned()),
+                    description: None,
+                },
+            },
+        ];
+        let encoder =
+            MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views)
+                .expect("valid resource fragment");
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &TWO_FIELD_VIEW_DESCRIPTOR,
+                empty_attributes(),
+                vec![MetricValue::F64(1.0), MetricValue::F64(2.0)],
+            )],
+        };
+
+        let error = encoder
+            .encode(&batch)
+            .expect_err("different source fields cannot share a viewed output name");
+        assert!(matches!(
+            error,
+            Error::MetricNameCollision {
+                scope_name,
+                first_metric: "gauge.first",
+                first_name,
+                second_metric: "gauge.second",
+                second_name,
+            } if scope_name == "test.view_collision"
+                && first_name == "Process.Value"
+                && second_name == "process.value"
+        ));
+    }
+
+    #[test]
+    fn rejects_view_name_collisions_across_metric_sets_with_the_same_scope_identity() {
+        let views = vec![
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.shared_view_collision".to_owned()),
+                    instrument_name: Some("gauge.shared_first".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("shared.output".to_owned()),
+                    description: None,
+                },
+            },
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.shared_view_collision".to_owned()),
+                    instrument_name: Some("gauge.shared_second".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("SHARED.OUTPUT".to_owned()),
+                    description: None,
+                },
+            },
+        ];
+        let encoder =
+            MetricsOtlpEncoder::new_with_views(&ResourceLogs::default().encode_to_vec(), views)
+                .expect("valid resource fragment");
+        let attributes = empty_attributes();
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![
+                metric_set(
+                    &SHARED_SCOPE_FIRST_DESCRIPTOR,
+                    attributes.clone(),
+                    vec![MetricValue::F64(1.0)],
+                ),
+                metric_set(
+                    &SHARED_SCOPE_SECOND_DESCRIPTOR,
+                    attributes,
+                    vec![MetricValue::F64(2.0)],
+                ),
+            ],
+        };
+
+        let error = encoder
+            .encode(&batch)
+            .expect_err("equal scopes must be collision-checked across metric sets");
+        assert!(matches!(
+            error,
+            Error::MetricNameCollision {
+                scope_name,
+                first_metric: "gauge.shared_first",
+                second_metric: "gauge.shared_second",
+                ..
+            } if scope_name == "test.shared_view_collision"
+        ));
+    }
+
+    #[test]
+    fn preserves_preexisting_no_view_name_collision_behavior() {
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &NO_VIEW_COLLISION_DESCRIPTOR,
+                empty_attributes(),
+                vec![MetricValue::F64(1.0), MetricValue::F64(2.0)],
+            )],
+        };
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("the no-view fast path must preserve existing streams")
+                .expect("non-empty request"),
+        );
+        assert_eq!(only_scope(&request).metrics.len(), 2);
+    }
+
+    #[test]
     fn encodes_all_instrument_kinds_with_otlp_semantics() {
         let encoder = empty_resource_encoder();
         let batch = MetricExportBatch {
@@ -713,6 +1409,220 @@ mod tests {
         assert_eq!(point.max, Some(9.0));
         assert!(point.bucket_counts.is_empty());
         assert!(point.explicit_bounds.is_empty());
+    }
+
+    #[test]
+    fn emits_multiple_scopes_while_omitting_empty_mmsc_fields_and_sets() {
+        let empty_mmsc = MetricValue::Mmsc(MmscSnapshot {
+            min: f64::MAX,
+            max: f64::MIN,
+            sum: 0.0,
+            count: 0,
+        });
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![
+                metric_set(
+                    &ALL_METRICS_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![
+                        MetricValue::U64(1),
+                        MetricValue::U64(2),
+                        MetricValue::F64(-1.0),
+                        MetricValue::F64(3.0),
+                        MetricValue::F64(4.0),
+                        empty_mmsc,
+                    ],
+                ),
+                metric_set(&MMSC_ONLY_DESCRIPTOR, empty_attributes(), vec![empty_mmsc]),
+                metric_set(
+                    &MMSC_ONLY_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![MetricValue::Mmsc(MmscSnapshot {
+                        min: 2.0,
+                        max: 8.0,
+                        sum: 10.0,
+                        count: 2,
+                    })],
+                ),
+            ],
+        };
+
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("non-empty request"),
+        );
+        let [resource_metrics] = request.resource_metrics.as_slice() else {
+            panic!("expected one resource metrics message")
+        };
+        assert_eq!(resource_metrics.scope_metrics.len(), 2);
+
+        let first = &resource_metrics.scope_metrics[0];
+        assert_eq!(first.scope.as_ref().expect("scope").name, "test.scope");
+        assert_eq!(first.metrics.len(), 5);
+        assert!(
+            first
+                .metrics
+                .iter()
+                .all(|metric| metric.name != "histogram.mmsc")
+        );
+
+        let second = &resource_metrics.scope_metrics[1];
+        assert_eq!(
+            second.scope.as_ref().expect("scope").name,
+            "test.empty_mmsc"
+        );
+        assert_eq!(second.metrics.len(), 1);
+        assert_eq!(second.metrics[0].name, "histogram.empty");
+    }
+
+    #[test]
+    fn emits_meaningful_zero_scalar_values() {
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &ALL_METRICS_DESCRIPTOR,
+                empty_attributes(),
+                vec![
+                    MetricValue::U64(0),
+                    MetricValue::U64(0),
+                    MetricValue::F64(0.0),
+                    MetricValue::F64(0.0),
+                    MetricValue::F64(0.0),
+                    MetricValue::Mmsc(MmscSnapshot {
+                        min: f64::MAX,
+                        max: f64::MIN,
+                        sum: 0.0,
+                        count: 0,
+                    }),
+                ],
+            )],
+        };
+
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("encode succeeds")
+                .expect("zero scalar values must still produce a request"),
+        );
+        let scope = only_scope(&request);
+        assert_eq!(scope.metrics.len(), 5);
+
+        for name in ["counter.delta", "counter.cumulative", "up_down.delta"] {
+            let (point, _) = number_point(metric_named(scope, name));
+            assert!(matches!(
+                point.value,
+                Some(number_data_point::Value::AsInt(0))
+                    | Some(number_data_point::Value::AsDouble(0.0))
+            ));
+        }
+
+        let gauge = metric_named(scope, "gauge");
+        let Some(metric::Data::Gauge(gauge)) = gauge.data.as_ref() else {
+            panic!("expected gauge metric")
+        };
+        assert_eq!(
+            gauge.data_points[0].value,
+            Some(number_data_point::Value::AsDouble(0.0))
+        );
+
+        let histogram = metric_named(scope, "histogram.scalar");
+        let Some(metric::Data::Histogram(histogram)) = histogram.data.as_ref() else {
+            panic!("expected histogram metric")
+        };
+        let point = &histogram.data_points[0];
+        assert_eq!(point.count, 1);
+        assert_eq!(point.sum, Some(0.0));
+        assert_eq!(point.bucket_counts[0], 1);
+    }
+
+    #[test]
+    fn scalar_histogram_uses_closed_upper_bounds_and_handles_extremes_and_u64() {
+        let cases = [
+            (MetricValue::F64(f64::MIN), 0, f64::MIN),
+            (MetricValue::F64(0.0), 0, 0.0),
+            (MetricValue::F64(f64::EPSILON), 1, f64::EPSILON),
+            (MetricValue::F64(5.0), 1, 5.0),
+            (
+                MetricValue::F64(5.000_000_000_000_001),
+                2,
+                5.000_000_000_000_001,
+            ),
+            (MetricValue::F64(10_000.0), 14, 10_000.0),
+            (MetricValue::F64(f64::MAX), 15, f64::MAX),
+            (MetricValue::U64(u64::MAX), 15, u64::MAX as f64),
+        ];
+
+        for (value, expected_bucket, expected_value) in cases {
+            let point = scalar_histogram_data_point(value, DELTA_START, COLLECTION_TIME);
+            assert_eq!(point.count, 1);
+            assert_eq!(
+                point.sum,
+                (expected_value >= 0.0).then_some(expected_value),
+                "OTLP histogram sums are only defined for non-negative populations"
+            );
+            assert_eq!(point.min, Some(expected_value));
+            assert_eq!(point.max, Some(expected_value));
+            assert_eq!(point.bucket_counts.iter().sum::<u64>(), 1);
+            assert_eq!(point.bucket_counts[expected_bucket], 1);
+        }
+
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &U64_HISTOGRAM_DESCRIPTOR,
+                empty_attributes(),
+                vec![MetricValue::U64(u64::MAX)],
+            )],
+        };
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("u64 histogram value matches its descriptor")
+                .expect("histogram produces a request"),
+        );
+        let metric = metric_named(only_scope(&request), "histogram.u64");
+        let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
+            panic!("expected histogram metric")
+        };
+        assert_eq!(histogram.data_points[0].sum, Some(u64::MAX as f64));
+        assert_eq!(histogram.data_points[0].bucket_counts[15], 1);
+    }
+
+    #[test]
+    fn omits_mmsc_sum_when_the_population_contains_negative_values() {
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![metric_set(
+                &MMSC_ONLY_DESCRIPTOR,
+                empty_attributes(),
+                vec![MetricValue::Mmsc(MmscSnapshot {
+                    min: -2.0,
+                    max: 8.0,
+                    sum: 6.0,
+                    count: 2,
+                })],
+            )],
+        };
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("negative MMSC values are valid")
+                .expect("MMSC produces a request"),
+        );
+        let metric = metric_named(only_scope(&request), "histogram.empty");
+        let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
+            panic!("expected histogram metric")
+        };
+        let [point] = histogram.data_points.as_slice() else {
+            panic!("expected one histogram data point")
+        };
+        assert_eq!(point.sum, None);
+        assert_eq!(point.min, Some(-2.0));
+        assert_eq!(point.max, Some(8.0));
+        assert_eq!(point.count, 2);
     }
 
     #[test]
@@ -871,6 +1781,94 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_resource_fragment() {
+        let error = MetricsOtlpEncoder::new(&[0x0a, 0x02, 0x08])
+            .expect_err("truncated nested resource must fail");
+        assert!(matches!(error, Error::InvalidResource(_)));
+    }
+
+    #[test]
+    fn rejects_metric_set_value_count_mismatches() {
+        for actual in [0, 2] {
+            let batch = MetricExportBatch {
+                time_unix_nano: COLLECTION_TIME,
+                metric_sets: vec![metric_set(
+                    &MMSC_ONLY_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![
+                        MetricValue::Mmsc(MmscSnapshot {
+                            min: 1.0,
+                            max: 1.0,
+                            sum: 1.0,
+                            count: 1,
+                        });
+                        actual
+                    ],
+                )],
+            };
+
+            let error = empty_resource_encoder()
+                .encode(&batch)
+                .expect_err("descriptor/value count mismatch must fail");
+            assert!(matches!(
+                error,
+                Error::ValueCountMismatch {
+                    metric_set: "test.empty_mmsc",
+                    expected: 1,
+                    actual: found,
+                } if found == actual
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_metric_value_kind_mismatches() {
+        let cases = [
+            (
+                &INVALID_SUM_DESCRIPTOR,
+                MetricValue::F64(1.0),
+                "invalid.sum",
+                "u64",
+                "f64",
+            ),
+            (
+                &F64_GAUGE_DESCRIPTOR,
+                MetricValue::U64(1),
+                "gauge.f64",
+                "f64",
+                "u64",
+            ),
+            (
+                &MMSC_ONLY_DESCRIPTOR,
+                MetricValue::U64(1),
+                "histogram.empty",
+                "mmsc",
+                "u64",
+            ),
+        ];
+
+        for (descriptor, value, metric, expected, actual) in cases {
+            let batch = MetricExportBatch {
+                time_unix_nano: COLLECTION_TIME,
+                metric_sets: vec![metric_set(descriptor, empty_attributes(), vec![value])],
+            };
+            let error = empty_resource_encoder()
+                .encode(&batch)
+                .expect_err("descriptor/value kind mismatch must fail");
+            assert!(matches!(
+                error,
+                Error::ValueKindMismatch {
+                    metric: found_metric,
+                    expected: found_expected,
+                    actual: found_actual,
+                } if found_metric == metric
+                    && found_expected == expected
+                    && found_actual == actual
+            ));
+        }
+    }
+
+    #[test]
     fn rejects_sum_without_temporality() {
         let batch = MetricExportBatch {
             time_unix_nano: COLLECTION_TIME,
@@ -893,11 +1891,44 @@ mod tests {
 
     #[test]
     fn encoded_metrics_are_consumable_by_the_otap_export_path() {
+        let resource = Resource {
+            attributes: vec![KeyValue::new(
+                "service.name",
+                AnyValue::new_string("telemetry-test"),
+            )],
+            dropped_attributes_count: 0,
+            entity_refs: Vec::new(),
+        };
+        let encoder = MetricsOtlpEncoder::new(
+            &ResourceLogs {
+                resource: Some(resource),
+                scope_logs: Vec::new(),
+                schema_url: "https://resource.example/schema".to_owned(),
+            }
+            .encode_to_vec(),
+        )
+        .expect("valid resource fragment");
+        let mut labels = BTreeMap::new();
+        let _ = labels.insert(
+            "region".to_owned(),
+            AttributeValue::String("west".to_owned()),
+        );
+        let attributes = shared_attributes(
+            &FULL_ATTRIBUTES_DESCRIPTOR,
+            vec![
+                AttributeValue::String("worker-a".to_owned()),
+                AttributeValue::Int(-4),
+                AttributeValue::UInt(9),
+                AttributeValue::Double(0.75),
+                AttributeValue::Boolean(true),
+                AttributeValue::Map(labels),
+            ],
+        );
         let batch = MetricExportBatch {
             time_unix_nano: COLLECTION_TIME,
             metric_sets: vec![metric_set(
                 &ALL_METRICS_DESCRIPTOR,
-                empty_attributes(),
+                attributes,
                 vec![
                     MetricValue::U64(7),
                     MetricValue::U64(11),
@@ -913,7 +1944,7 @@ mod tests {
                 ],
             )],
         };
-        let encoded = empty_resource_encoder()
+        let encoded = encoder
             .encode(&batch)
             .expect("OTLP encoding succeeds")
             .expect("batch is non-empty");
@@ -923,5 +1954,59 @@ mod tests {
             .try_into_with_default()
             .expect("OTAP exporter can convert bridge output to Arrow records");
         assert!(matches!(records, OtapArrowRecords::Metrics(_)));
+
+        let view = OtapMetricsView::try_from(&records).expect("valid OTAP metrics view");
+        let mut resources = view.resources();
+        let resource_metrics = resources.next().expect("one resource metrics group");
+        assert!(resources.next().is_none());
+        assert_eq!(
+            resource_metrics.schema_url(),
+            Some(b"https://resource.example/schema".as_slice())
+        );
+        {
+            let resource = resource_metrics.resource().expect("resource metadata");
+            let service_name = resource
+                .attributes()
+                .find(|attribute| attribute.key() == b"service.name")
+                .expect("service.name resource attribute");
+            let value = service_name.value().expect("resource attribute value");
+            assert_eq!(value.as_string(), Some(b"telemetry-test".as_slice()));
+        }
+
+        let mut scopes = resource_metrics.scopes();
+        let scope_metrics = scopes.next().expect("one scope metrics group");
+        assert!(scopes.next().is_none());
+        {
+            let scope = scope_metrics.scope().expect("instrumentation scope");
+            assert_eq!(scope.name(), Some(b"test.scope".as_slice()));
+            let scope_attributes = scope.attributes().collect::<Vec<_>>();
+            assert_eq!(scope_attributes.len(), 6);
+            let worker_name = scope_attributes
+                .iter()
+                .find(|attribute| attribute.key() == b"worker.name")
+                .expect("worker.name scope attribute");
+            let value = worker_name.value().expect("scope attribute value");
+            assert_eq!(value.as_string(), Some(b"worker-a".as_slice()));
+        }
+
+        let counter = scope_metrics
+            .metrics()
+            .find(|metric| metric.name() == b"counter.delta")
+            .expect("delta counter survives OTAP conversion");
+        assert_eq!(counter.description(), b"Delta counter");
+        assert_eq!(counter.unit(), b"{request}");
+        let data = counter.data().expect("counter data");
+        let sum = data.as_sum().expect("counter remains a sum");
+        assert!(sum.is_monotonic());
+        assert_eq!(
+            sum.aggregation_temporality(),
+            otap_df_pdata_views::views::metrics::AggregationTemporality::Delta
+        );
+        let mut points = sum.data_points();
+        let point = points.next().expect("counter data point");
+        assert!(points.next().is_none());
+        assert_eq!(point.start_time_unix_nano(), DELTA_START);
+        assert_eq!(point.time_unix_nano(), COLLECTION_TIME);
+        assert_eq!(point.value(), Some(Value::Integer(7)));
     }
 }

@@ -8,7 +8,7 @@ change_type: enhancement
 component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Route internal metrics through the Internal Telemetry System without requiring the OpenTelemetry client SDK.
+note: Route internal metrics through the Internal Telemetry System with receiver-configurable periodic emission and metric views, without requiring the OpenTelemetry client SDK.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2408]
@@ -16,4 +16,5 @@ issues: [2408]
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
-subtext:
+subtext: |
+  The internal telemetry receiver supports exact scope and instrument selectors with metric name and description overrides.

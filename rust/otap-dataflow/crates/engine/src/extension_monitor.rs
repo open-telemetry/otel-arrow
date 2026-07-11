@@ -9,6 +9,7 @@ use crate::context::ExtensionContext;
 use crate::control::{ExtensionControlMsg, ExtensionControlSender};
 use crate::extension::wrapper::ExtensionVariant;
 use otap_df_config::ExtensionId;
+use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_warn;
@@ -343,6 +344,18 @@ impl ExtensionMetricsMonitor {
                 );
             }
         }
+    }
+
+    pub(crate) async fn finish_reporting(
+        &mut self,
+        reporter: &MetricsReporter,
+    ) -> Result<(), TelemetryError> {
+        for entry in &mut self.entries {
+            let _ = reporter
+                .report_reliably(&mut entry.lifecycle_metrics)
+                .await?;
+        }
+        reporter.flush().await
     }
 
     /// Returns the lifecycle state for `key`, or `None` if absent.

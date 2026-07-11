@@ -31,7 +31,7 @@ use otap_df_config::MetricLevel;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
@@ -221,6 +221,37 @@ pub(crate) fn report_node_metrics_with_handles(
         }
     }
     Ok(())
+}
+
+/// Takes owned snapshots of non-empty per-node metric sets for terminal reporting.
+pub(crate) fn snapshot_node_metrics_with_handles(
+    node_metric_handles: &Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
+) -> Vec<MetricSetSnapshot> {
+    let handles_guard = node_metric_handles.borrow();
+    let mut snapshots = Vec::new();
+    for handles in handles_guard.iter().flatten() {
+        if let Some(input) = &handles.input
+            && !input.is_empty()
+        {
+            snapshots.push(input.snapshot());
+        }
+        snapshots.extend(
+            handles
+                .outputs
+                .iter()
+                .filter(|output| !output.is_empty())
+                .map(MetricSet::snapshot),
+        );
+        if let Some(completion_emission) = &handles.completion_emission
+            && let Some(snapshot) = completion_emission
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .snapshot()
+        {
+            snapshots.push(snapshot);
+        }
+    }
+    snapshots
 }
 
 impl Drop for NodeMetricHandles {
@@ -699,10 +730,56 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             self.runtime_control_metrics
                 .record_shutdown_completed(clock::now());
         }
+
+        // The monitor owns registered metric-set keys. Take and reliably hand
+        // off one final sample before it is dropped so a full collector channel
+        // cannot turn the terminal pipeline/Tokio measurements into tombstones.
+        if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
+            if self.telemetry.pipeline_metrics {
+                pipeline_metrics_monitor.update_pipeline_metrics();
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_reliably(pipeline_metrics_monitor.metrics_mut())
+                    .await
+                {
+                    otel_warn!(
+                        "pipeline.metrics.final_reporting.fail",
+                        error = err.to_string()
+                    );
+                }
+            }
+
+            if self.telemetry.tokio_metrics {
+                pipeline_metrics_monitor.update_tokio_metrics();
+                if let Err(err) = self
+                    .metrics_reporter
+                    .report_reliably(pipeline_metrics_monitor.tokio_metrics_mut())
+                    .await
+                {
+                    otel_warn!(
+                        "tokio.metrics.final_reporting.fail",
+                        error = err.to_string()
+                    );
+                }
+            }
+
+            if let Err(err) = self.metrics_reporter.flush().await {
+                otel_warn!(
+                    "pipeline.metrics.final_collection.flush.fail",
+                    error = err.to_string()
+                );
+            }
+        }
+
         // Flush one last time on actor exit so late counters and zero-valued
         // backlog transitions are not lost if the loop terminates before the
         // next periodic interval elapses.
-        self.report_runtime_control_metrics();
+        if let Err(err) = self.runtime_control_metrics.finish_reporting().await {
+            otel_warn!(
+                "pipeline.runtime_control.metrics.final_reporting.fail",
+                error = err.to_string()
+            );
+        }
 
         if self.telemetry.runtime_metrics >= MetricLevel::Normal {
             let _ = self.report_node_metrics();
@@ -1109,7 +1186,12 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         // Flush one final completion snapshot on exit so short-lived completion
         // bursts are still observed even if the dispatcher stops before the
         // next periodic interval.
-        self.report_completion_metrics();
+        if let Err(err) = self.completion_metrics.finish_reporting().await {
+            otel_warn!(
+                "pipeline.completion.metrics.final_reporting.fail",
+                error = err.to_string()
+            );
+        }
         Ok(())
     }
 

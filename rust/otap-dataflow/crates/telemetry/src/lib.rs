@@ -152,8 +152,10 @@ pub struct InternalTelemetrySettings {
     pub resource_bytes: bytes::Bytes,
     /// Handle to the telemetry registry for looking up entity attributes.
     pub registry: TelemetryRegistryHandle,
-    /// Registry export interval when internal metrics are routed through ITS.
-    /// `None` leaves metrics to the configured SDK provider or disables them.
+    /// Default registry export interval when internal metrics are routed through ITS.
+    /// The internal telemetry receiver may override this cold-path interval in
+    /// its node configuration. `None` leaves metrics to the configured SDK
+    /// provider or disables them.
     pub metrics_interval: Option<std::time::Duration>,
     /// Optional retained-log sink shared with admin consumers.
     pub log_tap: Option<log_tap::InternalLogTapHandle>,
@@ -258,6 +260,7 @@ impl InternalTelemetrySystem {
         // 1. Create internal metrics subsystem
         let (collector, metrics_reporter) =
             collector::InternalCollector::new(config, telemetry_registry.clone());
+        let collector = Arc::new(collector);
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
             telemetry_registry.clone(),
             config.reporting_interval,
@@ -302,7 +305,7 @@ impl InternalTelemetrySystem {
 
         Ok(Self {
             registry: telemetry_registry,
-            collector: Arc::new(collector),
+            collector,
             metrics_reporter,
             dispatcher,
             sdk_meter_provider,

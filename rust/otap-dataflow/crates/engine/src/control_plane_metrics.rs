@@ -722,6 +722,26 @@ impl RuntimeControlMetricsState {
         }
         Ok(())
     }
+
+    /// Performs the actor's final reliable handoff before its registered key is dropped.
+    pub(crate) async fn finish_reporting(&mut self) -> Result<(), TelemetryError> {
+        if self.metrics.is_none() {
+            return Ok(());
+        }
+        self.report_if_needed()?;
+        if self.dirty {
+            let snapshot = self
+                .metrics
+                .as_ref()
+                .expect("metrics presence checked above")
+                .metrics
+                .snapshot();
+            if self.reporter.report_snapshot_reliably(snapshot).await? == ReportOutcome::Sent {
+                self.dirty = false;
+            }
+        }
+        self.reporter.flush().await
+    }
 }
 
 pub(crate) struct PipelineCompletionMetricsState {
@@ -927,5 +947,25 @@ impl PipelineCompletionMetricsState {
             }
         }
         Ok(())
+    }
+
+    /// Performs the actor's final reliable handoff before its registered key is dropped.
+    pub(crate) async fn finish_reporting(&mut self) -> Result<(), TelemetryError> {
+        if self.metrics.is_none() {
+            return Ok(());
+        }
+        self.report_if_needed()?;
+        if self.dirty {
+            let snapshot = self
+                .metrics
+                .as_ref()
+                .expect("metrics presence checked above")
+                .metrics
+                .snapshot();
+            if self.reporter.report_snapshot_reliably(snapshot).await? == ReportOutcome::Sent {
+                self.dirty = false;
+            }
+        }
+        self.reporter.flush().await
     }
 }

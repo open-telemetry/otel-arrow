@@ -113,10 +113,18 @@ impl ExtensionLifecycle {
                         crate::runtime_pipeline::report_terminal_metrics(
                             &ext_metrics_reporter,
                             terminal_state,
-                        );
+                        )
+                        .await;
                         Ok(())
                     }
                     Err(e) => {
+                        if let Err(flush_error) = ext_metrics_reporter.flush().await {
+                            otel_warn!(
+                                "extension.metrics.flush.fail",
+                                extension = task_key.id.as_ref(),
+                                error = flush_error.to_string(),
+                            );
+                        }
                         otel_warn!(
                             "extension.task.error",
                             extension = task_key.id.as_ref(),
@@ -416,6 +424,13 @@ impl ExtensionLifecycle {
 
     pub fn monitor_tick(&mut self, now: Instant, reporter: &mut MetricsReporter) {
         self.monitor.tick(now, reporter);
+    }
+
+    pub(crate) async fn finish_metrics_reporting(
+        &mut self,
+        reporter: &MetricsReporter,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        self.monitor.finish_reporting(reporter).await
     }
 
     #[allow(dead_code)]

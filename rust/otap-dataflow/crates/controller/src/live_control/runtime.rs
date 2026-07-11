@@ -338,6 +338,49 @@ impl<
         }
     }
 
+    /// Waits for a global-shutdown producer to exit, including instances whose
+    /// terminal record was immediately compacted because no tracked per-pipeline
+    /// operation retained it.
+    fn wait_for_global_shutdown_exit(
+        &self,
+        deployed_key: &DeployedPipelineKey,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            match state.runtime_instances.get(deployed_key) {
+                None
+                | Some(RuntimeInstanceRecord {
+                    lifecycle: RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Success),
+                    ..
+                }) => return Ok(()),
+                Some(RuntimeInstanceRecord {
+                    lifecycle: RuntimeInstanceLifecycle::Exited(RuntimeInstanceExit::Error(error)),
+                    ..
+                }) => return Err(error.message.clone()),
+                Some(RuntimeInstanceRecord {
+                    lifecycle: RuntimeInstanceLifecycle::Active,
+                    ..
+                }) => {}
+            }
+
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return Err(format!(
+                    "timed out waiting for pipeline {} to drain before system observability shutdown",
+                    deployed_instance_label(deployed_key)
+                ));
+            };
+            let (next_state, _) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+        }
+    }
+
     /// Requests shutdown for one instance and waits until it exits.
     pub(super) fn shutdown_instance(
         &self,
@@ -368,77 +411,124 @@ impl<
         }
     }
 
-    /// Broadcasts shutdown to every currently active runtime instance.
+    /// Requests shutdown for every currently active runtime instance.
     ///
     /// This is best-effort across the snapshot: one failed send must not prevent
     /// later instances from receiving shutdown. It is also idempotent at the
     /// dispatch boundary: instances that already accepted shutdown have released
-    /// their retained control sender and are skipped by later calls.
-    pub(super) fn request_shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError> {
+    /// their retained control sender and are skipped by later calls. When the
+    /// system observability pipeline is active, producer pipelines are signaled
+    /// and awaited first so their final telemetry reaches the internal receiver
+    /// before that receiver is shut down.
+    pub(super) fn request_shutdown_all(
+        self: &Arc<Self>,
+        timeout_secs: u64,
+    ) -> Result<(), ControlPlaneError> {
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+
         // Snapshot under the state lock, then send outside the lock so runtime
         // callbacks can report exits while shutdown dispatch is in progress.
-        // Only active instances with a retained sender are eligible; a missing
-        // sender means shutdown was already accepted by a previous request.
-        let mut senders: Vec<_> = {
-            let state = self
+        // Producer keys include active instances whose sender was already
+        // released by an earlier request because they still need to exit before
+        // observability can be stopped.
+        let (mut producer_keys, mut producer_senders, mut observability_senders) = {
+            let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            state
-                .runtime_instances
-                .iter()
-                .filter_map(|(deployed_key, instance)| match instance.lifecycle {
-                    RuntimeInstanceLifecycle::Active => instance
-                        .control_sender
-                        .as_ref()
-                        .map(|sender| (deployed_key.clone(), sender.clone())),
-                    RuntimeInstanceLifecycle::Exited(_) => None,
-                })
-                .collect()
+            let mut producer_keys = Vec::new();
+            let mut producer_senders = Vec::new();
+            let mut observability_senders = Vec::new();
+
+            for (deployed_key, instance) in &mut state.runtime_instances {
+                if !matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active) {
+                    continue;
+                }
+
+                let is_observability = deployed_key.pipeline_group_id.as_ref()
+                    == SYSTEM_PIPELINE_GROUP_ID
+                    && deployed_key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID;
+                if is_observability {
+                    if let Some(sender) = instance.control_sender.take() {
+                        // Taking the sender is the idempotence marker for the
+                        // asynchronous observability-shutdown coordinator.
+                        observability_senders.push((deployed_key.clone(), sender));
+                    }
+                } else {
+                    producer_keys.push(deployed_key.clone());
+                    if let Some(sender) = &instance.control_sender {
+                        producer_senders.push((deployed_key.clone(), sender.clone()));
+                    }
+                }
+            }
+
+            (producer_keys, producer_senders, observability_senders)
         };
-        // Stabilize both test assertions and the aggregated error message.
-        senders.sort_by_key(|(deployed_key, _)| {
+
+        let sort_key = |deployed_key: &DeployedPipelineKey| {
             (
                 deployed_key.pipeline_group_id.as_ref().to_owned(),
                 deployed_key.pipeline_id.as_ref().to_owned(),
                 deployed_key.core_id,
                 deployed_key.deployment_generation,
             )
-        });
+        };
+        producer_keys.sort_by_key(&sort_key);
+        producer_senders.sort_by_key(|(deployed_key, _)| sort_key(deployed_key));
+        observability_senders.sort_by_key(|(deployed_key, _)| sort_key(deployed_key));
 
-        let mut failures = Vec::new();
-        for (deployed_key, sender) in senders {
-            if let Err(err) = sender.try_send_shutdown(
-                Instant::now() + Duration::from_secs(timeout_secs.max(1)),
-                "global shutdown".to_owned(),
-            ) {
-                // A failed send can race with the runtime thread exiting after
-                // the snapshot was taken. Treat clean exit as success, report a
-                // terminal runtime error if one was recorded, and otherwise keep
-                // the retained sender so a later shutdown-all can retry it.
-                match self.instance_exit(&deployed_key) {
-                    Some(RuntimeInstanceExit::Success) => {
+        let mut failures: HashMap<DeployedPipelineKey, String> = HashMap::new();
+        let dispatch =
+            |senders: Vec<(DeployedPipelineKey, Arc<dyn PipelineAdminSender>)>,
+             failures: &mut HashMap<DeployedPipelineKey, String>| {
+                for (deployed_key, sender) in senders {
+                    if let Err(err) =
+                        sender.try_send_shutdown(deadline, "global shutdown".to_owned())
+                    {
+                        // A failed send can race with the runtime thread exiting after
+                        // the snapshot was taken. Treat clean exit as success, report a
+                        // terminal runtime error if one was recorded, and otherwise keep
+                        // the retained sender so a later shutdown-all can retry it.
+                        match self.instance_exit(&deployed_key) {
+                            Some(RuntimeInstanceExit::Success) => {
+                                self.release_instance_control_sender(&deployed_key);
+                            }
+                            Some(RuntimeInstanceExit::Error(error)) => {
+                                _ = failures.insert(deployed_key, error.message);
+                            }
+                            None => {
+                                _ = failures.insert(deployed_key, err.to_string());
+                            }
+                        }
+                    } else {
+                        // After a successful send, the controller should not send
+                        // another shutdown message to this same active instance.
                         self.release_instance_control_sender(&deployed_key);
                     }
-                    Some(RuntimeInstanceExit::Error(error)) => {
-                        failures.push(format!(
-                            "{}: {}",
-                            deployed_instance_label(&deployed_key),
-                            error.message
-                        ));
-                    }
-                    None => {
-                        failures.push(format!(
-                            "{}: {}",
-                            deployed_instance_label(&deployed_key),
-                            err
-                        ));
-                    }
                 }
-            } else {
-                // After a successful send, the controller should not send
-                // another shutdown message to this same active instance.
-                self.release_instance_control_sender(&deployed_key);
+            };
+
+        dispatch(producer_senders, &mut failures);
+
+        if !observability_senders.is_empty() {
+            let restore_senders = observability_senders.clone();
+            let runtime = Arc::clone(self);
+            if let Err(error) = thread::Builder::new()
+                .name("global-observability-shutdown".to_owned())
+                .spawn(move || {
+                    runtime.complete_global_observability_shutdown(
+                        producer_keys,
+                        observability_senders,
+                        deadline,
+                    );
+                })
+            {
+                self.restore_observability_senders(&restore_senders);
+                return Err(ControlPlaneError::Internal {
+                    message: format!(
+                        "failed to start global observability shutdown coordinator: {error}"
+                    ),
+                });
             }
         }
 
@@ -447,13 +537,149 @@ impl<
         } else {
             // Report all failures together after every eligible instance has
             // been attempted, preserving best-effort shutdown semantics.
+            let mut failures: Vec<_> = failures.into_iter().collect();
+            failures.sort_by_key(|(deployed_key, _)| sort_key(deployed_key));
             Err(ControlPlaneError::Internal {
                 message: format!(
-                    "failed to send global shutdown to {} runtime instance(s): {}",
+                    "global shutdown failed for {} runtime instance(s): {}",
                     failures.len(),
-                    failures.join("; ")
+                    failures
+                        .into_iter()
+                        .map(|(deployed_key, error)| format!(
+                            "{}: {error}",
+                            deployed_instance_label(&deployed_key)
+                        ))
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 ),
             })
+        }
+    }
+
+    /// Completes the asynchronous second phase of global shutdown.
+    fn complete_global_observability_shutdown(
+        &self,
+        producer_keys: Vec<DeployedPipelineKey>,
+        observability_senders: Vec<(DeployedPipelineKey, Arc<dyn PipelineAdminSender>)>,
+        deadline: Instant,
+    ) {
+        let mut wait_failures = Vec::new();
+        for deployed_key in &producer_keys {
+            if let Err(error) = self.wait_for_global_shutdown_exit(deployed_key, deadline) {
+                wait_failures.push(error);
+            }
+        }
+        if !wait_failures.is_empty() {
+            self.record_async_global_shutdown_failure(format!(
+                "producer drain failed before system observability shutdown: {}",
+                wait_failures.join("; ")
+            ));
+        }
+
+        let active_producers = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            producer_keys
+                .iter()
+                .filter(|deployed_key| {
+                    matches!(
+                        state.runtime_instances.get(*deployed_key),
+                        Some(RuntimeInstanceRecord {
+                            lifecycle: RuntimeInstanceLifecycle::Active,
+                            ..
+                        })
+                    )
+                })
+                .map(deployed_instance_label)
+                .collect::<Vec<_>>()
+        };
+        if !active_producers.is_empty() {
+            self.restore_observability_senders(&observability_senders);
+            self.record_async_global_shutdown_failure(format!(
+                "system observability remains active because producer shutdown timed out: {}",
+                active_producers.join("; ")
+            ));
+            return;
+        }
+
+        for (deployed_key, sender) in observability_senders {
+            let retry_deadline = Instant::now() + Duration::from_secs(1);
+            let final_error = loop {
+                match sender.try_send_shutdown(
+                    Instant::now() + Duration::from_secs(1),
+                    "global shutdown".to_owned(),
+                ) {
+                    Ok(()) => break None,
+                    Err(error) => match self.instance_exit(&deployed_key) {
+                        Some(RuntimeInstanceExit::Success) => break None,
+                        Some(RuntimeInstanceExit::Error(exit)) => break Some(exit.message),
+                        None if Instant::now() < retry_deadline => {
+                            thread::sleep(Duration::from_millis(10));
+                        }
+                        None => break Some(error.to_string()),
+                    },
+                }
+            };
+
+            if let Some(error) = final_error {
+                let restored = {
+                    let mut state = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(instance) = state.runtime_instances.get_mut(&deployed_key)
+                        && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                        && instance.control_sender.is_none()
+                    {
+                        instance.control_sender = Some(sender);
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if restored {
+                    self.record_async_global_shutdown_failure(format!(
+                        "failed to send global shutdown to {} after retrying: {error}",
+                        deployed_instance_label(&deployed_key)
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Restores system observability senders if the coordinator could not start.
+    fn restore_observability_senders(
+        &self,
+        senders: &[(DeployedPipelineKey, Arc<dyn PipelineAdminSender>)],
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (deployed_key, sender) in senders {
+            if let Some(instance) = state.runtime_instances.get_mut(deployed_key)
+                && matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                && instance.control_sender.is_none()
+            {
+                instance.control_sender = Some(sender.clone());
+            }
+        }
+    }
+
+    /// Records a delayed global-shutdown failure for final controller teardown.
+    fn record_async_global_shutdown_failure(&self, message: String) {
+        otel_warn!(
+            "controller.global_shutdown.async_phase_failed",
+            error = message.as_str()
+        );
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.first_error.is_none() {
+            state.first_error = Some(message);
         }
     }
 
@@ -500,6 +726,29 @@ impl<
                 .wait(state)
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
+    }
+
+    /// Blocks until every runtime instance exits or the timeout elapses.
+    pub(crate) fn wait_until_all_instances_exit_for(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.active_instances > 0 {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return false;
+            };
+            let (next_state, wait_result) = self
+                .state_changed
+                .wait_timeout(state, remaining)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state = next_state;
+            if wait_result.timed_out() && state.active_instances > 0 {
+                return false;
+            }
+        }
+        true
     }
 
     /// Returns the first runtime error observed by any watched pipeline thread.

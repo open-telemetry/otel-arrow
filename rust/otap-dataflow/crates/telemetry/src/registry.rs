@@ -8,9 +8,11 @@ use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
-    MetricExportBatch, MetricSet, MetricSetHandler, MetricSetRegistry, MetricValue, MetricsIterator,
+    MetricExportBatch, MetricSet, MetricSetHandler, MetricSetRegistry, MetricSetUnregister,
+    MetricValue, MetricsIterator,
 };
 use crate::otel_debug;
+use crate::reporter::MetricsFlushHandle;
 use crate::semconv::SemConvRegistry;
 use parking_lot::Mutex;
 use slotmap::new_key_type;
@@ -37,6 +39,7 @@ new_key_type! {
 #[derive(Debug, Clone)]
 pub struct TelemetryRegistryHandle {
     pub(crate) registry: Arc<Mutex<TelemetryRegistry>>,
+    metrics_flusher: Arc<Mutex<Option<MetricsFlushHandle>>>,
 }
 
 /// The main telemetry registry maintaining both entity and metric set registries.
@@ -44,6 +47,7 @@ pub struct TelemetryRegistryHandle {
 pub(crate) struct TelemetryRegistry {
     pub(crate) entities: EntityRegistry,
     pub(crate) metrics: MetricSetRegistry,
+    defer_dirty_metric_unregistration: bool,
 }
 
 impl Default for TelemetryRegistryHandle {
@@ -58,6 +62,25 @@ impl TelemetryRegistryHandle {
     pub fn new() -> Self {
         Self {
             registry: Arc::new(Mutex::new(TelemetryRegistry::default())),
+            metrics_flusher: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(crate) fn configure_metrics_collector(
+        &self,
+        flusher: Option<MetricsFlushHandle>,
+        defer_dirty_unregistration: bool,
+    ) {
+        *self.metrics_flusher.lock() = flusher;
+        self.registry.lock().defer_dirty_metric_unregistration = defer_dirty_unregistration;
+    }
+
+    /// Flushes snapshots accepted by the internal metrics collector, if one is configured.
+    pub async fn flush_pending_metrics(&self) -> Result<(), crate::error::Error> {
+        let flusher = self.metrics_flusher.lock().clone();
+        match flusher {
+            Some(flusher) => flusher.flush().await,
+            None => Ok(()),
         }
     }
 
@@ -132,11 +155,17 @@ impl TelemetryRegistryHandle {
     #[must_use]
     pub fn unregister_metric_set(&self, metrics_key: MetricSetKey) -> bool {
         let mut reg = self.registry.lock();
-        if let Some(entity_key) = reg.metrics.unregister(metrics_key) {
-            let _ = reg.entities.unregister(entity_key);
-            true
-        } else {
-            false
+        let defer_dirty_unregistration = reg.defer_dirty_metric_unregistration;
+        match reg
+            .metrics
+            .unregister(metrics_key, defer_dirty_unregistration)
+        {
+            Some(MetricSetUnregister::Removed(entity_key)) => {
+                let _ = reg.entities.unregister(entity_key);
+                true
+            }
+            Some(MetricSetUnregister::Deferred) => true,
+            None => false,
         }
     }
 
@@ -177,7 +206,9 @@ impl TelemetryRegistryHandle {
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         let mut reg = self.registry.lock();
-        let TelemetryRegistry { entities, metrics } = &mut *reg;
+        let TelemetryRegistry {
+            entities, metrics, ..
+        } = &mut *reg;
         metrics.visit_metrics_and_reset(entities, f, keep_all_zeroes);
     }
 
@@ -192,7 +223,9 @@ impl TelemetryRegistryHandle {
 
     pub(crate) fn drain_metric_export_batch_at(&self, time_unix_nano: u64) -> MetricExportBatch {
         let mut reg = self.registry.lock();
-        let TelemetryRegistry { entities, metrics } = &mut *reg;
+        let TelemetryRegistry {
+            entities, metrics, ..
+        } = &mut *reg;
         metrics.drain_export_batch(entities, time_unix_nano)
     }
 
@@ -214,7 +247,9 @@ impl TelemetryRegistryHandle {
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
         let mut reg = self.registry.lock();
-        let TelemetryRegistry { entities, metrics } = &mut *reg;
+        let TelemetryRegistry {
+            entities, metrics, ..
+        } = &mut *reg;
         metrics.visit_admin_metrics_and_reset(entities, f, keep_all_zeroes);
     }
 
@@ -380,6 +415,57 @@ mod tests {
     }
 
     #[test]
+    fn test_dirty_unregistration_is_retained_until_one_final_export() {
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        telemetry_registry
+            .registry
+            .lock()
+            .defer_dirty_metric_unregistration = true;
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("final".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            &[MetricValue::U64(13), MetricValue::U64(21)],
+        );
+        assert!(telemetry_registry.unregister_metric_set(metrics_key));
+        assert_eq!(telemetry_registry.metric_set_count(), 1);
+        assert_eq!(telemetry_registry.entity_count(), 1);
+
+        let final_batch = telemetry_registry.drain_metric_export_batch_at(u64::MAX);
+        assert_eq!(final_batch.metric_sets.len(), 1);
+        assert_eq!(
+            final_batch.metric_sets[0].values,
+            vec![MetricValue::U64(13), MetricValue::U64(21)]
+        );
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
+        assert!(
+            telemetry_registry
+                .drain_metric_export_batch_at(u64::MAX)
+                .is_empty(),
+            "a deferred unregister must be exported exactly once"
+        );
+    }
+
+    #[test]
+    fn test_dirty_unregistration_does_not_leak_without_its_export() {
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("final".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            &[MetricValue::U64(13), MetricValue::U64(21)],
+        );
+        assert!(telemetry_registry.unregister_metric_set(metrics_key));
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
+    }
+
+    #[test]
     fn test_telemetry_registry_concurrent_access() {
         use std::thread;
 
@@ -408,5 +494,53 @@ mod tests {
 
         assert_eq!(telemetry_registry.metric_set_count(), 5);
         assert_eq!(telemetry_registry.entity_count(), 5);
+    }
+
+    #[test]
+    fn test_export_drain_does_not_consume_the_next_accumulation_window() {
+        use std::thread;
+
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("test_value".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            &[MetricValue::U64(3), MetricValue::U64(5)],
+        );
+        let first_batch = telemetry_registry.drain_metric_export_batch_at(10);
+
+        // Keep the owned first batch alive while another thread accumulates the
+        // next window. Encoding or downstream backpressure must not hold the
+        // registry lock or cause the new snapshot to join the drained batch.
+        let next_registry = telemetry_registry.clone();
+        thread::spawn(move || {
+            next_registry.accumulate_metric_set_snapshot(
+                metrics_key,
+                &[MetricValue::U64(7), MetricValue::U64(11)],
+            );
+        })
+        .join()
+        .expect("next-window accumulation thread should complete");
+
+        assert_eq!(first_batch.metric_sets.len(), 1);
+        assert_eq!(
+            first_batch.metric_sets[0].values,
+            vec![MetricValue::U64(3), MetricValue::U64(5)]
+        );
+
+        let second_batch = telemetry_registry.drain_metric_export_batch_at(20);
+        assert_eq!(second_batch.metric_sets.len(), 1);
+        assert_eq!(
+            second_batch.metric_sets[0].values,
+            vec![MetricValue::U64(7), MetricValue::U64(11)]
+        );
+        assert!(
+            telemetry_registry
+                .drain_metric_export_batch_at(30)
+                .is_empty(),
+            "the second window must be exported exactly once"
+        );
     }
 }

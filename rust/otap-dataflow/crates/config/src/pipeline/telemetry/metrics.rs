@@ -50,6 +50,9 @@ pub struct MetricsConfig {
     pub readers: Vec<readers::MetricsReaderConfig>,
 
     /// OpenTelemetry SDK metrics views.
+    ///
+    /// When metrics use the `its` provider, configure the supported view
+    /// subset on the internal telemetry receiver node instead.
     #[serde(default)]
     pub views: Vec<ViewConfig>,
 }
@@ -80,7 +83,7 @@ impl MetricsConfig {
         if !self.uses_opentelemetry_provider() && !self.readers.is_empty() {
             errors.push(crate::error::Error::InvalidUserConfig {
                 error: format!(
-                    "engine.telemetry.metrics.readers requires provider 'opentelemetry', got '{}'",
+                    "engine.telemetry.metrics.readers requires provider 'opentelemetry', got '{}'; for ITS, configure the periodic interval on the internal telemetry receiver and exporters as observability pipeline nodes",
                     self.provider.as_str()
                 ),
             });
@@ -88,7 +91,7 @@ impl MetricsConfig {
         if !self.uses_opentelemetry_provider() && !self.views.is_empty() {
             errors.push(crate::error::Error::InvalidUserConfig {
                 error: format!(
-                    "engine.telemetry.metrics.views requires provider 'opentelemetry', got '{}'",
+                    "engine.telemetry.metrics.views requires provider 'opentelemetry', got '{}'; configure ITS metric views on the internal telemetry receiver node",
                     self.provider.as_str()
                 ),
             });

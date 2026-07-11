@@ -197,6 +197,12 @@ impl<M: MetricSetHandler> MetricSet<M> {
         }
     }
 
+    /// Returns true when every value in this hot metric set is zero/empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        !self.metrics.needs_flush()
+    }
+
     /// Returns the entity key associated with this metric set.
     #[must_use]
     pub const fn entity_key(&self) -> EntityKey {
@@ -327,6 +333,9 @@ pub struct MetricsEntry {
 
     /// Whether at least one producer snapshot has updated the admin accumulator.
     pub(crate) admin_observed: bool,
+
+    /// Whether the producer has gone away while a final export is still pending.
+    pending_unregister: bool,
 }
 
 impl Debug for MetricsEntry {
@@ -338,6 +347,7 @@ impl Debug for MetricsEntry {
             .field("entity_key", &self.entity_key)
             .field("export_dirty", &self.export_dirty)
             .field("admin_observed", &self.admin_observed)
+            .field("pending_unregister", &self.pending_unregister)
             .finish()
     }
 }
@@ -360,6 +370,7 @@ impl MetricsEntry {
             delta_start_time_unix_nano: registered_at_unix_nano,
             export_dirty: false,
             admin_observed: false,
+            pending_unregister: false,
         }
     }
 }
@@ -467,6 +478,11 @@ pub struct MetricSetRegistry {
     pub(crate) metrics: SlotMap<MetricSetKey, MetricsEntry>,
 }
 
+pub(crate) enum MetricSetUnregister {
+    Removed(EntityKey),
+    Deferred,
+}
+
 impl Debug for MetricSetRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MetricSetRegistry")
@@ -564,10 +580,20 @@ impl MetricSetRegistry {
             });
     }
 
-    pub(crate) fn unregister(&mut self, metrics_key: MetricSetKey) -> Option<EntityKey> {
-        self.metrics
-            .remove(metrics_key)
-            .map(|entry| entry.entity_key)
+    pub(crate) fn unregister(
+        &mut self,
+        metrics_key: MetricSetKey,
+        defer_dirty_unregistration: bool,
+    ) -> Option<MetricSetUnregister> {
+        let entry = self.metrics.get_mut(metrics_key)?;
+        if defer_dirty_unregistration && entry.export_dirty {
+            entry.pending_unregister = true;
+            Some(MetricSetUnregister::Deferred)
+        } else {
+            self.metrics
+                .remove(metrics_key)
+                .map(|entry| MetricSetUnregister::Removed(entry.entity_key))
+        }
     }
 
     /// Returns the total number of registered metrics sets.
@@ -579,14 +605,15 @@ impl MetricSetRegistry {
     /// of (MetricsField, value), then resets the values to zero.
     pub(crate) fn visit_metrics_and_reset<F>(
         &mut self,
-        entities: &EntityRegistry,
+        entities: &mut EntityRegistry,
         mut f: F,
         keep_all_zeroes: bool,
     ) where
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        for entry in self.metrics.values_mut() {
+        let mut completed_unregisters = Vec::new();
+        for (metrics_key, entry) in &mut self.metrics {
             let values = &mut entry.metric_values;
             if keep_all_zeroes || entry.export_dirty || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
@@ -598,13 +625,20 @@ impl MetricSetRegistry {
                 values.iter_mut().for_each(MetricValue::reset);
                 entry.export_dirty = false;
             }
+            if entry.pending_unregister && !entry.export_dirty {
+                completed_unregisters.push((metrics_key, entry.entity_key));
+            }
+        }
+        for (metrics_key, entity_key) in completed_unregisters {
+            let _ = self.metrics.remove(metrics_key);
+            let _ = entities.unregister(entity_key);
         }
     }
 
     /// Copies the pending export accumulator into an owned batch.
     pub(crate) fn drain_export_batch(
         &mut self,
-        entities: &EntityRegistry,
+        entities: &mut EntityRegistry,
         requested_time_unix_nano: u64,
     ) -> MetricExportBatch {
         let time_unix_nano = self
@@ -616,7 +650,8 @@ impl MetricSetRegistry {
             });
         let mut metric_sets = Vec::new();
 
-        for entry in self.metrics.values_mut() {
+        let mut completed_unregisters = Vec::new();
+        for (metrics_key, entry) in &mut self.metrics {
             if entry.export_dirty
                 && let Some(attributes) = entities.get_shared(entry.entity_key)
             {
@@ -649,6 +684,13 @@ impl MetricSetRegistry {
 
             // Empty collection intervals still delimit the next delta window.
             entry.delta_start_time_unix_nano = time_unix_nano;
+            if entry.pending_unregister && !entry.export_dirty {
+                completed_unregisters.push((metrics_key, entry.entity_key));
+            }
+        }
+        for (metrics_key, entity_key) in completed_unregisters {
+            let _ = self.metrics.remove(metrics_key);
+            let _ = entities.unregister(entity_key);
         }
 
         MetricExportBatch {
@@ -917,9 +959,9 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        assert!(metrics.unregister(metrics_key).is_some());
+        assert!(metrics.unregister(metrics_key, false).is_some());
         assert_eq!(metrics.len(), 0);
-        assert!(metrics.unregister(metrics_key).is_none());
+        assert!(metrics.unregister(metrics_key, false).is_none());
     }
 
     #[test]
@@ -949,7 +991,7 @@ mod tests {
 
         let mut accumulated_values = Vec::new();
         metrics.visit_metrics_and_reset(
-            &entities,
+            &mut entities,
             |_desc, _attrs, iter| {
                 for (_field, value) in iter {
                     accumulated_values.push(value);
@@ -991,7 +1033,7 @@ mod tests {
 
         let mut accumulated_values = Vec::new();
         metrics.visit_metrics_and_reset(
-            &entities,
+            &mut entities,
             |_desc, _attrs, iter| {
                 for (_field, value) in iter {
                     accumulated_values.push(value);
@@ -1036,7 +1078,7 @@ mod tests {
         let mut collected_values = Vec::new();
 
         metrics.visit_metrics_and_reset(
-            &entities,
+            &mut entities,
             |desc, _attrs, iter| {
                 visit_count += 1;
                 assert_eq!(desc.name, "test_metrics");
@@ -1061,7 +1103,7 @@ mod tests {
         collected_values.clear();
 
         metrics.visit_metrics_and_reset(
-            &entities,
+            &mut entities,
             |_desc, _attrs, _iter| {
                 visit_count += 1;
             },
@@ -1095,7 +1137,7 @@ mod tests {
         );
 
         let first_time = registered_at + 10;
-        let first_batch = metrics.drain_export_batch(&entities, first_time);
+        let first_batch = metrics.drain_export_batch(&mut entities, first_time);
         assert_eq!(first_batch.time_unix_nano, first_time);
         assert_eq!(first_batch.metric_sets.len(), 1);
         let first_set = &first_batch.metric_sets[0];
@@ -1125,7 +1167,7 @@ mod tests {
 
         // An empty collection still advances the start of the next delta window.
         let empty_time = first_time + 10;
-        let empty_batch = metrics.drain_export_batch(&entities, empty_time);
+        let empty_batch = metrics.drain_export_batch(&mut entities, empty_time);
         assert!(empty_batch.is_empty());
         assert_eq!(empty_batch.time_unix_nano, empty_time);
 
@@ -1139,7 +1181,7 @@ mod tests {
             ],
         );
         let second_time = empty_time + 10;
-        let second_batch = metrics.drain_export_batch(&entities, second_time);
+        let second_batch = metrics.drain_export_batch(&mut entities, second_time);
         let second_set = &second_batch.metric_sets[0];
         assert_eq!(
             second_set.values,
@@ -1163,7 +1205,7 @@ mod tests {
                 MetricValue::U64(0),
             ],
         );
-        let zero_batch = metrics.drain_export_batch(&entities, second_time + 10);
+        let zero_batch = metrics.drain_export_batch(&mut entities, second_time + 10);
         assert_eq!(zero_batch.metric_sets.len(), 1);
         assert_eq!(
             zero_batch.metric_sets[0].values,
@@ -1191,7 +1233,7 @@ mod tests {
             MetricValue::U64(3),
         ];
         metrics.accumulate_snapshot(metrics_key, &first_values);
-        let _ = metrics.drain_export_batch(&entities, u64::MAX);
+        let _ = metrics.drain_export_batch(&mut entities, u64::MAX);
 
         let mut admin_values = Vec::new();
         metrics.visit_admin_metrics_and_reset(
@@ -1210,7 +1252,7 @@ mod tests {
         metrics.accumulate_snapshot(metrics_key, &second_values);
         metrics.visit_admin_metrics_and_reset(&entities, |_, _, _| {}, false);
 
-        let export_batch = metrics.drain_export_batch(&entities, u64::MAX);
+        let export_batch = metrics.drain_export_batch(&mut entities, u64::MAX);
         assert_eq!(export_batch.metric_sets.len(), 1);
         assert_eq!(export_batch.metric_sets[0].values, second_values);
 

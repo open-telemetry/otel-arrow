@@ -894,6 +894,75 @@ groups: {}
     }
 
     #[test]
+    fn from_yaml_rejects_its_metrics_with_unconnected_internal_telemetry_receiver() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config: {}
+        other_source:
+          type: "urn:test:receiver:example"
+          config: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: other_source
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("an unconnected ITS receiver must be rejected before build pruning");
+        assert!(
+            err.to_string().contains(
+                "internal telemetry receiver 'itr' to remain connected to a valid downstream path"
+            ),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_yaml_rejects_its_metrics_with_receiver_connected_only_to_orphan_chain() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config: {}
+        orphan_processor:
+          type: "urn:test:processor:example"
+          config: {}
+      connections:
+        - from: itr
+          to: orphan_processor
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("an ITS receiver feeding an orphan chain must be rejected");
+        assert!(
+            err.to_string().contains(
+                "internal telemetry receiver 'itr' to remain connected to a valid downstream path"
+            ),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
     fn from_yaml_accepts_custom_config() {
         let yaml = r#"
 version: otel_dataflow/v1

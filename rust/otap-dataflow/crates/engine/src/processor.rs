@@ -665,14 +665,36 @@ impl<PData> ProcessorWrapper<PData> {
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
                 {
-                    effect_handler.report_flow_metrics();
+                    effect_handler
+                        .report_flow_metrics_reliably()
+                        .await
+                        .map_err(|error| Error::InternalError {
+                            message: format!(
+                                "failed to report final processor flow metrics: {error}"
+                            ),
+                        })?;
                 }
-                processor
+                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                let process_result = processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: terminal_metrics_reporter,
+                        }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await;
+                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                    let _ = metrics_reporter
+                        .report_snapshot_reliably(snapshot)
+                        .await
+                        .map_err(|error| Error::InternalError {
+                            message: format!(
+                                "failed to report final processor component metrics: {error}"
+                            ),
+                        })?;
+                }
+                process_result?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -724,14 +746,36 @@ impl<PData> ProcessorWrapper<PData> {
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
                 {
-                    effect_handler.report_flow_metrics();
+                    effect_handler
+                        .report_flow_metrics_reliably()
+                        .await
+                        .map_err(|error| Error::InternalError {
+                            message: format!(
+                                "failed to report final processor flow metrics: {error}"
+                            ),
+                        })?;
                 }
-                processor
+                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                let process_result = processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: terminal_metrics_reporter,
+                        }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await;
+                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                    let _ = metrics_reporter
+                        .report_snapshot_reliably(snapshot)
+                        .await
+                        .map_err(|error| Error::InternalError {
+                            message: format!(
+                                "failed to report final processor component metrics: {error}"
+                            ),
+                        })?;
+                }
+                process_result?
             }
         }
         Ok(())

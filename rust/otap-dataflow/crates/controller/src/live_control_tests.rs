@@ -376,6 +376,31 @@ fn recording_admin_sender(
     (sender, calls)
 }
 
+struct NotifyingPipelineAdminSender {
+    notification: std::sync::mpsc::Sender<String>,
+}
+
+impl PipelineAdminSender for NotifyingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.notification
+            .send(reason)
+            .map_err(|error| EngineError::RuntimeMsgError {
+                error: error.to_string(),
+            })
+    }
+}
+
+fn notifying_admin_sender() -> (
+    Arc<dyn PipelineAdminSender>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let (notification, receiver) = std::sync::mpsc::channel();
+    (
+        Arc::new(NotifyingPipelineAdminSender { notification }),
+        receiver,
+    )
+}
+
 fn launched_runtime_instance(
     pipeline_group_id: &str,
     pipeline_id: &str,
@@ -2584,6 +2609,145 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         vec!["global shutdown".to_owned()]
     );
+}
+
+/// Scenario: global shutdown includes regular producer instances and the
+/// engine's system observability instance.
+/// Guarantees: all regular instances receive shutdown first, and the system
+/// observability sender is not called until every regular instance reports its
+/// terminal exit, preserving their final internal telemetry.
+#[test]
+fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key0 = deployed_key("g1", "p1", 0, 0);
+    let regular_key1 = deployed_key("g1", "p1", 1, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        2,
+        0,
+    );
+    let (regular_sender0, regular_notifications0) = notifying_admin_sender();
+    let (regular_sender1, regular_notifications1) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key0.clone(),
+        regular_sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key1.clone(),
+        regular_sender1,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key,
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    let shutdown_runtime = Arc::clone(&runtime);
+    let (shutdown_result_tx, shutdown_result_rx) = std::sync::mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        shutdown_result_tx
+            .send(shutdown_runtime.request_shutdown_all(5))
+            .expect("shutdown result receiver should remain open");
+    });
+
+    assert_eq!(
+        regular_notifications0
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    assert_eq!(
+        regular_notifications1
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    shutdown_result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown dispatch should return before regular instances exit")
+        .expect("initial shutdown dispatch should succeed");
+    shutdown_thread
+        .join()
+        .expect("global shutdown dispatch thread should join");
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while regular instances drain"
+    );
+
+    runtime.note_instance_exit(regular_key0, RuntimeInstanceExit::Success);
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "one remaining regular instance must keep observability active"
+    );
+    runtime.note_instance_exit(regular_key1, RuntimeInstanceExit::Success);
+
+    assert_eq!(
+        observability_notifications
+            .recv_timeout(Duration::from_secs(1))
+            .expect("observability should receive shutdown after producers exit"),
+        "global shutdown"
+    );
+
+    runtime
+        .request_shutdown_all(5)
+        .expect("repeated global shutdown should remain idempotent");
+    assert!(regular_notifications0.try_recv().is_err());
+    assert!(regular_notifications1.try_recv().is_err());
+    assert!(observability_notifications.try_recv().is_err());
+}
+
+#[test]
+fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        1,
+        0,
+    );
+    let (regular_sender, regular_notifications) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key,
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("initial shutdown dispatch should succeed");
+    let _ = regular_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("regular producer should receive shutdown");
+    assert!(
+        observability_notifications
+            .recv_timeout(Duration::from_millis(1_200))
+            .is_err(),
+        "observability must remain active when a producer misses its deadline"
+    );
+
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+    runtime
+        .request_shutdown_all(1)
+        .expect("a later request should retry the restored observability sender");
+    let _ = observability_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should stop once the producer has exited");
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline
