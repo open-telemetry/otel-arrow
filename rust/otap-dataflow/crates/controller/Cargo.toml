@@ -45,4 +45,4 @@ url = { workspace = true }
 
 [dev-dependencies]
 axum = { workspace = true }
-portpicker = { workspace = true }
+otap-df-test-net = { workspace = true }
