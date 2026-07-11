@@ -323,6 +323,7 @@ impl<
             );
             let deployed_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_placement,
                 *core_id,
                 plan.target_generation,
             ) {
@@ -389,6 +390,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_placement,
                 *core_id,
                 active_generation,
             ) {
@@ -502,6 +504,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_placement,
                 *core_id,
                 plan.target_generation,
             ) {
@@ -562,6 +565,7 @@ impl<
 
             let new_key = match self.launch_regular_pipeline_instance(
                 &plan.resolved_pipeline,
+                &plan.target_placement,
                 *core_id,
                 plan.target_generation,
             ) {
@@ -718,8 +722,18 @@ impl<
                 None,
             );
 
+            let current_placement = plan.current_placement.as_ref().ok_or_else(|| {
+                RolloutExecutionError::RollbackFailed(
+                    "internal error: resize rollback missing current placement".to_owned(),
+                )
+            })?;
             let old_key = self
-                .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
+                .launch_regular_pipeline_instance(
+                    &previous.resolved,
+                    current_placement,
+                    *core_id,
+                    previous_generation,
+                )
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             self.wait_for_pipeline_ready(&old_key, ready_deadline)
@@ -798,8 +812,18 @@ impl<
                 None,
             );
 
+            let current_placement = plan.current_placement.as_ref().ok_or_else(|| {
+                RolloutExecutionError::RollbackFailed(
+                    "internal error: replace rollback missing current placement".to_owned(),
+                )
+            })?;
             let old_key = self
-                .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
+                .launch_regular_pipeline_instance(
+                    &previous.resolved,
+                    current_placement,
+                    *core_id,
+                    previous_generation,
+                )
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             self.wait_for_pipeline_ready(&old_key, ready_deadline)
@@ -827,8 +851,18 @@ impl<
                 None,
             );
 
+            let current_placement = plan.current_placement.as_ref().ok_or_else(|| {
+                RolloutExecutionError::RollbackFailed(
+                    "internal error: replace rollback missing current placement".to_owned(),
+                )
+            })?;
             let old_key = self
-                .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
+                .launch_regular_pipeline_instance(
+                    &previous.resolved,
+                    current_placement,
+                    *core_id,
+                    previous_generation,
+                )
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
             let ready_deadline = Instant::now() + Duration::from_secs(plan.step_timeout_secs);
             self.wait_for_pipeline_ready(&old_key, ready_deadline)

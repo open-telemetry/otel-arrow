@@ -67,10 +67,6 @@ impl NumaTopologyProvider for LinuxNumaTopologyProvider {
             mut partial,
         } = discover_sysfs_topology(&self.node_root);
 
-        if cpu_to_node.is_empty() {
-            return NumaTopology::unknown();
-        }
-
         let allowed = match self.allowed_cpus() {
             AllowedCpuDiscovery::Known { cpus, degraded } => {
                 partial |= degraded;
@@ -378,6 +374,24 @@ mod tests {
     }
 
     #[test]
+    fn missing_sysfs_keeps_allowed_cpus_visible_without_numa_mapping() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let cgroup = tempfile::tempdir().unwrap();
+
+        let provider = LinuxNumaTopologyProvider::for_test(
+            sysfs.path().join("missing-node-root"),
+            cgroup.path().to_path_buf(),
+            affinity_0_to_3,
+        );
+        let topology = provider.discover();
+
+        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
+        assert!(topology.visible_nodes().is_empty());
+        assert_eq!(topology.numa_node(0), None);
+    }
+
+    #[test]
     fn ignores_empty_cpu_less_node_cpulist() {
         let sysfs = tempfile::tempdir().unwrap();
         let cgroup = tempfile::tempdir().unwrap();
@@ -432,12 +446,12 @@ mod tests {
     }
 
     #[test]
-    fn unknown_when_sysfs_missing() {
+    fn unknown_when_sysfs_and_allowed_cpus_are_unavailable() {
         let cgroup = tempfile::tempdir().unwrap();
         let provider = LinuxNumaTopologyProvider::for_test(
             PathBuf::from("/this/path/should/not/exist"),
             cgroup.path().to_path_buf(),
-            affinity_0_to_3,
+            affinity_error,
         );
         let topology = provider.discover();
 

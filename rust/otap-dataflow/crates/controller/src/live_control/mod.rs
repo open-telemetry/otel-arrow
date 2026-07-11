@@ -24,6 +24,7 @@ use otap_df_admin::{
     PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
     RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
+use otap_df_engine::topology::NumaTopology;
 use otap_df_state::conditions::ConditionStatus;
 use otap_df_state::phase::PipelinePhase;
 use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
@@ -44,10 +45,11 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LogicalPipelineRecord, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
-    TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile, is_expired, timestamp_now,
+    LivePipelinePlacement, LogicalPipelineRecord, RolloutAction, RolloutCoreProgress,
+    RolloutExecutionError, RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle,
+    RuntimeInstanceRecord, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
+    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
+    is_expired, timestamp_now,
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
@@ -76,6 +78,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     declared_topics: DeclaredTopics<PData>,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
+    /// Controller-owned topology snapshot used for live rollout placement metadata.
+    topology: NumaTopology,
     /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
     /// Runtime telemetry reporting cadence.
@@ -122,6 +126,7 @@ impl<
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
         available_core_ids: Vec<CoreId>,
+        topology: NumaTopology,
         engine_tracing_setup: TracingSetup,
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
@@ -136,6 +141,7 @@ impl<
             metrics_reporter,
             declared_topics,
             available_core_ids,
+            topology,
             engine_tracing_setup,
             telemetry_reporting_interval,
             memory_pressure_tx,
@@ -156,6 +162,7 @@ impl<
                 next_reconcile_id: 0,
                 next_rollout_id: 0,
                 next_shutdown_id: 0,
+                next_placement_generation: 1,
                 next_thread_id: 1,
                 first_error: None,
             }),

@@ -102,14 +102,55 @@ impl<
         &self,
         resolved_pipeline: &ResolvedPipelineConfig,
     ) -> Result<Vec<usize>, ControlPlaneError> {
-        Controller::<PData>::select_cores_for_allocation(
+        self.pipeline_placement_for_resolved(resolved_pipeline)
+            .map(|placement| {
+                placement
+                    .cores
+                    .into_iter()
+                    .map(|core| core.core_id.id)
+                    .collect()
+            })
+    }
+
+    /// Resolves controller-owned placement metadata for one pipeline.
+    pub(super) fn pipeline_placement_for_resolved(
+        &self,
+        resolved_pipeline: &ResolvedPipelineConfig,
+    ) -> Result<PipelinePlacement, ControlPlaneError> {
+        Controller::<PData>::select_cores_for_allocation_with_placement(
             self.available_core_ids.clone(),
             &resolved_pipeline.policies.resources.core_allocation,
+            &self.topology,
+            &BTreeSet::new(),
         )
-        .map(|cores| cores.into_iter().map(|core| core.id).collect())
+        .map(|cores| PipelinePlacement {
+            pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
+            pipeline_id: resolved_pipeline.pipeline_id.clone(),
+            cores: cores
+                .into_iter()
+                .map(|core_id| CorePlacement::from_core_id(core_id, &self.topology))
+                .collect(),
+        })
         .map_err(|err| ControlPlaneError::InvalidRequest {
             message: err.to_string(),
         })
+    }
+
+    fn live_pipeline_placement_from(
+        &self,
+        resolved_pipeline: &ResolvedPipelineConfig,
+        placement: PipelinePlacement,
+        placement_generation: u64,
+    ) -> LivePipelinePlacement {
+        let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
+            resolved_pipeline,
+            &placement,
+            placement_generation,
+        ));
+        LivePipelinePlacement {
+            placement,
+            listener_group_snapshot,
+        }
     }
 
     /// Reports which active cores still belong to the current committed generation.
@@ -339,12 +380,21 @@ impl<
             .ok_or_else(|| ControlPlaneError::Internal {
                 message: "candidate pipeline disappeared during resolution".to_owned(),
             })?;
-        let current_assigned_cores = if let Some(record) = current_record.as_ref() {
-            self.assigned_cores_for_resolved(&record.resolved)?
+        let current_pipeline_placement = if let Some(record) = current_record.as_ref() {
+            Some(self.pipeline_placement_for_resolved(&record.resolved)?)
         } else {
-            Vec::new()
+            None
         };
-        let target_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        let target_pipeline_placement = self.pipeline_placement_for_resolved(&resolved_pipeline)?;
+        let current_assigned_cores: Vec<usize> = current_pipeline_placement
+            .as_ref()
+            .map(|placement| placement.cores.iter().map(|core| core.core_id.id).collect())
+            .unwrap_or_default();
+        let target_assigned_cores = target_pipeline_placement
+            .cores
+            .iter()
+            .map(|core| core.core_id.id)
+            .collect::<Vec<_>>();
         let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
         let active_runtime_state = current_record
@@ -415,7 +465,7 @@ impl<
             .as_ref()
             .map(|record| record.active_generation);
 
-        let (rollout_id, target_generation) = {
+        let (rollout_id, target_generation, placement_generation) = {
             let mut state = self
                 .state
                 .lock()
@@ -448,8 +498,26 @@ impl<
                     target_generation
                 }
             };
-            (rollout_id, target_generation)
+            let placement_generation = state.next_placement_generation;
+            state.next_placement_generation += 1;
+            (rollout_id, target_generation, placement_generation)
         };
+        let current_placement =
+            current_record
+                .as_ref()
+                .zip(current_pipeline_placement)
+                .map(|(record, placement)| {
+                    self.live_pipeline_placement_from(
+                        &record.resolved,
+                        placement,
+                        placement_generation,
+                    )
+                });
+        let target_placement = self.live_pipeline_placement_from(
+            &resolved_pipeline,
+            target_pipeline_placement,
+            placement_generation,
+        );
 
         let rollout_core_ids = match action {
             RolloutAction::NoOp => Vec::new(),
@@ -516,6 +584,8 @@ impl<
             action,
             resolved_pipeline,
             current_record,
+            current_placement,
+            target_placement,
             current_assigned_cores,
             target_assigned_cores,
             common_assigned_cores,

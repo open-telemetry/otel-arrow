@@ -136,7 +136,7 @@ use live_control::{
     ControllerRuntime, LaunchedPipelineThread, PanicReport, RuntimeInstanceError,
     RuntimeInstanceExit,
 };
-use placement::{CorePlacement, PlacementPlanner, PlacementSnapshot};
+use placement::{CorePlacement, PipelinePlacement, PlacementPlanner, PlacementSnapshot};
 
 /// Controller for managing pipelines in a thread-per-core model.
 ///
@@ -1534,6 +1534,7 @@ impl<
             metrics_reporter.clone(),
             declared_topics,
             all_cores.clone(),
+            topology,
             telemetry_system.engine_tracing_setup(),
             telemetry_reporting_interval,
             memory_pressure_tx.clone(),
@@ -2009,6 +2010,7 @@ impl<
         visible
     }
 
+    #[cfg(test)]
     fn select_cores_for_allocation(
         available_core_ids: Vec<CoreId>,
         core_allocation: &CoreAllocation,
@@ -2038,7 +2040,10 @@ impl<
             CoreAllocationStrategy::CoreCount => match core_allocation.count {
                 Some(count) => {
                     if count == 0 {
-                        Ok(available_core_ids)
+                        Ok(available_core_ids
+                            .into_iter()
+                            .filter(|core| !reserved_core_ids.contains(&core.id))
+                            .collect())
                     } else if count > num_cores {
                         Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
@@ -2069,7 +2074,10 @@ impl<
                         }
                     }
                 }
-                None => Ok(available_core_ids),
+                None => Ok(available_core_ids
+                    .into_iter()
+                    .filter(|core| !reserved_core_ids.contains(&core.id))
+                    .collect()),
             },
             CoreAllocationStrategy::CoreSet => match &core_allocation.set {
                 Some(set) => {
@@ -2177,7 +2185,7 @@ impl<
                 &BTreeSet::new(),
             )?;
             reserved_core_ids.extend(selected.iter().map(|core| core.id));
-            placements[idx] = Some(placement::PipelinePlacement {
+            placements[idx] = Some(PipelinePlacement {
                 pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
                 pipeline_id: pipeline_entry.pipeline_id.clone(),
                 cores: selected
@@ -2203,7 +2211,7 @@ impl<
             ) {
                 reserved_core_ids.extend(selected.iter().map(|core| core.id));
             }
-            placements[idx] = Some(placement::PipelinePlacement {
+            placements[idx] = Some(PipelinePlacement {
                 pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
                 pipeline_id: pipeline_entry.pipeline_id.clone(),
                 cores: selected
@@ -3552,6 +3560,36 @@ groups: {{}}
                     .collect::<Vec<_>>()
             ),
             vec![4, 5]
+        );
+    }
+
+    #[test]
+    fn preflight_core_count_all_uses_only_unreserved_cores() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
+        ];
+
+        let placement = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect("preflight should succeed");
+
+        assert_eq!(
+            to_ids(
+                &placement.pipelines[1]
+                    .cores
+                    .iter()
+                    .map(|core| core.core_id)
+                    .collect::<Vec<_>>()
+            ),
+            vec![4, 5, 6, 7]
         );
     }
 

@@ -13,7 +13,9 @@ use otap_df_engine::control::{
 };
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::listener_group::ListenerProtocol;
 use otap_df_engine::receiver::ReceiverWrapper;
+use otap_df_engine::topology::NumaTopology;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::TracingSetup;
@@ -71,6 +73,12 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ReceiverFactory {
+        name: "urn:otel:receiver:otlp",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
 
 static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
@@ -92,6 +100,13 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> =
     PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES, &[]);
 
 fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
+    test_runtime_with_topology(config, NumaTopology::unknown())
+}
+
+fn test_runtime_with_topology(
+    config: &OtelDataflowSpec,
+    topology: NumaTopology,
+) -> Arc<ControllerRuntime<()>> {
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -112,6 +127,7 @@ fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
         metrics_reporter,
         declared_topics,
         available_core_ids(),
+        topology,
         TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
         Duration::from_secs(1),
         memory_pressure_tx,
@@ -562,6 +578,88 @@ connections:
             .map(|core| core.core_id)
             .collect::<Vec<_>>(),
         vec![1]
+    );
+}
+
+/// Scenario: live-control accepts a new pipeline with listener bind config on
+/// cores mapped to a known NUMA node.
+/// Guarantees: placement and listener metadata are resolved during planning,
+/// before any runtime worker is launched.
+#[test]
+fn prepare_rollout_plan_resolves_live_numa_and_listener_metadata() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let topology = NumaTopology::from_node_cpulists(&[(0, "0-3".into()), (1, "4-7".into())]);
+    let runtime = test_runtime_with_topology(&config, topology);
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: 4
+          end: 5
+nodes:
+  receiver:
+    type: "urn:otel:receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("listener pipeline should be planned");
+
+    assert_eq!(plan.target_assigned_cores, vec![4, 5]);
+    assert_eq!(plan.target_placement.placement.core_count(), 2);
+    assert_eq!(
+        plan.target_placement
+            .placement
+            .cores
+            .iter()
+            .map(|core| (core.core_id.id, core.known_numa_node_id))
+            .collect::<Vec<_>>(),
+        vec![(4, Some(1)), (5, Some(1))]
+    );
+
+    let snapshot = &plan.target_placement.listener_group_snapshot;
+    assert_eq!(snapshot.generation, 1);
+    assert_eq!(snapshot.plans.len(), 1);
+    let listener_plan = snapshot
+        .plan_for(
+            "receiver",
+            "127.0.0.1:4317".parse().unwrap(),
+            ListenerProtocol::Tcp,
+        )
+        .expect("grpc listener group should be planned");
+    assert_eq!(
+        listener_plan
+            .expected_members
+            .iter()
+            .map(|member| (member.core_id, member.numa_node_id))
+            .collect::<Vec<_>>(),
+        vec![(4, Some(1)), (5, Some(1))]
     );
 }
 
