@@ -1669,7 +1669,7 @@ mod tests {
     #[tokio::test]
     async fn startup_check_connect_succeeds() {
         crate::crypto::ensure_crypto_provider();
-        let port = portpicker::pick_unused_port().expect("no free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         // Bind a TCP listener so the eager connect attempt has something to connect to.
         let _listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
             .await
@@ -1686,7 +1686,7 @@ mod tests {
     #[tokio::test]
     async fn startup_check_connect_fails_connection_refused() {
         crate::crypto::ensure_crypto_provider();
-        let port = portpicker::pick_unused_port().expect("no free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let settings = GrpcClientSettings {
             grpc_endpoint: format!("http://127.0.0.1:{port}"),
             startup_check: StartupCheck::Connect,
