@@ -106,7 +106,7 @@ impl<
         self.pipeline_placement_for_resolved_with_reserved(resolved_pipeline, &BTreeSet::new())
     }
 
-    /// Resolves placement while excluding cores already committed to other pipelines.
+    /// Resolves placement using reservations for controller-selected `core_count` allocations.
     pub(super) fn pipeline_placement_for_resolved_with_reserved(
         &self,
         resolved_pipeline: &ResolvedPipelineConfig,
