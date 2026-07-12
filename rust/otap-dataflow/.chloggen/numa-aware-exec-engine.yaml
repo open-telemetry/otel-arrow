@@ -17,3 +17,5 @@ issues: [2155, 1837]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext:
+  - core_count placement is now planned globally by the controller, so multiple core_count pipelines no longer overlap on the first visible cores.
+  - Startup and live updates now fail when controller-selected placement cannot find an unreserved core set, including core_count: 0 when no unreserved cores remain.

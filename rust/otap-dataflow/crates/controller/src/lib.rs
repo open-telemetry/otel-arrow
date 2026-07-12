@@ -2044,10 +2044,22 @@ impl<
             CoreAllocationStrategy::CoreCount => match core_allocation.count {
                 Some(count) => {
                     if count == 0 {
-                        Ok(available_core_ids
-                            .into_iter()
+                        let selected = available_core_ids
+                            .iter()
+                            .copied()
                             .filter(|core| !reserved_core_ids.contains(&core.id))
-                            .collect())
+                            .collect::<Vec<_>>();
+                        if selected.is_empty() {
+                            Err(Error::InvalidCoreAllocation {
+                                alloc: core_allocation.clone(),
+                                message:
+                                    "Requested all unreserved cores but no unreserved cores are available"
+                                        .to_owned(),
+                                available: Vec::new(),
+                            })
+                        } else {
+                            Ok(selected)
+                        }
                     } else if count > num_cores {
                         Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
@@ -2082,10 +2094,24 @@ impl<
                         }
                     }
                 }
-                None => Ok(available_core_ids
-                    .into_iter()
-                    .filter(|core| !reserved_core_ids.contains(&core.id))
-                    .collect()),
+                None => {
+                    let selected = available_core_ids
+                        .iter()
+                        .copied()
+                        .filter(|core| !reserved_core_ids.contains(&core.id))
+                        .collect::<Vec<_>>();
+                    if selected.is_empty() {
+                        Err(Error::InvalidCoreAllocation {
+                            alloc: core_allocation.clone(),
+                            message:
+                                "Requested all unreserved cores but no unreserved cores are available"
+                                    .to_owned(),
+                            available: Vec::new(),
+                        })
+                    } else {
+                        Ok(selected)
+                    }
+                }
             },
             CoreAllocationStrategy::CoreSet => match &core_allocation.set {
                 Some(set) => {
@@ -3599,6 +3625,38 @@ groups: {{}}
             ),
             vec![4, 5, 6, 7]
         );
+    }
+
+    #[test]
+    fn preflight_core_count_all_errors_when_no_unreserved_cores_remain() {
+        let pipelines = vec![
+            resolved_pipeline_with_core_allocation(
+                "g1",
+                "p1",
+                CoreAllocation::core_set(vec![CoreRange { start: 0, end: 7 }]),
+            ),
+            resolved_pipeline_with_core_allocation("g1", "p2", CoreAllocation::core_count(0)),
+        ];
+
+        let err = Controller::<()>::preflight_pipeline_placement(
+            &pipelines,
+            &available_core_ids(),
+            &NumaTopology::unknown(),
+        )
+        .expect_err("preflight should reject empty effective core_count placement");
+
+        match err {
+            Error::InvalidCoreAllocation {
+                message, available, ..
+            } => {
+                assert!(
+                    message.contains("no unreserved cores are available"),
+                    "unexpected message: {message}"
+                );
+                assert!(available.is_empty());
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

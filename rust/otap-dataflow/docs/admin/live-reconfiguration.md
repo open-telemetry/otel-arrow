@@ -581,7 +581,7 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/rollouts/$ROLLOUT_ID" | jq .
 
 ### Example: Pure resource-policy resize
 
-This example changes only `coreAllocation.count` from `1` to `2`. The
+This example changes only `core_allocation.count` from `1` to `2`. The
 controller detects that the runtime shape is otherwise unchanged and executes a
 `resize` rollout instead of a full replace.
 
@@ -593,7 +593,7 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" \
         stepTimeoutSecs: 60,
         drainTimeoutSecs: 60
       }
-      | .pipeline.policies.resources.coreAllocation.count = 2
+      | .pipeline.policies.resources.core_allocation.count = 2
     ' \
   > /tmp/tenant_c_pipeline-scale-up.json
 ```
@@ -618,7 +618,7 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" \
   | jq '{totalCores, runningCores, activeGeneration, servingGenerations, rollout}'
 ```
 
-Scale back down by setting `coreAllocation.count = 1` in the same request body
+Scale back down by setting `core_allocation.count = 1` in the same request body
 pattern.
 
 ### Example: Full-config and lifecycle endpoints

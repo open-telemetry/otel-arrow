@@ -799,6 +799,74 @@ connections:
 }
 
 #[test]
+fn prepare_rollout_plan_rejects_core_count_all_when_no_unreserved_cores_remain() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 7
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let p2_create = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p2".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 0
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("p2 create should parse");
+
+    let err = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline: p2_create,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect_err("live planning should reject empty effective core_count placement");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { message }
+            if message.contains("no unreserved cores are available")
+    ));
+}
+
+#[test]
 fn prepare_rollout_plan_reserves_active_rollout_target_cores() {
     let config = OtelDataflowSpec::from_yaml(
         r#"

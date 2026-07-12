@@ -136,12 +136,17 @@ impl NumaTopology {
             .iter()
             .filter_map(|cpu| cpu_to_node.get(cpu).copied())
             .collect();
+        let has_unmapped_visible_cpus = visible_cpus
+            .iter()
+            .any(|cpu| !cpu_to_node.contains_key(cpu));
         let completeness = if cpu_to_node.is_empty() {
             if visible_cpus.is_empty() {
                 TopologyCompleteness::Unknown
             } else {
                 TopologyCompleteness::Partial
             }
+        } else if has_unmapped_visible_cpus {
+            TopologyCompleteness::Partial
         } else {
             completeness
         };
@@ -310,6 +315,19 @@ mod tests {
         assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([2, 3]));
         assert!(topology.visible_nodes().is_empty());
+        assert_eq!(topology.numa_node(2), None);
+    }
+
+    #[test]
+    fn topology_downgrades_complete_when_visible_cpu_is_unmapped() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::from([(0, 0), (1, 0)]),
+            BTreeSet::from([0, 1, 2]),
+            TopologyCompleteness::Complete,
+        );
+
+        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.numa_node(0), Some(0));
         assert_eq!(topology.numa_node(2), None);
     }
 }

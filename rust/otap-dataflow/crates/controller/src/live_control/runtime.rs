@@ -45,6 +45,7 @@ impl<
                     ))),
                 })?;
         let num_cores = placement.placement.core_count();
+        let live_config = self.engine_config_snapshot();
         let deployed_key = DeployedPipelineKey {
             pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
             pipeline_id: resolved_pipeline.pipeline_id.clone(),
@@ -68,11 +69,7 @@ impl<
             self.engine_tracing_setup.clone(),
             self.telemetry_reporting_interval,
             self.memory_pressure_tx.clone(),
-            &self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .live_config,
+            &live_config,
             &self.declared_topics,
             Arc::downgrade(self),
             thread_id,
