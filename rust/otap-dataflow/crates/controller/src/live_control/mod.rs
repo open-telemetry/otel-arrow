@@ -174,16 +174,17 @@ impl<
     pub(super) fn register_committed_pipeline(
         &self,
         resolved: ResolvedPipelineConfig,
+        placement: PipelinePlacement,
         generation: u64,
     ) {
         let pipeline_key = PipelineKey::new(
             resolved.pipeline_group_id.clone(),
             resolved.pipeline_id.clone(),
         );
-        if let Ok(active_cores) = self.assigned_cores_for_resolved(&resolved) {
-            self.observed_state_store
-                .set_pipeline_active_cores(pipeline_key.clone(), active_cores);
-        }
+        self.observed_state_store.set_pipeline_active_cores(
+            pipeline_key.clone(),
+            placement.cores.iter().map(|core| core.core_id.id),
+        );
         self.observed_state_store
             .set_pipeline_active_generation(pipeline_key.clone(), generation);
 
@@ -199,6 +200,7 @@ impl<
             LogicalPipelineRecord {
                 resolved,
                 active_generation: generation,
+                placement,
             },
         );
     }

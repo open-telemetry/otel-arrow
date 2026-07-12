@@ -1683,7 +1683,11 @@ impl<
         for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
         {
-            runtime.register_committed_pipeline(pipeline_entry.clone(), 0);
+            runtime.register_committed_pipeline(
+                pipeline_entry.clone(),
+                pipeline_placement.clone(),
+                0,
+            );
             let num_cores = pipeline_placement.core_count();
             let listener_group_snapshot = Arc::new(listener_group::snapshot_for_pipeline(
                 pipeline_entry,

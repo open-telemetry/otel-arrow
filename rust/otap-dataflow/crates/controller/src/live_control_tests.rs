@@ -301,7 +301,10 @@ fn register_pipeline(
                 && pipeline.pipeline_id.as_ref() == pipeline_id
         })
         .expect("resolved pipeline should exist");
-    runtime.register_committed_pipeline(resolved, 0);
+    let placement = runtime
+        .pipeline_placement_for_resolved(&resolved)
+        .expect("resolved pipeline placement should exist");
+    runtime.register_committed_pipeline(resolved, placement, 0);
 }
 
 fn register_runtime_instance(
@@ -579,6 +582,114 @@ connections:
             .collect::<Vec<_>>(),
         vec![1]
     );
+}
+
+#[test]
+fn prepare_rollout_plan_reserves_other_committed_pipeline_cores() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 4
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 4
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime(&config);
+    let mut resolved = config.resolve().pipelines;
+    resolved.sort_by(|left, right| left.pipeline_id.as_ref().cmp(right.pipeline_id.as_ref()));
+    let placement_snapshot = Controller::<()>::preflight_pipeline_placement(
+        &resolved,
+        &available_core_ids(),
+        &NumaTopology::unknown(),
+    )
+    .expect("startup placement should resolve");
+
+    for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
+        runtime.register_committed_pipeline(pipeline, placement, 0);
+    }
+    for core_id in 4..=7 {
+        let _receiver = register_runtime_instance(
+            &runtime,
+            "g1",
+            "p2",
+            core_id,
+            0,
+            RuntimeInstanceLifecycle::Active,
+        );
+    }
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p2".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("core allocation changes should be planned");
+
+    assert_eq!(plan.current_assigned_cores, vec![4, 5, 6, 7]);
+    assert_eq!(plan.target_assigned_cores, vec![4, 5]);
+    assert_eq!(plan.resize_stop_cores, vec![6, 7]);
+    assert!(plan.resize_start_cores.is_empty());
 }
 
 /// Scenario: live-control accepts a new pipeline with listener bind config on

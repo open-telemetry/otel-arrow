@@ -433,6 +433,7 @@ pub(crate) enum RuntimeInstanceExit {
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
     pub(super) active_generation: u64,
+    pub(super) placement: PipelinePlacement,
 }
 
 #[derive(Debug, Clone)]

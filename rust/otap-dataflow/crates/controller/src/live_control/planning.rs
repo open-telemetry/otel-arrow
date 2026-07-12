@@ -97,31 +97,26 @@ impl<
         ))
     }
 
-    /// Resolves the concrete core ids selected by a pipeline resource policy.
-    pub(super) fn assigned_cores_for_resolved(
-        &self,
-        resolved_pipeline: &ResolvedPipelineConfig,
-    ) -> Result<Vec<usize>, ControlPlaneError> {
-        self.pipeline_placement_for_resolved(resolved_pipeline)
-            .map(|placement| {
-                placement
-                    .cores
-                    .into_iter()
-                    .map(|core| core.core_id.id)
-                    .collect()
-            })
-    }
-
     /// Resolves controller-owned placement metadata for one pipeline.
+    #[cfg(test)]
     pub(super) fn pipeline_placement_for_resolved(
         &self,
         resolved_pipeline: &ResolvedPipelineConfig,
+    ) -> Result<PipelinePlacement, ControlPlaneError> {
+        self.pipeline_placement_for_resolved_with_reserved(resolved_pipeline, &BTreeSet::new())
+    }
+
+    /// Resolves placement while excluding cores already committed to other pipelines.
+    pub(super) fn pipeline_placement_for_resolved_with_reserved(
+        &self,
+        resolved_pipeline: &ResolvedPipelineConfig,
+        reserved_core_ids: &BTreeSet<usize>,
     ) -> Result<PipelinePlacement, ControlPlaneError> {
         Controller::<PData>::select_cores_for_allocation_with_placement(
             self.available_core_ids.clone(),
             &resolved_pipeline.policies.resources.core_allocation,
             &self.topology,
-            &BTreeSet::new(),
+            reserved_core_ids,
         )
         .map(|cores| PipelinePlacement {
             pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
@@ -134,6 +129,19 @@ impl<
         .map_err(|err| ControlPlaneError::InvalidRequest {
             message: err.to_string(),
         })
+    }
+
+    fn committed_core_reservations_except(&self, pipeline_key: &PipelineKey) -> BTreeSet<usize> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state
+            .logical_pipelines
+            .iter()
+            .filter(|(key, _)| *key != pipeline_key)
+            .flat_map(|(_, record)| record.placement.cores.iter().map(|core| core.core_id.id))
+            .collect()
     }
 
     fn live_pipeline_placement_from(
@@ -380,12 +388,14 @@ impl<
             .ok_or_else(|| ControlPlaneError::Internal {
                 message: "candidate pipeline disappeared during resolution".to_owned(),
             })?;
-        let current_pipeline_placement = if let Some(record) = current_record.as_ref() {
-            Some(self.pipeline_placement_for_resolved(&record.resolved)?)
-        } else {
-            None
-        };
-        let target_pipeline_placement = self.pipeline_placement_for_resolved(&resolved_pipeline)?;
+        let current_pipeline_placement = current_record
+            .as_ref()
+            .map(|record| record.placement.clone());
+        let reserved_core_ids = self.committed_core_reservations_except(&pipeline_key);
+        let target_pipeline_placement = self.pipeline_placement_for_resolved_with_reserved(
+            &resolved_pipeline,
+            &reserved_core_ids,
+        )?;
         let current_assigned_cores: Vec<usize> = current_pipeline_placement
             .as_ref()
             .map(|placement| placement.cores.iter().map(|core| core.core_id.id).collect())
@@ -763,12 +773,17 @@ impl<
                 LogicalPipelineRecord {
                     resolved: plan.resolved_pipeline.clone(),
                     active_generation,
+                    placement: plan.target_placement.placement.clone(),
                 },
             );
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
-            plan.target_assigned_cores.iter().copied(),
+            plan.target_placement
+                .placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id),
         );
         self.observed_state_store
             .set_pipeline_active_generation(plan.pipeline_key.clone(), active_generation);
