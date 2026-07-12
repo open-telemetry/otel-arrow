@@ -2034,7 +2034,6 @@ impl<
         reserved_core_ids: &BTreeSet<usize>,
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids = Self::process_visible_core_ids(&available_core_ids, topology);
-        available_core_ids.sort_by_key(|c| c.id);
 
         let max_core_id = available_core_ids.iter().map(|c| c.id).max().unwrap_or(0);
         let num_cores = available_core_ids.len();
