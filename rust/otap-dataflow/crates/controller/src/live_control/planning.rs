@@ -303,13 +303,8 @@ impl<
         Self::conflicting_reserved_core_ids_locked(&state, pipeline_key, rollout)
     }
 
-    fn reconcile_placement_phase(pipeline: &PipelineConfig) -> u8 {
-        let core_allocation_strategy = pipeline
-            .policies()
-            .and_then(|policies| policies.resources())
-            .map(|resources| resources.core_allocation.strategy.clone())
-            .unwrap_or_default();
-        match core_allocation_strategy {
+    fn reconcile_placement_phase_for_strategy(strategy: &CoreAllocationStrategy) -> u8 {
+        match strategy {
             CoreAllocationStrategy::CoreSet => 0,
             CoreAllocationStrategy::CoreCount => 1,
             CoreAllocationStrategy::AllCores => 2,
@@ -1731,9 +1726,26 @@ impl<
                 ));
             }
         }
-        desired_keys.sort_by(|(left_key, left_pipeline), (right_key, right_pipeline)| {
-            Self::reconcile_placement_phase(left_pipeline)
-                .cmp(&Self::reconcile_placement_phase(right_pipeline))
+        let desired_phase_by_key: HashMap<_, _> = desired_config
+            .resolve()
+            .pipelines
+            .into_iter()
+            .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+            .map(|pipeline| {
+                (
+                    PipelineKey::new(pipeline.pipeline_group_id, pipeline.pipeline_id),
+                    Self::reconcile_placement_phase_for_strategy(
+                        &pipeline.policies.resources.core_allocation.strategy,
+                    ),
+                )
+            })
+            .collect();
+        desired_keys.sort_by(|(left_key, _), (right_key, _)| {
+            desired_phase_by_key
+                .get(left_key)
+                .copied()
+                .unwrap_or(2)
+                .cmp(&desired_phase_by_key.get(right_key).copied().unwrap_or(2))
                 .then_with(|| {
                     left_key
                         .pipeline_group_id()

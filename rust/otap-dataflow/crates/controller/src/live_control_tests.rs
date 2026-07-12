@@ -3294,6 +3294,112 @@ groups:
     assert_eq!(runtime.engine_config_snapshot(), config);
 }
 
+#[test]
+fn reconcile_engine_config_phases_inherited_core_allocation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  a_count:
+    policies:
+      resources:
+        core_allocation:
+          type: core_count
+          count: 4
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+  b_set:
+    policies:
+      resources:
+        core_allocation:
+          type: core_set
+          set:
+            - start: 0
+              end: 3
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("config should parse");
+    let runtime = test_runtime(&config);
+
+    for resolved in config
+        .resolve()
+        .pipelines
+        .into_iter()
+        .filter(|pipeline| pipeline.role == ResolvedPipelineRole::Regular)
+    {
+        let assigned_cores = match resolved.pipeline_group_id.as_ref() {
+            "a_count" => vec![4, 5, 6, 7],
+            "b_set" => vec![0, 1, 2, 3],
+            other => panic!("unexpected group: {other}"),
+        };
+        let placement = PipelinePlacement {
+            pipeline_group_id: resolved.pipeline_group_id.clone(),
+            pipeline_id: resolved.pipeline_id.clone(),
+            cores: assigned_cores
+                .iter()
+                .copied()
+                .map(|id| CorePlacement::from_core_id(CoreId { id }, &NumaTopology::unknown()))
+                .collect(),
+        };
+        let group_id = resolved.pipeline_group_id.as_ref().to_owned();
+        let pipeline_id = resolved.pipeline_id.as_ref().to_owned();
+        runtime.register_committed_pipeline(resolved, placement, 0);
+        for core_id in assigned_cores {
+            let _rx = register_runtime_instance(
+                &runtime,
+                &group_id,
+                &pipeline_id,
+                core_id,
+                0,
+                RuntimeInstanceLifecycle::Active,
+            );
+        }
+    }
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(config, true))
+        .expect("matching inherited placement config should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert_eq!(
+        status
+            .changes
+            .iter()
+            .map(|change| (
+                change.pipeline_group_id.as_ref().map(|id| id.as_ref()),
+                change.action,
+                change.state.as_str(),
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some("b_set"), ConfigChangeAction::Noop, "succeeded"),
+            (Some("a_count"), ConfigChangeAction::Noop, "succeeded"),
+        ]
+    );
+}
+
 /// Scenario: a detached shutdown worker panics before it reaches the normal
 /// terminal-state bookkeeping path.
 /// Guarantees: the shutdown is forced into a failed terminal state and the
