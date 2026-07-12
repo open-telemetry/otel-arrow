@@ -27,9 +27,10 @@ pub struct MetricsDispatcher {
     metrics_handler: TelemetryRegistryHandle,
     reporting_interval: std::time::Duration,
     /// Observable-counter series backing cumulative sums, keyed by scope
-    /// series key, then by metric name. Each series holds the shared value
-    /// read by an SDK callback registered once per series; the SDK reader
-    /// then performs cumulative/delta temporality conversion itself.
+    /// series key, then by metric name. Each series holds one value slot per
+    /// attribute set, shared with an SDK callback registered once per series;
+    /// the SDK reader then performs cumulative/delta temporality conversion
+    /// itself.
     ///
     /// The series currently live for the process lifetime. Naive eviction is
     /// unsafe because dropping these instrument handles does not unregister
@@ -37,57 +38,87 @@ pub struct MetricsDispatcher {
     cumulative_series: Mutex<HashMap<String, HashMap<&'static str, CumulativeCounterSeries>>>,
 }
 
+/// One value slot per attribute set reported for a cumulative series, keyed
+/// by the encoded attribute set. Each slot pairs the attribute list passed to
+/// `observe` with the shared atomic holding the latest total (`f64` totals
+/// store their bit pattern).
+type SlotMap = HashMap<String, (Vec<opentelemetry::KeyValue>, Arc<AtomicU64>)>;
+
 /// Backing state for one exported cumulative counter series.
 ///
-/// The `value` slot is shared with an SDK observable-counter callback that
-/// reports the latest total at every SDK collection. The instrument handle is
-/// retained so the registration lives as long as the series.
+/// The slot map is shared with an SDK observable-counter callback that
+/// reports every slot's latest total at each SDK collection, one data point
+/// per attribute set. Data points carry no attributes today, so the map holds
+/// a single empty-attribute slot, but the shape is ready for datapoint-level
+/// attributes (#3369). The instrument handle is retained so the registration
+/// lives as long as the series.
 enum CumulativeCounterSeries {
     /// Series for a `u64` cumulative counter.
     U64 {
-        value: Arc<AtomicU64>,
+        slots: Arc<Mutex<SlotMap>>,
         _instrument: ObservableCounter<u64>,
     },
-    /// Series for an `f64` cumulative counter; the atomic stores the bit
-    /// pattern of the current value.
+    /// Series for an `f64` cumulative counter; slots store the bit pattern
+    /// of the current value.
     F64 {
-        value: Arc<AtomicU64>,
+        slots: Arc<Mutex<SlotMap>>,
         _instrument: ObservableCounter<f64>,
     },
 }
 
 impl CumulativeCounterSeries {
-    fn build(field: &MetricsField, initial: MetricValue, meter: &Meter) -> Self {
+    fn initial_slots(
+        attr_key: &str,
+        attributes: &[opentelemetry::KeyValue],
+        raw: u64,
+    ) -> Arc<Mutex<SlotMap>> {
+        Arc::new(Mutex::new(HashMap::from([(
+            attr_key.to_owned(),
+            (attributes.to_vec(), Arc::new(AtomicU64::new(raw))),
+        )])))
+    }
+
+    fn build(
+        field: &MetricsField,
+        initial: MetricValue,
+        attributes: &[opentelemetry::KeyValue],
+        attr_key: &str,
+        meter: &Meter,
+    ) -> Self {
         match initial {
             MetricValue::U64(v) => {
-                let value = Arc::new(AtomicU64::new(v));
-                let observed = Arc::clone(&value);
+                let slots = Self::initial_slots(attr_key, attributes, v);
+                let observed = Arc::clone(&slots);
                 let instrument = meter
                     .u64_observable_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .with_callback(move |observer| {
-                        observer.observe(observed.load(Ordering::Relaxed), &[]);
+                        for (attrs, slot) in observed.lock().values() {
+                            observer.observe(slot.load(Ordering::Relaxed), attrs);
+                        }
                     })
                     .build();
                 Self::U64 {
-                    value,
+                    slots,
                     _instrument: instrument,
                 }
             }
             MetricValue::F64(v) => {
-                let value = Arc::new(AtomicU64::new(v.to_bits()));
-                let observed = Arc::clone(&value);
+                let slots = Self::initial_slots(attr_key, attributes, v.to_bits());
+                let observed = Arc::clone(&slots);
                 let instrument = meter
                     .f64_observable_counter(field.name)
                     .with_description(field.brief)
                     .with_unit(field.unit)
                     .with_callback(move |observer| {
-                        observer.observe(f64::from_bits(observed.load(Ordering::Relaxed)), &[]);
+                        for (attrs, slot) in observed.lock().values() {
+                            observer.observe(f64::from_bits(slot.load(Ordering::Relaxed)), attrs);
+                        }
                     })
                     .build();
                 Self::F64 {
-                    value,
+                    slots,
                     _instrument: instrument,
                 }
             }
@@ -95,18 +126,31 @@ impl CumulativeCounterSeries {
         }
     }
 
-    fn store(&self, value: MetricValue) {
-        match (self, value) {
-            (Self::U64 { value: slot, .. }, MetricValue::U64(v)) => {
-                slot.store(v, Ordering::Relaxed);
+    /// Records `value` in the slot identified by `attr_key`, creating the
+    /// slot on first sight (even at zero). Zero updates to an existing slot
+    /// are skipped; see [`MetricsDispatcher::observe_cumulative_counter`].
+    fn observe(&self, value: MetricValue, attributes: &[opentelemetry::KeyValue], attr_key: &str) {
+        let (slots, raw) = match (self, value) {
+            (Self::U64 { slots, .. }, MetricValue::U64(v)) => (slots, v),
+            (Self::F64 { slots, .. }, MetricValue::F64(v)) => (slots, v.to_bits()),
+            _ => {
+                debug_assert!(
+                    false,
+                    "metric value type must not change between dispatches"
+                );
+                return;
             }
-            (Self::F64 { value: slot, .. }, MetricValue::F64(v)) => {
-                slot.store(v.to_bits(), Ordering::Relaxed);
+        };
+        let mut slots = slots.lock();
+        if let Some((_, slot)) = slots.get(attr_key) {
+            if !value.is_zero() {
+                slot.store(raw, Ordering::Relaxed);
             }
-            _ => debug_assert!(
-                false,
-                "metric value type must not change between dispatches"
-            ),
+        } else {
+            let _ = slots.insert(
+                attr_key.to_owned(),
+                (attributes.to_vec(), Arc::new(AtomicU64::new(raw))),
+            );
         }
     }
 }
@@ -206,14 +250,21 @@ impl MetricsDispatcher {
         opentelemetry::KeyValue::new(key.to_string(), otel_value)
     }
 
-    /// Builds a stable identifier for the series cache from the scope name and
-    /// its entity attributes (which are fixed for a registered metric set).
-    fn scope_series_key(scope_name: &str, attributes: &[opentelemetry::KeyValue]) -> String {
+    /// Encodes an attribute list into a stable map key.
+    fn attr_set_key(attributes: &[opentelemetry::KeyValue]) -> String {
         use std::fmt::Write;
-        let mut key = String::from(scope_name);
+        let mut key = String::new();
         for kv in attributes {
             let _ = write!(key, "\u{1f}{}\u{1f}{}", kv.key, kv.value);
         }
+        key
+    }
+
+    /// Builds a stable identifier for the series cache from the scope name and
+    /// its entity attributes (which are fixed for a registered metric set).
+    fn scope_series_key(scope_name: &str, attributes: &[opentelemetry::KeyValue]) -> String {
+        let mut key = String::from(scope_name);
+        key.push_str(&Self::attr_set_key(attributes));
         key
     }
 
@@ -231,7 +282,7 @@ impl MetricsDispatcher {
                     self.add_opentelemetry_counter(field, value, attributes, meter)
                 }
                 Some(Temporality::Cumulative) => {
-                    self.observe_cumulative_counter(field, value, meter, scope_key)
+                    self.observe_cumulative_counter(field, value, attributes, meter, scope_key)
                 }
                 None => {
                     debug_assert!(false, "sum-like instrument must have a temporality");
@@ -303,27 +354,29 @@ impl MetricsDispatcher {
     /// cumulative/delta temporality conversion.
     ///
     /// The observable instrument and its callback are created once per series
-    /// and cached; later dispatches only update the shared value slot.
+    /// and cached; later dispatches only update the value slot matching the
+    /// data-point attribute set (one slot per attribute set, so the series
+    /// stays correct when datapoint-level attributes arrive with #3369).
     ///
-    /// Zero updates to existing series are skipped: the registry zeroes
+    /// Zero updates to an existing slot are skipped: the registry zeroes
     /// accumulated values after every visit, so a zero for an already-created
-    /// monotonic series means "no fresh observation this interval". Initial
-    /// zero values still create a series so readers can observe a legitimate
+    /// monotonic slot means "no fresh observation this interval". Initial
+    /// zero values still create the slot so readers can observe a legitimate
     /// zero starting total.
     fn observe_cumulative_counter(
         &self,
         field: &MetricsField,
         value: MetricValue,
+        attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
         scope_key: &str,
     ) {
+        let attr_key = Self::attr_set_key(attributes);
         let mut scopes = self.cumulative_series.lock();
         if let Some(series) = scopes.get(scope_key).and_then(|s| s.get(field.name)) {
-            if !value.is_zero() {
-                series.store(value);
-            }
+            series.observe(value, attributes, &attr_key);
         } else {
-            let series = CumulativeCounterSeries::build(field, value, meter);
+            let series = CumulativeCounterSeries::build(field, value, attributes, &attr_key, meter);
             let _ = scopes
                 .entry(scope_key.to_owned())
                 .or_default()
@@ -1204,6 +1257,71 @@ mod tests {
         );
         let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
         assert_eq!(value, 7);
+    }
+
+    /// Drives the cumulative path directly with distinct data-point attribute
+    /// sets (the registry cannot yield them yet; see #3369) and verifies each
+    /// set gets its own slot and data point under a single instrument.
+    #[test]
+    fn test_cumulative_counter_reports_one_data_point_per_attribute_set() {
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let meter = meter_provider.meter("dp_attr_dispatch_test");
+        let field = MetricsField {
+            name: "events_total",
+            unit: "{event}",
+            brief: "lifetime event count",
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Cumulative),
+            value_type: MetricValueType::U64,
+        };
+        let dispatcher = MetricsDispatcher::new(
+            TelemetryRegistryHandle::new(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let logs = [opentelemetry::KeyValue::new("signal", "logs")];
+        let traces = [opentelemetry::KeyValue::new("signal", "traces")];
+        dispatcher.add_opentelemetry_metric(&field, MetricValue::U64(10), &logs, &meter, "dp");
+        dispatcher.add_opentelemetry_metric(&field, MetricValue::U64(4), &traces, &meter, "dp");
+        // A later total must land in the slot matching its attribute set.
+        dispatcher.add_opentelemetry_metric(&field, MetricValue::U64(25), &logs, &meter, "dp");
+        meter_provider.force_flush().expect("force_flush failed");
+
+        let batch = exporter
+            .get_finished_metrics()
+            .expect("get_finished_metrics failed")
+            .pop()
+            .expect("no batch collected");
+        let mut points = Vec::new();
+        for sm in batch.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == "events_total" {
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("expected a u64 Sum");
+                    };
+                    assert!(sum.is_monotonic());
+                    for dp in sum.data_points() {
+                        let signal = dp
+                            .attributes()
+                            .find(|kv| kv.key.as_str() == "signal")
+                            .map(|kv| kv.value.to_string());
+                        points.push((signal, dp.value()));
+                    }
+                }
+            }
+        }
+        points.sort();
+        assert_eq!(
+            points,
+            vec![
+                (Some("logs".to_string()), 25),
+                (Some("traces".to_string()), 4),
+            ],
+            "each attribute set must report its own slot"
+        );
     }
 
     #[test]
