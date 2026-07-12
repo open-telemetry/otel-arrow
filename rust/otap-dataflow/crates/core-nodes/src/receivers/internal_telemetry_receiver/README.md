@@ -29,35 +29,34 @@ config: {}
 
 ## Configuration
 
-Batching is optional and off by default. With an empty config each log record is
-emitted as its own `ExportLogsRequest`, exactly as before:
-
-```yaml
-type: receiver:internal_telemetry
-config: {}
-```
-
-To batch records, set `batch_size`. Records that share a scope are then combined
-into one `ScopeLogs` message instead of being emitted one per message:
+Batching is on by default: records accumulate until `batch_size` bytes are
+reached (or `max_batch_duration` elapses), and those sharing a scope are
+combined into one `ScopeLogs` message instead of being emitted one per message.
+The empty config shown above uses the defaults below; set either field to
+override them:
 
 ```yaml
 type: receiver:internal_telemetry
 config:
-  # Records to accumulate before emitting one batched ExportLogsRequest.
-  # Omit to disable batching. Must be greater than 0.
-  batch_size: 100
+  # Bytes to accumulate (estimated per-record size) before emitting one
+  # batched ExportLogsRequest. Default 64 KiB. Must be greater than 0.
+  batch_size: 65536
 
   # Upper bound on how long a record waits in a partial batch before it is
-  # flushed. Only applies when batch_size is set (default: 200ms).
+  # flushed. Default: 200ms.
   max_batch_duration: 200ms
 ```
 
-- `batch_size`: omit (the default) to emit each record immediately, or set a
-  positive count to group records sharing a scope into one `ScopeLogs` message.
-- `max_batch_duration`: how long a partial batch may wait before flushing. Only
-  relevant when `batch_size` is set. The pending batch is also flushed on drain,
-  shutdown, and channel close, and large batches are split so every emitted
-  message stays well under the transport size limit.
+- `batch_size`: bytes to accumulate before flushing, estimated from each
+  record's pre-encoded body plus framing overhead. Default 64 KiB. Set it to
+  `1` to flush every record immediately (each record's own size always
+  exceeds a 1-byte threshold).
+- `max_batch_duration`: how long a partial batch may wait before flushing.
+  The pending batch is also flushed on drain, shutdown, and channel close. A
+  `batch_size` set well above the transport size limit is still split
+  automatically once accumulated records reach an internal ~2 MiB budget. That
+  budget is a size estimate (body plus framing, not full protobuf overhead),
+  so it's a safety margin rather than a guarantee against oversized messages.
 
 This receiver is normally declared inside `engine.observability.pipeline`, not
 inside a user ingest pipeline.

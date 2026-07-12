@@ -55,18 +55,37 @@ const MAX_BATCH_BYTES: usize = 1 << 21; // 2 MiB
 /// a message's size (timestamp, severity, event name, length prefixes).
 const RECORD_FRAMING_BYTES: usize = 64;
 
+/// Estimated on-wire size of `event`: its pre-encoded body plus
+/// [`RECORD_FRAMING_BYTES`]. Shared by the running batch-byte counter and the
+/// flush/split logic so both use the same estimate.
+fn record_bytes(event: &LogEvent) -> usize {
+    event.record.body_attrs_bytes.len() + RECORD_FRAMING_BYTES
+}
+
+/// Default byte threshold for accumulating records into one batched
+/// `ExportLogsRequest`, so the receiver batches out of the box without
+/// `batch_size` configured. Well under [`MAX_BATCH_BYTES`], the separate
+/// budget that triggers a split; see its doc for why that's a heuristic, not
+/// a guarantee.
+const DEFAULT_BATCH_SIZE_BYTES: NonZeroUsize = NonZeroUsize::new(64 * 1024).unwrap(); // 64 KiB
+
+fn default_batch_size() -> NonZeroUsize {
+    DEFAULT_BATCH_SIZE_BYTES
+}
+
 /// Configuration for the internal telemetry receiver.
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Records to accumulate before emitting one batched `ExportLogsRequest`,
-    /// grouping those that share a scope. Unset (the default) emits each record
-    /// immediately, as before. A configured `0` is rejected.
-    #[serde(default)]
-    batch_size: Option<NonZeroUsize>,
+    /// Bytes to accumulate (each record's estimated size, see
+    /// [`record_bytes`]) before emitting one batched `ExportLogsRequest`,
+    /// grouping records that share a scope. Default 64 KiB. A configured `0`
+    /// is rejected.
+    #[serde(default = "default_batch_size")]
+    batch_size: NonZeroUsize,
 
     /// How long a record may wait in a partial batch before being flushed.
-    /// Only relevant when `batch_size` is set. Default 200ms.
+    /// Default 200ms.
     #[serde(with = "humantime_serde", default = "default_max_batch_duration")]
     max_batch_duration: Duration,
 }
@@ -74,7 +93,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            batch_size: None,
+            batch_size: default_batch_size(),
             max_batch_duration: default_max_batch_duration(),
         }
     }
@@ -154,11 +173,13 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         let resource_bytes = internal.resource_bytes;
         let log_tap = internal.log_tap;
         let mut scope_cache = ScopeToBytesMap::new(internal.registry);
-        // With no `batch_size` the threshold is 1, so every record flushes on its
-        // own, exactly as the receiver behaved before batching.
-        let threshold = self.config.batch_size.map_or(1, NonZeroUsize::get);
+        let flush_threshold_bytes = self.config.batch_size.get();
         let flush_period = self.config.max_batch_duration;
         let mut batch: Vec<LogEvent> = Vec::new();
+        // Running total of `record_bytes` for everything currently in `batch`;
+        // reset alongside every flush. Compared against `flush_threshold_bytes`
+        // to decide when a batch is full.
+        let mut batch_bytes: usize = 0;
         // Set when the first record lands in an empty batch, cleared on every
         // flush. The timer below only sleeps while a deadline is pending, so an
         // idle receiver never wakes up.
@@ -178,6 +199,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 )
                 .await?;
                 batch_deadline = None;
+                batch_bytes = 0;
             }
 
             tokio::select! {
@@ -187,13 +209,15 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
-                            // Chunk by `threshold` so a large backlog drains as
-                            // several bounded messages, not one oversized payload.
+                            // Chunk by `flush_threshold_bytes` so a large backlog
+                            // drains as several bounded messages, not one oversized
+                            // payload.
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
-                                    Self::buffer_log(&log_tap, &mut batch, log_event);
-                                    if batch.len() >= threshold {
+                                    batch_bytes += Self::buffer_log(&log_tap, &mut batch, log_event);
+                                    if batch_bytes >= flush_threshold_bytes {
                                         Self::flush_batch(&effect_handler, &mut batch, &resource_bytes, &mut scope_cache).await?;
+                                        batch_bytes = 0;
                                     }
                                 }
                             }
@@ -204,9 +228,10 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
-                                    Self::buffer_log(&log_tap, &mut batch, log_event);
-                                    if batch.len() >= threshold {
+                                    batch_bytes += Self::buffer_log(&log_tap, &mut batch, log_event);
+                                    if batch_bytes >= flush_threshold_bytes {
                                         Self::flush_batch(&effect_handler, &mut batch, &resource_bytes, &mut scope_cache).await?;
+                                        batch_bytes = 0;
                                     }
                                 }
                             }
@@ -235,10 +260,11 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             if batch.is_empty() {
                                 batch_deadline = Some(tokio::time::Instant::now() + flush_period);
                             }
-                            Self::buffer_log(&log_tap, &mut batch, log_event);
-                            if batch.len() >= threshold {
+                            batch_bytes += Self::buffer_log(&log_tap, &mut batch, log_event);
+                            if batch_bytes >= flush_threshold_bytes {
                                 Self::flush_batch(&effect_handler, &mut batch, &resource_bytes, &mut scope_cache).await?;
                                 batch_deadline = None;
+                                batch_bytes = 0;
                             }
                         }
                         Ok(ObservedEvent::Engine(_)) => {
@@ -264,15 +290,19 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
 
 impl InternalTelemetryReceiver {
     /// Tap a log event for admin consumers, then buffer it for the next flush.
+    /// Returns the event's estimated size in bytes (see [`record_bytes`]) so
+    /// the caller can track the running batch-byte total.
     fn buffer_log(
         log_tap: &Option<InternalLogTapHandle>,
         batch: &mut Vec<LogEvent>,
         log_event: LogEvent,
-    ) {
+    ) -> usize {
         if let Some(tap) = log_tap.as_ref() {
             tap.record(log_event.clone());
         }
+        let size = record_bytes(&log_event);
         batch.push(log_event);
+        size
     }
 
     /// Encode and send the accumulated batch, grouping records by scope. A batch
@@ -289,15 +319,11 @@ impl InternalTelemetryReceiver {
             return Ok(());
         }
         let base = resource_bytes.len();
-        let total = base
-            + batch
-                .iter()
-                .map(|e| e.record.body_attrs_bytes.len() + RECORD_FRAMING_BYTES)
-                .sum::<usize>();
+        let total = base + batch.iter().map(record_bytes).sum::<usize>();
 
         // Common case: the whole batch fits one message, so encode it directly
-        // with no per-record size vector or chunk loop. The default (batching
-        // off) one-record flush always lands here.
+        // with no per-record size vector or chunk loop. `batch_size` defaults
+        // to well under `MAX_BATCH_BYTES`, so most flushes land here.
         if total <= MAX_BATCH_BYTES {
             Self::send_chunk(effect_handler, batch, total, resource_bytes, scope_cache).await?;
             batch.clear();
@@ -305,13 +331,8 @@ impl InternalTelemetryReceiver {
         }
 
         // Oversized batch: split into byte-bounded messages.
-        let sizes: Vec<usize> = batch
-            .iter()
-            .map(|e| e.record.body_attrs_bytes.len() + RECORD_FRAMING_BYTES)
-            .collect();
-        let mut start = 0;
-        while start < batch.len() {
-            let end = chunk_end(&sizes, start, base, MAX_BATCH_BYTES);
+        let sizes: Vec<usize> = batch.iter().map(record_bytes).collect();
+        for (start, end) in chunk_ranges(&sizes, base, MAX_BATCH_BYTES) {
             let capacity = base + sizes[start..end].iter().sum::<usize>();
             Self::send_chunk(
                 effect_handler,
@@ -321,7 +342,6 @@ impl InternalTelemetryReceiver {
                 scope_cache,
             )
             .await?;
-            start = end;
         }
         batch.clear();
         Ok(())
@@ -362,6 +382,22 @@ fn chunk_end(record_sizes: &[usize], start: usize, base_bytes: usize, budget: us
         end += 1;
     }
     end
+}
+
+/// Split a batch of `record_sizes` into consecutive `[start, end)` windows, each
+/// staying within `budget` once `base_bytes` of per-message overhead is counted
+/// (a lone record larger than `budget` still gets its own window). Pure, so the
+/// split loop is unit-tested directly instead of driving the receiver with a
+/// budget-sized batch.
+fn chunk_ranges(record_sizes: &[usize], base_bytes: usize, budget: usize) -> Vec<(usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut start = 0;
+    while start < record_sizes.len() {
+        let end = chunk_end(record_sizes, start, base_bytes, budget);
+        ranges.push((start, end));
+        start = end;
+    }
+    ranges
 }
 
 #[cfg(test)]
@@ -419,11 +455,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_config_rejects_zero_batch_size() {
+        let result =
+            InternalTelemetryReceiver::parse_config(&serde_json::json!({ "batch_size": 0 }));
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn batches_multiple_records_into_one_scope_logs() {
         let test_runtime = TestRuntime::new();
-        // batch_size exceeds what we send, so the flush happens on shutdown drain.
+        // batch_size (bytes) exceeds what we send, so the flush happens on
+        // shutdown drain rather than on the byte threshold.
         let config = Config {
-            batch_size: NonZeroUsize::new(10),
+            batch_size: NonZeroUsize::new(10_000).unwrap(),
             max_batch_duration: Duration::from_secs(60),
         };
         let (receiver, sender) = wire_receiver(&test_runtime, config);
@@ -447,9 +491,15 @@ mod tests {
     }
 
     #[test]
-    fn default_config_emits_one_record_per_message() {
+    fn default_config_combines_records_into_one_message() {
         let test_runtime = TestRuntime::new();
-        // Batching off (the default): each record is its own message.
+        // Default config: batch_size (64 KiB) is far above two tiny records, so
+        // neither the threshold nor the 200ms duration is reached before the
+        // 50ms sleep ends; both records are still pending and go out together
+        // in the shutdown-drain flush. This only proves batching is on by
+        // default (records don't flush one per message, as the pre-batching
+        // receiver did); it does not exercise the duration timer itself — see
+        // `timer_flushes_partial_batch_before_shutdown` for that.
         let (receiver, sender) = wire_receiver(&test_runtime, Config::default());
 
         test_runtime
@@ -462,8 +512,43 @@ mod tests {
                 ctx.send_shutdown(Instant::now(), "done").await.unwrap();
             })
             .run_validation(|mut ctx| async move {
+                let request = decode_logs(ctx.recv().await.expect("one batched message"));
+                let scope_logs = &request.resource_logs[0].scope_logs;
+                assert_eq!(scope_logs.len(), 1);
+                assert_eq!(scope_logs[0].log_records.len(), 2);
+            });
+    }
+
+    #[test]
+    fn small_batch_size_flushes_each_record_separately() {
+        let test_runtime = TestRuntime::new();
+        // batch_size of 1 byte is smaller than any single record, so each one
+        // crosses the threshold on its own and flushes immediately. Long
+        // max_batch_duration and a shutdown that arrives well after both sends
+        // mean a passing recv can only be explained by the byte threshold, not
+        // the timer or the shutdown drain.
+        let config = Config {
+            batch_size: NonZeroUsize::new(1).unwrap(),
+            max_batch_duration: Duration::from_secs(60),
+        };
+        let (receiver, sender) = wire_receiver(&test_runtime, config);
+
+        test_runtime
+            .set_receiver(receiver)
+            .run_test(move |ctx| async move {
                 for _ in 0..2 {
-                    let request = decode_logs(ctx.recv().await.expect("a per-record message"));
+                    sender.send(ObservedEvent::Log(log_event())).unwrap();
+                }
+                ctx.sleep(Duration::from_millis(300)).await;
+                ctx.send_shutdown(Instant::now(), "done").await.unwrap();
+            })
+            .run_validation_concurrent(|mut ctx| async move {
+                for _ in 0..2 {
+                    let pdata = tokio::time::timeout(Duration::from_millis(150), ctx.recv())
+                        .await
+                        .expect("threshold flush within bound")
+                        .expect("a message");
+                    let request = decode_logs(pdata);
                     let scope_logs = &request.resource_logs[0].scope_logs;
                     assert_eq!(scope_logs.len(), 1);
                     assert_eq!(scope_logs[0].log_records.len(), 1);
@@ -476,7 +561,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
         // High batch_size so size never triggers; short duration so the timer does.
         let config = Config {
-            batch_size: NonZeroUsize::new(10),
+            batch_size: NonZeroUsize::new(10_000).unwrap(),
             max_batch_duration: Duration::from_millis(20),
         };
         let (receiver, sender) = wire_receiver(&test_runtime, config);
@@ -515,5 +600,23 @@ mod tests {
         assert_eq!(chunk_end(&[300, 300], 0, 500, 700), 1);
         // Everything fits one chunk when the budget is ample.
         assert_eq!(chunk_end(&sizes, 0, 0, 10_000), 4);
+    }
+
+    #[test]
+    fn chunk_ranges_splits_batch_into_bounded_windows() {
+        // 4 records of 300 under a 700 budget: two records per window.
+        assert_eq!(
+            chunk_ranges(&[300, 300, 300, 300], 0, 700),
+            [(0, 2), (2, 4)]
+        );
+        // Ample budget: the whole batch is one window.
+        assert_eq!(chunk_ranges(&[300, 300, 300, 300], 0, 10_000), [(0, 4)]);
+        // Records that each exceed the budget still advance one at a time, so the
+        // loop always terminates and never drops a record.
+        assert_eq!(chunk_ranges(&[1000, 1000], 0, 100), [(0, 1), (1, 2)]);
+        // Base (resource) bytes count against every window's budget.
+        assert_eq!(chunk_ranges(&[300, 300], 500, 700), [(0, 1), (1, 2)]);
+        // An empty batch yields no windows.
+        assert!(chunk_ranges(&[], 0, 700).is_empty());
     }
 }
