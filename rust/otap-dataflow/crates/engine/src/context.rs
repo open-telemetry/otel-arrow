@@ -151,6 +151,9 @@ pub struct PipelineContext {
     /// Optional pipeline-scoped topic set injected by the controller.
     /// ToDo: Make PipelineContext generic over a TopicSet type to avoid dynamic typing here.
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
+    // Immutable placement metadata shared across contexts for this pipeline instance.
+    // Consumers should cache any needed listener plan during setup rather than cloning
+    // or searching this snapshot from the per-record data path.
     listener_group_snapshot: Arc<ListenerGroupSnapshot>,
 }
 
