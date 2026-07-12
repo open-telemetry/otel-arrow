@@ -2170,6 +2170,27 @@ impl<
                         }
                     }
 
+                    let available_core_id_set: BTreeSet<_> =
+                        available_core_ids.iter().map(|core| core.id).collect();
+                    let requested_core_ids: BTreeSet<_> = set
+                        .iter()
+                        .flat_map(|range| range.start..=range.end)
+                        .collect();
+                    let unavailable_core_ids: Vec<_> = requested_core_ids
+                        .difference(&available_core_id_set)
+                        .copied()
+                        .collect();
+                    if !unavailable_core_ids.is_empty() {
+                        return Err(Error::InvalidCoreAllocation {
+                            alloc: core_allocation.clone(),
+                            message: format!(
+                                "Core set includes cores that are not visible to this process: {:?}",
+                                unavailable_core_ids
+                            ),
+                            available: available_core_ids.iter().map(|core| core.id).collect(),
+                        });
+                    }
+
                     let selected: Vec<_> = available_core_ids
                         .into_iter()
                         .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
@@ -3330,6 +3351,28 @@ groups: {{}}
             Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
                 .unwrap();
         assert_eq!(to_ids(&result), vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn select_with_partially_visible_core_set_errors() {
+        let core_allocation = CoreAllocation::core_set(vec![CoreRange { start: 0, end: 3 }]);
+        let available_core_ids = vec![CoreId { id: 2 }, CoreId { id: 3 }];
+        let err =
+            Controller::<()>::select_cores_for_allocation(available_core_ids, &core_allocation)
+                .unwrap_err();
+
+        match err {
+            Error::InvalidCoreAllocation {
+                message, available, ..
+            } => {
+                assert!(
+                    message.contains("not visible to this process"),
+                    "unexpected message: {message}"
+                );
+                assert_eq!(available, vec![2, 3]);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[test]

@@ -19,3 +19,5 @@ issues: [2155, 1837]
 subtext:
   - core_count placement is now planned globally by the controller, so multiple core_count pipelines no longer overlap on the first visible cores.
   - Startup and live updates now fail when controller-selected placement cannot find an unreserved core set, including core_count: 0 when no unreserved cores remain.
+  - Explicit core_set placement now fails when any requested core is hidden by process affinity or cgroup CPU constraints.
+  - Full-config reconcile now preflights placement conflicts before starting rollouts and rejects transitions that require another live pipeline to vacate cores first.

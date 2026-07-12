@@ -3210,6 +3210,90 @@ groups:
     assert_eq!(runtime.engine_config_snapshot(), config);
 }
 
+#[test]
+fn reconcile_engine_config_rejects_core_relocation_before_mutating() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 2
+                  end: 3
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 0
+                  end: 1
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("reconcile should reject vacate-before-claim placement");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("conflicts with committed or in-flight"));
+            assert!(message.contains("stage the conflicting delete or resize"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: a detached shutdown worker panics before it reaches the normal
 /// terminal-state bookkeeping path.
 /// Guarantees: the shutdown is forced into a failed terminal state and the

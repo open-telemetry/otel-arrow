@@ -383,6 +383,14 @@ Behavior:
 - The desired full config is validated before any live work starts.
 - Desired pipelines are created, replaced, resized, or treated as `noop` using
   the same rollout machinery as `PUT /groups/{group}/pipelines/{id}`.
+- Placement-sensitive rollouts are planned before they start. Desired
+  `core_set` pipelines are considered before desired `core_count` pipelines so
+  controller-selected `core_count` placements avoid explicit core requests.
+- Reconciliation rejects placement changes that would require another live
+  pipeline to vacate cores first. Stage those transitions manually, for example
+  by resizing or deleting the conflicting pipeline before reconciling the full
+  config. This includes cores held by pipelines that are omitted from the
+  desired config, because `deleteMissing` deletes them after desired rollouts.
 - When `deleteMissing=true`, live pipelines and groups omitted from the desired
   config are gracefully deleted.
 - When `deleteMissing=false`, omitted live pipelines and groups are preserved.
