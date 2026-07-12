@@ -131,17 +131,90 @@ impl<
         })
     }
 
-    fn committed_core_reservations_except(&self, pipeline_key: &PipelineKey) -> BTreeSet<usize> {
+    fn core_allocation_reserves_exclusive_cores(strategy: &CoreAllocationStrategy) -> bool {
+        matches!(
+            strategy,
+            CoreAllocationStrategy::CoreCount | CoreAllocationStrategy::CoreSet
+        )
+    }
+
+    fn reserved_core_ids_except_locked(
+        state: &ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+    ) -> BTreeSet<usize> {
+        let mut reserved_core_ids: BTreeSet<usize> = state
+            .logical_pipelines
+            .iter()
+            .filter(|(key, _)| *key != pipeline_key)
+            .filter(|(_, record)| {
+                Self::core_allocation_reserves_exclusive_cores(
+                    &record.resolved.policies.resources.core_allocation.strategy,
+                )
+            })
+            .flat_map(|(_, record)| record.placement.cores.iter().map(|core| core.core_id.id))
+            .collect();
+
+        for (key, rollout_id) in &state.active_rollouts {
+            if key == pipeline_key {
+                continue;
+            }
+            let Some(rollout) = state.rollouts.get(rollout_id) else {
+                continue;
+            };
+            if Self::core_allocation_reserves_exclusive_cores(
+                &rollout.target_core_allocation_strategy,
+            ) {
+                reserved_core_ids.extend(
+                    rollout
+                        .target_placement
+                        .cores
+                        .iter()
+                        .map(|core| core.core_id.id),
+                );
+            }
+        }
+
+        reserved_core_ids
+    }
+
+    fn reserved_core_ids_except(&self, pipeline_key: &PipelineKey) -> BTreeSet<usize> {
         let state = self
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state
-            .logical_pipelines
+        Self::reserved_core_ids_except_locked(&state, pipeline_key)
+    }
+
+    fn conflicts_with_reserved_core_count_placement_locked(
+        state: &ControllerRuntimeState,
+        pipeline_key: &PipelineKey,
+        rollout: &RolloutRecord,
+    ) -> bool {
+        if !matches!(
+            rollout.target_core_allocation_strategy,
+            CoreAllocationStrategy::CoreCount
+        ) {
+            return false;
+        }
+
+        let target_core_ids: BTreeSet<_> = rollout
+            .target_placement
+            .cores
             .iter()
-            .filter(|(key, _)| *key != pipeline_key)
-            .flat_map(|(_, record)| record.placement.cores.iter().map(|core| core.core_id.id))
-            .collect()
+            .map(|core| core.core_id.id)
+            .collect();
+        if target_core_ids.is_empty() {
+            return false;
+        }
+
+        if Self::reserved_core_ids_except_locked(state, pipeline_key)
+            .iter()
+            .any(|core_id| target_core_ids.contains(core_id))
+        {
+            return true;
+        }
+
+        false
     }
 
     fn live_pipeline_placement_from(
@@ -391,7 +464,7 @@ impl<
         let current_pipeline_placement = current_record
             .as_ref()
             .map(|record| record.placement.clone());
-        let reserved_core_ids = self.committed_core_reservations_except(&pipeline_key);
+        let reserved_core_ids = self.reserved_core_ids_except(&pipeline_key);
         let target_pipeline_placement = self.pipeline_placement_for_resolved_with_reserved(
             &resolved_pipeline,
             &reserved_core_ids,
@@ -584,6 +657,13 @@ impl<
                 .as_ref()
                 .map(|record| record.active_generation),
             drain_timeout_secs,
+            resolved_pipeline
+                .policies
+                .resources
+                .core_allocation
+                .strategy
+                .clone(),
+            target_placement.placement.clone(),
             cores,
         );
 
@@ -638,6 +718,13 @@ impl<
             if state.active_rollouts.contains_key(pipeline_key)
                 || state.active_shutdowns.contains_key(pipeline_key)
             {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            if Self::conflicts_with_reserved_core_count_placement_locked(
+                &state,
+                pipeline_key,
+                &rollout,
+            ) {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             _ = state

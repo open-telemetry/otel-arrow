@@ -241,9 +241,13 @@ pub(super) struct RolloutRecord {
     pub(super) previous_generation: Option<u64>,
     /// Drain timeout requested with the rollout, reused for panic cleanup.
     pub(super) drain_timeout_secs: u64,
+    /// Target core-allocation strategy, used to mirror startup reservation semantics.
+    pub(super) target_core_allocation_strategy: CoreAllocationStrategy,
     pub(super) started_at: String,
     pub(super) updated_at: String,
     pub(super) failure_reason: Option<String>,
+    /// Full target placement reserved by this rollout while it is active.
+    pub(super) target_placement: PipelinePlacement,
     pub(super) cores: Vec<RolloutCoreProgress>,
     pub(super) completed_at: Option<Instant>,
 }
@@ -258,6 +262,8 @@ impl RolloutRecord {
         target_generation: u64,
         previous_generation: Option<u64>,
         drain_timeout_secs: u64,
+        target_core_allocation_strategy: CoreAllocationStrategy,
+        target_placement: PipelinePlacement,
         cores: Vec<RolloutCoreProgress>,
     ) -> Self {
         let now = timestamp_now();
@@ -270,9 +276,11 @@ impl RolloutRecord {
             target_generation,
             previous_generation,
             drain_timeout_secs,
+            target_core_allocation_strategy,
             started_at: now.clone(),
             updated_at: now,
             failure_reason: None,
+            target_placement,
             cores,
             completed_at: None,
         }

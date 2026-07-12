@@ -2073,7 +2073,11 @@ impl<
                                     count,
                                     selected.len()
                                 ),
-                                available: available_core_ids.iter().map(|c| c.id).collect(),
+                                available: available_core_ids
+                                    .iter()
+                                    .filter(|core| !reserved_core_ids.contains(&core.id))
+                                    .map(|core| core.id)
+                                    .collect(),
                             })
                         }
                     }
