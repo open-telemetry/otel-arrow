@@ -132,6 +132,10 @@ impl<
     }
 
     fn core_allocation_reserves_exclusive_cores(strategy: &CoreAllocationStrategy) -> bool {
+        // Explicit core_set allocations reserve their cores for later controller-chosen
+        // core_count placement, but core_set candidates may still overlap by operator
+        // intent. This mirrors startup preflight: core_count avoids reserved cores,
+        // while explicit core_set is not rewritten or rejected for cross-pipeline overlap.
         matches!(
             strategy,
             CoreAllocationStrategy::CoreCount | CoreAllocationStrategy::CoreSet
@@ -207,14 +211,9 @@ impl<
             return false;
         }
 
-        if Self::reserved_core_ids_except_locked(state, pipeline_key)
+        Self::reserved_core_ids_except_locked(state, pipeline_key)
             .iter()
             .any(|core_id| target_core_ids.contains(core_id))
-        {
-            return true;
-        }
-
-        false
     }
 
     fn live_pipeline_placement_from(
