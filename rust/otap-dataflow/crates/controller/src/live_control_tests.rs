@@ -1201,6 +1201,141 @@ connections:
     ));
 }
 
+#[test]
+fn insert_rollout_rejects_core_set_overlapping_committed_core_count_pipeline() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let p2_create = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p2".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: 1
+          end: 2
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("p2 create should parse");
+    let p2_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline: p2_create,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("p2 create should be planned");
+
+    assert_eq!(p2_plan.target_assigned_cores, vec![1, 2]);
+    assert!(matches!(
+        runtime.insert_rollout(&p2_plan.pipeline_key, p2_plan.rollout.clone()),
+        Err(ControlPlaneError::RolloutConflict)
+    ));
+}
+
+#[test]
+fn insert_rollout_allows_core_set_overlapping_committed_core_set_pipeline() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_set
+              set:
+                - start: 1
+                  end: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let p2_create = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p2".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: 2
+          end: 3
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("p2 create should parse");
+    let p2_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline: p2_create,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("p2 create should be planned");
+
+    assert_eq!(p2_plan.target_assigned_cores, vec![2, 3]);
+    runtime
+        .insert_rollout(&p2_plan.pipeline_key, p2_plan.rollout.clone())
+        .expect("explicit core_set overlap should be allowed");
+}
+
 /// Scenario: live-control accepts a new pipeline with listener bind config on
 /// cores mapped to a known NUMA node.
 /// Guarantees: placement and listener metadata are resolved during planning,

@@ -132,28 +132,30 @@ impl<
     }
 
     fn core_allocation_reserves_exclusive_cores(strategy: &CoreAllocationStrategy) -> bool {
-        // Explicit core_set allocations reserve their cores for later controller-chosen
-        // core_count placement, but core_set candidates may still overlap by operator
-        // intent. This mirrors startup preflight: core_count avoids reserved cores,
-        // while explicit core_set is not rewritten or rejected for cross-pipeline overlap.
+        // Explicit core_set allocations reserve cores for later controller-chosen
+        // core_count placement, while all_cores remains shared. This mirrors startup
+        // preflight: core_count avoids both explicit core_set and prior core_count cores.
         matches!(
             strategy,
             CoreAllocationStrategy::CoreCount | CoreAllocationStrategy::CoreSet
         )
     }
 
+    fn core_allocation_claims_controller_chosen_cores(strategy: &CoreAllocationStrategy) -> bool {
+        matches!(strategy, CoreAllocationStrategy::CoreCount)
+    }
+
     fn reserved_core_ids_except_locked(
         state: &ControllerRuntimeState,
         pipeline_key: &PipelineKey,
+        reserves_core: impl Fn(&CoreAllocationStrategy) -> bool,
     ) -> BTreeSet<usize> {
         let mut reserved_core_ids: BTreeSet<usize> = state
             .logical_pipelines
             .iter()
             .filter(|(key, _)| *key != pipeline_key)
             .filter(|(_, record)| {
-                Self::core_allocation_reserves_exclusive_cores(
-                    &record.resolved.policies.resources.core_allocation.strategy,
-                )
+                reserves_core(&record.resolved.policies.resources.core_allocation.strategy)
             })
             .flat_map(|(_, record)| record.placement.cores.iter().map(|core| core.core_id.id))
             .collect();
@@ -165,9 +167,7 @@ impl<
             let Some(rollout) = state.rollouts.get(rollout_id) else {
                 continue;
             };
-            if Self::core_allocation_reserves_exclusive_cores(
-                &rollout.target_core_allocation_strategy,
-            ) {
+            if reserves_core(&rollout.target_core_allocation_strategy) {
                 reserved_core_ids.extend(
                     rollout
                         .target_placement
@@ -186,20 +186,23 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::reserved_core_ids_except_locked(&state, pipeline_key)
+        Self::reserved_core_ids_except_locked(
+            &state,
+            pipeline_key,
+            Self::core_allocation_reserves_exclusive_cores,
+        )
     }
 
-    fn conflicts_with_reserved_core_count_placement_locked(
+    fn conflicts_with_reserved_placement_locked(
         state: &ControllerRuntimeState,
         pipeline_key: &PipelineKey,
         rollout: &RolloutRecord,
     ) -> bool {
-        if !matches!(
-            rollout.target_core_allocation_strategy,
-            CoreAllocationStrategy::CoreCount
-        ) {
-            return false;
-        }
+        let reserves_core = match rollout.target_core_allocation_strategy {
+            CoreAllocationStrategy::CoreCount => Self::core_allocation_reserves_exclusive_cores,
+            CoreAllocationStrategy::CoreSet => Self::core_allocation_claims_controller_chosen_cores,
+            CoreAllocationStrategy::AllCores => return false,
+        };
 
         let target_core_ids: BTreeSet<_> = rollout
             .target_placement
@@ -211,7 +214,7 @@ impl<
             return false;
         }
 
-        Self::reserved_core_ids_except_locked(state, pipeline_key)
+        Self::reserved_core_ids_except_locked(state, pipeline_key, reserves_core)
             .iter()
             .any(|core_id| target_core_ids.contains(core_id))
     }
@@ -719,11 +722,7 @@ impl<
             {
                 return Err(ControlPlaneError::RolloutConflict);
             }
-            if Self::conflicts_with_reserved_core_count_placement_locked(
-                &state,
-                pipeline_key,
-                &rollout,
-            ) {
+            if Self::conflicts_with_reserved_placement_locked(&state, pipeline_key, &rollout) {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             _ = state
