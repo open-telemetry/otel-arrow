@@ -1079,6 +1079,145 @@ connections:
 }
 
 #[test]
+fn insert_rollout_rejects_core_set_overlapping_active_core_count_target() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+groups:
+  g1:
+    pipelines:
+      p1:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+      p2:
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("engine config should parse");
+    let runtime = test_runtime(&config);
+    let mut resolved = config.resolve().pipelines;
+    resolved.sort_by(|left, right| left.pipeline_id.as_ref().cmp(right.pipeline_id.as_ref()));
+    let placement_snapshot = Controller::<()>::preflight_pipeline_placement(
+        &resolved,
+        &available_core_ids(),
+        &NumaTopology::unknown(),
+    )
+    .expect("startup placement should resolve");
+
+    for (pipeline, placement) in resolved.iter().cloned().zip(placement_snapshot.pipelines) {
+        runtime.register_committed_pipeline(pipeline, placement, 0);
+    }
+
+    let p2_resize = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p2".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 4
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("p2 resize should parse");
+    let p2_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p2",
+            &ReconfigureRequest {
+                pipeline: p2_resize,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("p2 resize should be planned");
+
+    runtime
+        .insert_rollout(&p2_plan.pipeline_key, p2_plan.rollout.clone())
+        .expect("p2 rollout should insert");
+
+    let p3_create = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p3".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_set
+      set:
+        - start: 4
+          end: 5
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("p3 create should parse");
+    let p3_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p3",
+            &ReconfigureRequest {
+                pipeline: p3_create,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("p3 create should be planned");
+
+    assert_eq!(p2_plan.target_assigned_cores, vec![2, 3, 4, 5]);
+    assert_eq!(p3_plan.target_assigned_cores, vec![4, 5]);
+    assert!(matches!(
+        runtime.insert_rollout(&p3_plan.pipeline_key, p3_plan.rollout.clone()),
+        Err(ControlPlaneError::RolloutConflict)
+    ));
+}
+
+#[test]
 fn insert_rollout_rejects_stale_plan_conflicting_with_new_committed_pipeline() {
     let config = engine_config_with_pipeline(
         r#"

@@ -198,6 +198,11 @@ impl<
         pipeline_key: &PipelineKey,
         rollout: &RolloutRecord,
     ) -> bool {
+        // Live insertion preserves the startup overlap matrix:
+        // - core_count candidates conflict with committed/in-flight core_count and core_set.
+        // - core_set candidates conflict only with committed/in-flight core_count, preserving
+        //   explicit core_set-to-core_set overlap as operator intent.
+        // - all_cores candidates remain shared and never conflict.
         let reserves_core = match rollout.target_core_allocation_strategy {
             CoreAllocationStrategy::CoreCount => Self::core_allocation_reserves_exclusive_cores,
             CoreAllocationStrategy::CoreSet => Self::core_allocation_claims_controller_chosen_cores,
