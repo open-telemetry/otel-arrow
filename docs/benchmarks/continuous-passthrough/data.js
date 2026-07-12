@@ -1,92 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1783821142444,
+  "lastUpdate": 1783877675143,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "33842784+JakeDern@users.noreply.github.com",
-            "name": "Jake Dern",
-            "username": "JakeDern"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "c35370ab3b764eb3265eefcece1900f138761f5e",
-          "message": "feat(comparison_dashboard): OTC Logs baseline suites (#2934)\n\n# Change Summary\n\nThis PR adds all of the OTC baseline logs suites for OTAP, OTLP, and\nOTLP HTTP.\n\n## What issue does this PR close?\n\n* Closes #2932\n\n## How are these changes tested?\n\nExecuted the 100k for all suites: \n\n```\n  ┌─────────────────────────────────┬────────────┬────────────┬───────┬───────┐\n  │              suite              │ produced/s │ received/s │ drop% │  dur  │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otap_gzip_baseline     │ 99,288     │ 101,901    │ -2.6  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otap_none_baseline     │ 99,360     │ 101,974    │ -2.6  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otap_zstd_baseline     │ 99,163     │ 99,163     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlp_gzip_baseline     │ 99,017     │ 99,017     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlp_none_baseline     │ 99,269     │ 99,269     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlp_zstd_baseline     │ 99,343     │ 99,343     │ 0.00  │ 20.0s │\n  ├─────────────────────────────────┼────────────┼────────────┼───────┼───────┤\n  │ otc_logs_otlphttp_none_baseline │ 99,480     │ 99,428     │ 0.05  │ 20.0s │\n  └─────────────────────────────────┴────────────┴────────────┴───────┴───────┘\n```\n\n## Are there any user-facing changes?\n\nNone.\n\n---------\n\nCo-authored-by: Laurent Quérel <l.querel@f5.com>",
-          "timestamp": "2026-05-12T15:30:01Z",
-          "tree_id": "e80876f179a9400bb87392c53908e21d442a6927",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/c35370ab3b764eb3265eefcece1900f138761f5e"
-        },
-        "date": 1778605588206,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -1100,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 5.78365026171154,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 6.3462392108508014,
-            "unit": "%",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.863020833333334,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.05078125,
-            "unit": "MiB",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 503.4141773484418,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 6040.970128181301,
-            "unit": "logs/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.006256,
-            "unit": "seconds",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 213810.102919456,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 175855.20895237048,
-            "unit": "bytes/sec",
-            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -12240,6 +12156,160 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 29.665719938063628,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "59957e07eec5630be835293d6226289bcbfc0596",
+          "message": "fix(pdata): Fix silent attribute loss when decoding OTAP batches whose root IDs are not monotonic in resource/scope visitation order (#3450)\n\n# Change Summary\n\nAddresses a follow-up from #2421.\n\nOn that PR review, it was noted that a 'truly pathological' OTAP batch\nmight drop attributes in certain cases if root IDs are not in expected\norder. However, with query-engine, it is easily possible to construct\nsuch a batch when adding attributes to a record which previously didn't\nhave any.\n\nThe OTLP decoder joined child records (attributes, datapoints, span\nevents/links) to parents with a shared forward-only cursor that assumed\nparents were visited in ascending ID order. When root IDs aren't\nmonotonic in `(resource_id, scope_id, id)` visitation order, a\nlater-visited smaller-ID record's child rows were skipped — silently\ndropping all of that record's attributes with no error.\n\n`ChildIndexIter::new` now binary-searches to each parent's rows\n(`SortedBatchCursor::seek_to_parent`), making the join order-independent\nacross logs, metrics, and traces. Adds regression tests in `pdata` and\n`query-engine`.\n\nThis could have a minor performance impact adding a `O(P * log n)`\nsearch where `P` is the number of parent records and `n` is the number\nof child rows.\n\n## What issue does this PR close?\n\n* Closes #3448 \n\n## How are these changes tested?\n\nUnit tests\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-07-10T20:58:39Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/59957e07eec5630be835293d6226289bcbfc0596"
+        },
+        "date": 1783877673964,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 2.6663851737976074,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 100.19976228723802,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 100.54850578281456,
+            "unit": "%",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 42.6328125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 43.64453125,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 2060579.4944519764,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 2005636.5102673532,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.003439,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 23179406.4561274,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 23101378.548164126,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 11.557132280683087,
+            "unit": "bytes/log",
+            "extra": "Continuous - Passthrough OTAP/OTAP-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 1.3803577423095703,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 77.13389018840654,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 81.19178944089705,
+            "unit": "%",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 24.18984375,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 24.76171875,
+            "unit": "MiB",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 376467.7083456419,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 371271.10746206576,
+            "unit": "logs/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002299,
+            "unit": "seconds",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 10998793.716461863,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 10966099.51084379,
+            "unit": "bytes/sec",
+            "extra": "Continuous - Passthrough/OTLP-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 29.624696065490777,
             "unit": "bytes/log",
             "extra": "Continuous - Passthrough/OTLP-OTLP - Egress Bytes Per Log"
           }
