@@ -72,7 +72,8 @@ impl NumaTopology {
         }
     }
 
-    /// Detects Linux NUMA topology under an arbitrary sysfs root.
+    /// Detects Linux NUMA topology under an arbitrary sysfs root without applying
+    /// process affinity or cgroup CPU-visibility filtering.
     ///
     /// On non-Linux platforms this returns an unknown topology.
     #[must_use]
