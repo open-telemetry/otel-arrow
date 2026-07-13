@@ -134,7 +134,8 @@ The exporter obtains OAuth bearer tokens from the
 extension through the `bearer_token_provider` capability. Wiring has two parts:
 
 1. Declare the extension instance in the pipeline's `extensions:` section.
-2. Bind it on the exporter node via `capabilities: { bearer_token_provider: <instance-name> }`.
+2. Bind it on the exporter node via the node's `capabilities:` map, e.g.
+   `bearer_token_provider: <instance-name>`.
 
 The authentication flow is chosen by the extension's `method` field:
 

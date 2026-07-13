@@ -5,10 +5,10 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
+use otap_df_engine::capability::BearerToken;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::capability::BearerToken;
 use otap_df_engine::local::capability::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
@@ -126,7 +126,10 @@ impl AzureMonitorExporter {
     /// expiry maps to a far-future horizon (`NO_EXPIRY_HORIZON_SECS`), i.e.
     /// "valid until replaced".
     #[inline]
-    fn token_expiry_instant(token: &BearerToken, now: tokio::time::Instant) -> tokio::time::Instant {
+    fn token_expiry_instant(
+        token: &BearerToken,
+        now: tokio::time::Instant,
+    ) -> tokio::time::Instant {
         match token.expires_on() {
             Some(expires_on) => tokio::time::Instant::from_std(expires_on),
             None => now + tokio::time::Duration::from_secs(NO_EXPIRY_HORIZON_SECS),
