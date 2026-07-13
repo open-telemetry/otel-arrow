@@ -171,7 +171,7 @@ represent the engine's placement needs without forcing a Linux-only model.
 
 The configuration should move toward declaring core counts and placement intent,
 not exact core ids. For example, a pipeline policy can say that a pipeline needs
-`N` cores. The controller then resolves `N` to concrete cores based on:
+`N` cores. The controller should then resolve `N` to concrete cores based on:
 
 - the topology provider output,
 - cores already assigned to other running pipelines,
@@ -188,7 +188,7 @@ startup/live rollout integration. A placement strategy owns the core-selection
 heuristic. Strategy implementations must be deterministic for identical inputs,
 must honor the set of reserved cores supplied by the planner, and must only
 select from the available visible cores. That contract matters because the same
-placement path is used for startup and live control-plane operations.
+placement path should be usable for startup and live control-plane operations.
 
 The initial strategy should be automatic and conservative: for `core_count`, it
 prefers compact placement within one NUMA node when enough unreserved cores are
@@ -198,12 +198,12 @@ Balancing across nodes, graph-aware placement, or group-level policies can be
 added as additional strategies without changing planner call sites or the
 metadata contract.
 
-The initial implementation does not treat a pipeline group as an implicit
-same-NUMA placement unit. Multiple pipelines in one group still receive
-pipeline-level placements, while the engine-level reservation model prevents
-exclusive `core_count` and `core_set` allocations from silently overlapping.
-Future group-level policies can build on the same strategy interface if the
-configuration model needs that behavior.
+The initial implementation should not treat a pipeline group as an implicit
+same-NUMA placement unit. Multiple pipelines in one group should still receive
+pipeline-level placements, while the engine-level reservation model should
+prevent exclusive `core_count` and `core_set` allocations from silently
+overlapping. Future group-level policies can build on the same strategy
+interface if the configuration model needs that behavior.
 
 This is related to the direction in
 [#2155](https://github.com/open-telemetry/otel-arrow/issues/2155) and
@@ -218,17 +218,18 @@ move to core-count-only configuration.
 
 ### Compatibility
 
-This changes `core_count` placement semantics. A `core_count` pipeline is now
-resolved by the controller as an exclusive placement: it avoids cores explicitly
+The first engine-resolved placement implementation is expected to change
+`core_count` placement semantics. A `core_count` pipeline should be resolved by
+the controller as an exclusive placement: it should avoid cores explicitly
 claimed by `core_set` pipelines and cores already selected for other
-`core_count` pipelines. `all_cores` remains shared.
+`core_count` pipelines. `all_cores` should remain shared.
 
-When NUMA topology is known, the controller prefers compact same-node placement.
-When topology is unknown, placement falls back to deterministic visible-core
-selection while keeping the same reservation rules.
+When NUMA topology is known, the controller should prefer compact same-node
+placement. When topology is unknown, placement should fall back to deterministic
+visible-core selection while keeping the same reservation rules.
 
 If the controller cannot find enough unreserved visible cores, startup or live
-update fails instead of silently overlapping pipelines or shrinking the
+update should fail instead of silently overlapping pipelines or shrinking the
 placement.
 
 ### Controller Integration
@@ -239,10 +240,12 @@ for that instance. That keeps placement decisions visible in one place and lets
 future live reconfiguration compare old and new snapshots before changing
 runtime state.
 
-The placement snapshot should be observable. Useful attributes include pipeline
-group id, pipeline id, core id, NUMA node id, and placement policy. Metrics
-should follow the engine's existing naming style and use low-cardinality
-attributes rather than embedding policy or node ids in metric names.
+The placement snapshot should become observable over time. The initial
+implementation can log topology discovery and per-pipeline core allocation;
+future telemetry can add resolved core-to-NUMA mappings, placement policy, and
+component-level attributes as consumers need them. Metrics should follow the
+engine's existing naming style and use low-cardinality attributes rather than
+embedding policy or node ids in metric names.
 
 Live reconfiguration should use the same planner and strategy contract as
 startup. A scale-only update can change the requested core count for one
@@ -260,11 +263,11 @@ stable for the lifetime of a running placement generation and should include:
 
 - pipeline group id,
 - pipeline id,
-- pipeline node id or component id, when applicable,
+- pipeline node id or component id, when applicable in future consumers,
 - placement generation id,
 - assigned core id,
 - NUMA node id,
-- placement policy,
+- placement policy, when multiple policy implementations need to be exposed,
 - whether the topology is complete, partial, or unknown.
 
 The contract should be strategy-agnostic. Receivers, topic scheduling, admission
@@ -273,6 +276,11 @@ the same placement snapshot, but they should not own topology discovery or
 pipeline placement. Socket-specific fields such as bind addresses, protocols,
 file descriptors, or kernel grouping identities belong in the consumer design
 that needs them, not in the engine placement contract.
+
+A future socket-placement implementation can consume a separate data-only
+listener-group snapshot derived from the engine placement snapshot. Socket
+binding, reuseport coordination, and eBPF attachment remain outside the core
+placement contract.
 
 ## Operational Requirements
 
