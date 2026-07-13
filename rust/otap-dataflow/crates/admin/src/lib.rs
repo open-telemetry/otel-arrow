@@ -263,9 +263,11 @@ impl AppState {
 
 /// Attaches hardened security headers to every `/api/v1/*` response.
 ///
-/// These are the same policies already applied to UI/static routes in
-/// `dashboard.rs`. Centralising them here as a layer on `api_routes` means
-/// any new endpoint added to the router automatically inherits them.
+/// Mirrors the non-CSP subset of the UI/static header set from `dashboard.rs`:
+/// `Cache-Control`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+/// Content-Security-Policy is intentionally omitted — it is only meaningful for
+/// HTML responses served by the UI, not for JSON API endpoints.
+/// Centralising them as a layer on `api_routes` means new endpoints inherit them.
 async fn attach_api_security_headers(mut response: Response) -> Response {
     use axum::http::{HeaderName, HeaderValue, header};
     let h = response.headers_mut();
