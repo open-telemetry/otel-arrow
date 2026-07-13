@@ -612,25 +612,11 @@ struct TraceStatsSnapshot {
 /// Per-poller baseline state used to compute monotonic deltas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct PollerBaselines {
-    handle: u64,
-    events_lost: u64,
-    real_time_buffers_lost: u64,
-    log_buffers_lost: u64,
-    buffers_written: u64,
+    last: TraceStatsSnapshot,
     query_failed_logged: bool,
 }
 
 impl PollerBaselines {
-    /// Reset per-counter baselines when the ETW handle changes.
-    fn rotate_handle(&mut self, handle: u64) {
-        self.handle = handle;
-        self.events_lost = 0;
-        self.real_time_buffers_lost = 0;
-        self.log_buffers_lost = 0;
-        self.buffers_written = 0;
-        self.query_failed_logged = false;
-    }
-
     /// Mark a query failure and report whether the caller should emit a warn.
     fn on_query_failed(&mut self) -> bool {
         if self.query_failed_logged {
@@ -658,43 +644,36 @@ fn publish_trace_stats_delta(
     baselines: &mut PollerBaselines,
     stats: TraceStatsSnapshot,
 ) {
-    let events_lost = stats.events_lost.saturating_sub(baselines.events_lost);
-    baselines.events_lost = stats.events_lost;
-    if events_lost > 0 {
-        let _ = telemetry
-            .kernel_events_lost
-            .fetch_add(events_lost, Ordering::Relaxed);
+    /// Compute the delta against the stored baseline, advance the baseline to
+    /// the new cumulative value, and add the delta to the shared atomic.
+    fn accumulate(atomic: &AtomicU64, baseline: &mut u64, current: u64) {
+        let delta = current.saturating_sub(*baseline);
+        *baseline = current;
+        if delta > 0 {
+            let _ = atomic.fetch_add(delta, Ordering::Relaxed);
+        }
     }
 
-    let rt_lost = stats
-        .real_time_buffers_lost
-        .saturating_sub(baselines.real_time_buffers_lost);
-    baselines.real_time_buffers_lost = stats.real_time_buffers_lost;
-    if rt_lost > 0 {
-        let _ = telemetry
-            .kernel_real_time_buffers_lost
-            .fetch_add(rt_lost, Ordering::Relaxed);
-    }
-
-    let log_lost = stats
-        .log_buffers_lost
-        .saturating_sub(baselines.log_buffers_lost);
-    baselines.log_buffers_lost = stats.log_buffers_lost;
-    if log_lost > 0 {
-        let _ = telemetry
-            .kernel_log_buffers_lost
-            .fetch_add(log_lost, Ordering::Relaxed);
-    }
-
-    let written = stats
-        .buffers_written
-        .saturating_sub(baselines.buffers_written);
-    baselines.buffers_written = stats.buffers_written;
-    if written > 0 {
-        let _ = telemetry
-            .kernel_buffers_written
-            .fetch_add(written, Ordering::Relaxed);
-    }
+    accumulate(
+        &telemetry.kernel_events_lost,
+        &mut baselines.last.events_lost,
+        stats.events_lost,
+    );
+    accumulate(
+        &telemetry.kernel_real_time_buffers_lost,
+        &mut baselines.last.real_time_buffers_lost,
+        stats.real_time_buffers_lost,
+    );
+    accumulate(
+        &telemetry.kernel_log_buffers_lost,
+        &mut baselines.last.log_buffers_lost,
+        stats.log_buffers_lost,
+    );
+    accumulate(
+        &telemetry.kernel_buffers_written,
+        &mut baselines.last.buffers_written,
+        stats.buffers_written,
+    );
 }
 
 fn run_trace_stats_poller_loop<F>(
@@ -715,12 +694,6 @@ fn run_trace_stats_poller_loop<F>(
         let handle = handle_slot.load(Ordering::SeqCst);
         if handle == 0 {
             continue; // session not started yet
-        }
-
-        // Reset all baselines on session (re)start / handle rotation so we
-        // never emit a bogus giant delta against a fresh cumulative counter.
-        if handle != baselines.handle {
-            baselines.rotate_handle(handle);
         }
 
         match query_stats(handle) {
@@ -1656,9 +1629,6 @@ mod tests {
         let telemetry = SessionWideMetrics::default();
         let mut baselines = PollerBaselines::default();
 
-        // Simulate started_callback setting the first live handle.
-        baselines.rotate_handle(42);
-
         publish_trace_stats_delta(
             &telemetry,
             &mut baselines,
@@ -1679,48 +1649,6 @@ mod tests {
         );
         assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 2);
         assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 11);
-    }
-
-    #[test]
-    fn trace_stats_handle_rotation_resets_baselines() {
-        let telemetry = SessionWideMetrics::default();
-        let mut baselines = PollerBaselines::default();
-
-        baselines.rotate_handle(1001);
-        publish_trace_stats_delta(
-            &telemetry,
-            &mut baselines,
-            TraceStatsSnapshot {
-                events_lost: 10,
-                real_time_buffers_lost: 4,
-                log_buffers_lost: 1,
-                buffers_written: 20,
-            },
-        );
-
-        // New ETW handle should reset baselines so a lower cumulative value is
-        // treated as a fresh full sample, not clamped to zero forever.
-        baselines.rotate_handle(1002);
-        publish_trace_stats_delta(
-            &telemetry,
-            &mut baselines,
-            TraceStatsSnapshot {
-                events_lost: 3,
-                real_time_buffers_lost: 1,
-                log_buffers_lost: 0,
-                buffers_written: 5,
-            },
-        );
-
-        assert_eq!(telemetry.kernel_events_lost.load(Ordering::Relaxed), 13);
-        assert_eq!(
-            telemetry
-                .kernel_real_time_buffers_lost
-                .load(Ordering::Relaxed),
-            5
-        );
-        assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 1);
-        assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 25);
     }
 
     #[test]
