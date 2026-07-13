@@ -1594,7 +1594,7 @@ mod test {
         expected_exchanges: usize,
         mut config: Config,
     ) -> Vec<AgentToServer> {
-        let port = portpicker::pick_unused_port().expect("free port");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         config.endpoint = format!("ws://127.0.0.1:{port}/v1/opamp");
 
         let cancellation_token = CancellationToken::new();
