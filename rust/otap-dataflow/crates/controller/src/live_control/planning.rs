@@ -480,7 +480,7 @@ impl<
         let pipeline_id: PipelineId = pipeline_id.to_owned().into();
         let pipeline_key = PipelineKey::new(pipeline_group_id.clone(), pipeline_id.clone());
 
-        let (live_config, current_record) = {
+        let (live_config, base_config_revision, current_record) = {
             let state = self
                 .state
                 .lock()
@@ -499,6 +499,7 @@ impl<
             }
             (
                 state.live_config.clone(),
+                state.config_revision,
                 state.logical_pipelines.get(&pipeline_key).cloned(),
             )
         };
@@ -568,6 +569,19 @@ impl<
             &resolved_pipeline,
             &reserved_core_ids,
         )?;
+        let listener_group_plans_unchanged = current_record
+            .as_ref()
+            .zip(current_pipeline_placement.as_ref())
+            .is_none_or(|(record, placement)| {
+                let current_snapshot =
+                    listener_group::snapshot_for_pipeline(&record.resolved, placement, 0);
+                let target_snapshot = listener_group::snapshot_for_pipeline(
+                    &resolved_pipeline,
+                    &target_pipeline_placement,
+                    0,
+                );
+                current_snapshot.plans == target_snapshot.plans
+            });
         let current_assigned_cores: Vec<usize> = current_pipeline_placement
             .as_ref()
             .map(|placement| placement.cores.iter().map(|core| core.core_id.id).collect())
@@ -624,6 +638,7 @@ impl<
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
+                && listener_group_plans_unchanged
                 && record
                     .resolved
                     .runtime_shape_matches_ignoring_resources(&resolved_pipeline);
@@ -692,7 +707,7 @@ impl<
                     self.live_pipeline_placement_from(
                         &record.resolved,
                         placement,
-                        placement_generation,
+                        record.placement_generation,
                     )
                 });
         let target_placement = self.live_pipeline_placement_from(
@@ -772,6 +787,7 @@ impl<
             pipeline_id,
             action,
             resolved_pipeline,
+            base_config_revision,
             current_record,
             current_placement,
             target_placement,
@@ -796,7 +812,20 @@ impl<
         pipeline_key: &PipelineKey,
         rollout: RolloutRecord,
     ) -> Result<(), ControlPlaneError> {
-        self.insert_rollout_for_engine_operation(pipeline_key, rollout, None)
+        self.insert_rollout_for_engine_operation(pipeline_key, rollout, None, None)
+    }
+
+    #[cfg(test)]
+    pub(super) fn insert_rollout_plan(
+        &self,
+        plan: &CandidateRolloutPlan,
+    ) -> Result<(), ControlPlaneError> {
+        self.insert_rollout_for_engine_operation(
+            &plan.pipeline_key,
+            plan.rollout.clone(),
+            None,
+            Some(plan.base_config_revision),
+        )
     }
 
     fn insert_rollout_for_engine_operation(
@@ -804,6 +833,7 @@ impl<
         pipeline_key: &PipelineKey,
         rollout: RolloutRecord,
         engine_operation_id: Option<&str>,
+        expected_config_revision: Option<u64>,
     ) -> Result<(), ControlPlaneError> {
         self.prune_retained_operation_history();
         {
@@ -812,6 +842,9 @@ impl<
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if !Self::engine_operation_allows(&state, engine_operation_id) {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            if expected_config_revision.is_some_and(|revision| revision != state.config_revision) {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             if state.active_rollouts.contains_key(pipeline_key)
@@ -956,8 +989,10 @@ impl<
                     resolved: plan.resolved_pipeline.clone(),
                     active_generation,
                     placement: plan.target_placement.placement.clone(),
+                    placement_generation: plan.target_placement.listener_group_snapshot.generation,
                 },
             );
+            state.config_revision += 1;
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
@@ -1266,6 +1301,7 @@ impl<
                 message: err.to_string(),
             })?;
         state.live_config = candidate_config;
+        state.config_revision += 1;
         Ok(group)
     }
 
@@ -1285,6 +1321,7 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if delete_missing {
             state.live_config = desired_config.clone();
+            state.config_revision += 1;
             return;
         }
 
@@ -1306,6 +1343,7 @@ impl<
                     .insert(pipeline_id.clone(), pipeline.clone());
             }
         }
+        state.config_revision += 1;
     }
 
     fn live_pipeline_keys(&self) -> Vec<PipelineKey> {
@@ -1394,6 +1432,7 @@ impl<
             }
             let _ = state.logical_pipelines.remove(pipeline_key);
             let _ = state.generation_counters.remove(pipeline_key);
+            state.config_revision += 1;
             state.runtime_instances.retain(|deployed_key, _| {
                 deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
                     || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
@@ -1670,6 +1709,7 @@ impl<
                 });
             }
             let _ = state.live_config.groups.remove(&pipeline_group_id);
+            state.config_revision += 1;
         }
 
         Ok(GroupDeleteStatus {
@@ -1932,6 +1972,9 @@ impl<
             &pipeline_key,
             plan.rollout.clone(),
             engine_operation_id,
+            engine_operation_id
+                .is_none()
+                .then_some(plan.base_config_revision),
         )?;
         if matches!(plan.action, RolloutAction::NoOp) {
             self.commit_pipeline_record(&plan, plan.target_generation);

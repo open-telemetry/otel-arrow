@@ -442,6 +442,7 @@ pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
     pub(super) active_generation: u64,
     pub(super) placement: PipelinePlacement,
+    pub(super) placement_generation: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -478,6 +479,8 @@ pub(super) struct TopicRuntimeProfile {
 pub(super) struct ControllerRuntimeState {
     /// Latest accepted full engine config, including committed live changes.
     pub(super) live_config: OtelDataflowSpec,
+    /// Monotonic revision for committed logical config changes.
+    pub(super) config_revision: u64,
     /// Committed logical pipelines keyed by group/pipeline id.
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
@@ -533,6 +536,8 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) action: RolloutAction,
     /// Resolved target pipeline config after applying the request.
     pub(super) resolved_pipeline: ResolvedPipelineConfig,
+    /// Runtime config revision used to build this plan.
+    pub(super) base_config_revision: u64,
     /// Current committed record, absent for create rollouts.
     pub(super) current_record: Option<LogicalPipelineRecord>,
     /// Placement metadata for the committed record, used by rollback launches.

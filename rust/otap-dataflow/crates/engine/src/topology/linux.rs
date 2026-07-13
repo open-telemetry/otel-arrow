@@ -146,6 +146,7 @@ fn discover_sysfs_topology(root: &Path) -> DiscoveryResult {
 
     let mut partial = false;
     let mut cpu_to_node = BTreeMap::new();
+    let mut duplicate_cpus = BTreeSet::new();
     for entry in entries {
         let Ok(entry) = entry else {
             partial = true;
@@ -174,7 +175,14 @@ fn discover_sysfs_topology(root: &Path) -> DiscoveryResult {
             }
         };
         for cpu in cpus {
-            _ = cpu_to_node.insert(cpu, node_id);
+            if duplicate_cpus.contains(&cpu) {
+                continue;
+            }
+            if cpu_to_node.insert(cpu, node_id).is_some() {
+                partial = true;
+                _ = duplicate_cpus.insert(cpu);
+                _ = cpu_to_node.remove(&cpu);
+            }
         }
     }
 
@@ -385,10 +393,31 @@ mod tests {
         );
         let topology = provider.discover();
 
-        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.completeness(), TopologyCompleteness::Unknown);
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
         assert!(topology.visible_nodes().is_empty());
         assert_eq!(topology.numa_node(0), None);
+    }
+
+    #[test]
+    fn duplicate_cpu_mappings_are_degraded_and_unmapped() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let cgroup = tempfile::tempdir().unwrap();
+        write_node(sysfs.path(), 0, "0-2");
+        write_node(sysfs.path(), 1, "2-3");
+
+        let provider = LinuxNumaTopologyProvider::for_test(
+            sysfs.path().to_path_buf(),
+            cgroup.path().to_path_buf(),
+            affinity_0_to_3,
+        );
+        let topology = provider.discover();
+
+        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
+        assert_eq!(topology.numa_node(0), Some(0));
+        assert_eq!(topology.numa_node(2), None);
+        assert_eq!(topology.numa_node(3), Some(1));
     }
 
     #[test]

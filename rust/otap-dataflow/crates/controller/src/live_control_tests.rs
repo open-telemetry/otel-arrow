@@ -1409,6 +1409,105 @@ connections:
 }
 
 #[test]
+fn insert_rollout_rejects_plan_after_committed_config_revision_changes() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let resize_to_three = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 3
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("resize to three should parse");
+    let stale_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: resize_to_three,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("resize to three should be planned");
+
+    let resize_to_four = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 4
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("resize to four should parse");
+    let committed_plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: resize_to_four,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("resize to four should be planned");
+    runtime.commit_pipeline_record(&committed_plan, committed_plan.target_generation);
+
+    assert!(matches!(
+        runtime.insert_rollout_plan(&stale_plan),
+        Err(ControlPlaneError::RolloutConflict)
+    ));
+}
+
+#[test]
 fn insert_rollout_rejects_core_set_overlapping_committed_core_count_pipeline() {
     let config = engine_config_with_pipeline(
         r#"
@@ -1623,6 +1722,74 @@ connections:
             .collect::<Vec<_>>(),
         vec![(4, Some(1)), (5, Some(1))]
     );
+}
+
+#[test]
+fn prepare_rollout_plan_replaces_when_listener_membership_changes() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 2
+        nodes:
+          receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime(&config);
+    register_existing_pipeline(&runtime, &config);
+
+    let resize = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 3
+nodes:
+  receiver:
+    type: "urn:otel:receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("resize should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: resize,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("resize should be planned");
+
+    assert_eq!(plan.action, RolloutAction::Replace);
 }
 
 /// Scenario: a reconfigure request changes only the effective core
@@ -1853,10 +2020,8 @@ connections:
         )
         .expect("identical non-monotonic NUMA updates should be planned");
 
-    assert_eq!(plan.target_assigned_cores, vec![4, 5, 6, 7, 0, 1]);
-    assert_eq!(plan.action, RolloutAction::NoOp);
-    assert_eq!(plan.target_generation, 0);
-    assert!(plan.rollout.cores.is_empty());
+    assert_eq!(plan.target_assigned_cores, vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(plan.action, RolloutAction::Replace);
 }
 
 /// Scenario: the controller executes a rollout plan that has already been

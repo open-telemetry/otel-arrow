@@ -94,6 +94,18 @@ pub trait PlacementStrategy: std::fmt::Debug {
     ) -> Vec<CoreId>;
 }
 
+#[derive(Debug, Eq, PartialEq, thiserror::Error)]
+pub enum PlacementError {
+    #[error("strategy returned duplicate core {0}")]
+    DuplicateCore(usize),
+    #[error("strategy returned unavailable core {0}")]
+    UnavailableCore(usize),
+    #[error("strategy returned reserved core {0}")]
+    ReservedCore(usize),
+    #[error("strategy returned {actual} cores, expected {expected}")]
+    WrongCount { expected: usize, actual: usize },
+}
+
 /// Default `core_count` strategy that prefers one NUMA node when possible.
 ///
 /// This policy is chosen for intra-pipeline cache and NUMA locality. Future
@@ -122,12 +134,9 @@ impl PlacementStrategy for NumaPackingPlacementStrategy {
         }
 
         let mut by_node: BTreeMap<u32, Vec<CoreId>> = BTreeMap::new();
-        let mut unknown = Vec::new();
-        for core in free {
+        for core in &free {
             if let Some(node) = topology.numa_node(core.id as u32) {
-                by_node.entry(node).or_default().push(core);
-            } else {
-                unknown.push(core);
+                by_node.entry(node).or_default().push(*core);
             }
         }
 
@@ -141,23 +150,7 @@ impl PlacementStrategy for NumaPackingPlacementStrategy {
             }
         }
 
-        let mut selected = Vec::with_capacity(count);
-        for cores in by_node.values() {
-            for core in cores {
-                selected.push(*core);
-                if selected.len() == count {
-                    return selected;
-                }
-            }
-        }
-        unknown.sort_by_key(|core| core.id);
-        for core in unknown {
-            selected.push(core);
-            if selected.len() == count {
-                return selected;
-            }
-        }
-        selected
+        free.into_iter().take(count).collect()
     }
 }
 
@@ -185,15 +178,46 @@ impl<'a, S: PlacementStrategy> PlacementPlanner<'a, S> {
     }
 
     /// Selects `count` cores from `available` using this planner's strategy.
-    #[must_use]
     pub fn select_core_count(
         &self,
         available: &[CoreId],
         reserved: &BTreeSet<usize>,
         count: usize,
-    ) -> Vec<CoreId> {
-        self.strategy
-            .select_core_count(self.topology, available, reserved, count)
+    ) -> Result<Vec<CoreId>, PlacementError> {
+        let selected = self
+            .strategy
+            .select_core_count(self.topology, available, reserved, count);
+        self.validate_selected_cores(available, reserved, count, selected)
+    }
+
+    fn validate_selected_cores(
+        &self,
+        available: &[CoreId],
+        reserved: &BTreeSet<usize>,
+        count: usize,
+        selected: Vec<CoreId>,
+    ) -> Result<Vec<CoreId>, PlacementError> {
+        if selected.len() != count {
+            return Err(PlacementError::WrongCount {
+                expected: count,
+                actual: selected.len(),
+            });
+        }
+
+        let available_ids: BTreeSet<_> = available.iter().map(|core| core.id).collect();
+        let mut seen = BTreeSet::new();
+        for core in &selected {
+            if !seen.insert(core.id) {
+                return Err(PlacementError::DuplicateCore(core.id));
+            }
+            if !available_ids.contains(&core.id) {
+                return Err(PlacementError::UnavailableCore(core.id));
+            }
+            if reserved.contains(&core.id) {
+                return Err(PlacementError::ReservedCore(core.id));
+            }
+        }
+        Ok(selected)
     }
 }
 
@@ -223,24 +247,109 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct FixedPlacementStrategy(Vec<CoreId>);
+
+    impl PlacementStrategy for FixedPlacementStrategy {
+        fn select_core_count(
+            &self,
+            _topology: &NumaTopology,
+            _available: &[CoreId],
+            _reserved: &BTreeSet<usize>,
+            _count: usize,
+        ) -> Vec<CoreId> {
+            self.0.clone()
+        }
+    }
+
     #[test]
     fn planner_can_use_injected_strategy() {
         let topology = NumaTopology::unknown();
         let planner = PlacementPlanner::with_strategy(&topology, ReversePlacementStrategy);
-        let selected = planner.select_core_count(
-            &[
-                CoreId { id: 0 },
-                CoreId { id: 1 },
-                CoreId { id: 2 },
-                CoreId { id: 3 },
-            ],
-            &BTreeSet::from([2]),
-            2,
-        );
+        let selected = planner
+            .select_core_count(
+                &[
+                    CoreId { id: 0 },
+                    CoreId { id: 1 },
+                    CoreId { id: 2 },
+                    CoreId { id: 3 },
+                ],
+                &BTreeSet::from([2]),
+                2,
+            )
+            .expect("reverse strategy should produce a valid selection");
 
         assert_eq!(
             selected.iter().map(|core| core.id).collect::<Vec<_>>(),
             vec![3, 1]
+        );
+    }
+
+    #[test]
+    fn planner_rejects_invalid_strategy_output() {
+        let topology = NumaTopology::unknown();
+        let available = [CoreId { id: 0 }, CoreId { id: 1 }];
+
+        let duplicate = PlacementPlanner::with_strategy(
+            &topology,
+            FixedPlacementStrategy(vec![CoreId { id: 0 }, CoreId { id: 0 }]),
+        );
+        assert_eq!(
+            duplicate.select_core_count(&available, &BTreeSet::new(), 2),
+            Err(PlacementError::DuplicateCore(0))
+        );
+
+        let unavailable = PlacementPlanner::with_strategy(
+            &topology,
+            FixedPlacementStrategy(vec![CoreId { id: 0 }, CoreId { id: 7 }]),
+        );
+        assert_eq!(
+            unavailable.select_core_count(&available, &BTreeSet::new(), 2),
+            Err(PlacementError::UnavailableCore(7))
+        );
+
+        let reserved = PlacementPlanner::with_strategy(
+            &topology,
+            FixedPlacementStrategy(vec![CoreId { id: 0 }, CoreId { id: 1 }]),
+        );
+        assert_eq!(
+            reserved.select_core_count(&available, &BTreeSet::from([1]), 2),
+            Err(PlacementError::ReservedCore(1))
+        );
+
+        let wrong_count = PlacementPlanner::with_strategy(
+            &topology,
+            FixedPlacementStrategy(vec![CoreId { id: 0 }]),
+        );
+        assert_eq!(
+            wrong_count.select_core_count(&available, &BTreeSet::new(), 2),
+            Err(PlacementError::WrongCount {
+                expected: 2,
+                actual: 1
+            })
+        );
+    }
+
+    #[test]
+    fn numa_packing_fallback_uses_global_core_order() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::from([(0, 0), (1, 1), (2, 0)]),
+            BTreeSet::from([0, 1, 2]),
+            TopologyCompleteness::Complete,
+        );
+        let planner = PlacementPlanner::new(&topology);
+
+        let selected = planner
+            .select_core_count(
+                &[CoreId { id: 0 }, CoreId { id: 1 }, CoreId { id: 2 }],
+                &BTreeSet::new(),
+                3,
+            )
+            .expect("fallback should select all requested cores");
+
+        assert_eq!(
+            selected.iter().map(|core| core.id).collect::<Vec<_>>(),
+            vec![0, 1, 2]
         );
     }
 }

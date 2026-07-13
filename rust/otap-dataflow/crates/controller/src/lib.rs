@@ -1707,12 +1707,26 @@ impl<
                 .resources
                 .core_allocation
                 .to_string();
+            let resolved_cores = pipeline_placement
+                .cores
+                .iter()
+                .map(|core| core.core_id.id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let resolved_numa_nodes = pipeline_placement
+                .cores
+                .iter()
+                .map(|core| core.numa_node_id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
             otel_info!(
                 "pipeline.core_allocation",
                 pipeline_group_id = pipeline_entry.pipeline_group_id.as_ref(),
                 pipeline_id = pipeline_entry.pipeline_id.as_ref(),
                 num_cores = num_cores,
-                core_allocation = core_allocation
+                core_allocation = core_allocation,
+                resolved_cores = resolved_cores,
+                resolved_numa_nodes = resolved_numa_nodes
             );
 
             for placement in &pipeline_placement.cores {
@@ -2008,7 +2022,7 @@ impl<
         available_core_ids: &[CoreId],
         topology: &NumaTopology,
     ) -> Vec<CoreId> {
-        let mut visible: Vec<_> = if topology.is_unknown() {
+        let mut visible: Vec<_> = if topology.visible_cpus().is_empty() {
             available_core_ids.to_vec()
         } else {
             available_core_ids
@@ -2076,20 +2090,12 @@ impl<
                             available: available_core_ids.iter().map(|c| c.id).collect(),
                         })
                     } else {
-                        let selected = PlacementPlanner::new(topology).select_core_count(
-                            &available_core_ids,
-                            reserved_core_ids,
-                            count,
-                        );
-                        if selected.len() == count {
-                            Ok(selected)
-                        } else {
-                            Err(Error::InvalidCoreAllocation {
+                        PlacementPlanner::new(topology)
+                            .select_core_count(&available_core_ids, reserved_core_ids, count)
+                            .map_err(|err| Error::InvalidCoreAllocation {
                                 alloc: core_allocation.clone(),
                                 message: format!(
-                                    "Requested {} cores but only {} unreserved cores available on this system",
-                                    count,
-                                    selected.len()
+                                    "Requested {count} cores but placement strategy could not produce a valid unreserved core set: {err}"
                                 ),
                                 available: available_core_ids
                                     .iter()
@@ -2097,7 +2103,6 @@ impl<
                                     .map(|core| core.id)
                                     .collect(),
                             })
-                        }
                     }
                 }
                 None => {
@@ -3012,6 +3017,24 @@ groups: {{}}
     }
 
     #[test]
+    fn unknown_topology_with_visible_cpus_still_filters_available_cores() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::from([2, 3]),
+            TopologyCompleteness::Unknown,
+        );
+        let result = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::all_cores(),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .unwrap();
+
+        assert_eq!(to_ids(&result), vec![2, 3]);
+    }
+
+    #[test]
     fn select_filters_to_topology_visible_cpus() {
         let topology = synthetic_topology(&[(2, 0), (3, 0), (6, 1), (7, 1)]);
         let result = Controller::<()>::select_cores_for_allocation_with_placement(
@@ -3600,7 +3623,9 @@ groups: {{}}
         match err {
             Error::InvalidCoreAllocation { message, .. } => {
                 assert!(
-                    message.contains("Requested 5 cores but only 3 unreserved cores available"),
+                    message.contains(
+                        "Requested 5 cores but placement strategy could not produce a valid unreserved core set"
+                    ),
                     "unexpected message: {message}"
                 );
             }

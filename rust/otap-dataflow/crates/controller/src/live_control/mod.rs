@@ -147,6 +147,7 @@ impl<
             memory_pressure_tx,
             state: Mutex::new(ControllerRuntimeState {
                 live_config,
+                config_revision: 0,
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 pending_instance_exits: HashMap::new(),
@@ -201,6 +202,7 @@ impl<
                 resolved,
                 active_generation: generation,
                 placement,
+                placement_generation: 0,
             },
         );
     }

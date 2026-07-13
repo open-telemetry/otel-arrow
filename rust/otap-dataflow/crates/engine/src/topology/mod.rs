@@ -140,11 +140,7 @@ impl NumaTopology {
             .iter()
             .any(|cpu| !cpu_to_node.contains_key(cpu));
         let completeness = if cpu_to_node.is_empty() {
-            if visible_cpus.is_empty() {
-                TopologyCompleteness::Unknown
-            } else {
-                TopologyCompleteness::Partial
-            }
+            TopologyCompleteness::Unknown
         } else if has_unmapped_visible_cpus {
             TopologyCompleteness::Partial
         } else {
@@ -202,6 +198,8 @@ impl NumaTopology {
 
 /// Parses a Linux cpulist such as `0-3,8,10-12`.
 pub(crate) fn parse_cpu_list(input: &str) -> Result<BTreeSet<u32>, ParseCpuListError> {
+    const MAX_CPU_LIST_CPUS: usize = 1_048_576;
+
     let input = input.trim();
     if input.is_empty() {
         return Err(ParseCpuListError::Empty);
@@ -228,6 +226,12 @@ pub(crate) fn parse_cpu_list(input: &str) -> Result<BTreeSet<u32>, ParseCpuListE
             if lo > hi {
                 return Err(ParseCpuListError::ReversedRange(lo, hi));
             }
+            let range_len = u64::from(hi) - u64::from(lo) + 1;
+            if range_len > MAX_CPU_LIST_CPUS as u64
+                || cpus.len().saturating_add(range_len as usize) > MAX_CPU_LIST_CPUS
+            {
+                return Err(ParseCpuListError::RangeTooLarge(lo, hi));
+            }
             for cpu in lo..=hi {
                 _ = cpus.insert(cpu);
             }
@@ -251,6 +255,8 @@ pub(crate) enum ParseCpuListError {
     BadRange(String),
     #[error("reversed range `{0}-{1}` in cpulist")]
     ReversedRange(u32, u32),
+    #[error("CPU range `{0}-{1}` is too large")]
+    RangeTooLarge(u32, u32),
     #[error("invalid cpu id `{0}` in cpulist")]
     BadCpu(String),
 }
@@ -294,6 +300,10 @@ mod tests {
             parse_cpu_list("4-2").unwrap_err(),
             ParseCpuListError::ReversedRange(4, 2)
         );
+        assert_eq!(
+            parse_cpu_list("0-4294967295").unwrap_err(),
+            ParseCpuListError::RangeTooLarge(0, u32::MAX)
+        );
     }
 
     #[test]
@@ -312,7 +322,7 @@ mod tests {
             TopologyCompleteness::Partial,
         );
 
-        assert_eq!(topology.completeness(), TopologyCompleteness::Partial);
+        assert_eq!(topology.completeness(), TopologyCompleteness::Unknown);
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([2, 3]));
         assert!(topology.visible_nodes().is_empty());
         assert_eq!(topology.numa_node(2), None);

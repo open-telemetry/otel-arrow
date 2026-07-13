@@ -386,6 +386,9 @@ Behavior:
 - Placement-sensitive rollouts are planned before they start. Desired
   `core_set` pipelines are considered before desired `core_count` pipelines so
   controller-selected `core_count` placements avoid explicit core requests.
+- `core_count` placements avoid both committed `core_set` cores and other
+  committed or in-flight `core_count` cores. Explicit `core_set` pipelines may
+  still overlap other explicit `core_set` pipelines as operator intent.
 - Reconciliation rejects placement changes that would require another live
   pipeline to vacate cores first. Stage those transitions manually, for example
   by resizing or deleting the conflicting pipeline before reconciling the full
