@@ -1,0 +1,19 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: admin
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: >-
+  Hardened security response headers (`X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+  `Cache-Control: no-store, no-cache, must-revalidate`) are now applied to
+  all `/api/v1/*` API endpoints via an Axum `map_response` middleware layer.
+  Previously these headers were only set on static UI routes in `dashboard.rs`.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [3445]
