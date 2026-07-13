@@ -205,10 +205,9 @@ mod fresh_start_tests {
 mod imp {
     #![allow(unsafe_code)]
 
-    use crate::receivers::journald_receiver::arrow_records_encoder::{JournalEntry, JournalField};
-    use crate::receivers::journald_receiver::config::{
-        ExtractionConfig, LargeFieldPolicy, RuntimeConfig,
-    };
+    use crate::receivers::journald_receiver::arrow_records_encoder::JournalEntry;
+    use crate::receivers::journald_receiver::config::{ExtractionConfig, RuntimeConfig};
+    use crate::receivers::journald_receiver::decode;
 
     use libc::{RTLD_NOW, c_char, c_int, c_void, size_t};
     use std::ffi::{CStr, CString};
@@ -219,7 +218,6 @@ mod imp {
 
     const SD_JOURNAL_LOCAL_ONLY: c_int = 1;
     const SD_JOURNAL_OS_ROOT: c_int = 16;
-    const FIELD_NAME_THRESHOLD_HEADROOM_BYTES: u64 = 4096;
 
     type SdJournal = c_void;
     type OpenFn = unsafe extern "C" fn(*mut *mut SdJournal, c_int) -> c_int;
@@ -588,78 +586,90 @@ mod imp {
                 "sd_journal_get_realtime_usec",
             )?;
 
+            // Decode the entry's fields incrementally. `EnumerateData::next_field`
+            // hands out each `sd_journal_enumerate_data` slice borrowed only for
+            // the duration of the `feed` call (those buffers are invalidated by
+            // the next enumerate call), and `FieldDecoder` copies every kept
+            // field out before the next slice is fetched — so the MESSAGE payload
+            // is stored once, never cloned a second time for the log body.
             unsafe { (self.lib.restart_data)(self.journal.as_ptr()) };
-            let mut fields = Vec::with_capacity(self.extraction.max_fields_per_entry.min(64));
-            let mut copied_entry_bytes = 0u64;
-            let mut copied_field_count = 0usize;
-            let mut dropped_fields = 0u64;
-            let mut message_seen = false;
-            let mut message_body = None;
-            loop {
-                let mut data: *const c_void = std::ptr::null();
-                let mut len: size_t = 0;
-                let rc = unsafe {
-                    (self.lib.enumerate_data)(self.journal.as_ptr(), &mut data, &mut len)
-                };
-                if rc < 0 {
-                    return Err(JournalError::SystemdCall {
-                        operation: "sd_journal_enumerate_data",
-                        rc,
-                    });
-                }
-                if rc == 0 {
-                    break;
-                }
-                let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
-                if let Some(eq) = bytes.iter().position(|b| *b == b'=') {
-                    let is_first_message = if !message_seen && &bytes[..eq] == b"MESSAGE" {
-                        message_seen = true;
-                        true
-                    } else {
-                        false
-                    };
-                    let value_len = bytes.len().saturating_sub(eq + 1) as u64;
-                    let field_len = bytes.len() as u64;
-                    let possibly_truncated =
-                        field_len >= extraction_data_threshold_u64(&self.extraction);
-                    let would_exceed_entry = copied_entry_bytes.saturating_add(field_len)
-                        > self.extraction.max_entry_bytes;
-                    let should_drop = possibly_truncated
-                        || value_len > self.extraction.max_field_bytes
-                        || copied_field_count >= self.extraction.max_fields_per_entry
-                        || would_exceed_entry;
-                    if should_drop {
-                        match self.extraction.large_field_policy {
-                            LargeFieldPolicy::DropAndCount => {
-                                dropped_fields = dropped_fields.saturating_add(1);
-                                continue;
-                            }
-                        }
-                    }
-                    let name = match std::str::from_utf8(&bytes[..eq]) {
-                        Ok(name) => name.to_owned(),
-                        Err(_) => {
-                            dropped_fields = dropped_fields.saturating_add(1);
-                            continue;
-                        }
-                    };
-                    let value = bytes[eq + 1..].to_vec();
-                    if is_first_message {
-                        message_body = Some(value.clone());
-                    }
-                    fields.push(JournalField { name, value });
-                    copied_entry_bytes = copied_entry_bytes.saturating_add(field_len);
-                    copied_field_count = copied_field_count.saturating_add(1);
-                }
+            let reader: &SdJournalReader = self;
+            let mut enumerate = EnumerateData::new(reader);
+            let mut decoder = decode::FieldDecoder::new(&reader.extraction);
+            while let Some(bytes) = enumerate.next_field() {
+                decoder.feed(bytes);
             }
+            if let Some(rc) = enumerate.error {
+                return Err(JournalError::SystemdCall {
+                    operation: "sd_journal_enumerate_data",
+                    rc,
+                });
+            }
+            let decoded = decoder.finish();
 
             Ok(JournalEntry {
                 cursor,
-                message_body,
+                message_body_index: decoded.message_body_index,
                 realtime_unix_nano: realtime_usec.saturating_mul(1000),
-                fields,
-                dropped_fields,
+                fields: decoded.fields,
+                dropped_fields: decoded.dropped_fields,
             })
+        }
+    }
+
+    /// A lending reader over the current entry's raw `name=value` field slices,
+    /// wrapping `sd_journal_enumerate_data`.
+    ///
+    /// Each slice returned by [`EnumerateData::next_field`] borrows journald-owned
+    /// memory that is only valid until the *next* `sd_journal_enumerate_data`
+    /// call. That contract is modelled precisely by borrowing `&mut self` for the
+    /// returned slice's lifetime: the borrow checker forbids fetching the next
+    /// field (or otherwise touching `self`) while a slice is still held, so a
+    /// slice can never be aliased past the call that invalidates it. This is
+    /// deliberately NOT a `std::iter::Iterator` — a non-lending `Item` would let
+    /// safe code `collect()` the slices or hold two at once, an immediate
+    /// use-after-free.
+    struct EnumerateData<'j> {
+        reader: &'j SdJournalReader,
+        /// First negative `sd_journal_enumerate_data` return code, if any.
+        /// Enumeration ends on error; the caller inspects this afterward and maps
+        /// it to a `JournalError`.
+        error: Option<c_int>,
+    }
+
+    impl<'j> EnumerateData<'j> {
+        fn new(reader: &'j SdJournalReader) -> Self {
+            Self {
+                reader,
+                error: None,
+            }
+        }
+
+        /// Fetch the next raw `name=value` field, or `None` at end-of-entry or on
+        /// error (recorded in `self.error`). The returned slice borrows `self`,
+        /// so it must be consumed before the next call.
+        fn next_field(&mut self) -> Option<&[u8]> {
+            if self.error.is_some() {
+                return None;
+            }
+            let mut data: *const c_void = std::ptr::null();
+            let mut len: size_t = 0;
+            let rc = unsafe {
+                (self.reader.lib.enumerate_data)(self.reader.journal.as_ptr(), &mut data, &mut len)
+            };
+            if rc < 0 {
+                self.error = Some(rc);
+                return None;
+            }
+            if rc == 0 {
+                return None;
+            }
+            // SAFETY: on a positive return, `data`/`len` describe a buffer owned by
+            // the journal, valid until the next `sd_journal_enumerate_data` call.
+            // The returned slice borrows `&mut self`, so the borrow checker
+            // prevents another `next_field` call (which would invalidate it) while
+            // it is still held — matching the FFI's documented lifetime exactly.
+            Some(unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) })
         }
     }
 
@@ -672,15 +682,7 @@ mod imp {
     }
 
     fn extraction_data_threshold(extraction: &ExtractionConfig) -> size_t {
-        extraction_data_threshold_u64(extraction).min(size_t::MAX as u64) as size_t
-    }
-
-    fn extraction_data_threshold_u64(extraction: &ExtractionConfig) -> u64 {
-        extraction
-            .max_field_bytes
-            .saturating_add(FIELD_NAME_THRESHOLD_HEADROOM_BYTES)
-            .min(extraction.max_entry_bytes)
-            .max(1)
+        decode::extraction_data_threshold_u64(extraction).min(size_t::MAX as u64) as size_t
     }
 
     impl super::JournalSeek for SdJournalReader {
