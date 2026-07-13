@@ -20,6 +20,7 @@ otap-df-otap = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
+async-lock.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 linkme.workspace = true

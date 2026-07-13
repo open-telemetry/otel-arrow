@@ -13,6 +13,8 @@ use azure_identity::{
 };
 use otap_df_engine::capability::BearerToken;
 
+use crate::azure_identity_auth::arc_managed_identity::{ArcManagedIdentity, is_arc_environment};
+
 use super::config::{AuthMethod, Config};
 use super::error::Error;
 
@@ -68,12 +70,23 @@ fn create_credential(config: &Config) -> Result<Arc<dyn TokenCredential>, Error>
             if let Some(client_id) = &config.client_id {
                 options.user_assigned_id = Some(UserAssignedId::ClientId(client_id.clone()));
             }
-            let cred = ManagedIdentityCredential::new(Some(options)).map_err(|source| {
-                Error::CreateCredential {
-                    method: AuthMethod::ManagedIdentity,
-                    source,
-                }
-            })?;
+
+            let cred: Arc<dyn TokenCredential> = if is_arc_environment() {
+                ArcManagedIdentity::new(Some(options)).map_err(|source| {
+                    Error::CreateCredential {
+                        method: AuthMethod::ManagedIdentity,
+                        source,
+                    }
+                })?
+            } else {
+                ManagedIdentityCredential::new(Some(options)).map_err(|source| {
+                    Error::CreateCredential {
+                        method: AuthMethod::ManagedIdentity,
+                        source,
+                    }
+                })?
+            };
+
             Ok(cred)
         }
         AuthMethod::Development => {
