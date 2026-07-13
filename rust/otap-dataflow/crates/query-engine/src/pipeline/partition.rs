@@ -12,7 +12,8 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use arrow::array::{
-    Array, ArrayRef, BooleanArray, BooleanBufferBuilder, StructArray, UInt8Array, make_comparator,
+    Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, BooleanBufferBuilder, DynComparator,
+    StructArray, UInt8Array, make_comparator,
 };
 use arrow::buffer::{BooleanBuffer, MutableBuffer};
 use arrow::compute::SortOptions;
@@ -20,6 +21,7 @@ use arrow::datatypes::DataType;
 use arrow::util::bit_util;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::ColumnarValue;
+use datafusion::object_store::AttributeValue;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
@@ -321,8 +323,13 @@ fn partition(
     match eval_result.values {
         ColumnarValue::Array(array) => {
             if is_any_value_data_type(array.data_type()) {
-                // TODO need to partition any values
-                todo!()
+                partition_any_value_struct_array(
+                    array.as_struct(),
+                    otap_batch,
+                    result_partitions,
+                    range_coalescer,
+                    id_bitmap_pool,
+                )
             } else {
                 partition_simple_array(
                     array,
@@ -340,6 +347,7 @@ fn partition(
                 PartitionValue::try_from_scalar(scalar)?,
                 otap_batch,
             ));
+
             Ok(())
         }
     }
@@ -352,14 +360,60 @@ fn partition_simple_array(
     range_coalescer: &mut PartitionRangeCoalescer,
     id_bitmap_pool: &mut IdBitmapPool,
 ) -> Result<()> {
-    let num_rows = array.len();
-
     // TODO - should use the logic from distinct here?
     let cmp = make_comparator(&array, &array, SortOptions::default())?;
     let boundaries: BooleanBuffer = (0..array.len() - 1)
         .map(|i| !cmp(i, i + 1).is_eq())
         .collect();
 
+    partition_at_boundaries(
+        array.as_ref(),
+        boundaries,
+        otap_batch,
+        result,
+        range_coalescer,
+        id_bitmap_pool,
+        &|i1, i2| Ok(cmp(i1, i2)),
+    )
+}
+
+fn partition_any_value_struct_array(
+    array: &StructArray,
+    otap_batch: OtapArrowRecords,
+    result: &mut Vec<Partition>,
+    range_coalescer: &mut PartitionRangeCoalescer,
+    id_bitmap_pool: &mut IdBitmapPool,
+) -> Result<()> {
+    let comparator = AnyValueStructComparator::try_new(array)?;
+    let boundaries: BooleanBuffer = (0..array.len() - 1)
+        .map(|i| !comparator.cmp(i, i + 1).unwrap().is_eq())
+        .collect();
+
+    partition_at_boundaries(
+        array,
+        boundaries,
+        otap_batch,
+        result,
+        range_coalescer,
+        id_bitmap_pool,
+        &|i1, i2| comparator.cmp(i1, i2),
+    )
+}
+
+fn partition_at_boundaries(
+    array: &dyn Array,
+    boundaries: BooleanBuffer,
+    otap_batch: OtapArrowRecords,
+    result: &mut Vec<Partition>,
+    range_coalescer: &mut PartitionRangeCoalescer,
+    id_bitmap_pool: &mut IdBitmapPool,
+    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+) -> Result<()> {
+    // TODO remove this
+    let dbg_boundaries = BooleanArray::new(boundaries.clone(), None);
+    println!("dbg_boundaries = {dbg_boundaries:?}");
+
+    let num_rows = boundaries.len() + 1;
     for group in range_coalescer
         .coalesce_groups(num_rows, boundaries, &cmp)
         .into_iter()
@@ -371,82 +425,133 @@ fn partition_simple_array(
         ));
         let filtered = filter_otap_batch(&selection_vec, &otap_batch, id_bitmap_pool)?;
         let partition_value =
-            PartitionValue::try_from_array_value(array.as_ref(), group.representative_row)?;
+            PartitionValue::try_from_array_value(array, group.representative_row)?;
         result.push(Partition::new(partition_value, filtered));
     }
 
     Ok(())
 }
 
-fn partition_anyvalue_struct_array(array: &StructArray) -> Result<()> {
-    let num_rows = array.len();
-    let Some(type_col) = array.column_by_name(consts::ATTRIBUTE_TYPE) else {
-        todo!("missing type col")
-    };
+/// Wrapper around the fields from an AnyValue struct array that will compare the attribute values
+/// at two indices. This is functionally equivalent to arrow's [`make_comparator`], but its
+/// comparison implementation understands the semantics of how OTAP represents AnyValues.
+struct AnyValueStructComparator<'a> {
+    type_col: &'a UInt8Array,
+    str_comparator: Option<DynComparator>,
+    int_comparator: Option<DynComparator>,
+    float_comparator: Option<DynComparator>,
+    bool_comparator: Option<DynComparator>,
+    bytes_comparator: Option<DynComparator>,
+    ser_comparator: Option<DynComparator>,
+    // TODO - add fields for int, double, bool, bytes ser
+}
 
-    let Some(type_col) = type_col.as_any().downcast_ref::<UInt8Array>() else {
-        todo!("invalid type col")
-    };
-    let type_cmp = make_comparator(type_col, type_col, SortOptions::default())?;
-    let mut values_comparators = [None, None, None, None, None, None, None, None, None, None];
-    let mut all_null = [false, false, false, false, false, false, false, false];
-    let mut curr_type_eq_range_start = 0;
-    let mut i = 1;
+impl<'a> AnyValueStructComparator<'a> {
+    fn try_new(anyval_struct_arr: &'a StructArray) -> Result<Self> {
+        let type_col = anyval_struct_arr
+            .column_by_name(consts::ATTRIBUTE_TYPE)
+            .unwrap()
+            .as_any()
+            .downcast_ref()
+            .unwrap();
 
-    let mut boundaries_builder = MutableBuffer::from_len_zeroed(num_rows);
-
-    let mut update_boundaries = move |range: Range<usize>| {
-        let type_encoded = type_col.values()[range.start];
-        let Ok(attr_type) = AttributeValueType::try_from(type_encoded) else {
-            todo!("invalid type")
-        };
-
-        if values_comparators[type_encoded as usize].is_none() && !all_null[type_encoded as usize] {
-            let col = match attr_type {
-                AttributeValueType::Str => array.column_by_name(consts::ATTRIBUTE_STR),
-                _ => {
-                    todo!()
-                }
-            };
-
-            match col {
-                Some(col) => {
-                    values_comparators[type_encoded as usize] =
-                        Some(make_comparator(col, col, SortOptions::default())?);
-                }
-                None => all_null[type_encoded as usize] = true,
-            }
-        }
-
-        if all_null[type_encoded as usize] {
-            set_range_bits(curr_type_eq_range_start..i, &mut boundaries_builder);
-        } else {
-            let val_cmp = values_comparators[type_encoded as usize].as_ref().unwrap();
-            let mut val_eq_range_start = curr_type_eq_range_start;
-            let mut j = val_eq_range_start + 1;
-            while j < i {
-                if val_cmp(val_eq_range_start, j).is_ne() {
-                    set_range_bits(val_eq_range_start..j, &mut boundaries_builder);
-                    val_eq_range_start = j;
-                }
-                j += 1;
-            }
-        }
-
-        Ok::<(), Error>(())
-    };
-
-    while i < num_rows {
-        if type_cmp(curr_type_eq_range_start, i).is_ne() {
-            update_boundaries(curr_type_eq_range_start..i)?;
-            curr_type_eq_range_start = i;
-        }
-        i += 1;
+        Ok(Self {
+            type_col,
+            str_comparator: anyval_struct_arr
+                .column_by_name(consts::ATTRIBUTE_STR)
+                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .transpose()?,
+            int_comparator: anyval_struct_arr
+                .column_by_name(consts::ATTRIBUTE_INT)
+                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .transpose()?,
+            float_comparator: anyval_struct_arr
+                .column_by_name(consts::ATTRIBUTE_DOUBLE)
+                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .transpose()?,
+            bool_comparator: anyval_struct_arr
+                .column_by_name(consts::ATTRIBUTE_BOOL)
+                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .transpose()?,
+            bytes_comparator: anyval_struct_arr
+                .column_by_name(consts::ATTRIBUTE_BYTES)
+                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .transpose()?,
+            ser_comparator: anyval_struct_arr
+                .column_by_name(consts::ATTRIBUTE_SER)
+                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .transpose()?,
+        })
     }
 
-    update_boundaries(curr_type_eq_range_start..i)?;
+    // TODO - this
+    fn cmp(&self, i1: usize, i2: usize) -> Result<Ordering> {
+        let type1 = self.type_col.values()[i1];
+        let type2 = self.type_col.values()[i2];
 
-    todo!()
+        match type1.compare(type2) {
+            Ordering::Equal => {
+                if type1 == AttributeValueType::Empty as u8 {
+                    return Ok(Ordering::Equal);
+                }
+
+                if type1 == AttributeValueType::Str as u8 {
+                    return Ok(if let Some(cmp) = self.str_comparator.as_ref() {
+                        cmp(i1, i2)
+                    } else {
+                        Ordering::Equal
+                    });
+                }
+
+                if type1 == AttributeValueType::Int as u8 {
+                    return Ok(if let Some(cmp) = self.int_comparator.as_ref() {
+                        cmp(i1, i2)
+                    } else {
+                        Ordering::Equal
+                    });
+                }
+
+                if type1 == AttributeValueType::Double as u8 {
+                    return Ok(if let Some(cmp) = self.float_comparator.as_ref() {
+                        cmp(i1, i2)
+                    } else {
+                        Ordering::Equal
+                    });
+                }
+
+                if type1 == AttributeValueType::Bool as u8 {
+                    return Ok(if let Some(cmp) = self.bool_comparator.as_ref() {
+                        cmp(i1, i2)
+                    } else {
+                        Ordering::Equal
+                    });
+                }
+
+                if type1 == AttributeValueType::Bytes as u8 {
+                    return Ok(if let Some(cmp) = self.bytes_comparator.as_ref() {
+                        cmp(i1, i2)
+                    } else {
+                        Ordering::Equal
+                    });
+                }
+
+                if type1 == AttributeValueType::Slice as u8
+                    || type1 == AttributeValueType::Map as u8
+                {
+                    return Ok(if let Some(cmp) = self.ser_comparator.as_ref() {
+                        cmp(i1, i2)
+                    } else {
+                        Ordering::Equal
+                    });
+                }
+
+                return Err(Error::ExecutionError {
+                    cause: format!("Invalid attribute type enum value {type1:?}"),
+                });
+            }
+            other => Ok(other),
+        }
+    }
 }
 
 struct PartitionRangeCoalescer {
@@ -462,7 +567,7 @@ impl PartitionRangeCoalescer {
         &mut self,
         source_len: usize,
         partition_boundaries: BooleanBuffer,
-        cmp: &dyn Fn(usize, usize) -> Ordering,
+        cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
     ) -> impl IntoIterator<Item = CoalescingGroup> {
         coalesce_groups(source_len, partition_boundaries, cmp, &mut self.groups);
 
@@ -478,7 +583,7 @@ struct CoalescingGroup {
 fn coalesce_groups(
     source_len: usize,
     partition_boundaries: BooleanBuffer,
-    cmp: &dyn Fn(usize, usize) -> Ordering,
+    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
     groups: &mut Vec<CoalescingGroup>,
 ) {
     let mut current = 0;
@@ -497,12 +602,12 @@ fn coalesce_groups(
 fn append_range_to_groups(
     source_len: usize,
     range: Range<usize>,
-    cmp: &dyn Fn(usize, usize) -> Ordering,
+    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
     groups: &mut Vec<CoalescingGroup>,
 ) {
     let match_group = groups
         .iter_mut()
-        .find(|group| cmp(group.representative_row, range.start).is_eq());
+        .find(|group| cmp(group.representative_row, range.start).unwrap().is_eq());
 
     if let Some(group) = match_group {
         set_range_bits(range, &mut group.selection_vec_builder);
@@ -548,13 +653,19 @@ fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
 mod test {
     use std::sync::Arc;
 
-    use arrow::array::{BooleanArray, UInt8Array};
+    use arrow::array::{
+        BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, StructArray, UInt8Array,
+    };
     use arrow::buffer::BooleanBuffer;
     use arrow::compute::kernels::cmp::distinct;
+    use arrow::datatypes::{DataType, Field, Fields};
     use datafusion::logical_expr::col;
     use otap_df_pdata::otap::filter::IdBitmapPool;
+    use otap_df_pdata::otlp::attributes::AttributeValueType;
     use otap_df_pdata::proto::OtlpProtoMessage;
-    use otap_df_pdata::proto::opentelemetry::common::v1::InstrumentationScope;
+    use otap_df_pdata::proto::opentelemetry::common::v1::{
+        AnyValue, InstrumentationScope, KeyValue,
+    };
     use otap_df_pdata::proto::opentelemetry::logs::v1::{
         LogRecord, LogsData, ResourceLogs, ScopeLogs,
     };
@@ -564,7 +675,9 @@ mod test {
 
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::{DataScope, LeafEval, ScopedExpr};
-    use crate::pipeline::partition::PartitionRangeCoalescer;
+    use crate::pipeline::partition::{
+        AnyValueStructComparator, PartitionRangeCoalescer, Partitioner,
+    };
 
     use super::partition;
 
@@ -759,7 +872,7 @@ mod test {
     }
 
     #[test]
-    fn test_partition_anyvalue_struct_array() {
+    fn test_partition_anyvalue_struct_array_homogenous_type_no_nulls() {
         /// Returns a mask with bits set whenever the value or nullability changes
         fn find_boundaries(v: &dyn arrow::array::Array) -> BooleanBuffer {
             let slice_len = v.len() - 1;
@@ -767,14 +880,6 @@ mod test {
             let v2 = v.slice(1, slice_len);
 
             distinct(&v1, &v2).unwrap().values().clone()
-
-            // if supports_distinct(v.data_type()) {
-            //     return Ok(distinct(&v1, &v2)?.values().clone());
-            // }
-            // // Given that we're only comparing values, null ordering in the input or
-            // // sort options do not matter.
-            // let cmp = make_comparator(&v1, &v2, SortOptions::default())?;
-            // Ok((0..slice_len).map(|i| !cmp(i, i).is_eq()).collect())
         }
 
         let test_referenec = UInt8Array::from_iter_values([0, 0, 1, 1, 1, 2, 2, 2, 0, 1, 2, 2]);
@@ -784,5 +889,234 @@ mod test {
 
         let ba = BooleanArray::new(result, None);
         println!("ref result {ba:?}");
+
+        // --- TODO delete everything above this line
+
+        let otap = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                    ],
+                )],
+            ),
+        ])));
+
+        let mut partitioner =
+            Partitioner::try_new_from_opl_expression("attributes[\"x\"]").unwrap();
+        let partitions = partitioner
+            .partition(otap)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
+        assert_eq!(partitions.len(), 3);
+    }
+
+    #[test]
+    fn test_anyval_comparator_type_and_value_logic() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+                Field::new(consts::ATTRIBUTE_INT, DataType::Int64, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                    AttributeValueType::Int as u8,
+                ])),
+                Arc::new(StringArray::from_iter_values(["a", "a", "b", "", "", ""])),
+                Arc::new(Int64Array::from_iter_values([0, 0, 0, 0, 0, 1])),
+            ],
+            // TODO test with nulls
+            None,
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+
+        assert!(comparator.cmp(0, 1).unwrap().is_eq()); // equivalent strings
+        assert!(comparator.cmp(1, 2).unwrap().is_ne()); // non-equivalent strings
+        assert!(comparator.cmp(2, 3).unwrap().is_ne()); // non-matching types
+        assert!(comparator.cmp(3, 4).unwrap().is_eq()); // matching ints
+        assert!(comparator.cmp(4, 5).unwrap().is_ne()); // non-matching ints
+    }
+
+    // TODO
+    // - test missing columns
+    // - test nulls in values column
+    // - test null in struct array?
+
+    #[test]
+    fn test_anyval_comparator_bool() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_BOOL, DataType::Boolean, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Bool as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(BooleanArray::from(vec![true, true, false, false])),
+            ],
+            None,
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_anyval_comparator_double() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_DOUBLE, DataType::Float64, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Double as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(Float64Array::from_iter_values([0.1, 0.1, 0.0, 0.0])),
+            ],
+            None,
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_anyval_compartor_bytes() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_BYTES, DataType::Binary, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Bytes as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(BinaryArray::from_iter_values([b"0", b"0", b"1", b"1"])),
+            ],
+            None,
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_anyval_comparator_slice_and_map() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_SER, DataType::Binary, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Map as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Slice as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(BinaryArray::from_iter_values([
+                    b"0", b"0", b"1", b"1", b"1", b"2", b"b",
+                ])),
+            ],
+            None,
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_ne());
+        assert!(comparator.cmp(3, 4).unwrap().is_eq());
+        assert!(comparator.cmp(4, 5).unwrap().is_ne());
+        assert!(comparator.cmp(5, 6).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_anyval_comparator_empty() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![Field::new(
+                consts::ATTRIBUTE_TYPE,
+                DataType::UInt8,
+                false,
+            )]),
+            vec![Arc::new(UInt8Array::from_iter_values([
+                AttributeValueType::Empty as u8,
+                AttributeValueType::Empty as u8,
+                AttributeValueType::Str as u8,
+            ]))],
+            None,
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
     }
 }
