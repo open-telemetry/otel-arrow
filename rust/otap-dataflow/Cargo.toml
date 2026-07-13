@@ -119,7 +119,6 @@ linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
 mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
-libmimalloc-sys = { version = "0.1.49", features = ["extended"] }
 tikv-jemallocator = { version = "0.7.0" }
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "0.7.0"
