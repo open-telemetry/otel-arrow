@@ -21,7 +21,7 @@ pub enum Error {
 
     // ==================== Authentication Errors ====================
     /// Authentication/authorization error.
-    #[error("Auth error ({kind})")]
+    #[error("Auth error ({kind}){}", body.as_ref().map(|b| format!(": {b}")).unwrap_or_default())]
     Auth {
         /// The kind of authentication error.
         kind: AuthErrorKind,
@@ -292,14 +292,20 @@ mod tests {
     #[test]
     fn test_auth_unauthorized_message() {
         let error = Error::unauthorized("invalid token".to_string());
-        assert_eq!(error.to_string(), "Auth error (unauthorized)");
+        assert_eq!(
+            error.to_string(),
+            "Auth error (unauthorized): invalid token"
+        );
         assert!(error.source().is_none());
     }
 
     #[test]
     fn test_auth_forbidden_message() {
         let error = Error::forbidden("insufficient permissions".to_string());
-        assert_eq!(error.to_string(), "Auth error (forbidden)");
+        assert_eq!(
+            error.to_string(),
+            "Auth error (forbidden): insufficient permissions"
+        );
         assert!(error.source().is_none());
     }
 

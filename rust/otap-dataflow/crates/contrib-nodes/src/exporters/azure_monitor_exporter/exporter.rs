@@ -521,8 +521,8 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
         let mut next_heartbeat_send = tokio::time::Instant::now();
 
         // pdata is not accepted until we have a valid token with sufficient
-        // remaining lifetime. `token_expiry_at` starts in the past so that
-        // `has_token` is false until the first token arrives.
+        // remaining lifetime. `token_expiry_at` starts at `now`, so `has_token`
+        // is false (the usable-margin check fails) until the first token arrives.
         let mut token_expiry_at = tokio::time::Instant::now();
 
         loop {
@@ -649,6 +649,7 @@ mod tests {
     use super::super::config::{ApiConfig, HeartbeatConfig, SchemaConfig};
     use super::*;
     use bytes::Bytes;
+    use futures::StreamExt;
     use http::StatusCode;
     use otap_df_channel::mpsc;
     use otap_df_engine::Interests;
