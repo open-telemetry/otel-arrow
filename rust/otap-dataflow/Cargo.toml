@@ -31,6 +31,7 @@ path = "src/main.rs"
 
 [dependencies]
 otap-df-config.workspace = true
+otap-df-contrib-extensions.workspace = true
 otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
@@ -50,6 +51,7 @@ otap-df-admin-types = { path = "crates/admin-types" }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
+otap-df-contrib-extensions = { path = "crates/contrib-extensions" }
 otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-control-channel = { path = "crates/control-channel" }
 otap-df-controller = { path = "crates/controller" }
@@ -57,6 +59,7 @@ otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
+otap-df-test-net = { path = "crates/otap-test-net" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 otap-df-telemetry = { path = "crates/telemetry" }
@@ -78,7 +81,7 @@ arrow-select = { version = "58.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
-axum = "0.8.4"
+axum = { version = "0.8.4", features = ["ws"] }
 base64 = "0.22.1"
 bitflags = "2.10"
 bytes = "1.11.1"
@@ -100,6 +103,7 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
+futures-util = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
@@ -146,7 +150,6 @@ paste = "1"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
-portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 prometheus = "0.14.0"
@@ -185,6 +188,7 @@ thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
 tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process"] }
+tokio-tungstenite = { version = "0.29.0" }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
 tonic = { version = "0.14", default-features = false, features = [
@@ -208,11 +212,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
@@ -298,6 +302,9 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib extensions (opt-in) - in contrib-extensions
+contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
+azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]

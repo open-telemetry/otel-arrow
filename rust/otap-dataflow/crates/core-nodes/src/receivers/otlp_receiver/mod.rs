@@ -1846,7 +1846,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -1885,10 +1885,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -1986,7 +1986,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2077,10 +2077,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2139,10 +2139,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2211,10 +2211,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2302,10 +2302,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2367,10 +2367,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2432,10 +2432,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2544,7 +2544,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -2629,7 +2629,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2715,10 +2715,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2796,10 +2796,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2861,10 +2861,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -2939,7 +2939,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3016,10 +3016,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3120,10 +3120,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3203,10 +3203,10 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3296,9 +3296,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3353,9 +3353,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3410,11 +3410,11 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{grpc_addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3519,11 +3519,11 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{addr}:{grpc_port}");
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
 
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -3709,7 +3709,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3823,7 +3823,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -3940,7 +3940,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
 
@@ -4038,9 +4038,9 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_listen: SocketAddr = format!("{addr}:{grpc_port}").parse().unwrap();
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
@@ -4143,7 +4143,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
-        let http_port = portpicker::pick_unused_port().expect("No free ports");
+        let http_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let http_listen: SocketAddr = format!("{addr}:{http_port}").parse().unwrap();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
