@@ -53,9 +53,45 @@ const PERIODIC_EXPORT_INTERVAL: u64 = 3;
 /// behavior.
 const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
 
-/// Far-future expiry used when the provider supplies a token without a known
-/// expiry instant (treated as "valid until replaced").
-const NO_EXPIRY_HORIZON_SECS: u64 = 365 * 24 * 60 * 60; // ~1 year
+/// The exporter's view of the current bearer token's remaining lifetime.
+///
+/// Models the three states explicitly instead of encoding them in a single
+/// `Instant` with a sentinel: no token yet, a non-expiring token, or a token
+/// with a known expiry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TokenExpiry {
+    /// No usable token yet (before the first token arrives).
+    None,
+    /// A token with no known expiry; valid until replaced.
+    NeverExpires,
+    /// A token that expires at the given monotonic instant.
+    At(tokio::time::Instant),
+}
+
+impl TokenExpiry {
+    /// Derives the expiry state from a provider token. A token without a known
+    /// `expires_on` is treated as non-expiring ("valid until replaced").
+    #[inline]
+    fn from_token(token: &BearerToken) -> Self {
+        match token.expires_on() {
+            Some(expires_on) => Self::At(tokio::time::Instant::from_std(expires_on)),
+            None => Self::NeverExpires,
+        }
+    }
+
+    /// Returns whether the token is still usable at `now`. An expiring token is
+    /// usable only while more than `margin` remains before expiry, so a request
+    /// started now still completes against a valid token; otherwise the exporter
+    /// stops accepting pdata and back-pressures.
+    #[inline]
+    fn is_usable(self, now: tokio::time::Instant, margin: std::time::Duration) -> bool {
+        match self {
+            Self::None => false,
+            Self::NeverExpires => true,
+            Self::At(expiry) => expiry > now + margin,
+        }
+    }
+}
 
 /// Azure Monitor exporter.
 pub struct AzureMonitorExporter {
@@ -119,34 +155,6 @@ impl AzureMonitorExporter {
             heartbeat,
             token_provider,
         })
-    }
-
-    /// Maps a provider token's optional expiry to the monotonic instant at
-    /// which the exporter should consider it expired. A token without a known
-    /// expiry maps to a far-future horizon (`NO_EXPIRY_HORIZON_SECS`), i.e.
-    /// "valid until replaced".
-    #[inline]
-    fn token_expiry_instant(
-        token: &BearerToken,
-        now: tokio::time::Instant,
-    ) -> tokio::time::Instant {
-        match token.expires_on() {
-            Some(expires_on) => tokio::time::Instant::from_std(expires_on),
-            None => now + tokio::time::Duration::from_secs(NO_EXPIRY_HORIZON_SECS),
-        }
-    }
-
-    /// Returns whether a token expiring at `expiry` is still usable at `now`.
-    /// Usable only while more than `margin` remains before expiry, so a request
-    /// started now still completes against a valid token; otherwise the
-    /// exporter stops accepting pdata and back-pressures.
-    #[inline]
-    fn token_is_usable(
-        expiry: tokio::time::Instant,
-        now: tokio::time::Instant,
-        margin: std::time::Duration,
-    ) -> bool {
-        expiry > now + margin
     }
 
     /// Update all gauges (in-flight exports + state map sizes).
@@ -520,16 +528,14 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
             + tokio::time::Duration::from_secs(PERIODIC_EXPORT_INTERVAL);
         let mut next_heartbeat_send = tokio::time::Instant::now();
 
-        // pdata is not accepted until we have a valid token with sufficient
-        // remaining lifetime. `token_expiry_at` starts at `now`, so `has_token`
-        // is false (the usable-margin check fails) until the first token arrives.
-        let mut token_expiry_at = tokio::time::Instant::now();
+        // pdata is not accepted until a usable token arrives. Starts as `None`
+        // so `has_token` is false until the first token is published.
+        let mut token_expiry = TokenExpiry::None;
 
         loop {
             // We have a valid token as long as it won't expire within the
             // usability safety margin.
-            let has_token = Self::token_is_usable(
-                token_expiry_at,
+            let has_token = token_expiry.is_usable(
                 tokio::time::Instant::now(),
                 tokio::time::Duration::from_secs(TOKEN_USABLE_MARGIN_SECS),
             );
@@ -550,8 +556,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                                         hb.update_auth(header.clone());
                                     }
 
-                                    token_expiry_at =
-                                        Self::token_expiry_instant(&token, tokio::time::Instant::now());
+                                    token_expiry = TokenExpiry::from_token(&token);
 
                                     otel_info!("azure_monitor_exporter.auth.token_acquired");
                                 }
@@ -878,8 +883,8 @@ mod tests {
     fn token_usable_when_expiry_beyond_margin() {
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        let expiry = now + Duration::from_secs(TOKEN_USABLE_MARGIN_SECS + 60);
-        assert!(AzureMonitorExporter::token_is_usable(expiry, now, margin));
+        let expiry = TokenExpiry::At(now + Duration::from_secs(TOKEN_USABLE_MARGIN_SECS + 60));
+        assert!(expiry.is_usable(now, margin));
     }
 
     #[test]
@@ -888,8 +893,8 @@ mod tests {
         // an in-flight request can't outlive the token.
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        let expiry = now + Duration::from_secs(TOKEN_USABLE_MARGIN_SECS - 5);
-        assert!(!AzureMonitorExporter::token_is_usable(expiry, now, margin));
+        let expiry = TokenExpiry::At(now + Duration::from_secs(TOKEN_USABLE_MARGIN_SECS - 5));
+        assert!(!expiry.is_usable(now, margin));
     }
 
     #[test]
@@ -898,48 +903,44 @@ mod tests {
         // boundary as not usable.
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        assert!(!AzureMonitorExporter::token_is_usable(
-            now + margin,
-            now,
-            margin
-        ));
+        assert!(!TokenExpiry::At(now + margin).is_usable(now, margin));
     }
 
     #[test]
     fn token_unusable_when_already_expired() {
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        let expiry = now - Duration::from_secs(1);
-        assert!(!AzureMonitorExporter::token_is_usable(expiry, now, margin));
+        let expiry = TokenExpiry::At(now - Duration::from_secs(1));
+        assert!(!expiry.is_usable(now, margin));
     }
 
     #[test]
     fn startup_state_gates_pdata() {
-        // The loop initializes `token_expiry_at = now`, which must read as "no
-        // usable token" so pdata is gated until the first token arrives.
+        // The loop initializes `token_expiry = TokenExpiry::None`, which must
+        // read as "no usable token" so pdata is gated until the first token
+        // arrives.
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        assert!(!AzureMonitorExporter::token_is_usable(now, now, margin));
+        assert!(!TokenExpiry::None.is_usable(now, margin));
     }
 
     #[test]
-    fn expiry_instant_uses_token_expiry_when_present() {
-        let now = tokio::time::Instant::now();
+    fn expiry_uses_token_expiry_when_present() {
         let expires_on = Instant::now() + Duration::from_secs(3600);
         let token = BearerToken::new("secret".to_owned(), Some(expires_on));
         assert_eq!(
-            AzureMonitorExporter::token_expiry_instant(&token, now),
-            tokio::time::Instant::from_std(expires_on)
+            TokenExpiry::from_token(&token),
+            TokenExpiry::At(tokio::time::Instant::from_std(expires_on))
         );
     }
 
     #[test]
-    fn non_expiring_token_maps_to_horizon_and_stays_usable() {
+    fn non_expiring_token_never_expires_and_stays_usable() {
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
         let token = BearerToken::new("secret".to_owned(), None);
-        let expiry = AzureMonitorExporter::token_expiry_instant(&token, now);
-        assert_eq!(expiry, now + Duration::from_secs(NO_EXPIRY_HORIZON_SECS));
-        assert!(AzureMonitorExporter::token_is_usable(expiry, now, margin));
+        let expiry = TokenExpiry::from_token(&token);
+        assert_eq!(expiry, TokenExpiry::NeverExpires);
+        assert!(expiry.is_usable(now, margin));
     }
 }
