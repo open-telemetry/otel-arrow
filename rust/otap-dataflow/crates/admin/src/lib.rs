@@ -13,6 +13,7 @@ mod pipeline_group;
 mod telemetry;
 
 use axum::Router;
+use axum::response::Response;
 pub use otap_df_admin_types::engine::{
     ConfigChangeAction, ConfigChangeStatus, EngineConfigReconcileRequest,
     EngineConfigReconcileState, EngineConfigReconcileStatus, GroupDeleteStatus,
@@ -260,6 +261,33 @@ impl AppState {
     }
 }
 
+/// Attaches hardened security headers to every `/api/v1/*` response.
+///
+/// These are the same policies already applied to UI/static routes in
+/// `dashboard.rs`. Centralising them here as a layer on `api_routes` means
+/// any new endpoint added to the router automatically inherits them.
+async fn attach_api_security_headers(mut response: Response) -> Response {
+    use axum::http::{HeaderName, HeaderValue, header};
+    let h = response.headers_mut();
+    let _ = h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    let _ = h.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    let _ = h.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    let _ = h.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
+}
+
 /// Run the admin HTTP server until shutdown is requested.
 pub async fn run(
     config: HttpAdminSettings,
@@ -287,7 +315,8 @@ pub async fn run(
         .merge(telemetry::routes())
         .merge(engine_config::routes())
         .merge(pipeline_group::routes())
-        .merge(pipeline::routes());
+        .merge(pipeline::routes())
+        .layer(axum::middleware::map_response(attach_api_security_headers));
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
