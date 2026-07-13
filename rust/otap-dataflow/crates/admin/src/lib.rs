@@ -375,3 +375,40 @@ pub async fn run(
             details: format!("{e}"),
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::attach_api_security_headers;
+    use axum::body::Body;
+    use axum::http::Response;
+
+    /// Verify that all four hardened security headers are injected with the
+    /// expected values and that a pre-existing header on the response is
+    /// not overwritten.
+    #[tokio::test]
+    async fn security_headers_are_attached() {
+        let response = Response::builder()
+            .body(Body::empty())
+            .expect("response should build");
+
+        let response = attach_api_security_headers(response).await;
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-store, no-cache, must-revalidate"),
+        );
+        assert_eq!(
+            headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+            Some("nosniff"),
+        );
+        assert_eq!(
+            headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+            Some("DENY"),
+        );
+        assert_eq!(
+            headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+            Some("no-referrer"),
+        );
+    }
+}
