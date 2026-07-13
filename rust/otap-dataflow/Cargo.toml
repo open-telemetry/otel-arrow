@@ -31,6 +31,7 @@ path = "src/main.rs"
 
 [dependencies]
 otap-df-config.workspace = true
+otap-df-contrib-extensions.workspace = true
 otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
@@ -50,6 +51,7 @@ otap-df-admin-types = { path = "crates/admin-types" }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
+otap-df-contrib-extensions = { path = "crates/contrib-extensions" }
 otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-control-channel = { path = "crates/control-channel" }
 otap-df-controller = { path = "crates/controller" }
@@ -57,6 +59,7 @@ otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
+otap-df-test-net = { path = "crates/otap-test-net" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 otap-df-telemetry = { path = "crates/telemetry" }
@@ -147,7 +150,6 @@ paste = "1"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
-portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 prometheus = "0.14.0"
@@ -300,6 +302,9 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
 azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# Contrib extensions (opt-in) - in contrib-extensions
+contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
+azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]

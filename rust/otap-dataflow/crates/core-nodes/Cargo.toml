@@ -100,7 +100,7 @@ tokio-stream.workspace = true
 zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
-portpicker.workspace = true
+otap-df-test-net.workspace = true
 otap-test-tls-certs.workspace = true
 criterion.workspace = true
 
