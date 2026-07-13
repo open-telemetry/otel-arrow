@@ -233,11 +233,19 @@ fn jittered_backoff(base_secs: u64) -> Duration {
 /// refresh instant so many per-core extensions do not refresh on the same tick.
 ///
 /// Jitter only ever moves the refresh earlier (never later, which would risk
-/// serving a token past its safety buffer) and never before `now`.
-fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Instant {
+/// serving a token past its safety buffer) and never earlier than the
+/// `MIN_TOKEN_REFRESH_INTERVAL_SECS` floor that `schedule_next` enforces -
+/// otherwise a near-floor target could be pulled all the way to `now` and
+/// busy-loop the refresh task while the token is still fresh.
+pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Instant {
     let now = tokio::time::Instant::now();
-    // Bound jitter by how far out the target is so we never move it before now.
-    let max_jitter = REFRESH_JITTER_SECS.min(target.saturating_duration_since(now).as_secs());
+    // Only jitter the slack *above* the minimum refresh interval, so the
+    // earliest possible result is `now + MIN_TOKEN_REFRESH_INTERVAL_SECS`.
+    let slack = target
+        .saturating_duration_since(now)
+        .as_secs()
+        .saturating_sub(MIN_TOKEN_REFRESH_INTERVAL_SECS);
+    let max_jitter = REFRESH_JITTER_SECS.min(slack);
     if max_jitter == 0 {
         return target;
     }

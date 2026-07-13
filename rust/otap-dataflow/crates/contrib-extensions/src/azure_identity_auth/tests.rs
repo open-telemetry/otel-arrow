@@ -511,3 +511,48 @@ fn retry_backoff_grows_exponentially_and_caps() {
     // A very large failure count must not overflow the shift.
     assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
 }
+
+// ── jitter_refresh tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn jitter_refresh_preserves_min_interval_floor() {
+    use std::time::Duration;
+
+    // A target exactly at the 10s minimum-refresh floor has no slack to jitter,
+    // so it must be returned unchanged rather than pulled toward `now` (which
+    // would busy-loop the refresh task while the token is still fresh).
+    let target = tokio::time::Instant::now() + Duration::from_secs(10);
+    for _ in 0..1000 {
+        assert_eq!(
+            extension::jitter_refresh(target),
+            target,
+            "near-floor target must not be jittered earlier"
+        );
+    }
+}
+
+#[tokio::test]
+async fn jitter_refresh_stays_within_bounds() {
+    use std::time::Duration;
+
+    // A far-out target is jittered earlier by at most REFRESH_JITTER_SECS (60s)
+    // and never earlier than the 10s floor from `now`.
+    let now = tokio::time::Instant::now();
+    let target = now + Duration::from_secs(3600);
+    let floor = now + Duration::from_secs(10);
+    for _ in 0..1000 {
+        let jittered = extension::jitter_refresh(target);
+        assert!(
+            jittered <= target,
+            "jitter must only move the refresh earlier"
+        );
+        assert!(
+            jittered >= target - Duration::from_secs(60),
+            "jitter must not exceed REFRESH_JITTER_SECS"
+        );
+        assert!(
+            jittered >= floor,
+            "jitter must not precede the min-interval floor"
+        );
+    }
+}
