@@ -1,0 +1,12 @@
+change_type: bug_fix
+
+component: pipeline
+
+note: Fix the Azure Monitor exporter docs and sample configs to use capability-based authentication.
+
+issues: [3356]
+
+subtext: |
+  The Azure Monitor exporter no longer accepts an in-config `auth` block; it
+  obtains bearer tokens from the `azure_identity_auth` extension via the
+  `bearer_token_provider` capability.
