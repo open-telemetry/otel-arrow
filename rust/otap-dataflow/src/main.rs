@@ -8,9 +8,10 @@ use clap::Parser;
 use otap_df_config::config_provider::{ConfigFormat, resolve_config};
 use otap_df_config::engine::OtelDataflowSpec;
 use otap_df_config::policy::{CoreAllocation, CoreRange};
-// Keep this side-effect import so the crate is linked and its `linkme`
-// distributed-slice registrations (contrib nodes) are visible
+// Keep these side-effect imports so the crates are linked and their `linkme`
+// distributed-slice registrations (contrib nodes and extensions) are visible
 // in `OTAP_PIPELINE_FACTORY` at runtime.
+use otap_df_contrib_extensions as _;
 use otap_df_contrib_nodes as _;
 use otap_df_controller::startup;
 use otap_df_controller::{Controller, ControllerRunOptions};
