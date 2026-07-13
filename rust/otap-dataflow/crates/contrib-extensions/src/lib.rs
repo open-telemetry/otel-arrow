@@ -9,3 +9,6 @@
 
 #[cfg(feature = "azure-identity-auth-extension")]
 pub mod azure_identity_auth;
+
+#[cfg(feature = "k8s-service-account-token-extension")]
+pub mod k8s_service_account_token;

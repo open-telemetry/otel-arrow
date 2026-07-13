@@ -30,15 +30,20 @@ tokio.workspace = true
 tokio-stream.workspace = true
 azure_core = { workspace = true, optional = true, features = ["reqwest"] }
 azure_identity = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
 humantime-serde = { workspace = true, optional = true }
+notify = { workspace = true, optional = true }
 
 [features]
 # Umbrella feature enabling all contrib extensions.
-contrib-extensions = ["azure-identity-auth-extension"]
+contrib-extensions = ["azure-identity-auth-extension", "k8s-service-account-token-extension"]
 # Azure Identity authentication extension (BearerTokenProvider capability).
 azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde"]
+# Kubernetes projected service account token extension (BearerTokenProvider capability).
+k8s-service-account-token-extension = ["dep:base64", "dep:humantime-serde", "dep:notify"]
 
 [dev-dependencies]
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["crypto-ring"] }
 tokio = { workspace = true, features = ["test-util"] }
+tempfile = { workspace = true }
