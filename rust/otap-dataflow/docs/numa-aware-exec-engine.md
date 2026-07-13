@@ -41,8 +41,8 @@ This proposal is primarily asking for feedback on:
 
 ## Goals
 
-- Preserve current behavior when NUMA discovery or dynamic placement is not
-  enabled.
+- Preserve deterministic fallback behavior when NUMA topology cannot be
+  discovered.
 - Discover CPU-to-NUMA-node topology as an engine capability, not as a
   receiver-specific or eBPF-specific concern.
 - Start with a Linux implementation while keeping the API OS-abstracted so
@@ -62,7 +62,9 @@ This proposal is primarily asking for feedback on:
   changes can recalculate placement without requiring operators to name
   concrete cores.
 - Support multiple pipeline groups and pipelines in one engine process, each
-  with its own placement requirements.
+  with its own placement requirements. The initial placement unit is still the
+  pipeline; group-wide placement policies can be added later without changing
+  the metadata contract.
 - Expose placement metadata through a strategy-agnostic engine contract so
   receivers, topic scheduling, admission, observability, and optional
   load-balancing mechanisms can build on the same placement snapshot.
@@ -180,17 +182,30 @@ not exact core ids. For example, a pipeline policy can say that a pipeline needs
 - optional placement preferences such as same-node, spread-across-nodes, or
   automatic.
 
-The default policy should be automatic and conservative. For a single pipeline,
-the controller can prefer compact placement within one NUMA node when that
-reduces cross-node traffic. For multiple independent pipelines or groups, it can
-spread placements across NUMA nodes to avoid hot spots. For pipeline graphs that
-communicate through topics, the placement planner can keep strongly coupled
-topic-connected ingest and processing pipelines on the same node when that is
-more efficient than spreading them. Nodes inside one pipeline instance already
-co-reside on that instance's assigned core; the placement problem here is where
-the controller places pipeline instances and topic-connected pipelines.
+The controller should separate placement mechanism from placement policy. The
+planner owns visible-core filtering, reservation checks, conflict errors, and
+startup/live rollout integration. A placement strategy owns the core-selection
+heuristic. Strategy implementations must be deterministic for identical inputs,
+must honor the set of reserved cores supplied by the planner, and must only
+select from the available visible cores. That contract matters because the same
+placement path is used for startup and live control-plane operations.
 
-This follows the direction in
+The initial strategy should be automatic and conservative: for `core_count`, it
+prefers compact placement within one NUMA node when enough unreserved cores are
+available there, then falls back to deterministic visible-core order. This
+NUMA-packing default is chosen for intra-pipeline cache and memory locality.
+Balancing across nodes, graph-aware placement, or group-level policies can be
+added as additional strategies without changing planner call sites or the
+metadata contract.
+
+The initial implementation does not treat a pipeline group as an implicit
+same-NUMA placement unit. Multiple pipelines in one group still receive
+pipeline-level placements, while the engine-level reservation model prevents
+exclusive `core_count` and `core_set` allocations from silently overlapping.
+Future group-level policies can build on the same strategy interface if the
+configuration model needs that behavior.
+
+This is related to the direction in
 [#2155](https://github.com/open-telemetry/otel-arrow/issues/2155) and
 [#1837](https://github.com/open-telemetry/otel-arrow/issues/1837): operators
 should be able to configure how many cores a pipeline needs, while the engine
@@ -200,6 +215,21 @@ During the transition, explicit-core configuration remains valid. When an
 operator names concrete cores, the controller can preserve those assignments and
 annotate them with discovered NUMA metadata rather than forcing an immediate
 move to core-count-only configuration.
+
+### Compatibility
+
+This changes `core_count` placement semantics. A `core_count` pipeline is now
+resolved by the controller as an exclusive placement: it avoids cores explicitly
+claimed by `core_set` pipelines and cores already selected for other
+`core_count` pipelines. `all_cores` remains shared.
+
+When NUMA topology is known, the controller prefers compact same-node placement.
+When topology is unknown, placement falls back to deterministic visible-core
+selection while keeping the same reservation rules.
+
+If the controller cannot find enough unreserved visible cores, startup or live
+update fails instead of silently overlapping pipelines or shrinking the
+placement.
 
 ### Controller Integration
 
@@ -214,12 +244,13 @@ group id, pipeline id, core id, NUMA node id, and placement policy. Metrics
 should follow the engine's existing naming style and use low-cardinality
 attributes rather than embedding policy or node ids in metric names.
 
-Live reconfiguration should eventually use the same planner. A scale-only update
-can change the requested core count for one pipeline, then ask the controller to
-produce a new placement snapshot. The rollout logic can decide whether the
-change is a no-op, an in-place resize, or a replacement. The first
-implementation does not need to support arbitrary migration of running tasks;
-it only needs a design path that does not hard-code static core lists forever.
+Live reconfiguration should use the same planner and strategy contract as
+startup. A scale-only update can change the requested core count for one
+pipeline, then ask the controller to produce a new placement snapshot. The
+rollout logic can decide whether the change is a no-op, an in-place resize, or
+a replacement. The first implementation does not need to support arbitrary
+migration of running tasks; it only needs a design path that does not hard-code
+static core lists forever.
 
 ### Placement Metadata Contract
 
