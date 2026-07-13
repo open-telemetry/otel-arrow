@@ -1716,7 +1716,10 @@ impl<
             let resolved_numa_nodes = pipeline_placement
                 .cores
                 .iter()
-                .map(|core| core.numa_node_id.to_string())
+                .map(|core| {
+                    core.known_numa_node_id
+                        .map_or_else(|| "unknown".to_owned(), |node| node.to_string())
+                })
                 .collect::<Vec<_>>()
                 .join(",");
             otel_info!(

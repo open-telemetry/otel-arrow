@@ -695,8 +695,24 @@ impl<
                     target_generation
                 }
             };
-            let placement_generation = state.next_placement_generation;
-            state.next_placement_generation += 1;
+            let placement_generation = match action {
+                RolloutAction::NoOp | RolloutAction::Resize => current_record
+                    .as_ref()
+                    .map(|record| record.placement_generation)
+                    .ok_or_else(|| ControlPlaneError::Internal {
+                        message: format!(
+                            "rollout planner produced {:?} for {}:{} without a current placement generation",
+                            action,
+                            pipeline_key.pipeline_group_id().as_ref(),
+                            pipeline_key.pipeline_id().as_ref()
+                        ),
+                    })?,
+                RolloutAction::Create | RolloutAction::Replace => {
+                    let generation = state.next_placement_generation;
+                    state.next_placement_generation += 1;
+                    generation
+                }
+            };
             (rollout_id, target_generation, placement_generation)
         };
         let current_placement =

@@ -198,7 +198,7 @@ impl NumaTopology {
 
 /// Parses a Linux cpulist such as `0-3,8,10-12`.
 pub(crate) fn parse_cpu_list(input: &str) -> Result<BTreeSet<u32>, ParseCpuListError> {
-    const MAX_CPU_LIST_CPUS: usize = 1_048_576;
+    const MAX_CPU_LIST_CPUS: usize = 65_536;
 
     let input = input.trim();
     if input.is_empty() {
@@ -239,6 +239,9 @@ pub(crate) fn parse_cpu_list(input: &str) -> Result<BTreeSet<u32>, ParseCpuListE
             let cpu = token
                 .parse::<u32>()
                 .map_err(|_| ParseCpuListError::BadCpu(token.to_string()))?;
+            if !cpus.contains(&cpu) && cpus.len() >= MAX_CPU_LIST_CPUS {
+                return Err(ParseCpuListError::TooManyCpus(MAX_CPU_LIST_CPUS));
+            }
             _ = cpus.insert(cpu);
         }
     }
@@ -257,6 +260,8 @@ pub(crate) enum ParseCpuListError {
     ReversedRange(u32, u32),
     #[error("CPU range `{0}-{1}` is too large")]
     RangeTooLarge(u32, u32),
+    #[error("cpulist contains more than {0} CPUs")]
+    TooManyCpus(usize),
     #[error("invalid cpu id `{0}` in cpulist")]
     BadCpu(String),
 }
@@ -303,6 +308,14 @@ mod tests {
         assert_eq!(
             parse_cpu_list("0-4294967295").unwrap_err(),
             ParseCpuListError::RangeTooLarge(0, u32::MAX)
+        );
+        let too_many_singletons = (0..=65_536u32)
+            .map(|cpu| cpu.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(
+            parse_cpu_list(&too_many_singletons).unwrap_err(),
+            ParseCpuListError::TooManyCpus(65_536)
         );
     }
 

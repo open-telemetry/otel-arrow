@@ -1868,6 +1868,7 @@ connections:
     assert!(plan.resize_start_cores.is_empty());
     assert_eq!(plan.resize_stop_cores, vec![1]);
     assert_eq!(plan.target_generation, 0);
+    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 0);
     assert_eq!(
         plan.rollout
             .cores
@@ -1945,6 +1946,7 @@ connections:
 
     assert_eq!(plan.action, RolloutAction::NoOp);
     assert_eq!(plan.target_generation, 0);
+    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 0);
     assert!(plan.rollout.cores.is_empty());
     assert!(plan.resize_start_cores.is_empty());
     assert!(plan.resize_stop_cores.is_empty());
