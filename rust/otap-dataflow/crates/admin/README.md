@@ -103,7 +103,7 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   `POST /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
   and `POST /api/v1/groups/shutdown` with stricter access controls than
   read-only endpoints.
-- [ ] Apply the same hardened response headers to API endpoints
+- [x] Apply the same hardened response headers to API endpoints
   (`/api/v1/status`, `/api/v1/livez`, `/api/v1/readyz`,
   `/api/v1/telemetry/*`, `/api/v1/metrics`), not only UI/static.
 - [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward
