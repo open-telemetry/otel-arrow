@@ -209,7 +209,7 @@ offset-commit and retry differences.
 ##### Signals
 
 The Go receiver also consumes a `profiles` signal. This receiver supports
-`traces`, `metrics`, and `logs` only -- there is no `profiles` signal.
+`traces`, `metrics`, and `logs` only -- support for `profiles` has not yet been added..
 
 ##### Encodings
 
