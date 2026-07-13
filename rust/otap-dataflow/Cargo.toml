@@ -118,8 +118,7 @@ kube = {version = "4.0.0", features = ["derive"] }
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
-libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
+mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
 tikv-jemallocator = { version = "0.7.0" }
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "0.7.0"
