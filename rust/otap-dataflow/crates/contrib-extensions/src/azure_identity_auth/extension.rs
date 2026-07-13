@@ -343,12 +343,23 @@ impl SharedExtension for AzureIdentityAuthExtension {
                     // concurrent cache-miss fetch coalesce onto one in-flight
                     // credential call instead of both hitting the token endpoint.
                     let refresh = async {
+                        // Note the current cache version before contending for
+                        // the lock so we can tell whether another caller
+                        // publishes a new token while we wait.
+                        let mut rx = inner.tx.subscribe();
+                        let _ = rx.borrow_and_update();
                         let _guard = inner.fetch_lock.lock().await;
-                        // A concurrent `get_token` may have refreshed the cache
-                        // while we waited for the lock. If so, fully coalesce:
-                        // reuse that token and skip a redundant credential call.
-                        if let Some(token) = inner.current_fresh_token() {
-                            return Ok(token);
+                        // Only coalesce when a concurrent slow-path `get_token`
+                        // actually published a fresh token while we waited for
+                        // the lock. We must NOT skip merely because the cached
+                        // token is still "usable": the loop refreshes ~5 min
+                        // before expiry, but a token stays usable until ~30 s
+                        // before expiry, so reusing it here would defer the
+                        // planned early refresh far too long.
+                        if rx.has_changed().unwrap_or(false) {
+                            if let Some(token) = inner.current_fresh_token() {
+                                return Ok(token);
+                            }
                         }
                         inner.refresh_once().await
                     };
