@@ -7,37 +7,133 @@
 //! or some computed value, like
 //! `sha256(concat(resource.attributes["k8s.namespace.name"], resource.attributes["service.name"]`)`
 //!
+//! The main public entrypoint for this module is the [`Partitioner`] type.
 
 use std::cmp::Ordering;
 use std::ops::Range;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, BooleanBufferBuilder, DynComparator,
-    StructArray, UInt8Array, make_comparator,
+    Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, DynComparator, StructArray,
+    UInt8Array, make_comparator,
 };
 use arrow::buffer::{BooleanBuffer, MutableBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::DataType;
 use arrow::util::bit_util;
+use data_engine_expressions::{PipelineFunction, ScalarExpression};
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::ColumnarValue;
-use datafusion::object_store::AttributeValue;
 use datafusion::scalar::ScalarValue;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::filter::{IdBitmapPool, filter_otap_batch};
 use otap_df_pdata::otlp::attributes::AttributeValueType;
 use otap_df_pdata::schema::consts;
-use otap_df_query_engine_languages::opl::parser::OplParser;
 
 use crate::error::{Error, Result};
-use crate::parser::default_parser_options;
 use crate::pipeline::Pipeline;
 use crate::pipeline::expr::ScopedExpr;
 use crate::pipeline::expr::eval::align_value_to_root;
 use crate::pipeline::expr::planner::ExprPlanner;
 use crate::pipeline::project::anyval::is_any_value_data_type;
 
-/// Computed value of partition for partitioned OTAP Data
+/// Produces partitioned record batches by the results of some evaluated expression.
+///
+/// Usage:
+///
+/// ```rust,ignore
+/// let (scalar_expr, functions) = OplParser::parse_expr_with_options(
+///     "attributes[\"x\"]",
+///     default_parser_options()
+/// )?;
+/// let mut partitioner = Partitioner::try_new(scalar_expr, functions)?;
+/// let partitions = partitioner.partition(otap_batch)?.into_iter().collect::<Vec<_>>();
+/// ```
+///
+/// The intention is that this type can be reused for each OTAP batch that must be partitioned in
+/// order that any internal heap allocations can be reused across batches.
+pub struct Partitioner {
+    /// the expression that will be evaluated to partition incoming OTAP batches
+    expr: ScopedExpr,
+
+    /// datafusion [`SessionContext`] - used to evaluate expression
+    session_ctx: SessionContext,
+
+    /// coalescer for ranges of partitioned rows that have the same partition value.
+    range_coalescer: PartitionRangeCoalescer,
+
+    /// ID bitmap pool - used when taking rows that belong to the same partition
+    id_bitmap_pool: IdBitmapPool,
+
+    /// Reusable buffer of partition results
+    partitions: Vec<Partition>,
+}
+
+impl Partitioner {
+    /// Create a new instance of [`Partitioner`] that will partition OTAP batches on the evaluation
+    /// result of the passed expression.
+    ///
+    /// If the expression references functions, they must be defined in the vec of passed
+    /// functions. [`ScalarExpression`]s produced by parsers implementations will typically create
+    /// these function definitions while parsing, so this constructor is intended to be used from
+    /// the results of parsing some expression.
+    pub fn try_new(
+        scalar_expr: ScalarExpression,
+        functions: Vec<PipelineFunction>,
+    ) -> Result<Self> {
+        let expr_planner = ExprPlanner::new();
+        let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
+
+        Ok(Self {
+            expr: planned_expr.expr,
+            session_ctx: Pipeline::create_session_context(),
+            id_bitmap_pool: IdBitmapPool::new(),
+            range_coalescer: PartitionRangeCoalescer::new(),
+            partitions: Vec::new(),
+        })
+    }
+
+    /// Evaluates the
+    pub fn partition(
+        &mut self,
+        otap_batch: OtapArrowRecords,
+    ) -> Result<impl IntoIterator<Item = Partition>> {
+        // reset state
+        self.partitions.clear();
+        self.range_coalescer.clear();
+
+        partition(
+            otap_batch,
+            &self.session_ctx,
+            &mut self.expr,
+            &mut self.partitions,
+            &mut self.range_coalescer,
+            &mut self.id_bitmap_pool,
+        )?;
+
+        // return iterator of results
+        Ok(self.partitions.drain(..))
+    }
+}
+
+/// Partitioned OTAP batch
+///
+/// All records in the batch have the same value computed from the partition expression.
+pub struct Partition {
+    /// value of partition
+    pub value: PartitionValue,
+
+    /// telemetry data in partition
+    pub batch: OtapArrowRecords,
+}
+
+impl Partition {
+    fn new(value: PartitionValue, batch: OtapArrowRecords) -> Self {
+        Self { value, batch }
+    }
+}
+
+/// Computed value of partition for partitioned OTAP Data.
+#[derive(Debug, PartialEq)]
 pub enum PartitionValue {
     /// value of type string
     String(String),
@@ -62,6 +158,9 @@ pub enum PartitionValue {
 }
 
 impl PartitionValue {
+    /// Construct a [`PartitionValue`] from the value in the [`ScalarExpression`].
+    ///
+    /// May return `Err` for types that are not yet supported.
     fn try_from_scalar(scalar: ScalarValue) -> Result<Self> {
         Ok(match scalar {
             ScalarValue::Boolean(Some(b)) => Self::Boolean(b),
@@ -139,15 +238,15 @@ impl PartitionValue {
 
             ScalarValue::Struct(s) => {
                 if is_any_value_data_type(&DataType::Struct(s.fields().clone())) {
-                    // safety: we've checked the type is struct array
-                    let anyvalue_arr = s
-                        .as_any()
-                        .downcast_ref::<StructArray>()
-                        .expect("is struct array");
-                    return Self::try_from_anyvalue_struct_arr(anyvalue_arr, 0);
+                    return Self::try_from_anyvalue_struct_arr(s.as_ref(), 0);
                 }
 
-                todo!("handle invalid struct")
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "partition value cannot be computed from unsupported datatype {:?}",
+                        s.data_type(),
+                    ),
+                });
             }
 
             ScalarValue::Dictionary(_, s) | ScalarValue::RunEndEncoded(_, _, s) => {
@@ -166,7 +265,12 @@ impl PartitionValue {
             | ScalarValue::LargeList(_)
             | ScalarValue::Map(_)
             | ScalarValue::Union(_, _, _) => {
-                todo!("invalid")
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "partition value cannot be computed from unsupported datatype {:?}",
+                        scalar.data_type()
+                    ),
+                });
             }
         })
     }
@@ -185,19 +289,32 @@ impl PartitionValue {
         Self::try_from_scalar(scalar_at_index)
     }
 
+    /// Construct a partition value from the `AnyValue` by examining the struct representation
+    /// at some index.
+    ///
+    /// Will return an error if the struct array is not the proper representation used by OTAP
+    /// to represent `AnyValue`s.
     fn try_from_anyvalue_struct_arr(arr: &StructArray, index: usize) -> Result<Self> {
         let Some(type_col) = arr.column_by_name(consts::ATTRIBUTE_TYPE) else {
-            todo!("invalid struct col")
+            return Err(otap_df_pdata::error::Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_TYPE.into(),
+            }
+            .into());
         };
 
         let Some(type_col) = type_col.as_any().downcast_ref::<UInt8Array>() else {
-            todo!("invalid struct col");
+            return Err(otap_df_pdata::error::Error::ColumnDataTypeMismatch {
+                name: consts::ATTRIBUTE_TYPE.into(),
+                actual: type_col.data_type().clone(),
+                expect: DataType::UInt8,
+            }
+            .into());
         };
 
-        let type_encoded = type_col.values()[index];
-        let Ok(attr_type) = AttributeValueType::try_from(type_encoded) else {
-            todo!("invalid type")
-        };
+        let attr_type =
+            AttributeValueType::try_from(type_col.values()[index]).map_err(|error| {
+                otap_df_pdata::error::Error::UnrecognizedAttributeValueType { error }
+            })?;
 
         let values_col = match attr_type {
             AttributeValueType::Bool => arr.column_by_name(consts::ATTRIBUTE_BOOL),
@@ -218,82 +335,16 @@ impl PartitionValue {
     }
 }
 
-/// Partitioned OTAP batch
+/// Partition OTAP batch by the value of the evaluated expression.
 ///
-/// All records in the batch have the same value computed from the partition expression.
-pub struct Partition {
-    /// value of partition
-    value: PartitionValue,
-
-    /// telemetry data in partition
-    batch: OtapArrowRecords,
-}
-
-impl Partition {
-    fn new(value: PartitionValue, batch: OtapArrowRecords) -> Self {
-        Self { value, batch }
-    }
-}
-
-/// Produces partitioned record batches by the results of some evaluated expression
-pub struct Partitioner {
-    expr: ScopedExpr,
-
-    session_ctx: SessionContext,
-
-    range_coalescer: PartitionRangeCoalescer,
-
-    id_bitmap_pool: IdBitmapPool,
-
-    /// reusable buffer of partitions
-    partitions: Vec<Partition>,
-}
-
-impl Partitioner {
-    /// TODO docs
-    /// TODO - this is possibly the wrong abstraction due to this having the crate depend on
-    /// the parser, consider if maybe we should have this specific constructor take
-    /// ScalarExpression and Functions, but move the constructor (or this type) to something
-    /// higher level
-    pub fn try_new_from_opl_expression(expr: &str) -> Result<Self> {
-        let (scalar_expr, functions) =
-            OplParser::parse_expr_with_options(expr, default_parser_options()).unwrap(); // TODO no unwrap
-
-        let expr_planner = ExprPlanner::new();
-        let planned_expr = expr_planner.plan_scalar(&scalar_expr, &functions)?;
-
-        Ok(Self {
-            expr: planned_expr.expr,
-            session_ctx: Pipeline::create_session_context(),
-            id_bitmap_pool: IdBitmapPool::new(),
-            range_coalescer: PartitionRangeCoalescer::new(),
-            partitions: Vec::new(),
-        })
-    }
-}
-
-impl Partitioner {
-    /// TODO docs
-    pub fn partition(
-        &mut self,
-        otap_batch: OtapArrowRecords,
-    ) -> Result<impl IntoIterator<Item = Partition>> {
-        self.partitions.clear();
-
-        partition(
-            otap_batch,
-            &self.session_ctx,
-            &mut self.expr,
-            &mut self.partitions,
-            &mut self.range_coalescer,
-            &mut self.id_bitmap_pool,
-        )?;
-
-        Ok(self.partitions.drain(..))
-    }
-}
-
-/// Partition OTAP batch by the value of the evaluated expression
+/// The full partitioning process can be roughly thought of in three phases:
+/// 1. determining partition boundaries - e.g. which rows are distinct from their neighbour
+/// 2. grouping partition boundaries that have the same value
+/// 3. taking all the rows in the same partition.
+///
+/// However, there may be cases where we return early before performing all these steps
+/// (e.g. when we can determine quickly that there will only be one or zero partitions).
+///
 fn partition(
     otap_batch: OtapArrowRecords,
     session_ctx: &SessionContext,
@@ -353,6 +404,8 @@ fn partition(
     }
 }
 
+/// Populate the `result` vec with partitions of the OTAP batch based on which rows in the passed
+/// array have equivalent values.
 fn partition_simple_array(
     array: ArrayRef,
     otap_batch: OtapArrowRecords,
@@ -360,7 +413,6 @@ fn partition_simple_array(
     range_coalescer: &mut PartitionRangeCoalescer,
     id_bitmap_pool: &mut IdBitmapPool,
 ) -> Result<()> {
-    // TODO - should use the logic from distinct here?
     let cmp = make_comparator(&array, &array, SortOptions::default())?;
     let boundaries: BooleanBuffer = (0..array.len() - 1)
         .map(|i| !cmp(i, i + 1).is_eq())
@@ -377,6 +429,8 @@ fn partition_simple_array(
     )
 }
 
+/// Populate the `result` vec with partitions of the OTAP batch based on which rows in the passed
+/// struct array (which represents a list of `AnyValue`) have equivalent values.
 fn partition_any_value_struct_array(
     array: &StructArray,
     otap_batch: OtapArrowRecords,
@@ -400,6 +454,25 @@ fn partition_any_value_struct_array(
     )
 }
 
+/// Populate the `result` vec with partitions from `boundaries`, which represents indices where
+/// the array value is distinct from its next neighbour. The range_coalescer will be used to group
+/// boundary-delineated partitions into the same result partition.
+///
+/// For example, if passed:
+/// ```text,ignore
+/// boundaries: [false, true, false, true, true]
+/// array: ["a", "a", "b", "b", "a"]
+/// ```
+/// The result would be two partitions with :
+/// ```text
+/// // partition 1:
+/// rows: [0, 1, 4]
+/// value: "a"
+///
+/// // partition 2:
+/// rows: [2, 3]
+/// value: "b"
+/// ```
 fn partition_at_boundaries(
     array: &dyn Array,
     boundaries: BooleanBuffer,
@@ -409,10 +482,6 @@ fn partition_at_boundaries(
     id_bitmap_pool: &mut IdBitmapPool,
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
 ) -> Result<()> {
-    // TODO remove this
-    let dbg_boundaries = BooleanArray::new(boundaries.clone(), None);
-    println!("dbg_boundaries = {dbg_boundaries:?}");
-
     let num_rows = boundaries.len() + 1;
     for group in range_coalescer
         .coalesce_groups(num_rows, boundaries, &cmp)
@@ -432,6 +501,146 @@ fn partition_at_boundaries(
     Ok(())
 }
 
+/// This type is responsible for grouping boundary-delineated partitions that have the same
+/// actual value for the partition expression.
+///
+/// Partitioning proceeds by determining the boundaries at which each row where the value of the
+/// partition key is not equal to its next neighbour. The ranges between these boundaries are then
+/// grouped together where ranges have equivalent values, and a selection vector is created
+///
+/// For example, if we had `boundaries: [false, true, false, true, true]` and partition key values
+/// of ["a", "a", "b", "b", "a"] this represents three ranges: `[(0, 2), (2, 3), (3, 4)]`, where
+/// the first and third ranges have equivalent values. This type would try to produce the following
+/// groups:
+/// ```text,ignore
+/// // group 1:
+/// representative_row: 0
+/// selection_vec: [true, true, false, false, true]
+///
+/// // group 2
+/// representative_row: 2
+/// selection_vec: [false, false, true, true, false]
+/// ```
+///
+/// The intention with this type is that it can be reused for multiple coalescing operations in
+/// order that the internal heap allocation can be reused for many OTAP batches.
+struct PartitionRangeCoalescer {
+    groups: Vec<CoalescingGroup>,
+}
+
+/// Intermediate result used when coalescing partitions into a single partition
+struct CoalescingGroup {
+    /// index of row representing the value of the group
+    representative_row: usize,
+
+    /// mutable selection vec builder for selecting rows belonging to the partition
+    selection_vec_builder: MutableBuffer,
+}
+
+impl PartitionRangeCoalescer {
+    fn new() -> Self {
+        Self { groups: Vec::new() }
+    }
+
+    fn coalesce_groups(
+        &mut self,
+        source_len: usize,
+        partition_boundaries: BooleanBuffer,
+        cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+    ) -> impl IntoIterator<Item = CoalescingGroup> {
+        coalesce_groups(source_len, partition_boundaries, cmp, &mut self.groups);
+
+        // return iterator of results
+        self.groups.drain(..)
+    }
+
+    fn clear(&mut self) {
+        self.groups.clear();
+    }
+}
+
+/// coalesce partitions delineated by `boundaries` into groups of rows that have equivalent values.
+///
+/// `boundaries` is a boolean buffer where the rows represent that some index is distinct from its
+/// next neighbour. `cmp` is a comparison function used to compare two rows.
+fn coalesce_groups(
+    source_len: usize,
+    partition_boundaries: BooleanBuffer,
+    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+    groups: &mut Vec<CoalescingGroup>,
+) {
+    let mut current = 0;
+    for idx in partition_boundaries.set_indices() {
+        let t = current;
+        current = idx + 1;
+        append_range_to_groups(source_len, t..current, cmp, groups);
+    }
+
+    let last = partition_boundaries.len() + 1;
+    if current != last {
+        append_range_to_groups(source_len, current..last, cmp, groups);
+    }
+}
+
+/// appends the range of rows to the [`CoalescingGroup`] to which it belongs. This means either
+/// setting rows in the selection vec of some existing group that has the same partition value
+/// as the rows in the passed range, or creating a new group if no such equivalent group exists.
+fn append_range_to_groups(
+    source_len: usize,
+    range: Range<usize>,
+    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+    groups: &mut Vec<CoalescingGroup>,
+) {
+    // try to find a group whose value matches the value of the rows in the passed range
+    let match_group = groups
+        .iter_mut()
+        .find(|group| cmp(group.representative_row, range.start).unwrap().is_eq());
+
+    if let Some(group) = match_group {
+        // set the bits in the selection vec for this group
+        set_range_bits(range, &mut group.selection_vec_builder);
+    } else {
+        // create a new group
+        let mut group = CoalescingGroup {
+            representative_row: range.start,
+            selection_vec_builder: MutableBuffer::from_len_zeroed(source_len),
+        };
+        set_range_bits(range, &mut group.selection_vec_builder);
+        groups.push(group)
+    }
+}
+
+/// sets all the rows in the range to `1`.
+///
+/// this expects that the buffer len is at least range.end
+fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
+    let aligned_start_index = bit_util::ceil(range.start, 8) * 8;
+    let aligned_end_index = (range.end / 8) * 8;
+
+    if aligned_start_index >= aligned_end_index {
+        // range too small to contain a full byte
+        for i in range.start..range.end {
+            bit_util::set_bit(bool_buffer, i);
+        }
+        return;
+    }
+
+    // set leading partial
+    for i in range.start..aligned_start_index {
+        bit_util::set_bit(bool_buffer, i);
+    }
+
+    // full bytes — memset
+    let first_full_byte = aligned_start_index / 8;
+    let last_full_byte = aligned_end_index / 8;
+    bool_buffer[first_full_byte..last_full_byte].fill(0xFF);
+
+    // set trailing partial
+    for i in aligned_start_index..range.end {
+        bit_util::set_bit(bool_buffer, i);
+    }
+}
+
 /// Wrapper around the fields from an AnyValue struct array that will compare the attribute values
 /// at two indices. This is functionally equivalent to arrow's [`make_comparator`], but its
 /// comparison implementation understands the semantics of how OTAP represents AnyValues.
@@ -443,7 +652,6 @@ struct AnyValueStructComparator<'a> {
     bool_comparator: Option<DynComparator>,
     bytes_comparator: Option<DynComparator>,
     ser_comparator: Option<DynComparator>,
-    // TODO - add fields for int, double, bool, bytes ser
 }
 
 impl<'a> AnyValueStructComparator<'a> {
@@ -484,7 +692,6 @@ impl<'a> AnyValueStructComparator<'a> {
         })
     }
 
-    // TODO - this
     fn cmp(&self, i1: usize, i2: usize) -> Result<Ordering> {
         let type1 = self.type_col.values()[i1];
         let type2 = self.type_col.values()[i2];
@@ -554,101 +761,6 @@ impl<'a> AnyValueStructComparator<'a> {
     }
 }
 
-struct PartitionRangeCoalescer {
-    groups: Vec<CoalescingGroup>,
-}
-
-impl PartitionRangeCoalescer {
-    fn new() -> Self {
-        Self { groups: Vec::new() }
-    }
-
-    fn coalesce_groups(
-        &mut self,
-        source_len: usize,
-        partition_boundaries: BooleanBuffer,
-        cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
-    ) -> impl IntoIterator<Item = CoalescingGroup> {
-        coalesce_groups(source_len, partition_boundaries, cmp, &mut self.groups);
-
-        self.groups.drain(..)
-    }
-}
-
-struct CoalescingGroup {
-    representative_row: usize,
-    selection_vec_builder: MutableBuffer,
-}
-
-fn coalesce_groups(
-    source_len: usize,
-    partition_boundaries: BooleanBuffer,
-    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
-    groups: &mut Vec<CoalescingGroup>,
-) {
-    let mut current = 0;
-    for idx in partition_boundaries.set_indices() {
-        let t = current;
-        current = idx + 1;
-        append_range_to_groups(source_len, t..current, cmp, groups);
-    }
-
-    let last = partition_boundaries.len() + 1;
-    if current != last {
-        append_range_to_groups(source_len, current..last, cmp, groups);
-    }
-}
-
-fn append_range_to_groups(
-    source_len: usize,
-    range: Range<usize>,
-    cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
-    groups: &mut Vec<CoalescingGroup>,
-) {
-    let match_group = groups
-        .iter_mut()
-        .find(|group| cmp(group.representative_row, range.start).unwrap().is_eq());
-
-    if let Some(group) = match_group {
-        set_range_bits(range, &mut group.selection_vec_builder);
-    } else {
-        let mut group = CoalescingGroup {
-            representative_row: range.start,
-            selection_vec_builder: MutableBuffer::from_len_zeroed(source_len),
-        };
-        set_range_bits(range, &mut group.selection_vec_builder);
-        groups.push(group)
-    }
-}
-
-fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
-    let aligned_start_index = bit_util::ceil(range.start, 8) * 8;
-    let aligned_end_index = (range.end / 8) * 8;
-
-    if aligned_start_index >= aligned_end_index {
-        // range too small to contain a full byte
-        for i in range.start..range.end {
-            bit_util::set_bit(bool_buffer, i);
-        }
-        return;
-    }
-
-    // set leading partial
-    for i in range.start..aligned_start_index {
-        bit_util::set_bit(bool_buffer, i);
-    }
-
-    // full bytes — memset
-    let first_full_byte = aligned_start_index / 8;
-    let last_full_byte = aligned_end_index / 8;
-    bool_buffer[first_full_byte..last_full_byte].fill(0xFF);
-
-    // set trailing partial
-    for i in aligned_start_index..range.end {
-        bit_util::set_bit(bool_buffer, i);
-    }
-}
-
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
@@ -672,11 +784,13 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use otap_df_pdata::schema::consts;
     use otap_df_pdata::testing::round_trip::{otap_to_otlp, otlp_to_otap};
+    use otap_df_query_engine_languages::opl::parser::OplParser;
 
+    use crate::parser::default_parser_options;
     use crate::pipeline::Pipeline;
     use crate::pipeline::expr::{DataScope, LeafEval, ScopedExpr};
     use crate::pipeline::partition::{
-        AnyValueStructComparator, PartitionRangeCoalescer, Partitioner,
+        AnyValueStructComparator, PartitionRangeCoalescer, PartitionValue, Partitioner,
     };
 
     use super::partition;
@@ -873,25 +987,6 @@ mod test {
 
     #[test]
     fn test_partition_anyvalue_struct_array_homogenous_type_no_nulls() {
-        /// Returns a mask with bits set whenever the value or nullability changes
-        fn find_boundaries(v: &dyn arrow::array::Array) -> BooleanBuffer {
-            let slice_len = v.len() - 1;
-            let v1 = v.slice(0, slice_len);
-            let v2 = v.slice(1, slice_len);
-
-            distinct(&v1, &v2).unwrap().values().clone()
-        }
-
-        let test_referenec = UInt8Array::from_iter_values([0, 0, 1, 1, 1, 2, 2, 2, 0, 1, 2, 2]);
-        // let result = arrow::compute::partition(&[Arc::new(test_referenec)]).unwrap();
-        let result = find_boundaries(&test_referenec);
-        println!("ref result {result:?}");
-
-        let ba = BooleanArray::new(result, None);
-        println!("ref result {ba:?}");
-
-        // --- TODO delete everything above this line
-
         let otap = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData::new(vec![
             ResourceLogs::new(
                 Resource::default(),
@@ -899,42 +994,55 @@ mod test {
                     InstrumentationScope::default(),
                     vec![
                         LogRecord::build()
+                            .event_name("event0")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event1")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event2")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event3")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event4")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event5")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event6")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event7")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event8")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event9")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event10")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event11")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                             .finish(),
                         LogRecord::build()
+                            .event_name("event12")
                             .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                             .finish(),
                     ],
@@ -942,14 +1050,119 @@ mod test {
             ),
         ])));
 
-        let mut partitioner =
-            Partitioner::try_new_from_opl_expression("attributes[\"x\"]").unwrap();
+        let (scalar_expr, functions) =
+            OplParser::parse_expr_with_options("attributes[\"x\"]", default_parser_options())
+                .unwrap();
+        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
         let partitions = partitioner
             .partition(otap)
             .unwrap()
             .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(partitions.len(), 3);
+
+        assert_eq!(partitions[0].value, PartitionValue::String("0".into()));
+        let OtlpProtoMessage::Logs(partition0_log_records) = otap_to_otlp(&partitions[0].batch)
+        else {
+            panic!("invalid signal type")
+        };
+        assert_eq!(
+            partition0_log_records,
+            LogsData::new(vec![ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .event_name("event0")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event1")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event9")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                            .finish(),
+                    ],
+                )],
+            ),])
+        );
+
+        assert_eq!(partitions[1].value, PartitionValue::String("1".into()));
+        let OtlpProtoMessage::Logs(partition1_log_records) = otap_to_otlp(&partitions[1].batch)
+        else {
+            panic!("invalid signal type")
+        };
+        assert_eq!(
+            partition1_log_records,
+            LogsData::new(vec![ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .event_name("event2")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event3")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event4")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event10")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                            .finish(),
+                    ],
+                )],
+            ),])
+        );
+
+        assert_eq!(partitions[2].value, PartitionValue::String("2".into()));
+        let OtlpProtoMessage::Logs(partition2_log_records) = otap_to_otlp(&partitions[2].batch)
+        else {
+            panic!("invalid signal type")
+        };
+        assert_eq!(
+            partition2_log_records,
+            LogsData::new(vec![ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .event_name("event5")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event6")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event7")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event8")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event11")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                        LogRecord::build()
+                            .event_name("event12")
+                            .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                            .finish(),
+                    ],
+                )],
+            ),])
+        );
     }
 
     #[test]
