@@ -10,7 +10,7 @@
 mod auth;
 pub mod config;
 pub mod error;
-mod arc_managed_identity;
+mod arc_server_managed_identity;
 mod extension;
 mod metrics;
 

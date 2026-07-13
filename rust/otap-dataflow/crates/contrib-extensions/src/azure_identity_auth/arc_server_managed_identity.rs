@@ -21,11 +21,11 @@ pub const WWW_AUTHENTICATE: HeaderName = HeaderName::from_static_standard("www-a
 const DEFAULT_ENDPOINT: &str = "http://localhost:40342/metadata/identity/oauth2/token";
 const API_VERSION: &str = "2021-02-01";
 
-// ArcManagedIdentity is very similar to ImdsManagedIdentityCredential, but with Arc-connected servers support.
+// ArcServerManagedIdentity is very similar to ImdsManagedIdentityCredential, but with Arc-connected servers support.
 // I tried to contribute this code to the Azure SDK but they were not willing to accept contributions of identity providers,
 // hence the need to re-implement it here until the MSAL/SDK team can add Arc support to the Rust SDK.
 #[derive(Debug)]
-pub(crate) struct ArcManagedIdentity {
+pub(crate) struct ArcServerManagedIdentity {
     pipeline: Pipeline,
     endpoint: Url,
     api_version: String,
@@ -34,7 +34,7 @@ pub(crate) struct ArcManagedIdentity {
 }
 
 #[async_trait::async_trait]
-impl TokenCredential for ArcManagedIdentity {
+impl TokenCredential for ArcServerManagedIdentity {
     async fn get_token(
         &self,
         scopes: &[&str],
@@ -46,7 +46,7 @@ impl TokenCredential for ArcManagedIdentity {
     }
 }
 
-impl ArcManagedIdentity {
+impl ArcServerManagedIdentity {
     pub(crate) fn new(options: Option<ManagedIdentityCredentialOptions>) -> azure_core::Result<Arc<Self>> {
         let options = options.unwrap_or_default();
 
@@ -334,7 +334,7 @@ fn should_refresh(token: &AccessToken) -> bool {
     token.expires_on <= OffsetDateTime::now_utc() + Duration::seconds(300)
 }
 
-pub(crate) fn is_arc_environment() -> bool {
+pub(crate) fn is_arc_server_environment() -> bool {
     if cfg!(windows) {
         if let Ok(program_files_path) = env::var("PROGRAMFILES") {
             !program_files_path.is_empty()
