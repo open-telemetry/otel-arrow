@@ -239,3 +239,130 @@ fn static_metric_set_export_carries_fixed_attributes() {
         vec![(vec![("signal".to_string(), "logs".to_string())], 42)]
     );
 }
+
+#[test]
+fn register_metric_sets_for_existing_entity() {
+    let registry = TelemetryRegistryHandle::new();
+    let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
+
+    // Register the owning entity once, then attach both a static and a dynamic
+    // metric set to that same entity key.
+    let entity = registry.register_entity(ScopeAttributes {
+        node: "shared_entity".to_string(),
+    });
+
+    let static_attrs = SignalAttributes {
+        signal: Signal::Traces,
+    };
+    let mut journald = registry
+        .register_metric_set_with_static_attributes_for_entity::<JournaldMetrics>(
+            entity,
+            &static_attrs,
+        );
+    let mut loss =
+        registry.register_metric_set_with_dynamic_attributes_for_entity::<LossMetrics>(entity);
+
+    // Both metric sets should be bound to the entity we created.
+    assert_eq!(loss.entity_key(), entity);
+
+    journald.records.add(7);
+    loss.with(LossAttributes {
+        signal: Signal::Traces,
+        outcome: LossOutcome::Dropped,
+    })
+    .lost_items
+    .add(3);
+
+    reporter.report(&mut journald).unwrap();
+    reporter.report_dynamic(&mut loss).unwrap();
+
+    while let Ok(snapshot) = rx.try_recv() {
+        registry.accumulate_metric_set_snapshot(
+            snapshot.key(),
+            snapshot.bucket(),
+            snapshot.get_metrics(),
+        );
+    }
+
+    let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
+    registry.visit_metrics_and_reset_with_datapoint_attrs(
+        |_desc, _scope, dp_attrs, iter| {
+            let attrs = dp_attrs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<Vec<_>>();
+            let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
+            seen.push((attrs, total));
+        },
+        false,
+    );
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            (vec![("signal".to_string(), "traces".to_string())], 7),
+            (
+                vec![
+                    ("signal".to_string(), "traces".to_string()),
+                    ("outcome".to_string(), "dropped".to_string()),
+                ],
+                3,
+            ),
+        ]
+    );
+}
+
+#[test]
+fn read_only_visit_preserves_datapoint_values() {
+    let registry = TelemetryRegistryHandle::new();
+    let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
+
+    let mut loss =
+        registry.register_metric_set_with_dynamic_attributes::<LossMetrics>(ScopeAttributes {
+            node: "readonly".to_string(),
+        });
+    loss.with(LossAttributes {
+        signal: Signal::Metrics,
+        outcome: LossOutcome::Expired,
+    })
+    .lost_items
+    .add(11);
+    reporter.report_dynamic(&mut loss).unwrap();
+    while let Ok(snapshot) = rx.try_recv() {
+        registry.accumulate_metric_set_snapshot(
+            snapshot.key(),
+            snapshot.bucket(),
+            snapshot.get_metrics(),
+        );
+    }
+
+    // Visiting without reset must return the same value on repeated calls.
+    let read = || {
+        let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
+        registry.visit_current_metrics_with_datapoint_attrs(
+            |_desc, _scope, dp_attrs, iter| {
+                let attrs = dp_attrs
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect::<Vec<_>>();
+                let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
+                seen.push((attrs, total));
+            },
+            false,
+        );
+        seen
+    };
+    let first = read();
+    let second = read();
+    assert_eq!(first, second);
+    assert_eq!(
+        first,
+        vec![(
+            vec![
+                ("signal".to_string(), "metrics".to_string()),
+                ("outcome".to_string(), "expired".to_string()),
+            ],
+            11,
+        )]
+    );
+}
