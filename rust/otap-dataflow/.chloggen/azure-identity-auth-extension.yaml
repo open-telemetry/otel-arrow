@@ -1,0 +1,18 @@
+change_type: new_component
+
+component: pipeline
+
+note: Add the `azure_identity_auth` extension, a `BearerTokenProvider` backed by Azure identity flows.
+
+issues: [3356]
+
+subtext: |
+  New `otap-df-contrib-extensions` crate (feature `azure-identity-auth-extension`,
+  URN `urn:microsoft:extension:azure_identity_auth`) that acquires and refreshes
+  Azure access tokens and exposes them to data-path nodes via the shared
+  `BearerTokenProvider` capability. Supports Managed Identity, developer tooling
+  (`development`), and Workload Identity Federation auth methods. Tokens are
+  cached and refreshed ahead of expiry in a background task, concurrent cache
+  misses are coalesced onto a single credential call, and the extension gates
+  pipeline startup on the first successful token publish. Emits success/failure/
+  publish counters and acquisition-latency telemetry.

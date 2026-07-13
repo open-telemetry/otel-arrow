@@ -1,0 +1,17 @@
+version: otel_dataflow/v1
+
+engine:
+  controller:
+    extensions:
+      opamp:
+        type: "urn:otel:extension:opamp"
+        config:
+          endpoint: "ws://127.0.0.1:4320/v1/opamp"
+          # Fixed UUID so the agent is easy to find in the UI. Omit to
+          # generate a fresh UUIDv7 on each start.
+          instance_uid: "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+          heartbeat_interval: "5s"
+          agent_description:
+            identifying_attributes:
+              service.name: "otap-df-engine"
+groups: {}

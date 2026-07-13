@@ -114,6 +114,10 @@ pub use linkme::distributed_slice;
 pub mod controller_monitor;
 /// Error types and helpers for the controller module.
 pub mod error;
+
+/// Available controller extensions.
+pub mod extension;
+
 mod live_control;
 /// Reusable startup helpers (validation, CLI overrides, system info).
 pub mod startup;
