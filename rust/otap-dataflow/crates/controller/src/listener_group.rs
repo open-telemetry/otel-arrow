@@ -157,6 +157,7 @@ pub(crate) fn snapshot_for_pipeline(
         }
     }
 
+    plans.sort_by(|left, right| left.key.cmp(&right.key));
     ListenerGroupSnapshot::new(generation, plans)
 }
 
@@ -259,6 +260,31 @@ nodes:
         assert_eq!(snapshot.plans.len(), 1);
         assert_eq!(snapshot.plans[0].key.receiver_node_id.as_ref(), "otap");
         assert_eq!(snapshot.plans[0].key.protocol, ListenerProtocol::Tcp);
+    }
+
+    #[test]
+    fn listener_group_plans_are_sorted_by_key() {
+        let pipeline = resolved_pipeline(
+            r#"
+nodes:
+  z_otap:
+    type: "urn:otel:receiver:otap"
+    config:
+      listening_addr: "127.0.0.1:9000"
+  a_otlp:
+    type: "urn:otel:receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: "127.0.0.1:4317"
+"#,
+        );
+
+        let snapshot = snapshot_for_pipeline(&pipeline, &placement(), 0);
+
+        assert_eq!(snapshot.plans.len(), 2);
+        assert_eq!(snapshot.plans[0].key.receiver_node_id.as_ref(), "a_otlp");
+        assert_eq!(snapshot.plans[1].key.receiver_node_id.as_ref(), "z_otap");
     }
 
     #[test]
