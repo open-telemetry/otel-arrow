@@ -194,9 +194,11 @@ The initial strategy should be automatic and conservative: for `core_count`, it
 prefers compact placement within one NUMA node when enough unreserved cores are
 available there, then falls back to deterministic visible-core order. This
 NUMA-packing default is chosen for intra-pipeline cache and memory locality.
-Balancing across nodes, graph-aware placement, or group-level policies can be
-added as additional strategies without changing planner call sites or the
-metadata contract.
+The default strategy should use stable tie-breaks, such as lowest NUMA node id
+and then lowest core id, so repeated planning with the same inputs produces the
+same result. Balancing across nodes, graph-aware placement, or group-level
+policies can be added as additional strategies without changing planner call
+sites or the metadata contract.
 
 The initial implementation should not treat a pipeline group as an implicit
 same-NUMA placement unit. Multiple pipelines in one group should still receive
@@ -231,6 +233,10 @@ visible-core selection while keeping the same reservation rules.
 If the controller cannot find enough unreserved visible cores, startup or live
 update should fail instead of silently overlapping pipelines or shrinking the
 placement.
+
+The first implementation should land with explicit release-note coverage for
+these validation changes; no compatibility mode is proposed because silent
+overlap is the behavior this design is removing.
 
 ### Controller Integration
 
