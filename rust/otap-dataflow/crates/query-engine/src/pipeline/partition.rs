@@ -16,7 +16,7 @@ use arrow::array::{
     Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, DynComparator, StructArray,
     UInt8Array, make_comparator,
 };
-use arrow::buffer::{BooleanBuffer, MutableBuffer};
+use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
 use arrow::compute::SortOptions;
 use arrow::datatypes::DataType;
 use arrow::util::bit_util;
@@ -652,6 +652,7 @@ fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
 /// comparison implementation understands the semantics of how OTAP represents AnyValues.
 struct AnyValueStructComparator<'a> {
     type_col: &'a UInt8Array,
+    struct_nulls: Option<&'a NullBuffer>,
     str_comparator: Option<DynComparator>,
     int_comparator: Option<DynComparator>,
     float_comparator: Option<DynComparator>,
@@ -668,16 +669,18 @@ impl<'a> AnyValueStructComparator<'a> {
                 name: consts::ATTRIBUTE_TYPE.into(),
             })?;
 
-        let type_col = type_col_arr.as_any().downcast_ref::<UInt8Array>().ok_or_else(|| {
-            otap_df_pdata::error::Error::ColumnDataTypeMismatch {
+        let type_col = type_col_arr
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .ok_or_else(|| otap_df_pdata::error::Error::ColumnDataTypeMismatch {
                 name: consts::ATTRIBUTE_TYPE.into(),
                 actual: type_col_arr.data_type().clone(),
                 expect: DataType::UInt8,
-            }
-        })?;
+            })?;
 
         Ok(Self {
             type_col,
+            struct_nulls: anyval_struct_arr.nulls(),
             str_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_STR)
                 .map(|col| make_comparator(col, col, SortOptions::default()))
@@ -706,6 +709,22 @@ impl<'a> AnyValueStructComparator<'a> {
     }
 
     fn cmp(&self, i1: usize, i2: usize) -> Result<Ordering> {
+        if let Some(nulls) = self.struct_nulls {
+            let validity_bitmap = nulls.inner().values();
+            let i1_valid = bit_util::get_bit(validity_bitmap, i1);
+            let i2_valid = bit_util::get_bit(validity_bitmap, i2);
+            if !i1_valid && !i2_valid {
+                // both null
+                return Ok(Ordering::Equal);
+            }
+            if i1_valid && !i2_valid {
+                return Ok(Ordering::Less);
+            }
+            if !i1_valid && i2_valid {
+                return Ok(Ordering::Greater);
+            }
+        }
+
         let type1 = self.type_col.values()[i1];
         let type2 = self.type_col.values()[i2];
 
@@ -781,6 +800,7 @@ mod test {
     use arrow::array::{
         BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, StructArray, UInt8Array,
     };
+    use arrow::buffer::{BooleanBuffer, NullBuffer};
     use arrow::datatypes::{DataType, Field, Fields};
     use otap_df_pdata::otlp::attributes::AttributeValueType;
     use otap_df_pdata::proto::OtlpProtoMessage;
@@ -796,9 +816,7 @@ mod test {
     use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::parser::default_parser_options;
-    use crate::pipeline::partition::{
-        AnyValueStructComparator, PartitionValue, Partitioner,
-    };
+    use crate::pipeline::partition::{AnyValueStructComparator, PartitionValue, Partitioner};
 
     #[test]
     fn test_partition_logs_by_severity_number() {
@@ -938,12 +956,8 @@ mod test {
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
 
-        assert_eq!(
-            partitions[0].value,
-            PartitionValue::String("op-a".into())
-        );
-        let OtlpProtoMessage::Traces(partition0_traces) = otap_to_otlp(&partitions[0].batch)
-        else {
+        assert_eq!(partitions[0].value, PartitionValue::String("op-a".into()));
+        let OtlpProtoMessage::Traces(partition0_traces) = otap_to_otlp(&partitions[0].batch) else {
             panic!("expected traces");
         };
         assert_eq!(
@@ -970,12 +984,8 @@ mod test {
             )])
         );
 
-        assert_eq!(
-            partitions[1].value,
-            PartitionValue::String("op-b".into())
-        );
-        let OtlpProtoMessage::Traces(partition1_traces) = otap_to_otlp(&partitions[1].batch)
-        else {
+        assert_eq!(partitions[1].value, PartitionValue::String("op-b".into()));
+        let OtlpProtoMessage::Traces(partition1_traces) = otap_to_otlp(&partitions[1].batch) else {
             panic!("expected traces");
         };
         assert_eq!(
@@ -1203,7 +1213,6 @@ mod test {
                 Arc::new(StringArray::from_iter_values(["a", "a", "b", "", "", ""])),
                 Arc::new(Int64Array::from_iter_values([0, 0, 0, 0, 0, 1])),
             ],
-            // TODO test with nulls
             None,
         );
 
@@ -1215,11 +1224,6 @@ mod test {
         assert!(comparator.cmp(3, 4).unwrap().is_eq()); // matching ints
         assert!(comparator.cmp(4, 5).unwrap().is_ne()); // non-matching ints
     }
-
-    // TODO
-    // - test missing columns
-    // - test nulls in values column
-    // - test null in struct array?
 
     #[test]
     fn test_anyval_comparator_bool() {
@@ -1349,5 +1353,100 @@ mod test {
         let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_anyval_comparator_missing_columns_treated_as_equal() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![Field::new(
+                consts::ATTRIBUTE_TYPE,
+                DataType::UInt8,
+                false,
+            )]),
+            vec![Arc::new(UInt8Array::from_iter_values([
+                AttributeValueType::Str as u8,
+                AttributeValueType::Str as u8,
+                AttributeValueType::Int as u8,
+                AttributeValueType::Int as u8,
+            ]))],
+            None,
+        );
+
+        // since the values columns are missing, we assume they are all null so effectively
+        // the partition has equivalent values
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_eq());
+    }
+
+    #[test]
+    fn test_anyval_comparator_null_values() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter([
+                    Some(""),
+                    Some(""),
+                    None,
+                    None,
+                    Some(""),
+                ])),
+            ],
+            None,
+        );
+
+        // since the values columns are missing, we assume they are all null so effectively
+        // the partition has equivalent values
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_eq());
+        assert!(comparator.cmp(3, 4).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_anyval_comparator_null_struct_col() {
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(consts::ATTRIBUTE_STR, DataType::Utf8, true),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(StringArray::from_iter([
+                    Some(""),
+                    Some(""),
+                    Some(""),
+                    Some("a"),
+                    Some("a"),
+                ])),
+            ],
+            Some(NullBuffer::new(BooleanBuffer::from(vec![
+                true, true, false, false, true,
+            ]))),
+        );
+
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        assert!(comparator.cmp(1, 2).unwrap().is_ne());
+        assert!(comparator.cmp(2, 3).unwrap().is_eq());
+        assert!(comparator.cmp(3, 4).unwrap().is_ne());
     }
 }
