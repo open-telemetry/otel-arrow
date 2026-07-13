@@ -494,7 +494,10 @@ pub struct CoreAllocation {
     pub strategy: CoreAllocationStrategy,
 
     /// Number of cores to use (only valid when strategy is "core_count").
-    /// If 0, uses all unreserved visible cores.
+    /// If 0, uses all unreserved visible cores. `core_count` placement is
+    /// controller-selected and exclusive across pipelines using `core_count` or
+    /// `core_set`; it fails when enough unreserved visible cores are not
+    /// available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<usize>,
 
@@ -507,13 +510,14 @@ pub struct CoreAllocation {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreAllocationStrategy {
-    /// Use all available CPU cores.
+    /// Use all available CPU cores. This strategy is shared and does not reserve
+    /// cores away from other pipelines.
     #[default]
     AllCores,
-    /// Use a controller-selected number of CPU cores.
+    /// Use a controller-selected number of CPU cores exclusively.
     /// If the requested number exceeds available cores, configuration validation fails.
     CoreCount,
-    /// Defines a set of CPU cores should be allocated for pipeline execution.
+    /// Defines an explicit set of CPU cores for pipeline execution.
     CoreSet,
 }
 

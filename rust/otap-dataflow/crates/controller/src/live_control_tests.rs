@@ -1783,6 +1783,82 @@ connections:
     assert!(plan.resize_stop_cores.is_empty());
 }
 
+#[test]
+fn prepare_rollout_plan_returns_noop_for_identical_non_monotonic_numa_placement() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          resources:
+            core_allocation:
+              type: core_count
+              count: 6
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let topology = NumaTopology::from_node_cpulists(&[(0, "4-7".into()), (1, "0-3".into())]);
+    let runtime = test_runtime_with_topology(&config, topology);
+    register_existing_pipeline(&runtime, &config);
+    for core_id in [4, 5, 6, 7, 0, 1] {
+        let _rx = register_runtime_instance(
+            &runtime,
+            "g1",
+            "p1",
+            core_id,
+            0,
+            RuntimeInstanceLifecycle::Active,
+        );
+    }
+
+    let replacement = PipelineConfig::from_yaml(
+        "g1".into(),
+        "p1".into(),
+        r#"
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 6
+nodes:
+  receiver:
+    type: "urn:test:receiver:example"
+    config: null
+  exporter:
+    type: "urn:test:exporter:example"
+    config: null
+connections:
+  - from: receiver
+    to: exporter
+"#,
+    )
+    .expect("replacement should parse");
+
+    let plan = runtime
+        .prepare_rollout_plan(
+            "g1",
+            "p1",
+            &ReconfigureRequest {
+                pipeline: replacement,
+                step_timeout_secs: 60,
+                drain_timeout_secs: 60,
+            },
+        )
+        .expect("identical non-monotonic NUMA updates should be planned");
+
+    assert_eq!(plan.target_assigned_cores, vec![4, 5, 6, 7, 0, 1]);
+    assert_eq!(plan.action, RolloutAction::NoOp);
+    assert_eq!(plan.target_generation, 0);
+    assert!(plan.rollout.cores.is_empty());
+}
+
 /// Scenario: the controller executes a rollout plan that has already been
 /// classified as `NoOp`.
 /// Guarantees: the controller returns an immediate successful rollout

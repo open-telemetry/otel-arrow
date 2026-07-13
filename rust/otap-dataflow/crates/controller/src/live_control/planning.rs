@@ -618,11 +618,11 @@ impl<
             .filter(|core_id| !target_core_set.contains(core_id))
             .collect();
         let action = if let Some(record) = current_record.as_ref() {
-            let identical_update = current_assigned_cores == target_assigned_cores
-                && active_runtime_state.current_generation_cores == target_assigned_cores
+            let identical_update = current_core_set == target_core_set
+                && active_core_set == target_core_set
                 && !active_runtime_state.has_foreign_active_generations
                 && record.resolved.runtime_matches(&resolved_pipeline);
-            let resize_only = current_assigned_cores != target_assigned_cores
+            let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
                 && record
                     .resolved

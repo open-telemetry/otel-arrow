@@ -2190,6 +2190,8 @@ impl<
                         });
                     }
 
+                    let visible_core_ids: Vec<_> =
+                        available_core_ids.iter().map(|core| core.id).collect();
                     let selected: Vec<_> = available_core_ids
                         .into_iter()
                         .filter(|c| set.iter().any(|r| r.start <= c.id && c.id <= r.end))
@@ -2199,17 +2201,17 @@ impl<
                         return Err(Error::InvalidCoreAllocation {
                             alloc: core_allocation.clone(),
                             message: "No available cores in the specified ranges".to_owned(),
-                            available: core_affinity::get_core_ids()
-                                .unwrap_or_default()
-                                .iter()
-                                .map(|c| c.id)
-                                .collect(),
+                            available: visible_core_ids,
                         });
                     }
 
                     Ok(selected)
                 }
-                None => Ok(Vec::new()),
+                None => Err(Error::InvalidCoreAllocation {
+                    alloc: core_allocation.clone(),
+                    message: "'set' is required when strategy is 'core_set'".to_owned(),
+                    available: available_core_ids.iter().map(|core| core.id).collect(),
+                }),
             },
         }
     }

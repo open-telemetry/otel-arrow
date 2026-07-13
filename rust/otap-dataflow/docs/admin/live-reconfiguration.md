@@ -396,6 +396,9 @@ Behavior:
 - When `deleteMissing=false`, omitted live pipelines and groups are preserved.
 - Engine-level and group-level metadata is committed only after the
   reconciliation succeeds.
+- Reconciliation is not atomic across pipelines. Pipeline rollouts that
+  succeeded before a later rollout failure remain applied and are reflected in
+  the committed live config.
 - Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
 
 Response body is an `EngineConfigReconcileStatus` with:
