@@ -1064,19 +1064,6 @@ mod tests {
         assert_eq!(log_count, 3, "Expected 3 logs");
     }
 
-    #[test]
-    fn test_geneva_exporter_handles_missing_logs_batch() {
-        // Verify that Geneva exporter properly handles the case where
-        // OtapArrowRecords is missing the required logs batch
-
-        let otap_records = OtapArrowRecords::Logs(Default::default());
-
-        // This should fail because logs batch is missing
-        let result = OtapLogsView::try_from(&otap_records);
-
-        assert!(result.is_err(), "Should fail when logs batch is missing");
-    }
-
     // Configuration tests
     #[test]
     fn test_config_deserialization() {

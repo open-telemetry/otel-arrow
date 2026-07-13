@@ -212,11 +212,11 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
