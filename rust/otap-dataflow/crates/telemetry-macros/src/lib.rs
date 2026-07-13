@@ -375,44 +375,19 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Determine if we're in the telemetry crate itself by looking at the crate name context
-    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
-    let is_telemetry_crate = crate_name == "otap-df-telemetry";
+    // Determine the telemetry crate root once and derive all paths from it.
+    let root = telemetry_crate_root();
 
     // Choose path prefixes based on context
-    let (
-        attr_handler_path,
-        descriptor_path,
-        field_path,
-        value_type_path,
-        attr_value_path,
-        attr_iterator_path,
-    ) = if is_telemetry_crate {
-        (
-            quote!(crate::attributes::AttributeSetHandler),
-            quote!(crate::descriptor::AttributesDescriptor),
-            quote!(crate::descriptor::AttributeField),
-            quote!(crate::descriptor::AttributeValueType),
-            quote!(crate::attributes::AttributeValue),
-            quote!(crate::attributes::AttributeIterator),
-        )
-    } else {
-        (
-            quote!(::otap_df_telemetry::attributes::AttributeSetHandler),
-            quote!(::otap_df_telemetry::descriptor::AttributesDescriptor),
-            quote!(::otap_df_telemetry::descriptor::AttributeField),
-            quote!(::otap_df_telemetry::descriptor::AttributeValueType),
-            quote!(::otap_df_telemetry::attributes::AttributeValue),
-            quote!(::otap_df_telemetry::attributes::AttributeIterator),
-        )
-    };
+    let attr_handler_path = quote!(#root::attributes::AttributeSetHandler);
+    let descriptor_path = quote!(#root::descriptor::AttributesDescriptor);
+    let field_path = quote!(#root::descriptor::AttributeField);
+    let value_type_path = quote!(#root::descriptor::AttributeValueType);
+    let attr_value_path = quote!(#root::attributes::AttributeValue);
+    let attr_iterator_path = quote!(#root::attributes::AttributeIterator);
 
     // Path to the AttributeEnum trait, used for enum-typed attribute fields.
-    let attr_enum_path = if is_telemetry_crate {
-        quote!(crate::attributes::AttributeEnum)
-    } else {
-        quote!(::otap_df_telemetry::attributes::AttributeEnum)
-    };
+    let attr_enum_path = quote!(#root::attributes::AttributeEnum);
 
     // Collect attribute fields and composed attribute sets
     let mut attr_field_idents = Vec::new();
@@ -692,6 +667,18 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Returns the path prefix used to reference the telemetry crate from generated
+/// code: `crate` when expanding inside `otap-df-telemetry` itself, and
+/// `::otap_df_telemetry` for every downstream crate.
+fn telemetry_crate_root() -> proc_macro2::TokenStream {
+    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+    if crate_name == "otap-df-telemetry" {
+        quote!(crate)
+    } else {
+        quote!(::otap_df_telemetry)
+    }
+}
+
 /// Converts a `CamelCase`/`PascalCase` identifier to `snake_case`.
 fn to_snake_case(ident: &str) -> String {
     let mut out = String::with_capacity(ident.len() + 4);
@@ -785,12 +772,9 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
     let cardinality = variant_idents.len();
     let indices: Vec<usize> = (0..cardinality).collect();
 
-    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
-    let is_telemetry_crate = crate_name == "otap-df-telemetry";
-    let attr_enum_path = if is_telemetry_crate {
-        quote!(crate::attributes::AttributeEnum)
-    } else {
-        quote!(::otap_df_telemetry::attributes::AttributeEnum)
+    let attr_enum_path = {
+        let root = telemetry_crate_root();
+        quote!(#root::attributes::AttributeEnum)
     };
 
     let generated = quote! {
@@ -893,13 +877,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let struct_ident = s.ident.clone();
 
-    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
-    let is_telemetry_crate = crate_name == "otap-df-telemetry";
-    let crate_root = if is_telemetry_crate {
-        quote!(crate)
-    } else {
-        quote!(::otap_df_telemetry)
-    };
+    let crate_root = telemetry_crate_root();
 
     let marker_impl = if let Some(ty) = &static_attrs {
         quote! {
@@ -1047,13 +1025,7 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
         ));
     }
 
-    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
-    let is_telemetry_crate = crate_name == "otap-df-telemetry";
-    let crate_root = if is_telemetry_crate {
-        quote!(crate)
-    } else {
-        quote!(::otap_df_telemetry)
-    };
+    let crate_root = telemetry_crate_root();
 
     Ok(quote! {
         impl #crate_root::attributes::DynamicAttributeSet for #struct_ident {
