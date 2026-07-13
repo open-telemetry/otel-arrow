@@ -528,8 +528,15 @@ struct SchemaReader {
 /// Building a `try_get_field_data_closure` for every field on every event is
 /// O(n^2) (each call re-walks the field list) and allocates a boxed closure per
 /// field. A [`SchemaId`] uniquely identifies a field layout, so we build the
-/// readers once per schema and reuse them, making per-event extraction an O(n)
-/// pass with no per-field allocations.
+/// readers once per schema and reuse them, removing the per-event closure
+/// rebuild and per-field allocations.
+///
+/// For all-fixed-size schemas this makes per-event extraction an O(n) pass.
+/// Variable-length fields are not fully linearized here: a reader for a field
+/// that sits behind variable-length data still re-walks the earlier
+/// variable-length fields on every event (a property of `one_collect`'s
+/// per-field closure API), so such schemas remain O(n^2) per event. A
+/// single-pass reader in `one_collect` is the right place to fix that.
 ///
 /// Reuse is sound because a cached reader is only ever applied to payloads of
 /// the same [`SchemaId`], and each closure recomputes any offset that sits
@@ -799,8 +806,10 @@ fn spawn_etw_session(
 
             // Cache of per-schema field readers, keyed by the decoder's
             // `SchemaId`.  Built once per schema and reused for every event of
-            // that schema, so per-event field extraction is O(n) with no
-            // per-field allocations.  Owned by this single decode thread and
+            // that schema, removing the per-event closure rebuild and per-field
+            // allocations (an O(n) pass for all-fixed-size schemas; variable-
+            // length fields can still re-walk earlier fields via one_collect's
+            // closure API).  Owned by this single decode thread and
             // never shared, so like the decoder it uses `Rc<RefCell<>>` and
             // adds no cross-core synchronization.
             let reader_cache: Rc<RefCell<ReaderCache>> = Rc::new(RefCell::new(
