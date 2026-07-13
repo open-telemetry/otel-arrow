@@ -768,11 +768,7 @@ mod test {
     use arrow::array::{
         BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, StructArray, UInt8Array,
     };
-    use arrow::buffer::BooleanBuffer;
-    use arrow::compute::kernels::cmp::distinct;
     use arrow::datatypes::{DataType, Field, Fields};
-    use datafusion::logical_expr::col;
-    use otap_df_pdata::otap::filter::IdBitmapPool;
     use otap_df_pdata::otlp::attributes::AttributeValueType;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
@@ -787,15 +783,9 @@ mod test {
     use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::parser::default_parser_options;
-    use crate::pipeline::Pipeline;
-    use crate::pipeline::expr::{DataScope, LeafEval, ScopedExpr};
     use crate::pipeline::partition::{
-        AnyValueStructComparator, PartitionRangeCoalescer, PartitionValue, Partitioner,
+        AnyValueStructComparator, PartitionValue, Partitioner,
     };
-
-    use super::partition;
-
-    // TODO the tests here also need to assert on the partition values.
 
     #[test]
     fn test_partition_logs_by_severity_number() {
@@ -825,74 +815,72 @@ mod test {
                 )],
             ),
         ])));
-        let session_ctx = Pipeline::create_session_context();
 
-        let mut expr = ScopedExpr::Eval {
-            scope: DataScope::Root,
-            eval: LeafEval::new_df_expr(col(consts::SEVERITY_NUMBER), false).unwrap(),
-        };
-
-        let mut partitions = Vec::new();
-        partition(
-            otap,
-            &session_ctx,
-            &mut expr,
-            &mut partitions,
-            &mut PartitionRangeCoalescer::new(),
-            &mut IdBitmapPool::new(),
-        )
-        .unwrap();
+        let (scalar_expr, functions) =
+            OplParser::parse_expr_with_options("severity_number", default_parser_options())
+                .unwrap();
+        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let partitions = partitioner
+            .partition(otap)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
 
-        // Collect (severity_number, event_names) for each partition by round-tripping to OTLP.
-        let mut partition_summaries: Vec<(i32, Vec<String>)> = Vec::new();
-        for p in &partitions {
-            let root_rb = p
-                .batch
-                .root_record_batch()
-                .expect("partition should have root batch");
-            assert!(root_rb.num_rows() == 2, "each partition should have 2 rows");
+        assert_eq!(partitions[0].value, PartitionValue::Int(13));
+        let OtlpProtoMessage::Logs(partition0_logs) = otap_to_otlp(&partitions[0].batch) else {
+            panic!("expected logs");
+        };
+        assert_eq!(
+            partition0_logs,
+            LogsData::new(vec![ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .severity_number(13)
+                            .event_name("e1")
+                            .finish(),
+                        LogRecord::build()
+                            .severity_number(13)
+                            .event_name("e3")
+                            .finish(),
+                    ],
+                )],
+            )])
+        );
 
-            let OtlpProtoMessage::Logs(logs_data) = otap_to_otlp(&p.batch) else {
-                panic!("expected logs");
-            };
-            let records: Vec<_> = logs_data
-                .resource_logs
-                .iter()
-                .flat_map(|rl| &rl.scope_logs)
-                .flat_map(|sl| &sl.log_records)
-                .collect();
-
-            let severity = records[0].severity_number;
-            let event_names: Vec<String> = records.iter().map(|r| r.event_name.clone()).collect();
-
-            // All records in a partition should share the same severity_number.
-            for r in &records {
-                assert_eq!(r.severity_number, severity);
-            }
-
-            partition_summaries.push((severity, event_names));
-        }
-
-        // Sort by severity so assertion order is deterministic.
-        partition_summaries.sort_by_key(|(sev, _)| *sev);
-
-        assert_eq!(partition_summaries[0].0, 13);
-        assert_eq!(partition_summaries[0].1, vec!["e1", "e3"]);
-        assert_eq!(partition_summaries[1].0, 17);
-        assert_eq!(partition_summaries[1].1, vec!["e2", "e4"]);
+        assert_eq!(partitions[1].value, PartitionValue::Int(17));
+        let OtlpProtoMessage::Logs(partition1_logs) = otap_to_otlp(&partitions[1].batch) else {
+            panic!("expected logs");
+        };
+        assert_eq!(
+            partition1_logs,
+            LogsData::new(vec![ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .severity_number(17)
+                            .event_name("e2")
+                            .finish(),
+                        LogRecord::build()
+                            .severity_number(17)
+                            .event_name("e4")
+                            .finish(),
+                    ],
+                )],
+            )])
+        );
     }
 
-    /// Partition traces by span `name`.
-    ///
-    /// Input: 4 spans with names ["op-a", "op-b", "op-a", "op-b"].
-    /// Expected: 2 partitions -- one with the two "op-a" spans, one with the two "op-b" spans.
-    /// This tests partitioning on a string column with non-adjacent equal values in traces.
     #[test]
     fn test_partition_traces_by_span_name() {
         use otap_df_pdata::proto::opentelemetry::trace::v1::{
-            ResourceSpans, ScopeSpans, Span, TracesData,
+            ResourceSpans, ScopeSpans, Span, Status, TracesData,
         };
 
         let otap = otlp_to_otap(&OtlpProtoMessage::Traces(TracesData::new(vec![
@@ -925,64 +913,81 @@ mod test {
                 )],
             ),
         ])));
-        let session_ctx = Pipeline::create_session_context();
 
-        let mut expr = ScopedExpr::Eval {
-            scope: DataScope::Root,
-            eval: LeafEval::new_df_expr(col(consts::NAME), false).unwrap(),
-        };
-
-        let mut partitions = Vec::new();
-
-        partition(
-            otap,
-            &session_ctx,
-            &mut expr,
-            &mut partitions,
-            &mut PartitionRangeCoalescer::new(),
-            &mut IdBitmapPool::new(),
-        )
-        .unwrap();
+        let (scalar_expr, functions) =
+            OplParser::parse_expr_with_options("name", default_parser_options()).unwrap();
+        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let partitions = partitioner
+            .partition(otap)
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
 
-        // Collect (span_name, span_ids) for each partition by round-tripping to OTLP.
-        let mut partition_summaries: Vec<(String, Vec<Vec<u8>>)> = Vec::new();
-        for p in &partitions {
-            let root_rb = p
-                .batch
-                .root_record_batch()
-                .expect("partition should have root batch");
-            assert_eq!(root_rb.num_rows(), 2, "each partition should have 2 rows");
+        assert_eq!(
+            partitions[0].value,
+            PartitionValue::String("op-a".into())
+        );
+        let OtlpProtoMessage::Traces(partition0_traces) = otap_to_otlp(&partitions[0].batch)
+        else {
+            panic!("expected traces");
+        };
+        assert_eq!(
+            partition0_traces,
+            TracesData::new(vec![ResourceSpans::new(
+                Resource::default(),
+                vec![ScopeSpans::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        Span::build()
+                            .trace_id(vec![1u8; 16])
+                            .span_id(vec![1u8; 8])
+                            .name("op-a")
+                            .status(Status::default())
+                            .finish(),
+                        Span::build()
+                            .trace_id(vec![3u8; 16])
+                            .span_id(vec![3u8; 8])
+                            .name("op-a")
+                            .status(Status::default())
+                            .finish(),
+                    ],
+                )],
+            )])
+        );
 
-            let OtlpProtoMessage::Traces(traces_data) = otap_to_otlp(&p.batch) else {
-                panic!("expected traces");
-            };
-            let spans: Vec<_> = traces_data
-                .resource_spans
-                .iter()
-                .flat_map(|rs| &rs.scope_spans)
-                .flat_map(|ss| &ss.spans)
-                .collect();
-
-            let name = spans[0].name.clone();
-            let span_ids: Vec<Vec<u8>> = spans.iter().map(|s| s.span_id.clone()).collect();
-
-            // All spans in a partition should share the same name.
-            for s in &spans {
-                assert_eq!(s.name, name);
-            }
-
-            partition_summaries.push((name, span_ids));
-        }
-
-        // Sort by name so assertion order is deterministic.
-        partition_summaries.sort_by(|(a, _), (b, _)| a.cmp(b));
-
-        assert_eq!(partition_summaries[0].0, "op-a");
-        assert_eq!(partition_summaries[0].1, vec![vec![1u8; 8], vec![3u8; 8]]);
-        assert_eq!(partition_summaries[1].0, "op-b");
-        assert_eq!(partition_summaries[1].1, vec![vec![2u8; 8], vec![4u8; 8]]);
+        assert_eq!(
+            partitions[1].value,
+            PartitionValue::String("op-b".into())
+        );
+        let OtlpProtoMessage::Traces(partition1_traces) = otap_to_otlp(&partitions[1].batch)
+        else {
+            panic!("expected traces");
+        };
+        assert_eq!(
+            partition1_traces,
+            TracesData::new(vec![ResourceSpans::new(
+                Resource::default(),
+                vec![ScopeSpans::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        Span::build()
+                            .trace_id(vec![2u8; 16])
+                            .span_id(vec![2u8; 8])
+                            .name("op-b")
+                            .status(Status::default())
+                            .finish(),
+                        Span::build()
+                            .trace_id(vec![4u8; 16])
+                            .span_id(vec![4u8; 8])
+                            .name("op-b")
+                            .status(Status::default())
+                            .finish(),
+                    ],
+                )],
+            )])
+        );
     }
 
     #[test]
