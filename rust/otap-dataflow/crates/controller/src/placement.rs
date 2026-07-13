@@ -6,6 +6,7 @@
 use core_affinity::CoreId;
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Stable placement snapshot for a controller deployment generation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -75,25 +76,38 @@ impl CorePlacement {
     }
 }
 
-/// NUMA-aware selection helper for `core_count` allocations.
-#[derive(Debug)]
-pub struct PlacementPlanner<'a> {
-    topology: &'a NumaTopology,
+/// Strategy used to select concrete cores for `core_count` allocations.
+///
+/// Implementations are called during startup preflight and live-control
+/// rollout/reconcile planning, so they must be deterministic for identical
+/// inputs. Strategies must honor `reserved`, return at most `count` cores, and
+/// only select cores from `available`.
+pub trait PlacementStrategy: std::fmt::Debug {
+    /// Selects `count` cores from `available` while excluding `reserved`.
+    #[must_use]
+    fn select_core_count(
+        &self,
+        topology: &NumaTopology,
+        available: &[CoreId],
+        reserved: &BTreeSet<usize>,
+        count: usize,
+    ) -> Vec<CoreId>;
 }
 
-impl<'a> PlacementPlanner<'a> {
-    /// Creates a planner over a single topology snapshot.
-    #[must_use]
-    pub fn new(topology: &'a NumaTopology) -> Self {
-        Self { topology }
-    }
+/// Default `core_count` strategy that prefers one NUMA node when possible.
+///
+/// This policy is chosen for intra-pipeline cache and NUMA locality. Future
+/// balancing or hardware-aware policies can implement [`PlacementStrategy`]
+/// without changing controller placement call sites.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NumaPackingPlacementStrategy;
 
-    /// Selects `count` cores from `available`, preferring one NUMA node when possible.
-    #[must_use]
-    pub fn select_core_count(
+impl PlacementStrategy for NumaPackingPlacementStrategy {
+    fn select_core_count(
         &self,
+        topology: &NumaTopology,
         available: &[CoreId],
-        reserved: &std::collections::BTreeSet<usize>,
+        reserved: &BTreeSet<usize>,
         count: usize,
     ) -> Vec<CoreId> {
         let mut free: Vec<_> = available
@@ -103,15 +117,14 @@ impl<'a> PlacementPlanner<'a> {
             .collect();
         free.sort_by_key(|core| core.id);
 
-        if count == 0 || self.topology.is_unknown() {
+        if count == 0 || topology.is_unknown() {
             return free.into_iter().take(count).collect();
         }
 
-        let mut by_node: std::collections::BTreeMap<u32, Vec<CoreId>> =
-            std::collections::BTreeMap::new();
+        let mut by_node: BTreeMap<u32, Vec<CoreId>> = BTreeMap::new();
         let mut unknown = Vec::new();
         for core in free {
-            if let Some(node) = self.topology.numa_node(core.id as u32) {
+            if let Some(node) = topology.numa_node(core.id as u32) {
                 by_node.entry(node).or_default().push(core);
             } else {
                 unknown.push(core);
@@ -145,5 +158,89 @@ impl<'a> PlacementPlanner<'a> {
             }
         }
         selected
+    }
+}
+
+/// Selection helper for controller-owned pipeline placement.
+#[derive(Debug)]
+pub struct PlacementPlanner<'a, S = NumaPackingPlacementStrategy> {
+    topology: &'a NumaTopology,
+    strategy: S,
+}
+
+impl<'a> PlacementPlanner<'a, NumaPackingPlacementStrategy> {
+    /// Creates a planner over a single topology snapshot using the default
+    /// NUMA-packing strategy.
+    #[must_use]
+    pub fn new(topology: &'a NumaTopology) -> Self {
+        Self::with_strategy(topology, NumaPackingPlacementStrategy)
+    }
+}
+
+impl<'a, S: PlacementStrategy> PlacementPlanner<'a, S> {
+    /// Creates a planner over a single topology snapshot and placement strategy.
+    #[must_use]
+    pub fn with_strategy(topology: &'a NumaTopology, strategy: S) -> Self {
+        Self { topology, strategy }
+    }
+
+    /// Selects `count` cores from `available` using this planner's strategy.
+    #[must_use]
+    pub fn select_core_count(
+        &self,
+        available: &[CoreId],
+        reserved: &BTreeSet<usize>,
+        count: usize,
+    ) -> Vec<CoreId> {
+        self.strategy
+            .select_core_count(self.topology, available, reserved, count)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Debug)]
+    struct ReversePlacementStrategy;
+
+    impl PlacementStrategy for ReversePlacementStrategy {
+        fn select_core_count(
+            &self,
+            _topology: &NumaTopology,
+            available: &[CoreId],
+            reserved: &BTreeSet<usize>,
+            count: usize,
+        ) -> Vec<CoreId> {
+            let mut selected = available
+                .iter()
+                .copied()
+                .filter(|core| !reserved.contains(&core.id))
+                .collect::<Vec<_>>();
+            selected.sort_by_key(|core| std::cmp::Reverse(core.id));
+            selected.truncate(count);
+            selected
+        }
+    }
+
+    #[test]
+    fn planner_can_use_injected_strategy() {
+        let topology = NumaTopology::unknown();
+        let planner = PlacementPlanner::with_strategy(&topology, ReversePlacementStrategy);
+        let selected = planner.select_core_count(
+            &[
+                CoreId { id: 0 },
+                CoreId { id: 1 },
+                CoreId { id: 2 },
+                CoreId { id: 3 },
+            ],
+            &BTreeSet::from([2]),
+            2,
+        );
+
+        assert_eq!(
+            selected.iter().map(|core| core.id).collect::<Vec<_>>(),
+            vec![3, 1]
+        );
     }
 }

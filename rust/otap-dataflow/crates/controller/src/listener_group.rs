@@ -14,35 +14,80 @@ use otap_df_engine::listener_group::{
     ListenerGroupKey, ListenerGroupMember, ListenerGroupPlan, ListenerGroupSnapshot,
     ListenerProtocol,
 };
+use otap_df_telemetry::otel_warn;
 use std::net::SocketAddr;
 
+// TODO: Replace this conservative extraction with receiver/factory-declared
+// bind identities so listener-group planning does not hardcode receiver URNs
+// and config shapes in the controller.
 const KNOWN_RECEIVER_URNS: &[&str] = &[
     "urn:otel:receiver:otlp",
     "urn:otel:receiver:otap",
     "urn:otel:receiver:syslog_cef",
 ];
 
-fn parse_listening_addr(value: &serde_json::Value) -> Option<SocketAddr> {
+fn parse_listening_addr(value: &serde_json::Value) -> Option<Result<SocketAddr, String>> {
     // Listener groups only describe concrete socket bind identities. Hostnames
     // can resolve differently over time, so they are left to future resolver
     // integration instead of being guessed here.
-    value
-        .get("listening_addr")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|raw| raw.parse().ok())
+    let raw = value.get("listening_addr")?;
+    Some(if let Some(raw) = raw.as_str() {
+        raw.parse().map_err(|err| format!("`{raw}`: {err}"))
+    } else {
+        Err(format!("expected string, got {raw}"))
+    })
 }
 
-fn listener_addresses(config: &serde_json::Value) -> Vec<(ListenerProtocol, SocketAddr)> {
+fn push_listening_addr(
+    addresses: &mut Vec<(ListenerProtocol, SocketAddr)>,
+    node_id: &str,
+    receiver_urn: &str,
+    config_path: &str,
+    value: &serde_json::Value,
+    protocol: ListenerProtocol,
+) {
+    match parse_listening_addr(value) {
+        Some(Ok(addr)) => addresses.push((protocol, addr)),
+        Some(Err(error)) => {
+            otel_warn!(
+                "controller.listener_group.addr_skipped",
+                node_id = node_id,
+                receiver_urn = receiver_urn,
+                config_path = config_path,
+                error = error.as_str()
+            );
+        }
+        None => {}
+    }
+}
+
+fn listener_addresses(
+    node_id: &str,
+    receiver_urn: &str,
+    config: &serde_json::Value,
+) -> Vec<(ListenerProtocol, SocketAddr)> {
     let mut addresses = Vec::new();
 
-    if let Some(addr) = parse_listening_addr(config) {
-        addresses.push((ListenerProtocol::Tcp, addr));
-    }
+    push_listening_addr(
+        &mut addresses,
+        node_id,
+        receiver_urn,
+        "listening_addr",
+        config,
+        ListenerProtocol::Tcp,
+    );
 
     if let Some(protocols) = config.get("protocols") {
         for protocol in ["grpc", "http"] {
-            if let Some(addr) = protocols.get(protocol).and_then(parse_listening_addr) {
-                addresses.push((ListenerProtocol::Tcp, addr));
+            if let Some(protocol_config) = protocols.get(protocol) {
+                push_listening_addr(
+                    &mut addresses,
+                    node_id,
+                    receiver_urn,
+                    &format!("protocols.{protocol}.listening_addr"),
+                    protocol_config,
+                    ListenerProtocol::Tcp,
+                );
             }
         }
     }
@@ -52,8 +97,15 @@ fn listener_addresses(config: &serde_json::Value) -> Vec<(ListenerProtocol, Sock
             ("tcp", ListenerProtocol::Tcp),
             ("udp", ListenerProtocol::Udp),
         ] {
-            if let Some(addr) = protocol.get(key).and_then(parse_listening_addr) {
-                addresses.push((listener_protocol, addr));
+            if let Some(protocol_config) = protocol.get(key) {
+                push_listening_addr(
+                    &mut addresses,
+                    node_id,
+                    receiver_urn,
+                    &format!("protocol.{key}.listening_addr"),
+                    protocol_config,
+                    listener_protocol,
+                );
             }
         }
     }
@@ -89,7 +141,9 @@ pub(crate) fn snapshot_for_pipeline(
             continue;
         }
 
-        for (protocol, bind_address) in listener_addresses(&node_cfg.config) {
+        for (protocol, bind_address) in
+            listener_addresses(node_id.as_ref(), node_cfg.r#type.as_str(), &node_cfg.config)
+        {
             plans.push(ListenerGroupPlan {
                 key: ListenerGroupKey::new(
                     pipeline.pipeline_group_id.clone(),

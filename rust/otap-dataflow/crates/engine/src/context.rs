@@ -13,7 +13,6 @@ use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::listener_group::ListenerGroupSnapshot;
 use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
-use crate::topology::NumaTopology;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
@@ -260,12 +259,6 @@ impl ControllerContext {
             },
             deployment_generation,
         )
-    }
-
-    /// Returns the topology detected for this controller process.
-    #[must_use]
-    pub fn topology(&self) -> NumaTopology {
-        NumaTopology::detect()
     }
 
     /// Registers the engine-level entity for engine-wide metrics with no scope attributes.

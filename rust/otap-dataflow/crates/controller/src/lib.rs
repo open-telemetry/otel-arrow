@@ -90,6 +90,7 @@ use otap_df_engine::topic::{
     InMemoryBackend, PipelineTopicBinding, TopicBroker, TopicOptions, TopicPublishOutcomeConfig,
     TopicSet,
 };
+use otap_df_engine::topology::NumaTopology;
 use otap_df_state::store::{ObservedStateHandle, ObservedStateStore};
 use otap_df_telemetry::event::{EngineEvent, ErrorSummary, ObservedEventReporter};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -1521,7 +1522,13 @@ impl<
                 pipeline.policies.health.clone(),
             );
         }
-        let topology = controller_ctx.topology();
+        let topology = NumaTopology::detect();
+        otel_info!(
+            "controller.numa_topology.detected",
+            completeness = format!("{:?}", topology.completeness()),
+            visible_cpu_count = topology.visible_cpus().len(),
+            visible_node_count = topology.visible_nodes().len()
+        );
         let placement_snapshot =
             Self::preflight_pipeline_placement(&pipelines, &all_cores, &topology)?;
 
@@ -1999,7 +2006,7 @@ impl<
     /// Selects which CPU cores to use based on the given allocation.
     fn process_visible_core_ids(
         available_core_ids: &[CoreId],
-        topology: &otap_df_engine::topology::NumaTopology,
+        topology: &NumaTopology,
     ) -> Vec<CoreId> {
         let mut visible: Vec<_> = if topology.is_unknown() {
             available_core_ids.to_vec()
@@ -2022,7 +2029,7 @@ impl<
         Self::select_cores_for_allocation_with_placement(
             available_core_ids,
             core_allocation,
-            &otap_df_engine::topology::NumaTopology::unknown(),
+            &NumaTopology::unknown(),
             &BTreeSet::new(),
         )
     }
@@ -2030,7 +2037,7 @@ impl<
     fn select_cores_for_allocation_with_placement(
         mut available_core_ids: Vec<CoreId>,
         core_allocation: &CoreAllocation,
-        topology: &otap_df_engine::topology::NumaTopology,
+        topology: &NumaTopology,
         reserved_core_ids: &BTreeSet<usize>,
     ) -> Result<Vec<CoreId>, Error> {
         available_core_ids = Self::process_visible_core_ids(&available_core_ids, topology);
@@ -2222,7 +2229,7 @@ impl<
     fn preflight_pipeline_placement(
         pipelines: &[ResolvedPipelineConfig],
         available_core_ids: &[CoreId],
-        topology: &otap_df_engine::topology::NumaTopology,
+        topology: &NumaTopology,
     ) -> Result<PlacementSnapshot, Error> {
         let mut reserved_core_ids = BTreeSet::new();
         let mut placements = vec![None; pipelines.len()];
@@ -2295,7 +2302,7 @@ impl<
         Ok(Self::preflight_pipeline_placement(
             pipelines,
             available_core_ids,
-            &otap_df_engine::topology::NumaTopology::unknown(),
+            &NumaTopology::unknown(),
         )?
         .pipelines
         .into_iter()
