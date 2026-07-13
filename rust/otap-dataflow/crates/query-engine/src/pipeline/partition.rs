@@ -440,8 +440,9 @@ fn partition_any_value_struct_array(
 ) -> Result<()> {
     let comparator = AnyValueStructComparator::try_new(array)?;
     let boundaries: BooleanBuffer = (0..array.len() - 1)
-        .map(|i| !comparator.cmp(i, i + 1).unwrap().is_eq())
-        .collect();
+        .map(|i| comparator.cmp(i, i + 1).map(|ord| !ord.is_eq()))
+        .collect::<Result<Vec<bool>>>()?
+        .into();
 
     partition_at_boundaries(
         array,
@@ -483,10 +484,7 @@ fn partition_at_boundaries(
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
 ) -> Result<()> {
     let num_rows = boundaries.len() + 1;
-    for group in range_coalescer
-        .coalesce_groups(num_rows, boundaries, &cmp)
-        .into_iter()
-    {
+    for group in range_coalescer.coalesce_groups(num_rows, boundaries, &cmp)? {
         let selection_vec = BooleanArray::from(BooleanBuffer::new(
             group.selection_vec_builder.into(),
             0,
@@ -547,11 +545,11 @@ impl PartitionRangeCoalescer {
         source_len: usize,
         partition_boundaries: BooleanBuffer,
         cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
-    ) -> impl IntoIterator<Item = CoalescingGroup> {
-        coalesce_groups(source_len, partition_boundaries, cmp, &mut self.groups);
+    ) -> Result<impl IntoIterator<Item = CoalescingGroup>> {
+        coalesce_groups(source_len, partition_boundaries, cmp, &mut self.groups)?;
 
         // return iterator of results
-        self.groups.drain(..)
+        Ok(self.groups.drain(..))
     }
 
     fn clear(&mut self) {
@@ -568,18 +566,20 @@ fn coalesce_groups(
     partition_boundaries: BooleanBuffer,
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
     groups: &mut Vec<CoalescingGroup>,
-) {
+) -> Result<()> {
     let mut current = 0;
     for idx in partition_boundaries.set_indices() {
         let t = current;
         current = idx + 1;
-        append_range_to_groups(source_len, t..current, cmp, groups);
+        append_range_to_groups(source_len, t..current, cmp, groups)?;
     }
 
     let last = partition_boundaries.len() + 1;
     if current != last {
-        append_range_to_groups(source_len, current..last, cmp, groups);
+        append_range_to_groups(source_len, current..last, cmp, groups)?;
     }
+
+    Ok(())
 }
 
 /// appends the range of rows to the [`CoalescingGroup`] to which it belongs. This means either
@@ -590,15 +590,19 @@ fn append_range_to_groups(
     range: Range<usize>,
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
     groups: &mut Vec<CoalescingGroup>,
-) {
+) -> Result<()> {
     // try to find a group whose value matches the value of the rows in the passed range
-    let match_group = groups
-        .iter_mut()
-        .find(|group| cmp(group.representative_row, range.start).unwrap().is_eq());
+    let mut match_idx = None;
+    for (idx, group) in groups.iter().enumerate() {
+        if cmp(group.representative_row, range.start)?.is_eq() {
+            match_idx = Some(idx);
+            break;
+        }
+    }
 
-    if let Some(group) = match_group {
+    if let Some(idx) = match_idx {
         // set the bits in the selection vec for this group
-        set_range_bits(range, &mut group.selection_vec_builder);
+        set_range_bits(range, &mut groups[idx].selection_vec_builder);
     } else {
         // create a new group
         let mut group = CoalescingGroup {
@@ -608,6 +612,8 @@ fn append_range_to_groups(
         set_range_bits(range, &mut group.selection_vec_builder);
         groups.push(group)
     }
+
+    Ok(())
 }
 
 /// sets all the rows in the range to `1`.
@@ -636,7 +642,7 @@ fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
     bool_buffer[first_full_byte..last_full_byte].fill(0xFF);
 
     // set trailing partial
-    for i in aligned_start_index..range.end {
+    for i in aligned_end_index..range.end {
         bit_util::set_bit(bool_buffer, i);
     }
 }
@@ -656,12 +662,19 @@ struct AnyValueStructComparator<'a> {
 
 impl<'a> AnyValueStructComparator<'a> {
     fn try_new(anyval_struct_arr: &'a StructArray) -> Result<Self> {
-        let type_col = anyval_struct_arr
+        let type_col_arr = anyval_struct_arr
             .column_by_name(consts::ATTRIBUTE_TYPE)
-            .unwrap()
-            .as_any()
-            .downcast_ref()
-            .unwrap();
+            .ok_or_else(|| otap_df_pdata::error::Error::ColumnNotFound {
+                name: consts::ATTRIBUTE_TYPE.into(),
+            })?;
+
+        let type_col = type_col_arr.as_any().downcast_ref::<UInt8Array>().ok_or_else(|| {
+            otap_df_pdata::error::Error::ColumnDataTypeMismatch {
+                name: consts::ATTRIBUTE_TYPE.into(),
+                actual: type_col_arr.data_type().clone(),
+                expect: DataType::UInt8,
+            }
+        })?;
 
         Ok(Self {
             type_col,
@@ -752,9 +765,9 @@ impl<'a> AnyValueStructComparator<'a> {
                     });
                 }
 
-                return Err(Error::ExecutionError {
+                Err(Error::ExecutionError {
                     cause: format!("Invalid attribute type enum value {type1:?}"),
-                });
+                })
             }
             other => Ok(other),
         }
