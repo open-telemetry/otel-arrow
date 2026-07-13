@@ -1953,7 +1953,7 @@ connections:
 }
 
 #[test]
-fn prepare_rollout_plan_returns_noop_for_identical_non_monotonic_numa_placement() {
+fn prepare_rollout_plan_replaces_divergent_non_monotonic_numa_placement() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -2020,7 +2020,7 @@ connections:
                 drain_timeout_secs: 60,
             },
         )
-        .expect("identical non-monotonic NUMA updates should be planned");
+        .expect("divergent non-monotonic NUMA update should be planned");
 
     assert_eq!(plan.target_assigned_cores, vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(plan.action, RolloutAction::Replace);

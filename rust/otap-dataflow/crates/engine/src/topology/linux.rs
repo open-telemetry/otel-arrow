@@ -67,14 +67,14 @@ impl NumaTopologyProvider for LinuxNumaTopologyProvider {
             mut partial,
         } = discover_sysfs_topology(&self.node_root);
 
-        let allowed = match self.allowed_cpus() {
+        let (allowed, visible_cpus_known) = match self.allowed_cpus() {
             AllowedCpuDiscovery::Known { cpus, degraded } => {
                 partial |= degraded;
-                Some(cpus)
+                (Some(cpus), true)
             }
             AllowedCpuDiscovery::Unavailable => {
                 partial = true;
-                None
+                (None, false)
             }
         };
 
@@ -90,7 +90,12 @@ impl NumaTopologyProvider for LinuxNumaTopologyProvider {
         } else {
             TopologyCompleteness::Complete
         };
-        NumaTopology::with_visible_cpus(cpu_to_node, visible_cpus, completeness)
+        NumaTopology::with_visible_cpu_discovery(
+            cpu_to_node,
+            visible_cpus,
+            visible_cpus_known,
+            completeness,
+        )
     }
 }
 
@@ -291,6 +296,10 @@ mod tests {
         Ok(BTreeSet::from([4, 5, 6, 7]))
     }
 
+    fn affinity_0_to_1() -> io::Result<BTreeSet<u32>> {
+        Ok(BTreeSet::from([0, 1]))
+    }
+
     fn affinity_error() -> io::Result<BTreeSet<u32>> {
         Err(io::Error::other("mock affinity failure"))
     }
@@ -340,6 +349,25 @@ mod tests {
         assert_eq!(topology.completeness(), TopologyCompleteness::Complete);
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([2, 3]));
         assert_eq!(topology.visible_nodes(), &BTreeSet::from([0]));
+    }
+
+    #[test]
+    fn disjoint_affinity_and_cgroup_keep_known_empty_visibility() {
+        let sysfs = tempfile::tempdir().unwrap();
+        let cgroup = tempfile::tempdir().unwrap();
+        write_node(sysfs.path(), 0, "0-3");
+        fs::write(cgroup.path().join("cpuset.cpus.effective"), "2-3").unwrap();
+
+        let provider = LinuxNumaTopologyProvider::for_test(
+            sysfs.path().to_path_buf(),
+            cgroup.path().to_path_buf(),
+            affinity_0_to_1,
+        );
+        let topology = provider.discover();
+
+        assert!(topology.visible_cpus_known());
+        assert!(topology.visible_cpus().is_empty());
+        assert!(topology.visible_nodes().is_empty());
     }
 
     #[test]

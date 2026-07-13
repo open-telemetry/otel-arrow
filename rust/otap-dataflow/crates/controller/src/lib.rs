@@ -2025,7 +2025,7 @@ impl<
         available_core_ids: &[CoreId],
         topology: &NumaTopology,
     ) -> Vec<CoreId> {
-        let mut visible: Vec<_> = if topology.visible_cpus().is_empty() {
+        let mut visible: Vec<_> = if !topology.visible_cpus_known() {
             available_core_ids.to_vec()
         } else {
             available_core_ids
@@ -2078,7 +2078,7 @@ impl<
                                 message:
                                     "Requested all unreserved cores but no unreserved cores are available"
                                         .to_owned(),
-                                available: Vec::new(),
+                                available: available_core_ids.iter().map(|c| c.id).collect(),
                             })
                         } else {
                             Ok(selected)
@@ -2120,7 +2120,7 @@ impl<
                             message:
                                 "Requested all unreserved cores but no unreserved cores are available"
                                     .to_owned(),
-                            available: Vec::new(),
+                            available: available_core_ids.iter().map(|c| c.id).collect(),
                         })
                     } else {
                         Ok(selected)
@@ -2231,6 +2231,29 @@ impl<
         }
     }
 
+    fn add_pipeline_context_to_core_allocation_error(
+        err: Error,
+        pipeline_entry: &ResolvedPipelineConfig,
+    ) -> Error {
+        match err {
+            Error::InvalidCoreAllocation {
+                alloc,
+                message,
+                available,
+            } => Error::InvalidCoreAllocation {
+                alloc,
+                message: format!(
+                    "Pipeline {}:{} has invalid core allocation: {}",
+                    pipeline_entry.pipeline_group_id.as_ref(),
+                    pipeline_entry.pipeline_id.as_ref(),
+                    message
+                ),
+                available,
+            },
+            other => other,
+        }
+    }
+
     /// Pre-resolves core assignments for all regular pipelines.
     ///
     /// This validates the full pipeline set before any pipeline thread is spawned.
@@ -2254,7 +2277,10 @@ impl<
                 &pipeline_entry.policies.resources.core_allocation,
                 topology,
                 &BTreeSet::new(),
-            )?;
+            )
+            .map_err(|err| {
+                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
+            })?;
             reserved_core_ids.extend(selected.iter().map(|core| core.id));
             placements[idx] = Some(PipelinePlacement {
                 pipeline_group_id: pipeline_entry.pipeline_group_id.clone(),
@@ -2275,7 +2301,10 @@ impl<
                 &pipeline_entry.policies.resources.core_allocation,
                 topology,
                 &reserved_core_ids,
-            )?;
+            )
+            .map_err(|err| {
+                Self::add_pipeline_context_to_core_allocation_error(err, pipeline_entry)
+            })?;
             if matches!(
                 pipeline_entry.policies.resources.core_allocation.strategy,
                 CoreAllocationStrategy::CoreCount
@@ -3038,6 +3067,27 @@ groups: {{}}
     }
 
     #[test]
+    fn known_empty_visible_cpus_do_not_fall_back_to_all_cores() {
+        let topology = NumaTopology::with_visible_cpus(
+            BTreeMap::new(),
+            BTreeSet::new(),
+            TopologyCompleteness::Unknown,
+        );
+        let err = Controller::<()>::select_cores_for_allocation_with_placement(
+            available_core_ids(),
+            &CoreAllocation::core_count(1),
+            &topology,
+            &BTreeSet::new(),
+        )
+        .expect_err("known empty visibility should not fall back to all cores");
+
+        match err {
+            Error::InvalidCoreAllocation { available, .. } => assert!(available.is_empty()),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn select_filters_to_topology_visible_cpus() {
         let topology = synthetic_topology(&[(2, 0), (3, 0), (6, 1), (7, 1)]);
         let result = Controller::<()>::select_cores_for_allocation_with_placement(
@@ -3732,7 +3782,13 @@ groups: {{}}
                     message.contains("no unreserved cores are available"),
                     "unexpected message: {message}"
                 );
-                assert!(available.is_empty());
+                assert_eq!(
+                    available,
+                    available_core_ids()
+                        .iter()
+                        .map(|core| core.id)
+                        .collect::<Vec<_>>()
+                );
             }
             other => panic!("unexpected error: {other:?}"),
         }

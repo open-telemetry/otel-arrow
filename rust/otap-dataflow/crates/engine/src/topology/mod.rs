@@ -41,6 +41,7 @@ pub struct NumaTopology {
 struct NumaTopologyInner {
     cpu_to_node: BTreeMap<u32, u32>,
     visible_cpus: BTreeSet<u32>,
+    visible_cpus_known: bool,
     visible_nodes: BTreeSet<u32>,
     completeness: TopologyCompleteness,
 }
@@ -118,7 +119,13 @@ impl NumaTopology {
     #[must_use]
     pub fn new(cpu_to_node: BTreeMap<u32, u32>, completeness: TopologyCompleteness) -> Self {
         let visible_cpus = cpu_to_node.keys().copied().collect();
-        Self::with_visible_cpus(cpu_to_node, visible_cpus, completeness)
+        let visible_cpus_known = !cpu_to_node.is_empty();
+        Self::with_visible_cpu_discovery(
+            cpu_to_node,
+            visible_cpus,
+            visible_cpus_known,
+            completeness,
+        )
     }
 
     /// Creates a topology with explicit process-visible CPUs.
@@ -130,6 +137,21 @@ impl NumaTopology {
     pub fn with_visible_cpus(
         cpu_to_node: BTreeMap<u32, u32>,
         visible_cpus: BTreeSet<u32>,
+        completeness: TopologyCompleteness,
+    ) -> Self {
+        Self::with_visible_cpu_discovery(cpu_to_node, visible_cpus, true, completeness)
+    }
+
+    /// Creates a topology with optional process-visible CPU discovery.
+    ///
+    /// When `visible_cpus_known` is `false`, an empty `visible_cpus` means CPU
+    /// visibility could not be discovered. When it is `true`, an empty set means
+    /// discovery succeeded and no CPUs are usable by this process.
+    #[must_use]
+    pub fn with_visible_cpu_discovery(
+        cpu_to_node: BTreeMap<u32, u32>,
+        visible_cpus: BTreeSet<u32>,
+        visible_cpus_known: bool,
         completeness: TopologyCompleteness,
     ) -> Self {
         let visible_nodes = visible_cpus
@@ -150,6 +172,7 @@ impl NumaTopology {
             inner: Arc::new(NumaTopologyInner {
                 cpu_to_node,
                 visible_cpus,
+                visible_cpus_known,
                 visible_nodes,
                 completeness,
             }),
@@ -175,6 +198,12 @@ impl NumaTopology {
     #[must_use]
     pub fn visible_cpus(&self) -> &BTreeSet<u32> {
         &self.inner.visible_cpus
+    }
+
+    /// Returns whether the visible CPU set was discovered.
+    #[must_use]
+    pub fn visible_cpus_known(&self) -> bool {
+        self.inner.visible_cpus_known
     }
 
     /// NUMA nodes represented by the visible CPU set.
