@@ -51,7 +51,7 @@ use serde_json::Value;
 use smallvec::smallvec;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
@@ -617,6 +617,11 @@ impl KafkaReceiver {
             }
         }
 
+        // Set once the receiver-first drain protocol begins. After this the
+        // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
+        // but stays responsive to control messages until `Shutdown` arrives.
+        let mut draining_deadline: Option<Instant> = None;
+
         loop {
             // Reconcile any partition revocations / metrics produced by the
             // rebalance callbacks since the last iteration. Cheap when idle.
@@ -643,6 +648,40 @@ impl KafkaReceiver {
                             let snapshot = self.metrics.snapshot();
                             _ = telemetry_cancel_handle.cancel().await;
                             return Ok(TerminalState::new(deadline, [snapshot]));
+                        },
+                        Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                            // Receiver-first shutdown: the engine sends
+                            // DrainIngress and waits for notify_receiver_drained()
+                            // before shutting down downstream nodes.
+                            if draining_deadline.is_none() {
+                                otel_info!("kafka.receiver.drain_ingress");
+                                // Stop admitting new Kafka records immediately.
+                                // Unsubscribing halts the subscription so the
+                                // `consumer.recv()` branch (now gated on
+                                // `draining_deadline.is_none()`) yields no more
+                                // messages.
+                                consumer.unsubscribe();
+                                draining_deadline = Some(deadline);
+                                // Bounded receiver-local drain: one final
+                                // synchronous commit of everything acked so far.
+                                // Un-acked offsets are safely re-delivered on
+                                // restart (at-least-once), so there is nothing
+                                // else to wait on.
+                                if manual_commit {
+                                    if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                                        otel_error!(
+                                            "kafka.drain.commit_failed",
+                                            error = %e,
+                                        );
+                                    }
+                                    self.refresh_committable_snapshot();
+                                }
+                                // Signal the runtime that receiver-local drain is
+                                // complete so it can proceed to shut down
+                                // downstream nodes. The loop stays alive and
+                                // responsive to the eventual Shutdown message.
+                                effect_handler.notify_receiver_drained().await?;
+                            }
                         },
                         Ok(NodeControlMsg::Ack(ack_msg)) => {
                             self.metrics.acks_received.add(1);
@@ -694,8 +733,9 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 2. Consume Kafka messages
-                result = consumer.recv() => {
+                // 2. Consume Kafka messages. Stops once draining begins so no
+                // new records are admitted during receiver-first shutdown.
+                result = consumer.recv(), if draining_deadline.is_none() => {
                     match result {
                         Ok(data) => {
                             // Extract metadata before processing so we can
@@ -1324,6 +1364,44 @@ mod tests {
         mpsc::Sender<NodeControlMsg<OtapPdata>>,
         KeepAlive,
     ) {
+        let (
+            receiver,
+            ctrl_msg_chan,
+            effect_handler,
+            pdata_receiver,
+            control_sender,
+            rt_rx,
+            mut keep_alive,
+        ) = wire_receiver_harness_with_runtime_rx(config, pdata_cap);
+        // Tests using this helper don't observe runtime-control messages, so the
+        // runtime receiver is kept alive (dropping it would close the channel).
+        keep_alive.0.push(Box::new(rt_rx));
+        (
+            receiver,
+            ctrl_msg_chan,
+            effect_handler,
+            pdata_receiver,
+            control_sender,
+            keep_alive,
+        )
+    }
+
+    /// Like [`wire_receiver_harness`] but also returns the runtime-control
+    /// receiver so tests can observe `RuntimeControlMsg::ReceiverDrained`
+    /// (emitted by `notify_receiver_drained()` during ingress drain).
+    #[allow(clippy::type_complexity)]
+    fn wire_receiver_harness_with_runtime_rx(
+        config: KafkaReceiverConfig,
+        pdata_cap: usize,
+    ) -> (
+        Box<KafkaReceiver>,
+        local::ControlChannel<OtapPdata>,
+        local::EffectHandler<OtapPdata>,
+        Receiver<OtapPdata>,
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        otap_df_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
+        KeepAlive,
+    ) {
         let pipeline_ctx = make_pipeline_ctx();
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
@@ -1351,17 +1429,16 @@ mod tests {
             metrics_reporter,
         );
 
-        let keep_alive = KeepAlive(vec![
-            Box::new(control_sender.clone()),
-            Box::new(pipeline_ctrl_msg_rx),
-            Box::new(metrics_rx),
-        ]);
+        // Keep the control sender clone and metrics receiver alive for the
+        // duration of the test (dropping them would close their channels).
+        let keep_alive = KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
         (
             receiver,
             ctrl_msg_chan,
             effect_handler,
             pdata_receiver,
             control_sender,
+            pipeline_ctrl_msg_rx,
             keep_alive,
         )
     }
@@ -3165,6 +3242,41 @@ mod tests {
         wire_receiver_harness(kafka_config, 256)
     }
 
+    /// Like [`setup_manual_traces_harness`] but also returns the runtime-control
+    /// receiver so a test can observe `RuntimeControlMsg::ReceiverDrained`.
+    #[allow(clippy::type_complexity)]
+    fn setup_manual_traces_harness_with_runtime_rx(
+        brokers: &str,
+        group_id: &str,
+        traces_topic: &str,
+        commit_interval_ms: u64,
+    ) -> (
+        Box<KafkaReceiver>,
+        local::ControlChannel<OtapPdata>,
+        local::EffectHandler<OtapPdata>,
+        Receiver<OtapPdata>,
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        otap_df_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
+        KeepAlive,
+    ) {
+        let kafka_config = KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+                .with_traces(
+                    SignalConfig::new(vec![traces_topic.to_string()])
+                        .with_encoding(MessageFormat::OtlpProto),
+                )
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Manual,
+                    interval_ms: Some(commit_interval_ms),
+                })
+                .with_auto_offset_reset(AutoOffsetReset::Earliest)
+                .with_isolation_level(IsolationLevel::ReadUncommitted),
+        )
+        .expect("test config should be valid");
+
+        wire_receiver_harness_with_runtime_rx(kafka_config, 256)
+    }
+
     /// Read the committed offset for `(topic, partition)` for a consumer group,
     /// using an independent client. Returns `Some(offset)` when an offset has
     /// been committed, or `None` when the group has no committed offset yet.
@@ -3418,6 +3530,136 @@ mod tests {
                     .expect("send shutdown");
                 let _ = timeout(Duration::from_secs(10), handle).await;
                 drop(consumer_b);
+            })
+            .await;
+    }
+
+    /// Receiver-first drain: on `DrainIngress` the receiver must stop admitting
+    /// new Kafka records, perform a bounded final commit, call
+    /// `notify_receiver_drained()`, and remain responsive to `Shutdown`.
+    #[tokio::test]
+    #[ignore]
+    async fn drain_ingress_stops_polling_and_notifies_drained() {
+        use otap_df_engine::control::RuntimeControlMsg;
+
+        let (_container, brokers) = start_kafka_container().await;
+        let producer = create_test_producer(&brokers);
+
+        let topic = "drain-ingress-traces";
+        let group = "drain-ingress-group";
+
+        let req = create_traces_with_spans();
+        let mut bytes = vec![];
+        req.encode(&mut bytes).expect("encode");
+
+        // Produce an initial batch that the receiver will consume before drain.
+        const INITIAL: usize = 3;
+        for i in 0..INITIAL {
+            let _ = producer
+                .send(
+                    FutureRecord::to(topic)
+                        .payload(&bytes)
+                        .key(&format!("pre-{i}")),
+                    Timeout::After(Duration::from_secs(10)),
+                )
+                .await
+                .expect("Failed to send message");
+        }
+
+        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, mut rt_rx, _handles) =
+            setup_manual_traces_harness_with_runtime_rx(&brokers, group, topic, 60_000);
+
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let handle = tokio::task::spawn_local(async move {
+                    receiver.start(ctrl_chan, effect_handler).await
+                });
+
+                // Consume and ack the initial batch so offsets are tracked and
+                // committable at drain time.
+                for i in 0..INITIAL {
+                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                        .await
+                        .unwrap_or_else(|_| panic!("Timed out waiting for message {i}"))
+                        .unwrap_or_else(|_| panic!("No message received for {i}"));
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
+                        ctrl_tx
+                            .send(NodeControlMsg::Ack(ack))
+                            .expect("send ack for consumed message");
+                    }
+                }
+
+                // Begin receiver-first drain.
+                ctrl_tx
+                    .send(NodeControlMsg::DrainIngress {
+                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
+                        reason: "drain test".to_string(),
+                    })
+                    .expect("send drain ingress");
+
+                // The receiver must signal ReceiverDrained. The runtime channel
+                // also carries timer-setup messages (StartTimer /
+                // StartTelemetryTimer) emitted while the loop starts up, so skip
+                // past those until the drain signal arrives.
+                let mut drained = false;
+                for _ in 0..16 {
+                    let msg = timeout(Duration::from_secs(10), rt_rx.recv())
+                        .await
+                        .expect("timed out waiting for ReceiverDrained")
+                        .expect("runtime control channel closed");
+                    if matches!(msg, RuntimeControlMsg::ReceiverDrained { .. }) {
+                        drained = true;
+                        break;
+                    }
+                }
+                assert!(drained, "receiver never emitted ReceiverDrained");
+
+                // After drain, produce more records. The receiver has stopped
+                // polling, so none of these should be forwarded downstream.
+                for i in 0..INITIAL {
+                    let _ = producer
+                        .send(
+                            FutureRecord::to(topic)
+                                .payload(&bytes)
+                                .key(&format!("post-{i}")),
+                            Timeout::After(Duration::from_secs(10)),
+                        )
+                        .await
+                        .expect("Failed to send post-drain message");
+                }
+
+                // No further pdata should arrive within a reasonable window.
+                let post = timeout(Duration::from_secs(3), pdata_rx.recv()).await;
+                assert!(
+                    post.is_err(),
+                    "receiver forwarded a record after DrainIngress; polling did not stop",
+                );
+
+                // Committed offset must account for the pre-drain batch (final
+                // commit happened during drain).
+                let committed = committed_offset_for(&brokers, group, topic, 0);
+                assert!(
+                    committed.is_some_and(|o| o >= INITIAL as i64),
+                    "pre-drain offsets should be committed at drain time, got {committed:?}",
+                );
+
+                // The receiver must still terminate cleanly on Shutdown.
+                ctrl_tx
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
+                        reason: "test complete".to_string(),
+                    })
+                    .expect("send shutdown");
+                let result = timeout(Duration::from_secs(10), handle)
+                    .await
+                    .expect("receiver task did not shut down in time")
+                    .expect("receiver task panicked");
+                assert!(
+                    result.is_ok(),
+                    "receiver returned an error: {:?}",
+                    result.err(),
+                );
             })
             .await;
     }
