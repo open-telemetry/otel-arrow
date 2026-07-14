@@ -127,8 +127,6 @@ pub fn build_client(config: &Config, database: &str) -> Client {
         .with_user(config.username.clone())
         .with_password(config.password.expose_secret());
     if config.async_insert {
-        client = client.with_setting("async_insert", "1");
-    if config.async_insert {
         client = client
             .with_setting("async_insert", "1")
             .with_setting("wait_for_async_insert", "1");
