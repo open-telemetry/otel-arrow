@@ -604,6 +604,15 @@ without explicit completion. Neither detects a completely uninstrumented
 retention site. Retained-byte totals must not be described as complete until the
 required retention-site inventory is covered.
 
+This accounting is cooperative. Built-in and external components only appear in
+logical retained-byte totals when they use the ownership API correctly. An
+unsupported, uninstrumented, or buggy component can retain memory without a
+ticket or report less than it retains. Observe-only mode should mark such
+components or sites as uncovered. A later strict enforcement mode should require
+an enforcement-compatible capability and reject incompatible pipelines at
+startup. The process-wide RSS or cgroup limiter remains the backstop for memory
+that retained-work accounting cannot attribute.
+
 ### Implementation sequence
 
 1. Define scopes, ticket lifecycle, ownership metrics, and a no-op or disabled
