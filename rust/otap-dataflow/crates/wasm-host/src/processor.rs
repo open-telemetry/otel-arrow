@@ -108,10 +108,19 @@ impl WasmProcessor {
             record_batch: batch,
         })?;
 
-        let output = self
+        let output = match self
             .instance
             .otel_otap_dataflow_plugin_processor()
-            .call_process(&mut self.store, input)?;
+            .call_process(&mut self.store, input.clone())
+        {
+            Ok(output) => output,
+            Err(err) => {
+                // Best-effort cleanup: the guest may already have consumed or
+                // dropped this handle before trapping/returning an error.
+                let _ = self.store.data_mut().table.delete(input);
+                return Err(err);
+            }
+        };
 
         match output {
             Some(handle) => {
