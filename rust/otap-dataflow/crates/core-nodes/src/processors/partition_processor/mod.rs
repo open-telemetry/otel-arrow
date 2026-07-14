@@ -109,7 +109,7 @@ impl PartitionProcessor {
             partitioner,
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             header_name: config.partition_header_name,
-            serialization_strategy: config.serialization_strategy,
+            serialization_strategy: config.header_serialization_strategy,
         })
     }
 }
@@ -315,5 +315,255 @@ fn partition_value_to_transport_header(
                 value: header_bytes,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+
+    #[test]
+    fn test_partition_value_to_transport_header_to_bytes_lossy() {
+        let header_name = "partition";
+        let strategy = PartitionValueSerializeStrategy::ToBytesLossy {
+            text_as_binary_header: false,
+        };
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::String("test".to_string()),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "test".as_bytes().to_vec()
+            }
+        );
+
+        // ensure we also encode as Binary if configured ...
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &PartitionValueSerializeStrategy::ToBytesLossy {
+                text_as_binary_header: true,
+            },
+            PartitionValue::String("test".to_string()),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: "test".as_bytes().to_vec()
+            }
+        );
+
+        // check other header types ...
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Int(514),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: 514i64.to_le_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Float(14.7),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: 14.7f64.to_le_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Boolean(true),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: vec![1]
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Boolean(false),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: vec![0]
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Binary(vec![4, 1, 8]),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: vec![4, 1, 8],
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Null,
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Binary,
+                value: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn test_partition_value_to_transport_header_json() {
+        let header_name = "partition";
+        let strategy = PartitionValueSerializeStrategy::Json;
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::String("test".to_string()),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "\"test\"".as_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Int(514),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "514".as_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Float(14.7),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "14.7".as_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Boolean(true),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "true".as_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Boolean(false),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "false".as_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Binary(vec![4, 1, 8]),
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "[4,1,8]".as_bytes().to_vec()
+            }
+        );
+
+        let header = partition_value_to_transport_header(
+            header_name.to_string(),
+            &strategy,
+            PartitionValue::Null,
+        );
+        assert_eq!(
+            header,
+            TransportHeader {
+                name: header_name.to_string(),
+                wire_name: header_name.to_string(),
+                value_kind: ValueKind::Text,
+                value: "null".as_bytes().to_vec()
+            }
+        );
     }
 }

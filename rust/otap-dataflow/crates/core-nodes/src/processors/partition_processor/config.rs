@@ -5,7 +5,7 @@ use std::num::NonZeroUsize;
 
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct Config {
     /// configuration for how to compute the partition
     pub partition_by: PartitionByConfig,
@@ -15,7 +15,7 @@ pub struct Config {
 
     /// strategy to use when serializing partition results.
     #[serde(default)]
-    pub serialization_strategy: PartitionValueSerializeStrategy,
+    pub header_serialization_strategy: PartitionValueSerializeStrategy,
 
     #[serde(default = "default_inbound_request_limit")]
     pub inbound_request_limit: NonZeroUsize,
@@ -24,7 +24,7 @@ pub struct Config {
     pub outbound_request_limit: NonZeroUsize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PartitionByConfig {
     /// partition the OTAP batches by the result of evaluating this OPL expression
@@ -39,7 +39,7 @@ pub enum PartitionByConfig {
 /// so there needs to be a conversion. Different strategies may optimize for performance,
 /// vs preserving tpe information
 ///
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PartitionValueSerializeStrategy {
     /// Simply convert the header value to Binary by taking the bytes.
@@ -47,7 +47,7 @@ pub enum PartitionValueSerializeStrategy {
     /// - Int/Double will use little endian byte representation
     /// - Boolean `true` will be encoded as [1], and `false` will be represented as [0].
     /// - Null will be represented as an empty vec
-    /// 
+    ///
     /// This does not preserve type information. It also means that there will not be a
     /// distinction between the partition values that have the same byte serialization.
     /// For example, a boolean `false` may have the same serialization as binary [0x00].
@@ -55,7 +55,7 @@ pub enum PartitionValueSerializeStrategy {
     /// This is a good strategy to use when, for example, there is some a-priori knowledge that
     /// all the types produced by the expression are the same, or when the serialization collisions
     /// between different types don't matter to downstream consumers.
-    /// 
+    ///
     /// The header `value_kind` will be set to `Binary` for all non-string partition values.
     /// When the value is a string value, the value_kind is controlled by the
     /// `text_as_binary_header` flag.
@@ -82,13 +82,76 @@ impl Default for PartitionValueSerializeStrategy {
 }
 
 const fn default_text_as_binary_header() -> bool {
-    true
+    false
 }
 
 const fn default_inbound_request_limit() -> NonZeroUsize {
-    NonZeroUsize::new(1024).expect("ok") // default_min_size/8
+    NonZeroUsize::new(1024).expect("ok")
 }
 
 const fn default_outbound_request_limit() -> NonZeroUsize {
-    NonZeroUsize::new(512).expect("ok") // default_min_size/16
+    NonZeroUsize::new(2048).expect("ok")
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_deserialize_defaults() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "part.name"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config,
+            Config {
+                partition_by: PartitionByConfig::OplExpression("name".to_string()),
+                partition_header_name: "part.name".to_string(),
+                header_serialization_strategy: PartitionValueSerializeStrategy::ToBytesLossy {
+                    text_as_binary_header: false,
+                },
+                inbound_request_limit: NonZeroUsize::new(1024).unwrap(),
+                outbound_request_limit: NonZeroUsize::new(2048).unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_choose_partition_serialization_strategy_json() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "part.name",
+            "header_serialization_strategy": "json"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.header_serialization_strategy,
+            PartitionValueSerializeStrategy::Json
+        )
+    }
+
+    #[test]
+    fn test_choose_partition_serialization_strategy_to_bytes_lossy() {
+        let config: Config = serde_json::from_value(serde_json::json!({
+            "partition_by": { "opl_expression": "name" },
+            "partition_header_name": "part.name",
+            "header_serialization_strategy":  {
+                "to_bytes_lossy": {
+                    "text_as_binary_header": true
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            config.header_serialization_strategy,
+            PartitionValueSerializeStrategy::ToBytesLossy {
+                text_as_binary_header: true
+            }
+        )
+    }
 }
