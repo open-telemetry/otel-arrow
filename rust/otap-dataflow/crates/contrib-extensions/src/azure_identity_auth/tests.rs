@@ -548,13 +548,12 @@ async fn run_get_token_test(
                     // the underlying client in the future won't break tests
                     if !expected_request.headers().iter().all(
                         |(expected_header_name, expected_header_val)| {
-                            let result = actual_req
+                            actual_req
                                 .headers()
                                 .get_str(expected_header_name)
-                                .map_or(false, |actual_header| {
+                                .is_ok_and(|actual_header| {
                                     actual_header == expected_header_val.as_str()
-                                });
-                            result
+                                })
                         },
                     ) {
                         continue;
