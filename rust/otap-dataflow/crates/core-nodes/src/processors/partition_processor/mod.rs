@@ -69,7 +69,6 @@ pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
     wiring_contract: WiringContract::UNRESTRICTED,
-    // TODO - should this also try to parse the OPL expr, etc?
     validate_config: validate_typed_config::<Config>,
 };
 
@@ -221,7 +220,6 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         let pdata =
                             OtapPdata::new(inbound_context, OtapPayload::empty(signal_type));
 
-                        // TODO - were we supposed to preserve the original pdata here?
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                     }
                     1 => {
@@ -725,8 +723,6 @@ mod test {
                         )]
                     }
                 )
-
-                // TODO need to validate Acks and Nacks here
             })
             .validate(|_ctx| async move {});
     }
