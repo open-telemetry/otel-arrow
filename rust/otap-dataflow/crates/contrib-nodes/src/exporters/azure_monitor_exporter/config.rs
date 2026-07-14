@@ -201,11 +201,11 @@ pub struct ApiConfig {
 
     /// Schema mapping configuration.
     ///
-    /// When omitted, no mappings are applied (rows are emitted empty). To emit
-    /// all log record attributes as-is, set `log_record_mapping.attributes` to
-    /// the string `passthrough`; every log attribute is then emitted as its own
-    /// top-level `"<key>": <value>` column (the attribute key is the column
-    /// name).
+    /// When omitted (or left empty), no mappings are applied and rows are
+    /// emitted empty. Only the sections you configure are emitted; unmapped
+    /// resource attributes, scope attributes, and log-record fields are dropped,
+    /// not passed through. See [`SchemaConfig`] for per-section mapping,
+    /// including attribute passthrough on `log_record_mapping`.
     #[serde(default)]
     pub schema: SchemaConfig,
 
@@ -237,7 +237,24 @@ pub struct SchemaConfig {
     #[serde(default)]
     pub scope_mapping: HashMap<String, String>,
 
-    /// Log record field mappings
+    /// Log record field mappings.
+    ///
+    /// Each key maps a log-record field (e.g. `body`, `severity_text`,
+    /// `time_unix_nano`) to a destination column name. The special key
+    /// `attributes` accepts either an explicit `{ <attr key>: <column> }` object
+    /// (map specific attributes) or the string `passthrough`: in passthrough
+    /// mode every log-record attribute is emitted as-is as its own top-level
+    /// `"<key>": <value>` column (the attribute key becomes the column name),
+    /// avoiding per-attribute configuration.
+    ///
+    /// Passthrough composes with `resource_mapping`, `scope_mapping`, and the
+    /// other `log_record_mapping` fields, which continue to emit their own
+    /// columns. If a passed-through attribute key collides with a mapped column,
+    /// the attribute value wins (innermost) and the column is emitted once.
+    ///
+    /// Note: passthrough column names are runtime attribute keys, so they are
+    /// not validated for duplicates at config time (unlike explicit mappings);
+    /// any collision is resolved at emit time by the innermost-wins rule above.
     #[serde(default)]
     pub log_record_mapping: HashMap<String, Value>,
 }

@@ -5,14 +5,19 @@
 # `passthrough`. In this mode every log record attribute is emitted as-is as its
 # own top-level "key": value column (the attribute key is the column name).
 #
-# Attributes already mapped explicitly are skipped so they are not duplicated.
-# Passthrough composes with resource, scope, and top-level field mappings.
+# Passthrough applies to log-record attributes only. Resource attributes, scope
+# attributes, and top-level log-record fields are NOT passed through
+# automatically; they are emitted only when explicitly mapped via
+# resource_mapping / scope_mapping / log_record_mapping (which compose with
+# passthrough). Attributes already mapped explicitly are skipped so they are not
+# duplicated.
 #
-# Azure Log Analytics only ingests columns defined in the DCR stream schema whose
-# names follow the column-naming rules (letters, digits, underscores; must start
-# with a letter or underscore). Since attribute keys are emitted verbatim, a key
-# such as "service.name" must have a matching column in your DCR, otherwise that
-# attribute is dropped at ingestion.
+# WARNING - silent data loss: Azure Log Analytics only ingests columns defined in
+# the DCR stream schema whose names follow the column-naming rules (letters,
+# digits, underscores; must start with a letter or underscore). Attribute keys
+# are emitted verbatim and are NOT sanitized, so a key such as "service.name"
+# (or any key without a matching, validly-named DCR column) is silently dropped
+# at ingestion. Map such attributes to valid column names explicitly.
 
 version: otel_dataflow/v1
 

@@ -59,9 +59,9 @@ config:
     dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
     stream_name: "Custom-MyLogTable_CL"
     dcr: "dcr-abc123def456"
-    # Schema mapping is optional. To emit all log record attributes as-is,
-    # set `log_record_mapping.attributes` to the string `passthrough`; every log
-    # attribute is then emitted as its own top-level "key": value column.
+    # Schema mapping is optional; only the sections you configure are emitted
+    # (unmapped resource/scope attributes and log-record fields are dropped, not
+    # passed through).
     schema:
       # Map OTLP resource attributes to Azure fields.
       resource_mapping:
@@ -80,6 +80,9 @@ config:
         "time_unix_nano": "TimeGenerated"
         "trace_id": "TraceId"
         "span_id": "SpanId"
+        # `attributes` is either an explicit per-attribute mapping (below) or the
+        # string `passthrough` to emit every log attribute as-is as its own
+        # top-level "key": value column. See "Attribute Passthrough Mode" below.
         "attributes":
           "message": "ParsedMessage"
 
@@ -224,18 +227,28 @@ schema:
     attributes: passthrough
 ```
 
-In this mode every log record attribute is written as-is as a top-level
+In this mode every log record **attribute** is written as-is as a top-level
 `"<key>": <value>` pair, using the attribute key as the column name. Passthrough
-composes with resource, scope, and top-level field mappings, which continue to
-emit their own columns. If an attribute key collides with a mapped column name,
-the attribute value wins (the innermost/most-specific value), and the column is
-emitted only once.
+applies to log-record attributes only: resource attributes, scope attributes,
+and top-level log-record fields are **not** passed through automatically. They
+are emitted only when you configure them via `resource_mapping`, `scope_mapping`,
+or the other `log_record_mapping` fields, which compose with passthrough and
+continue to emit their own columns. If an attribute key collides with a mapped
+column name, the attribute value wins (the innermost/most-specific value), and
+the column is emitted only once.
 
-Note: Azure Log Analytics only ingests columns that exist in the DCR stream
-schema and whose names satisfy the column-naming rules (letters, digits, and
-underscores; must start with a letter or underscore). Attribute keys are emitted
-verbatim, so a key such as `service.name` must have a matching column defined in
-your DCR; attributes without a matching, valid column are dropped at ingestion.
+Because passthrough column names come from runtime attribute keys, they are not
+validated for duplicates at config load time the way explicit mappings are;
+collisions are resolved at emit time by the innermost-wins rule above.
+
+> **Warning -- silent data loss:** Azure Log Analytics only ingests columns that
+> exist in the DCR stream schema and whose names satisfy the column-naming rules
+> (letters, digits, and underscores; must start with a letter or underscore).
+> Attribute keys are emitted verbatim and are **not** sanitized, so a key such as
+> `service.name` (containing a `.`) or any key without a matching, validly-named
+> DCR column is **silently dropped at ingestion** -- the exporter does not rewrite
+> or reject it. Map such attributes to valid column names explicitly (via the
+> `attributes` object form) or ensure your DCR defines matching columns.
 
 ## Azure Setup
 
