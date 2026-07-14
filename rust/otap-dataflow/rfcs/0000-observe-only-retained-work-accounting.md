@@ -1,4 +1,13 @@
-# Observe-Only Retained-Work Memory Accounting
+---
+Proposal Name: observe-only-retained-work-accounting
+Start Date: 2026-07-14
+RFC PR: open-telemetry/otel-arrow#3316
+Tracking Issue: open-telemetry/otel-arrow#3272
+---
+
+# RFC NNNN: Observe-Only Retained-Work Accounting
+
+## Summary
 
 This document defines the first level of retained-work memory accounting for
 the OTAP dataflow engine: an observe-only layer for seeing where admitted
@@ -6,8 +15,6 @@ telemetry waits in memory and which component logically owns it.
 
 This document deliberately stops before enforcement. The goal here is to agree
 on the measurement model first.
-
-## Summary
 
 A telemetry pipeline can hold admitted data in receiver intake, queues, batch
 buffers, retry buffers, routers, topics, and exporter requests. Any of these can
@@ -26,7 +33,7 @@ Observe-only accounting should:
 - and provide the visibility needed before any later enforcement or tenant
   isolation work.
 
-## Why this exists
+## Motivation
 
 A pipeline can look healthy at the process level while one queue, exporter, or
 retry buffer holds most of the retained work. An operator with only a process
@@ -41,7 +48,7 @@ Before anyone can safely isolate, reject, or backpressure a source, they need to
 know who is actually holding memory and where. The first step is visibility, not
 rejection. Get attribution right, validate it, and only then consider control.
 
-## Relationship to the process-wide limiter
+### Relationship to the process-wide limiter
 
 The process-wide memory limiter (`memory-limiter-phase1.md`) remains the outer
 safety guard: it samples real process or cgroup memory and sheds ingress under
@@ -62,7 +69,7 @@ process memory must remain available for runtime and thread overhead, allocator
 overhead and fragmentation, shared and unattributed state, internal telemetry,
 and safety headroom.
 
-## Future tenant and priority attribution
+### Future tenant and priority attribution
 
 This observe-only phase does not enforce tenant limits, reserve memory for
 internal telemetry, or preempt already-admitted work. It only establishes the
@@ -102,7 +109,9 @@ enforcement rules. It only requires retained-work ownership to carry stable
 scope attribution so later budgeting layers can aggregate over prefixes of that
 scope and enforce without changing the ownership model.
 
-## A minimal mental model
+## Guide-level explanation
+
+### A minimal mental model
 
 The OTAP dataflow engine moves telemetry through a small set of roles. A
 reviewer does not need to know every internal type to follow this document.
@@ -120,9 +129,9 @@ Once an item is admitted, it occupies memory somewhere in this chain until it is
 delivered, dropped, or acknowledged. Retained-work accounting is about naming
 that "somewhere".
 
-## Diagrams
+### Diagrams
 
-### Where work can be retained
+#### Where work can be retained
 
 ```mermaid
 flowchart TB
@@ -148,7 +157,7 @@ plugin or WASM module runs as a data-path node, or if a capability buffers
 admitted telemetry, its retained work follows the same ownership discipline as
 the built-in pipeline stages.
 
-### Observe-only versus enforcement
+#### Observe-only versus enforcement
 
 ```mermaid
 flowchart TD
@@ -163,7 +172,7 @@ exposes that information through metrics. Traffic continues to flow as before.
 The dotted path is intentional: backpressure or rejection comes later, after the
 ownership and release paths are trustworthy.
 
-### Local ownership
+#### Local ownership
 
 ```mermaid
 sequenceDiagram
@@ -179,7 +188,7 @@ Local ownership is the lowest-overhead case. A node keeps a local ticket beside
 the data it is holding, and the ticket is valid only on that runtime. This keeps
 the common path local for work that never leaves the runtime.
 
-### Shared-boundary ownership
+#### Shared-boundary ownership
 
 ```mermaid
 sequenceDiagram
@@ -196,7 +205,7 @@ ticket cannot safely travel. The local owner is converted into a sendable owner,
 which is then responsible for release while the work sits outside the local
 runtime.
 
-## Core idea: retained work has an owner
+### Core idea: retained work has an owner
 
 The whole design rests on one rule: every admitted item that waits in memory has
 exactly one logical owner.
@@ -217,9 +226,11 @@ it clones a payload reference for a subscriber. Any accounting kept beside a
 payload should have a lifetime tied directly to the retaining entry so it cannot
 drift away from the work it describes.
 
-## Ownership types
+## Reference-level explanation
 
-### Local retained ownership
+### Ownership types
+
+#### Local retained ownership
 
 Local retained ownership is used when retained work stays on the same pinned
 runtime.
@@ -231,7 +242,7 @@ runtime.
 
 In Rust terms this maps to a non-`Send` ticket held next to retained data.
 
-### Shared retained ownership
+#### Shared retained ownership
 
 Shared retained ownership is used when retained work crosses a `Send` boundary:
 a shared queue, a topic, or a cross-runtime path.
@@ -242,7 +253,7 @@ a shared queue, a topic, or a cross-runtime path.
 In Rust terms this maps to a sendable ownership handle, such as an escrow
 ticket.
 
-### Envelope-style ownership
+#### Envelope-style ownership
 
 A retained item can be carried as an envelope that holds the payload and its
 ownership together. Bundling them is a simple way to make sure the data and its
@@ -453,7 +464,7 @@ without explicit completion. It usually points at a terminal or error path that
 needs review. Normal completion and abandonment both refund exactly once, but
 only the unresolved drop records abandonment.
 
-## What observe-only should measure
+### What observe-only should measure
 
 The goal is to answer "where is admitted work waiting, and who owns it" with a
 small, low-cardinality set of dimensions.
@@ -493,7 +504,7 @@ local tickets and shared-boundary owners carrying that scope. This is logical
 retained memory attributed to that pipeline instance, not exact allocator RSS for
 that pipeline instance.
 
-## Applying the model
+### Applying the model
 
 Observe-only accounting is added where a component starts retaining admitted
 work, not where bytes happen to be allocated. For each waiting item, the design
@@ -567,12 +578,12 @@ model: logical retained bytes answer "who is holding admitted work", and may be
 larger than process RSS. The process-wide limiter remains responsible for real
 residency.
 
-## Initial observe-only scope
+### Initial observe-only scope
 
 The first level should cover the places where retained work commonly
 accumulates and leave control policy for later.
 
-### In scope for the first level
+#### In scope for the first level
 
 - local retained work on pinned runtimes,
 - topic or queue retained work,
@@ -593,7 +604,7 @@ without explicit completion. Neither detects a completely uninstrumented
 retention site. Retained-byte totals must not be described as complete until the
 required retention-site inventory is covered.
 
-## Implementation sequence
+### Implementation sequence
 
 1. Define scopes, ticket lifecycle, ownership metrics, and a no-op or disabled
    handle.
@@ -606,7 +617,7 @@ required retention-site inventory is covered.
 8. Consider enforcement only after accounting coverage and release behavior are
    trustworthy.
 
-## Non-goals for the first level
+### Non-goals for the first level
 
 These are explicit non-goals:
 
@@ -626,7 +637,7 @@ first level should not try to reconcile the two. It tracks what the pipeline
 logically holds, which is a different and more actionable number than what the
 allocator happens to keep resident.
 
-## Accounting principles
+### Accounting principles
 
 Observe-only accounting should be simple enough to reason about during review.
 
@@ -647,7 +658,7 @@ Observe-only accounting should be simple enough to reason about during review.
 - Metric labels should stay low-cardinality and should not require per-item
   string allocation.
 
-## Performance principles
+### Performance principles
 
 The accounting has to be cheap enough to leave on in production.
 
@@ -662,7 +673,49 @@ The accounting has to be cheap enough to leave on in production.
 - The design should fit the current-thread, pinned-per-core runtime model rather
   than fight it.
 
-## How this helps operators
+## Drawbacks
+
+- Retaining components must keep ownership beside their own retained state, so
+  coverage is added site by site.
+- A site that is not instrumented does not appear in retained-byte totals. The
+  coverage inventory is required to avoid treating partial totals as complete.
+- Logical retained bytes can exceed resident bytes when fanout or shared buffers
+  create multiple retained owners for the same underlying allocation.
+
+## Rationale and alternatives
+
+- Logical retained ownership is used because process RSS, cgroup usage, and
+  allocator statistics cannot say which admitted work is waiting where.
+- Local tickets and shared escrow match the engine's pinned-runtime and
+  cross-runtime boundary model without putting accounting state inside
+  `OtapPdata`.
+- The alternative of using allocator thread, heap, or arena statistics was
+  rejected for ownership accounting because allocator residency is not the same
+  as retained work and cannot be reliably assigned to tenants or components.
+- The alternative of adding enforcement now was rejected because the release
+  paths, size estimates, and coverage inventory need to be trusted first.
+
+## Prior art
+
+- The existing process-wide limiter is the outer safety guard for real process
+  memory, but it has no retained-work attribution.
+- The topic `Delivery` pattern is the local precedent for distinguishing normal
+  completion from unresolved drop cleanup.
+- If there is other prior art for this exact retained-work ownership model, it
+  is not yet captured here.
+
+## Unresolved questions
+
+- Which retained sites should be covered before retained-byte totals can be
+  described as complete?
+- What documented estimate should the columnar record-batch payload use for its
+  logical retained size?
+- Which later RFC should define tenant policy, priority classes, and enforcement
+  configuration?
+
+## Future possibilities
+
+### How this helps operators
 
 The payoff is being able to make concrete statements instead of guesses:
 
@@ -677,7 +730,7 @@ The payoff is being able to make concrete statements instead of guesses:
 Each of these is something an operator can act on, and none of them require
 changing traffic to learn.
 
-## How this prepares for later enforcement
+### How this prepares for later enforcement
 
 Enforcement remains out of scope. This phase would only establish trustworthy
 ownership, release behavior, coverage, and stable scope attribution. Those
