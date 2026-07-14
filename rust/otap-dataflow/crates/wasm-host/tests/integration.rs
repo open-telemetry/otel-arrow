@@ -51,8 +51,7 @@ fn build_guest_wasm() -> PathBuf {
     wasm
 }
 
-/// Build a Logs `OtapPdata` with a `severity_text` column and a preserved
-/// context (a transport-header entry we assert survives the round trip).
+/// Build a Logs `OtapPdata` with a `severity_text` column.
 fn logs_with_severities(severities: &[&str]) -> OtapPdata {
     let ids: Vec<u16> = (0..severities.len() as u16).collect();
     let schema = Schema::new(vec![
