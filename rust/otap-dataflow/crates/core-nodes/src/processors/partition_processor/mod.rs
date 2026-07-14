@@ -65,7 +65,7 @@ fn create_partition_processor(
 
 /// Register partition processor
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
-pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
+pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
     wiring_contract: WiringContract::UNRESTRICTED,
@@ -117,8 +117,8 @@ impl PartitionProcessor {
         })
     }
 
-    /// Clears the outbound context for the given key, and send an Ack/Nack for any
-    /// associated inbound inf the inbound and no outstanding outbounds
+    /// Clears the outbound context for the given key, and sends an Ack/Nack for the associated
+    /// inbound once there are no outstanding outbounds.
     async fn handle_ack_nack(
         &mut self,
         outbound_key: Key,
@@ -378,7 +378,17 @@ fn partition_value_to_transport_header(
                     serde_json::to_vec(&bool).expect("can json serialize bool")
                 }
                 PartitionValue::Float(float) => {
-                    serde_json::to_vec(&float).expect("can json serialize float")
+                    if float.is_nan() {
+                        "NaN".as_bytes().to_vec()
+                    } else if float.is_infinite() {
+                        if float.is_sign_negative() {
+                            "-Inf".as_bytes().to_vec()
+                        } else {
+                            "Inf".as_bytes().to_vec()
+                        }
+                    } else {
+                        serde_json::to_vec(&float).expect("can json serialize float")
+                    }
                 }
                 PartitionValue::Int(i) => serde_json::to_vec(&i).expect("can json serialize int"),
                 PartitionValue::UInt(i) => serde_json::to_vec(&i).expect("can json serialize int"),

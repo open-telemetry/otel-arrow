@@ -3,9 +3,9 @@
 
 //! Utilities for splitting based on the result of some expression.
 //!
-//! For example, we may wish to split an OTAP batch on some some attribute/resource attribute,
+//! For example, we may wish to split an OTAP batch on some attribute/resource attribute,
 //! or some computed value, like
-//! `sha256(concat(resource.attributes["k8s.namespace.name"], resource.attributes["service.name"]`)`
+//! `sha256(concat(resource.attributes["k8s.namespace.name"], resource.attributes["service.name"]))`
 //!
 //! The main public entrypoint for this module is the [`Partitioner`] type.
 
@@ -295,6 +295,10 @@ impl PartitionValue {
     /// Will return an error if the struct array is not the proper representation used by OTAP
     /// to represent `AnyValue`s.
     fn try_from_anyvalue_struct_arr(arr: &StructArray, index: usize) -> Result<Self> {
+        if arr.is_null(index) {
+            return Ok(Self::Null);
+        }
+
         let Some(type_col) = arr.column_by_name(consts::ATTRIBUTE_TYPE) else {
             return Err(otap_df_pdata::error::Error::ColumnNotFound {
                 name: consts::ATTRIBUTE_TYPE.into(),
@@ -607,7 +611,7 @@ fn append_range_to_groups(
         // create a new group
         let mut group = CoalescingGroup {
             representative_row: range.start,
-            selection_vec_builder: MutableBuffer::from_len_zeroed(source_len),
+            selection_vec_builder: MutableBuffer::from_len_zeroed(bit_util::ceil(source_len, 8)),
         };
         set_range_bits(range, &mut group.selection_vec_builder);
         groups.push(group)
@@ -1390,7 +1394,7 @@ mod test {
     }
 
     #[test]
-    fn test_anyval_compartor_bytes() {
+    fn test_anyval_comparator_bytes() {
         let anyval_struct = StructArray::new(
             Fields::from(vec![
                 Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),

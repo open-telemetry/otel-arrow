@@ -37,7 +37,7 @@ pub enum PartitionByConfig {
 /// OTAP Headers can only take on values of Binary and Text, whereas the expression used to
 /// partition the batch may result in a variety of types including Ints, Doubles, Bools or Null,
 /// so there needs to be a conversion. Different strategies may optimize for performance,
-/// vs preserving tpe information
+/// vs preserving type information
 ///
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -60,9 +60,9 @@ pub enum PartitionValueSerializeStrategy {
     /// When the value is a string value, the value_kind is controlled by the
     /// `text_as_binary_header` flag.
     ToBytesLossy {
-        /// Whether to set the `value_kind`` as `Text` in cases where the partition value is
-        /// a string value. When `false`, the value_kind will be set to `Binary` as it is for
-        /// all other types.
+        /// Whether to set the `value_kind` as `Binary` in cases where the partition value is
+        /// a string value. When `false`, the value_kind will be set to `Text`.
+        /// When `true`, the value_kind will be set to `Binary` as it is for all other types.
         #[serde(default = "default_text_as_binary_header")]
         text_as_binary_header: bool,
     },
