@@ -62,7 +62,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
-use one_collect::etw::tdh::{SchemaId, TdhDecoder};
+use one_collect::etw::tdh::TdhDecoder;
 use one_collect::etw::{self, EtwSession};
 use otap_df_engine::error::Error;
 use otap_df_telemetry::{otel_error, otel_info};
@@ -501,179 +501,40 @@ fn decode_utf16le(data: &[u8]) -> String {
     out
 }
 
-/// Closure that extracts one field's bytes from an event payload.
-///
-/// Given the raw payload it returns the sub-slice for this field, accounting
-/// for any offset shift caused by earlier variable-length fields.
-type FieldDataFn = Box<dyn FnMut(&[u8]) -> &[u8]>;
-
-/// A cached reader for one field of a schema.
-///
-/// `name` and `type_name` are cloned once, when the schema is first seen.
-/// `reader` is the extraction closure, built once from the schema; it is `None`
-/// only for field layouts TDH never emits, in which case the field has no bytes.
-struct FieldReader {
-    name: String,
-    type_name: String,
-    reader: Option<FieldDataFn>,
-}
-
-/// The field readers for one TDH schema, cached by [`SchemaId`].
-struct SchemaReader {
-    fields: Vec<FieldReader>,
-}
-
-/// Cache of field readers, one entry per schema, keyed by [`SchemaId`].
-///
-/// Building a `try_get_field_data_closure` for every field on every event is
-/// O(n^2) (each call re-walks the field list) and allocates a boxed closure per
-/// field. A [`SchemaId`] uniquely identifies a field layout, so we build the
-/// readers once per schema and reuse them, removing the per-event closure
-/// rebuild and per-field allocations.
-///
-/// For all-fixed-size schemas this makes per-event extraction an O(n) pass.
-/// Variable-length fields are not fully linearized here: a reader for a field
-/// that sits behind variable-length data still re-walks the earlier
-/// variable-length fields on every event (a property of `one_collect`'s
-/// per-field closure API), so such schemas remain O(n^2) per event. A
-/// single-pass reader in `one_collect` is the right place to fix that.
-///
-/// Reuse is sound because a cached reader is only ever applied to payloads of
-/// the same [`SchemaId`], and each closure recomputes any offset that sits
-/// behind variable-length data from the payload on every call (only all-fixed
-/// prefixes are offset-baked, where offsets are invariant). The load-bearing
-/// invariant is therefore purely one of schema identity: a given [`SchemaId`]
-/// maps to exactly one field layout for the lifetime of its cache entry. The
-/// decoder never recycles an id for a different layout.
-///
-/// The cache is owned by the single ETW decode (`ProcessTrace`) thread and is
-/// never accessed from any other thread. That is why it uses `Rc`/`RefCell`
-/// rather than `Arc`/`Mutex` and adds no cross-core synchronization. (The
-/// reader closures are `!Send`, so they must stay on this thread anyway.)
-type ReaderCache = HashMap<SchemaId, SchemaReader>;
-
-/// Maximum number of distinct schemas whose readers are cached.
-///
-/// Normally the schema set is small and stable (one entry per TraceLogging call
-/// site), so this cap is never hit. It guards against a pathological producer
-/// that emits unbounded distinct schemas (for example a `TraceLoggingDynamic`
-/// source that puts request data in field names). Once the cap is reached, new
-/// schemas are decoded with throwaway readers built per event instead of being
-/// cached, so the map cannot grow without bound.
-///
-/// A plain cap is enough because the real schema set appears early; switch to an
-/// LRU here only if a large rotating working set ever becomes a concern.
-const MAX_CACHED_SCHEMAS: usize = 4096;
-
-/// Initial capacity for the reader cache.
-///
-/// Covers a typical provider's schema set without a rehash during warmup, while
-/// staying well below [`MAX_CACHED_SCHEMAS`] so we do not over-allocate for the
-/// common case. Growth only happens on cache misses, never on the per-event hot
-/// path.
-const READER_CACHE_INITIAL_CAPACITY: usize = 128;
-
-/// Build the field readers for a newly seen schema.
-///
-/// Called at most once per [`SchemaId`]; the result is cached and reused for
-/// every later event of that schema.
-fn build_schema_reader(format: &one_collect::event::EventFormat) -> SchemaReader {
-    let fields = format
-        .fields()
-        .iter()
-        .map(|field| FieldReader {
-            name: field.name.clone(),
-            type_name: field.type_name.clone(),
-            reader: format.try_get_field_data_closure(&field.name),
-        })
-        .collect();
-
-    SchemaReader { fields }
-}
-
 /// Decode an event's fields into owned [`DecodedField`]s.
 ///
-/// Field readers are cached by [`SchemaId`]: the first event of a schema builds
-/// them via [`build_schema_reader`], later events reuse them. Each reader
-/// resolves its field's bytes (accounting for earlier variable-length fields),
-/// which are interpreted into a typed [`EtwAttributeValue`] straight from the
-/// borrowed slice, with no intermediate copy.
+/// Uses [`one_collect::event::EventFormat::fields_with_data`], which walks the
+/// payload exactly once (carrying a running offset) and yields each field
+/// paired with its bytes. Variable-length fields (strings / counted arrays)
+/// are therefore scanned a single time, making extraction an O(n) pass rather
+/// than the O(n^2) cost of resolving each field independently. The single pass
+/// also needs no per-schema reader cache: there are no boxed closures to build
+/// or reuse.
+///
+/// Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
+/// straight from the borrowed slice, with no intermediate copy. Numeric fields
+/// allocate nothing; string and bytes fields allocate only their owned value.
 ///
 /// # Safety
 ///
 /// Called during the `ProcessTrace` callback while the `EVENT_RECORD` (and its
-/// `UserData`) is still valid. The reader closures only cover the field layouts
-/// TDH emits, so they never hit the `todo!()` paths in
-/// `get_data_with_offset_direct` (which are for Linux tracefs `__rel_loc`
-/// fields). No panic can occur, so no `catch_unwind` is needed in this
-/// `extern "system"` callback.
+/// `UserData`) is still valid. `fields_with_data` reads only within the payload
+/// slice and yields an empty slice for any field (and all following) whose
+/// length can't be resolved. It cannot panic here because TDH emits only
+/// fixed / string / counted-array layouts, never the `__rel_loc`/`__data_loc`
+/// types that hit `todo!()` in `get_data_with_offset_direct`. So no
+/// `catch_unwind` is needed in this `extern "system"` callback.
 fn extract_decoded_fields(
-    cache: &mut ReaderCache,
-    schema_id: SchemaId,
     format: &one_collect::event::EventFormat,
     event_data: &[u8],
 ) -> Vec<DecodedField> {
-    cache_and_read(cache, schema_id, MAX_CACHED_SCHEMAS, format, event_data)
-}
-
-/// Cache-and-read policy, generic over the cache key and cap.
-///
-/// Kept generic so it can be unit-tested without constructing a `SchemaId`
-/// (whose inner value is private) and without inserting `MAX_CACHED_SCHEMAS`
-/// real entries: tests pass a stand-in key and a small cap.
-///
-/// - Hit: reuse the cached readers.
-/// - Miss under `max_cached`: build once, insert, and reuse thereafter.
-/// - Miss at/over `max_cached`: build throwaway readers for this event only, so
-///   the map cannot grow without bound. This costs the same as the pre-cache
-///   path, so it is correct and no worse than before.
-fn cache_and_read<K: Eq + std::hash::Hash + Copy>(
-    cache: &mut HashMap<K, SchemaReader>,
-    key: K,
-    max_cached: usize,
-    format: &one_collect::event::EventFormat,
-    event_data: &[u8],
-) -> Vec<DecodedField> {
-    // Fast path: readers for this schema are already cached.
-    if let Some(schema_reader) = cache.get_mut(&key) {
-        return read_fields(schema_reader, event_data);
-    }
-
-    if cache.len() < max_cached {
-        let schema_reader = cache
-            .entry(key)
-            .or_insert_with(|| build_schema_reader(format));
-        read_fields(schema_reader, event_data)
-    } else {
-        let mut schema_reader = build_schema_reader(format);
-        read_fields(&mut schema_reader, event_data)
-    }
-}
-
-/// Read every field of an event through an already-built [`SchemaReader`].
-///
-/// Each reader resolves its field's bytes (accounting for earlier
-/// variable-length fields), interpreted into a typed [`EtwAttributeValue`]
-/// straight from the borrowed slice, with no intermediate copy. Numeric fields
-/// allocate nothing; string and bytes fields allocate only their owned value.
-fn read_fields(schema_reader: &mut SchemaReader, event_data: &[u8]) -> Vec<DecodedField> {
-    let mut fields = Vec::with_capacity(schema_reader.fields.len());
-
-    for field_reader in &mut schema_reader.fields {
-        let bytes: &[u8] = match field_reader.reader.as_mut() {
-            Some(data_fn) => data_fn(event_data),
-            None => &[],
-        };
-
-        let value = interpret_field_value(&field_reader.type_name, bytes);
-
-        fields.push(DecodedField {
-            name: field_reader.name.clone(),
-            value,
-        });
-    }
-
-    fields
+    format
+        .fields_with_data(event_data)
+        .map(|(field, bytes)| DecodedField {
+            name: field.name.clone(),
+            value: interpret_field_value(&field.type_name, bytes),
+        })
+        .collect()
 }
 
 // ── Per-session telemetry bridge ─────────────────────────────────────────────
@@ -804,18 +665,6 @@ fn spawn_etw_session(
             // Rc<RefCell<>> is safe (no cross-thread access).
             let decoder: Rc<RefCell<TdhDecoder>> = Rc::new(RefCell::new(TdhDecoder::new()));
 
-            // Cache of per-schema field readers, keyed by the decoder's
-            // `SchemaId`.  Built once per schema and reused for every event of
-            // that schema, removing the per-event closure rebuild and per-field
-            // allocations (an O(n) pass for all-fixed-size schemas; variable-
-            // length fields can still re-walk earlier fields via one_collect's
-            // closure API).  Owned by this single decode thread and
-            // never shared, so like the decoder it uses `Rc<RefCell<>>` and
-            // adds no cross-core synchronization.
-            let reader_cache: Rc<RefCell<ReaderCache>> = Rc::new(RefCell::new(
-                HashMap::with_capacity(READER_CACHE_INITIAL_CAPACITY),
-            ));
-
             // Capture QPC reference point for timestamp conversion.
             // This is done on the session thread just before parse_until
             // enters the ProcessTrace loop.
@@ -841,7 +690,6 @@ fn spawn_etw_session(
                 let closed_logged = Rc::clone(&closed_logged);
                 let txs = Rc::clone(&txs);
                 let decoder = Rc::clone(&decoder);
-                let reader_cache = Rc::clone(&reader_cache);
                 let telemetry = Arc::clone(&telemetry);
 
                 wide_event.add_callback(move |_event_data| {
@@ -894,8 +742,6 @@ fn spawn_etw_session(
                             Ok(result) => {
                                 event_name = result.event_name.unwrap_or("").to_owned();
                                 decoded_fields = extract_decoded_fields(
-                                    &mut reader_cache.borrow_mut(),
-                                    result.schema_id,
                                     result.event_data.format(),
                                     result.event_data.event_data(),
                                 );
@@ -1462,7 +1308,7 @@ mod tests {
         assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
     }
 
-    // ── Reader cache policy ─────────────────
+    // ── Single-pass field extraction ─────────────────
 
     /// Builds an all-fixed-size `u32` schema with the given field names.
     fn u32_schema(names: &[&str]) -> one_collect::event::EventFormat {
@@ -1481,61 +1327,70 @@ mod tests {
     }
 
     #[test]
-    fn cache_hit_reuses_and_returns_identical() {
+    fn extract_decodes_all_fixed_fields_in_order() {
+        // A single forward pass yields every field, in schema order, with its
+        // interpreted value.
         let format = u32_schema(&["a", "b"]);
         let mut data = Vec::new();
         data.extend_from_slice(&1u32.to_ne_bytes());
         data.extend_from_slice(&2u32.to_ne_bytes());
 
-        let mut cache: HashMap<u64, SchemaReader> = HashMap::new();
+        let fields = extract_decoded_fields(&format, &data);
 
-        // First event of the schema: inserted under the cap.
-        let first = cache_and_read(&mut cache, 7, 8, &format, &data);
-        assert_eq!(cache.len(), 1);
-
-        // Second event, same key: cache hit, no new entry, identical output.
-        let second = cache_and_read(&mut cache, 7, 8, &format, &data);
-        assert_eq!(cache.len(), 1);
-        assert_eq!(first, second);
-
-        assert_eq!(first[0].name, "a");
-        assert_eq!(first[0].value, EtwAttributeValue::Int(1));
-        assert_eq!(first[1].value, EtwAttributeValue::Int(2));
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "a");
+        assert_eq!(fields[0].value, EtwAttributeValue::Int(1));
+        assert_eq!(fields[1].name, "b");
+        assert_eq!(fields[1].value, EtwAttributeValue::Int(2));
     }
 
     #[test]
-    fn cache_miss_under_cap_inserts() {
+    fn extract_is_deterministic_across_calls() {
+        // The extraction owns no per-schema state, so repeated calls on the
+        // same schema and payload produce identical output.
         let format = u32_schema(&["x"]);
         let data = 9u32.to_ne_bytes();
 
-        let mut cache: HashMap<u64, SchemaReader> = HashMap::new();
+        let first = extract_decoded_fields(&format, &data);
+        let second = extract_decoded_fields(&format, &data);
 
-        let r1 = cache_and_read(&mut cache, 1, 4, &format, &data);
-        let r2 = cache_and_read(&mut cache, 2, 4, &format, &data);
-
-        // Both distinct schemas inserted (under the cap).
-        assert_eq!(cache.len(), 2);
-        assert!(cache.contains_key(&1));
-        assert!(cache.contains_key(&2));
-        assert_eq!(r1[0].value, EtwAttributeValue::Int(9));
-        assert_eq!(r2[0].value, EtwAttributeValue::Int(9));
+        assert_eq!(first, second);
+        assert_eq!(first[0].value, EtwAttributeValue::Int(9));
     }
 
     #[test]
-    fn cache_over_cap_falls_back_without_inserting() {
-        let format = u32_schema(&["v"]);
-        let data = 42u32.to_ne_bytes();
+    fn extract_handles_variable_length_prefix() {
+        // A leading NUL-terminated string shifts the fixed field that follows;
+        // the single pass carries the running offset so the trailing u64 is
+        // read from the correct position.
+        use one_collect::event::{EventField, EventFormat, LocationType};
 
-        let mut cache: HashMap<u64, SchemaReader> = HashMap::new();
+        let mut format = EventFormat::new();
+        format.add_field(EventField::new(
+            "s".to_string(),
+            "string".to_string(),
+            LocationType::StaticString,
+            0,
+            0,
+        ));
+        format.add_field(EventField::new(
+            "n".to_string(),
+            "u64".to_string(),
+            LocationType::Static,
+            0,
+            8,
+        ));
 
-        // Fill the cache to the cap (cap = 1).
-        let _ = cache_and_read(&mut cache, 1, 1, &format, &data);
-        assert_eq!(cache.len(), 1);
+        let mut data = Vec::new();
+        data.extend_from_slice(b"hello\0");
+        data.extend_from_slice(&123u64.to_ne_bytes());
 
-        // New schema over the cap: still decodes correctly, but is not cached.
-        let over = cache_and_read(&mut cache, 2, 1, &format, &data);
-        assert_eq!(cache.len(), 1);
-        assert!(!cache.contains_key(&2));
-        assert_eq!(over[0].value, EtwAttributeValue::Int(42));
+        let fields = extract_decoded_fields(&format, &data);
+
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name, "s");
+        assert_eq!(fields[0].value, EtwAttributeValue::Str("hello".to_string()));
+        assert_eq!(fields[1].name, "n");
+        assert_eq!(fields[1].value, EtwAttributeValue::Int(123));
     }
 }
