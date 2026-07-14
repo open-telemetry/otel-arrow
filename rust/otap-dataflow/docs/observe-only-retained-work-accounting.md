@@ -57,18 +57,25 @@ telemetry precisely, but does not see allocator slack or non-pdata state.
 Neither number replaces the other, and later enforcement layers are expected to
 keep the process limiter as the final backstop.
 
+A retained-work budget must be smaller than the process memory limit. Some
+process memory must remain available for runtime and thread overhead, allocator
+overhead and fragmentation, shared and unattributed state, internal telemetry,
+and safety headroom.
+
 ## Future tenant and priority attribution
 
 This observe-only phase does not enforce tenant limits, reserve memory for
 internal telemetry, or preempt already-admitted work. It only establishes the
 retained-work ownership model needed to make those policies possible later.
 
-Future tenant-aware enforcement may need to distinguish protected internal
-telemetry, pipeline groups, tenants, or other policy-defined classes. The
-ownership model should therefore allow tickets, escrow, and shared-boundary
-owners to carry an optional stable work-owner attribution key. That key should
-be a small, stable value such as an interned id or compact numeric handle, not a
-per-item string. Human-readable names can be resolved when metrics are exported.
+Future tenant-aware enforcement may need to distinguish the owner of retained
+work from the admission class used to admit it. The owner says whose work is
+retained, such as a tenant or pipeline group. The admission class says how
+important that work is, such as `normal` or `critical internal`. The ownership
+model should therefore allow tickets, escrow, and shared-boundary owners to
+carry an optional stable work-owner attribution key. That key should be a small,
+stable value such as an interned id or compact numeric handle, not a per-item
+string. Human-readable names can be resolved when metrics are exported.
 
 That attribution key may come from a tenant descriptor, pipeline group,
 internal-telemetry classification, or another policy source. Tenant descriptor
@@ -81,12 +88,12 @@ lower-priority work first, and account shared queues or topics by tenant or
 policy class. Dynamic reclaim or preemption of already-admitted lower-priority
 work is separate future work and is not part of this observe-only phase.
 
-Internal telemetry should eventually be modeled as a protected owner class, not
-as ordinary tenant work. Enforcement can then fund that class from a reserved
-budget before admitting other tenant work, and startup validation can fail fast
-when the configured process budget cannot fund the internal telemetry floor.
-Observe-only accounting does not enforce that reservation; it only leaves room
-for the owner attribution needed to add it later.
+Internal telemetry should use a protected admission class instead of being
+treated as normal tenant work. Enforcement can later give that class a bounded
+reserved budget before admitting normal tenant or pipeline work. That reserve is
+limited; internal telemetry must not have unlimited memory. Observe-only
+accounting does not enforce that reservation; it only leaves room for the owner
+and admission-class attribution needed to add it later.
 
 Future hierarchical budgeting may add parent-child budget scopes such as
 engine, internal telemetry, pipeline group, pipeline, runtime, and tenant or
@@ -352,11 +359,13 @@ should live in an envelope, component state, or a side table whose lifetime is
 tied to the retained payload.
 
 `OtapPdata` should remain accounting-neutral. `LocalMemoryTicket`,
-`EscrowTicket`, and `EscrowSlot` should not be embedded directly inside it.
-Shared boundaries would instead carry an external
-`SharedEnvelope<OtapPdata>`. Cloning `OtapPdata` would clone only its telemetry
-payload and context; it would not clone, share, or transfer accounting
-ownership. `LocalMemoryTicket` must remain outside every `Send` payload type.
+`EscrowTicket`, and `EscrowSlot` should not be embedded directly inside it, and
+future tenant or priority attribution should stay on the accounting scope and
+ownership envelope rather than in `OtapPdata::Context`. Shared boundaries would
+instead carry an external `SharedEnvelope<OtapPdata>`. Cloning `OtapPdata` would
+clone only its telemetry payload and context; it would not clone, share, or
+transfer accounting ownership. `LocalMemoryTicket` must remain outside every
+`Send` payload type.
 
 When fanout creates another independently retained branch, an explicit,
 ownership-aware fork operation would create a new envelope and a new accounting
@@ -530,6 +539,13 @@ than retention, they include memory the component does not own, and they change
 underneath the accounting. At an instrumented site, a payload whose size cannot
 be estimated reports unknown-size rather than guessing. This exposes an
 estimation gap at that site, not missing instrumentation elsewhere.
+
+mimalloc thread or heap statistics and jemalloc thread or arena statistics were
+also considered. They are not suitable as ownership charges because a pipeline
+thread can process many tenants, allocations and frees can happen on different
+threads, shared allocations cannot be assigned reliably, and allocator-resident
+memory is different from logically retained work. They may still be useful later
+as diagnostic signals.
 
 The engine's two payload forms do not make this equally easy. An encoded OTLP
 payload has an exact byte length. A columnar record-batch payload has no single
