@@ -1,51 +1,13 @@
-# Demonstrates the distributed flow metrics feature, including two drop
-# decision nodes within a single flow range.
+# Demonstrates distributed flow metrics with multiple drop decision nodes inside a
+# single flow range:
 #
-#   receiver -> attr1 -> sampler -> attr2 -> attr3 -> filter -> attr4 -> noop
-#
-#   flow metric "ingest_pipeline" - covers attr1 through attr4. Both decision
-#   nodes (sampler, filter) sit in the interior of the range.
-#
-# Flow metrics sum per-processor wall-clock compute time across each node in
-# the range. The engine arms an Instant send-marker before each `process()` call
-# and advances it on every `send_message`; the elapsed delta is accumulated
-# onto the message's flow metric context and recorded at the end node. This
-# captures synchronous compute plus any await/I/O that occurs inside
-# `process()` between sends; it excludes time the message spends queued in
-# inbound channels.
-#
-# Metrics emitted on the `flow` metric set:
-#   - compute.duration (MMSC histogram, nanoseconds)
-#   - signals.incoming   (MMSC, items observed at the start node)
-#   - signals.outgoing   (MMSC, items observed at the end node)
-#   - signals.dropped    (MMSC, items a decision node dropped)
-#
-# With the sampler in place, `signals.incoming` (at attr1) reflects the full
-# input volume while `signals.outgoing` (at attr4) reflects what survives both
-# decision nodes, so the difference is directly visible.
-#
-# `signals.dropped` is recorded only by processors that declare the drop
-# capability and lie within a flow range. This flow has TWO such decision nodes,
-# both interior to the range:
-#   - sampler (between attr1 and attr2): keeps ~1/3 of log records.
-#   - filter  (between attr3 and attr4): drops records matching its exclude rule.
-# Each decision node's count carries a `flow.node.decision` attribute set to that
-# node's name ("sampler" / "filter"), so the two are not conflated. The flow's
-# incoming/outgoing/duration entity carries an empty `flow.node.decision` value.
-#
-# There is no per-node "kept" metric. `signals.dropped` sums correctly across
-# `flow.node.decision` (drops at different nodes are disjoint), so the total
-# equals signals.incoming - signals.outgoing. The flow-wide kept count is just
-# signals.outgoing; a per-node survivor count would be non-additive and is not
-# emitted.
-#
-# Note: only non-overlapping flow metric ranges are supported. A message can
-# be inside at most one flow metric range at a time. Two flows may not share an
-# interior decision node.
+# The "ingest_pipeline" flow covers attr1..attr4. The sampler, filter, and
+# transform nodes each drop records and record `signals.dropped` tagged with a
+# `flow.node.decision` attribute of their node name.
 #
 # Query metrics while running:
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
-#     | jq '[.metric_sets[] | select(.name == "flow" or .name == "processor.compute")]'
+#     | jq '[.metric_sets[] | select(.name == "flow")]'
 
 version: otel_dataflow/v1
 engine: {}
@@ -68,7 +30,13 @@ groups:
                   end_node: attr4
                 # metrics is optional
                 # if omitted, all supported metrics are recorded
-                metrics: [compute_duration, signals_incoming, signals_outgoing, signals_dropped]
+                metrics:
+                  [
+                    compute_duration,
+                    signals_incoming,
+                    signals_outgoing,
+                    signals_dropped,
+                  ]
 
         nodes:
           receiver:
@@ -79,15 +47,11 @@ groups:
                 signals_per_second: 10
                 log_weight: 100
               # Synthetic data source emits deterministic log attributes
-              # (thread.id, thread.name) so the filter below drops a
-              # predictable fraction regardless of registry contents.
+              # (thread.id, thread.name) so the downstream filter/transform drop
+              # a predictable fraction.
               data_source: synthetic
 
-          # Decision node #1 (interior of the flow range, between attr1 and
-          # attr2). Deterministically keeps
-          # ~1/3 of log records and drops the rest, independent of payload
-          # content. Records signals.dropped with
-          # flow.node.decision="sampler".
+          # Decision node #1: keeps ~1/3 of log records.
           sampler:
             type: processor:log_sampling
             config:
@@ -112,13 +76,7 @@ groups:
                   key: pipeline.stage2
                   value: "2"
 
-          # Decision node #2 (interior of the flow range, between attr3 and
-          # attr4). Drops log records whose
-          # thread.name matches the exclude rule. The ratio sampler upstream keeps
-          # a per-batch prefix, so the records reaching here cycle through the
-          # first few synthetic thread.name values (main, worker-1, worker-2,
-          # worker-3); excluding two of them drops roughly half of the survivors.
-          # Records signals.dropped with flow.node.decision="filter".
+          # Decision node #2: drops log records whose thread.name is worker-1.
           filter:
             type: processor:filter
             config:
@@ -128,8 +86,13 @@ groups:
                   record_attributes:
                     - key: thread.name
                       value: worker-1
-                    - key: thread.name
-                      value: worker-3
+
+          # Decision node #3: transform processor dropping worker-3 via a KQL
+          # `where` predicate, proving it records signals.dropped too.
+          transform:
+            type: processor:transform
+            config:
+              kql_query: 'logs | where attributes["thread.name"] != "worker-3"'
 
           attr3:
             type: processor:attribute
@@ -163,6 +126,8 @@ groups:
           - from: attr3
             to: filter
           - from: filter
+            to: transform
+          - from: transform
             to: attr4
           - from: attr4
             to: noop
