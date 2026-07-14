@@ -840,6 +840,7 @@ dependencies = [
  "otap-df-pdata",
  "otap-df-pdata-views",
  "otap-df-telemetry",
+ "otap-df-telemetry-macros",
  "otap-df-test-net",
  "prost",
  "roaring",
