@@ -6,6 +6,9 @@
 //! This processor will partition incoming OTAP batches by the evaluated result of some expression
 //! and set the partition value in the outgoing batches metadata.
 
+// TODO
+// - metrics
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -320,8 +323,157 @@ fn partition_value_to_transport_header(
 
 #[cfg(test)]
 mod test {
+    use std::collections::VecDeque;
 
     use super::*;
+
+    use otap_df_engine::{
+        capability::registry::Capabilities,
+        context::ControllerContext,
+        testing::{processor::TestRuntime, test_node},
+    };
+    use otap_df_pdata::{
+        OtlpProtoBytes, TryFromWithOptions,
+        proto::{
+            OtlpProtoMessage,
+            opentelemetry::{
+                common::v1::{AnyValue, InstrumentationScope, KeyValue},
+                logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs},
+                resource::v1::Resource,
+            },
+        },
+        testing::round_trip::otlp_to_otap,
+    };
+    use prost::Message as _;
+
+    // TODO additional test cases:
+    // - empty incoming batch
+    // - all belonging to same partition
+    // - it preserves existing headers on emitted batches
+    // - proper handling of full context slots
+
+    fn create_processor_with_config(
+        config: Value,
+        runtime: &TestRuntime<OtapPdata>,
+    ) -> Result<ProcessorWrapper<OtapPdata>, otap_df_config::error::Error> {
+        let mut node_config = NodeUserConfig::new_processor_config(PARTITION_PROCESSOR_URN);
+        node_config.config = config;
+
+        let telemetry_registry_handle = runtime.metrics_registry();
+        let controller_context = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_context = controller_context.pipeline_context_with(
+            "group_id".into(),
+            "pipeline_id".into(),
+            0,
+            1,
+            0,
+        );
+        let node_id = test_node("partition_processor");
+        create_partition_processor(
+            pipeline_context,
+            node_id,
+            Arc::new(node_config),
+            runtime.config(),
+            &Capabilities::empty(),
+        )
+    }
+
+    #[test]
+    fn test_simple_partitioning() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
+        let expression = "attributes[\"x\"]";
+        let header_name = "partition-header";
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": header_name,
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event0")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event2")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event3")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
+                        .finish(),
+                ];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let mut out = ctx.drain_pdata().await.into_iter().collect::<VecDeque<_>>();
+                assert_eq!(out.len(), 3);
+
+                let part1_batch = out.pop_front().unwrap();
+                let (context, payload) = part1_batch.into_parts();
+                let headers = context.transport_headers().unwrap();
+                let header = headers.find_by_name(header_name).next().unwrap();
+                assert_eq!(
+                    header,
+                    &TransportHeader {
+                        name: header_name.to_string(),
+                        wire_name: header_name.to_string(),
+                        value_kind: ValueKind::Text,
+                        value: "0".as_bytes().to_vec()
+                    }
+                );
+
+                let proto_bytes = OtlpProtoBytes::try_from_with_default(payload).unwrap();
+                assert_eq!(
+                    LogsData::decode(proto_bytes.as_bytes()).unwrap(),
+                    LogsData {
+                        resource_logs: vec![ResourceLogs::new(
+                            Resource::default(),
+                            vec![ScopeLogs::new(
+                                InstrumentationScope::default(),
+                                vec![log_records[0].clone(), log_records[2].clone()]
+                            )]
+                        )]
+                    }
+                )
+
+                // TODO assert on all the output data
+
+                //     .map(OtapPdata::payload)
+                //     .map(OtlpProtoBytes::try_from_with_default)
+                //     .map(Result::unwrap)
+                //     .map(|b| LogsData::decode(b.as_bytes()).unwrap())
+                //     .collect::<Vec<_>>();
+
+                // assert_eq!(out.len(), 3);
+            })
+            .validate(|_ctx| async move {});
+    }
 
     #[test]
     fn test_partition_value_to_transport_header_to_bytes_lossy() {

@@ -837,7 +837,10 @@ fn maybe_downcast_dicts(batch: RecordBatch, opts: &ProjectionOptions) -> Result<
 /// The value may have been computed from attributes, or a scalar, or some other expression
 /// will have the row order based on the computation input. This method realigns the rows so
 /// that they match the root batch by invoking join.
-pub(crate) fn align_value_to_root(value: ScopedValue, otap_batch: &OtapArrowRecords) -> Result<ScopedValue> {
+pub(crate) fn align_value_to_root(
+    value: ScopedValue,
+    otap_batch: &OtapArrowRecords,
+) -> Result<ScopedValue> {
     let root_batch = match otap_batch.root_record_batch() {
         Some(rb) => rb,
         None => return Ok(value),
