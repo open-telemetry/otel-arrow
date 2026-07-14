@@ -433,9 +433,6 @@ mod test {
     };
     use prost::Message as _;
 
-    // TODO additional test cases:
-    // - proper handling of full context slots
-
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
@@ -1231,5 +1228,362 @@ mod test {
                 value: "null".as_bytes().to_vec()
             }
         );
+    }
+
+    /// When the outbound slot limit is exhausted mid-way through emitting partitions,
+    /// the processor should:
+    /// 1. Return an error containing "outbound slots not available"
+    /// 2. Still have sent the partitions that were emitted before the failure
+    /// 3. When those already-emitted outbound batches are Ack'd, Nack the inbound with
+    ///    reason "insufficient outbound slots for partitions"
+    #[test]
+    fn test_full_outbound_slots_some_partitions_already_emitted() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let header_name = "partition-header";
+
+        // only 1 outbound slot — but a batch producing 3 partitions needs 3
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": header_name,
+                "outbound_request_limit": 1,
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+
+                // 3 distinct partition values → 3 partitions
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                LogRecord::build()
+                                    .event_name("e0")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("0"),
+                                    )])
+                                    .finish(),
+                                LogRecord::build()
+                                    .event_name("e1")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("1"),
+                                    )])
+                                    .finish(),
+                                LogRecord::build()
+                                    .event_name("e2")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("2"),
+                                    )])
+                                    .finish(),
+                            ],
+                        )],
+                    )],
+                }));
+
+                let pdata = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::ACKS_OR_NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // process should fail because the 2nd partition can't allocate an outbound slot
+                let err = ctx
+                    .process(Message::PData(pdata))
+                    .await
+                    .expect_err("should fail when outbound slots exhausted");
+                assert!(
+                    err.to_string().contains("outbound slots not available"),
+                    "unexpected error: {err}",
+                );
+
+                // the first partition should still have been sent
+                let out = ctx.drain_pdata().await;
+                assert_eq!(out.len(), 1, "first partition should have been emitted");
+                let (outbound_context, _) = out.into_iter().next().unwrap().into_parts();
+
+                // set up pipeline completion channel to observe Ack/Nack delivery
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                // Ack the single emitted outbound — should trigger a Nack for the inbound
+                // because some partitions were not emitted
+                send_ack(&mut ctx, outbound_context, SignalType::Logs)
+                    .await
+                    .unwrap();
+
+                let completion_msg = pipeline_completion_rx.recv().await.unwrap();
+                match completion_msg {
+                    PipelineCompletionMsg::DeliverNack { nack } => {
+                        let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                        assert_eq!(
+                            nack.reason,
+                            "insufficient outbound slots for partitions",
+                        );
+                    }
+                    other => panic!("expected DeliverNack, got {other:?}"),
+                };
+            })
+            .validate(|_ctx| async move {});
+    }
+
+    /// When outbound slots are already fully consumed from a prior batch, the next batch's
+    /// very first outbound allocation fails (outbound_emitted_subscribed == 0). In this case
+    /// the processor should clear the inbound slot it just allocated, return an error, and
+    /// not leak the inbound slot so that subsequent batches can succeed once slots are freed.
+    #[test]
+    fn test_full_outbound_slots_no_partitions_emitted() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let header_name = "partition-header";
+
+        // 2 outbound slots — the first batch (2 partitions) will fill them
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": header_name,
+                "inbound_request_limit": 2,
+                "outbound_request_limit": 2,
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+
+                // 2 distinct partition values → 2 partitions → fills 2 outbound slots
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                LogRecord::build()
+                                    .event_name("e0")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("a"),
+                                    )])
+                                    .finish(),
+                                LogRecord::build()
+                                    .event_name("e1")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("b"),
+                                    )])
+                                    .finish(),
+                            ],
+                        )],
+                    )],
+                }));
+
+                let pdata = create_pdata_with_subscriber(
+                    otap_batch.clone(),
+                    Interests::ACKS_OR_NACKS,
+                    1,
+                    upstream_node_id,
+                );
+
+                // first batch succeeds and fills both outbound slots
+                ctx.process(Message::PData(pdata)).await.unwrap();
+                let first_batch_out = ctx.drain_pdata().await;
+                assert_eq!(first_batch_out.len(), 2);
+
+                // second batch — outbound slots are full, first insert_outbound fails immediately
+                let pdata2 = create_pdata_with_subscriber(
+                    otap_batch.clone(),
+                    Interests::ACKS_OR_NACKS,
+                    2,
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata2))
+                    .await
+                    .expect_err("should fail when outbound slots full");
+                assert!(
+                    err.to_string().contains("outbound slots not available"),
+                    "unexpected error: {err}",
+                );
+
+                // nothing new was emitted
+                assert!(ctx.drain_pdata().await.is_empty());
+
+                // now Ack the first batch's outbounds to free the slots
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                for out in first_batch_out {
+                    let (outbound_ctx, _) = out.into_parts();
+                    send_ack(&mut ctx, outbound_ctx, SignalType::Logs)
+                        .await
+                        .unwrap();
+                }
+
+                // a new batch should now succeed — verifying the inbound slot from the failed
+                // second batch was properly cleaned up (not leaked)
+                let pdata3 = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::ACKS_OR_NACKS,
+                    3,
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata3))
+                    .await
+                    .expect("should succeed after slots freed");
+
+                let out = ctx.drain_pdata().await;
+                assert_eq!(out.len(), 2, "third batch should produce 2 partitions");
+            })
+            .validate(|_ctx| async move {});
+    }
+
+    /// When the inbound slot limit is exhausted, the processor should return an error.
+    /// After the outstanding inbound is cleared (via Ack'ing its outbounds), new batches
+    /// should succeed.
+    #[test]
+    fn test_full_inbound_slots() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let expression = "attributes[\"x\"]";
+        let header_name = "partition-header";
+
+        // 1 inbound slot, plenty of outbound
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": header_name,
+                "inbound_request_limit": 1,
+                "outbound_request_limit": 10,
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+
+                // 2 distinct partition values → 2 partitions (triggers the multi-partition path
+                // which is the only path that allocates inbound slots)
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                LogRecord::build()
+                                    .event_name("e0")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("a"),
+                                    )])
+                                    .finish(),
+                                LogRecord::build()
+                                    .event_name("e1")
+                                    .attributes(vec![KeyValue::new(
+                                        "x",
+                                        AnyValue::new_string("b"),
+                                    )])
+                                    .finish(),
+                            ],
+                        )],
+                    )],
+                }));
+
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, _pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                // first batch fills the single inbound slot
+                let pdata1 = create_pdata_with_subscriber(
+                    otap_batch.clone(),
+                    Interests::ACKS_OR_NACKS,
+                    1,
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata1)).await.unwrap();
+
+                // second batch should fail because the inbound slot is occupied
+                let pdata2 = create_pdata_with_subscriber(
+                    otap_batch.clone(),
+                    Interests::ACKS_OR_NACKS,
+                    2,
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata2))
+                    .await
+                    .expect_err("should fail when inbound slots full");
+                assert!(
+                    err.to_string().contains("inbound slots not available"),
+                    "unexpected error: {err}",
+                );
+
+                // Ack the first batch's outbounds to free the inbound slot
+                let first_batch_out = ctx.drain_pdata().await;
+                assert_eq!(first_batch_out.len(), 2);
+
+                for out in first_batch_out {
+                    let (outbound_ctx, _) = out.into_parts();
+                    send_ack(&mut ctx, outbound_ctx, SignalType::Logs)
+                        .await
+                        .unwrap();
+                }
+
+                // now a new batch should succeed
+                let pdata3 = create_pdata_with_subscriber(
+                    otap_batch.clone(),
+                    Interests::ACKS_OR_NACKS,
+                    3,
+                    upstream_node_id,
+                );
+                ctx.process(Message::PData(pdata3))
+                    .await
+                    .expect("should succeed after inbound slot freed");
+
+                // verify the batch was processed
+                let out = ctx.drain_pdata().await;
+                assert_eq!(out.len(), 2, "third batch should produce 2 partitions");
+
+                // and the inbound slot is full again
+                let pdata4 = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::ACKS_OR_NACKS,
+                    4,
+                    upstream_node_id,
+                );
+                let err = ctx
+                    .process(Message::PData(pdata4))
+                    .await
+                    .expect_err("should fail again when inbound slot re-filled");
+                assert!(
+                    err.to_string().contains("inbound slots not available"),
+                    "unexpected error: {err}",
+                );
+            })
+            .validate(|_ctx| async move {});
     }
 }
