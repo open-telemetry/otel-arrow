@@ -59,7 +59,7 @@ impl ExecutionState {
         self.counters
     }
 
-    /// Records that `count` records were removed by a filter predicate.
+    /// Record that `count` records were removed by a filter predicate.
     pub fn add_filtered(&mut self, count: usize) {
         self.counters.filtered = self.counters.filtered.saturating_add(count);
     }
