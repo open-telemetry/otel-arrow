@@ -124,7 +124,12 @@ EPS-based.
 
 ### Admission Decision
 
-Receiver admission combines process memory pressure and scoped rate state:
+Receiver admission combines process memory pressure and scoped rate state. It
+should follow the existing memory-limiter admission pattern: the engine
+maintains shared pressure or limiter state, propagates admission state to
+receivers, and receivers consult local admission state on their ingress hot
+paths. The engine does not call receiver-specific throttle APIs; receivers own
+the protocol-specific response.
 
 ```text
 if process_pressure == Hard:
@@ -137,10 +142,14 @@ else:
 
 This gives soft pressure an admission-control meaning for this policy. The
 existing phase-1 memory limiter behavior remains unchanged: hard pressure is
-still the global shedding backstop. If the process memory limiter is configured
-in observe-only mode, this policy should observe only too. Adopting this policy
-would require updating the phase-1 memory limiter documentation that describes
-soft pressure as informational only.
+still the global shedding backstop. If the process memory limiter is not
+configured, this policy has no process-pressure trigger and should observe EPS
+without pressure-based throttling. If the process memory limiter is configured
+in observe-only mode, this policy should observe only too. If it is configured
+in enforce mode, hard pressure continues to shed normal ingress globally, while
+soft pressure can trigger scoped EPS throttling. Adopting this policy would
+require updating the phase-1 memory limiter documentation that describes soft
+pressure as informational only.
 
 The exact rejection response is receiver-specific. HTTP receivers can return a
 service-unavailable or too-many-requests response with retry guidance. gRPC
