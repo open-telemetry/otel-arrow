@@ -21,7 +21,8 @@ OTAP.
 
 ## Getting Started
 
-Declare it with an empty config inside `engine.observability.pipeline`:
+Declare it inside `engine.observability.pipeline` and select the `its` metrics
+provider:
 
 The observability pipeline is defined under `engine.observability` rather than
 inside a user pipeline group, so it is owned by the engine and cannot be
@@ -30,6 +31,7 @@ referenced from groups.
 ```yaml
 engine:
   telemetry:
+    reporting_interval: 1s
     metrics:
       provider: its
   observability:
@@ -37,23 +39,47 @@ engine:
       nodes:
         internal:
           type: receiver:internal_telemetry
-          config: {}
-        console:
-          type: exporter:console
+          config:
+            metrics:
+              interval: 2s
+        debug:
+          type: processor:debug
+          config:
+            verbosity: detailed
+            signals: [metrics]
+        noop:
+          type: exporter:noop
           config: {}
       connections:
         - from: internal
-          to: console
+          to: debug
+        - from: debug
+          to: noop
 ```
 
 ## Configuration
 
-This receiver has no node-specific configuration.
+The receiver can override the metric emission interval and apply a supported
+subset of OpenTelemetry metric views. If `metrics.interval` is omitted, it
+inherits `engine.telemetry.reporting_interval`.
 
 ```yaml
 type: receiver:internal_telemetry
-config: {}
+config:
+  metrics:
+    interval: 2s
+    views:
+      - selector:
+          scope_name: engine
+          instrument_name: memory.rss
+        stream:
+          name: process_memory_usage
+          description: Total physical memory used by the process.
 ```
+
+View selectors use exact matches. `scope_name` selects the metric-set
+descriptor and `instrument_name` selects a field in that set. The supported
+stream overrides are `name` and `description`.
 
 This receiver is normally declared inside `engine.observability.pipeline`, not
 inside a user ingest pipeline.
@@ -81,7 +107,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 - It is normally used under `engine.observability.pipeline`.
 - The `its` metrics provider requires exactly one internal telemetry receiver
   in the observability pipeline.
-- Internal metric batches are emitted on `engine.telemetry.reporting_interval`.
+- Internal metric batches use the receiver's `metrics.interval`, or
+  `engine.telemetry.reporting_interval` when no receiver interval is set.
+- Receiver-local views support exact scope and instrument selectors with
+  metric name and description overrides.
 - The receiver drains an export-specific registry view; admin endpoint reads
   and resets do not consume its pending metrics.
 
