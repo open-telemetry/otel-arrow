@@ -399,7 +399,9 @@ mod tests {
             Some("no-store, no-cache, must-revalidate"),
         );
         assert_eq!(
-            headers.get("x-content-type-options").and_then(|v| v.to_str().ok()),
+            headers
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
             Some("nosniff"),
         );
         assert_eq!(
