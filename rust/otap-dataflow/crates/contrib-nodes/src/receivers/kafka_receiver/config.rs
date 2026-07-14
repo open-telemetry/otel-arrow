@@ -115,7 +115,8 @@ pub struct CommitConfig {
     /// Commit interval in milliseconds (optional).
     ///
     /// - In `auto` mode: forwarded to rdkafka as `auto.commit.interval.ms`.
-    ///   When omitted, defaults to `0` (commit as often as possible).
+    ///   When omitted, the property is not set and librdkafka retains its
+    ///   positive default (5000 ms).
     /// - In `manual` mode: controls a periodic safety-net timer for offset commits.
     ///   When omitted, no periodic timer is created and offsets are committed
     ///   purely through ack/nack signals from downstream processing.
@@ -512,6 +513,10 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             return Err("max_partition_fetch_bytes must be > 0".to_string());
         }
 
+        if builder.commit.interval_ms == Some(0) {
+            return Err("commit.interval_ms, when set, must be > 0".to_string());
+        }
+
         Ok(Self(builder))
     }
 }
@@ -794,10 +799,9 @@ impl KafkaReceiverConfigBuilder {
         // Commit settings derived from CommitConfig
         let auto_commit = matches!(self.commit.mode, CommitMode::Auto);
         if auto_commit {
-            // When interval_ms is None in auto mode, default to 0 (commit as
-            // often as possible).
-            let interval = self.commit.interval_ms.unwrap_or(0);
-            _ = config.set("auto.commit.interval.ms", interval.to_string());
+            if let Some(interval) = self.commit.interval_ms {
+                _ = config.set("auto.commit.interval.ms", interval.to_string());
+            }
         }
         _ = config.set(
             "enable.auto.commit",
@@ -1681,8 +1685,9 @@ mod tests {
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
     }
 
+    // REVIEW-FIX(#3 reject-zero-interval): zero commit interval is now invalid.
     #[test]
-    fn validate_commit_interval_zero_is_valid() {
+    fn validate_commit_interval_zero_is_invalid() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
             .with_traces(SignalConfig {
                 topics: vec!["t".to_string()],
@@ -1692,7 +1697,8 @@ mod tests {
                 interval_ms: Some(0),
                 ..Default::default()
             });
-        assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        assert!(err.contains("must be > 0"), "unexpected error: {err}");
     }
 
     #[test]
@@ -1845,14 +1851,14 @@ mod tests {
     }
 
     #[test]
-    fn build_client_config_auto_commit_no_interval_defaults_to_zero() {
+    fn build_client_config_auto_commit_no_interval_omits_property() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_commit(CommitConfig {
             mode: CommitMode::Auto,
             interval_ms: None,
         });
         let client_config = cfg.build_client_config();
         assert_eq!(client_config.get("enable.auto.commit"), Some("true"));
-        assert_eq!(client_config.get("auto.commit.interval.ms"), Some("0"));
+        assert_eq!(client_config.get("auto.commit.interval.ms"), None);
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("true"));
     }
 

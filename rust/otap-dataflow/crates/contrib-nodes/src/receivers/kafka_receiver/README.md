@@ -326,7 +326,7 @@ receiver supports additional encodings (e.g. `jaeger_proto`, `zipkin_json`,
 
 #### Auto Mode (`commit.mode: auto`)
 
-Offsets are committed automatically by the underlying rdkafka client. The `commit.interval_ms` value is forwarded to rdkafka as `auto.commit.interval.ms`. If `commit.interval_ms` is not set, it defaults to a 0 ms interval.
+Offsets are committed automatically by the underlying rdkafka client. The `commit.interval_ms` value is forwarded to rdkafka as `auto.commit.interval.ms`. If `commit.interval_ms` is not set, the property is omitted and librdkafka retains its positive default (5000 ms). `commit.interval_ms`, when set, must be greater than 0.
 
 ```yaml
 config:
