@@ -14,9 +14,7 @@ use async_trait::async_trait;
 use azure_core::Bytes;
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
 use azure_core::http::headers::{HeaderValue, Headers};
-use azure_core::http::{
-    AsyncRawResponse, ClientOptions, HttpClient, Method, Request, StatusCode, Transport,
-};
+use azure_core::http::{AsyncRawResponse, HttpClient, Method, Request, StatusCode, Transport};
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use azure_identity::ManagedIdentityCredentialOptions;
 use futures::future::BoxFuture;
