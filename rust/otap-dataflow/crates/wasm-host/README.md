@@ -61,7 +61,7 @@ slice needs:
 ```yaml
 nodes:
   my-filter:
-    type: wasm_processor
+    type: processor:wasm_processor
     config:
       wasm_path: "/plugins/severity_filter.wasm"
 ```
