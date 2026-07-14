@@ -2,7 +2,7 @@
 Proposal Name: pressure-aware-eps-throttling
 Start Date: 2026-07-14
 RFC PR: open-telemetry/otel-arrow#0000
-Tracking Issue: open-telemetry/otel-arrow#3272
+Tracking Issue: open-telemetry/otel-arrow#0000
 ---
 
 # RFC NNNN: Pressure-Aware EPS Throttling
@@ -59,12 +59,11 @@ The basic behavior is:
 | Memory soft and scope over EPS | Throttle or reject new work for that scope. |
 | Memory soft and scope within EPS | Continue admitting that scope's work. |
 | Memory hard | Existing global hard-pressure shedding applies, unchanged. |
-| Critical internal telemetry | Use a separate bounded protected class, not normal tenant capacity. |
 <!-- markdownlint-enable MD013 -->
 
-This is a fairness rule, not proof of memory ownership. It says that when memory
-is scarce, traffic above the configured rate for the selected scope is removed
-first.
+This is a fairness heuristic, not evidence that an over-limit scope caused or
+owns the process memory pressure. It only decides which excess ingress is
+removed first while memory is scarce.
 
 ## Reference-level explanation
 
@@ -84,14 +83,10 @@ raw client-controlled header such as `x-tenant-id` unless an upstream
 authentication or trust boundary has already validated it and mapped it into an
 operator-owned tenant token.
 
-Internal telemetry should not be treated as a normal tenant. It should use a
-bounded protected class so it can continue during pressure without having
-unlimited memory.
-
 ### Enforcement Scope
 
-The first implementation should target receiver admission using the existing
-policy scope. Policy precedence follows the existing
+The first implementation is pipeline-local and targets receiver admission using
+the existing policy scope. Policy precedence follows the existing
 [configuration model](../docs/configuration-model.md). In a shared pipeline, the
 limiter bucket can be selected by tenant token. In a deployment where tenants
 are already separated by pipeline or pipeline group, the policy can be placed at
@@ -117,10 +112,17 @@ telemetry items:
 - spans for traces,
 - metric data points for metrics.
 
-If the receiver cannot count decoded items before admission, it may use request
-history for that tenant to make the next pre-decode decision. Request or body
-bytes may be tracked as an additional signal, but this RFC's required policy is
-EPS-based.
+The first pre-decode implementation is limited to tenant tokens resolved from
+trusted transport metadata, receiver identity, or static configuration.
+Resource-attribute extractors require decoded request context and are outside
+that path unless the receiver explicitly accepts the cost of decoding before
+admission.
+
+If the receiver cannot count decoded items before admission, it may use recent
+accepted-request history for that tenant to make the next pre-decode decision.
+Request or body bytes may be tracked as an additional signal, but this RFC's
+required policy is EPS-based. The implementation must define how that history is
+aged or reset, and whether rejected requests update it.
 
 ### Admission Decision
 
@@ -151,9 +153,10 @@ soft pressure can trigger scoped EPS throttling. Adopting this policy would
 require updating the phase-1 memory limiter documentation that describes soft
 pressure as informational only.
 
-The exact rejection response is receiver-specific. HTTP receivers can return a
-service-unavailable or too-many-requests response with retry guidance. gRPC
-receivers can use `ResourceExhausted` and retry pushback where available.
+The exact rejection response is receiver-specific. OTLP/HTTP should preserve the
+existing memory-pressure response shape: HTTP 503 with `Retry-After`. OTLP/gRPC
+should use `ResourceExhausted` with retry pushback metadata. Other receivers
+define equivalent protocol-specific refusal behavior.
 
 ### Bursts and Recovery
 
@@ -166,10 +169,11 @@ weight; any separate time-window smoothing should be named separately. The
 policy should also use admission recovery hysteresis before unthrottling so the
 same scope does not rapidly switch between admitted and rejected on every sample.
 This is separate from the memory limiter's own hysteresis for leaving soft
-pressure.
+pressure. Rate measurements should continue while memory is normal so entering
+soft pressure uses current history instead of starting from an empty window.
 
-Receivers should continue updating scoped rate state while throttling so the
-engine can detect recovery.
+Receivers should continue updating scoped rate state while throttling so
+receiver-local admission can detect when the scope becomes eligible again.
 
 ### Interaction With Retained-Work Accounting
 
@@ -205,7 +209,7 @@ policies:
       pressure_eps:
         unit: request_items/second
         optional_tenant_tokens: [customer_tenant]
-        # Proposed extension: apply this rate limit only while process
+        # Proposed policy-level gate: apply this rate limit only while process
         # memory is at or above soft pressure. The final schema must define
         # how this composes with tenant-token conditions.
         token_bucket:
@@ -234,6 +238,13 @@ already separated by pipeline or pipeline group, the same policy can be applied
 at that scope without extracting a tenant token. The receiver remains the
 admission point in both cases.
 
+This example is not accepted by the current v1 schema. The eventual schema must
+keep strict unknown-field rejection, validate policy placement and receiver
+binding, verify that the receiver supplies the configured weight unit, and
+reject unsupported pressure-gate combinations at startup. Per-tenant overrides
+should use ordered conditions from the tenant-token policy model if that model
+is adopted.
+
 A later implementation should define:
 
 - tenant-token extractors or descriptors,
@@ -244,7 +255,7 @@ A later implementation should define:
 - rolling-window or token-bucket parameters,
 - soft-pressure threshold for selective throttling,
 - admission recovery hysteresis,
-- internal telemetry class behavior.
+- live-update behavior for limiter state.
 
 The configuration should be operator-owned and should avoid unbounded
 per-request or per-scope label cardinality.
@@ -261,6 +272,11 @@ per-request or per-scope label cardinality.
   is not always known before reading the request body.
 - If pressure is caused by a stuck exporter, retry backlog, or other downstream
   retention site, throttling a current high-EPS scope may not reduce pressure.
+- Unidentified traffic must still be bounded. If tenant identity is optional,
+  unresolved traffic falls into a default bucket unless the policy requires a
+  tenant token and rejects missing identity.
+- Live policy updates need explicit state handling so changed limits, removed
+  buckets, and per-core limiter state do not produce surprising behavior.
 
 ## Rationale and alternatives
 
@@ -293,22 +309,30 @@ per-request or per-scope label cardinality.
 ## Unresolved questions
 
 - Which tenant-token extractor source should the first implementation use?
+- How should accepted-request history age, and should rejected requests update
+  it?
 - Should the first version enforce only EPS, or also request/body bytes per
   second?
 - What is the exact response code and retry guidance for each receiver type?
-- Should the first implementation be pipeline-local, require tenant routing to
-  one pipeline, or depend on a shared limiter extension?
 - What rolling-window or token-bucket parameters should be configurable?
 - Should selective EPS throttling start at process soft pressure only, or at a
   separate threshold below soft pressure?
-- Should pressure gating be a new condition input, a policy-level gate, or a
-  signal consumed by the limiter?
+- Is pressure gating a policy-level receiver gate, rather than a new tenant
+  condition?
 - How should limits be represented for mixed signal traffic from one scope?
+- Should unidentified traffic share one default bucket, or should missing tenant
+  identity reject immediately?
+- Does changing limits reset or preserve limiter state during live
+  reconfiguration?
 
 ## Future possibilities
 
 - Add bytes-per-second limits alongside EPS to handle large events better.
 - Add per-signal EPS limits for logs, traces, and metrics.
+- Add bounded protected handling for internal telemetry, separate from normal
+  tenant traffic.
+- Add process-wide per-tenant EPS through tenant routing or a shared limiter
+  extension.
 - Feed retained-work accounting into later decisions so the engine can throttle
   tenants whose accepted work remains buffered even when current EPS is low.
 - Add administrative metrics showing throttled tenants, over-limit duration,
