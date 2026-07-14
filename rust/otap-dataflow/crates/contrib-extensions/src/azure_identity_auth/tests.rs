@@ -517,25 +517,10 @@ async fn run_get_token_test(
             let _ = token_requests_clone.fetch_add(1, Ordering::SeqCst);
             let model_request_responses = model_request_responses.clone();
 
-            println!("Request: {}", actual_req.url());
-            println!(" headers:");
-            for (h, hv) in actual_req.headers().iter() {
-                println!("  {}: {}", h.as_str(), hv.as_str());
-            }
             async move {
                 for mock_request_response in model_request_responses {
-                    println!(
-                        "checking model request: {}",
-                        mock_request_response.request.url()
-                    );
-                    println!(" headers:");
-                    for (h, hv) in mock_request_response.request.headers().iter() {
-                        println!("  {}: {}", h.as_str(), hv.as_str());
-                    }
-
                     let expected_request = mock_request_response.request;
                     if expected_request.method() != actual_req.method() {
-                        println!(" method did not match");
                         continue;
                     }
 
@@ -547,7 +532,6 @@ async fn run_get_token_test(
                     expected_params.sort();
 
                     if expected_params != actual_params {
-                        println!(" params did not match");
                         continue;
                     }
 
@@ -557,7 +541,6 @@ async fn run_get_token_test(
                     expected_url.set_query(None);
 
                     if actual_url != expected_url {
-                        println!(" url did not match");
                         continue;
                     }
 
@@ -574,12 +557,8 @@ async fn run_get_token_test(
                             result
                         },
                     ) {
-                        println!(" headers did not match");
                         continue;
                     }
-
-                    println!("Returning this one");
-                    println!("");
 
                     return Ok(AsyncRawResponse::from_bytes(
                         mock_request_response.response_status,
