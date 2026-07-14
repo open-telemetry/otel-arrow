@@ -78,7 +78,10 @@ impl otel_kernels::Host for HostState {
             .expect("invalid wasm host batch handle")
             .record_batch
             .clone();
-        let _ = self.table.delete(b).expect("invalid wasm host batch handle");
+        let _ = self
+            .table
+            .delete(b)
+            .expect("invalid wasm host batch handle");
 
         let result = match scope {
             // TODO: implement `resource`/`scope` attribute scopes and
