@@ -101,8 +101,8 @@ impl OplParser {
         };
 
         let mut state = ParserState::new_with_options(expr, options);
-        let mut pipeline_builder = RootPipelineBuilder::new(&mut state);
-        let result = parse_expression(rule, &mut pipeline_builder).map_err(|e| vec![e])?;
+        let pipeline_builder = RootPipelineBuilder::new(&mut state);
+        let result = parse_expression(rule, &pipeline_builder).map_err(|e| vec![e])?;
         let pipeline = state.build()?;
 
         Ok((result.into(), pipeline.get_functions().to_vec()))

@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! utilities for managing context of inbound and outbound requests
-//! produced by transform processor.
+//! produced by processors that may split the incoming batch into
+//! multiple outbound batches
 
 use slotmap::Key as _;
 use std::num::NonZeroUsize;
 
-use otap_df_otap::{
+use crate::{
     accessory::slots::{Key, State},
     pdata::Context,
 };
@@ -37,6 +38,7 @@ pub struct Contexts {
 
 impl Contexts {
     /// Create a new instance of [`Contexts`] with limits on the number of inbound/outbound slots.
+    #[must_use]
     pub fn new(max_inbound: NonZeroUsize, max_outbound: NonZeroUsize) -> Self {
         Self {
             inbound: State::new(max_inbound.into()),
@@ -153,7 +155,7 @@ impl Contexts {
 #[cfg(test)]
 mod test {
     use super::*;
-    use otap_df_otap::testing::create_test_pdata;
+    use crate::testing::create_test_pdata;
     use std::num::NonZeroUsize;
 
     fn new_contexts() -> Contexts {

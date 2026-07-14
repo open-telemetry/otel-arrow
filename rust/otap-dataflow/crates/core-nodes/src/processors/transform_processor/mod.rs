@@ -33,7 +33,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
-    accessory::slots::Key,
+    accessory::{context::split_contexts::Contexts, slots::Key},
     pdata::{Context, OtapPdata},
 };
 use otap_df_pdata::TryIntoWithOptions;
@@ -52,12 +52,9 @@ use slotmap::Key as _;
 use crate::processors::transform_processor::routing::RouterImpl;
 
 use self::config::{Config, Query};
-use self::context::Contexts;
 use self::metrics::Metrics;
 
 mod config;
-// TODO - find a different way to expose this
-pub mod context;
 mod metrics;
 mod routing;
 

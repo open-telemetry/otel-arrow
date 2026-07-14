@@ -26,6 +26,7 @@ use otap_df_engine::{
     ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::accessory::context::split_contexts::Contexts;
 use otap_df_otap::accessory::slots::Key;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
@@ -36,8 +37,6 @@ use otap_df_query_engine_languages::opl::parser::OplParser;
 use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
-
-use crate::processors::transform_processor::context::Contexts;
 
 use self::config::{Config, PartitionByConfig, PartitionValueSerializeStrategy};
 use self::metrics::Metrics;
@@ -841,7 +840,7 @@ mod test {
                     .await
                     .expect("no process error");
 
-                for out in ctx.drain_pdata().await.into_iter() {
+                for out in ctx.drain_pdata().await {
                     let (mut context, _) = out.into_parts();
                     let headers = context.take_transport_headers().unwrap();
                     assert!(headers.find_by_name("h1").next().is_some());
@@ -1267,24 +1266,15 @@ mod test {
                             vec![
                                 LogRecord::build()
                                     .event_name("e0")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("0"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
                                     .finish(),
                                 LogRecord::build()
                                     .event_name("e1")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("1"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("1"))])
                                     .finish(),
                                 LogRecord::build()
                                     .event_name("e2")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("2"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("2"))])
                                     .finish(),
                             ],
                         )],
@@ -1331,10 +1321,7 @@ mod test {
                     PipelineCompletionMsg::DeliverNack { nack } => {
                         let (node_id, nack) = next_nack(nack).expect("expected nack subscriber");
                         assert_eq!(node_id, upstream_node_id);
-                        assert_eq!(
-                            nack.reason,
-                            "insufficient outbound slots for partitions",
-                        );
+                        assert_eq!(nack.reason, "insufficient outbound slots for partitions",);
                     }
                     other => panic!("expected DeliverNack, got {other:?}"),
                 };
@@ -1378,17 +1365,11 @@ mod test {
                             vec![
                                 LogRecord::build()
                                     .event_name("e0")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("a"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
                                     .finish(),
                                 LogRecord::build()
                                     .event_name("e1")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("b"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
                                     .finish(),
                             ],
                         )],
@@ -1494,17 +1475,11 @@ mod test {
                             vec![
                                 LogRecord::build()
                                     .event_name("e0")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("a"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("a"))])
                                     .finish(),
                                 LogRecord::build()
                                     .event_name("e1")
-                                    .attributes(vec![KeyValue::new(
-                                        "x",
-                                        AnyValue::new_string("b"),
-                                    )])
+                                    .attributes(vec![KeyValue::new("x", AnyValue::new_string("b"))])
                                     .finish(),
                             ],
                         )],

@@ -854,7 +854,6 @@ mod test {
         let partitions = partitioner
             .partition(otap)
             .unwrap()
-            .into_iter()
             .collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
@@ -951,7 +950,6 @@ mod test {
         let partitions = partitioner
             .partition(otap)
             .unwrap()
-            .into_iter()
             .collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
@@ -1085,7 +1083,6 @@ mod test {
         let partitions = partitioner
             .partition(otap)
             .unwrap()
-            .into_iter()
             .collect::<Vec<_>>();
         assert_eq!(partitions.len(), 3);
 
