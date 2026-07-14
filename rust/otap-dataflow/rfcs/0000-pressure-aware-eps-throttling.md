@@ -10,11 +10,9 @@ Tracking Issue: open-telemetry/otel-arrow#3272
 ## Summary
 
 Add pressure-aware throttling at receiver admission points. Receivers measure
-event rate by configured scope key, aggregate that rate across receiver
-instances, and throttle scopes that exceed their configured events-per-second
-(EPS) limit when process memory is under pressure. A scope key can include a
-tenant token, pipeline group, pipeline, receiver/source, or a combination of
-those dimensions.
+event rate at the configured enforcement scope and throttle traffic that
+exceeds its configured events-per-second (EPS) limit when process memory is
+under pressure.
 
 This proposal is an admission-control policy. It does not require retained-work
 memory attribution across queues, topics, batchers, retry buffers, exporters, or
@@ -41,16 +39,16 @@ This gives the engine a simple first enforcement step:
 
 ## Guide-level explanation
 
-Each receiver measures incoming telemetry rate by a configured scope key. The
-engine aggregates those measurements across receiver instances so the selected
-scope's rate is counted process-wide, not only per receiver.
+Each receiver measures incoming telemetry rate at its configured enforcement
+scope. In a shared pipeline, the buckets can be keyed by tenant tokens. If each
+tenant already has a separate pipeline or pipeline group, policy placement can
+define the scope without extracting a tenant token.
 
 When process memory is normal, the receiver records EPS but does not reject only
 because a scope is over its configured rate. When process memory enters soft
-pressure, receivers throttle scopes whose aggregated EPS is above their
-configured limit. Scopes within their configured EPS continue normally. If
-memory reaches hard pressure, the existing global hard-pressure shedding remains
-the final backstop.
+pressure, receivers throttle scopes whose EPS is above their configured limit.
+Scopes within their configured EPS continue normally. If memory reaches hard
+pressure, the existing global hard-pressure shedding remains the final backstop.
 
 The basic behavior is:
 
@@ -60,7 +58,7 @@ The basic behavior is:
 | Memory normal | Observe scoped EPS only. |
 | Memory soft and scope over EPS | Throttle or reject new work for that scope. |
 | Memory soft and scope within EPS | Continue admitting that scope's work. |
-| Memory hard | Preserve existing global hard-pressure shedding if selective throttling is not enough. |
+| Memory hard | Existing global hard-pressure shedding applies, unchanged. |
 | Critical internal telemetry | Use a separate bounded protected class, not normal tenant capacity. |
 <!-- markdownlint-enable MD013 -->
 
@@ -72,10 +70,13 @@ first.
 
 ### Tenant Tokens
 
-Admission decisions should use the tenant-token model from the multitenancy
-design. A tenant token is an operator-configured set of key/value identifiers
-resolved from trusted request context, such as validated transport headers,
-resource attributes, receiver identity, or a static configured key.
+Admission decisions should use the tenant-token model proposed by
+[otel-arrow#3389](https://github.com/open-telemetry/otel-arrow/pull/3389). That
+PR is not merged, so this RFC treats the tenant-token model as design context,
+not as current repository behavior. A tenant token is an operator-configured set
+of key/value identifiers resolved from trusted request context, such as
+validated transport headers, resource attributes, receiver identity, or a static
+configured key.
 
 The EPS limiter should not define a new hard-coded `tenant_id` field. It should
 use the resolved tenant token as the bucket key. The design must not rely on a
@@ -87,31 +88,24 @@ Internal telemetry should not be treated as a normal tenant. It should use a
 bounded protected class so it can continue during pressure without having
 unlimited memory.
 
-### Scope Key
+### Enforcement Scope
 
-The EPS limiter should evaluate a configured scope key, not only one fixed
-tenant key. A scope key may include:
+The first implementation should target receiver admission using the existing
+policy scope. In a shared pipeline, the limiter bucket can be selected by tenant
+token. In a deployment where tenants are already separated by pipeline or
+pipeline group, the policy can be placed at that scope.
 
-- tenant token,
-- pipeline group,
-- pipeline,
-- receiver or source,
-- or a combination such as tenant token plus pipeline group.
-
-A tenant-token-only key gives process-wide tenant EPS. A tenant-token plus
-pipeline-group key gives per-group tenant EPS. A pipeline-group key gives
-group-wide EPS regardless of tenant.
-
-The first implementation can target tenant-token EPS aggregated across receiver
-instances, because that matches the pressure-aware fairness goal. The RFC keeps
-the key shape broader so later implementations can add pipeline, group, or source
-scope without changing the admission model.
+Process-wide per-tenant EPS is a separate scope choice. It requires either
+routing each tenant to one pipeline or adding a shared limiter extension that
+aggregates rate state across receiver instances. This RFC does not require that
+shared limiter in the first step.
 
 ### EPS Measurement
 
-Receivers maintain EPS measurements by configured scope key and publish them to
-a shared rate state. The shared state aggregates across all receiver instances
-handling the same scope key.
+Receivers maintain EPS measurements for the limiter scope that applies at the
+admission point. If the policy is pipeline-local, the EPS limit is local to that
+pipeline instance. If the policy is shared by a later extension, the shared
+implementation owns aggregation across receiver instances.
 
 The design must define the counted unit. A first version can use normalized
 telemetry items:
@@ -138,18 +132,26 @@ else:
     admit
 ```
 
+This gives soft pressure an admission-control meaning for this policy. The
+existing phase-1 memory limiter behavior remains unchanged: hard pressure is
+still the global shedding backstop. If the process memory limiter is configured
+in observe-only mode, this policy should observe only too.
+
 The exact rejection response is receiver-specific. HTTP receivers can return a
 service-unavailable or too-many-requests response with retry guidance. gRPC
 receivers can use `ResourceExhausted` and retry pushback where available.
 
 ### Bursts and Recovery
 
-Configured EPS should allow bounded bursts. A tenant should not be throttled
+Configured EPS should allow bounded spikes. A tenant should not be throttled
 forever because of a short spike.
 
-The shared rate state should use a rolling window or token-bucket style
-calculation. It should also use hysteresis before unthrottling so the same scope
-does not rapidly switch between admitted and rejected on every sample.
+Rate state should use a rolling window or token-bucket style calculation.
+Existing token-bucket terminology may use `burst` for the maximum single request
+weight; any separate time-window smoothing should be named separately. The
+policy should also use admission recovery hysteresis before unthrottling so the
+same scope does not rapidly switch between admitted and rejected on every
+sample.
 
 Receivers should continue updating scoped rate state while throttling so the
 engine can detect recovery.
@@ -168,8 +170,10 @@ enforcement step.
 
 ### Configuration Shape
 
-This RFC does not define the final configuration schema. Until the
-multitenancy configuration is finalized, the expected shape is:
+This RFC does not define the final configuration schema. The sketch below is
+illustrative only. It assumes the tenant-token and `rate_limits` schema proposed
+in [otel-arrow#3389](https://github.com/open-telemetry/otel-arrow/pull/3389);
+if that design changes, this shape changes with it.
 
 ```yaml
 tenant_tokens:
@@ -184,13 +188,14 @@ policies:
   resources:
     rate_limits:
       pressure_eps:
-        unit: telemetry_items/second
+        unit: request_items/second
         optional_tenant_tokens: [customer_tenant]
-        pressure_trigger:
-          process_memory: soft
+        # Proposed extension: apply this rate limit only while process
+        # memory is at or above soft pressure. The final schema must define
+        # how this composes with tenant-token conditions.
         token_bucket:
           allow: 10000
-          burst: 20000
+          burst: 20000 # maximum single request weight
           interval: 1s
           mode: nonblocking
         cardinality:
@@ -217,13 +222,13 @@ admission point in both cases.
 A later implementation should define:
 
 - tenant-token extractors or descriptors,
-- scope-key dimensions,
 - default EPS limit,
 - per-tenant-token EPS overrides,
-- burst allowance,
+- pressure gating and how it composes with conditions,
+- request weight and burst semantics,
 - rolling-window or token-bucket parameters,
 - soft-pressure threshold for selective throttling,
-- recovery hysteresis,
+- admission recovery hysteresis,
 - internal telemetry class behavior.
 
 The configuration should be operator-owned and should avoid unbounded
@@ -234,11 +239,13 @@ per-request or per-scope label cardinality.
 - EPS is not memory ownership. A scope can stay within EPS but send large
   events or cause downstream buffering.
 - A scope over EPS may not be the scope that caused process memory pressure.
-- Accurate process-wide scoped EPS requires shared state across receivers and
-  cores.
+- Process-wide per-tenant EPS requires tenant routing or a shared limiter
+  extension; a pipeline-local token bucket does not provide that by itself.
 - The counted unit must be defined carefully across logs, traces, and metrics.
 - Pre-decode admission may need to use recent history because decoded item count
   is not always known before reading the request body.
+- If pressure is caused by a stuck exporter, retry backlog, or other downstream
+  retention site, throttling a current high-EPS scope may not reduce pressure.
 
 ## Rationale and alternatives
 
@@ -257,8 +264,12 @@ per-request or per-scope label cardinality.
 
 ## Prior art
 
-- The existing process-wide memory limiter already classifies process memory
-  pressure and sheds ingress under hard pressure.
+- The existing [process-wide memory limiter](../docs/memory-limiter-phase1.md)
+  already classifies process memory pressure and sheds ingress under hard
+  pressure.
+- The unmerged [multitenancy design
+  proposal](https://github.com/open-telemetry/otel-arrow/pull/3389) describes
+  tenant tokens, limiter policies, and receiver binding.
 - Receiver-side admission control is the natural place to reject or throttle
   new work before it creates more retained state.
 - If there is prior art in related OpenTelemetry components for tenant EPS
@@ -270,7 +281,8 @@ per-request or per-scope label cardinality.
 - Should the first version enforce only EPS, or also request/body bytes per
   second?
 - What is the exact response code and retry guidance for each receiver type?
-- Which scope dimensions should the first implementation support?
+- Should the first implementation be pipeline-local, require tenant routing to
+  one pipeline, or depend on a shared limiter extension?
 - What rolling-window or token-bucket parameters should be configurable?
 - Should selective EPS throttling start at process soft pressure only, or at a
   separate threshold below soft pressure?
