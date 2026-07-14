@@ -100,7 +100,7 @@ tokio-stream.workspace = true
 zstd.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
-portpicker.workspace = true
+otap-df-test-net.workspace = true
 otap-test-tls-certs.workspace = true
 criterion.workspace = true
 
@@ -108,3 +108,9 @@ criterion.workspace = true
 name = "temporal_reaggregation_processor"
 harness = false
 path = "benches/temporal_reaggregation_processor/main.rs"
+
+[[bench]]
+name = "journald_decode"
+harness = false
+path = "benches/journald_decode/main.rs"
+required-features = ["bench"]

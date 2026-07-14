@@ -12,7 +12,7 @@ use crate::template::render_jinja;
 use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::context;
-use portpicker::pick_unused_port;
+use otap_df_test_net::try_pick_unused_loopback_tcp_port;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -25,6 +25,7 @@ const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
 const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(60);
+const MAX_PORT_ALLOCATION_ATTEMPTS: usize = 64;
 
 /// Look up a container by label, validate that `internal_port` is set, and
 /// return the host port mapped to that internal port. If no mapping exists
@@ -215,20 +216,38 @@ impl Scenario {
     /// update the config to wire the connections between the pipelines
     fn update_configs(&mut self) -> Result<(), ValidationError> {
         // Track ports already handed out so that back-to-back
-        // `pick_unused_port()` calls (which only probe availability)
-        // cannot return the same port twice (TOCTOU race).
+        // `try_pick_unused_loopback_tcp_port()` calls (which only probe
+        // availability) cannot return the same port twice (TOCTOU race).
         let allocated = RefCell::new(HashSet::<u16>::new());
         let pick_port = |context: &str| -> Result<u16, ValidationError> {
             let mut set = allocated.borrow_mut();
-            for _ in 0..64 {
-                if let Some(port) = pick_unused_port() {
-                    if set.insert(port) {
-                        return Ok(port);
+            let mut io_error_count = 0;
+            let mut last_io_error = None;
+            for _ in 0..MAX_PORT_ALLOCATION_ATTEMPTS {
+                match try_pick_unused_loopback_tcp_port() {
+                    Ok(port) => {
+                        if set.insert(port) {
+                            return Ok(port);
+                        }
+                    }
+                    Err(error) => {
+                        io_error_count += 1;
+                        last_io_error = Some(error);
                     }
                 }
             }
+            let detail = last_io_error.map_or_else(
+                || "all returned ports were duplicates".to_string(),
+                |error| {
+                    format!(
+                        "{io_error_count} socket allocation attempts failed; \
+                         last error: {error}"
+                    )
+                },
+            );
             Err(ValidationError::Config(format!(
-                "failed to get unique port for {context}"
+                "failed to get unique port for {context} after \
+                 {MAX_PORT_ALLOCATION_ATTEMPTS} attempts: {detail}"
             )))
         };
 
