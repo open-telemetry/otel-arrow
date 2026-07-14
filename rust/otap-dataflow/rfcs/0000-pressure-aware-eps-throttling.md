@@ -168,8 +168,53 @@ enforcement step.
 
 ### Configuration Shape
 
-This RFC does not define the final configuration schema. A later implementation
-should define:
+This RFC does not define the final configuration schema. Until the
+multitenancy configuration is finalized, the expected shape is:
+
+```yaml
+tenant_tokens:
+  customer_tenant:
+    extractors:
+    - key: customer_id
+      transport_header: x-customer-id
+    - key: workspace_id
+      transport_header: x-workspace-id
+
+policies:
+  resources:
+    rate_limits:
+      pressure_eps:
+        unit: telemetry_items/second
+        optional_tenant_tokens: [customer_tenant]
+        pressure_trigger:
+          process_memory: soft
+        token_bucket:
+          allow: 10000
+          burst: 20000
+          interval: 1s
+          mode: nonblocking
+        cardinality:
+          max_count: 10000
+          failure_mode: reject
+
+groups:
+  main:
+    pipelines:
+      logs:
+        nodes:
+          otlp:
+            type: receiver:otlp
+            rate_limits: [pressure_eps]
+            config:
+              tenant_tokens: [customer_tenant]
+```
+
+In a shared pipeline, the EPS buckets come from tenant tokens. If tenants are
+already separated by pipeline or pipeline group, the same policy can be applied
+at that scope without extracting a tenant token. The receiver remains the
+admission point in both cases.
+
+A later implementation should define:
 
 - tenant-token extractors or descriptors,
 - scope-key dimensions,
