@@ -507,9 +507,9 @@ fn decode_utf16le(data: &[u8]) -> String {
 /// payload exactly once (carrying a running offset) and yields each field
 /// paired with its bytes. Variable-length fields (strings / counted arrays)
 /// are therefore scanned a single time, making extraction an O(n) pass rather
-/// than the O(n^2) cost of resolving each field independently via a per-field
-/// `try_get_field_data_closure`. The single pass also needs no per-schema
-/// reader cache: there are no boxed closures to build or reuse.
+/// than the O(n^2) cost of resolving each field independently. The single pass
+/// also needs no per-schema reader cache: there are no boxed closures to build
+/// or reuse.
 ///
 /// Each field's bytes are interpreted into a typed [`EtwAttributeValue`]
 /// straight from the borrowed slice, with no intermediate copy. Numeric fields
@@ -518,9 +518,11 @@ fn decode_utf16le(data: &[u8]) -> String {
 /// # Safety
 ///
 /// Called during the `ProcessTrace` callback while the `EVENT_RECORD` (and its
-/// `UserData`) is still valid. `fields_with_data` only reads within the
-/// provided payload slice (a field whose length cannot be resolved, and every
-/// field after it, yields an empty slice) and never panics, so no
+/// `UserData`) is still valid. `fields_with_data` reads only within the payload
+/// slice and yields an empty slice for any field (and all following) whose
+/// length can't be resolved. It cannot panic here because TDH emits only
+/// fixed / string / counted-array layouts, never the `__rel_loc`/`__data_loc`
+/// types that hit `todo!()` in `get_data_with_offset_direct`. So no
 /// `catch_unwind` is needed in this `extern "system"` callback.
 fn extract_decoded_fields(
     format: &one_collect::event::EventFormat,
