@@ -223,7 +223,7 @@ zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-one_collect = "0.1.34532"
+one_collect = "0.1.34811"
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
