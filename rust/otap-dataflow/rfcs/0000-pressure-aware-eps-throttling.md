@@ -10,9 +10,9 @@ Tracking Issue: open-telemetry/otel-arrow#3272
 ## Summary
 
 Add pressure-aware tenant throttling at receiver admission points. Receivers
-measure each tenant's event rate, aggregate that rate across receiver instances,
-and throttle tenants that exceed their configured events-per-second (EPS) limit
-when process memory is under pressure.
+measure event rate by resolved tenant token, aggregate that rate across receiver
+instances, and throttle tenants that exceed their configured events-per-second
+(EPS) limit when process memory is under pressure.
 
 This proposal is an admission-control policy. It does not require retained-work
 memory attribution across queues, topics, batchers, retry buffers, exporters, or
@@ -38,8 +38,8 @@ This gives the engine a simple first enforcement step:
 
 ## Guide-level explanation
 
-Each receiver measures incoming telemetry rate by authenticated tenant identity.
-The engine aggregates those measurements across receiver instances so a tenant's
+Each receiver measures incoming telemetry rate by resolved tenant token. The
+engine aggregates those measurements across receiver instances so a tenant's
 rate is counted process-wide, not only per receiver.
 
 When process memory is normal, the receiver records EPS but does not reject only
@@ -66,12 +66,18 @@ is scarce, traffic above the tenant's configured rate is removed first.
 
 ## Reference-level explanation
 
-### Tenant Identity
+### Tenant Tokens
 
-Admission decisions must use a trusted tenant identity. The design must not rely
-on a raw client-controlled header such as `x-tenant-id` unless an upstream
-authentication or trust boundary has already validated and mapped it to an
-operator-owned tenant descriptor.
+Admission decisions should use the tenant-token model from the multitenancy
+design. A tenant token is an operator-configured set of key/value identifiers
+resolved from trusted request context, such as validated transport headers,
+resource attributes, receiver identity, or a static configured key.
+
+The EPS limiter should not define a new hard-coded `tenant_id` field. It should
+use the resolved tenant token as the bucket key. The design must not rely on a
+raw client-controlled header such as `x-tenant-id` unless an upstream
+authentication or trust boundary has already validated it and mapped it into an
+operator-owned tenant token.
 
 Internal telemetry should not be treated as a normal tenant. It should use a
 bounded protected class so it can continue during pressure without having
@@ -79,9 +85,9 @@ unlimited memory.
 
 ### EPS Measurement
 
-Receivers maintain tenant EPS measurements and publish them to a shared tenant
-rate state. The shared state aggregates across all receiver instances handling
-the same tenant.
+Receivers maintain EPS measurements by resolved tenant token and publish them to
+a shared tenant-rate state. The shared state aggregates across all receiver
+instances handling the same tenant token.
 
 The design must define the counted unit. A first version can use normalized
 telemetry items:
@@ -141,9 +147,9 @@ enforcement step.
 This RFC does not define the final configuration schema. A later implementation
 should define:
 
-- tenant identity source,
+- tenant-token extractors or descriptors,
 - default EPS limit,
-- per-tenant EPS overrides,
+- per-tenant-token EPS overrides,
 - burst allowance,
 - rolling-window or token-bucket parameters,
 - soft-pressure threshold for selective throttling,
@@ -190,7 +196,7 @@ per-request or per-tenant label cardinality.
 
 ## Unresolved questions
 
-- What tenant identity source should the first implementation use?
+- Which tenant-token extractor source should the first implementation use?
 - Should the first version enforce only EPS, or also request/body bytes per
   second?
 - What is the exact response code and retry guidance for each receiver type?
