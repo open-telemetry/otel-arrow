@@ -178,7 +178,7 @@ impl ArcServerManagedIdentity {
             if let Ok(challenge) = rsp.headers().get_str(&WWW_AUTHENTICATE) {
                 if let Some(challenge_location) = challenge
                     .split_once('=')
-                    .and_then(|(_, location)| location.trim().trim_matches('"').splitn(2, '"').next())
+                    .and_then(|(_, location)| location.trim().trim_matches('"').split('"').next())
                 {
                     let challenge_response =
                         self.retrieve_challenge_response(challenge_location)?;
