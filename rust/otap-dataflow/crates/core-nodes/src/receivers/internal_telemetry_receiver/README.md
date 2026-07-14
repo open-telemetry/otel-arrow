@@ -70,16 +70,22 @@ config:
     interval: 2s
     views:
       - selector:
-          scope_name: engine
-          instrument_name: memory.rss
+          scope_name: pipeline
+          scope_attributes:
+            pipeline.group.id: production
+          instrument_name: uptime
         stream:
-          name: process_memory_usage
-          description: Total physical memory used by the process.
+          name: process_uptime
+          description: Uptime of a production pipeline process.
 ```
 
 View selectors use exact matches. `scope_name` selects the metric-set
-descriptor and `instrument_name` selects a field in that set. The supported
-stream overrides are `name` and `description`.
+descriptor, `scope_attributes` requires the metric-set entity to contain every
+configured key-value pair, and `instrument_name` selects a field in that set.
+Scope attribute selectors support string, integer, floating-point, and boolean
+values; values must have the same type and value as the entity attribute.
+Non-negative integer selectors also match internal unsigned integer attributes.
+The supported stream overrides are `name` and `description`.
 
 This receiver is normally declared inside `engine.observability.pipeline`, not
 inside a user ingest pipeline.
@@ -109,8 +115,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
   in the observability pipeline.
 - Internal metric batches use the receiver's `metrics.interval`, or
   `engine.telemetry.reporting_interval` when no receiver interval is set.
-- Receiver-local views support exact scope and instrument selectors with
-  metric name and description overrides.
+- Receiver-local views support exact scope name, scalar scope attribute, and
+  instrument selectors with metric name and description overrides.
 - The receiver drains an export-specific registry view; admin endpoint reads
   and resets do not consume its pending metrics.
 

@@ -34,9 +34,8 @@ use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::testing::EmptyAttributes;
 use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{attribute_set, metric_set};
 use parking_lot::Mutex;
 use prost::Message as _;
 use std::sync::mpsc::{SyncSender, sync_channel};
@@ -117,8 +116,18 @@ struct TestMetrics {
     emitted: Counter<u64>,
 }
 
-fn decode_viewed_test_metric(bytes: &[u8]) -> (String, String, i64) {
+#[attribute_set(name = "test.its.pipeline.attrs")]
+#[derive(Debug, Clone)]
+struct TestAttributes {
+    /// Test route used to select one metric-set entity.
+    #[attribute(key = "test.route")]
+    route: String,
+}
+
+fn decode_test_metrics(bytes: &[u8]) -> ((String, String, i64), i64) {
     let request = ExportMetricsServiceRequest::decode(bytes).expect("valid OTLP metrics request");
+    let mut viewed = None;
+    let mut unviewed = None;
     for resource_metrics in request.resource_metrics {
         for scope_metrics in resource_metrics.scope_metrics {
             let Some(scope) = scope_metrics.scope else {
@@ -128,7 +137,7 @@ fn decode_viewed_test_metric(bytes: &[u8]) -> (String, String, i64) {
                 continue;
             }
             for metric in scope_metrics.metrics {
-                if metric.name != VIEWED_METRIC_NAME {
+                if metric.name != VIEWED_METRIC_NAME && metric.name != "emitted" {
                     continue;
                 }
                 let metric_name = metric.name;
@@ -147,11 +156,18 @@ fn decode_viewed_test_metric(bytes: &[u8]) -> (String, String, i64) {
                 let Some(number_data_point::Value::AsInt(value)) = point.value else {
                     panic!("test metric must contain an integer value")
                 };
-                return (metric_name, metric_description, value);
+                if metric_name == VIEWED_METRIC_NAME {
+                    viewed = Some((metric_name, metric_description, value));
+                } else {
+                    unviewed = Some(value);
+                }
             }
         }
     }
-    panic!("captured request did not contain the viewed test metric")
+    (
+        viewed.expect("captured request must contain the viewed test metric"),
+        unviewed.expect("captured request must contain the unviewed test metric"),
+    )
 }
 
 #[test]
@@ -186,6 +202,8 @@ engine:
               views:
                 - selector:
                     scope_name: test.its.pipeline
+                    scope_attributes:
+                      test.route: selected
                     instrument_name: emitted
                   stream:
                     name: {VIEWED_METRIC_NAME}
@@ -246,17 +264,27 @@ groups: {{}}
 
     // Exercise the real hot metric set -> reporter -> collector path rather
     // than inserting values directly into the registry.
-    let mut metric_set = registry.register_metric_set::<TestMetrics>(EmptyAttributes());
-    metric_set.emitted.add(3);
+    let mut selected_metric_set = registry.register_metric_set::<TestMetrics>(TestAttributes {
+        route: "selected".to_owned(),
+    });
+    selected_metric_set.emitted.add(3);
     telemetry_system
         .reporter()
-        .report(&mut metric_set)
+        .report(&mut selected_metric_set)
         .expect("metric snapshot should enter the collector channel");
     assert_eq!(
-        metric_set.emitted.get(),
+        selected_metric_set.emitted.get(),
         0,
         "successful report resets the hot set"
     );
+    let mut unselected_metric_set = registry.register_metric_set::<TestMetrics>(TestAttributes {
+        route: "unselected".to_owned(),
+    });
+    unselected_metric_set.emitted.add(5);
+    telemetry_system
+        .reporter()
+        .report(&mut unselected_metric_set)
+        .expect("unselected metric snapshot should enter the collector channel");
 
     let (capture_tx, capture_rx) = sync_channel(4);
     assert!(
@@ -346,12 +374,15 @@ groups: {{}}
     );
     collector_result.expect("collector should shut down cleanly");
     assert_eq!(
-        decode_viewed_test_metric(&captured),
+        decode_test_metrics(&captured),
         (
-            VIEWED_METRIC_NAME.to_owned(),
-            VIEWED_METRIC_DESCRIPTION.to_owned(),
-            3,
-        )
+            (
+                VIEWED_METRIC_NAME.to_owned(),
+                VIEWED_METRIC_DESCRIPTION.to_owned(),
+                3,
+            ),
+            5,
+        ),
     );
     telemetry_system
         .shutdown_otel()

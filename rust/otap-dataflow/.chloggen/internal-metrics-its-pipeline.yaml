@@ -17,4 +17,4 @@ issues: [2408]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  The internal telemetry receiver supports exact scope and instrument selectors with metric name and description overrides.
+  The internal telemetry receiver supports exact scope name, scalar scope attribute, and instrument selectors with metric name and description overrides.

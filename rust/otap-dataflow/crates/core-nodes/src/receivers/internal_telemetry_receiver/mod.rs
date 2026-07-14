@@ -16,17 +16,20 @@
 //!     interval: 60s
 //!     views:
 //!       - selector:
-//!           scope_name: engine
-//!           instrument_name: memory.rss
+//!           scope_name: pipeline
+//!           scope_attributes:
+//!             pipeline.group.id: pipeline-group-a
+//!           instrument_name: uptime
 //!         stream:
-//!           name: process_memory_usage
-//!           description: Total physical memory used by the process.
+//!           name: process_uptime
+//!           description: Uptime of the pipeline process.
 //! ```
 
 use async_trait::async_trait;
 use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -49,6 +52,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at};
@@ -57,7 +61,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at};
 pub use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Configuration for the internal telemetry receiver.
-#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// Configuration for registry-backed internal metrics.
@@ -66,7 +70,7 @@ pub struct Config {
 }
 
 /// Registry-backed internal metrics configuration.
-#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     /// How frequently accumulated registry metrics are emitted.
@@ -81,7 +85,7 @@ pub struct MetricsConfig {
 }
 
 /// A supported metric view transformation.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewConfig {
     /// Selects metric-set fields to transform.
@@ -92,11 +96,15 @@ pub struct ViewConfig {
 }
 
 /// Exact-match selector for a metric view.
-#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct ViewSelector {
     /// Metric-set (instrumentation scope) name to match.
     pub scope_name: Option<String>,
+
+    /// Scalar metric-set entity attributes that must all match exactly.
+    #[serde(default)]
+    pub scope_attributes: HashMap<String, ConfigAttributeValue>,
 
     /// Metric field (instrument) name to match.
     pub instrument_name: Option<String>,
@@ -124,6 +132,7 @@ impl From<ViewConfig> for MetricView {
         Self {
             selector: MetricViewSelector {
                 scope_name: view.selector.scope_name,
+                scope_attributes: view.selector.scope_attributes,
                 instrument_name: view.selector.instrument_name,
             },
             stream: MetricViewStream {
@@ -212,6 +221,18 @@ impl Config {
             return Err(otap_df_config::error::Error::InvalidUserConfig {
                 error: "internal telemetry receiver metrics interval must be greater than zero"
                     .to_owned(),
+            });
+        }
+        if let Some((key, _)) = self.metrics.views.iter().find_map(|view| {
+            view.selector
+                .scope_attributes
+                .iter()
+                .find(|(_, value)| matches!(value, ConfigAttributeValue::Array(_)))
+        }) {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "internal telemetry receiver metric view scope attribute '{key}' must be a scalar value"
+                ),
             });
         }
         Ok(())
@@ -513,6 +534,12 @@ mod tests {
                 "views": [{
                     "selector": {
                         "scope_name": "engine",
+                        "scope_attributes": {
+                            "service.instance.id": "pipeline-group-a",
+                            "worker.id": 3,
+                            "worker.ready": true,
+                            "worker.load": 0.5
+                        },
                         "instrument_name": "memory.rss"
                     },
                     "stream": {
@@ -530,6 +557,15 @@ mod tests {
             vec![ViewConfig {
                 selector: ViewSelector {
                     scope_name: Some("engine".to_owned()),
+                    scope_attributes: HashMap::from([
+                        (
+                            "service.instance.id".to_owned(),
+                            ConfigAttributeValue::String("pipeline-group-a".to_owned()),
+                        ),
+                        ("worker.id".to_owned(), ConfigAttributeValue::I64(3)),
+                        ("worker.ready".to_owned(), ConfigAttributeValue::Bool(true)),
+                        ("worker.load".to_owned(), ConfigAttributeValue::F64(0.5)),
+                    ]),
                     instrument_name: Some("memory.rss".to_owned()),
                 },
                 stream: ViewStream {
@@ -557,14 +593,6 @@ mod tests {
             serde_json::json!({
                 "metrics": {
                     "views": [{
-                        "selector": { "scope_attributes": {} },
-                        "stream": {}
-                    }]
-                }
-            }),
-            serde_json::json!({
-                "metrics": {
-                    "views": [{
                         "selector": {},
                         "stream": { "unit": "By" }
                     }]
@@ -574,6 +602,22 @@ mod tests {
             let _ = InternalTelemetryReceiver::parse_config(&config)
                 .expect_err("unknown fields must be rejected");
         }
+
+        let array_selector = InternalTelemetryReceiver::parse_config(&serde_json::json!({
+            "metrics": {
+                "views": [{
+                    "selector": { "scope_attributes": { "worker.tags": ["a", "b"] } },
+                    "stream": {}
+                }]
+            }
+        }))
+        .expect_err("array scope attribute selectors must be rejected");
+        assert!(
+            array_selector
+                .to_string()
+                .contains("must be a scalar value"),
+            "unexpected error: {array_selector}"
+        );
     }
 
     #[test]

@@ -102,6 +102,7 @@ use crate::descriptor::{Instrument, MetricsField, Temporality};
 use crate::entity::EntityAttributeSet;
 use crate::metrics::{MetricExportBatch, MetricSetExport, MetricValue};
 use bytes::Bytes;
+use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
@@ -180,7 +181,7 @@ pub enum Error {
 /// different source fields in the same effective scope to the same
 /// case-insensitive name is rejected when at least one stream was produced by
 /// a view, because their already-aggregated data cannot be merged safely.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MetricView {
     /// Selects the metric fields to which the stream overrides apply.
     pub selector: MetricViewSelector,
@@ -191,12 +192,15 @@ pub struct MetricView {
 /// Exact-match selectors supported by [`MetricView`].
 ///
 /// An omitted selector matches every value for that dimension. `scope_name`
-/// matches the metric-set descriptor name and `instrument_name` matches a
-/// field name within that metric set.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// matches the metric-set descriptor name, `scope_attributes` requires the
+/// metric-set entity to contain every configured scalar key-value pair, and
+/// `instrument_name` matches a field name within that metric set.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct MetricViewSelector {
     /// Exact metric-set/instrumentation-scope name to match.
     pub scope_name: Option<String>,
+    /// Exact scalar entity attributes that must all be present.
+    pub scope_attributes: HashMap<String, ConfigAttributeValue>,
     /// Exact metric field/instrument name to match.
     pub instrument_name: Option<String>,
 }
@@ -370,6 +374,12 @@ fn encode_metric_set_with_views<'a>(
     validate_value_count(metric_set)?;
 
     let mut metrics = Vec::with_capacity(metric_set.values.len());
+    // Scope selectors are invariant across all fields in this metric set, so
+    // evaluate them once before resolving the per-instrument selectors.
+    let scope_views = views
+        .iter()
+        .filter(|view| view_matches_scope(view, metric_set))
+        .collect::<SmallVec<[&MetricView; 4]>>();
     let scope_streams = collisions
         .entry(ScopeIdentity {
             name: metric_set.descriptor.name,
@@ -378,7 +388,7 @@ fn encode_metric_set_with_views<'a>(
         .or_insert_with(|| HashMap::with_capacity(metric_set.values.len()));
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
         validate_value_kind(field, *value)?;
-        for stream in resolve_views(metric_set.descriptor.name, field, views) {
+        for stream in resolve_views(field, &scope_views) {
             if let Some(metric) = encode_metric(
                 field,
                 *value,
@@ -402,6 +412,47 @@ fn encode_metric_set_with_views<'a>(
         return Ok(None);
     }
     Ok(Some(build_scope_metrics(metric_set, metrics)))
+}
+
+/// Matches the dimensions that are common to every field in a metric set.
+fn view_matches_scope(view: &MetricView, metric_set: &MetricSetExport) -> bool {
+    view.selector
+        .scope_name
+        .as_deref()
+        .is_none_or(|selector| selector == metric_set.descriptor.name)
+        && view
+            .selector
+            .scope_attributes
+            .iter()
+            .all(|(expected_key, expected_value)| {
+                metric_set
+                    .attributes
+                    .iter_attributes()
+                    .any(|(actual_key, actual_value)| {
+                        actual_key == expected_key
+                            && scope_attribute_value_matches(expected_value, actual_value)
+                    })
+            })
+}
+
+/// Compares one configured scalar value with its internal metric-set value.
+fn scope_attribute_value_matches(expected: &ConfigAttributeValue, actual: &AttributeValue) -> bool {
+    match (expected, actual) {
+        (ConfigAttributeValue::String(expected), AttributeValue::String(actual)) => {
+            expected == actual
+        }
+        (ConfigAttributeValue::Bool(expected), AttributeValue::Boolean(actual)) => {
+            expected == actual
+        }
+        (ConfigAttributeValue::I64(expected), AttributeValue::Int(actual)) => expected == actual,
+        (ConfigAttributeValue::I64(expected), AttributeValue::UInt(actual)) => {
+            u64::try_from(*expected).is_ok_and(|expected| expected == *actual)
+        }
+        (ConfigAttributeValue::F64(expected), AttributeValue::Double(actual)) => expected == actual,
+        // Array selectors are rejected by the receiver configuration. Maps
+        // also have no scalar configuration representation.
+        _ => false,
+    }
 }
 
 fn validate_value_count(metric_set: &MetricSetExport) -> Result<(), Error> {
@@ -465,23 +516,17 @@ fn register_projected_stream<'a>(
 
 /// Resolves and deduplicates lightweight metadata before protobuf construction.
 fn resolve_views<'a>(
-    scope_name: &str,
     field: &'static MetricsField,
-    views: &'a [MetricView],
+    scope_views: &[&'a MetricView],
 ) -> SmallVec<[ResolvedStream<'a>; 1]> {
     let mut matched = false;
     let mut streams = SmallVec::new();
 
-    for view in views.iter().filter(|view| {
+    for view in scope_views.iter().copied().filter(|view| {
         view.selector
-            .scope_name
+            .instrument_name
             .as_deref()
-            .is_none_or(|selector| selector == scope_name)
-            && view
-                .selector
-                .instrument_name
-                .as_deref()
-                .is_none_or(|selector| selector == field.name)
+            .is_none_or(|selector| selector == field.name)
     }) {
         matched = true;
         let stream = ResolvedStream {
@@ -1030,6 +1075,7 @@ mod tests {
         let views = vec![MetricView {
             selector: MetricViewSelector {
                 scope_name: Some("another.scope".to_owned()),
+                scope_attributes: HashMap::new(),
                 instrument_name: Some("gauge.f64".to_owned()),
             },
             stream: MetricViewStream {
@@ -1065,6 +1111,98 @@ mod tests {
     }
 
     #[test]
+    fn scope_attribute_selectors_require_all_exact_scalar_matches() {
+        let attributes = shared_attributes(
+            &FULL_ATTRIBUTES_DESCRIPTOR,
+            vec![
+                AttributeValue::String("worker-a".to_owned()),
+                AttributeValue::Int(-2),
+                AttributeValue::UInt(7),
+                AttributeValue::Double(0.75),
+                AttributeValue::Boolean(true),
+                AttributeValue::Map(BTreeMap::from([(
+                    "region".to_owned(),
+                    AttributeValue::String("west".to_owned()),
+                )])),
+            ],
+        );
+        let matching_scope_attributes = HashMap::from([
+            (
+                "worker.name".to_owned(),
+                ConfigAttributeValue::String("worker-a".to_owned()),
+            ),
+            ("worker.delta".to_owned(), ConfigAttributeValue::I64(-2)),
+            ("worker.sequence".to_owned(), ConfigAttributeValue::I64(7)),
+            ("worker.load".to_owned(), ConfigAttributeValue::F64(0.75)),
+            ("worker.ready".to_owned(), ConfigAttributeValue::Bool(true)),
+        ]);
+        let view_for = |scope_attributes| MetricView {
+            selector: MetricViewSelector {
+                scope_name: Some("test.f64_gauge".to_owned()),
+                scope_attributes,
+                instrument_name: Some("gauge.f64".to_owned()),
+            },
+            stream: MetricViewStream {
+                name: Some("viewed.gauge".to_owned()),
+                description: None,
+            },
+        };
+        let encode_with = |scope_attributes| {
+            let encoder = MetricsOtlpEncoder::new_with_views(
+                &ResourceLogs::default().encode_to_vec(),
+                vec![view_for(scope_attributes)],
+            )
+            .expect("valid resource fragment");
+            let batch = MetricExportBatch {
+                time_unix_nano: COLLECTION_TIME,
+                metric_sets: vec![metric_set(
+                    &F64_GAUGE_DESCRIPTOR,
+                    attributes.clone(),
+                    vec![MetricValue::F64(3.5)],
+                )],
+            };
+            decode_request(
+                encoder
+                    .encode(&batch)
+                    .expect("encode succeeds")
+                    .expect("non-empty request"),
+            )
+        };
+
+        let matching_request = encode_with(matching_scope_attributes.clone());
+        assert_eq!(
+            only_scope(&matching_request).metrics[0].name,
+            "viewed.gauge"
+        );
+
+        let mut missing_attribute = matching_scope_attributes.clone();
+        let _ = missing_attribute.insert(
+            "worker.missing".to_owned(),
+            ConfigAttributeValue::String("absent".to_owned()),
+        );
+        let mut wrong_value = matching_scope_attributes.clone();
+        let _ = wrong_value.insert(
+            "worker.name".to_owned(),
+            ConfigAttributeValue::String("worker-b".to_owned()),
+        );
+        let mut wrong_type = matching_scope_attributes.clone();
+        let _ = wrong_type.insert("worker.sequence".to_owned(), ConfigAttributeValue::F64(7.0));
+        let mut negative_unsigned = matching_scope_attributes;
+        let _ =
+            negative_unsigned.insert("worker.sequence".to_owned(), ConfigAttributeValue::I64(-1));
+
+        for scope_attributes in [
+            missing_attribute,
+            wrong_value,
+            wrong_type,
+            negative_unsigned,
+        ] {
+            let request = encode_with(scope_attributes);
+            assert_eq!(only_scope(&request).metrics[0].name, "gauge.f64");
+        }
+    }
+
+    #[test]
     fn matching_views_deduplicate_names_case_insensitively_with_description_identity() {
         let renamed_stream = MetricViewStream {
             name: Some("viewed.gauge".to_owned()),
@@ -1075,6 +1213,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.f64_gauge".to_owned()),
+                    scope_attributes: HashMap::new(),
                     instrument_name: None,
                 },
                 stream: renamed_stream.clone(),
@@ -1083,6 +1222,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: None,
+                    scope_attributes: HashMap::new(),
                     instrument_name: Some("gauge.f64".to_owned()),
                 },
                 stream: MetricViewStream {
@@ -1101,6 +1241,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.f64_gauge".to_owned()),
+                    scope_attributes: HashMap::new(),
                     instrument_name: Some("gauge.f64".to_owned()),
                 },
                 stream: MetricViewStream {
@@ -1158,6 +1299,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.view_collision".to_owned()),
+                    scope_attributes: HashMap::new(),
                     instrument_name: Some("gauge.first".to_owned()),
                 },
                 stream: MetricViewStream {
@@ -1168,6 +1310,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.view_collision".to_owned()),
+                    scope_attributes: HashMap::new(),
                     instrument_name: Some("gauge.second".to_owned()),
                 },
                 stream: MetricViewStream {
@@ -1211,6 +1354,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.shared_view_collision".to_owned()),
+                    scope_attributes: HashMap::new(),
                     instrument_name: Some("gauge.shared_first".to_owned()),
                 },
                 stream: MetricViewStream {
@@ -1221,6 +1365,7 @@ mod tests {
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.shared_view_collision".to_owned()),
+                    scope_attributes: HashMap::new(),
                     instrument_name: Some("gauge.shared_second".to_owned()),
                 },
                 stream: MetricViewStream {
