@@ -10,7 +10,6 @@
 //! The configuration may change in the future and support for various transformation query is
 //! still being developed.
 //!
-//! ToDo: Handle Ack and Nack
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
 use std::sync::Arc;
@@ -57,14 +56,15 @@ use self::context::Contexts;
 use self::metrics::Metrics;
 
 mod config;
-mod context;
+// TODO - find a different way to expose this
+pub mod context;
 mod metrics;
 mod routing;
 
 /// URN for the TransformProcessor
 pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
-/// Opentelemetry Processing Language Processor
+/// Transform Processor
 pub struct TransformProcessor {
     execution_state: ExecutionState,
     transforms: Vec<Transform>,

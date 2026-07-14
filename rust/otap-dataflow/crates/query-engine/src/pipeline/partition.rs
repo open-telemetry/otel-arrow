@@ -92,11 +92,11 @@ impl Partitioner {
         })
     }
 
-    /// Evaluates the
+    /// Evaluates the partition expression against the batch and returns an iterator of partitions.
     pub fn partition(
         &mut self,
         otap_batch: OtapArrowRecords,
-    ) -> Result<impl IntoIterator<Item = Partition>> {
+    ) -> Result<impl ExactSizeIterator<Item = Partition> + '_> {
         // reset state
         self.partitions.clear();
         self.range_coalescer.clear();

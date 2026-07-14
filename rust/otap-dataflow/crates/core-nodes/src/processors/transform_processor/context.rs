@@ -30,12 +30,13 @@ struct Outbound {
 /// - Inbound: manages how many outbound batches are associated with an inbound batch, as well as
 ///   the error reason if any occurred (either processing the inbound batch, or any outbound batch).
 /// - Outbound: maps the inbound key to the outbound key.
-pub(super) struct Contexts {
+pub struct Contexts {
     inbound: State<Inbound>,
     outbound: State<Outbound>,
 }
 
 impl Contexts {
+    /// Create a new instance of [`Contexts`] with limits on the number of inbound/outbound slots.
     pub fn new(max_inbound: NonZeroUsize, max_outbound: NonZeroUsize) -> Self {
         Self {
             inbound: State::new(max_inbound.into()),
