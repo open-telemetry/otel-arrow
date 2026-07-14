@@ -91,9 +91,11 @@ unlimited memory.
 ### Enforcement Scope
 
 The first implementation should target receiver admission using the existing
-policy scope. In a shared pipeline, the limiter bucket can be selected by tenant
-token. In a deployment where tenants are already separated by pipeline or
-pipeline group, the policy can be placed at that scope.
+policy scope. Policy precedence follows the existing
+[configuration model](../docs/configuration-model.md). In a shared pipeline, the
+limiter bucket can be selected by tenant token. In a deployment where tenants
+are already separated by pipeline or pipeline group, the policy can be placed at
+that scope.
 
 Process-wide per-tenant EPS is a separate scope choice. It requires either
 routing each tenant to one pipeline or adding a shared limiter extension that
@@ -104,7 +106,8 @@ shared limiter in the first step.
 
 Receivers maintain EPS measurements for the limiter scope that applies at the
 admission point. If the policy is pipeline-local, the EPS limit is local to that
-pipeline instance. If the policy is shared by a later extension, the shared
+pipeline instance, per core, so the effective process-wide rate scales with the
+number of cores. If the policy is shared by a later extension, the shared
 implementation owns aggregation across receiver instances.
 
 The design must define the counted unit. A first version can use normalized
@@ -135,7 +138,9 @@ else:
 This gives soft pressure an admission-control meaning for this policy. The
 existing phase-1 memory limiter behavior remains unchanged: hard pressure is
 still the global shedding backstop. If the process memory limiter is configured
-in observe-only mode, this policy should observe only too.
+in observe-only mode, this policy should observe only too. Adopting this policy
+would require updating the phase-1 memory limiter documentation that describes
+soft pressure as informational only.
 
 The exact rejection response is receiver-specific. HTTP receivers can return a
 service-unavailable or too-many-requests response with retry guidance. gRPC
@@ -150,8 +155,9 @@ Rate state should use a rolling window or token-bucket style calculation.
 Existing token-bucket terminology may use `burst` for the maximum single request
 weight; any separate time-window smoothing should be named separately. The
 policy should also use admission recovery hysteresis before unthrottling so the
-same scope does not rapidly switch between admitted and rejected on every
-sample.
+same scope does not rapidly switch between admitted and rejected on every sample.
+This is separate from the memory limiter's own hysteresis for leaving soft
+pressure.
 
 Receivers should continue updating scoped rate state while throttling so the
 engine can detect recovery.
@@ -286,6 +292,8 @@ per-request or per-scope label cardinality.
 - What rolling-window or token-bucket parameters should be configurable?
 - Should selective EPS throttling start at process soft pressure only, or at a
   separate threshold below soft pressure?
+- Should pressure gating be a new condition input, a policy-level gate, or a
+  signal consumed by the limiter?
 - How should limits be represented for mixed signal traffic from one scope?
 
 ## Future possibilities
