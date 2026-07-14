@@ -293,7 +293,7 @@ fn process_record<'a, TRecord: Record + 'static>(
                         execution_context.add_diagnostic_if_enabled(
                             RecordSetEngineDiagnosticLevel::Info,
                             s,
-                            || "Record summarized and dropped".into(),
+                            || "Record summarized".into(),
                         );
 
                         return RecordSetEngineResult::Summarized(execution_context.into());
