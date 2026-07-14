@@ -851,10 +851,7 @@ mod test {
             OplParser::parse_expr_with_options("severity_number", default_parser_options())
                 .unwrap();
         let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
-        let partitions = partitioner
-            .partition(otap)
-            .unwrap()
-            .collect::<Vec<_>>();
+        let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
 
@@ -947,10 +944,7 @@ mod test {
         let (scalar_expr, functions) =
             OplParser::parse_expr_with_options("name", default_parser_options()).unwrap();
         let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
-        let partitions = partitioner
-            .partition(otap)
-            .unwrap()
-            .collect::<Vec<_>>();
+        let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
 
         assert_eq!(partitions.len(), 2, "expected 2 partitions");
 
@@ -1009,6 +1003,131 @@ mod test {
                 )],
             )])
         );
+    }
+
+    #[test]
+    fn test_partition_using_functions() {
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("506"))]),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().event_name("e1").finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("514"))]),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().event_name("e2").finish()],
+                )],
+            ),
+            ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("418"))]),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().event_name("e3").finish()],
+                )],
+            ),
+        ])));
+
+        let (scalar_expr, functions) = OplParser::parse_expr_with_options(
+            "substring(resource.attributes[\"attr1\"], 0, 1)",
+            default_parser_options(),
+        )
+        .unwrap();
+        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let partitions = partitioner.partition(input).unwrap().collect::<Vec<_>>();
+        assert_eq!(partitions.len(), 2);
+
+        assert_eq!(partitions[0].value, PartitionValue::String("5".into()));
+        let OtlpProtoMessage::Logs(partition0_log_records) = otap_to_otlp(&partitions[0].batch)
+        else {
+            panic!("invalid signal type")
+        };
+
+        assert_eq!(
+            partition0_log_records,
+            LogsData::new(vec![
+                ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("506"))]),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![LogRecord::build().event_name("e1").finish()],
+                    )],
+                ),
+                ResourceLogs::new(
+                    Resource::build()
+                        .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("514"))]),
+                    vec![ScopeLogs::new(
+                        InstrumentationScope::default(),
+                        vec![LogRecord::build().event_name("e2").finish()],
+                    )],
+                ),
+            ])
+        );
+
+        assert_eq!(partitions[1].value, PartitionValue::String("4".into()));
+        let OtlpProtoMessage::Logs(partition1_log_records) = otap_to_otlp(&partitions[1].batch)
+        else {
+            panic!("invalid signal type")
+        };
+
+        assert_eq!(
+            partition1_log_records,
+            LogsData::new(vec![ResourceLogs::new(
+                Resource::build()
+                    .attributes(vec![KeyValue::new("attr1", AnyValue::new_string("418"))]),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![LogRecord::build().event_name("e3").finish()],
+                )],
+            )])
+        )
+    }
+
+    #[test]
+    fn test_partition_missing_data_produces_null_partition_value() {
+        let otap = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData::new(vec![
+            ResourceLogs::new(
+                Resource::default(),
+                vec![ScopeLogs::new(
+                    InstrumentationScope::default(),
+                    vec![
+                        LogRecord::build()
+                            .attributes(vec![KeyValue::new("attrx", AnyValue::new_string("y"))])
+                            .event_name("e1")
+                            .finish(),
+                        LogRecord::build()
+                            .severity_number(17)
+                            .event_name("e2")
+                            .finish(),
+                        LogRecord::build()
+                            .severity_number(13)
+                            .event_name("e3")
+                            .finish(),
+                        LogRecord::build()
+                            .severity_number(17)
+                            .event_name("e4")
+                            .finish(),
+                    ],
+                )],
+            ),
+        ])));
+
+        let (scalar_expr, functions) = OplParser::parse_expr_with_options(
+            "attributes[\"some_attr_not_existing\"]",
+            default_parser_options(),
+        )
+        .unwrap();
+        let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
+        let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
+        assert_eq!(partitions.len(), 1);
+        assert_eq!(partitions[0].value, PartitionValue::Null);
     }
 
     #[test]
@@ -1080,10 +1199,7 @@ mod test {
             OplParser::parse_expr_with_options("attributes[\"x\"]", default_parser_options())
                 .unwrap();
         let mut partitioner = Partitioner::try_new(scalar_expr, functions).unwrap();
-        let partitions = partitioner
-            .partition(otap)
-            .unwrap()
-            .collect::<Vec<_>>();
+        let partitions = partitioner.partition(otap).unwrap().collect::<Vec<_>>();
         assert_eq!(partitions.len(), 3);
 
         assert_eq!(partitions[0].value, PartitionValue::String("0".into()));
