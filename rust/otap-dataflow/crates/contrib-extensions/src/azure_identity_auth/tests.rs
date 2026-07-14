@@ -3,17 +3,32 @@
 
 //! Unit tests for the Azure Identity Auth extension.
 
+use std::fs::File;
+use std::io::Write;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{env, fmt, fs};
 
+use async_trait::async_trait;
+use azure_core::Bytes;
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
+use azure_core::http::headers::{HeaderValue, Headers};
+use azure_core::http::{
+    AsyncRawResponse, ClientOptions, HttpClient, Method, Request, StatusCode, Transport,
+};
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
-use futures::StreamExt;
+use azure_identity::ManagedIdentityCredentialOptions;
+use futures::future::BoxFuture;
+use futures::lock::Mutex;
+use futures::{FutureExt, StreamExt};
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::shared::capability::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
+
+use crate::azure_identity_auth::arc_server_managed_identity::ArcServerManagedIdentity;
 
 use super::auth::Auth;
 use super::config::{AuthMethod, Config};
@@ -336,6 +351,191 @@ async fn clones_share_one_token_cache() {
         .await
         .expect("stream yields the shared token");
     assert_eq!(streamed.expose_secret(), "shared");
+}
+
+// ── Arc server managed identity tests ─────────────────────────
+
+#[tokio::test]
+async fn arc_challenge_response() {
+    let key_id = rand::random::<u8>();
+    let token_path = env::temp_dir().join(format!("arc-{key_id}.token"));
+    let token_path_str = token_path.to_str().unwrap().to_string();
+    let mut token_file = File::create(&token_path).unwrap();
+    token_file.write_all("abc".as_bytes()).unwrap();
+    drop(token_file);
+
+    let expected_token_request_count = 2;
+    let token_requests = Arc::new(AtomicUsize::new(0));
+    let token_requests_clone = token_requests.clone();
+    let expires_on = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 3600;
+
+    let mock_client = MockHttpClient::new(move |actual_req: &Request| {
+        {
+            let _ = token_requests_clone.fetch_add(1, Ordering::SeqCst);
+
+            let mut model_naive_req = Request::new(
+            "http://localhost:40342/metadata/identity/oauth2/token"
+                .parse()
+                .unwrap(),
+            Method::Get,
+            );
+            model_naive_req.insert_header("metadata", "true");
+
+            let params = Vec::from([
+                ("api-version", "2021-02-01"),
+                ("resource", "https://monitor.azure.com"),
+            ]);
+            let _ = model_naive_req
+                .url_mut()
+                .query_pairs_mut()
+                .extend_pairs(params);
+
+            let mut model_challenge_response_request = model_naive_req.clone();
+            model_challenge_response_request.insert_header("authorization", "Basic abc");
+
+            let mut challenge_headers = Headers::default();
+            let response_header = HeaderValue::from(format!("Realm={token_path_str}"));
+
+            challenge_headers.insert("www-authenticate", response_header);
+
+            let model_request_responses = vec![
+                MockRequestResponse {
+                    request: model_challenge_response_request,
+                    response_status: StatusCode::Ok,
+                    response_headers: Headers::default(),
+                    response_format: r#"{"token_type":"Bearer","expires_in":"85770","expires_on":"EXPIRES_ON","ext_expires_in":86399,"access_token":"*","resource":"https://monitor.azure.com/.default"}"#.to_string(),
+                },
+                MockRequestResponse {
+                    request: model_naive_req,
+                    response_status: StatusCode::Unauthorized,
+                    response_headers: challenge_headers,
+                    response_format: String::from(r#"{"error":"unauthorized_client","error_description":"Missing Basic Authorization header","error_codes":[401]}"#),
+                },
+            ];
+            async move {
+                for mock_request_response in model_request_responses {
+                    let expected_request = mock_request_response.request;
+                    if expected_request.method() != actual_req.method() {
+                        continue;
+                    }
+
+                    let mut actual_params: Vec<_> =
+                        actual_req.url().query_pairs().into_owned().collect();
+                    actual_params.sort();
+                    let mut expected_params: Vec<_> =
+                        expected_request.url().query_pairs().into_owned().collect();
+                    expected_params.sort();
+
+                    if expected_params != actual_params {
+                        continue;
+                    }
+
+                    let mut actual_url = actual_req.url().clone();
+                    actual_url.set_query(None);
+                    let mut expected_url = expected_request.url().clone();
+                    expected_url.set_query(None);
+
+                    if actual_url != expected_url {
+                        continue;
+                    }
+
+                    // allow additional headers in the actual request so changing
+                    // the underlying client in the future won't break tests
+                    if !expected_request.headers().iter().all(
+                        |(expected_header_name, expected_header_val)| {
+                            let result = actual_req
+                                .headers()
+                                .get_str(expected_header_name)
+                                .map_or(false, |actual_header| {
+                                    actual_header == expected_header_val.as_str()
+                                });
+                            result
+                        },
+                    ) {
+                        continue;
+                    }
+
+                    return Ok(AsyncRawResponse::from_bytes(
+                        mock_request_response.response_status,
+                        mock_request_response.response_headers,
+                        Bytes::from(mock_request_response.response_format.replacen(
+                            "EXPIRES_ON",
+                            &expires_on.to_string(),
+                            1,
+                        )),
+                    ));
+                }
+                // if we got here, none of the model requests matched.
+                panic!("None of the model requests matched the actual request received");
+            }
+        }
+        .boxed()
+    });
+    let mut options = ManagedIdentityCredentialOptions::default();
+    options.client_options = ClientOptions {
+        transport: Some(Transport::new(Arc::new(mock_client))),
+        ..Default::default()
+    };
+    let cred = ArcServerManagedIdentity::new(Some(options)).expect("credential");
+    for _ in 0..4 {
+        let token = cred
+            .get_token(&["https://monitor.azure.com/.default"], None)
+            .await
+            .expect("token");
+        assert_eq!(token.expires_on.unix_timestamp(), expires_on as i64);
+        assert_eq!(token.token.secret(), "*");
+        assert_eq!(
+            token_requests.load(Ordering::SeqCst),
+            expected_token_request_count
+        );
+    }
+
+    let _ = fs::remove_file(token_path); // try our best to clean up the temp file
+}
+
+#[derive(Debug, Clone)]
+struct MockRequestResponse {
+    request: Request,
+
+    response_status: StatusCode,
+    response_headers: Headers,
+    response_format: String,
+}
+
+pub struct MockHttpClient<C>(Mutex<C>);
+
+impl<C> MockHttpClient<C>
+where
+    C: FnMut(&Request) -> BoxFuture<'_, azure_core::Result<AsyncRawResponse>> + Send + Sync,
+{
+    /// Creates a new `MockHttpClient` using a capture.
+    ///
+    /// The capture takes a `&Request` and returns a `BoxedFuture<Output = azure_core::Result<Response>>`.
+    /// See the example on [`MockHttpClient`].
+    pub fn new(client: C) -> Self {
+        Self(Mutex::new(client))
+    }
+}
+
+impl<C> fmt::Debug for MockHttpClient<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(stringify!("MockHttpClient"))
+    }
+}
+
+#[async_trait]
+impl<C> HttpClient for MockHttpClient<C>
+where
+    C: FnMut(&Request) -> BoxFuture<'_, azure_core::Result<AsyncRawResponse>> + Send + Sync,
+{
+    async fn execute_request(&self, req: &Request) -> azure_core::Result<AsyncRawResponse> {
+        let mut client = self.0.lock().await;
+        (client)(req).await
+    }
 }
 
 // ── Metrics tracker tests ─────────────────────────────────────

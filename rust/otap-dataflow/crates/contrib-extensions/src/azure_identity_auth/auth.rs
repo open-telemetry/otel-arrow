@@ -13,7 +13,9 @@ use azure_identity::{
 };
 use otap_df_engine::capability::BearerToken;
 
-use crate::azure_identity_auth::arc_server_managed_identity::{ArcServerManagedIdentity, is_arc_server_environment};
+use crate::azure_identity_auth::arc_server_managed_identity::{
+    ArcServerManagedIdentity, is_arc_server_environment,
+};
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;

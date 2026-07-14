@@ -7,10 +7,10 @@
 //! nodes through the `BearerTokenProvider` capability. See
 //! `docs/azure-identity-auth-extension.md` for the design.
 
+mod arc_server_managed_identity;
 mod auth;
 pub mod config;
 pub mod error;
-mod arc_server_managed_identity;
 mod extension;
 mod metrics;
 

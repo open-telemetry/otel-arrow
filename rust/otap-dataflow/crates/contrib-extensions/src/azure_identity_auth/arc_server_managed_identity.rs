@@ -1,4 +1,11 @@
-use std::{collections::HashMap, env, fs::{self, File}, io::Read, path::Path, sync::Arc};
+use std::{
+    collections::HashMap,
+    env,
+    fs::{self, File},
+    io::Read,
+    path::Path,
+    sync::Arc,
+};
 
 use async_lock::RwLock;
 use azure_core::{
@@ -47,7 +54,9 @@ impl TokenCredential for ArcServerManagedIdentity {
 }
 
 impl ArcServerManagedIdentity {
-    pub(crate) fn new(options: Option<ManagedIdentityCredentialOptions>) -> azure_core::Result<Arc<Self>> {
+    pub(crate) fn new(
+        options: Option<ManagedIdentityCredentialOptions>,
+    ) -> azure_core::Result<Arc<Self>> {
         let options = options.unwrap_or_default();
 
         let endpoint = match (
