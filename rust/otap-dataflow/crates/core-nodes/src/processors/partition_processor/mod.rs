@@ -13,10 +13,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
+use otap_df_config::SignalType;
 use otap_df_config::{node::NodeUserConfig, validation::validate_typed_config};
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
-use otap_df_engine::control::AckMsg;
+use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::ProcessorErrorKind;
 use otap_df_engine::local::processor::{EffectHandler, Processor};
 use otap_df_engine::message::Message;
@@ -28,6 +29,7 @@ use otap_df_engine::{
     ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
+use otap_df_otap::accessory::slots::Key;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
@@ -35,7 +37,7 @@ use otap_df_query_engine::parser::default_parser_options;
 use otap_df_query_engine::pipeline::partition::{PartitionValue, Partitioner};
 use otap_df_query_engine_languages::opl::parser::OplParser;
 use serde_json::Value;
-use slotmap::Key;
+use slotmap::Key as _;
 
 use crate::processors::partition_processor::config::{
     Config, PartitionByConfig, PartitionValueSerializeStrategy,
@@ -115,6 +117,30 @@ impl PartitionProcessor {
             serialization_strategy: config.header_serialization_strategy,
         })
     }
+
+    /// Clears the outbound context for the given key, and send an Ack/Nack for any
+    /// associated inbound inf the inbound and no outstanding outbounds
+    async fn handle_ack_nack(
+        &mut self,
+        outbound_key: Key,
+        signal_type: SignalType,
+        effect_handler: &mut EffectHandler<OtapPdata>,
+    ) -> Result<(), otap_df_engine::error::Error> {
+        // clear the outbound context
+        if let Some(inbound) = self.contexts.clear_outbound(outbound_key) {
+            // if we're in this location, we've cleared the final outbound context for some inbound
+            // batch, which means we can now Ack or Nack the inbound context
+            let (context, error_reason) = inbound;
+            let pdata = OtapPdata::new(context, OtapPayload::empty(signal_type));
+            if let Some(error) = error_reason {
+                effect_handler.notify_nack(NackMsg::new(error, pdata)).await
+            } else {
+                effect_handler.notify_ack(AckMsg::new(pdata)).await
+            }
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -126,8 +152,38 @@ impl Processor<OtapPdata> for PartitionProcessor {
     ) -> Result<(), otap_df_engine::error::Error> {
         match message {
             Message::Control(control_message) => match control_message {
-                _ => {
+                NodeControlMsg::CollectTelemetry { metrics_reporter } => {
                     todo!()
+                }
+                NodeControlMsg::Ack(ack_msg) => {
+                    self.handle_ack_nack(
+                        ack_msg.unwind.route.calldata.try_into()?,
+                        ack_msg.accepted.signal_type(),
+                        effect_handler,
+                    )
+                    .await?
+                }
+
+                NodeControlMsg::Nack(nack_msg) => {
+                    let outbound_key: Key = nack_msg.unwind.route.calldata.try_into()?;
+                    self.contexts
+                        .set_failed_outbound(outbound_key, nack_msg.reason);
+                    self.handle_ack_nack(
+                        outbound_key,
+                        nack_msg.refused.signal_type(),
+                        effect_handler,
+                    )
+                    .await?;
+                }
+
+                NodeControlMsg::Config { .. }
+                | NodeControlMsg::TimerTick { .. }
+                | NodeControlMsg::Wakeup { .. }
+                | NodeControlMsg::DelayedData { .. }
+                | NodeControlMsg::MemoryPressureChanged { .. }
+                | NodeControlMsg::DrainIngress { .. }
+                | NodeControlMsg::Shutdown { .. } => {
+                    // Not handled - nothing to do
                 }
             },
             Message::PData(pdata) => {
@@ -150,11 +206,14 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         effect_handler.notify_ack(AckMsg::new(pdata)).await?;
                     }
                     1 => {
-                        // safety: we can expect here because we've checked there is at least one partition
-                        // so call to `next` will be `Some`
+                        // single partition is a special case because we don't need to create
+                        // new outbound contexts. We can reuse the original context/headers, etc.
+
+                        // safety: we can expect here because we've checked there is at least one
+                        // partition so call to `next` will be `Some`
                         let partition = partitions.next().expect("at least one partition");
 
-                        // there's only one partition, so we don't need to juggle inbound and outbound contexts
+                        // update the header values
                         let mut headers =
                             inbound_context.take_transport_headers().unwrap_or_default();
                         headers.push(partition_value_to_transport_header(
@@ -330,8 +389,15 @@ mod test {
     use otap_df_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
-        testing::{processor::TestRuntime, test_node},
+        control::{
+            PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        },
+        testing::{
+            processor::{TestContext, TestRuntime},
+            test_node,
+        },
     };
+    use otap_df_otap::testing::{TestCallData, next_ack};
     use otap_df_pdata::{
         OtlpProtoBytes, TryFromWithOptions,
         proto::{
@@ -378,6 +444,35 @@ mod test {
         )
     }
 
+    /// Helper to send an Ack for a given context
+    async fn send_ack(
+        ctx: &mut TestContext<OtapPdata>,
+        context: Context,
+        signal_type: SignalType,
+    ) -> Result<(), otap_df_engine::error::Error> {
+        let ack = next_ack(AckMsg::new(OtapPdata::new(
+            context,
+            OtapPayload::empty(signal_type),
+        )));
+        let (_, ack) = ack.unwrap();
+        ctx.process(Message::Control(NodeControlMsg::Ack(ack)))
+            .await
+    }
+
+    /// Helper to create pdata with subscribers for testing Ack/Nack
+    fn create_pdata_with_subscriber(
+        otap_batch: OtapArrowRecords,
+        interests: Interests,
+        call_data_id: u64,
+        node_id: usize,
+    ) -> OtapPdata {
+        OtapPdata::new_default(otap_batch.into()).test_subscribe_to(
+            interests,
+            TestCallData::new_with(call_data_id, 0).into(),
+            node_id,
+        )
+    }
+
     #[test]
     fn test_simple_partitioning() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -397,6 +492,8 @@ mod test {
         runtime
             .set_processor(processor)
             .run_test(move |mut ctx| async move {
+                let upstream_node_id = 999;
+
                 let log_records = vec![
                     LogRecord::build()
                         .event_name("event0")
@@ -426,7 +523,13 @@ mod test {
                     )],
                 }));
 
-                let pdata = OtapPdata::new_default(otap_batch.into());
+                // let pdata = OtapPdata::new_default(otap_batch.into());
+                let pdata = create_pdata_with_subscriber(
+                    otap_batch,
+                    Interests::ACKS_OR_NACKS,
+                    1,
+                    upstream_node_id,
+                );
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
@@ -434,8 +537,144 @@ mod test {
                 let mut out = ctx.drain_pdata().await.into_iter().collect::<VecDeque<_>>();
                 assert_eq!(out.len(), 3);
 
-                let part1_batch = out.pop_front().unwrap();
-                let (context, payload) = part1_batch.into_parts();
+                let expected = vec![
+                    ("0", vec![log_records[0].clone(), log_records[2].clone()]),
+                    ("1", vec![log_records[1].clone()]),
+                    ("2", vec![log_records[3].clone()]),
+                ];
+
+                let mut outbound_contexts = Vec::with_capacity(3);
+
+                for (partition_value, expected_log_records) in expected {
+                    let emitted_batch = out.pop_front().unwrap();
+                    let (context, payload) = emitted_batch.into_parts();
+                    let headers = context.transport_headers().unwrap();
+                    let header = headers.find_by_name(header_name).next().unwrap();
+                    assert_eq!(
+                        header,
+                        &TransportHeader {
+                            name: header_name.to_string(),
+                            wire_name: header_name.to_string(),
+                            value_kind: ValueKind::Text,
+                            value: partition_value.as_bytes().to_vec()
+                        }
+                    );
+                    outbound_contexts.push(context);
+
+                    let proto_bytes = OtlpProtoBytes::try_from_with_default(payload).unwrap();
+                    assert_eq!(
+                        LogsData::decode(proto_bytes.as_bytes()).unwrap(),
+                        LogsData {
+                            resource_logs: vec![ResourceLogs::new(
+                                Resource::default(),
+                                vec![ScopeLogs::new(
+                                    InstrumentationScope::default(),
+                                    expected_log_records
+                                )]
+                            )]
+                        }
+                    )
+                }
+
+                // send the Acks and ensure we eventually get an Ack for the inbound context
+                let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(10);
+                let (pipeline_completion_tx, mut pipeline_completion_rx) =
+                    pipeline_completion_msg_channel(10);
+                ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
+                ctx.set_pipeline_completion_sender(pipeline_completion_tx);
+
+                // first outbound partition Ack'd
+                send_ack(&mut ctx, outbound_contexts.pop().unwrap(), SignalType::Logs)
+                    .await
+                    .unwrap();
+                // no ack b/c not all outbound are ack'd
+                assert!(pipeline_completion_rx.is_empty());
+
+                // second outbound partition Ack'd
+                send_ack(&mut ctx, outbound_contexts.pop().unwrap(), SignalType::Logs)
+                    .await
+                    .unwrap();
+                // no ack b/c not all outbound are ack'd
+                assert!(pipeline_completion_rx.is_empty());
+
+                // final outbound partition ack'd
+                send_ack(&mut ctx, outbound_contexts.pop().unwrap(), SignalType::Logs)
+                    .await
+                    .unwrap();
+
+                // assert we finally receive an Ack for the inbound pdata
+                let ack_msg = pipeline_completion_rx.recv().await.unwrap();
+                match ack_msg {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        let (node_id, _ack) = next_ack(ack).expect("expected ack subscriber");
+                        assert_eq!(node_id, upstream_node_id);
+                    }
+                    other => {
+                        panic!("got unexpected pipeline ctrl message {other:?}")
+                    }
+                };
+            })
+            .validate(|_ctx| async move {});
+    }
+
+    #[test]
+    fn test_single_partition() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
+        let expression = "attributes[\"x\"]";
+        let header_name = "partition-header";
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": expression },
+                "partition_header_name": header_name,
+            }),
+            &runtime,
+        )
+        .unwrap();
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let log_records = vec![
+                    LogRecord::build()
+                        .event_name("event0")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event1")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event2")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                    LogRecord::build()
+                        .event_name("event3")
+                        .attributes(vec![KeyValue::new("x", AnyValue::new_string("0"))])
+                        .finish(),
+                ];
+
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            log_records.clone(),
+                        )],
+                    )],
+                }));
+
+                let pdata = OtapPdata::new_default(otap_batch.into());
+                ctx.process(Message::PData(pdata))
+                    .await
+                    .expect("no process error");
+
+                let mut out = ctx.drain_pdata().await.into_iter().collect::<VecDeque<_>>();
+                assert_eq!(out.len(), 1);
+
+                let emitted_batch = out.pop_front().unwrap();
+                let (context, payload) = emitted_batch.into_parts();
                 let headers = context.transport_headers().unwrap();
                 let header = headers.find_by_name(header_name).next().unwrap();
                 assert_eq!(
@@ -456,21 +695,13 @@ mod test {
                             Resource::default(),
                             vec![ScopeLogs::new(
                                 InstrumentationScope::default(),
-                                vec![log_records[0].clone(), log_records[2].clone()]
+                                log_records.clone()
                             )]
                         )]
                     }
                 )
 
-                // TODO assert on all the output data
-
-                //     .map(OtapPdata::payload)
-                //     .map(OtlpProtoBytes::try_from_with_default)
-                //     .map(Result::unwrap)
-                //     .map(|b| LogsData::decode(b.as_bytes()).unwrap())
-                //     .collect::<Vec<_>>();
-
-                // assert_eq!(out.len(), 3);
+                // TODO need to validate Acks and Nacks here
             })
             .validate(|_ctx| async move {});
     }
