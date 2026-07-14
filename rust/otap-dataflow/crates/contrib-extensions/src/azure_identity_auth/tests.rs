@@ -13,10 +13,12 @@ use std::{env, fmt, fs};
 use async_trait::async_trait;
 use azure_core::Bytes;
 use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
+use azure_core::http::StatusCode::BadRequest;
 use azure_core::http::headers::{HeaderValue, Headers};
 use azure_core::http::{AsyncRawResponse, HttpClient, Method, Request, StatusCode, Transport};
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use azure_identity::ManagedIdentityCredentialOptions;
+use azure_identity::UserAssignedId::ObjectId;
 use futures::future::BoxFuture;
 use futures::lock::Mutex;
 use futures::{FutureExt, StreamExt};
@@ -362,7 +364,125 @@ async fn arc_challenge_response() {
     token_file.write_all("abc".as_bytes()).unwrap();
     drop(token_file);
 
-    let expected_token_request_count = 2;
+    let mut model_naive_req = Request::new(
+        "http://localhost:40342/metadata/identity/oauth2/token"
+            .parse()
+            .unwrap(),
+        Method::Get,
+    );
+    model_naive_req.insert_header("metadata", "true");
+
+    let params = Vec::from([
+        ("api-version", "2021-02-01"),
+        ("resource", "https://monitor.azure.com"),
+        ("object_id", "abc-123"),
+    ]);
+    let _ = model_naive_req
+        .url_mut()
+        .query_pairs_mut()
+        .extend_pairs(params);
+
+    let mut model_challenge_response_request = model_naive_req.clone();
+    model_challenge_response_request.insert_header("authorization", "Basic abc");
+
+    let mut challenge_headers = Headers::default();
+    let response_header = HeaderValue::from(format!("Basic realm={token_path_str}"));
+
+    challenge_headers.insert("www-authenticate", response_header);
+
+    run_get_token_test(Some(ManagedIdentityCredentialOptions{
+            user_assigned_id: Some(ObjectId("abc-123".into())),
+            ..Default::default()
+        }),
+        vec![
+            MockRequestResponse {
+                request: model_challenge_response_request,
+                response_status: StatusCode::Ok,
+                response_headers: Headers::default(),
+                response_format: r#"{"token_type":"Bearer","expires_in":"85770","expires_on":"EXPIRES_ON","ext_expires_in":86399,"access_token":"*","resource":"https://monitor.azure.com/.default"}"#.to_string(),
+            },
+            MockRequestResponse {
+                request: model_naive_req,
+                response_status: StatusCode::Unauthorized,
+                response_headers: challenge_headers,
+                response_format: String::from(r#"{"error":"unauthorized_client","error_description":"Missing Basic Authorization header","error_codes":[401]}"#),
+            },
+        ],
+        None
+    ).await;
+
+    let _ = fs::remove_file(token_path); // try our best to clean up the temp file
+}
+
+#[tokio::test]
+async fn arc_challenge_failed() {
+    let key_id = rand::random::<u8>();
+    let token_path = env::temp_dir().join(format!("arc-{key_id}.key"));
+    let token_path_str = token_path.to_str().unwrap().to_string();
+    let mut token_file = File::create(&token_path).unwrap();
+    token_file.write_all("abc".as_bytes()).unwrap();
+    drop(token_file);
+
+    let mut model_naive_req = Request::new(
+        "http://localhost:40342/metadata/identity/oauth2/token"
+            .parse()
+            .unwrap(),
+        Method::Get,
+    );
+    model_naive_req.insert_header("metadata", "true");
+
+    let params = Vec::from([
+        ("api-version", "2021-02-01"),
+        ("resource", "https://monitor.azure.com"),
+        ("object_id", "abc-123"),
+    ]);
+    let _ = model_naive_req
+        .url_mut()
+        .query_pairs_mut()
+        .extend_pairs(params);
+
+    let mut model_challenge_response_request = model_naive_req.clone();
+    model_challenge_response_request.insert_header("authorization", "Basic abc");
+
+    let mut challenge_headers = Headers::default();
+    let response_header = HeaderValue::from(format!("Basic realm={token_path_str}"));
+    challenge_headers.insert("www-authenticate", response_header);
+
+    run_get_token_test(Some(ManagedIdentityCredentialOptions{
+            user_assigned_id: Some(ObjectId("abc-123".into())),
+            ..Default::default()
+        }),
+        vec![
+            MockRequestResponse {
+                request: model_challenge_response_request,
+                response_status: BadRequest,
+                response_headers: Headers::default(),
+                response_format: String::from(r#"{"error":"bad_request","error_description":"Something happened","error_codes":[400]}"#),
+            },
+            MockRequestResponse {
+                request: model_naive_req,
+                response_status: StatusCode::Unauthorized,
+                response_headers: challenge_headers,
+                response_format: String::from(r#"{"error":"unauthorized_client","error_description":"Missing Basic Authorization header","error_codes":[401]}"#),
+            },
+        ],
+        Some(azure_core::Error::with_message(
+            azure_core::error::ErrorKind::HttpResponse { status: BadRequest, error_code: Some("(unknown error code)".into()), raw_response: None },
+            "The requested identity has not been assigned to this resource"
+        ))
+    ).await;
+
+    let _ = fs::remove_file(token_path); // try our best to clean up the temp file
+}
+
+/// When using multiple entries in model_request_responses, it's important that the most specific request is first,
+/// because this function will use the first request-response pair that matches the request received.
+async fn run_get_token_test(
+    options: Option<ManagedIdentityCredentialOptions>,
+    model_request_responses: Vec<MockRequestResponse>,
+    expected_token_err: Option<azure_core::Error>,
+) {
+    let expected_token_request_count = model_request_responses.len();
     let token_requests = Arc::new(AtomicUsize::new(0));
     let token_requests_clone = token_requests.clone();
     let expires_on = SystemTime::now()
@@ -370,54 +490,30 @@ async fn arc_challenge_response() {
         .unwrap()
         .as_secs()
         + 3600;
-
     let mock_client = MockHttpClient::new(move |actual_req: &Request| {
         {
             let _ = token_requests_clone.fetch_add(1, Ordering::SeqCst);
+            let model_request_responses = model_request_responses.clone();
 
-            let mut model_naive_req = Request::new(
-            "http://localhost:40342/metadata/identity/oauth2/token"
-                .parse()
-                .unwrap(),
-            Method::Get,
-            );
-            model_naive_req.insert_header("metadata", "true");
-
-            let params = Vec::from([
-                ("api-version", "2021-02-01"),
-                ("resource", "https://monitor.azure.com"),
-            ]);
-            let _ = model_naive_req
-                .url_mut()
-                .query_pairs_mut()
-                .extend_pairs(params);
-
-            let mut model_challenge_response_request = model_naive_req.clone();
-            model_challenge_response_request.insert_header("authorization", "Basic abc");
-
-            let mut challenge_headers = Headers::default();
-            let response_header = HeaderValue::from(format!("Basic realm={token_path_str}"));
-
-            challenge_headers.insert("www-authenticate", response_header);
-
-            let model_request_responses = vec![
-                MockRequestResponse {
-                    request: model_challenge_response_request,
-                    response_status: StatusCode::Ok,
-                    response_headers: Headers::default(),
-                    response_format: r#"{"token_type":"Bearer","expires_in":"85770","expires_on":"EXPIRES_ON","ext_expires_in":86399,"access_token":"*","resource":"https://monitor.azure.com/.default"}"#.to_string(),
-                },
-                MockRequestResponse {
-                    request: model_naive_req,
-                    response_status: StatusCode::Unauthorized,
-                    response_headers: challenge_headers,
-                    response_format: String::from(r#"{"error":"unauthorized_client","error_description":"Missing Basic Authorization header","error_codes":[401]}"#),
-                },
-            ];
+            println!("Request: {}", actual_req.url());
+            println!(" headers:");
+            for (h, hv) in actual_req.headers().iter() {
+                println!("  {}: {}", h.as_str(), hv.as_str());
+            }
             async move {
                 for mock_request_response in model_request_responses {
+                    println!(
+                        "checking model request: {}",
+                        mock_request_response.request.url()
+                    );
+                    println!(" headers:");
+                    for (h, hv) in mock_request_response.request.headers().iter() {
+                        println!("  {}: {}", h.as_str(), hv.as_str());
+                    }
+
                     let expected_request = mock_request_response.request;
                     if expected_request.method() != actual_req.method() {
+                        println!(" method did not match");
                         continue;
                     }
 
@@ -429,6 +525,7 @@ async fn arc_challenge_response() {
                     expected_params.sort();
 
                     if expected_params != actual_params {
+                        println!(" params did not match");
                         continue;
                     }
 
@@ -438,6 +535,7 @@ async fn arc_challenge_response() {
                     expected_url.set_query(None);
 
                     if actual_url != expected_url {
+                        println!(" url did not match");
                         continue;
                     }
 
@@ -445,16 +543,21 @@ async fn arc_challenge_response() {
                     // the underlying client in the future won't break tests
                     if !expected_request.headers().iter().all(
                         |(expected_header_name, expected_header_val)| {
-                            actual_req
+                            let result = actual_req
                                 .headers()
                                 .get_str(expected_header_name)
-                                .is_ok_and(|actual_header| {
+                                .map_or(false, |actual_header| {
                                     actual_header == expected_header_val.as_str()
-                                })
+                                });
+                            result
                         },
                     ) {
+                        println!(" headers did not match");
                         continue;
                     }
+
+                    println!("Returning this one");
+                    println!("");
 
                     return Ok(AsyncRawResponse::from_bytes(
                         mock_request_response.response_status,
@@ -472,24 +575,33 @@ async fn arc_challenge_response() {
         }
         .boxed()
     });
-    let mut options = ManagedIdentityCredentialOptions::default();
+    let mut options = options.unwrap_or_default();
     options.client_options.transport = Some(Transport::new(Arc::new(mock_client)));
 
     let cred = ArcServerManagedIdentity::new(Some(options)).expect("credential");
     for _ in 0..4 {
-        let token = cred
+        let token_result = cred
             .get_token(&["https://monitor.azure.com/.default"], None)
-            .await
-            .expect("token");
-        assert_eq!(token.expires_on.unix_timestamp(), expires_on as i64);
-        assert_eq!(token.token.secret(), "*");
-        assert_eq!(
-            token_requests.load(Ordering::SeqCst),
-            expected_token_request_count
-        );
-    }
+            .await;
 
-    let _ = fs::remove_file(token_path); // try our best to clean up the temp file
+        if let Some(ref expected_token_err) = expected_token_err {
+            let actual_err = token_result.expect_err("Expected get_token to fail");
+            assert_eq!(
+                actual_err.kind().to_string(),
+                expected_token_err.kind().to_string()
+            );
+            assert_eq!(actual_err.http_status(), expected_token_err.http_status());
+            assert_eq!(actual_err.to_string(), expected_token_err.to_string());
+        } else {
+            let token = token_result.expect("Expected get_token to succeed");
+            assert_eq!(token.expires_on.unix_timestamp(), expires_on as i64);
+            assert_eq!(token.token.secret(), "*");
+            assert_eq!(
+                token_requests.load(Ordering::SeqCst),
+                expected_token_request_count
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

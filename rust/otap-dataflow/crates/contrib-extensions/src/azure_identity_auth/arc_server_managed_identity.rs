@@ -32,8 +32,7 @@ const DEFAULT_ENDPOINT: &str = "http://localhost:40342/metadata/identity/oauth2/
 const API_VERSION: &str = "2021-02-01";
 
 // ArcServerManagedIdentity is very similar to ImdsManagedIdentityCredential, but with Arc-connected servers support.
-// I tried to contribute this code to the Azure SDK but they were not willing to accept contributions of identity providers,
-// hence the need to re-implement it here until the MSAL/SDK team can add Arc support to the Rust SDK.
+// ImdsManagedIdentityCredential from the Azure SDK does not support Arc, so this is a short-term solution until they do.
 #[derive(Debug)]
 pub(crate) struct ArcServerManagedIdentity {
     pipeline: Pipeline,
