@@ -358,7 +358,7 @@ async fn clones_share_one_token_cache() {
 #[tokio::test]
 async fn arc_challenge_response() {
     let key_id = rand::random::<u8>();
-    let token_path = env::temp_dir().join(format!("arc-{key_id}.token"));
+    let token_path = env::temp_dir().join(format!("arc-{key_id}.key"));
     let token_path_str = token_path.to_str().unwrap().to_string();
     let mut token_file = File::create(&token_path).unwrap();
     token_file.write_all("abc".as_bytes()).unwrap();
