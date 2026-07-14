@@ -70,24 +70,15 @@ impl otel_kernels::Host for HostState {
         value: String,
     ) -> Resource<HostBatchData> {
         // Read the input batch, consume the input handle, and return a fresh
-        // handle for the result. On any failure we fall back to passing the
-        // batch through unchanged so a plugin can never silently corrupt data.
-        let input = match self.table.get(&b) {
-            Ok(d) => d.record_batch.clone(),
-            Err(_) => {
-                // Should not happen; return the (now-deleted) handle's slot.
-                let _ = self.table.delete(b);
-                return self
-                    .table
-                    .push(HostBatchData {
-                        record_batch: RecordBatch::new_empty(
-                            arrow::datatypes::Schema::empty().into(),
-                        ),
-                    })
-                    .expect("resource table push");
-            }
-        };
-        let _ = self.table.delete(b);
+        // handle for the result. Invalid handles are a contract violation and
+        // should trap instead of silently dropping data.
+        let input = self
+            .table
+            .get(&b)
+            .expect("invalid wasm host batch handle")
+            .record_batch
+            .clone();
+        let _ = self.table.delete(b).expect("invalid wasm host batch handle");
 
         let result = match scope {
             // TODO: implement `resource`/`scope` attribute scopes and
