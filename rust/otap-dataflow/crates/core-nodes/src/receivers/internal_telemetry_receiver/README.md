@@ -29,34 +29,39 @@ config: {}
 
 ## Configuration
 
-Batching is on by default: records accumulate until `batch_size` bytes are
+Batching is on by default: records accumulate until `min_size` bytes are
 reached (or `max_batch_duration` elapses), and those sharing a scope are
 combined into one `ScopeLogs` message instead of being emitted one per message.
-The empty config shown above uses the defaults below; set either field to
-override them:
+A batch that would exceed `max_size` is split across several messages instead.
+The empty config shown above uses the defaults below; override any field as
+needed:
 
 ```yaml
 type: receiver:internal_telemetry
 config:
-  # Bytes to accumulate (estimated per-record size) before emitting one
-  # batched ExportLogsRequest. Default 64 KiB. Must be greater than 0.
-  batch_size: 65536
+  # Bytes to accumulate (estimated per-record size) before flushing, as a
+  # minimum. Default 64 KiB. Must be greater than 0.
+  min_size: 65536
+
+  # Upper bound on a single flushed message's estimated size; a batch that
+  # would exceed it is split instead. Default 2 MiB. Must be >= min_size.
+  max_size: 2097152
 
   # Upper bound on how long a record waits in a partial batch before it is
   # flushed. Default: 200ms.
   max_batch_duration: 200ms
 ```
 
-- `batch_size`: bytes to accumulate before flushing, estimated from each
+- `min_size`: bytes to accumulate before flushing, estimated from each
   record's pre-encoded body plus framing overhead. Default 64 KiB. Set it to
   `1` to flush every record immediately (each record's own size always
   exceeds a 1-byte threshold).
+- `max_size`: upper bound on a single flushed message's estimated size,
+  checked against the same per-record estimate as `min_size`. Default 2 MiB.
+  That estimate omits some protobuf overhead (e.g. scope attributes), so it's
+  a safety margin rather than a guarantee against oversized messages.
 - `max_batch_duration`: how long a partial batch may wait before flushing.
-  The pending batch is also flushed on drain, shutdown, and channel close. A
-  `batch_size` set well above the transport size limit is still split
-  automatically once accumulated records reach an internal ~2 MiB budget. That
-  budget is a size estimate (body plus framing, not full protobuf overhead),
-  so it's a safety margin rather than a guarantee against oversized messages.
+  The pending batch is also flushed on drain, shutdown, and channel close.
 
 This receiver is normally declared inside `engine.observability.pipeline`, not
 inside a user ingest pipeline.

@@ -10,9 +10,11 @@ component: pipeline
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
 note: >-
   The internal telemetry receiver now batches log records by default. Records
-  accumulate until `batch_size` bytes are reached (default 64KiB) or
+  accumulate until `min_size` bytes are reached (default 64KiB) or
   `max_batch_duration` elapses (default 200ms), with records sharing a scope
-  combined into one `ScopeLogs` message rather than one message each.
+  combined into one `ScopeLogs` message rather than one message each. A batch
+  that would exceed `max_size` (default 2MiB) is split across several
+  messages instead.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [1902]
