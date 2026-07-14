@@ -1,6 +1,6 @@
 ---
 Proposal Name: component-inventory
-Start Date: 2026-07-08
+Start Date: 2026-07-14
 RFC PR: open-telemetry/otel-arrow#3434
 Tracking Issue: open-telemetry/otel-arrow#3435
 ---
