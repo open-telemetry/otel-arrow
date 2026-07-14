@@ -1,4 +1,4 @@
-# rust/otap-dataflow/crates/otap/src/experimental/azure_monitor_exporter/otlp-ame.yaml
+# rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_monitor_exporter/otlp-ame.yaml
 # Azure Monitor Exporter Configuration for AKS with Managed Identity
 #
 # This configuration is designed for running in AKS with workload identity
@@ -24,6 +24,20 @@ groups:
   default:
     pipelines:
       main:
+        extensions:
+          # Supplies OAuth bearer tokens to the exporter via the
+          # bearer_token_provider capability. On AKS, managed identity acquires
+          # tokens without any stored secret.
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: managedidentity   # or "msi"
+              # For a user-assigned managed identity (common in AKS), set the
+              # client_id from your AKS managed identity configuration. Omit it
+              # to use the system-assigned identity.
+              client_id: "YOUR-USER-ASSIGNED-IDENTITY-CLIENT-ID"
+              scope: "https://monitor.azure.com/.default"
+
         nodes:
           otlp-receiver:
             type: "urn:otel:receiver:otlp"
@@ -35,6 +49,9 @@ groups:
 
           azure-monitor-exporter:
             type: "urn:microsoft:exporter:azure_monitor"
+            # Bind the bearer token provider to the extension declared above.
+            capabilities:
+              bearer_token_provider: azure_identity
             config:
               # API configuration - Update with your actual values
               api:
@@ -70,21 +87,6 @@ groups:
                       "exception.type": "ExceptionType"
                       "exception.message": "ExceptionMessage"
                       "user.id": "UserId"
-
-              # Authentication configuration for AKS
-              auth:
-                # Use managed identity for AKS workloads
-                method: "managedidentity"  # or "msi"
-
-                # For user-assigned managed identity (common in AKS)
-                # Get this from your AKS managed identity configuration
-                client_id: "YOUR-USER-ASSIGNED-IDENTITY-CLIENT-ID"
-
-                # For system-assigned managed identity (less common in AKS)
-                # Comment out the client_id field above
-
-                # OAuth scope for Azure Monitor
-                scope: "https://monitor.azure.com/.default"
 
               # Heartbeat configuration (optional, disabled by default)
               heartbeat:
