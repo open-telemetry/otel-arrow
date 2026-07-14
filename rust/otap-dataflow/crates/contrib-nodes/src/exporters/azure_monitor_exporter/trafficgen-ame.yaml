@@ -4,7 +4,7 @@
 # Azure Monitor Exporter.
 #
 # Usage:
-#   cargo run -- --config trafficgen-ame.yaml
+#   cargo run --features azure-monitor-exporter,azure-identity-auth-extension -- --config trafficgen-ame.yaml
 
 version: otel_dataflow/v1
 
