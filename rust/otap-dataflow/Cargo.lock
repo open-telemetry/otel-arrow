@@ -140,7 +140,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -151,7 +151,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -697,9 +697,9 @@ dependencies = [
 
 [[package]]
 name = "azure_core"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe6a26a7d374b440015cbbcbf2d9d8be5a133aa940599f5e5dc569504baa262e"
+checksum = "4e41cbd819986ba41904c207d8ffc4106f8f8352a548d773e9554906379bb2fb"
 dependencies = [
  "async-lock",
  "async-trait",
@@ -711,8 +711,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "typespec 1.0.0",
- "typespec_client_core 1.0.0",
+ "typespec 1.1.0",
+ "typespec_client_core 1.1.0",
 ]
 
 [[package]]
@@ -765,7 +765,7 @@ checksum = "32edf96b356ca7c51d7590c4925cc36efc3947a5da4468e8e0b25c56ecbb3de5"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core 1.0.0",
+ "azure_core 1.1.0",
  "futures",
  "pin-project",
  "serde",
@@ -840,7 +840,7 @@ dependencies = [
  "otap-df-pdata",
  "otap-df-pdata-views",
  "otap-df-telemetry",
- "portpicker",
+ "otap-df-test-net",
  "prost",
  "roaring",
  "serde_json",
@@ -2780,7 +2780,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2888,7 +2888,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3287,7 +3287,7 @@ dependencies = [
 [[package]]
 name = "geneva-uploader"
 version = "0.5.0"
-source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=48529c24bde22947b386b87f4b379d21fc4237bc#48529c24bde22947b386b87f4b379d21fc4237bc"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=c0a28d7541afd51dc763b7dea3458ebb3aee4d52#c0a28d7541afd51dc763b7dea3458ebb3aee4d52"
 dependencies = [
  "azure_core 0.29.1",
  "azure_identity 0.29.0",
@@ -4259,11 +4259,11 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.10.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
+checksum = "32069d97bb81e38fa67eab65e3393bf804bb85969f2bc06bf13f64aef5aba248"
 dependencies = [
- "hashbrown 0.15.5",
+ "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -5267,13 +5267,12 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "libmimalloc-sys"
-version = "0.1.44"
+version = "0.1.49"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "667f4fec20f29dfc6bc7357c582d91796c169ad7e2fce709468aefeb2c099870"
+checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
 dependencies = [
  "cc",
  "cty",
- "libc",
 ]
 
 [[package]]
@@ -5573,9 +5572,9 @@ dependencies = [
 
 [[package]]
 name = "mimalloc"
-version = "0.1.48"
+version = "0.1.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1ee66a4b64c74f4ef288bcbb9192ad9c3feaad75193129ac8509af543894fd8"
+checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
 dependencies = [
  "libmimalloc-sys",
 ]
@@ -6267,6 +6266,7 @@ dependencies = [
  "dhat",
  "mimalloc",
  "otap-df-config",
+ "otap-df-contrib-extensions",
  "otap-df-contrib-nodes",
  "otap-df-controller",
  "otap-df-core-nodes",
@@ -6358,6 +6358,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-contrib-extensions"
+version = "0.49.0"
+dependencies = [
+ "async-trait",
+ "azure_core 1.1.0",
+ "azure_identity 1.0.0",
+ "futures",
+ "humantime-serde",
+ "linkme",
+ "otap-df-config",
+ "otap-df-engine",
+ "otap-df-otap",
+ "otap-df-telemetry",
+ "otap-df-telemetry-macros",
+ "rand 0.10.1",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
 name = "otap-df-contrib-nodes"
 version = "0.49.0"
 dependencies = [
@@ -6367,7 +6390,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "axum",
- "azure_core 1.0.0",
+ "azure_core 1.1.0",
  "azure_identity 1.0.0",
  "base64",
  "bytes",
@@ -6440,8 +6463,11 @@ dependencies = [
 name = "otap-df-controller"
 version = "0.49.0"
 dependencies = [
+ "axum",
+ "bytes",
  "chrono",
  "core_affinity",
+ "futures-util",
  "humantime-serde",
  "linkme",
  "miette",
@@ -6451,13 +6477,18 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
+ "prost",
  "serde",
  "serde_json",
  "smallvec",
  "sysinfo",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -6502,12 +6533,13 @@ dependencies = [
  "otap-df-quiver",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
  "otap-df-test-tls-certs",
  "parking_lot",
  "parquet",
- "portpicker",
  "pretty_assertions",
  "prost",
+ "prost-types",
  "rand 0.10.1",
  "regex",
  "reqwest 0.13.4",
@@ -6613,7 +6645,7 @@ dependencies = [
  "arc-swap",
  "arrow",
  "async-trait",
- "azure_core 1.0.0",
+ "azure_core 1.1.0",
  "azure_identity 1.0.0",
  "base64",
  "bytes",
@@ -6641,9 +6673,9 @@ dependencies = [
  "otap-df-state",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
  "otap-df-test-tls-certs",
  "parking_lot",
- "portpicker",
  "pretty_assertions",
  "prost",
  "prost-types",
@@ -6696,8 +6728,8 @@ dependencies = [
  "otap-df-pdata-otlp-macros",
  "otap-df-pdata-otlp-model",
  "otap-df-pdata-views",
+ "otap-df-test-net",
  "paste",
- "portpicker",
  "pretty_assertions",
  "prost",
  "rand 0.10.1",
@@ -6900,6 +6932,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-test-net"
+version = "0.49.0"
+
+[[package]]
 name = "otap-df-test-tls-certs"
 version = "0.49.0"
 dependencies = [
@@ -6923,8 +6959,8 @@ dependencies = [
  "otap-df-pdata",
  "otap-df-telemetry",
  "otap-df-telemetry-macros",
+ "otap-df-test-net",
  "otap-df-test-tls-certs",
- "portpicker",
  "prost",
  "serde",
  "serde_json",
@@ -7336,15 +7372,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a106d1259c23fac8e543272398ae0e3c0b8d33c88ed73d0cc71b0f1d902618"
 dependencies = [
  "portable-atomic",
-]
-
-[[package]]
-name = "portpicker"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "be97d76faf1bfab666e1375477b23fde79eccf0276e9b63b92a39d676a889ba9"
-dependencies = [
- "rand 0.8.6",
 ]
 
 [[package]]
@@ -8246,7 +8273,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8319,7 +8346,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -8378,25 +8405,25 @@ dependencies = [
 
 [[package]]
 name = "saphyr"
-version = "0.0.6"
+version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3767dfe8889ebb55a21409df2b6f36e66abfbe1eb92d64ff76ae799d3f91016"
+checksum = "ef5bcc48916766e53689486df76c80ccf62a38f20d20b816056ff6ab84197cbd"
 dependencies = [
- "arraydeque",
  "encoding_rs",
  "hashlink",
  "ordered-float 5.3.0",
  "saphyr-parser",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "saphyr-parser"
-version = "0.0.6"
+version = "0.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb771b59f6b1985d1406325ec28f97cfb14256abcec4fdfb37b36a1766d6af7"
+checksum = "cbeae0f40b92f2afe16422744aabb145187167184cc18bf4d01da5acdc665f09"
 dependencies = [
  "arraydeque",
- "hashlink",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -8900,7 +8927,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9157,7 +9184,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9170,7 +9197,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -9180,7 +9207,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -9915,9 +9942,9 @@ dependencies = [
 
 [[package]]
 name = "typespec"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21666a31293beab8f41d38c2849ddbc342cd9c7cb4d71a9818868287a8934e53"
+checksum = "753a2fe021e407d4fc9ee6f4f0a33403cc306d5c54c4e4ebe1b8cbde0ca052b9"
 dependencies = [
  "base64",
  "bytes",
@@ -9954,9 +9981,9 @@ dependencies = [
 
 [[package]]
 name = "typespec_client_core"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "924f0c734e0ac3b881ab99d032bd28fcc969d2bb73ef1b8dd4772fd8e518a382"
+checksum = "0373af0f9d4f580b3a1a9d9639cedaabe015ed262b35bfbe13941bfb14fe1ea6"
 dependencies = [
  "async-trait",
  "base64",
@@ -9970,7 +9997,7 @@ dependencies = [
  "serde_json",
  "time",
  "tracing",
- "typespec 1.0.0",
+ "typespec 1.1.0",
  "typespec_macros 1.0.0",
  "url",
  "uuid",
@@ -10355,7 +10382,7 @@ dependencies = [
 [[package]]
 name = "weaver_common"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "dirs",
  "flate2",
@@ -10380,7 +10407,7 @@ dependencies = [
 [[package]]
 name = "weaver_diff"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "serde_json",
  "similar",
@@ -10390,7 +10417,7 @@ dependencies = [
 [[package]]
 name = "weaver_forge"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "convert_case 0.11.0",
  "dirs",
@@ -10425,7 +10452,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolved_schema"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "log",
  "schemars 1.2.1",
@@ -10439,7 +10466,7 @@ dependencies = [
 [[package]]
 name = "weaver_resolver"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "globset",
  "itertools 0.15.0",
@@ -10462,7 +10489,7 @@ dependencies = [
 [[package]]
 name = "weaver_semconv"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "glob",
  "globset",
@@ -10486,7 +10513,7 @@ dependencies = [
 [[package]]
 name = "weaver_version"
 version = "0.24.2"
-source = "git+https://github.com/open-telemetry/weaver.git?rev=351d5e5430b1e12a045a8b48fe112b3457ef2770#351d5e5430b1e12a045a8b48fe112b3457ef2770"
+source = "git+https://github.com/open-telemetry/weaver.git?rev=62117732a3368c6f53b3ecc3d48538ee832239ee#62117732a3368c6f53b3ecc3d48538ee832239ee"
 dependencies = [
  "schemars 1.2.1",
  "semver",
@@ -10628,7 +10655,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

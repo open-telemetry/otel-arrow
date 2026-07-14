@@ -68,9 +68,13 @@ fn build_attr32_index(attrs: &Attribute32Arrays<'_>) -> BTreeMap<u32, Vec<usize>
 
 /// Zero-copy view over OTAP metrics Arrow RecordBatches.
 pub struct OtapMetricsView<'a> {
-    metrics_arrays: MetricsArrays<'a>,
-    resource_columns: ResourceArrays<'a>,
-    scope_columns: ScopeArrays<'a>,
+    // Cached root (metrics) columns. `None` when the root metrics payload is
+    // missing. Per the OTAP spec, a missing root payload is semantically
+    // equivalent to one with 0 rows, so when these are `None` the view emits
+    // 0 rows (the hierarchy maps below are empty).
+    metrics_arrays: Option<MetricsArrays<'a>>,
+    resource_columns: Option<ResourceArrays<'a>>,
+    scope_columns: Option<ScopeArrays<'a>>,
 
     resource_attrs: Option<Attribute16Arrays<'a>>,
     scope_attrs: Option<Attribute16Arrays<'a>>,
@@ -128,25 +132,30 @@ impl<'a> TryFrom<&'a OtapArrowRecords> for OtapMetricsView<'a> {
     type Error = Error;
 
     fn try_from(records: &'a OtapArrowRecords) -> Result<Self, Self::Error> {
+        // A missing root metrics payload is semantically equivalent to 0 rows.
         let metrics_batch = records
             .get(ArrowPayloadType::UnivariateMetrics)
-            .or_else(|| records.get(ArrowPayloadType::MultivariateMetrics))
-            .ok_or(Error::MetricRecordNotFound)?;
+            .or_else(|| records.get(ArrowPayloadType::MultivariateMetrics));
 
-        let metrics_arrays = MetricsArrays::try_from(metrics_batch)?;
-        let resource_columns = ResourceArrays::try_from(metrics_batch)?;
-        let scope_columns = ScopeArrays::try_from(metrics_batch)?;
+        // Cache root columns for O(1) access.
+        let metrics_arrays = metrics_batch.map(MetricsArrays::try_from).transpose()?;
+        let resource_columns = metrics_batch.map(ResourceArrays::try_from).transpose()?;
+        let scope_columns = metrics_batch.map(ScopeArrays::try_from).transpose()?;
 
         let resource_attrs_batch = records.get(ArrowPayloadType::ResourceAttrs);
         let scope_attrs_batch = records.get(ArrowPayloadType::ScopeAttrs);
         let metric_attrs_batch = records.get(ArrowPayloadType::MetricAttrs);
 
-        // Resource/scope hierarchy
-        let resource_groups = group_by_resource_id(metrics_batch);
+        // Resource/scope hierarchy. When the root batch is missing these stay
+        // empty, so iteration yields 0 rows.
+        let mut resource_groups = Vec::new();
         let mut scope_groups_map = BTreeMap::new();
-        for (resource_id, row_indices) in &resource_groups {
-            let scope_groups = group_by_scope_id(metrics_batch, row_indices);
-            let _ = scope_groups_map.insert(*resource_id, scope_groups);
+        if let Some(metrics_batch) = metrics_batch {
+            resource_groups = group_by_resource_id(metrics_batch);
+            for (resource_id, row_indices) in &resource_groups {
+                let scope_groups = group_by_scope_id(metrics_batch, row_indices);
+                let _ = scope_groups_map.insert(*resource_id, scope_groups);
+            }
         }
 
         // Attribute indexes (u16 parent)
@@ -425,6 +434,7 @@ impl<'a> ResourceMetricsView for OtapResourceMetricsView<'a> {
         let first_row = self.row_indices.iter().next()?;
         self.view
             .resource_columns
+            .as_ref()?
             .schema_url
             .as_ref()
             .and_then(|c| c.str_at(first_row))
@@ -469,8 +479,8 @@ impl<'a> ResourceView for OtapMetricsResourceView<'a> {
         let first_row = self.find_first_row_for_resource().unwrap_or(0);
         self.view
             .resource_columns
-            .dropped_attributes_count
             .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
                 if col.is_valid(first_row) {
                     col.value(first_row)
@@ -559,6 +569,7 @@ impl<'a> ScopeMetricsView for OtapScopeMetricsView<'a> {
             .and_then(|first_row| {
                 self.view
                     .metrics_arrays
+                    .as_ref()?
                     .schema_url
                     .as_ref()
                     .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
@@ -589,6 +600,7 @@ impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
         let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
+            .as_ref()?
             .name
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
@@ -599,6 +611,7 @@ impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
         let first_row = self.find_first_row_for_scope()?;
         self.view
             .scope_columns
+            .as_ref()?
             .version
             .as_ref()
             .and_then(|col| col.str_at(first_row).map(|s| s.as_bytes()))
@@ -626,8 +639,8 @@ impl<'a> InstrumentationScopeView for OtapMetricsScopeView<'a> {
         let first_row = self.find_first_row_for_scope().unwrap_or(0);
         self.view
             .scope_columns
-            .dropped_attributes_count
             .as_ref()
+            .and_then(|cols| cols.dropped_attributes_count.as_ref())
             .map(|col| {
                 if col.is_valid(first_row) {
                     col.value(first_row)
@@ -694,56 +707,43 @@ impl<'a> MetricView for OtapMetricView<'a> {
 
     #[inline]
     fn name(&self) -> Str<'_> {
-        self.view
-            .metrics_arrays
-            .name
-            .str_at(self.row_idx)
+        self.metrics_arrays()
+            .and_then(|arrays| arrays.name.str_at(self.row_idx))
             .map(|s| s.as_bytes())
             .unwrap_or(b"")
     }
 
     #[inline]
     fn description(&self) -> Str<'_> {
-        self.view
-            .metrics_arrays
-            .description
-            .as_ref()
+        self.metrics_arrays()
+            .and_then(|arrays| arrays.description.as_ref())
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
             .unwrap_or(b"")
     }
 
     #[inline]
     fn unit(&self) -> Str<'_> {
-        self.view
-            .metrics_arrays
-            .unit
-            .as_ref()
+        self.metrics_arrays()
+            .and_then(|arrays| arrays.unit.as_ref())
             .and_then(|col| col.str_at(self.row_idx).map(|s| s.as_bytes()))
             .unwrap_or(b"")
     }
 
     #[inline]
     fn data(&self) -> Option<<OtapMetricView<'a> as MetricView>::Data<'_>> {
-        let metric_type_val = self
-            .view
-            .metrics_arrays
-            .metric_type
-            .value_at(self.row_idx)?;
+        let metrics_arrays = self.metrics_arrays()?;
+        let metric_type_val = metrics_arrays.metric_type.value_at(self.row_idx)?;
         let metric_type = MetricType::try_from(metric_type_val).ok()?;
-        let metric_id = self.view.metrics_arrays.id.value_at(self.row_idx)?;
+        let metric_id = metrics_arrays.id.value_at(self.row_idx)?;
 
-        let aggregation_temporality = self
-            .view
-            .metrics_arrays
+        let aggregation_temporality = metrics_arrays
             .aggregation_temporality
             .as_ref()
             .and_then(|col| col.value_at(self.row_idx))
             .map(|v| AggregationTemporality::from(v as u32))
             .unwrap_or(AggregationTemporality::Unspecified);
 
-        let is_monotonic = self
-            .view
-            .metrics_arrays
+        let is_monotonic = metrics_arrays
             .is_monotonic
             .value_at(self.row_idx)
             .unwrap_or(false);
@@ -781,7 +781,9 @@ impl<'a> MetricView for OtapMetricView<'a> {
 
     #[inline]
     fn metadata(&self) -> <OtapMetricView<'a> as MetricView>::AttributeIter<'_> {
-        let metric_id = self.view.metrics_arrays.id.value_at(self.row_idx);
+        let metric_id = self
+            .metrics_arrays()
+            .and_then(|arrays| arrays.id.value_at(self.row_idx));
         let matching_rows = metric_id
             .and_then(|id| self.view.metric_attrs_map.get(&id))
             .map(|v| v.as_slice())
@@ -791,6 +793,18 @@ impl<'a> MetricView for OtapMetricView<'a> {
             matching_rows,
             current_idx: 0,
         }
+    }
+}
+
+impl<'a> OtapMetricView<'a> {
+    /// Cached root metrics columns for the view, if the root batch is present.
+    ///
+    /// A metric view is only ever produced while iterating a non-empty root
+    /// batch, so in practice this is always `Some`, but the guard keeps the
+    /// missing-root case sound.
+    #[inline]
+    fn metrics_arrays(&self) -> Option<&'a MetricsArrays<'a>> {
+        self.view.metrics_arrays.as_ref()
     }
 }
 
@@ -1963,5 +1977,45 @@ impl<'a> ExemplarView for OtapExemplarView<'a> {
             .as_ref()
             .and_then(|col| col.slice_at(self.row_idx))
             .and_then(|bytes| bytes.try_into().ok())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_missing_root_metrics_batch_yields_empty_view() {
+        // Per the OTAP spec, a missing root payload is semantically equivalent to
+        // one with 0 rows. An OtapArrowRecords without a UnivariateMetrics batch
+        // should build a valid view that iterates over 0 resources/scopes/metrics.
+        let otap_records = OtapArrowRecords::Metrics(Default::default());
+
+        let view = OtapMetricsView::try_from(&otap_records)
+            .expect("missing root should yield an empty view");
+
+        assert!(
+            view.metrics_arrays.is_none(),
+            "metrics_arrays should be None (no root)"
+        );
+        assert!(view.resource_groups.is_empty());
+        assert!(view.scope_groups_map.is_empty());
+
+        let mut resource_count = 0;
+        let mut scope_count = 0;
+        let mut metric_count = 0;
+        for resource_metrics in view.resources() {
+            resource_count += 1;
+            for scope_metrics in resource_metrics.scopes() {
+                scope_count += 1;
+                for _metric in scope_metrics.metrics() {
+                    metric_count += 1;
+                }
+            }
+        }
+
+        assert_eq!(resource_count, 0, "Expected 0 resources");
+        assert_eq!(scope_count, 0, "Expected 0 scopes");
+        assert_eq!(metric_count, 0, "Expected 0 metrics");
     }
 }

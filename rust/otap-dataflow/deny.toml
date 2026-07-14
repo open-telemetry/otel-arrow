@@ -78,6 +78,7 @@ ignore = [
     { id="RUSTSEC-2021-0127", reason="`serde_cbor` is archived, but current implementation meets needs" },
     { id="RUSTSEC-2026-0194", reason="`quick-xml` <0.41 DoS via crafted untrusted XML; pulled transitively via datafusion → object_store. Fix merged upstream (apache/arrow-rs-object-store#785, 2026-07-02) but not yet in a released version. Remove once a new `object_store` (>0.14.0) is available."},
     { id="RUSTSEC-2026-0195", reason="`quick-xml` <0.41 DoS via unbounded namespace-declaration allocation in `NsReader`. Same transitive path and fix as RUSTSEC-2026-0194."},
+    { id="RUSTSEC-2026-0204", reason="`crossbeam` (transitive dependency of criterion and weaver-forge) dereferences pointer in fmt::Display. See https://github.com/crossbeam-rs/crossbeam/pull/1276. Remove when dependency updated in these crates." }
 ]
 # If this is true, then cargo deny will use the git executable to fetch advisory database.
 # If this is false, then it uses a built-in git library.
