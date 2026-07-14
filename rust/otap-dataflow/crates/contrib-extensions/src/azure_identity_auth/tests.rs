@@ -475,6 +475,28 @@ async fn arc_challenge_failed() {
     let _ = fs::remove_file(token_path); // try our best to clean up the temp file
 }
 
+#[tokio::test]
+async fn arc_multiple_scope_fails() {
+    let mock_client =
+        MockHttpClient::new(|_: &Request| panic!("Should not have made an HTTP call"));
+
+    let mut options = ManagedIdentityCredentialOptions::default();
+    options.client_options.transport = Some(Transport::new(Arc::new(mock_client)));
+
+    let cred = ArcServerManagedIdentity::new(Some(options)).expect("credential");
+
+    let _ = cred
+        .get_token(
+            &[
+                "https://monitor.azure.com/.default",
+                "https://notallowed.azure.com/.default",
+            ],
+            None,
+        )
+        .await
+        .expect_err("Expected get_token to fail");
+}
+
 /// When using multiple entries in model_request_responses, it's important that the most specific request is first,
 /// because this function will use the first request-response pair that matches the request received.
 async fn run_get_token_test(
