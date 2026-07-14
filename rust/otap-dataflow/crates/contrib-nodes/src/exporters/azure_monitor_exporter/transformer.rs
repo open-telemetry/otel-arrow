@@ -1101,6 +1101,87 @@ mod tests {
     }
 
     #[test]
+    fn test_passthrough_composed_multiple_records_reset_overridden() {
+        // Two log records share one scope in the combined (passthrough + base
+        // mapping) path. The first has an attribute that overrides the mapped
+        // resource column; the second does not. This exercises the per-record
+        // reset of the `overridden` scratch buffer: the base column must be
+        // suppressed for the first record and reappear for the second, with no
+        // state leaking between records.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("service.name".into(), "Shared".into())]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("from-resource".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![
+                        // Record 1: attribute "Shared" collides with the mapped
+                        // resource column -> attribute wins, base dropped.
+                        LogRecord {
+                            attributes: vec![KeyValue {
+                                key: "Shared".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                                }),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        // Record 2: no collision -> base "Shared" reappears
+                        // alongside the passthrough attribute.
+                        LogRecord {
+                            attributes: vec![KeyValue {
+                                key: "other".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("val".into())),
+                                }),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    ],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 2);
+
+        // Record 1: attribute overrides the base column; single unique key.
+        let json0: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json0["Shared"], "from-attr");
+        assert_eq!(json0.as_object().unwrap().len(), 1);
+
+        // Record 2: overridden reset -> base column reappears next to the attr.
+        let json1: Value = serde_json::from_slice(&result[1]).unwrap();
+        assert_eq!(json1["Shared"], "from-resource");
+        assert_eq!(json1["other"], "val");
+        assert_eq!(json1.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
     fn test_passthrough_attribute_overrides_resource_column() {
         // Innermost wins: a log attribute whose key equals a mapped resource
         // column overrides it, and no duplicate key is emitted.
