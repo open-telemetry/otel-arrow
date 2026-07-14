@@ -176,7 +176,7 @@ impl ArcServerManagedIdentity {
                 if let Some(challenge_location) = challenge
                     .split_once('=')
                     .and_then(|(_, location)| location.trim().trim_matches('"').split_once('"'))
-                    .map(|(m,_)| m)
+                    .map(|(m, _)| m)
                 {
                     let challenge_response =
                         self.retrieve_challenge_response(challenge_location)?;
@@ -264,7 +264,7 @@ impl ArcServerManagedIdentity {
             .take(4096) // avoid slurping a huge file - the challenge response will not be > 4KiB
             .read_to_string(&mut challenge_response)?;
 
-        Ok(challenge_response)
+        Ok(challenge_response.trim().to_owned())
     }
 }
 

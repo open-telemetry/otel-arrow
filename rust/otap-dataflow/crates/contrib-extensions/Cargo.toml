@@ -20,7 +20,7 @@ otap-df-otap = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 
-async-lock.workspace = true
+async-lock = { workspace = true, optional = true }
 async-trait.workspace = true
 futures.workspace = true
 linkme.workspace = true
@@ -38,7 +38,7 @@ rand = { workspace = true, optional = true }
 # Umbrella feature enabling all contrib extensions.
 contrib-extensions = ["azure-identity-auth-extension"]
 # Azure Identity authentication extension (BearerTokenProvider capability).
-azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
+azure-identity-auth-extension = ["dep:async-lock", "dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 
 [dev-dependencies]
 otap-df-engine = { workspace = true, features = ["test-utils"] }

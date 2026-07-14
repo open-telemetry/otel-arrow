@@ -398,7 +398,7 @@ async fn arc_challenge_response() {
             model_challenge_response_request.insert_header("authorization", "Basic abc");
 
             let mut challenge_headers = Headers::default();
-            let response_header = HeaderValue::from(format!("Realm={token_path_str}"));
+            let response_header = HeaderValue::from(format!("Basic realm={token_path_str}"));
 
             challenge_headers.insert("www-authenticate", response_header);
 
@@ -447,13 +447,12 @@ async fn arc_challenge_response() {
                     // the underlying client in the future won't break tests
                     if !expected_request.headers().iter().all(
                         |(expected_header_name, expected_header_val)| {
-                            let result = actual_req
+                            actual_req
                                 .headers()
                                 .get_str(expected_header_name)
-                                .map_or(false, |actual_header| {
+                                .is_ok_and(|actual_header| {
                                     actual_header == expected_header_val.as_str()
-                                });
-                            result
+                                })
                         },
                     ) {
                         continue;
@@ -476,10 +475,8 @@ async fn arc_challenge_response() {
         .boxed()
     });
     let mut options = ManagedIdentityCredentialOptions::default();
-    options.client_options = ClientOptions {
-        transport: Some(Transport::new(Arc::new(mock_client))),
-        ..Default::default()
-    };
+    options.client_options.transport = Some(Transport::new(Arc::new(mock_client)));
+
     let cred = ArcServerManagedIdentity::new(Some(options)).expect("credential");
     for _ in 0..4 {
         let token = cred
