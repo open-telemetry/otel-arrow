@@ -3,8 +3,10 @@
 
 //! Debug endpoints.
 //!
-//! - /api/v1/debug/pprof/heap - dump profile of unfreed heap allocations
-//!   (only returns 200 on linux with jemalloc allocator otherwise returns 500)
+//! - /api/v1/debug/pprof/heap - dump profile of unfreed heap allocations. This fails unless
+//!   jemalloc is the active allocator and profiling is enabled.
+//!    
+//!   
 
 use axum::Router;
 use axum::body::Body;
@@ -31,7 +33,13 @@ async fn get_heap_profile(
     let prof_ctl = std::panic::catch_unwind(AssertUnwindSafe(|| jemalloc_pprof::PROF_CTL.as_ref()));
     let mut prof_ctl = match prof_ctl {
         Ok(Some(prof_ctl)) => prof_ctl,
-        Ok(None) | Err(_) => {
+        Ok(None) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Memory Profiling not activated".into(),
+            ))
+        }
+        Err(_) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Heap profiling not available \
