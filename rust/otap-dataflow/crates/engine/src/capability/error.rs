@@ -100,7 +100,7 @@ impl<C: ExtensionCapability> Clone for CapabilityErrorSource<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capability::BearerTokenProvider;
+    use crate::capability::bearer_token_provider::BearerTokenProvider;
 
     #[test]
     fn stamps_extension_and_capability_identity() {

@@ -45,8 +45,6 @@ data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
-azure_core = { workspace = true, optional = true, features = ["reqwest"] }
-azure_identity = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
@@ -114,9 +112,7 @@ geneva-exporter = [
 ]
 azure-monitor-exporter = [
     "dep:opentelemetry-proto",
-    "dep:azure_identity",
     "dep:reqwest",
-    "dep:azure_core",
     "dep:ahash",
     "dep:sysinfo",
     "dep:chrono",

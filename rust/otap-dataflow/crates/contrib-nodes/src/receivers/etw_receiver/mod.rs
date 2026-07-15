@@ -456,6 +456,10 @@ struct EventCountsDelta {
     total: u64,
     dropped_slow_worker: u64,
     invalid: u64,
+    kernel_events_lost: u64,
+    kernel_real_time_buffers_lost: u64,
+    kernel_log_buffers_lost: u64,
+    kernel_buffers_written: u64,
 }
 
 impl EventCountsDelta {
@@ -465,7 +469,13 @@ impl EventCountsDelta {
     /// applies unconditionally, skipping zero deltas inside [`Self::apply`]).
     #[cfg(test)]
     fn is_empty(&self) -> bool {
-        self.total == 0 && self.dropped_slow_worker == 0 && self.invalid == 0
+        self.total == 0
+            && self.dropped_slow_worker == 0
+            && self.invalid == 0
+            && self.kernel_events_lost == 0
+            && self.kernel_real_time_buffers_lost == 0
+            && self.kernel_log_buffers_lost == 0
+            && self.kernel_buffers_written == 0
     }
 
     /// Fold the claimed deltas into `metrics`. Each non-zero delta becomes a
@@ -482,6 +492,26 @@ impl EventCountsDelta {
         }
         if self.invalid > 0 {
             metrics.received_events_invalid.add(self.invalid);
+        }
+        if self.kernel_events_lost > 0 {
+            metrics
+                .received_events_lost_kernel
+                .add(self.kernel_events_lost);
+        }
+        if self.kernel_real_time_buffers_lost > 0 {
+            metrics
+                .kernel_real_time_buffers_lost
+                .add(self.kernel_real_time_buffers_lost);
+        }
+        if self.kernel_log_buffers_lost > 0 {
+            metrics
+                .kernel_log_buffers_lost
+                .add(self.kernel_log_buffers_lost);
+        }
+        if self.kernel_buffers_written > 0 {
+            metrics
+                .kernel_buffers_written
+                .add(self.kernel_buffers_written);
         }
     }
 }
@@ -507,6 +537,10 @@ fn take_event_counts(telemetry: &session::SessionWideMetrics) -> EventCountsDelt
         total: telemetry.total.swap(0, Ordering::Relaxed),
         dropped_slow_worker: claim_if_nonzero(&telemetry.dropped_slow_worker),
         invalid: claim_if_nonzero(&telemetry.decode_failed),
+        kernel_events_lost: claim_if_nonzero(&telemetry.kernel_events_lost),
+        kernel_real_time_buffers_lost: claim_if_nonzero(&telemetry.kernel_real_time_buffers_lost),
+        kernel_log_buffers_lost: claim_if_nonzero(&telemetry.kernel_log_buffers_lost),
+        kernel_buffers_written: claim_if_nonzero(&telemetry.kernel_buffers_written),
     }
 }
 
@@ -830,6 +864,30 @@ pub struct EtwReceiverMetrics {
     /// downstream backpressure.
     #[metric(unit = "{event}")]
     pub received_events_dropped_slow_worker: Counter<u64>,
+
+    /// Events lost inside the kernel ETW buffers before `one_collect` ever saw
+    /// them (buffer overrun), from `TraceStats::events_lost`. Distinct from
+    /// `received_events_dropped_slow_worker`, which is our own downstream
+    /// backpressure after the event was already received.
+    #[metric(unit = "{event}")]
+    pub received_events_lost_kernel: Counter<u64>,
+
+    /// Real-time delivery buffers lost because the consumer could not drain
+    /// the ETW real-time buffers fast enough, from
+    /// `TraceStats::real_time_buffers_lost`.
+    #[metric(unit = "{buffer}")]
+    pub kernel_real_time_buffers_lost: Counter<u64>,
+
+    /// Log buffers that could not be flushed, from
+    /// `TraceStats::log_buffers_lost`.
+    #[metric(unit = "{buffer}")]
+    pub kernel_log_buffers_lost: Counter<u64>,
+
+    /// Total ETW buffers written by the session, from
+    /// `TraceStats::buffers_written`. A throughput/health denominator rather
+    /// than a loss signal.
+    #[metric(unit = "{buffer}")]
+    pub kernel_buffers_written: Counter<u64>,
 }
 
 #[cfg(test)]
@@ -1014,6 +1072,7 @@ mod tests {
                 total: 10,
                 dropped_slow_worker: 3,
                 invalid: 2,
+                ..Default::default()
             }
         );
 
@@ -1031,6 +1090,54 @@ mod tests {
         assert_eq!(metrics.received_events_invalid.get(), 2);
         // Consumer-side counter is removed from metric set; only producer-side
         // `received_events_total` exists now.
+    }
+
+    #[test]
+    fn take_event_counts_claims_kernel_trace_stats_and_resets() {
+        let telemetry = SessionWideMetrics::default();
+        let _ = telemetry.total.fetch_add(4, Ordering::Relaxed);
+        let _ = telemetry.kernel_events_lost.fetch_add(2, Ordering::Relaxed);
+        let _ = telemetry
+            .kernel_real_time_buffers_lost
+            .fetch_add(3, Ordering::Relaxed);
+        let _ = telemetry
+            .kernel_log_buffers_lost
+            .fetch_add(1, Ordering::Relaxed);
+        let _ = telemetry
+            .kernel_buffers_written
+            .fetch_add(9, Ordering::Relaxed);
+
+        let deltas = take_event_counts(&telemetry);
+        assert_eq!(
+            deltas,
+            EventCountsDelta {
+                total: 4,
+                kernel_events_lost: 2,
+                kernel_real_time_buffers_lost: 3,
+                kernel_log_buffers_lost: 1,
+                kernel_buffers_written: 9,
+                ..Default::default()
+            }
+        );
+
+        assert_eq!(telemetry.total.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.kernel_events_lost.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            telemetry
+                .kernel_real_time_buffers_lost
+                .load(Ordering::Relaxed),
+            0
+        );
+        assert_eq!(telemetry.kernel_log_buffers_lost.load(Ordering::Relaxed), 0);
+        assert_eq!(telemetry.kernel_buffers_written.load(Ordering::Relaxed), 0);
+
+        let mut metrics = EtwReceiverMetrics::default();
+        deltas.apply(&mut metrics);
+        assert_eq!(metrics.received_events_total.get(), 4);
+        assert_eq!(metrics.received_events_lost_kernel.get(), 2);
+        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 3);
+        assert_eq!(metrics.kernel_log_buffers_lost.get(), 1);
+        assert_eq!(metrics.kernel_buffers_written.get(), 9);
     }
 
     #[test]
@@ -1100,6 +1207,10 @@ mod tests {
         assert_eq!(metrics.received_events_total.get(), 0);
         assert_eq!(metrics.received_events_dropped_slow_worker.get(), 0);
         assert_eq!(metrics.received_events_invalid.get(), 0);
+        assert_eq!(metrics.received_events_lost_kernel.get(), 0);
+        assert_eq!(metrics.kernel_real_time_buffers_lost.get(), 0);
+        assert_eq!(metrics.kernel_log_buffers_lost.get(), 0);
+        assert_eq!(metrics.kernel_buffers_written.get(), 0);
     }
 }
 
