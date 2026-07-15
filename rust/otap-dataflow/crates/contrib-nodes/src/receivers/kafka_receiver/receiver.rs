@@ -404,8 +404,25 @@ impl KafkaReceiver {
 
     /// Commit the current committable offsets to Kafka.
     ///
-    /// Updates the offset tracker's internal [`TopicPartitionList`] in-place
-    /// and commits synchronously. Only commits when auto-commit is disabled.
+    /// Updates the offset tracker's internal [`TopicPartitionList`] in-place and
+    /// commits **asynchronously**: [`CommitMode::Async`] enqueues the request in
+    /// librdkafka's local work queue and returns immediately, so the pipeline's
+    /// single-thread runtime never blocks on a broker round-trip. This method is
+    /// on the hot ACK/NACK path, so it must not stall data processing, control
+    /// messages, telemetry, or shutdown.
+    ///
+    /// Because the commit is async, the returned `Ok(())` only means the request
+    /// was enqueued — not that the broker accepted it. The eventual broker
+    /// outcome is observed via
+    /// [`RebalancingConsumerContext::commit_callback`](super::rebalance::RebalancingConsumerContext),
+    /// which folds success/failure counts into
+    /// [`offset_commits`](KafkaReceiverMetrics::offset_commits) /
+    /// [`offset_commit_errors`](KafkaReceiverMetrics::offset_commit_errors) via
+    /// the shared rebalance state. A rare *enqueue* failure is returned here so
+    /// callers can log it; the offsets stay tracked and are retried on the next
+    /// ack/nack/timer-tick.
+    ///
+    /// Only commits when auto-commit is disabled.
     fn commit_offsets<C: ConsumerContext>(
         &mut self,
         consumer: &StreamConsumer<C>,
@@ -422,13 +439,12 @@ impl KafkaReceiver {
         if tpl.count() == 0 {
             return Ok(());
         }
-        match consumer.commit(tpl, CommitMode::Sync) {
-            Ok(()) => {
-                self.metrics.offset_commits.add(1);
-                Ok(())
-            }
+        // Enqueue asynchronously; the broker result arrives later on
+        // `commit_callback`, which is the single source of truth for commit
+        // success/failure metrics (avoids double counting).
+        match consumer.commit(tpl, CommitMode::Async) {
+            Ok(()) => Ok(()),
             Err(e) => {
-                self.metrics.offset_commit_errors.add(1);
                 let source_detail = format_error_sources(&e);
                 Err(EngineError::ReceiverError {
                     receiver: receiver_id.clone(),
@@ -489,6 +505,12 @@ impl KafkaReceiver {
             self.metrics
                 .rebalance_commit_errors
                 .add(delta.rebalance_commit_errors);
+            // Commit outcomes are observed asynchronously on the consumer commit
+            // callback and folded in here (see `commit_offsets`).
+            self.metrics.offset_commits.add(delta.offset_commits);
+            self.metrics
+                .offset_commit_errors
+                .add(delta.offset_commit_errors);
         }
     }
 
@@ -1945,6 +1967,31 @@ mod tests {
     }
 
     #[test]
+    fn reconcile_folds_commit_callback_metrics() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Simulate commit-callback outcomes accumulated on the poll thread.
+        receiver.rebalance_state.record_commit_result_for_test(true);
+        receiver.rebalance_state.record_commit_result_for_test(true);
+        receiver
+            .rebalance_state
+            .record_commit_result_for_test(false);
+
+        receiver.reconcile_rebalance_state();
+
+        assert_eq!(receiver.metrics.offset_commits.get(), 2);
+        assert_eq!(receiver.metrics.offset_commit_errors.get(), 1);
+
+        // Counters were drained; a second reconcile adds nothing.
+        receiver.reconcile_rebalance_state();
+        assert_eq!(receiver.metrics.offset_commits.get(), 2);
+        assert_eq!(receiver.metrics.offset_commit_errors.get(), 1);
+    }
+
+    #[test]
     fn refresh_committable_snapshot_feeds_rebalance_state() {
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
         let ctx = make_pipeline_ctx();
@@ -3392,8 +3439,17 @@ mod tests {
 
                 // Each partition should have a committed offset accounting for
                 // its records (committed offset is "next to read", so >= count).
+                // Commits are asynchronous (flushed on unsubscribe/close), so
+                // poll until the broker reports them rather than asserting once.
                 for partition in 0..REBALANCE_TEST_PARTITIONS {
-                    let committed = committed_offset_for(&brokers, group, topic, partition);
+                    let mut committed = None;
+                    for _ in 0..20 {
+                        committed = committed_offset_for(&brokers, group, topic, partition);
+                        if committed.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64) {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
                     assert!(
                         committed.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64),
                         "partition {partition} should have committed offset >= {REBALANCE_RECORDS_PER_PARTITION}, got {committed:?}",
@@ -3637,8 +3693,17 @@ mod tests {
                 );
 
                 // Committed offset must account for the pre-drain batch (final
-                // commit happened during drain).
-                let committed = committed_offset_for(&brokers, group, topic, 0);
+                // commit was issued during drain and flushed on unsubscribe).
+                // The commit is asynchronous, so poll until the broker reports
+                // it rather than asserting once.
+                let mut committed = None;
+                for _ in 0..20 {
+                    committed = committed_offset_for(&brokers, group, topic, 0);
+                    if committed.is_some_and(|o| o >= INITIAL as i64) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
                 assert!(
                     committed.is_some_and(|o| o >= INITIAL as i64),
                     "pre-drain offsets should be committed at drain time, got {committed:?}",

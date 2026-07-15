@@ -59,10 +59,17 @@ pub struct KafkaReceiverMetrics {
     pub transport_errors: Counter<u64>,
 
     // ── Consumer Health ─────────────────────────────────────
-    /// Number of offset commits performed
+    /// Number of offset commits acknowledged by the broker.
+    ///
+    /// Populated from the consumer commit callback (not at commit-issue time),
+    /// so it counts commits the broker actually accepted — covering both the
+    /// receiver's asynchronous steady-state commits and the synchronous
+    /// pre-rebalance commit-before-revoke.
     #[metric(unit = "{commit}")]
     pub offset_commits: Counter<u64>,
-    /// Number of offset commit failures
+    /// Number of offset commits the broker rejected.
+    ///
+    /// Populated from the consumer commit callback (see [`offset_commits`]).
     #[metric(unit = "{error}")]
     pub offset_commit_errors: Counter<u64>,
     /// Messages skipped due to idempotency check (duplicate detection)

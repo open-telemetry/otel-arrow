@@ -124,6 +124,13 @@ pub(crate) struct RebalanceState {
     partitions_revoked: AtomicU64,
     /// Count of commit failures during pre-rebalance revoke (callback-incremented).
     rebalance_commit_errors: AtomicU64,
+    /// Count of offset commits acknowledged by the broker, observed on the
+    /// commit callback (callback-incremented). Covers the receiver's async
+    /// steady-state commits and the sync pre-rebalance commit.
+    offset_commits: AtomicU64,
+    /// Count of offset commits rejected by the broker, observed on the commit
+    /// callback (callback-incremented).
+    offset_commit_errors: AtomicU64,
 }
 
 /// A batch of rebalance counter deltas drained by the receive loop and folded
@@ -136,6 +143,10 @@ pub(crate) struct RebalanceMetricsDelta {
     pub(crate) partitions_revoked: u64,
     /// Commit failures during revoke since the last drain.
     pub(crate) rebalance_commit_errors: u64,
+    /// Broker-acknowledged offset commits since the last drain.
+    pub(crate) offset_commits: u64,
+    /// Broker-rejected offset commits since the last drain.
+    pub(crate) offset_commit_errors: u64,
 }
 
 impl RebalanceMetricsDelta {
@@ -145,6 +156,8 @@ impl RebalanceMetricsDelta {
         self.partitions_assigned == 0
             && self.partitions_revoked == 0
             && self.rebalance_commit_errors == 0
+            && self.offset_commits == 0
+            && self.offset_commit_errors == 0
     }
 }
 
@@ -163,6 +176,8 @@ impl RebalanceState {
             partitions_assigned: AtomicU64::new(0),
             partitions_revoked: AtomicU64::new(0),
             rebalance_commit_errors: AtomicU64::new(0),
+            offset_commits: AtomicU64::new(0),
+            offset_commit_errors: AtomicU64::new(0),
         }
     }
 
@@ -209,6 +224,26 @@ impl RebalanceState {
             partitions_assigned: self.partitions_assigned.swap(0, Ordering::Relaxed),
             partitions_revoked: self.partitions_revoked.swap(0, Ordering::Relaxed),
             rebalance_commit_errors: self.rebalance_commit_errors.swap(0, Ordering::Relaxed),
+            offset_commits: self.offset_commits.swap(0, Ordering::Relaxed),
+            offset_commit_errors: self.offset_commit_errors.swap(0, Ordering::Relaxed),
+        }
+    }
+
+    /// Record the outcome of an offset commit reported by librdkafka on the
+    /// commit callback. Called on the poll thread for both the receiver's async
+    /// commits and the synchronous pre-rebalance commit.
+    fn record_commit_result(&self, result: &rdkafka::error::KafkaResult<()>) {
+        match result {
+            Ok(()) => {
+                let _ = self.offset_commits.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                let _ = self.offset_commit_errors.fetch_add(1, Ordering::Relaxed);
+                otel_error!(
+                    "kafka.commit.async_failed",
+                    error = %e,
+                );
+            }
         }
     }
 
@@ -229,6 +264,21 @@ impl RebalanceState {
     #[cfg(test)]
     pub(crate) fn assign_for_test(&self, topic: &str, partition: i32) {
         self.lock_assigned().add_partition(topic, partition);
+    }
+
+    /// Test-only: record a commit outcome as if the commit callback had fired,
+    /// so the receive-loop metric-folding path can be exercised without a live
+    /// broker.
+    #[cfg(test)]
+    pub(crate) fn record_commit_result_for_test(&self, ok: bool) {
+        let result = if ok {
+            Ok(())
+        } else {
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "test".to_string(),
+            ))
+        };
+        self.record_commit_result(&result);
     }
 
     /// Test-only: read the committable offset snapshot for a partition.
@@ -439,6 +489,23 @@ impl ConsumerContext for RebalancingConsumerContext {
             }
         }
     }
+
+    fn commit_callback(
+        &self,
+        result: rdkafka::error::KafkaResult<()>,
+        _offsets: &TopicPartitionList,
+    ) {
+        let state = self.state();
+        // In auto-commit mode librdkafka manages offsets itself; keep manual-mode
+        // commit metrics clean by ignoring those callbacks.
+        if state.is_auto_commit() {
+            return;
+        }
+        // Single source of truth for commit success/failure metrics: the
+        // receiver's steady-state commits are asynchronous, so the broker
+        // outcome is only known here (not at commit-issue time).
+        state.record_commit_result(&result);
+    }
 }
 
 #[cfg(test)]
@@ -577,6 +644,73 @@ mod tests {
     fn metrics_delta_is_empty() {
         let state = RebalanceState::new(false);
         assert!(state.drain_metrics().is_empty());
+    }
+
+    #[test]
+    fn record_commit_result_counts_success_and_failure() {
+        let state = RebalanceState::new(false);
+
+        state.record_commit_result(&Ok(()));
+        state.record_commit_result(&Ok(()));
+        state.record_commit_result(&Err(rdkafka::error::KafkaError::ClientCreation(
+            "boom".to_string(),
+        )));
+
+        let delta = state.drain_metrics();
+        assert_eq!(delta.offset_commits, 2);
+        assert_eq!(delta.offset_commit_errors, 1);
+
+        // Draining resets the counters.
+        let empty = state.drain_metrics();
+        assert_eq!(empty.offset_commits, 0);
+        assert_eq!(empty.offset_commit_errors, 0);
+    }
+
+    #[test]
+    fn commit_result_makes_delta_non_empty() {
+        let state = RebalanceState::new(false);
+        state.record_commit_result(&Ok(()));
+        assert!(!state.drain_metrics().is_empty());
+    }
+
+    #[test]
+    fn commit_callback_folds_results_via_context() {
+        // Exercise the callback through the real ConsumerContext impl to ensure
+        // the wiring (auto-commit gate + state folding) is correct.
+        let state = Arc::new(RebalanceState::new(false));
+        let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
+        let empty_tpl = TopicPartitionList::new();
+
+        ctx.commit_callback(Ok(()), &empty_tpl);
+        ctx.commit_callback(
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "boom".to_string(),
+            )),
+            &empty_tpl,
+        );
+
+        let delta = state.drain_metrics();
+        assert_eq!(delta.offset_commits, 1);
+        assert_eq!(delta.offset_commit_errors, 1);
+    }
+
+    #[test]
+    fn commit_callback_is_noop_in_auto_commit() {
+        let state = Arc::new(RebalanceState::new(true));
+        let ctx = RebalancingConsumerContext::Default(Arc::clone(&state));
+        let empty_tpl = TopicPartitionList::new();
+
+        ctx.commit_callback(Ok(()), &empty_tpl);
+        ctx.commit_callback(
+            Err(rdkafka::error::KafkaError::ClientCreation(
+                "boom".to_string(),
+            )),
+            &empty_tpl,
+        );
+
+        let delta = state.drain_metrics();
+        assert_eq!(delta.offset_commits, 0);
+        assert_eq!(delta.offset_commit_errors, 0);
     }
 
     #[test]
