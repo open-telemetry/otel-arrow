@@ -79,6 +79,8 @@ pub struct JournaldMetrics {
     pub records: Counter<u64>,
 }
 
+/// Scenario: enum variants use default and explicit exported strings.
+/// Guarantees: descriptors expose stable strings, indexes, and cardinality.
 #[test]
 fn attribute_enum_snake_case_and_override() {
     assert_eq!(Signal::Logs.as_str(), "logs");
@@ -96,6 +98,8 @@ fn attribute_enum_snake_case_and_override() {
     assert_eq!(HttpMethod::CARDINALITY, 3);
 }
 
+/// Scenario: a two-field enum attribute set selects datapoint buckets.
+/// Guarantees: descriptors and mixed-radix indexes match declaration order.
 #[test]
 fn dynamic_attribute_set_descriptors_and_bucketing() {
     assert_eq!(LossAttributes::CARDINALITY, 6);
@@ -116,6 +120,8 @@ fn dynamic_attribute_set_descriptors_and_bucketing() {
     assert_eq!(idx(Signal::Traces, LossOutcome::Expired), 5);
 }
 
+/// Scenario: two dynamic buckets report through the telemetry registry.
+/// Guarantees: each bucket retains attributes and aggregates its own values.
 #[test]
 fn dynamic_metric_set_export_carries_datapoint_attributes() {
     let registry = TelemetryRegistryHandle::new();
@@ -196,6 +202,8 @@ fn dynamic_metric_set_export_carries_datapoint_attributes() {
     );
 }
 
+/// Scenario: a static attribute is supplied when a metric set is registered.
+/// Guarantees: the fixed attribute is exported with the recorded datapoint.
 #[test]
 fn static_metric_set_export_carries_fixed_attributes() {
     let registry = TelemetryRegistryHandle::new();
@@ -240,6 +248,8 @@ fn static_metric_set_export_carries_fixed_attributes() {
     );
 }
 
+/// Scenario: static and dynamic metric sets share a registered entity.
+/// Guarantees: both sets retain their datapoint attributes after reporting.
 #[test]
 fn register_metric_sets_for_existing_entity() {
     let registry = TelemetryRegistryHandle::new();
@@ -312,6 +322,8 @@ fn register_metric_sets_for_existing_entity() {
     );
 }
 
+/// Scenario: a dynamic datapoint is read from the registry without reset.
+/// Guarantees: repeated reads return the same attributes and values.
 #[test]
 fn read_only_visit_preserves_datapoint_values() {
     let registry = TelemetryRegistryHandle::new();

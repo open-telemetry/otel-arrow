@@ -1277,32 +1277,12 @@ fn format_prometheus_text(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
+                     datapoint_attributes: &[(&str, &str)],
                      metrics_iter: MetricsIterator<'_>| {
-        // Base labels: `otel_scope_name` plus the merged sanitized attributes.
-        // `otel_scope_version` is emitted only when a non-empty version is
-        // available; the current `MetricsDescriptor` does not carry one, so
-        // the label is omitted entirely (per OTel→Prometheus spec: only
-        // labels with values are emitted).
+        // Scope and datapoint attributes may sanitize to the same Prometheus
+        // label. Merge them before rendering to preserve both values.
         let mut base_labels = String::new();
-        if !descriptor.name.is_empty() {
-            let _ = write!(
-                &mut base_labels,
-                "otel_scope_name=\"{}\"",
-                escape_prom_label_value(descriptor.name)
-            );
-        }
-        // Scope attributes become `otel_scope_<key>` labels. Merge values
-        // for keys that collide after sanitization (per OTel→Prometheus
-        // spec). Emission order is unspecified. Drop attribute keys whose
-        // prefixed labels collide with reserved `otel_scope_*` names already
-        // emitted above.
-        let merged = sanitize_and_merge_label_pairs(
-            attributes
-                .iter_attributes()
-                .map(|(k, v)| (k, v.to_string_value())),
-            "otel_scope_",
-            RESERVED_SCOPE_LABEL_KEYS,
-        );
+        let merged = merge_prometheus_metric_labels(descriptor, attributes, datapoint_attributes);
         for (key, value) in &merged {
             if !base_labels.is_empty() {
                 base_labels.push(',');
@@ -1328,15 +1308,69 @@ fn format_prometheus_text(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry
+            .visit_metrics_and_reset_with_datapoint_attrs(|d, a, dp, m| visit(d, a, dp, m), false);
     } else {
-        telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
+        telemetry_registry
+            .visit_current_metrics_with_datapoint_attrs(|d, a, dp, m| visit(d, a, dp, m), false);
     }
 
     // Emit all metric families as contiguous groups (Prometheus spec requirement).
     groups.emit(&mut out);
 
     out
+}
+
+/// Merges scope and datapoint attributes into valid Prometheus labels.
+///
+/// The OpenTelemetry Prometheus compatibility specification requires values from
+/// different OpenTelemetry keys that map to the same Prometheus label to be
+/// concatenated with `;`, ordered by their original keys.
+/// See <https://opentelemetry.io/docs/specs/otel/compatibility/prometheus_and_openmetrics/#metric-attributes>.
+fn merge_prometheus_metric_labels(
+    descriptor: &MetricsDescriptor,
+    scope_attributes: &dyn AttributeSetHandler,
+    datapoint_attributes: &[(&str, &str)],
+) -> HashMap<String, String> {
+    let mut entries = Vec::new();
+
+    if !descriptor.name.is_empty() {
+        entries.push((
+            "otel_scope_name".to_string(),
+            "otel_scope_name".to_string(),
+            descriptor.name.to_string(),
+        ));
+    }
+
+    for (key, value) in scope_attributes.iter_attributes() {
+        let label_key = format!("otel_scope_{}", sanitize_prom_label_key(key));
+        if RESERVED_SCOPE_LABEL_KEYS.contains(&label_key.as_str()) {
+            continue;
+        }
+        entries.push((key.to_string(), label_key, value.to_string_value()));
+    }
+
+    for (key, value) in datapoint_attributes {
+        entries.push((
+            (*key).to_string(),
+            sanitize_prom_label_key(key),
+            (*value).to_string(),
+        ));
+    }
+
+    entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let mut labels: HashMap<String, String> = HashMap::with_capacity(entries.len());
+    for (_, label_key, value) in entries {
+        let _ = labels
+            .entry(label_key)
+            .and_modify(|existing| {
+                existing.push(';');
+                existing.push_str(&value);
+            })
+            .or_insert(value);
+    }
+    labels
 }
 
 fn escape_lp_measurement(s: &str) -> String {
@@ -3447,7 +3481,10 @@ mod tests {
     use otap_df_telemetry::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, MetricValueType,
     };
+    use otap_df_telemetry::instrument::Counter;
     use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
+    use otap_df_telemetry::reporter::MetricsReporter;
+    use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
     #[derive(Debug)]
     struct E2eMetricSet {
@@ -3536,6 +3573,116 @@ mod tests {
         fn attribute_values(&self) -> &[AttributeValue] {
             &self.values
         }
+    }
+
+    #[attribute_set(name = "test.prometheus.scope")]
+    #[derive(Debug, Clone)]
+    struct PrometheusScopeAttributes {
+        #[attribute(key = "foo")]
+        foo: String,
+    }
+
+    #[derive(Debug, Clone, Copy, AttributeEnum)]
+    enum DatapointSignal {
+        Logs,
+        Metrics,
+    }
+
+    #[derive(Debug, Clone, Copy, AttributeEnum)]
+    enum DatapointCollision {
+        Value,
+    }
+
+    #[attribute_set(name = "test.prometheus.signal", dynamic)]
+    #[derive(Debug, Clone, Copy)]
+    struct DatapointSignalAttributes {
+        #[attribute(key = "signal")]
+        signal: DatapointSignal,
+        #[attribute(key = "otel.scope.foo")]
+        scope_foo: DatapointCollision,
+    }
+
+    #[metric_set(
+        name = "test.prometheus.dynamic",
+        dynamic_attributes = DatapointSignalAttributes
+    )]
+    #[derive(Debug, Default, Clone)]
+    struct DatapointSignalMetrics {
+        #[metric(unit = "1")]
+        events: Counter<u64>,
+    }
+
+    /// Scenario: two dynamic attribute buckets share one scope and metric set.
+    /// Guarantees: Prometheus emits one distinct series with the recorded value
+    /// per bucket.
+    #[test]
+    fn test_format_prometheus_text_preserves_dynamic_datapoint_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(2);
+        let mut metrics = registry
+            .register_metric_set_with_dynamic_attributes::<DatapointSignalMetrics>(
+                PrometheusScopeAttributes {
+                    foo: "scope".to_string(),
+                },
+            );
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: DatapointSignal::Logs,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(7);
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: DatapointSignal::Metrics,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(11);
+        reporter
+            .report_dynamic(&mut metrics)
+            .expect("dynamic metrics should report");
+
+        while let Ok(snapshot) = receiver.try_recv() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let output = format_prometheus_text(&registry, false, None, "");
+        let samples: Vec<&str> = output
+            .lines()
+            .filter(|line| line.starts_with("events_total{"))
+            .collect();
+
+        assert_eq!(samples.len(), 2, "expected two datapoint series:\n{output}");
+        assert!(
+            samples
+                .iter()
+                .any(|line| line.contains(r#"signal="logs""#) && line.ends_with(" 7")),
+            "missing logs series:\n{output}"
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|line| line.contains(r#"signal="metrics""#) && line.ends_with(" 11")),
+            "missing metrics series:\n{output}"
+        );
+        let label_sets: Vec<&str> = samples
+            .iter()
+            .map(|line| line.split_once('}').expect("sample should have labels").0)
+            .collect();
+        assert_ne!(
+            label_sets[0], label_sets[1],
+            "dynamic buckets must not emit duplicate label sets:\n{output}"
+        );
+        assert_eq!(
+            output.matches(r#"otel_scope_foo="scope;value""#).count(),
+            2,
+            "scope and datapoint collisions should merge values:\n{output}"
+        );
     }
 
     #[test]
