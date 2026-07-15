@@ -34,6 +34,18 @@ groups:
   default:
     pipelines:
       main:
+        # Authentication is provided by an extension, not exporter config: the
+        # exporter consumes a `bearer_token_provider` capability. Declare an
+        # `azure_identity_auth` extension and bind it to the exporter node below.
+        extensions:
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: managed_identity   # or "development", "workload_identity"
+              # For a user-assigned managed identity, set client_id.
+              # client_id: "YOUR-USER-ASSIGNED-IDENTITY-CLIENT-ID"
+              scope: "https://monitor.azure.com/.default"
+
         nodes:
           otlp-receiver:
             type: "urn:otel:receiver:otlp"
@@ -45,6 +57,9 @@ groups:
 
           azure-monitor-exporter:
             type: "urn:microsoft:exporter:azure_monitor"
+            # Bind the capability to the extension instance declared above.
+            capabilities:
+              bearer_token_provider: azure_identity
             config:
               # API configuration - Update with your actual values
               api:
@@ -54,20 +69,14 @@ groups:
                 # Attribute passthrough: emit each log attribute as-is as its own
                 # top-level "key": value column. No resource/scope or top-level
                 # field mappings are applied here.
+                #
+                # TimeGenerated is not mapped here; Log Analytics auto-populates it
+                # with the ingestion time when a record omits it, so records are not
+                # rejected for a missing timestamp. Map time_unix_nano -> TimeGenerated
+                # under log_record_mapping to set it explicitly.
                 schema:
                   log_record_mapping:
                     attributes: passthrough
-
-              # Authentication configuration for AKS
-              auth:
-                # Use managed identity for AKS workloads
-                method: "managedidentity"  # or "msi"
-
-                # For user-assigned managed identity (common in AKS)
-                client_id: "YOUR-USER-ASSIGNED-IDENTITY-CLIENT-ID"
-
-                # OAuth scope for Azure Monitor
-                scope: "https://monitor.azure.com/.default"
 
               # Heartbeat configuration (optional, disabled by default)
               heartbeat:

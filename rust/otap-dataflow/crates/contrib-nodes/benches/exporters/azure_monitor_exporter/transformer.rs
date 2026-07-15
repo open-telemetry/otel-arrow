@@ -75,7 +75,6 @@ fn create_config() -> Config {
             gzip_compression_level: 6,
             user_agent: None,
         },
-        auth: AuthConfig::default(),
         heartbeat: HeartbeatConfig::default(),
     }
 }
@@ -84,7 +83,7 @@ fn create_config() -> Config {
 /// column via `attributes: passthrough`.
 fn create_passthrough_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
-        ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
+        ApiConfig, HeartbeatConfig, SchemaConfig,
     };
 
     Config {
@@ -224,7 +223,7 @@ fn make_request(
 /// `attributes: passthrough`, exercising the collision-aware combined path.
 fn create_combined_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
-        ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
+        ApiConfig, HeartbeatConfig, SchemaConfig,
     };
 
     Config {
@@ -248,7 +247,6 @@ fn create_combined_config() -> Config {
             gzip_compression_level: 6,
             user_agent: None,
         },
-        auth: AuthConfig::default(),
         heartbeat: HeartbeatConfig::default(),
     }
 }
