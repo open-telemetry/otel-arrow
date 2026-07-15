@@ -310,6 +310,21 @@ collisions are resolved at emit time by the innermost-wins rule above.
 > DCR column is **silently dropped at ingestion** -- the exporter does not rewrite
 > or reject it. Map such attributes to valid column names explicitly (via the
 > `attributes` object form) or ensure your DCR defines matching columns.
+>
+> The drop is **per column, not per record**: a record carrying an unmatched
+> column is still ingested with its remaining, matched columns -- ingestion does
+> not reject the record or the batch over an unknown column (only malformed JSON
+> or DCR/schema errors fail a batch). The loss is **silent to the exporter and
+> the sender** (no error is returned), but it is **observable to the workspace
+> operator**: ingestion emits a dropped-column count metric and records the
+> unmatched column names, so data loss can be detected on the Azure side even
+> though this exporter cannot surface it.
+
+Note on the mandatory `TimeGenerated` column: a log record that does not carry a
+`TimeGenerated` value does **not** get rejected -- Azure Log Analytics ingestion
+auto-populates `TimeGenerated` with the ingestion time when it is absent. To
+control it explicitly, map a log-record field to it (e.g.
+`log_record_mapping: { time_unix_nano: TimeGenerated }`).
 
 ## Azure Setup
 
