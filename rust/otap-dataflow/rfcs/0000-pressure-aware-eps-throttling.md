@@ -392,10 +392,14 @@ per-request or per-scope label cardinality.
 Before implementation is accepted, the admission path should be measured against
 the same receiver without this policy enabled. The checks should cover
 throughput, CPU cost, memory used by per-scope rate state, and the cost of
-counting accepted items after decode. The first implementation should use the
-existing benchmark and performance-test surfaces where possible, including
-receiver throughput tests and the existing item-count benchmark for the
-post-decode counting cost.
+counting accepted items after decode.
+
+The expected cost factors are tenant or scope extraction, bucket lookup,
+per-scope rate-state updates, post-decode item counting, scope cardinality, and
+whether the limiter remains receiver-local or later uses shared state. The first
+implementation should use the existing benchmark and performance-test surfaces
+where possible, including receiver throughput tests and the existing item-count
+benchmark for the post-decode counting cost.
 
 ## Drawbacks
 
