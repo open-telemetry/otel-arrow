@@ -472,8 +472,14 @@ impl KafkaReceiver {
         }
         let revoked = self.rebalance_state.drain_revoked();
         if !revoked.is_empty() {
-            for (topic, partition) in revoked {
-                self.offset_tracker.revoke(&topic, partition);
+            for r in revoked {
+                // Generation-aware purge: only remove tracker state that is not
+                // newer than the revocation. If the partition was reassigned to
+                // this consumer and re-tracked under a newer generation, this
+                // stale revocation is a no-op and the fresh state is preserved.
+                let _ = self
+                    .offset_tracker
+                    .revoke_if_older(&r.topic, r.partition, r.generation);
             }
             // Owned set changed; refresh the snapshot used by pre_rebalance.
             self.refresh_committable_snapshot();
@@ -570,7 +576,7 @@ impl KafkaReceiver {
         consumer: &StreamConsumer<C>,
         receiver_id: &NodeId,
     ) {
-        let (topic_id, partition, offset) = decode_calldata(calldata);
+        let (topic_id, partition, offset, ack_generation) = decode_calldata(calldata);
         // Resolve the dynamic topic ID back to the actual topic name. The
         // `Arc<str>` is an owned handle, so it does not borrow `self` and can
         // coexist with the `&mut self` calls below.
@@ -578,8 +584,23 @@ impl KafkaReceiver {
             return;
         };
 
+        // Stale-generation guard: feedback produced under an earlier ownership
+        // period must not affect the current one. If the partition's tracked
+        // state belongs to a newer generation than this ack, the ack is stale
+        // (the partition was revoked and reassigned since); drop it without
+        // disturbing the current state.
+        if self
+            .offset_tracker
+            .partition_generation(&name, partition)
+            .is_some_and(|current| ack_generation < current)
+        {
+            self.metrics.acks_for_revoked_partition.add(1);
+            return;
+        }
+
         // Late-ack guard: never commit a partition this consumer no longer
-        // owns. Drop the feedback and purge any lingering tracker state.
+        // owns. Drop the feedback and purge any lingering tracker state for the
+        // ack's generation or older (never a newer ownership period).
         //
         // This is safe because librdkafka runs `post_rebalance(Assign)` on the
         // poll thread *before* `consumer.recv()` yields messages for the newly
@@ -587,7 +608,9 @@ impl KafkaReceiver {
         // for those partitions can return.
         if !self.rebalance_state.is_assigned(&name, partition) {
             self.metrics.acks_for_revoked_partition.add(1);
-            self.offset_tracker.revoke(&name, partition);
+            let _ = self
+                .offset_tracker
+                .revoke_if_older(&name, partition, ack_generation);
             return;
         }
 
@@ -807,13 +830,24 @@ impl KafkaReceiver {
                             match self.process_kafka(data, capture_policy) {
                                 Ok(mut otap_data) => {
                                     if manual_commit {
+                                        // Stamp the record with this partition's
+                                        // ownership generation so a stale revocation
+                                        // of an older ownership period can't purge
+                                        // it, and its Ack/Nack can be recognized
+                                        // as belonging to the current ownership.
+                                        // The generation is stable while the partition
+                                        // stays owned, so records tracked across
+                                        // unrelated rebalances share one generation.
+                                        let generation =
+                                            self.rebalance_state.partition_generation(&topic, partition);
                                         // Track offset as in-flight
                                         self.offset_tracker
-                                            .track(&topic, partition, offset);
+                                            .track(&topic, partition, offset, generation);
                                         // Subscribe so Ack/Nack carries
-                                        // offset identity back to us
-                                        let calldata =
-                                            encode_calldata(topic_id, partition, offset);
+                                        // offset identity (and generation) back to us
+                                        let calldata = encode_calldata(
+                                            topic_id, partition, offset, generation,
+                                        );
                                         effect_handler.subscribe_to(
                                             Interests::ACKS_OR_NACKS,
                                             calldata,
@@ -891,9 +925,13 @@ impl KafkaReceiver {
                                         // the partition. This path intentionally
                                         // skips the late-ack guard — a poison
                                         // message must be advanced past
-                                        // regardless of assignment.
+                                        // regardless of assignment. Stamped with
+                                        // this partition's ownership generation for
+                                        // consistency with the revoke/purge path.
+                                        let generation =
+                                            self.rebalance_state.partition_generation(&topic, partition);
                                         self.offset_tracker
-                                            .track(&topic, partition, offset);
+                                            .track(&topic, partition, offset, generation);
                                         self.advance_offset_and_commit(
                                             &topic,
                                             partition,
@@ -935,21 +973,30 @@ impl KafkaReceiver {
 ///
 /// Slot 0: `(topic_id << 32) | (partition as u32)` packed into a `u64`.
 /// Slot 1: `offset` cast to `u64`.
-fn encode_calldata(topic_id: u32, partition: i32, offset: i64) -> CallData {
+/// Slot 2: assignment `generation`.
+///
+/// [`CallData`] inlines three slots, so carrying the generation adds no
+/// heap allocation.
+fn encode_calldata(topic_id: u32, partition: i32, offset: i64, generation: u64) -> CallData {
     let topic_partition = ((topic_id as u64) << 32) | (partition as u32 as u64);
     smallvec![
         Context8u8::from(topic_partition),
         Context8u8::from(offset as u64),
+        Context8u8::from(generation),
     ]
 }
 
 /// Decode Kafka message identity from [`CallData`] returned in Ack/Nack.
-fn decode_calldata(calldata: &CallData) -> (u32, i32, i64) {
+///
+/// A calldata without the generation slot (legacy 2-slot form) decodes as
+/// generation `0`.
+fn decode_calldata(calldata: &CallData) -> (u32, i32, i64, u64) {
     let topic_partition: u64 = calldata[0].into();
     let topic_id = (topic_partition >> 32) as u32;
     let partition = (topic_partition & 0xFFFF_FFFF) as i32;
     let offset: u64 = calldata[1].into();
-    (topic_id, partition, offset as i64)
+    let generation: u64 = calldata.get(2).copied().map(Into::into).unwrap_or(0);
+    (topic_id, partition, offset as i64, generation)
 }
 
 /// Decode a traces payload into `OtapPdata`.
@@ -1865,18 +1912,83 @@ mod tests {
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         // Simulate in-flight offsets across two partitions.
-        receiver.offset_tracker.track("traces", 0, 100);
-        receiver.offset_tracker.track("traces", 1, 200);
+        receiver.offset_tracker.track("traces", 0, 100, 0);
+        receiver.offset_tracker.track("traces", 1, 200, 0);
         assert_eq!(receiver.offset_tracker.total_pending(), 2);
 
         // Simulate a rebalance revoking partition 0.
-        receiver.rebalance_state.push_revoked_for_test("traces", 0);
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 0);
 
         receiver.reconcile_rebalance_state();
 
         // Partition 0 purged; partition 1 retained.
         assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
         assert_eq!(receiver.offset_tracker.pending_count("traces", 1), 1);
+    }
+
+    #[test]
+    fn stale_revocation_preserves_reassigned_partition_state() {
+        // Regression for the revoke/reassign race: a revocation queued for an
+        // older ownership period must not delete tracker state created after
+        // the partition was reassigned to this consumer under a newer
+        // generation.
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // A new record for partition 0 was tracked under generation 2 (after a
+        // reassignment), while a revocation from generation 1 is still queued.
+        receiver.offset_tracker.track("traces", 0, 250, 2);
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 1);
+
+        receiver.reconcile_rebalance_state();
+
+        // The stale generation-1 revocation must be a no-op: the newer state
+        // survives so its ACK can still advance and commit.
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 1);
+        assert_eq!(
+            receiver.offset_tracker.partition_generation("traces", 0),
+            Some(2),
+        );
+    }
+
+    #[test]
+    fn retained_partition_generation_is_stable_across_unrelated_rebalance() {
+        // Regression: the per-partition ownership generation must NOT change when the
+        // partition is retained across a rebalance that only affects OTHER
+        // partitions. Otherwise a newer record on the retained partition would
+        // bump its generation and cause a legitimate late ACK for an earlier record
+        // (carrying the older generation) to be wrongly dropped as stale.
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Initial assignment: own partition 0.
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl);
+        let generation_p0 = receiver.rebalance_state.partition_generation("traces", 0);
+
+        // An unrelated rebalance retains partition 0 and acquires partition 1
+        // (which advances the generation allocator).
+        let mut tpl2 = TopicPartitionList::new();
+        let _ = tpl2.add_partition("traces", 0);
+        let _ = tpl2.add_partition("traces", 1);
+        receiver.rebalance_state.set_assignment_for_test(&tpl2);
+
+        // Partition 0 was retained: its generation must be unchanged, even though the
+        // allocator advanced for partition 1.
+        assert_eq!(
+            receiver.rebalance_state.partition_generation("traces", 0),
+            generation_p0
+        );
+        assert!(receiver.rebalance_state.partition_generation("traces", 1) > generation_p0);
     }
 
     #[test]
@@ -1891,12 +2003,14 @@ mod tests {
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         // In-flight offsets on two partitions.
-        receiver.offset_tracker.track("traces", 0, 100);
-        receiver.offset_tracker.track("traces", 1, 200);
+        receiver.offset_tracker.track("traces", 0, 100, 0);
+        receiver.offset_tracker.track("traces", 1, 200, 0);
 
         // The callback queues a revoke for partition 0, but the loop has not
         // reconciled it yet (it is still tracked).
-        receiver.rebalance_state.push_revoked_for_test("traces", 0);
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 0);
         assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 1);
 
         // The drain-before-commit step that `commit_offsets` runs.
@@ -1935,8 +2049,10 @@ mod tests {
         let ctx = make_pipeline_ctx();
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
-        receiver.offset_tracker.track("traces", 0, 100);
-        receiver.rebalance_state.push_revoked_for_test("traces", 0);
+        receiver.offset_tracker.track("traces", 0, 100, 0);
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 0);
 
         // Under auto-commit, purge must not touch the tracker (librdkafka owns
         // offsets and rebalance handling is disabled).
@@ -1959,8 +2075,10 @@ mod tests {
         let ctx = make_pipeline_ctx();
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
-        receiver.offset_tracker.track("traces", 0, 100);
-        receiver.rebalance_state.push_revoked_for_test("traces", 0);
+        receiver.offset_tracker.track("traces", 0, 100, 0);
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 0);
 
         // Under auto-commit, reconcile must not touch the tracker or drain.
         receiver.reconcile_rebalance_state();
@@ -1998,14 +2116,14 @@ mod tests {
         let ctx = make_pipeline_ctx();
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
-        receiver.offset_tracker.track("traces", 0, 100);
-        receiver.offset_tracker.track("traces", 0, 101);
+        receiver.offset_tracker.track("traces", 0, 100, 0);
+        receiver.offset_tracker.track("traces", 0, 101, 0);
         receiver.refresh_committable_snapshot();
 
         // The shared state now reports partition 0 as assigned-or-not, but the
         // committable snapshot drives pre-rebalance commits. Assign and verify
         // the late-ack guard sees the partition.
-        receiver.rebalance_state.assign_for_test("traces", 0);
+        receiver.rebalance_state.assign_for_test("traces", 0, 1);
         assert!(receiver.rebalance_state.is_assigned("traces", 0));
         assert!(!receiver.rebalance_state.is_assigned("traces", 9));
     }
@@ -2020,8 +2138,8 @@ mod tests {
         let ctx = make_pipeline_ctx();
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
-        receiver.offset_tracker.track("traces", 0, 100);
-        receiver.offset_tracker.track("traces", 0, 101);
+        receiver.offset_tracker.track("traces", 0, 100, 0);
+        receiver.offset_tracker.track("traces", 0, 101, 0);
         receiver.refresh_committable_snapshot();
         assert_eq!(
             receiver.rebalance_state.committable_for_test("traces", 0),
@@ -2651,34 +2769,49 @@ mod tests {
 
     #[test]
     fn encode_decode_calldata_roundtrip() {
-        let cases: Vec<(u32, i32, i64)> = vec![
-            (0, 0, 0),
-            (0, 0, 100),
-            (1, 3, 999_999),
-            (2, 11, i64::MAX),
-            (5, 0, 42),
-            (10, 1, 1_000_000),
-            (255, 2, 0),
+        let cases: Vec<(u32, i32, i64, u64)> = vec![
+            (0, 0, 0, 0),
+            (0, 0, 100, 1),
+            (1, 3, 999_999, 7),
+            (2, 11, i64::MAX, u64::MAX),
+            (5, 0, 42, 0),
+            (10, 1, 1_000_000, 12_345),
+            (255, 2, 0, 3),
             // Values that would have been truncated by the old `u8` ID.
-            (256, 7, 1),
-            (65_536, 9, 2),
-            (u32::MAX, i32::MAX, i64::MAX),
-            (u32::MAX, -1, 0),
+            (256, 7, 1, 1),
+            (65_536, 9, 2, 2),
+            (u32::MAX, i32::MAX, i64::MAX, u64::MAX),
+            (u32::MAX, -1, 0, 9),
         ];
 
-        for (topic_id, partition, offset) in cases {
-            let calldata = encode_calldata(topic_id, partition, offset);
-            let (dec_tid, dec_part, dec_off) = decode_calldata(&calldata);
+        for (topic_id, partition, offset, generation) in cases {
+            let calldata = encode_calldata(topic_id, partition, offset, generation);
+            let (dec_tid, dec_part, dec_off, dec_gen) = decode_calldata(&calldata);
             assert_eq!(dec_tid, topic_id, "topic_id mismatch");
             assert_eq!(dec_part, partition, "partition mismatch");
             assert_eq!(dec_off, offset, "offset mismatch");
+            assert_eq!(dec_gen, generation, "generation mismatch");
         }
     }
 
     #[test]
-    fn encode_calldata_produces_two_slots() {
-        let calldata = encode_calldata(1, 5, 42);
-        assert_eq!(calldata.len(), 2);
+    fn encode_calldata_produces_three_slots() {
+        let calldata = encode_calldata(1, 5, 42, 3);
+        assert_eq!(calldata.len(), 3);
+    }
+
+    #[test]
+    fn decode_legacy_two_slot_calldata_defaults_generation_zero() {
+        // A calldata without the generation slot decodes as generation 0.
+        let legacy: CallData = smallvec![
+            Context8u8::from(((7u64) << 32) | 5u64),
+            Context8u8::from(42u64),
+        ];
+        let (topic_id, partition, offset, generation) = decode_calldata(&legacy);
+        assert_eq!(topic_id, 7);
+        assert_eq!(partition, 5);
+        assert_eq!(offset, 42);
+        assert_eq!(generation, 0);
     }
 
     // ---- TopicRegistry tests ----
@@ -3769,6 +3902,145 @@ mod tests {
                     .expect("send shutdown");
                 let _ = timeout(Duration::from_secs(10), handle).await;
                 drop(consumer_b);
+            })
+            .await;
+    }
+
+    /// Revoke-then-reassign: when a partition is revoked from the receiver and
+    /// later reassigned to it, records consumed under the new assignment must
+    /// still be committed. This is a best-effort end-to-end exercise of the
+    /// assignment-generation guard (the deterministic core is covered by
+    /// `stale_revocation_preserves_reassigned_partition_state`).
+    ///
+    /// A second consumer joins the group (forcing a revoke), then leaves
+    /// (reassigning everything back to the receiver). A record produced after
+    /// the reassignment must be consumed, acked, and committed.
+    #[tokio::test]
+    #[ignore]
+    async fn rebalance_revoke_then_reassign_preserves_new_records() {
+        let (_container, brokers) =
+            start_kafka_container_with_partitions(REBALANCE_TEST_PARTITIONS).await;
+        let producer = create_test_producer(&brokers);
+
+        let topic = "rebalance-reassign-traces";
+        let group = "rebalance-reassign-group";
+
+        let req = create_traces_with_spans();
+        let mut bytes = vec![];
+        req.encode(&mut bytes).expect("encode");
+
+        // One initial record per partition.
+        for partition in 0..REBALANCE_TEST_PARTITIONS {
+            let _ = producer
+                .send(
+                    FutureRecord::to(topic)
+                        .payload(&bytes)
+                        .key(&format!("init-{partition}"))
+                        .partition(partition),
+                    Timeout::After(Duration::from_secs(10)),
+                )
+                .await
+                .expect("Failed to send message");
+        }
+
+        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, _handles) =
+            setup_manual_traces_harness(&brokers, group, topic, 500);
+
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let handle = tokio::task::spawn_local(async move {
+                    receiver.start(ctrl_chan, effect_handler).await
+                });
+
+                // Consume + ack the initial records (receiver owns all partitions).
+                for i in 0..REBALANCE_TEST_PARTITIONS as usize {
+                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                        .await
+                        .unwrap_or_else(|_| panic!("Timed out waiting for initial message {i}"))
+                        .unwrap_or_else(|_| panic!("No initial message received for {i}"));
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
+                        ctrl_tx
+                            .send(NodeControlMsg::Ack(ack))
+                            .expect("send ack for initial message");
+                    }
+                }
+
+                // A second consumer joins, forcing a revoke of one partition.
+                let consumer_b: StreamConsumer = ClientConfig::new()
+                    .set("bootstrap.servers", &brokers)
+                    .set("group.id", group)
+                    .set("enable.auto.commit", "false")
+                    .set("auto.offset.reset", "earliest")
+                    .create()
+                    .expect("failed to create consumer B");
+                consumer_b
+                    .subscribe(&[topic])
+                    .expect("consumer B subscribe");
+                for _ in 0..40 {
+                    if consumer_b.assignment().is_ok_and(|a| a.count() > 0) {
+                        break;
+                    }
+                    let _ = timeout(Duration::from_millis(500), consumer_b.recv()).await;
+                }
+
+                // Consumer B leaves, reassigning all partitions back to the
+                // receiver.
+                drop(consumer_b);
+
+                // Produce a fresh record to every partition after the
+                // reassignment. Consume and ack whatever the receiver delivers.
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let _ = producer
+                        .send(
+                            FutureRecord::to(topic)
+                                .payload(&bytes)
+                                .key(&format!("post-{partition}"))
+                                .partition(partition),
+                            Timeout::After(Duration::from_secs(10)),
+                        )
+                        .await
+                        .expect("Failed to send post-reassign message");
+                }
+
+                // Drain and ack post-reassignment records for a while.
+                for _ in 0..40 {
+                    if let Ok(Ok(pdata)) = timeout(Duration::from_secs(2), pdata_rx.recv()).await {
+                        if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
+                            ctrl_tx
+                                .send(NodeControlMsg::Ack(ack))
+                                .expect("send ack post-reassign");
+                        }
+                    }
+                    // Both partitions should end up with a committed offset that
+                    // accounts for the initial + post-reassignment records.
+                    let c0 = committed_offset_for(&brokers, group, topic, 0);
+                    let c1 = committed_offset_for(&brokers, group, topic, 1);
+                    if c0.is_some_and(|o| o >= 2) && c1.is_some_and(|o| o >= 2) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+
+                // At least one partition must show the post-reassignment record
+                // committed (offset >= 2). If the generation guard were broken,
+                // the reassigned partition's fresh state would be purged and its
+                // ack dropped, leaving the offset stuck at 1.
+                let c0 = committed_offset_for(&brokers, group, topic, 0);
+                let c1 = committed_offset_for(&brokers, group, topic, 1);
+                assert!(
+                    c0.is_some_and(|o| o >= 2) || c1.is_some_and(|o| o >= 2),
+                    "a reassigned partition must commit its post-reassignment record; \
+                     got c0={c0:?} c1={c1:?}",
+                );
+
+                ctrl_tx
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
+                        reason: "test complete".to_string(),
+                    })
+                    .expect("send shutdown");
+                let _ = timeout(Duration::from_secs(10), handle).await;
             })
             .await;
     }

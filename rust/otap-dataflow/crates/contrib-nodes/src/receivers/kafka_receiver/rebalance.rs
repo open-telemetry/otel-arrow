@@ -34,7 +34,7 @@
 //! owner re-delivers it. This is safe under at-least-once semantics and mirrors
 //! the rotel Kafka receiver's behavior.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -46,15 +46,40 @@ use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 
-/// The set of topic-partitions currently assigned to this consumer.
+/// The set of topic-partitions currently assigned to this consumer, each tagged
+/// with a per-partition **ownership generation**.
 ///
-/// Keyed by topic name, then by partition. Used to scope offset commits to
-/// partitions this consumer actually owns, so that a late ack/nack or a
+/// Keyed by topic name, then by partition -> generation. Used to scope offset commits
+/// to partitions this consumer actually owns, so that a late ack/nack or a
 /// periodic timer tick never commits an offset for a partition that has been
 /// reassigned to another consumer.
+///
+/// The generation changes only when *this* partition's ownership is (re)acquired — it
+/// is stable while the partition stays continuously owned across unrelated
+/// rebalances. This is intentionally decoupled from any global rebalance counter:
+/// two records tracked during one continuous ownership must carry the same generation,
+/// otherwise a legitimate late ACK could be mistaken for feedback from a previous
+/// ownership period.
 #[derive(Debug, Default)]
 pub(crate) struct AssignedPartitions {
-    topics: HashMap<String, HashSet<i32>>,
+    topics: HashMap<String, HashMap<i32, u64>>,
+}
+
+/// A partition revoked during a rebalance, tagged with the assignment
+/// generation that was current when the revocation occurred.
+///
+/// The generation lets the receive loop tell whether tracker state for the
+/// partition belongs to the revoked ownership period (and should be purged) or
+/// to a newer one created after the partition was reassigned to this consumer
+/// (which must be preserved).
+#[derive(Debug, Clone)]
+pub(crate) struct RevokedPartition {
+    /// Topic of the revoked partition.
+    pub(crate) topic: String,
+    /// Partition number.
+    pub(crate) partition: i32,
+    /// Assignment generation at the time of revocation.
+    pub(crate) generation: u64,
 }
 
 impl AssignedPartitions {
@@ -65,29 +90,32 @@ impl AssignedPartitions {
         }
     }
 
-    /// Remove all assigned partitions.
-    pub(crate) fn clear(&mut self) {
-        self.topics.clear();
-    }
-
-    /// Record `(topic, partition)` as assigned.
-    pub(crate) fn add_partition(&mut self, topic: &str, partition: i32) {
+    /// Record `(topic, partition)` as assigned under `generation`.
+    ///
+    /// If the partition is already owned, its generation is left unchanged (the
+    /// partition was retained across the rebalance). Only a fresh acquisition
+    /// assigns a new generation.
+    pub(crate) fn add_partition(&mut self, topic: &str, partition: i32, generation: u64) {
         let _ = self
             .topics
             .entry(topic.to_string())
             .or_default()
-            .insert(partition);
+            .entry(partition)
+            .or_insert(generation);
     }
 
     /// Remove `(topic, partition)` from the assignment, dropping the topic
-    /// entry once it has no remaining partitions.
-    pub(crate) fn remove_partition(&mut self, topic: &str, partition: i32) {
+    /// entry once it has no remaining partitions. Returns `true` if the
+    /// partition was actually owned (and thus removed).
+    pub(crate) fn remove_partition(&mut self, topic: &str, partition: i32) -> bool {
+        let mut removed = false;
         if let Some(partitions) = self.topics.get_mut(topic) {
-            let _ = partitions.remove(&partition);
+            removed = partitions.remove(&partition).is_some();
             if partitions.is_empty() {
                 let _ = self.topics.remove(topic);
             }
         }
+        removed
     }
 
     /// Returns `true` if `(topic, partition)` is currently assigned.
@@ -95,7 +123,15 @@ impl AssignedPartitions {
     pub(crate) fn contains(&self, topic: &str, partition: i32) -> bool {
         self.topics
             .get(topic)
-            .is_some_and(|partitions| partitions.contains(&partition))
+            .is_some_and(|partitions| partitions.contains_key(&partition))
+    }
+
+    /// The ownership generation for `(topic, partition)`, or `None` if not owned.
+    #[must_use]
+    pub(crate) fn generation(&self, topic: &str, partition: i32) -> Option<u64> {
+        self.topics
+            .get(topic)
+            .and_then(|partitions| partitions.get(&partition).copied())
     }
 }
 
@@ -110,9 +146,16 @@ impl AssignedPartitions {
 pub(crate) struct RebalanceState {
     /// Partitions currently owned by this consumer.
     assigned: Mutex<AssignedPartitions>,
-    /// Partitions revoked since the receive loop last reconciled. Drained by
-    /// the loop, which then purges the tracker.
-    revoked: Mutex<Vec<(String, i32)>>,
+    /// Partitions revoked since the receive loop last reconciled, each tagged
+    /// with the generation at revoke time. Drained by the loop, which then
+    /// purges the tracker (only for state not newer than the revoke generation).
+    revoked: Mutex<Vec<RevokedPartition>>,
+    /// Monotonic allocator for per-partition ownership generations. Advanced in
+    /// [`set_assignment`](Self::set_assignment) for each partition that is
+    /// *newly* acquired (not-owned -> owned), so a partition reacquired after a
+    /// revocation gets a strictly greater generation than the revocation queued for
+    /// its prior ownership period. Retained partitions keep their generation.
+    generation_allocator: AtomicU64,
     /// Latest committable offset per `(topic, partition)`, refreshed by the
     /// receive loop. Read by `pre_rebalance` to commit before revocation.
     committable: Mutex<HashMap<(String, i32), i64>>,
@@ -178,7 +221,23 @@ impl RebalanceState {
             rebalance_commit_errors: AtomicU64::new(0),
             offset_commits: AtomicU64::new(0),
             offset_commit_errors: AtomicU64::new(0),
+            generation_allocator: AtomicU64::new(0),
         }
+    }
+
+    /// The ownership generation for `(topic, partition)`.
+    ///
+    /// Read by the receive loop when tracking a record so the tracked state and
+    /// its Ack/Nack calldata carry the ownership period they belong to. Stable
+    /// while the partition stays continuously owned; changes only when the
+    /// partition is reacquired after a revocation. Returns `0` when the
+    /// partition is not currently owned (the caller only tracks owned
+    /// partitions, so this fallback is not reached in practice).
+    #[must_use]
+    pub(crate) fn partition_generation(&self, topic: &str, partition: i32) -> u64 {
+        self.lock_assigned()
+            .generation(topic, partition)
+            .unwrap_or(0)
     }
 
     /// Returns `true` if auto-commit is enabled (rebalance handling disabled).
@@ -210,7 +269,7 @@ impl RebalanceState {
     /// Drain the revoked-partition queue, returning the partitions the receive
     /// loop should purge from the tracker. Returns an empty `Vec` if nothing
     /// has been revoked since the last call.
-    pub(crate) fn drain_revoked(&self) -> Vec<(String, i32)> {
+    pub(crate) fn drain_revoked(&self) -> Vec<RevokedPartition> {
         let mut guard = lock_ignore_poison(&self.revoked);
         if guard.is_empty() {
             return Vec::new();
@@ -251,19 +310,31 @@ impl RebalanceState {
         lock_ignore_poison(&self.assigned)
     }
 
-    /// Test-only: enqueue a revoked partition as if a rebalance callback had
-    /// fired, so the receive-loop reconcile path can be exercised without a
-    /// live broker.
+    /// Test-only: enqueue a revoked partition (tagged with `generation`) as if a
+    /// rebalance callback had fired, so the receive-loop reconcile path can be
+    /// exercised without a live broker.
     #[cfg(test)]
-    pub(crate) fn push_revoked_for_test(&self, topic: &str, partition: i32) {
-        lock_ignore_poison(&self.revoked).push((topic.to_string(), partition));
+    pub(crate) fn push_revoked_for_test(&self, topic: &str, partition: i32, generation: u64) {
+        lock_ignore_poison(&self.revoked).push(RevokedPartition {
+            topic: topic.to_string(),
+            partition,
+            generation,
+        });
     }
 
-    /// Test-only: mark a partition as assigned without going through a
-    /// rebalance callback.
+    /// Test-only: mark a partition as assigned (at `generation`) without going
+    /// through a rebalance callback.
     #[cfg(test)]
-    pub(crate) fn assign_for_test(&self, topic: &str, partition: i32) {
-        self.lock_assigned().add_partition(topic, partition);
+    pub(crate) fn assign_for_test(&self, topic: &str, partition: i32, generation: u64) {
+        self.lock_assigned()
+            .add_partition(topic, partition, generation);
+    }
+
+    /// Test-only: apply a full assignment (allocating/retaining generations) as if a
+    /// `post_rebalance(Assign)` had delivered `full`.
+    #[cfg(test)]
+    pub(crate) fn set_assignment_for_test(&self, full: &TopicPartitionList) {
+        self.set_assignment(full);
     }
 
     /// Test-only: record a commit outcome as if the commit callback had fired,
@@ -319,22 +390,38 @@ impl RebalanceState {
             }
         }
 
+        // Look up each partition's ownership generation and drop it from the assigned
+        // set. Queue every revoked partition (tagged with its own generation) for the
+        // receive loop to purge from the tracker; the generation lets the purge skip
+        // state that was re-tracked under a newer ownership period. Count only
+        // partitions that were genuinely owned for the revoked metric, mirroring
+        // the newly-added count in `set_assignment`.
+        let mut revoked_tagged = Vec::with_capacity(revoked.len());
+        let mut owned_revoked = 0u64;
         {
             let mut assigned = self.lock_assigned();
             for (topic, partition) in &revoked {
-                assigned.remove_partition(topic, *partition);
+                // Generation of the ownership period being revoked (default 0 if the
+                // partition wasn't actually owned).
+                let generation = assigned.generation(topic, *partition).unwrap_or(0);
+                if assigned.remove_partition(topic, *partition) {
+                    owned_revoked += 1;
+                }
+                revoked_tagged.push(RevokedPartition {
+                    topic: topic.clone(),
+                    partition: *partition,
+                    generation,
+                });
             }
         }
-        // Queue the revoked partitions for the receive loop to purge from the
-        // tracker, and drop them from the assigned set.
         {
             let mut revoked_queue = lock_ignore_poison(&self.revoked);
-            revoked_queue.extend(revoked.iter().cloned());
+            revoked_queue.extend(revoked_tagged);
         }
 
         let _ = self
             .partitions_revoked
-            .fetch_add(revoked.len() as u64, Ordering::Relaxed);
+            .fetch_add(owned_revoked, Ordering::Relaxed);
     }
 
     /// Replace the assigned set with the *complete* assignment `full`.
@@ -343,21 +430,35 @@ impl RebalanceState {
     /// delta. The `partitions_assigned` metric is incremented only by the number
     /// of partitions that are newly present (not previously owned), so
     /// cooperative-sticky rebalances that retain partitions don't re-count them.
+    ///
+    /// Each **newly acquired** partition is assigned a fresh ownership generation from
+    /// the monotonic allocator; **retained** partitions keep their existing generation
+    /// so records tracked during one continuous ownership all share one generation.
+    /// A partition reacquired after a revocation therefore gets a strictly
+    /// greater generation than the revocation queued for its prior ownership period.
     fn set_assignment(&self, full: &TopicPartitionList) {
         let full_partitions = topic_partitions(full);
         let mut assigned = self.lock_assigned();
-        // Count partitions that are newly assigned relative to the previous set.
-        let newly_added = full_partitions
-            .iter()
-            .filter(|(topic, partition)| !assigned.contains(topic, *partition))
-            .count();
-        assigned.clear();
+
+        let mut newly_added = 0u64;
+        // Rebuild the owned set: carry over the generation for retained partitions,
+        // allocate a fresh generation for newly acquired ones.
+        let mut next = AssignedPartitions::new();
         for (topic, partition) in &full_partitions {
-            assigned.add_partition(topic, *partition);
+            match assigned.generation(topic, *partition) {
+                Some(existing) => next.add_partition(topic, *partition, existing),
+                None => {
+                    newly_added += 1;
+                    let generation = self.generation_allocator.fetch_add(1, Ordering::Relaxed) + 1;
+                    next.add_partition(topic, *partition, generation);
+                }
+            }
         }
+        *assigned = next;
+
         let _ = self
             .partitions_assigned
-            .fetch_add(newly_added as u64, Ordering::Relaxed);
+            .fetch_add(newly_added, Ordering::Relaxed);
     }
 
     /// Handle a `post_rebalance` assign by storing the consumer's *complete*
@@ -558,9 +659,9 @@ mod tests {
         let mut ap = AssignedPartitions::new();
         assert!(!ap.contains("traces", 0));
 
-        ap.add_partition("traces", 0);
-        ap.add_partition("traces", 1);
-        ap.add_partition("metrics", 0);
+        ap.add_partition("traces", 0, 1);
+        ap.add_partition("traces", 1, 1);
+        ap.add_partition("metrics", 0, 1);
 
         assert!(ap.contains("traces", 0));
         assert!(ap.contains("traces", 1));
@@ -568,32 +669,35 @@ mod tests {
         assert!(!ap.contains("traces", 2));
         assert!(!ap.contains("logs", 0));
 
-        ap.remove_partition("traces", 0);
+        // remove_partition reports whether an owned partition was removed.
+        assert!(ap.remove_partition("traces", 0));
         assert!(!ap.contains("traces", 0));
         assert!(ap.contains("traces", 1));
 
         // Removing the last partition drops the topic entry.
-        ap.remove_partition("metrics", 0);
+        assert!(ap.remove_partition("metrics", 0));
         assert!(!ap.contains("metrics", 0));
         assert!(!ap.topics.contains_key("metrics"));
     }
 
     #[test]
-    fn assigned_partitions_clear() {
+    fn add_partition_keeps_existing_generation() {
         let mut ap = AssignedPartitions::new();
-        ap.add_partition("traces", 0);
-        ap.add_partition("metrics", 1);
-        ap.clear();
-        assert!(!ap.contains("traces", 0));
-        assert!(!ap.contains("metrics", 1));
+        ap.add_partition("traces", 0, 5);
+        // Re-adding an already-owned partition must not change its generation
+        // (retained across a rebalance).
+        ap.add_partition("traces", 0, 9);
+        assert_eq!(ap.generation("traces", 0), Some(5));
+        assert_eq!(ap.generation("traces", 9), None);
     }
 
     #[test]
     fn remove_unknown_partition_is_noop() {
         let mut ap = AssignedPartitions::new();
-        ap.add_partition("traces", 0);
-        ap.remove_partition("traces", 99);
-        ap.remove_partition("unknown", 0);
+        ap.add_partition("traces", 0, 1);
+        // Unknown partition/topic removals report false and change nothing.
+        assert!(!ap.remove_partition("traces", 99));
+        assert!(!ap.remove_partition("unknown", 0));
         assert!(ap.contains("traces", 0));
     }
 
@@ -645,15 +749,76 @@ mod tests {
         let state = RebalanceState::new(false);
         assert!(state.drain_revoked().is_empty());
 
-        {
-            let mut q = lock_ignore_poison(&state.revoked);
-            q.push(("traces".to_string(), 0));
-            q.push(("traces".to_string(), 1));
-        }
+        state.push_revoked_for_test("traces", 0, 0);
+        state.push_revoked_for_test("traces", 1, 0);
         let drained = state.drain_revoked();
         assert_eq!(drained.len(), 2);
         // Second drain is empty again.
         assert!(state.drain_revoked().is_empty());
+    }
+
+    #[test]
+    fn set_assignment_allocates_generation_for_new_partitions_only() {
+        let state = RebalanceState::new(false);
+
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        state.set_assignment(&tpl);
+        let e0 = state.partition_generation("traces", 0);
+        assert!(e0 > 0);
+
+        // Re-assigning the same set retains the partition -> generation unchanged.
+        state.set_assignment(&tpl);
+        assert_eq!(state.partition_generation("traces", 0), e0);
+
+        // Adding a new partition allocates a fresh, strictly-greater generation for
+        // it while the retained partition keeps its generation.
+        let mut tpl2 = TopicPartitionList::new();
+        let _ = tpl2.add_partition("traces", 0);
+        let _ = tpl2.add_partition("traces", 1);
+        state.set_assignment(&tpl2);
+        assert_eq!(state.partition_generation("traces", 0), e0);
+        assert!(state.partition_generation("traces", 1) > e0);
+    }
+
+    #[test]
+    fn reacquired_partition_gets_greater_generation() {
+        // A partition revoked and later reassigned to this consumer must get a
+        // strictly greater generation than its prior ownership period.
+        let state = RebalanceState::new(false);
+
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        state.set_assignment(&tpl);
+        let first = state.partition_generation("traces", 0);
+
+        // Revoke it (drops from the assigned set).
+        {
+            let mut assigned = state.lock_assigned();
+            assert!(assigned.remove_partition("traces", 0));
+        }
+
+        // Reassign -> new, greater generation.
+        state.set_assignment(&tpl);
+        assert!(state.partition_generation("traces", 0) > first);
+    }
+
+    #[test]
+    fn drain_revoked_preserves_generation_tag() {
+        // Revocations carry the generation of the ownership period being
+        // revoked, so the receive loop can purge only same-or-older tracker
+        // state. (handle_revoke stamps this; exercised end-to-end in the
+        // receiver integration tests.)
+        let state = RebalanceState::new(false);
+        state.push_revoked_for_test("traces", 0, 1);
+        state.push_revoked_for_test("traces", 1, 2);
+
+        let mut drained = state.drain_revoked();
+        drained.sort_by_key(|r| r.partition);
+        assert_eq!(drained[0].partition, 0);
+        assert_eq!(drained[0].generation, 1);
+        assert_eq!(drained[1].partition, 1);
+        assert_eq!(drained[1].generation, 2);
     }
 
     #[test]
