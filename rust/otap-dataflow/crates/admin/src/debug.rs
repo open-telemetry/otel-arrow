@@ -13,6 +13,8 @@ use axum::http::{StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
 
+use std::panic::AssertUnwindSafe;
+
 use crate::AppState;
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -21,13 +23,21 @@ pub(crate) fn routes() -> Router<AppState> {
     router
 }
 
-async fn get_heap_profile(State(_state): State<AppState>) -> Result<Response, (StatusCode, String)> {
-    // TODO fix how this can panic if the jemalloc profiling feature not enabled.
-    let mut prof_ctl = match jemalloc_pprof::PROF_CTL.as_ref() {
-        Some(prof_ctl) => prof_ctl,
-        None => {
-            // TODO no panic
-            panic!("no pprof ctl");
+async fn get_heap_profile(
+    State(_state): State<AppState>,
+) -> Result<Response, (StatusCode, String)> {
+    // Accessing `PROF_CTL` can panic if jemalloc is not the active allocator or was compiled w/out profiling
+    // feature. Catch this panic so we return a proper HTTP error instead.
+    let prof_ctl = std::panic::catch_unwind(AssertUnwindSafe(|| jemalloc_pprof::PROF_CTL.as_ref()));
+    let mut prof_ctl = match prof_ctl {
+        Ok(Some(prof_ctl)) => prof_ctl,
+        Ok(None) | Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Heap profiling not available \
+                 (jemalloc with profiling support is not the active allocator)."
+                    .into(),
+            ));
         }
     }
     .lock()
@@ -43,13 +53,18 @@ async fn get_heap_profile(State(_state): State<AppState>) -> Result<Response, (S
     match prof_ctl.dump_pprof() {
         Ok(pprof) => {
             let body = Body::from(pprof);
-            Ok(
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "application/x-protobuf")
-                    .body(body)
-                    .unwrap(), // TODO no unwrap
-            )
+            let resp = Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/x-protobuf")
+                .body(body)
+                .map_err(|e| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("Could not dump heap pprof: {e}"),
+                    )
+                })?;
+
+            Ok(resp)
         }
         Err(e) => {
             return Err((
