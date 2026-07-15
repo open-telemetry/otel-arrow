@@ -213,10 +213,11 @@ async fn shutdown_all_pipelines(
             );
         }
 
-        // Check if all pipelines have terminated
+        // Check if all pipelines have terminated. An empty snapshot means no
+        // pipelines were ever registered, which is itself a terminal state.
         let snapshot = state.observed_state_store.snapshot();
         let all_terminated =
-            !snapshot.is_empty() && snapshot.values().all(|status| status.is_terminated());
+            snapshot.is_empty() || snapshot.values().all(|status| status.is_terminated());
 
         if all_terminated {
             otel_info!(
@@ -636,6 +637,33 @@ mod tests {
         assert_eq!(
             status.failure_reason.as_deref(),
             Some("group delete failed")
+        );
+    }
+
+    /// Scenario: shutdown is requested with `wait=true` on a fresh engine
+    /// that has no pipelines registered (empty observed state store).
+    /// Guarantees: the handler treats an empty snapshot as all-terminated and
+    /// returns HTTP 200 immediately instead of polling until the timeout.
+    #[tokio::test]
+    async fn shutdown_returns_ok_immediately_when_snapshot_is_empty() {
+        let response = shutdown_all_pipelines(
+            State(test_app_state(stub(
+                Ok(None),
+                Ok(PipelineGroupConfig::new()),
+                Ok(delete_status("succeeded")),
+            ))),
+            Query(OperationOptions {
+                wait: true,
+                timeout_secs: 1,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "empty snapshot should satisfy shutdown immediately"
         );
     }
 }
