@@ -118,8 +118,7 @@ kube = {version = "4.0.0", features = ["derive"] }
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
-libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
+mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
 tikv-jemallocator = { version = "0.7.0" }
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "0.7.0"
@@ -224,7 +223,7 @@ zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
 cpu-time = "1.0.0"
 
-one_collect = "0.1.34532"
+one_collect = "0.1.34811"
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
@@ -234,7 +233,7 @@ flate2 = "1.1.5"
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = ">=0.3.47, <0.3.52"
+time = ">=0.3.47, <0.3.54"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -261,7 +260,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "66bfea4e84253996965c708c23a6eb38b0d848aa" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "c0a28d7541afd51dc763b7dea3458ebb3aee4d52" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
