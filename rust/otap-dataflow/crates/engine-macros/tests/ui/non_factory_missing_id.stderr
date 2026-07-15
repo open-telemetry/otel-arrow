@@ -1,0 +1,7 @@
+error: #[component_inventory] requires an explicit `id = "urn:..."` for items that are not factory statics with a `name` field
+ --> tests/ui/non_factory_missing_id.rs:4:1
+  |
+4 | #[component_inventory(category = Extension)]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `component_inventory` (in Nightly builds, run with -Z macro-backtrace for more info)

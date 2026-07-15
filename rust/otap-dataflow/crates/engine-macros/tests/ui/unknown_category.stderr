@@ -1,0 +1,5 @@
+error: unknown component category `Reciever`; expected one of: Receiver, Exporter, Processor, Extension
+ --> tests/ui/unknown_category.rs:4:34
+  |
+4 | #[component_inventory(category = Reciever)]
+  |                                  ^^^^^^^^

@@ -1,0 +1,7 @@
+error: unexpected end of input, missing required `category = <Category>`
+ --> tests/ui/missing_category.rs:4:1
+  |
+4 | #[component_inventory(description = "no category here")]
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the attribute macro `component_inventory` (in Nightly builds, run with -Z macro-backtrace for more info)
