@@ -682,6 +682,19 @@ The accounting has to be cheap enough to leave on in production.
 - The design should fit the current-thread, pinned-per-core runtime model rather
   than fight it.
 
+### Performance validation
+
+Before implementation is accepted, observe-only accounting should be measured
+against the same pipeline with accounting disabled. The checks should cover
+pipeline throughput, CPU cost, memory used by accounting state, and overhead at
+local retention sites and shared boundaries.
+
+The expected cost factors are ticket create, resize, transfer, and release
+operations; local ownership versus shared escrow; the number of instrumented
+retention sites; metric aggregation frequency; attribution cardinality; and
+size-estimation cost for each payload type. Final benchmark numbers should come
+from the implementation, not from this RFC.
+
 ## Drawbacks
 
 - Retaining components must keep ownership beside their own retained state, so
