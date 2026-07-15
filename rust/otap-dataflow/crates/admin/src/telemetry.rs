@@ -3736,8 +3736,8 @@ mod tests {
         );
     }
 
-    /// Full integration test: registers metrics, accumulates values, then validates
-    /// the Prometheus text output follows OTel OTLP-to-Prometheus translation rules.
+    /// Scenario: a metric set with scope and resource attributes is rendered as Prometheus text.
+    /// Guarantees: translated metric names, metadata, values, and labels follow OTel rules.
     #[test]
     fn test_format_prometheus_text_e2e_otel_compliance() {
         let registry = TelemetryRegistryHandle::new();
@@ -3805,8 +3805,14 @@ mod tests {
             "counter TYPE should be counter"
         );
         assert!(
-            output.contains(
-                "http_requests_total{otel_scope_name=\"http_server\",otel_scope_http_method=\"GET\"} 42 1000\n"
+            line_has_labels(
+                &output,
+                "http_requests_total{",
+                "} 42 1000",
+                &[
+                    r#"otel_scope_name="http_server""#,
+                    r#"otel_scope_http_method="GET""#,
+                ],
             ),
             "counter should have otel_scope_name and (omitted-when-empty) otel_scope_version labels. Output:\n{output}"
         );
@@ -3830,7 +3836,15 @@ mod tests {
             "TYPE should be counter"
         );
         assert!(
-            output.contains("http_request_duration_seconds_total{otel_scope_name=\"http_server\",otel_scope_http_method=\"GET\"} 1.25 1000\n"),
+            line_has_labels(
+                &output,
+                "http_request_duration_seconds_total{",
+                "} 1.25 1000",
+                &[
+                    r#"otel_scope_name="http_server""#,
+                    r#"otel_scope_http_method="GET""#,
+                ],
+            ),
             "should have correct value with labels. Output:\n{output}"
         );
 
@@ -3848,7 +3862,15 @@ mod tests {
             "TYPE should be gauge"
         );
         assert!(
-            output.contains("memory_usage_bytes{otel_scope_name=\"http_server\",otel_scope_http_method=\"GET\"} 1024 1000\n"),
+            line_has_labels(
+                &output,
+                "memory_usage_bytes{",
+                "} 1024 1000",
+                &[
+                    r#"otel_scope_name="http_server""#,
+                    r#"otel_scope_http_method="GET""#,
+                ],
+            ),
             "gauge should have correct value. Output:\n{output}"
         );
 
