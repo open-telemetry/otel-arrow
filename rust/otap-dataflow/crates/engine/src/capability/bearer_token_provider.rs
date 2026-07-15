@@ -11,8 +11,8 @@
 //!
 //! The `#[capability]` proc macro expands the trait into:
 //!
-//! - `pub mod local::BearerTokenProvider` (`!Send` trait variant)
-//! - `pub mod shared::BearerTokenProvider` (`Send` trait variant)
+//! - A `pub(crate) mod local` containing the `!Send` `BearerTokenProvider` trait variant
+//! - A `pub(crate) mod shared` containing the `Send` `BearerTokenProvider` trait variant
 //! - A `SharedAsLocalBearerTokenProvider` adapter
 //! - A zero-sized `pub struct BearerTokenProvider` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
@@ -83,10 +83,10 @@ impl BearerToken {
     /// Exposes the bearer token secret, for injection into an
     /// `Authorization` header or an `object_store` credential.
     ///
-    /// Named `expose_secret` (rather than a plain getter) so every
+    /// Named `expose_token` (rather than a plain getter) so every
     /// plaintext access is explicit and greppable.
     #[must_use]
-    pub fn expose_secret(&self) -> &str {
+    pub fn expose_token(&self) -> &str {
         self.secret.expose_secret()
     }
 
@@ -157,7 +157,7 @@ mod tests {
     fn accessors_round_trip() {
         let now = Instant::now();
         let token = BearerToken::new("super-secret".to_owned(), Some(now));
-        assert_eq!(token.expose_secret(), "super-secret");
+        assert_eq!(token.expose_token(), "super-secret");
         assert_eq!(token.expires_on(), Some(now));
 
         let non_expiring = BearerToken::new("s".to_owned(), None);
@@ -197,10 +197,10 @@ mod tests {
         let token = BearerToken::new("super-secret".to_owned(), None);
         let cloned = token.clone();
         // Both handles observe the same plaintext...
-        assert_eq!(token.expose_secret(), cloned.expose_secret());
+        assert_eq!(token.expose_token(), cloned.expose_token());
         // ...backed by one shared allocation (a clone is a refcount bump,
         // not a fresh copy of the secret bytes).
-        assert!(std::ptr::eq(token.expose_secret(), cloned.expose_secret()));
+        assert!(std::ptr::eq(token.expose_token(), cloned.expose_token()));
     }
 
     #[test]
