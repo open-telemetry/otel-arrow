@@ -21,82 +21,72 @@ use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum Signal {
+    #[attribute_value = "log-records"]
     Logs,
     Metrics,
     Traces,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum LossOutcome {
+pub enum Outcome {
     Dropped,
     Expired,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum HttpMethod {
-    #[attribute_value = "GET"]
-    Get,
-    #[attribute_value = "POST"]
-    Post,
-    Patch,
-}
-
-// A dynamic attribute set: every field is a per-record attribute.
-#[attribute_set(name = "test.loss.attrs", dynamic)]
+/// Dynamic fields use their field names as keys without annotations.
+#[attribute_set(name = "test.implicit.attrs", dynamic)]
 #[derive(Debug, Clone, Copy)]
-pub struct LossAttributes {
+pub struct ImplicitDynamicAttributes {
     pub signal: Signal,
-    pub outcome: LossOutcome,
+    pub outcome: Outcome,
 }
 
-// A dynamic attribute set that can be combined with static signal attributes.
-#[attribute_set(name = "test.outcome.attrs", dynamic)]
+/// An explicit key override changes the exported key from `outcome` to `result`.
+#[attribute_set(name = "test.explicit.attrs", dynamic)]
 #[derive(Debug, Clone, Copy)]
-pub struct OutcomeAttributes {
-    #[attribute(key = "outcome")]
-    pub outcome: LossOutcome,
+pub struct ExplicitDynamicAttributes {
+    #[attribute_key = "result"]
+    pub outcome: Outcome,
 }
 
-// A static attribute set: value fixed once at registration.
-#[attribute_set(name = "test.signal.attrs")]
+/// Static fields also use their field names as keys without annotations.
+#[attribute_set(name = "test.static.attrs")]
 #[derive(Debug, Clone, Copy)]
-pub struct SignalAttributes {
-    #[attribute(key = "signal")]
+pub struct StaticAttributes {
+    #[attribute_key = "static.signal"]
     pub signal: Signal,
 }
 
-// Scope attributes for the owning entity.
 #[attribute_set(name = "test.scope")]
 #[derive(Debug, Clone)]
-pub struct ScopeAttributes {
-    #[attribute(key = "node")]
-    pub node: String,
+pub struct TestScopeAttributes {
+    pub scope: String,
 }
 
-#[metric_set(name = "test.loss", dynamic_attributes = LossAttributes)]
+#[metric_set(
+    name = "test.dynamic",
+    dynamic_attributes = ImplicitDynamicAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct LossMetrics {
-    /// Number of items lost.
+pub struct DynamicMetrics {
     #[metric(unit = "{items}")]
-    pub lost_items: Counter<u64>,
+    pub items: Counter<u64>,
 }
 
-#[metric_set(name = "test.journald", static_attributes = SignalAttributes)]
+#[metric_set(name = "test.static", static_attributes = StaticAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct JournaldMetrics {
-    /// Number of records read.
+pub struct StaticMetrics {
     #[metric(unit = "{records}")]
     pub records: Counter<u64>,
 }
 
 #[metric_set(
-    name = "test.journald.outcomes",
-    static_attributes = SignalAttributes,
-    dynamic_attributes = OutcomeAttributes
+    name = "test.mixed",
+    static_attributes = StaticAttributes,
+    dynamic_attributes = ExplicitDynamicAttributes
 )]
 #[derive(Debug, Default, Clone)]
-pub struct JournaldOutcomeMetrics {
-    /// Number of records read by outcome.
+pub struct MixedMetrics {
     #[metric(unit = "{records}")]
     pub records: Counter<u64>,
 }
@@ -112,9 +102,9 @@ impl TestRegistrar {
         }
     }
 
-    fn scope() -> ScopeAttributes {
-        ScopeAttributes {
-            node: "test".to_string(),
+    fn scope() -> TestScopeAttributes {
+        TestScopeAttributes {
+            scope: "test".to_string(),
         }
     }
 }
@@ -149,77 +139,77 @@ impl MetricSetRegistrar for TestRegistrar {
 /// Scenario: enum variants use default and explicit exported strings.
 /// Guarantees: descriptors expose stable strings, indexes, and cardinality.
 #[test]
-fn attribute_enum_snake_case_and_override() {
-    assert_eq!(Signal::Logs.as_str(), "logs");
+fn attribute_enum_uses_default_and_override_values() {
+    assert_eq!(Signal::Logs.as_str(), "log-records");
     assert_eq!(Signal::Metrics.as_str(), "metrics");
     assert_eq!(Signal::Traces.as_str(), "traces");
     assert_eq!(Signal::CARDINALITY, 3);
-    assert_eq!(Signal::VARIANTS, &["logs", "metrics", "traces"]);
+    assert_eq!(Signal::VARIANTS, &["log-records", "metrics", "traces"]);
     assert_eq!(Signal::Logs.variant_index(), 0);
     assert_eq!(Signal::Traces.variant_index(), 2);
-
-    // Explicit overrides win; un-annotated variants fall back to snake_case.
-    assert_eq!(HttpMethod::Get.as_str(), "GET");
-    assert_eq!(HttpMethod::Post.as_str(), "POST");
-    assert_eq!(HttpMethod::Patch.as_str(), "patch");
-    assert_eq!(HttpMethod::CARDINALITY, 3);
 }
 
 /// Scenario: a two-field enum attribute set selects datapoint buckets.
 /// Guarantees: descriptors and mixed-radix indexes match declaration order.
 #[test]
 fn dynamic_attribute_set_descriptors_and_bucketing() {
-    assert_eq!(LossAttributes::CARDINALITY, 6);
-    let descriptors = LossAttributes::DESCRIPTORS;
+    assert_eq!(ImplicitDynamicAttributes::CARDINALITY, 6);
+    let descriptors = ImplicitDynamicAttributes::DESCRIPTORS;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].key, "signal");
-    assert_eq!(descriptors[0].variants, &["logs", "metrics", "traces"]);
+    assert_eq!(
+        descriptors[0].variants,
+        &["log-records", "metrics", "traces"]
+    );
     assert_eq!(descriptors[1].key, "outcome");
     assert_eq!(descriptors[1].variants, &["dropped", "expired"]);
 
     // First declared field (signal) is the low-order digit; radix 3 then 2.
-    let idx = |signal, outcome| LossAttributes { signal, outcome }.bucket_index();
-    assert_eq!(idx(Signal::Logs, LossOutcome::Dropped), 0);
-    assert_eq!(idx(Signal::Metrics, LossOutcome::Dropped), 1);
-    assert_eq!(idx(Signal::Traces, LossOutcome::Dropped), 2);
-    assert_eq!(idx(Signal::Logs, LossOutcome::Expired), 3);
-    assert_eq!(idx(Signal::Metrics, LossOutcome::Expired), 4);
-    assert_eq!(idx(Signal::Traces, LossOutcome::Expired), 5);
+    let idx = |signal, outcome| ImplicitDynamicAttributes { signal, outcome }.bucket_index();
+    assert_eq!(idx(Signal::Logs, Outcome::Dropped), 0);
+    assert_eq!(idx(Signal::Metrics, Outcome::Dropped), 1);
+    assert_eq!(idx(Signal::Traces, Outcome::Dropped), 2);
+    assert_eq!(idx(Signal::Logs, Outcome::Expired), 3);
+    assert_eq!(idx(Signal::Metrics, Outcome::Expired), 4);
+    assert_eq!(idx(Signal::Traces, Outcome::Expired), 5);
 }
 
-/// Scenario: two dynamic buckets report through the telemetry registry.
-/// Guarantees: each bucket retains attributes and aggregates its own values.
+/// Scenario: a dynamic set uses an `attribute_value` override.
+/// Guarantees: the dynamic datapoint carries the overridden enum wire value.
 #[test]
 fn dynamic_metric_set_export_carries_datapoint_attributes() {
     let registry = TelemetryRegistryHandle::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
-    let scope = ScopeAttributes {
-        node: "durable_buffer".to_string(),
+    let scope = TestScopeAttributes {
+        scope: "dynamic".to_string(),
     };
-    let mut loss = registry.register_metric_set_with_dynamic_attributes::<LossMetrics>(scope);
+    let mut metrics = registry.register_metric_set_with_dynamic_attributes::<DynamicMetrics>(scope);
 
     // Record into two distinct buckets, one of them twice to check aggregation.
-    loss.with(LossAttributes {
-        signal: Signal::Metrics,
-        outcome: LossOutcome::Expired,
-    })
-    .lost_items
-    .add(80);
-    loss.with(LossAttributes {
-        signal: Signal::Logs,
-        outcome: LossOutcome::Dropped,
-    })
-    .lost_items
-    .add(5);
-    loss.with(LossAttributes {
-        signal: Signal::Logs,
-        outcome: LossOutcome::Dropped,
-    })
-    .lost_items
-    .add(2);
+    metrics
+        .with(ImplicitDynamicAttributes {
+            signal: Signal::Metrics,
+            outcome: Outcome::Expired,
+        })
+        .items
+        .add(80);
+    metrics
+        .with(ImplicitDynamicAttributes {
+            signal: Signal::Logs,
+            outcome: Outcome::Dropped,
+        })
+        .items
+        .add(5);
+    metrics
+        .with(ImplicitDynamicAttributes {
+            signal: Signal::Logs,
+            outcome: Outcome::Dropped,
+        })
+        .items
+        .add(2);
 
-    reporter.report_dynamic(&mut loss).unwrap();
+    reporter.report_dynamic(&mut metrics).unwrap();
 
     // Drain the channel into the registry (one snapshot per touched bucket).
     let mut snapshot_count = 0;
@@ -253,7 +243,7 @@ fn dynamic_metric_set_export_carries_datapoint_attributes() {
         vec![
             (
                 vec![
-                    ("signal".to_string(), "logs".to_string()),
+                    ("signal".to_string(), "log-records".to_string()),
                     ("outcome".to_string(), "dropped".to_string()),
                 ],
                 7, // 5 + 2 aggregated in the same bucket
@@ -269,21 +259,21 @@ fn dynamic_metric_set_export_carries_datapoint_attributes() {
     );
 }
 
-/// Scenario: a static attribute is supplied when a metric set is registered.
-/// Guarantees: the fixed attribute is exported with the recorded datapoint.
+/// Scenario: a static set uses `attribute_key` and `attribute_value` overrides.
+/// Guarantees: the static datapoint carries both overridden key and enum wire value.
 #[test]
 fn static_metric_set_export_carries_fixed_attributes() {
     let registry = TelemetryRegistryHandle::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
-    let scope = ScopeAttributes {
-        node: "journald".to_string(),
+    let scope = TestScopeAttributes {
+        scope: "static".to_string(),
     };
-    let static_attrs = SignalAttributes {
+    let static_attrs = StaticAttributes {
         signal: Signal::Logs,
     };
-    let mut journald = registry
-        .register_metric_set_with_static_attributes::<JournaldMetrics>(scope, &static_attrs);
+    let mut journald =
+        registry.register_metric_set_with_static_attributes::<StaticMetrics>(scope, &static_attrs);
 
     journald.records.add(42);
     reporter.report(&mut journald).unwrap();
@@ -311,36 +301,39 @@ fn static_metric_set_export_carries_fixed_attributes() {
 
     assert_eq!(
         seen,
-        vec![(vec![("signal".to_string(), "logs".to_string())], 42)]
+        vec![(
+            vec![("static.signal".to_string(), "log-records".to_string())],
+            42
+        )]
     );
 }
 
-/// Scenario: fixed and per-record attributes are bound to one metric set.
-/// Guarantees: every emitted bucket includes the registration-time attribute.
+/// Scenario: a mixed set uses static and dynamic key/value overrides.
+/// Guarantees: every emitted bucket includes the static and dynamic overridden keys.
 #[test]
 fn static_and_dynamic_metric_set_export_carries_both_attribute_kinds() {
     let registry = TelemetryRegistryHandle::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
-    let static_attrs = SignalAttributes {
+    let static_attrs = StaticAttributes {
         signal: Signal::Logs,
     };
     let mut metrics = registry
-        .register_metric_set_with_static_and_dynamic_attributes::<JournaldOutcomeMetrics>(
-            ScopeAttributes {
-                node: "journald".to_string(),
+        .register_metric_set_with_static_and_dynamic_attributes::<MixedMetrics>(
+            TestScopeAttributes {
+                scope: "mixed".to_string(),
             },
             &static_attrs,
         );
     metrics
-        .with(OutcomeAttributes {
-            outcome: LossOutcome::Dropped,
+        .with(ExplicitDynamicAttributes {
+            outcome: Outcome::Dropped,
         })
         .records
         .add(4);
     metrics
-        .with(OutcomeAttributes {
-            outcome: LossOutcome::Expired,
+        .with(ExplicitDynamicAttributes {
+            outcome: Outcome::Expired,
         })
         .records
         .add(2);
@@ -373,15 +366,15 @@ fn static_and_dynamic_metric_set_export_carries_both_attribute_kinds() {
         vec![
             (
                 vec![
-                    ("signal".to_string(), "logs".to_string()),
-                    ("outcome".to_string(), "dropped".to_string()),
+                    ("static.signal".to_string(), "log-records".to_string()),
+                    ("result".to_string(), "dropped".to_string()),
                 ],
                 4,
             ),
             (
                 vec![
-                    ("signal".to_string(), "logs".to_string()),
-                    ("outcome".to_string(), "expired".to_string()),
+                    ("static.signal".to_string(), "log-records".to_string()),
+                    ("result".to_string(), "expired".to_string()),
                 ],
                 2,
             ),
@@ -394,26 +387,26 @@ fn static_and_dynamic_metric_set_export_carries_both_attribute_kinds() {
 #[test]
 fn generated_metric_set_registration_methods_dispatch_to_registrar() {
     let registrar = TestRegistrar::new();
-    let signal = SignalAttributes {
+    let signal = StaticAttributes {
         signal: Signal::Logs,
     };
 
-    let mut static_metrics = JournaldMetrics::register(&registrar, &signal);
+    let mut static_metrics = StaticMetrics::register(&registrar, &signal);
     static_metrics.records.add(1);
 
-    let mut dynamic_metrics = LossMetrics::register(&registrar);
+    let mut dynamic_metrics = DynamicMetrics::register(&registrar);
     dynamic_metrics
-        .with(LossAttributes {
+        .with(ImplicitDynamicAttributes {
             signal: Signal::Metrics,
-            outcome: LossOutcome::Dropped,
+            outcome: Outcome::Dropped,
         })
-        .lost_items
+        .items
         .add(1);
 
-    let mut combined_metrics = JournaldOutcomeMetrics::register(&registrar, &signal);
+    let mut combined_metrics = MixedMetrics::register(&registrar, &signal);
     combined_metrics
-        .with(OutcomeAttributes {
-            outcome: LossOutcome::Expired,
+        .with(ExplicitDynamicAttributes {
+            outcome: Outcome::Expired,
         })
         .records
         .add(1);
@@ -428,30 +421,30 @@ fn register_metric_sets_for_existing_entity() {
 
     // Register the owning entity once, then attach both a static and a dynamic
     // metric set to that same entity key.
-    let entity = registry.register_entity(ScopeAttributes {
-        node: "shared_entity".to_string(),
+    let entity = registry.register_entity(TestScopeAttributes {
+        scope: "shared".to_string(),
     });
 
-    let static_attrs = SignalAttributes {
+    let static_attrs = StaticAttributes {
         signal: Signal::Traces,
     };
     let mut journald = registry
-        .register_metric_set_with_static_attributes_for_entity::<JournaldMetrics>(
+        .register_metric_set_with_static_attributes_for_entity::<StaticMetrics>(
             entity,
             &static_attrs,
         );
     let mut loss =
-        registry.register_metric_set_with_dynamic_attributes_for_entity::<LossMetrics>(entity);
+        registry.register_metric_set_with_dynamic_attributes_for_entity::<DynamicMetrics>(entity);
 
     // Both metric sets should be bound to the entity we created.
     assert_eq!(loss.entity_key(), entity);
 
     journald.records.add(7);
-    loss.with(LossAttributes {
+    loss.with(ImplicitDynamicAttributes {
         signal: Signal::Traces,
-        outcome: LossOutcome::Dropped,
+        outcome: Outcome::Dropped,
     })
-    .lost_items
+    .items
     .add(3);
 
     reporter.report(&mut journald).unwrap();
@@ -481,7 +474,6 @@ fn register_metric_sets_for_existing_entity() {
     assert_eq!(
         seen,
         vec![
-            (vec![("signal".to_string(), "traces".to_string())], 7),
             (
                 vec![
                     ("signal".to_string(), "traces".to_string()),
@@ -489,6 +481,7 @@ fn register_metric_sets_for_existing_entity() {
                 ],
                 3,
             ),
+            (vec![("static.signal".to_string(), "traces".to_string())], 7),
         ]
     );
 }
@@ -500,15 +493,16 @@ fn read_only_visit_preserves_datapoint_values() {
     let registry = TelemetryRegistryHandle::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
-    let mut loss =
-        registry.register_metric_set_with_dynamic_attributes::<LossMetrics>(ScopeAttributes {
-            node: "readonly".to_string(),
-        });
-    loss.with(LossAttributes {
+    let mut loss = registry.register_metric_set_with_dynamic_attributes::<DynamicMetrics>(
+        TestScopeAttributes {
+            scope: "readonly".to_string(),
+        },
+    );
+    loss.with(ImplicitDynamicAttributes {
         signal: Signal::Metrics,
-        outcome: LossOutcome::Expired,
+        outcome: Outcome::Expired,
     })
-    .lost_items
+    .items
     .add(11);
     reporter.report_dynamic(&mut loss).unwrap();
     while let Ok(snapshot) = rx.try_recv() {

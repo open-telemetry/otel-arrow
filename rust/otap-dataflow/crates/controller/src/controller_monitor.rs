@@ -171,7 +171,7 @@ fn start_controller_monitor_extension(
 #[derive(Debug, Clone)]
 struct ControllerMonitorAttributes {
     /// Configured controller monitor extension instance identifier.
-    #[attribute(key = "extension.id")]
+    #[attribute_key = "extension.id"]
     extension_id: String,
 }
 

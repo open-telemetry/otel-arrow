@@ -72,11 +72,14 @@ Declare a regular `#[attribute_set]`, attach it to the metric set with
 `static_attributes`, and pass the value by reference when registering. The value
 applies to every datapoint from that registration.
 
+Every non-composed field in an attribute set becomes an attribute. Its key
+defaults to the field name with underscores replaced by dots. Use
+`#[attribute_key = "..."]` only when the exported key differs from that default.
+
 ```rust
 #[attribute_set(name = "receiver.signal")]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalAttributes {
-    #[attribute(key = "signal")]
     pub signal: Signal,
 }
 
@@ -108,7 +111,7 @@ attribute value and record through `with(...)`.
 #[attribute_set(name = "receiver.outcome", dynamic)]
 #[derive(Debug, Clone, Copy)]
 pub struct OutcomeAttributes {
-    #[attribute(key = "outcome")]
+    #[attribute_key = "result"]
     pub outcome: LossOutcome,
 }
 
@@ -150,9 +153,8 @@ combination.
 #[attribute_set(name = "processor.loss", dynamic)]
 #[derive(Debug, Clone, Copy)]
 pub struct LossAttributes {
-    #[attribute(key = "signal")]
     pub signal: Signal,
-    #[attribute(key = "outcome")]
+    #[attribute_key = "result"]
     pub outcome: LossOutcome,
 }
 

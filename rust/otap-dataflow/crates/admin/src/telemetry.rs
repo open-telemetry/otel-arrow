@@ -3578,7 +3578,7 @@ mod tests {
     #[attribute_set(name = "test.prometheus.scope")]
     #[derive(Debug, Clone)]
     struct PrometheusScopeAttributes {
-        #[attribute(key = "foo")]
+        #[attribute_key = "foo"]
         foo: String,
     }
 
@@ -3596,9 +3596,9 @@ mod tests {
     #[attribute_set(name = "test.prometheus.signal", dynamic)]
     #[derive(Debug, Clone, Copy)]
     struct DatapointSignalAttributes {
-        #[attribute(key = "signal")]
+        #[attribute_key = "signal"]
         signal: DatapointSignal,
-        #[attribute(key = "otel.scope.foo")]
+        #[attribute_key = "otel.scope.foo"]
         scope_foo: DatapointCollision,
     }
 

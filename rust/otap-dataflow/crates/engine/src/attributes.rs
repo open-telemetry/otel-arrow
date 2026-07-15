@@ -51,11 +51,9 @@ pub fn config_map_to_telemetry(
 #[derive(Debug, Clone, Default, Hash)]
 pub struct EngineAttributeSet {
     /// Core identifier.
-    #[attribute]
     pub core_id: usize,
 
     /// NUMA node identifier.
-    #[attribute]
     pub numa_node_id: usize,
 }
 
@@ -85,7 +83,6 @@ impl AttributeSetHandler for EngineEntityAttributeSet {
 #[derive(Debug, Clone, Default, Hash)]
 pub struct PipelineAttributeSet {
     /// Pipeline identifier as defined in the configuration.
-    #[attribute]
     pub pipeline_id: Cow<'static, str>,
 
     /// Engine attributes.
@@ -93,11 +90,9 @@ pub struct PipelineAttributeSet {
     pub engine_attrs: EngineAttributeSet,
 
     /// Pipeline group identifier.
-    #[attribute]
     pub pipeline_group_id: Cow<'static, str>,
 
     /// Deployment generation for this runtime instance.
-    #[attribute]
     pub deployment_generation: u64,
 }
 
@@ -119,7 +114,7 @@ pub struct PipelineAttributeSet {
 pub struct ExtensionScopeAttributeSet {
     /// Scope kind discriminator. Always paired with the populated payload
     /// field that matches it.
-    #[attribute(key = "scope.kind")]
+    #[attribute_key = "scope.kind"]
     pub(crate) kind: Cow<'static, str>,
 
     /// Pipeline-scope payload. Populated when `kind == "pipeline"`; left at
@@ -162,7 +157,6 @@ impl ExtensionScopeAttributeSet {
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionAttributeSet {
     /// Extension unique identifier within its host scope.
-    #[attribute]
     pub extension_id: Cow<'static, str>,
 
     /// Host scope of the extension.
@@ -170,7 +164,7 @@ pub struct ExtensionAttributeSet {
     pub extension_scope: ExtensionScopeAttributeSet,
 
     /// Physical variant of the extension (`"local"` or `"shared"`).
-    #[attribute(key = "extension.variant")]
+    #[attribute_key = "extension.variant"]
     pub extension_variant: Cow<'static, str>,
 }
 
@@ -179,7 +173,6 @@ pub struct ExtensionAttributeSet {
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeAttributeSet {
     /// Node unique identifier (in scope of the pipeline).
-    #[attribute]
     pub node_id: Cow<'static, str>,
 
     /// Pipeline attributes.
@@ -187,10 +180,9 @@ pub struct NodeAttributeSet {
     pub pipeline_attrs: PipelineAttributeSet,
 
     /// Node plugin URN.
-    #[attribute(key = "node.urn")]
+    #[attribute_key = "node.urn"]
     pub node_urn: Cow<'static, str>,
     /// Node type (e.g., "receiver", "processor", "exporter").
-    #[attribute]
     pub node_type: Cow<'static, str>,
 }
 
@@ -219,7 +211,6 @@ pub struct NodeWithTopicAttributeSet {
     #[compose]
     pub node_attrs: NodeAttributeSet,
     /// Topic name associated with the node metrics.
-    #[attribute]
     pub topic: Cow<'static, str>,
 }
 
@@ -231,7 +222,6 @@ pub struct NodeWithCustomTopicAttributeSet {
     #[compose]
     pub node_custom_attrs: NodeWithCustomAttributeSet,
     /// Topic name associated with the node metrics.
-    #[attribute]
     pub topic: Cow<'static, str>,
 }
 
@@ -331,7 +321,7 @@ mod tests {
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeChannelAttributeSet {
     /// Unique channel identifier within the host scope.
-    #[attribute(key = "channel.id")]
+    #[attribute_key = "channel.id"]
     pub channel_id: Cow<'static, str>,
 
     /// Node attributes.
@@ -342,20 +332,20 @@ pub struct NodeChannelAttributeSet {
     ///
     /// On the sender side, this is the port to which the channel is connected.
     /// On the receiver side, this defaults to the node's input port.
-    #[attribute(key = "node.port")]
+    #[attribute_key = "node.port"]
     pub node_port: Cow<'static, str>,
 
     /// Channel payload kind ("control" or "pdata").
-    #[attribute(key = "channel.kind")]
+    #[attribute_key = "channel.kind"]
     pub channel_kind: Cow<'static, str>,
     /// Concurrency mode of the channel ("local" or "shared").
-    #[attribute(key = "channel.mode")]
+    #[attribute_key = "channel.mode"]
     pub channel_mode: Cow<'static, str>,
     /// Channel type ("mpsc", "mpmc", "spsc", "spmc").
-    #[attribute(key = "channel.type")]
+    #[attribute_key = "channel.type"]
     pub channel_type: Cow<'static, str>,
     /// Channel implementation ("tokio", "flume", "internal").
-    #[attribute(key = "channel.impl")]
+    #[attribute_key = "channel.impl"]
     pub channel_impl: Cow<'static, str>,
 }
 
@@ -367,7 +357,7 @@ pub struct NodeChannelAttributeSet {
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionChannelAttributeSet {
     /// Unique channel identifier within the host scope.
-    #[attribute(key = "channel.id")]
+    #[attribute_key = "channel.id"]
     pub channel_id: Cow<'static, str>,
 
     /// Extension attributes.
@@ -375,9 +365,9 @@ pub struct ExtensionChannelAttributeSet {
     pub extension_attrs: ExtensionAttributeSet,
 
     /// Concurrency mode of the channel ("local" or "shared").
-    #[attribute(key = "channel.mode")]
+    #[attribute_key = "channel.mode"]
     pub channel_mode: Cow<'static, str>,
     /// Channel implementation ("tokio", "internal").
-    #[attribute(key = "channel.impl")]
+    #[attribute_key = "channel.impl"]
     pub channel_impl: Cow<'static, str>,
 }

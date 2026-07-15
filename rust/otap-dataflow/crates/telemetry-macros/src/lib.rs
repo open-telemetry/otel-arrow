@@ -8,7 +8,7 @@
 //!   - `#[attributes(name = "my.attributes.name")]`
 //!     Field attributes:
 //!   - `#[metric(name = "field.name", unit = "{unit}")]`
-//!   - `#[attribute(key = "field.key")]`
+//!   - `#[attribute_key = "field.key"]`
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -325,9 +325,9 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
 /// Container attribute:
 ///   - `#[attributes(name = "my.attributes.name")]`
 ///     Field attributes:
-///   - `#[attribute(key = "field.key")]` (optional, defaults to field name with dots)
+///   - `#[attribute_key = "field.key"]` (optional, defaults to field name with dots)
 ///   - `#[compose]` for fields that implement AttributeSetHandler
-#[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute, compose))]
+#[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute_key, compose))]
 pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -421,17 +421,6 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
             continue;
         }
 
-        // Check if this field has #[attribute] annotation
-        let has_attribute_attr = field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("attribute"));
-
-        if !has_attribute_attr {
-            // Skip fields without #[attribute] or #[compose] annotations
-            continue;
-        }
-
         // Collect doc comments for description (concatenate all lines)
         let mut desc_lines: Vec<String> = Vec::new();
         for attr in &field.attrs {
@@ -456,10 +445,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
             desc_lines.join(" ")
         };
 
-        // Find #[attribute(key = "...")]
+        // Find #[attribute_key = "..."]
         let mut key_attr: Option<String> = None;
         for attr in &field.attrs {
-            if let Some(key) = parse_attribute_field_attr(attr) {
+            let key = match parse_attribute_field_attr(attr) {
+                Ok(key) => key,
+                Err(error) => return error.to_compile_error().into(),
+            };
+            if let Some(key) = key {
                 key_attr = Some(key);
             }
         }
@@ -994,7 +987,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// and descriptor name via a container attribute.
 /// Usage:
 ///   #[otap_df_telemetry_macros::attribute_set(name = "my.attributes")]
-///   pub struct MyAttributes { #[attribute(key = "custom.key")] field: String, ... }
+///   pub struct MyAttributes { #[attribute_key = "custom.key")] field: String, ... }
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse arguments: `name = "..."` plus an optional bare `dynamic` flag.
@@ -1070,8 +1063,7 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!( #s #dynamic_impl ).into()
 }
 
-/// Marks every dynamic attribute-set field as an attribute and rejects
-/// compositions, which cannot participate in dense bucket indexing.
+/// Rejects compositions, which cannot participate in dense bucket indexing.
 fn normalize_dynamic_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
     let fields = match &mut s.fields {
         Fields::Named(fields) => &mut fields.named,
@@ -1093,13 +1085,6 @@ fn normalize_dynamic_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
                 field.span(),
                 "dynamic attribute_set does not support #[compose] fields",
             ));
-        }
-        if !field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("attribute"))
-        {
-            field.attrs.push(parse_quote!(#[attribute]));
         }
     }
     Ok(())
@@ -1135,7 +1120,7 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
         let ident = field.ident.clone().expect("named field must have an ident");
         let mut key_attr: Option<String> = None;
         for attr in &field.attrs {
-            if let Some(key) = parse_attribute_field_attr(attr) {
+            if let Some(key) = parse_attribute_field_attr(attr)? {
                 key_attr = Some(key);
             }
         }
@@ -1154,7 +1139,7 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
     if field_idents.is_empty() {
         return Err(syn::Error::new(
             s.span(),
-            "dynamic attribute_set requires at least one `#[attribute]` enum field",
+            "dynamic attribute_set requires at least one enum field",
         ));
     }
 
@@ -1238,19 +1223,27 @@ fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
     out
 }
 
-fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
-    if !attr.path().is_ident("attribute") {
-        return None;
+fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
+    if !attr.path().is_ident("attribute_key") {
+        return Ok(None);
     }
-    let mut out: Option<String> = None;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("key") {
-            let s: LitStr = meta.value()?.parse()?;
-            out = Some(s.value());
-        }
-        Ok(())
-    });
-    out
+    let syn::Meta::NameValue(name_value) = &attr.meta else {
+        return Err(syn::Error::new(
+            attr.span(),
+            "attribute_key must use the form #[attribute_key = \"...\"]",
+        ));
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(value),
+        ..
+    }) = &name_value.value
+    else {
+        return Err(syn::Error::new(
+            name_value.value.span(),
+            "attribute_key value must be a string literal",
+        ));
+    };
+    Ok(Some(value.value()))
 }
 
 #[cfg(test)]
@@ -1264,9 +1257,9 @@ mod tests {
         let attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
-                #[attribute(key = "outcome")]
+                #[attribute_key = "outcome"]
                 dropped: Outcome,
-                #[attribute(key = "outcome")]
+                #[attribute_key = "outcome"]
                 expired: Outcome,
             }
             "#,
@@ -1304,14 +1297,14 @@ mod tests {
     }
 
     /// Scenario: a dynamic attribute set omits field annotations.
-    /// Guarantees: every field receives the default attribute annotation.
+    /// Guarantees: every field is accepted as an attribute without a marker.
     #[test]
-    fn dynamic_attribute_set_marks_unannotated_fields() {
+    fn dynamic_attribute_set_accepts_unannotated_fields() {
         let mut attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
                 signal: Signal,
-                #[attribute(key = "error.type")]
+                #[attribute_key = "error.type"]
                 outcome: Outcome,
             }
             "#,
@@ -1320,24 +1313,36 @@ mod tests {
 
         normalize_dynamic_attribute_fields(&mut attributes)
             .expect("unannotated dynamic fields should be supported");
+        let generated = build_dynamic_attribute_set_impl(&attributes)
+            .expect("every dynamic field should be included as an attribute");
+        assert!(generated.to_string().contains("error.type"));
 
         let fields = match attributes.fields {
             Fields::Named(fields) => fields.named,
             _ => unreachable!("test input has named fields"),
         };
-        assert!(
-            fields[0]
-                .attrs
-                .iter()
-                .any(|attribute| attribute.path().is_ident("attribute"))
-        );
+        assert!(fields[0].attrs.is_empty());
         assert_eq!(
             fields[1]
                 .attrs
                 .iter()
-                .filter(|attribute| attribute.path().is_ident("attribute"))
+                .filter(|attribute| attribute.path().is_ident("attribute_key"))
                 .count(),
             1
+        );
+    }
+
+    /// Scenario: an attribute-key override omits its string value.
+    /// Guarantees: malformed overrides produce a targeted macro error.
+    #[test]
+    fn attribute_key_requires_a_string_value() {
+        let attr: Attribute = parse_quote!(#[attribute_key]);
+
+        let error = parse_attribute_field_attr(&attr)
+            .expect_err("an attribute key without a value should fail");
+        assert_eq!(
+            error.to_string(),
+            "attribute_key must use the form #[attribute_key = \"...\"]"
         );
     }
 }
