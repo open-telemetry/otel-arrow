@@ -9,8 +9,8 @@ Document every test immediately above its declaration using the language's
 customary comment syntax:
 
 ```text
-Scenario: <the behavior or condition under test>
-Guarantees: <the observable invariant protected by the test>
+<comment> Scenario: <the behavior or condition under test>
+<comment> Guarantees: <the observable invariant protected by the test>
 ```
 
 Make both statements specific enough for a reviewer to understand the test's
