@@ -113,7 +113,9 @@ similar counters. Do not introduce signal-specific or outcome-specific counters
 when a bounded attribute set expresses the same meaning.
 
 This follows the OpenTelemetry Collector's
-[component universal telemetry RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md). For more information, see [issue #3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
+[component universal telemetry RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+
+For more information, see [issue #3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and
