@@ -1434,7 +1434,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the UDP server to run at
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_udp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_udp(listening_addr);
@@ -1458,7 +1458,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the TCP server to run at
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_tcp(listening_addr);
@@ -1485,7 +1485,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the TCP server to run at
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_tcp(listening_addr);
@@ -1604,7 +1604,7 @@ mod tests {
     fn test_syslog_cef_receiver_tcp_truncation() {
         let test_runtime = TestRuntime::new();
 
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_tcp(listening_addr);
@@ -2110,7 +2110,7 @@ mod telemetry_tests {
             );
 
             // addr and port for the UDP server to run at
-            let listening_port = portpicker::pick_unused_port().expect("No free ports");
+            let listening_port = otap_df_test_net::pick_unused_loopback_udp_port();
             let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
             // Receiver with metrics enabled via pipeline.
@@ -2213,7 +2213,7 @@ mod telemetry_tests {
             );
 
             // Address
-            let port = portpicker::pick_unused_port().expect("No free ports");
+            let port = otap_df_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
             // Receiver with pipeline metrics.
@@ -2304,7 +2304,7 @@ mod telemetry_tests {
                 0,
             );
 
-            let port = portpicker::pick_unused_port().expect("No free ports");
+            let port = otap_df_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
             pipeline

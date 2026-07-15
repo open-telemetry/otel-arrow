@@ -10,6 +10,7 @@ use pest::iterators::Pair;
 
 use crate::opl::parser::expression::{
     parse_attribute_selection_expression, parse_expression, parse_index_expression,
+    parse_member_expression,
 };
 use crate::opl::parser::pipeline::PipelineBuilder;
 use crate::opl::parser::{Rule, invalid_child_rule_error};
@@ -68,6 +69,18 @@ pub(crate) fn parse_assignment_expression(
                 }
             }
         }
+        Rule::member_expression => match parse_member_expression(left, pipeline_builder)?.into() {
+            ScalarExpression::Source(source_expr) => source_expr,
+            other => {
+                return Err(ParserError::SyntaxError(
+                    left_query_location,
+                    format!(
+                        "Expected source scalar for member_expression rule, found {:?}",
+                        other
+                    ),
+                ));
+            }
+        },
         invalid_rule => {
             return Err(invalid_child_rule_error(
                 left_query_location,

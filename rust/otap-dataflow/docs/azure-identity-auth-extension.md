@@ -103,9 +103,9 @@ path free of authentication plumbing.
 | Startup gating | Opt into the engine readiness probe; `signal_ready()` after the first token publish so the engine holds data-path node startup until a token exists (bounded by the probe timeout). |
 | Sharing model | All state behind `Arc<Inner>`; every clone (consumers + background task) observes one token cache. At pipeline scope this is per pipeline instance (per core). |
 | Token cache | `tokio::sync::watch<Option<BearerToken>>` - lock-free fast-path read + pub/sub for `token_stream()`. |
-| Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers share one in-flight credential call. |
+| Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers - and the background refresh - share one in-flight credential call. |
 | Auth methods (v1) | `managed_identity` (system- or user-assigned), `development` (local dev tooling), and `workload_identity` (federated ServiceAccount token). |
-| Refresh tuning | Fixed constants (skew before expiry, retry delay, min cadence); not user-configurable. |
+| Refresh tuning | Fixed constants (skew before expiry, exponential-backoff-with-jitter retry, min cadence, refresh jitter); not user-configurable. |
 | Expiry handling | Absolute UNIX expiry converted once to a monotonic `Instant`, immune to wall-clock jumps thereafter. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
@@ -121,10 +121,9 @@ methods:
 /// A per-consumer subscription to token refreshes. Boxed to hide the concrete
 /// stream type so providers can back it differently (e.g. a `watch` channel or
 /// an `unfold`) without changing the signature.
-pub type TokenStream =
-    Pin<Box<dyn Stream<Item = Result<BearerToken, CapabilityError>> + 'static>>;
+pub type TokenStream = Pin<Box<dyn Stream<Item = BearerToken> + 'static>>;
 
-#[async_trait]
+#[capability(name = "bearer_token_provider", description = "...")]
 pub trait BearerTokenProvider {
     /// Return the current valid token. Fast path reads the cache; slow path
     /// performs a single credential call on a cache miss.
@@ -137,9 +136,10 @@ pub trait BearerTokenProvider {
 ```
 
 `BearerToken` is a hand-written shared data type carrying the secret token
-string and an optional `expires_on: Instant`. Errors are surfaced as
-`CapabilityError`, which carries the `(extension, capability)` identity plus the
-underlying source error.
+and an optional `expires_on: Instant`. Refresh failures are surfaced only via
+`get_token()`, which returns a `CapabilityError` carrying the
+`(extension, capability)` identity plus the underlying source error; the
+stream itself carries only successfully published tokens.
 
 The `TokenStream` alias omits a `Send` bound: the subscription is always
 consumed on the core that created it (thread-per-core), so it need not be `Send`.
@@ -265,10 +265,13 @@ groups:
 | `tenant_id` | `string?` | *none* | Entra tenant ID. Only for `workload_identity`; falls back to `AZURE_TENANT_ID`. |
 | `token_file_path` | `string?` (path) | *none* | Path to the projected federated token file. Only for `workload_identity`; falls back to `AZURE_FEDERATED_TOKEN_FILE`. |
 | `scope` | `string` | `https://monitor.azure.com/.default` | OAuth scope to request tokens for. Must be non-empty. |
+| `startup_timeout` | duration | `30s` | How long the engine holds data-path node startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Accepts human-readable durations (e.g. `30s`, `1m`); must be non-zero. Larger than the engine's 5 s readiness default to accommodate Azure cold-start plus a retry. |
 
 The config struct uses `#[serde(deny_unknown_fields)]` and is validated by the
 factory's `validate_config` hook before the pipeline starts. Validation rejects
-an empty/whitespace `scope`.
+an empty/whitespace `scope`, a zero `startup_timeout`, and any per-method field
+that does not apply to the selected method (`tenant_id`/`token_file_path` are
+`workload_identity`-only; `client_id` is not valid for `development`).
 
 ### Auth methods
 
@@ -283,25 +286,36 @@ an empty/whitespace `scope`.
 `start()` runs a `select!` loop with two arms:
 
 1. **Control channel** (`ctrl.recv()`):
-   - `Shutdown` - log and break, terminating the extension cleanly.
+   - `Shutdown` - return the final metric snapshot as the terminal state. The
+     control channel is polled even while a refresh is in flight, so a shutdown
+     arriving mid-acquisition cancels the in-progress token call rather than
+     letting a slow request run past the shutdown deadline.
    - `Config` - currently a no-op; refresh cadence is governed by token
      lifetime.
-   - `CollectTelemetry` - best-effort flush of the metric set to the reporter.
+   - `CollectTelemetry` - best-effort flush of the metric set to the reporter,
+     serviced without interrupting an in-flight refresh.
 2. **Refresh timer** (`sleep_until(next_refresh)`):
    - On success: publish the token with `send_replace` (which updates the cache
      regardless of receiver count, unlike `send`, which drops the value when
      there are no subscribers), then compute `next_refresh` from the token's
-     `expires_on` minus the skew buffer (clamped to a minimum cadence).
-   - On failure: log the error and reschedule after the fixed retry delay; keep
-     retrying for the lifetime of the extension.
+     `expires_on` minus the skew buffer (clamped to a minimum cadence), with a
+     small negative jitter so per-core extensions do not all refresh on the same
+     tick.
+   - On failure: log the error and reschedule using bounded exponential backoff
+     with jitter (from the base retry delay up to the cap), tracking consecutive
+     failures; keep retrying for the lifetime of the extension. The backoff
+     spreads retries across cores so a token-endpoint outage is not stampeded on
+     a fixed cadence.
 
 Tuning constants:
 
 | Constant | Value | Purpose |
 | --- | --- | --- |
 | `TOKEN_EXPIRY_BUFFER_SECS` | 299 (~5m) | Refresh this many seconds before `expires_on`. |
-| `MIN_TOKEN_REFRESH_INTERVAL_SECS` | 10 | Floor between successful refreshes; avoids busy-looping on near-expired tokens. |
-| `TOKEN_REFRESH_RETRY_SECS` | 10 | Reschedule delay after a failed acquisition. |
+| `MIN_TOKEN_REFRESH_INTERVAL_SECS` | 10 | Floor between successful refreshes; also the earliest a jittered refresh may land. Avoids busy-looping on near-expired tokens. |
+| `TOKEN_REFRESH_RETRY_SECS` | 10 | Base reschedule delay after a failed acquisition; doubles per consecutive failure. |
+| `MAX_TOKEN_REFRESH_RETRY_SECS` | 300 (5m) | Ceiling for the exponential retry backoff. |
+| `REFRESH_JITTER_SECS` | 60 | Max negative jitter applied to a scheduled refresh (never pulling it below the min cadence), to de-correlate per-core refreshes. |
 
 ### Expiry handling
 
@@ -397,10 +411,13 @@ Metrics are recorded in both the background refresh loop and the slow-path
    publishes a token onto the `watch` channel, then calls
    `EffectHandler::signal_ready()`.
 3. The engine holds data-path node spawning on the extension's readiness probe
-   (`wait_all_ready`) until that signal fires, bounded by the probe timeout
-   (default 5s; override via `with_readiness_probe_timeout_override`). If the
-   first token is not acquired in time, startup aborts with a readiness-timeout
-   error rather than starting nodes without a token.
+   (`wait_all_ready`) until that signal fires, bounded by the probe timeout. The
+   extension sets this via `with_readiness_probe_timeout_override` from the
+   `startup_timeout` config field (default `30s`, larger than the engine's 5 s
+   default because Azure cold-start plus the ~10 s failure-retry cadence needs
+   room for a retry inside the gate). If the first token is not acquired in
+   time, startup aborts with a readiness-timeout error rather than starting
+   nodes without a token.
 4. Data-path nodes then start. Each consumer resolves the capability once at
    construction (`require_local()` / `require_shared()`) and holds the typed
    handle for its lifetime - no capability resolution on the hot path. Because
@@ -414,8 +431,10 @@ Metrics are recorded in both the background refresh loop and the slow-path
 1. The engine drains data-path nodes first. The exporter finishes in-flight
    work and drops its capability handle.
 2. After all consumers drain, the engine sends `ExtensionControlMsg::Shutdown`
-   on the control channel. The refresh loop logs and breaks, dropping the
-   credential and the `watch` sender.
+   on the control channel. The refresh loop returns the final metric snapshot as
+   its terminal state and drops the credential and `watch` sender; a token
+   acquisition in flight at that moment is cancelled (see
+   [Refresh Loop](#refresh-loop)) so shutdown is not delayed by a slow request.
 
 ### Live reconfiguration
 
@@ -503,9 +522,13 @@ registration takes effect.
   on the same core share one `Arc<Inner>`); it does not share across cores.
   Consequently, **slow-path coalescing (`fetch_lock`) bounds the startup
   thundering herd to N concurrent acquisitions (one per core), but does not
-  eliminate it** - the per-core loops are uncoordinated. A future move to a
-  broader scope (group/engine) would let a single instance be shared across
-  cores without code changes (see
+  eliminate it** - the per-core loops are uncoordinated. To stop those
+  uncoordinated loops from realigning after startup, scheduled refreshes carry
+  negative jitter and failed acquisitions use bounded exponential backoff with
+  jitter, so steady-state refreshes and outage retries stay spread across cores
+  rather than firing on a shared cadence. A future move to a broader scope
+  (group/engine) would let a single instance be shared across cores without code
+  changes (see
   [Extension Scopes](extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all I/O is async (`reqwest` via the Azure SDK), so it never blocks other
@@ -541,8 +564,8 @@ Additional scenario coverage:
   result in a single credential call (one `auth_successes` increment), not a
   stampede.
 - **Refresh failure / retry.** A failing credential increments `auth_failures`,
-  the loop reschedules after the retry delay, and a subsequent success recovers
-  without restarting the extension.
+  the loop reschedules with bounded exponential backoff plus jitter, and a
+  subsequent success recovers without restarting the extension.
 - **Shutdown ordering.** The exporter drains before the extension receives
   `Shutdown`; no token is requested after shutdown begins.
 

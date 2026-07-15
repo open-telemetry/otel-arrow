@@ -1305,7 +1305,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         // tokio runtime to run grpc server in the background
@@ -1671,7 +1671,7 @@ mod tests {
     #[test]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let tokio_rt = Runtime::new().unwrap();
 
@@ -2085,7 +2085,7 @@ mod tests {
         use otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsServiceServer;
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let tokio_rt = Runtime::new().unwrap();
 
@@ -2266,7 +2266,7 @@ mod tests {
     #[test]
     fn test_shutdown_nacks_correlated_pdata() {
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let tokio_rt = Runtime::new().unwrap();
 
@@ -2445,7 +2445,7 @@ mod tests {
         use otap_df_pdata::proto::opentelemetry::arrow::v1::arrow_logs_service_server::ArrowLogsServiceServer;
 
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let tokio_rt = Runtime::new().unwrap();
 
@@ -2711,7 +2711,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
@@ -2835,7 +2835,7 @@ mod tests {
         let (shutdown_sender, shutdown_signal) = tokio::sync::oneshot::channel();
         let (ready_sender, ready_receiver) = tokio::sync::oneshot::channel();
         let grpc_addr = "127.0.0.1";
-        let grpc_port = portpicker::pick_unused_port().expect("No free ports");
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
         let listening_addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
         let tokio_rt = Runtime::new().unwrap();
