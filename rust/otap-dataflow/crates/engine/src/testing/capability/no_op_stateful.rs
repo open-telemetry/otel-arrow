@@ -16,8 +16,8 @@
 //!
 //! The `#[capability]` proc macro expands the trait below into:
 //!
-//! - `pub mod local::NoOpStateful` (`!Send` trait variant)
-//! - `pub mod shared::NoOpStateful` (`Send` trait variant)
+//! - `pub(crate) mod local::NoOpStateful` (`!Send` trait variant)
+//! - `pub(crate) mod shared::NoOpStateful` (`Send` trait variant)
 //! - A `SharedAsLocalNoOpStateful` adapter (auto-delegates `&mut self`)
 //! - A zero-sized `pub struct NoOpStateful` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
@@ -74,3 +74,12 @@ pub trait NoOpStateful {
     /// Exercises a `&self` read returning an owned `Option<_>`.
     fn last_recorded(&self) -> Option<u64>;
 }
+
+// The `#[capability]` macro emits the `local`/`shared` trait modules as
+// `pub(crate)`, so downstream test crates reach the variants through these
+// public aliases (a single surface) rather than the private submodule paths.
+
+/// The `!Send` (local) variant of the [`NoOpStateful`] capability trait.
+pub use local::NoOpStateful as LocalNoOpStateful;
+/// The `Send` (shared) variant of the [`NoOpStateful`] capability trait.
+pub use shared::NoOpStateful as SharedNoOpStateful;

@@ -11,8 +11,8 @@
 //!
 //! The `#[capability]` proc macro expands the trait below into:
 //!
-//! - `pub mod local::NoOpStateless` (`!Send` trait variant)
-//! - `pub mod shared::NoOpStateless` (`Send` trait variant)
+//! - `pub(crate) mod local::NoOpStateless` (`!Send` trait variant)
+//! - `pub(crate) mod shared::NoOpStateless` (`Send` trait variant)
 //! - A `SharedAsLocalNoOpStateless` adapter
 //! - A zero-sized `pub struct NoOpStateless` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
@@ -56,3 +56,12 @@ pub trait NoOpStateless {
     /// argument and an owned return.
     async fn echo_async(&self, value: String) -> String;
 }
+
+// The `#[capability]` macro emits the `local`/`shared` trait modules as
+// `pub(crate)`, so downstream test crates reach the variants through these
+// public aliases (a single surface) rather than the private submodule paths.
+
+/// The `!Send` (local) variant of the [`NoOpStateless`] capability trait.
+pub use local::NoOpStateless as LocalNoOpStateless;
+/// The `Send` (shared) variant of the [`NoOpStateless`] capability trait.
+pub use shared::NoOpStateless as SharedNoOpStateless;
