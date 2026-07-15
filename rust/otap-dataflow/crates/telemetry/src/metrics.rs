@@ -413,28 +413,38 @@ impl<M: DynamicMetricSetHandler> DynamicMetricSet<M> {
         (self.touched[bucket / 64] >> (bucket % 64)) & 1 == 1
     }
 
-    /// Produces one snapshot per touched bucket and clears the touched set and
-    /// per-bucket values. Returns an empty vector when nothing was recorded.
+    /// Produces one snapshot per touched bucket without clearing reported values.
+    ///
+    /// Empty touched buckets are cleared because they have no values to retry. A
+    /// caller must invoke [`Self::clear_bucket`] only after it successfully sends
+    /// a returned snapshot.
     ///
     /// Reporting is intentionally **event-driven**: only buckets recorded into
     /// since the last drain are exported. So an `always_flush` instrument (e.g.
     /// `Gauge`/`Observe*`) in a dynamic set is exported only for intervals in
     /// which its combination was recorded, not every cycle. A plain (non-dynamic)
     /// set is usually the better fit for continuously-sampled values.
-    pub(crate) fn drain_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+    pub(crate) fn pending_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut out = Vec::new();
         for bucket in 0..self.buckets.len() {
-            if self.is_touched(bucket) && self.buckets[bucket].needs_flush() {
-                out.push(MetricSetSnapshot {
-                    key: self.key,
-                    bucket,
-                    metrics: self.buckets[bucket].snapshot_values(),
-                });
-                self.buckets[bucket].clear_values();
+            if self.is_touched(bucket) {
+                if self.buckets[bucket].needs_flush() {
+                    out.push(MetricSetSnapshot {
+                        key: self.key,
+                        bucket,
+                        metrics: self.buckets[bucket].snapshot_values(),
+                    });
+                } else {
+                    self.clear_bucket(bucket);
+                }
             }
         }
-        self.touched.iter_mut().for_each(|w| *w = 0);
         out
+    }
+
+    pub(crate) fn clear_bucket(&mut self, bucket: usize) {
+        self.buckets[bucket].clear_values();
+        self.touched[bucket / 64] &= !(1u64 << (bucket % 64));
     }
 }
 

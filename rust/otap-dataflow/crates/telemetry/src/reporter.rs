@@ -80,18 +80,21 @@ impl MetricsReporter {
         }
     }
 
-    /// Report a dynamic metric set: drains each touched bucket into its own
-    /// snapshot and sends them. Buckets that fail to send (channel full) are
-    /// dropped for this interval, consistent with the loss handling of
-    /// [`Self::report`] when the channel is full.
+    /// Report a dynamic metric set: snapshots each touched bucket and sends it.
+    ///
+    /// A bucket is cleared only after its snapshot is accepted. If the channel
+    /// is full, that bucket and the remaining buckets stay pending for retry,
+    /// matching [`Self::report`]'s deferred-send behavior.
     pub fn report_dynamic<M: DynamicMetricSetHandler>(
         &mut self,
         metrics: &mut DynamicMetricSet<M>,
     ) -> Result<(), Error> {
-        for snapshot in metrics.drain_snapshots() {
-            // A `Deferred` outcome (channel full) drops this bucket's snapshot
-            // for the interval; the values were already cleared by drain.
-            let _ = self.try_report_snapshot_with_outcome(snapshot)?;
+        for snapshot in metrics.pending_snapshots() {
+            let bucket = snapshot.bucket();
+            match self.try_report_snapshot_with_outcome(snapshot)? {
+                ReportOutcome::Sent => metrics.clear_bucket(bucket),
+                ReportOutcome::Deferred => break,
+            }
         }
         Ok(())
     }

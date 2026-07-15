@@ -259,6 +259,44 @@ fn dynamic_metric_set_export_carries_datapoint_attributes() {
     );
 }
 
+/// Scenario: a dynamic bucket is reported while its reporting channel is full.
+/// Guarantees: its values remain pending, accumulate subsequent recordings, and
+/// are sent after channel capacity returns.
+#[test]
+fn dynamic_metric_set_retries_deferred_bucket() {
+    let registry = TelemetryRegistryHandle::new();
+    let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+    let attrs = ImplicitDynamicAttributes {
+        signal: Signal::Logs,
+        outcome: Outcome::Dropped,
+    };
+    let mut metrics = registry.register_metric_set_with_dynamic_attributes::<DynamicMetrics>(
+        TestScopeAttributes {
+            scope: "deferred".to_string(),
+        },
+    );
+
+    metrics.with(attrs).items.add(3);
+    reporter.report_dynamic(&mut metrics).unwrap();
+
+    metrics.with(attrs).items.add(4);
+    reporter.report_dynamic(&mut metrics).unwrap();
+
+    // The deferred bucket stays live, so later recordings join its retry snapshot.
+    metrics.with(attrs).items.add(6);
+
+    let first = rx
+        .try_recv()
+        .expect("first snapshot should fill the channel");
+    assert_eq!(first.get_metrics()[0].to_u64_lossy(), 3);
+
+    reporter.report_dynamic(&mut metrics).unwrap();
+    let retry = rx
+        .try_recv()
+        .expect("deferred dynamic bucket should be retried");
+    assert_eq!(retry.get_metrics()[0].to_u64_lossy(), 10);
+}
+
 /// Scenario: a static set uses `attribute_key` and `attribute_value` overrides.
 /// Guarantees: the static datapoint carries both overridden key and enum wire value.
 #[test]
