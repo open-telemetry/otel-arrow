@@ -1,60 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784082261918,
+  "lastUpdate": 1784138957609,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Arthur Câmara",
-            "username": "alochaus",
-            "email": "arthur_camara@outlook.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "281e61fd2c23b2e0374a7a43c50839632ec48acc",
-          "message": "feat: handle Ack and Nack messages in OTAP Exporter. (#1994)\n\n# Change Summary\n\nPart of #1325 (see also #1324).\n\n## Problem: flaky test due to sleep-based synchronization.\n\nThe OTAP Exporter had two related issues:\n\n### 1. Dropped Context\n\nWhen the exporter received pipeline data (OtapPdata), it split the\nmessage into context and payload, then threw away the context:\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/82f71508f8e598e78853335cce82195e894894cd/rust/otap-dataflow/crates/otap/src/otap_exporter.rs#L233-L235\n\nThe context carries routing information that tells the pipeline who to\nnotify when a message succeeds or fails. Without it, the exporter was a\nblack hole — data went in, but no confirmation ever came back.\n\n### 2. Flaky Test\n\nThe test `test_receiver_not_ready_on_start` had no way to know when the\nexporter finished processing, so it used arbitrary sleeps:\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/82f71508f8e598e78853335cce82195e894894cd/rust/otap-dataflow/crates/otap/src/otap_exporter.rs#L866-L868\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/82f71508f8e598e78853335cce82195e894894cd/rust/otap-dataflow/crates/otap/src/otap_exporter.rs#L870-L872\n\n\nhttps://github.com/open-telemetry/otel-arrow/blob/82f71508f8e598e78853335cce82195e894894cd/rust/otap-dataflow/crates/otap/src/otap_exporter.rs#L883-L885\n\nOn a slow machine or under load, these might not be long enough. On a\nfast machine, they waste time.\n\n## Solution: thread context through for ACK/NACK.\n\nThe core idea is to preserve the `OtapPdata` context by using\n`take_payload()` instead of `into_parts()`.\n\nThis extracts the payload for gRPC transmission while keeping the\ncontext alive in the original OtapPdata. Then pass that context through\nthe entire streaming pipeline so it can be returned with ACK (success)\nor NACK (failure) notifications.\n\n## Key changes\n\n1. Preserve context at the entry point\n\n```rust\n  // Before: context discarded\n  let (_context, payload) = pdata.into_parts();\n\n  // After: payload extracted, context preserved\n  let payload = pdata.take_payload();\n```\n\n2. Pair each batch with its context through the pipeline\n\nThe internal channels changed from carrying just data to carrying\n(context, data) tuples:\n\n```rust\n  // Before\n  channel::<OtapArrowRecords>(64)\n\n  // After\n  channel::<(OtapPdata, OtapArrowRecords)>(64)\n```\n\n3. Correlate gRPC responses with their original requests\n\nThe exporter uses bidirectional gRPC streaming — requests go out on one\nstream, responses come back on another. A FIFO correlation channel pairs\nthem:\n\n```\n  create_req_stream ──sends pdata──→ [correlation channel] ──recv pdata──→ handle_res_stream\n    (yielded batch)                                                         (got response)\n```\n\nSince both streams are ordered, the first response always corresponds to\nthe first request.\n\n\n4. Send ACK/NACK in the main loop\n\n```rust\n  Some(PDataMetricsUpdate::Exported(signal_type, pdata)) => {\n      self.pdata_metrics.inc_exported(signal_type);\n      effect_handler.notify_ack(AckMsg::new(pdata)).await?;\n  },\n  Some(PDataMetricsUpdate::Failed(signal_type, pdata)) => {\n      self.pdata_metrics.inc_failed(signal_type);\n      effect_handler.notify_nack(NackMsg::new(\"export failed\", pdata)).await?;\n  },\n```\n\nThe effect_handler uses the context inside pdata to route ACK/NACK back\nthrough the pipeline.\n\n\n5. Replace sleeps with deterministic waits in the test\n\n```Rust\n  // Before: sleep and hope\n  tokio::time::sleep(Duration::from_millis(5)).await;\n\n  // After: wait for the actual event\n  timeout(Duration::from_secs(5), async {\n      loop {\n          match pipeline_ctrl_msg_rx.recv().await {\n              Ok(PipelineControlMsg::DeliverNack { .. }) => break,\n              Ok(_) => continue,\n              Err(_) => panic!(\"pipeline ctrl channel closed\"),\n          }\n      }\n  }).await.expect(\"Timed out waiting for NACK\");\n```\n\nThe test is now event-driven: it proceeds as soon as the NACK/ACK\narrives, with a 5-second timeout as a safety net.\n\n## What issue does this PR close?\n\n* https://github.com/open-telemetry/otel-arrow/issues/1611\n\n## How are these changes tested?\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\n---------\n\nCo-authored-by: Drew Relmas <drewrelmas@gmail.com>",
-          "timestamp": "2026-03-04T00:59:02Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/281e61fd2c23b2e0374a7a43c50839632ec48acc"
-        },
-        "date": 1772593668108,
-        "tool": "customBiggerIsBetter",
-        "benches": [
-          {
-            "name": "otlp_scaling_efficiency_2_cores",
-            "value": 0.7643,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_4_cores",
-            "value": 0.7832,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_8_cores",
-            "value": 0.795,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_16_cores",
-            "value": 0.5157,
-            "unit": "",
-            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
-          },
-          {
-            "name": "otlp_scaling_efficiency_avg",
-            "value": 0.7146,
-            "unit": "",
-            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -5534,6 +5482,82 @@ window.BENCHMARK_DATA = {
           {
             "name": "otap_scaling_efficiency_avg",
             "value": 0.8267,
+            "unit": "",
+            "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "renovate[bot]",
+            "username": "renovate[bot]",
+            "email": "29139614+renovate[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ed8deab4e1a56145bcc3b1460a1507813a03c9b6",
+          "message": "chore(deps): update all patch versions (#3485)\n\nThis PR contains the following updates:\n\n| Package | Type | Update | Change |\n|---|---|---|---|\n| [syn](https://redirect.github.com/dtolnay/syn) |\nworkspace.dependencies | patch | `2.0.118` → `2.0.119` |\n| [xxhash-rust](https://redirect.github.com/DoumanAsh/xxhash-rust) |\nworkspace.dependencies | patch | `0.8.16` → `0.8.17` |\n\n---\n\n### Release Notes\n\n<details>\n<summary>dtolnay/syn (syn)</summary>\n\n###\n[`v2.0.119`](https://redirect.github.com/dtolnay/syn/releases/tag/2.0.119)\n\n[Compare\nSource](https://redirect.github.com/dtolnay/syn/compare/2.0.118...2.0.119)\n\n- Preserve attributes on tail-call expressions in statement position\n([#&#8203;1994](https://redirect.github.com/dtolnay/syn/issues/1994))\n- Parse field-representing types builtin in type position\n([#&#8203;1996](https://redirect.github.com/dtolnay/syn/issues/1996))\n\n</details>\n\n---\n\n### Configuration\n\n📅 **Schedule**: (UTC)\n\n- Branch creation\n  - \"before 8am every weekday\"\n- Automerge\n  - At any time (no schedule defined)\n\n🚦 **Automerge**: Disabled by config. Please merge this manually once you\nare satisfied.\n\n♻ **Rebasing**: Whenever PR becomes conflicted, or you tick the\nrebase/retry checkbox.\n\n👻 **Immortal**: This PR will be recreated if closed unmerged. Get\n[config\nhelp](https://redirect.github.com/renovatebot/renovate/discussions) if\nthat's undesired.\n\n---\n\n- [ ] <!-- rebase-check -->If you want to rebase/retry this PR, check\nthis box\n\n---\n\nThis PR was generated by [Mend Renovate](https://mend.io/renovate/).\nView the [repository job\nlog](https://developer.mend.io/github/open-telemetry/otel-arrow).\n\n<!--renovate-debug:eyJjcmVhdGVkSW5WZXIiOiI0My4yNTkuMiIsInVwZGF0ZWRJblZlciI6IjQzLjI1OS4yIiwidGFyZ2V0QnJhbmNoIjoibWFpbiIsImxhYmVscyI6WyJkZXBlbmRlbmNpZXMiXX0=-->\n\nCo-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>",
+          "timestamp": "2026-07-15T16:50:03Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/ed8deab4e1a56145bcc3b1460a1507813a03c9b6"
+        },
+        "date": 1784138955923,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "otlp_scaling_efficiency_2_cores",
+            "value": 0.7809,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_4_cores",
+            "value": 0.8959,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_8_cores",
+            "value": 0.8179,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_16_cores",
+            "value": 0.8322,
+            "unit": "",
+            "extra": "[OTLP] Scaling efficiency at 16 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otlp_scaling_efficiency_avg",
+            "value": 0.8318,
+            "unit": "",
+            "extra": "[OTLP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
+          },
+          {
+            "name": "otap_scaling_efficiency_2_cores",
+            "value": 0.985,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 2 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_4_cores",
+            "value": 0.9809,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 4 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_8_cores",
+            "value": 0.6982,
+            "unit": "",
+            "extra": "[OTAP] Scaling efficiency at 8 cores (1.0 = perfect linear scaling)"
+          },
+          {
+            "name": "otap_scaling_efficiency_avg",
+            "value": 0.888,
             "unit": "",
             "extra": "[OTAP] Average scaling efficiency across all multi-core tests (1.0 = perfect)"
           }
