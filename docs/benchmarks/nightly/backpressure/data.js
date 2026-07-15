@@ -1,90 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784021822459,
+  "lastUpdate": 1784074458826,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "name": "Laurent Quérel",
-            "username": "lquerel",
-            "email": "l.querel@f5.com"
-          },
-          "committer": {
-            "name": "GitHub",
-            "username": "web-flow",
-            "email": "noreply@github.com"
-          },
-          "id": "5507512bea4dd9e53a8ae74d1f5cd3a85b875d2c",
-          "message": "Add live pipeline reconfiguration and shutdown control to the admin API (#2618)\n\n## Change Summary\n\nThis PR adds live pipeline lifecycle control to the OTAP Dataflow Engine\nadmin API.\n\nThe controller now runs as a resident runtime manager and supports\nin-memory pipeline operations on a running engine:\n\n- create a new pipeline in an existing group\n- replace an existing pipeline with a health-gated serial rolling\ncutover\n- resize a pipeline when only the effective core allocation changes\n- detect identical updates and return a successful `noop` result\n- shut down an individual logical pipeline and track shutdown progress\n\nThe PR also adds rollout and shutdown status resources, extends runtime\nand observed-state tracking with deployment generations so overlapping\ninstances remain distinguishable, updates the Rust admin SDK with typed\nlive-control methods/outcomes, and documents the feature.\n\n## Design Decisions\n\nThis PR keeps live reconfiguration scoped to one logical pipeline at a\ntime, keyed by `(group, pipeline)`. Reconfiguration mutations go through\none declarative endpoint, `PUT /api/v1/groups/{group}/pipelines/{id}`,\nwhile pipeline shutdown remains a separate operation through `POST\n/api/v1/groups/{group}/pipelines/{id}/shutdown`.\n\nThe controller classifies each reconfiguration request as `create`,\n`noop`, `resize`, or `replace` instead of exposing separate start,\nscale, and update APIs.\n\nTopology and node-configuration changes use a serial rolling cutover\nwith overlap: start the new instance on one core, wait for `Admitted`\nand `Ready`, then drain the old instance on that core. This preserves\ncontinuity while fitting the existing runtime model, without requiring a\nfull second serving fleet or a separate traffic-switching layer.\n\nPure core-allocation changes use a dedicated internal resize path so\nscale up/down only starts or stops the delta cores and leaves unchanged\ncores running.\n\nRuntime mutations remain intentionally narrow. This PR keeps changes in\nmemory only and rejects updates that would require topic-broker\nreconfiguration or broader engine/group-level policy mutation. Runtime\nconfig persistence remains out of scope.\n\nOperations are explicit and observable through rollout and shutdown ids.\nTerminal operation history is intentionally bounded in memory, so old\nrollout/shutdown ids may eventually return `404` or `Ok(None)` from the\nSDK after retention pruning.\n\nObserved status is deployment-generation-aware. During overlapping\nrollouts, `/status.instances` preserves old and new runtime instances,\nwhile aggregate readiness/liveness still uses the selected serving\ngeneration per core. After controller work completes, superseded\nobserved instances are compacted so status memory does not grow\nunbounded across rollouts.\n\nThe controller also hardens lifecycle cleanup around live operations:\nworker panics are converted into terminal rollout/shutdown failure\nstates, runtime exits are reported through supervised bookkeeping, and\nshutdown drain completion waits for upstream closure rather than queue\nemptiness alone.\n\n## What issue does this PR close?\n\n* Closes #2617\n\n## How are these changes tested?\n\nCommands run:\n\n- `cargo xtask check`\n\nAutomated coverage includes:\n\n- rollout planning for create, replace, resize, scale up/down, noop,\ntopic-mutation rejection, and conflict handling\n- rollout execution success/failure paths, rollback behavior, worker\npanic cleanup, and bounded operation retention\n- per-pipeline shutdown planning, progress tracking, conflict handling,\ntimeout behavior, and worker panic cleanup\n- observed-state generation selection, overlap-aware\n`/status.instances`, compaction of superseded generations, and\nshutdown-terminal status behavior\n- admin HTTP handlers for reconfigure, rollout status, shutdown,\nshutdown status, operation errors, wait timeouts, and missing retained\noperation ids\n- Rust admin SDK decoding for typed reconfigure/shutdown outcomes,\noperation rejection errors, pipeline details/status, and\nrollout/shutdown polling\n- engine shutdown-drain behavior where downstream nodes wait for\nupstream channel closure before completing shutdown drain\n- route/doc compatibility checks through the full workspace validation\nsuite\n\nManual validation covered:\n\n- creating a new pipeline through the admin API\n- replacing a pipeline with a topology/config change\n- resizing a pipeline by changing only core allocation\n- submitting an identical config and observing a noop rollout\n- shutting down a pipeline and observing shutdown tracking/status\n- checking generation-aware status during overlapping rollout behavior\n\n## Are there any user-facing changes?\n\nYes.\n\n- The admin API now supports live pipeline create/update/resize/noop via\n`PUT /api/v1/groups/{group}/pipelines/{id}`.\n- Pipeline shutdown is available via `POST\n/api/v1/groups/{group}/pipelines/{id}/shutdown`.\n- Rollout and shutdown progress can be queried through dedicated status\nendpoints.\n- New pipeline-scoped admin routes are under `/api/v1/groups/...`.\n- Pipeline status payloads now include deployment-generation-aware\ninstance data and rollout metadata while preserving the existing\naggregate status shape.\n- Terminal rollout and shutdown ids are retained only within a bounded\nin-memory window.\n- The Rust admin SDK now exposes typed clients, request options,\noperation outcomes, and error models for live reconfiguration and\nshutdown.\n- Operator documentation was added in\n`rust/otap-dataflow/docs/admin/live-reconfiguration.md`.\n- Support for the existing WebSocket log stream endpoint\n`/api/v1/telemetry/logs/stream` is preserved/restored in this branch.",
-          "timestamp": "2026-04-24T05:43:29Z",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/5507512bea4dd9e53a8ae74d1f5cd3a85b875d2c"
-        },
-        "date": 1777057638158,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": -0.016952024772763252,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.0578106113534,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.49778017075609,
-            "unit": "%",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 16.525260416666665,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 17.0859375,
-            "unit": "MiB",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 98312.28030042727,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 98328.946223516,
-            "unit": "logs/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 60.002677,
-            "unit": "seconds",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2715873.715341777,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2561073.13807848,
-            "unit": "bytes/sec",
-            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -14222,6 +14140,160 @@ window.BENCHMARK_DATA = {
           {
             "name": "egress_bytes_per_log",
             "value": 32.03377070278073,
+            "unit": "bytes/log",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Drew Relmas",
+            "username": "drewrelmas",
+            "email": "drewrelmas@gmail.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "339e7ac67cc04ab693a08cb4692203f35bd99a0f",
+          "message": "feat(recordset_kql_processor): Record signals.dropped in recordset_kql_processor (#3482)\n\n# Change Summary\n\nExtends the `signals.dropped` flow metric (#2859) to the recordset_kql\nprocessor so pipelines can observe how many records it filters out.\nTogether with the earlier transform-processor change, this gives every\nKQL-based decision node the same queryable dropped count already\nprovided by `filter_processor` and `log_sampling_processor`.\n\nVery similar to recent PR #3473.\n\n### Validation\n\nRan `configs/trafficgen-flow-metrics-demo.yaml` (with `--features\nrecordset-kql-processor`), which places the recordset_kql processor as\none of four interior decision nodes in a single `ingest_pipeline` flow\nrange: the sampler keeps ~2/3, filter drops `worker-1`, transform drops\n`worker-3`, and recordset drops `worker-2`. Each decision node's drops\nare tagged with a distinct `flow.node.decision`, and the counts\nreconcile exactly against incoming/outgoing (480 − 160 − 48 − 48 − 48 =\n176).\n\n| `flow.node.decision` | Metric | Sum | Count |\n| --- | --- | ---: | ---: |\n| _(range)_ | signals.incoming | 480 | 48 |\n| sampler | signals.dropped | 160 | 48 |\n| filter | signals.dropped | 48 | 48 |\n| transform | signals.dropped | 48 | 48 |\n| **recordset** | **signals.dropped** | **48** | 48 |\n| _(range)_ | signals.outgoing | 176 | 48 |\n\nThe `recordset` row confirms the processor records `signals.dropped`\nunder its own decision attribute, exactly like the existing\n`filter`/`transform`/`sampler` decision nodes.\n\n## What issue does this PR close?\n\n<!--We highly recommend correlation of every PR to an issue-->\n\n* Related to #2859 \n\n## How are these changes tested?\n\n* Unit tests and demo config\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->\n\nAdditional `flow.dropped` metric source\n\n### Changelog\n\n<!--\nUser-facing changes need a .chloggen/*.yaml entry. Copy the\nTEMPLATE.yaml\nin go/.chloggen/ or rust/otap-dataflow/.chloggen/ and fill in the\nfields.\nIf not required, include `chore` in the PR title.\n-->\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.",
+          "timestamp": "2026-07-14T23:32:04Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/339e7ac67cc04ab693a08cb4692203f35bd99a0f"
+        },
+        "date": 1784074457617,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 1.6666667461395264,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.59686604765186,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.10323998143276,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 20.680729166666666,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 21.5,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99984.79731156878,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 98318.38402304263,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.009123,
+            "unit": "seconds",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3028746.5515168235,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1149420.6497188169,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 30.80549565183032,
+            "unit": "bytes/log",
+            "extra": "Nightly - Backpressure/OTAP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 1.6949152946472168,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.75149401015054,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.05877639081523,
+            "unit": "%",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.787109375,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.94140625,
+            "unit": "MiB",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 98329.7557690526,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 96663.14973906866,
+            "unit": "logs/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 60.002183,
+            "unit": "seconds",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3095444.5469740233,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2938054.0883431663,
+            "unit": "bytes/sec",
+            "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.02300520239439,
             "unit": "bytes/log",
             "extra": "Nightly - Backpressure/OTLP-ATTR-OTLP - Egress Bytes Per Log"
           }
