@@ -23,6 +23,7 @@ otap-df-state = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-engine = { workspace = true }
 
+jemalloc_pprof = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
