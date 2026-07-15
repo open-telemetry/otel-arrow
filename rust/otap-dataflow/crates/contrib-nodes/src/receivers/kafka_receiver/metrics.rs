@@ -80,10 +80,11 @@ pub struct KafkaReceiverMetrics {
     pub topic_id_exhausted: Counter<u64>,
 
     // ── Consumer-group Rebalances ───────────────────────────
-    /// Partitions assigned to this consumer across rebalances
+    /// Partitions newly acquired by this consumer across rebalances
+    /// (retained partitions are not re-counted)
     #[metric(unit = "{partition}")]
     pub partitions_assigned: Counter<u64>,
-    /// Partitions revoked from this consumer across rebalances
+    /// Genuinely-owned partitions revoked from this consumer across rebalances
     #[metric(unit = "{partition}")]
     pub partitions_revoked: Counter<u64>,
     /// Offset commit failures during pre-rebalance revoke

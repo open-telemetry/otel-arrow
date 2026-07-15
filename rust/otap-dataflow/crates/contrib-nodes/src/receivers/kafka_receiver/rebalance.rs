@@ -161,9 +161,12 @@ pub(crate) struct RebalanceState {
     committable: Mutex<HashMap<(String, i32), i64>>,
     /// When `true`, rebalance handling is skipped (librdkafka owns offsets).
     auto_commit: bool,
-    /// Count of partitions assigned across rebalances (callback-incremented).
+    /// Count of partitions **newly acquired** by this consumer across rebalances
+    /// (callback-incremented; retained partitions are not re-counted).
     partitions_assigned: AtomicU64,
-    /// Count of partitions revoked across rebalances (callback-incremented).
+    /// Count of **genuinely-owned** partitions revoked from this consumer across
+    /// rebalances (callback-incremented; a revoke reported for a partition this
+    /// consumer did not own is not counted).
     partitions_revoked: AtomicU64,
     /// Count of commit failures during pre-rebalance revoke (callback-incremented).
     rebalance_commit_errors: AtomicU64,
@@ -180,9 +183,9 @@ pub(crate) struct RebalanceState {
 /// into the receiver's [`MetricSet`](otap_df_telemetry::metrics::MetricSet).
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RebalanceMetricsDelta {
-    /// Partitions assigned since the last drain.
+    /// Partitions newly acquired since the last drain.
     pub(crate) partitions_assigned: u64,
-    /// Partitions revoked since the last drain.
+    /// Genuinely-owned partitions revoked since the last drain.
     pub(crate) partitions_revoked: u64,
     /// Commit failures during revoke since the last drain.
     pub(crate) rebalance_commit_errors: u64,
@@ -225,16 +228,20 @@ impl RebalanceState {
         }
     }
 
-    /// The ownership generation for `(topic, partition)`.
+    /// The current ownership generation to stamp onto a record being tracked
+    /// for `(topic, partition)`.
     ///
     /// Read by the receive loop when tracking a record so the tracked state and
     /// its Ack/Nack calldata carry the ownership period they belong to. Stable
     /// while the partition stays continuously owned; changes only when the
-    /// partition is reacquired after a revocation. Returns `0` when the
-    /// partition is not currently owned (the caller only tracks owned
-    /// partitions, so this fallback is not reached in practice).
+    /// partition is reacquired after a revocation.
+    ///
+    /// Returns `0` when the partition is not currently owned. Real generations
+    /// start at `1` (see [`next_generation`](Self::next_generation)), so `0` is a
+    /// safe sentinel; in practice the caller only tracks owned partitions, so
+    /// this fallback is not reached.
     #[must_use]
-    pub(crate) fn partition_generation(&self, topic: &str, partition: i32) -> u64 {
+    pub(crate) fn current_generation(&self, topic: &str, partition: i32) -> u64 {
         self.lock_assigned()
             .generation(topic, partition)
             .unwrap_or(0)
@@ -431,25 +438,37 @@ impl RebalanceState {
     /// of partitions that are newly present (not previously owned), so
     /// cooperative-sticky rebalances that retain partitions don't re-count them.
     ///
-    /// Each **newly acquired** partition is assigned a fresh ownership generation from
-    /// the monotonic allocator; **retained** partitions keep their existing generation
-    /// so records tracked during one continuous ownership all share one generation.
-    /// A partition reacquired after a revocation therefore gets a strictly
-    /// greater generation than the revocation queued for its prior ownership period.
+    /// All partitions **newly acquired** in this rebalance share a single fresh
+    /// ownership generation (the allocator is bumped at most once per call, and
+    /// only when at least one partition is newly acquired); **retained**
+    /// partitions keep their existing generation so records tracked during one
+    /// continuous ownership all share one generation. A partition reacquired
+    /// after a revocation therefore gets a strictly greater generation than the
+    /// revocation queued for its prior ownership period.
     fn set_assignment(&self, full: &TopicPartitionList) {
         let full_partitions = topic_partitions(full);
         let mut assigned = self.lock_assigned();
 
         let mut newly_added = 0u64;
+        // A single generation shared by every partition acquired in this
+        // rebalance, allocated lazily on the first newly-acquired partition.
+        let mut rebalance_generation: Option<u64> = None;
         // Rebuild the owned set: carry over the generation for retained partitions,
         // allocate a fresh generation for newly acquired ones.
+        //
+        // Ordering dependency: librdkafka runs `pre_rebalance(Revoke)` (which
+        // removes revoked partitions from the assigned set) *before*
+        // `post_rebalance(Assign)` reaches here, so a partition that was revoked
+        // and reassigned to this consumer is absent from the set at this point
+        // and correctly receives a fresh, strictly-greater generation.
         let mut next = AssignedPartitions::new();
         for (topic, partition) in &full_partitions {
             match assigned.generation(topic, *partition) {
                 Some(existing) => next.add_partition(topic, *partition, existing),
                 None => {
                     newly_added += 1;
-                    let generation = self.generation_allocator.fetch_add(1, Ordering::Relaxed) + 1;
+                    let generation =
+                        *rebalance_generation.get_or_insert_with(|| self.next_generation());
                     next.add_partition(topic, *partition, generation);
                 }
             }
@@ -459,6 +478,46 @@ impl RebalanceState {
         let _ = self
             .partitions_assigned
             .fetch_add(newly_added, Ordering::Relaxed);
+    }
+
+    /// Merge a rebalance **delta** into the current assignment without removing
+    /// anything.
+    ///
+    /// Used as the fallback when [`Consumer::assignment`] cannot be queried in
+    /// [`handle_assign`](Self::handle_assign). Unlike
+    /// [`set_assignment`](Self::set_assignment) (which treats its argument as the
+    /// complete owned set and replaces), this only *adds* partitions reported in
+    /// `delta` that are not already owned — so it can never drop a partition this
+    /// consumer still owns, even if `delta` is an incremental cooperative-sticky
+    /// delta rather than the full set. All partitions newly added in this call
+    /// share a single fresh ownership generation (allocated lazily, at most once
+    /// per call); already-owned partitions keep theirs.
+    fn merge_assignment(&self, delta: &TopicPartitionList) {
+        let delta_partitions = topic_partitions(delta);
+        let mut assigned = self.lock_assigned();
+        let mut newly_added = 0u64;
+        let mut rebalance_generation: Option<u64> = None;
+        for (topic, partition) in &delta_partitions {
+            if !assigned.contains(topic, *partition) {
+                newly_added += 1;
+                let generation =
+                    *rebalance_generation.get_or_insert_with(|| self.next_generation());
+                assigned.add_partition(topic, *partition, generation);
+            }
+        }
+        let _ = self
+            .partitions_assigned
+            .fetch_add(newly_added, Ordering::Relaxed);
+    }
+
+    /// Allocate the next ownership generation.
+    ///
+    /// Real generations start at `1` (the allocator starts at `0` and this
+    /// returns `previous + 1`), so `0` is reserved as a safe "unowned/absent"
+    /// sentinel that can never collide with a real generation — which keeps the
+    /// generation comparisons in the offset tracker unambiguous.
+    fn next_generation(&self) -> u64 {
+        self.generation_allocator.fetch_add(1, Ordering::Relaxed) + 1
     }
 
     /// Handle a `post_rebalance` assign by storing the consumer's *complete*
@@ -473,8 +532,12 @@ impl RebalanceState {
     /// `post_rebalance`, querying [`Consumer::assignment`] returns the full,
     /// current set for both the cooperative and eager protocols.
     ///
-    /// If the query fails (rare), fall back to the reported delta so behavior is
-    /// no worse than storing the delta directly.
+    /// If the query fails (rare), fall back to **merging** the reported delta
+    /// into the existing assignment ([`merge_assignment`](Self::merge_assignment))
+    /// rather than replacing. Replacing with a cooperative-sticky delta would
+    /// drop retained partitions (whose ACKs would then be rejected as revoked);
+    /// merging only adds and never drops, so retained partitions are preserved
+    /// until the next successful rebalance reconciles the full set.
     fn handle_assign<C: ConsumerContext>(
         &self,
         base_consumer: &BaseConsumer<C>,
@@ -487,7 +550,7 @@ impl RebalanceState {
                     "kafka.rebalance.assignment_query_failed",
                     error = %e,
                 );
-                self.set_assignment(tpl);
+                self.merge_assignment(tpl);
             }
         }
     }
@@ -764,12 +827,12 @@ mod tests {
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         state.set_assignment(&tpl);
-        let e0 = state.partition_generation("traces", 0);
+        let e0 = state.current_generation("traces", 0);
         assert!(e0 > 0);
 
         // Re-assigning the same set retains the partition -> generation unchanged.
         state.set_assignment(&tpl);
-        assert_eq!(state.partition_generation("traces", 0), e0);
+        assert_eq!(state.current_generation("traces", 0), e0);
 
         // Adding a new partition allocates a fresh, strictly-greater generation for
         // it while the retained partition keeps its generation.
@@ -777,8 +840,64 @@ mod tests {
         let _ = tpl2.add_partition("traces", 0);
         let _ = tpl2.add_partition("traces", 1);
         state.set_assignment(&tpl2);
-        assert_eq!(state.partition_generation("traces", 0), e0);
-        assert!(state.partition_generation("traces", 1) > e0);
+        assert_eq!(state.current_generation("traces", 0), e0);
+        assert!(state.current_generation("traces", 1) > e0);
+    }
+
+    #[test]
+    fn set_assignment_shares_one_generation_across_partitions() {
+        // All partitions acquired in a single rebalance share one generation,
+        // and the allocator advances by exactly one per rebalance.
+        let state = RebalanceState::new(false);
+
+        // First rebalance acquires two partitions at once -> same generation.
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let _ = tpl.add_partition("traces", 1);
+        state.set_assignment(&tpl);
+        let g0 = state.current_generation("traces", 0);
+        let g1 = state.current_generation("traces", 1);
+        assert_eq!(g0, g1, "partitions acquired together share one generation");
+        assert_eq!(g0, 1, "first generation is 1");
+
+        // Second rebalance retains 0 and 1, acquires 2 -> single bump to 2.
+        let mut tpl2 = TopicPartitionList::new();
+        let _ = tpl2.add_partition("traces", 0);
+        let _ = tpl2.add_partition("traces", 1);
+        let _ = tpl2.add_partition("traces", 2);
+        state.set_assignment(&tpl2);
+        assert_eq!(state.current_generation("traces", 0), g0);
+        assert_eq!(state.current_generation("traces", 1), g1);
+        assert_eq!(
+            state.current_generation("traces", 2),
+            2,
+            "one bump for the rebalance that acquired partition 2"
+        );
+
+        // A pure-retain rebalance acquires nothing -> allocator not bumped.
+        state.set_assignment(&tpl2);
+        assert_eq!(state.current_generation("traces", 0), g0);
+        assert_eq!(state.current_generation("traces", 2), 2);
+    }
+
+    #[test]
+    fn merge_assignment_shares_one_generation_across_partitions() {
+        let state = RebalanceState::new(false);
+
+        // Seed one owned partition (generation 1).
+        let mut initial = TopicPartitionList::new();
+        let _ = initial.add_partition("traces", 0);
+        state.set_assignment(&initial);
+
+        // Merge a delta adding two partitions at once -> both share one new
+        // generation (a single bump to 2).
+        let mut delta = TopicPartitionList::new();
+        let _ = delta.add_partition("traces", 1);
+        let _ = delta.add_partition("traces", 2);
+        state.merge_assignment(&delta);
+        assert_eq!(state.current_generation("traces", 0), 1);
+        assert_eq!(state.current_generation("traces", 1), 2);
+        assert_eq!(state.current_generation("traces", 2), 2);
     }
 
     #[test]
@@ -790,7 +909,7 @@ mod tests {
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         state.set_assignment(&tpl);
-        let first = state.partition_generation("traces", 0);
+        let first = state.current_generation("traces", 0);
 
         // Revoke it (drops from the assigned set).
         {
@@ -800,7 +919,51 @@ mod tests {
 
         // Reassign -> new, greater generation.
         state.set_assignment(&tpl);
-        assert!(state.partition_generation("traces", 0) > first);
+        assert!(state.current_generation("traces", 0) > first);
+    }
+
+    #[test]
+    fn merge_assignment_adds_new_without_dropping_retained() {
+        // The assignment-query-failure fallback must never drop a retained
+        // partition: merging a cooperative delta only adds new partitions.
+        let state = RebalanceState::new(false);
+
+        let mut initial = TopicPartitionList::new();
+        let _ = initial.add_partition("traces", 0);
+        state.set_assignment(&initial);
+        let g0 = state.current_generation("traces", 0);
+        let _ = state.drain_metrics(); // reset counters
+
+        // A delta reporting only the newly-gained partition 1.
+        let mut delta = TopicPartitionList::new();
+        let _ = delta.add_partition("traces", 1);
+        state.merge_assignment(&delta);
+
+        // Retained partition 0 survives with its original generation; partition
+        // 1 is added with a fresh, strictly-greater generation.
+        assert!(state.is_assigned("traces", 0));
+        assert_eq!(state.current_generation("traces", 0), g0);
+        assert!(state.is_assigned("traces", 1));
+        assert!(state.current_generation("traces", 1) > g0);
+
+        // Only the newly-added partition is counted.
+        assert_eq!(state.drain_metrics().partitions_assigned, 1);
+    }
+
+    #[test]
+    fn merge_assignment_is_noop_for_already_owned() {
+        let state = RebalanceState::new(false);
+
+        let mut initial = TopicPartitionList::new();
+        let _ = initial.add_partition("traces", 0);
+        state.set_assignment(&initial);
+        let g0 = state.current_generation("traces", 0);
+        let _ = state.drain_metrics();
+
+        // Merging a partition we already own changes nothing.
+        state.merge_assignment(&initial);
+        assert_eq!(state.current_generation("traces", 0), g0);
+        assert_eq!(state.drain_metrics().partitions_assigned, 0);
     }
 
     #[test]

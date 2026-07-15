@@ -584,16 +584,16 @@ impl KafkaReceiver {
             return;
         };
 
+        // Read the partition's tracked generation once and reuse it for both
+        // guards below (avoids repeated tracker lookups on this hot path).
+        let tracked_generation = self.offset_tracker.partition_generation(&name, partition);
+
         // Stale-generation guard: feedback produced under an earlier ownership
         // period must not affect the current one. If the partition's tracked
         // state belongs to a newer generation than this ack, the ack is stale
         // (the partition was revoked and reassigned since); drop it without
         // disturbing the current state.
-        if self
-            .offset_tracker
-            .partition_generation(&name, partition)
-            .is_some_and(|current| ack_generation < current)
-        {
+        if tracked_generation.is_some_and(|current| ack_generation < current) {
             self.metrics.acks_for_revoked_partition.add(1);
             return;
         }
@@ -608,9 +608,12 @@ impl KafkaReceiver {
         // for those partitions can return.
         if !self.rebalance_state.is_assigned(&name, partition) {
             self.metrics.acks_for_revoked_partition.add(1);
-            let _ = self
-                .offset_tracker
-                .revoke_if_older(&name, partition, ack_generation);
+            // Purge only state not newer than the ack (never a newer ownership
+            // period). `tracked_generation` was already fetched above, so this
+            // reuses that knowledge rather than re-reading the tracker.
+            if tracked_generation.is_some_and(|current| current <= ack_generation) {
+                self.offset_tracker.revoke(&name, partition);
+            }
             return;
         }
 
@@ -839,7 +842,7 @@ impl KafkaReceiver {
                                         // stays owned, so records tracked across
                                         // unrelated rebalances share one generation.
                                         let generation =
-                                            self.rebalance_state.partition_generation(&topic, partition);
+                                            self.rebalance_state.current_generation(&topic, partition);
                                         // Track offset as in-flight
                                         self.offset_tracker
                                             .track(&topic, partition, offset, generation);
@@ -929,7 +932,7 @@ impl KafkaReceiver {
                                         // this partition's ownership generation for
                                         // consistency with the revoke/purge path.
                                         let generation =
-                                            self.rebalance_state.partition_generation(&topic, partition);
+                                            self.rebalance_state.current_generation(&topic, partition);
                                         self.offset_tracker
                                             .track(&topic, partition, offset, generation);
                                         self.advance_offset_and_commit(
@@ -1973,7 +1976,7 @@ mod tests {
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         receiver.rebalance_state.set_assignment_for_test(&tpl);
-        let generation_p0 = receiver.rebalance_state.partition_generation("traces", 0);
+        let generation_p0 = receiver.rebalance_state.current_generation("traces", 0);
 
         // An unrelated rebalance retains partition 0 and acquires partition 1
         // (which advances the generation allocator).
@@ -1985,10 +1988,10 @@ mod tests {
         // Partition 0 was retained: its generation must be unchanged, even though the
         // allocator advanced for partition 1.
         assert_eq!(
-            receiver.rebalance_state.partition_generation("traces", 0),
+            receiver.rebalance_state.current_generation("traces", 0),
             generation_p0
         );
-        assert!(receiver.rebalance_state.partition_generation("traces", 1) > generation_p0);
+        assert!(receiver.rebalance_state.current_generation("traces", 1) > generation_p0);
     }
 
     #[test]
