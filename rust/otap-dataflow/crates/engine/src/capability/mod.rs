@@ -21,10 +21,12 @@ pub(crate) mod bearer_token_provider;
 pub(crate) mod error;
 pub(crate) mod factory;
 pub mod registry;
+pub(crate) mod vendor_bundle;
 
 pub use bearer_token_provider::{BearerToken, BearerTokenProvider, TokenStream};
 pub use error::{CapabilityError, CapabilityErrorSource};
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
+pub use vendor_bundle::VendorBundle;
 
 // ── Sealed ExtensionCapability trait ─────────────────────────────────────────
 

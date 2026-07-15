@@ -11,3 +11,4 @@
 //! re-exported here.
 
 pub use crate::capability::bearer_token_provider::local::BearerTokenProvider;
+pub use crate::capability::vendor_bundle::local::VendorBundle;
