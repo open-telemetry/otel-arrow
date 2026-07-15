@@ -11,8 +11,8 @@
 //!
 //! The `#[capability]` proc macro expands the trait below into:
 //!
-//! - `pub(crate) mod local::NoOpStateless` (`!Send` trait variant)
-//! - `pub(crate) mod shared::NoOpStateless` (`Send` trait variant)
+//! - A `pub(crate) mod local` containing the `!Send` `NoOpStateless` trait variant
+//! - A `pub(crate) mod shared` containing the `Send` `NoOpStateless` trait variant
 //! - A `SharedAsLocalNoOpStateless` adapter
 //! - A zero-sized `pub struct NoOpStateless` registration handle
 //! - `local_entry::<E>` / `shared_entry::<E>` factory bridges
