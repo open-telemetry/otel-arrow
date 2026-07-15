@@ -6141,6 +6141,7 @@ dependencies = [
  "otap-df-engine",
  "otap-df-state",
  "otap-df-telemetry",
+ "otap-df-telemetry-macros",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
