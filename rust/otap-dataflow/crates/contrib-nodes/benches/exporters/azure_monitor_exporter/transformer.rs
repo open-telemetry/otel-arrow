@@ -58,7 +58,7 @@ fn attr_mapping() -> serde_json::Value {
 
 fn create_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
-        ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig,
+        ApiConfig, HeartbeatConfig, SchemaConfig,
     };
 
     Config {
@@ -101,7 +101,6 @@ fn create_passthrough_config() -> Config {
             gzip_compression_level: 6,
             user_agent: None,
         },
-        auth: AuthConfig::default(),
         heartbeat: HeartbeatConfig::default(),
     }
 }

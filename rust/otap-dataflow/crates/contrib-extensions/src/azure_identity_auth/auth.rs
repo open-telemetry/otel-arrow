@@ -11,7 +11,7 @@ use azure_identity::{
     ManagedIdentityCredentialOptions, UserAssignedId, WorkloadIdentityCredential,
     WorkloadIdentityCredentialOptions,
 };
-use otap_df_engine::capability::BearerToken;
+use otap_df_engine::capability::bearer_token_provider::BearerToken;
 
 use super::config::{AuthMethod, Config};
 use super::error::Error;

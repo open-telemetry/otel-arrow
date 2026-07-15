@@ -4,7 +4,7 @@
 # Azure Monitor Exporter.
 #
 # Usage:
-#   cargo run -- --config trafficgen-ame.yaml
+#   cargo run --features azure-monitor-exporter,azure-identity-auth-extension -- --config trafficgen-ame.yaml
 
 version: otel_dataflow/v1
 
@@ -24,6 +24,16 @@ groups:
   default:
     pipelines:
       main:
+        extensions:
+          # Supplies OAuth bearer tokens to the exporter via the
+          # bearer_token_provider capability. Uses local developer credentials
+          # (Azure CLI / azd) for self-contained testing.
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: development
+              scope: "https://monitor.azure.com/.default"
+
         nodes:
           traffic-generator:
             type: "urn:otel:receiver:traffic_generator"
@@ -43,6 +53,9 @@ groups:
 
           azure-monitor-exporter:
             type: "urn:microsoft:exporter:azure_monitor"
+            # Bind the bearer token provider to the extension declared above.
+            capabilities:
+              bearer_token_provider: azure_identity
             config:
               api:
                 dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
@@ -63,9 +76,6 @@ groups:
                     "attributes":
                       "http.method": "HttpMethod"
                       "http.status_code": "HttpStatusCode"
-
-              auth:
-                method: "dev"
 
         connections:
           - from: traffic-generator

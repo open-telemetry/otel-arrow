@@ -22,7 +22,7 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_engine::ExtensionFactory;
-use otap_df_engine::capability::BearerTokenProvider;
+use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::ExtensionContext;
 use otap_df_engine::extension::wrapper::ExtensionVariant;

@@ -821,7 +821,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
-        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+        use super::super::config::{ApiConfig, HeartbeatConfig, SchemaConfig};
 
         Config {
             api: ApiConfig {
@@ -844,7 +844,6 @@ mod tests {
                 gzip_compression_level: 6,
                 user_agent: None,
             },
-            auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),
         }
     }
@@ -1730,7 +1729,7 @@ mod tests {
 
     #[test]
     fn test_empty_schema_mappings() {
-        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+        use super::super::config::{ApiConfig, HeartbeatConfig, SchemaConfig};
 
         let config = Config {
             api: ApiConfig {
@@ -1746,7 +1745,6 @@ mod tests {
                 gzip_compression_level: 6,
                 user_agent: None,
             },
-            auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),
         };
 
