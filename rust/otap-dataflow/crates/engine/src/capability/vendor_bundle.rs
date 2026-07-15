@@ -8,8 +8,11 @@
 //! interprets the contents; each consumer defines and reads its own keys.
 //! Supplied by an agent-fed extension; token-only scopes do not provide it.
 //!
-//! The host should publish these together with the bearer token so a consumer
-//! reads a consistent token/attributes snapshot.
+//! The host publishes the bundle and bearer token as one atomically-swapped
+//! record, but a consumer reads them through two separate capability calls, so a
+//! swap between the reads can transiently pair a stale token with fresh routing
+//! (or vice versa). That mismatch is acceptable: the backend rejects the bad pair
+//! and the consumer converges on the next refresh.
 //!
 //! Like [`bearer_token_provider`](super::bearer_token_provider), the trait is
 //! expanded by the `#[capability]` proc macro into `local` (!Send) and `shared`
