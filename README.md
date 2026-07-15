@@ -138,6 +138,7 @@ git clone https://github.com/open-telemetry/otel-arrow.git
 cd otel-arrow/rust/otap-dataflow
 cargo build --bin df_engine --no-default-features --features crypto-ring
 ```
+
 Minimal builds using `--no-default-features` should enable exactly one
 `crypto-*` provider feature. `crypto-ring` is the default-compatible
 provider used by the standard feature set.
