@@ -8,8 +8,8 @@ use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
-    DynamicMetricSet, DynamicMetricSetHandler, MetricSet, MetricSetHandler, MetricSetRegistry,
-    MetricValue, MetricsIterator, StaticMetricSetHandler,
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+    MetricSetRegistry, MetricValue, MetricsIterator, RegistrationMetricSetHandler,
 };
 use crate::otel_debug;
 use crate::semconv::SemConvRegistry;
@@ -148,94 +148,100 @@ impl TelemetryRegistryHandle {
         self.register_metric_set_for_existing_entity(entity_key, MetricSetRegistry::register::<T>)
     }
 
-    /// Registers a metric set type carrying fixed static datapoint attributes,
+    /// Registers a metric set type carrying registration-time datapoint attributes,
     /// captured from `static_attrs` at registration and attached to every
-    /// datapoint of the set (see `#[metric_set(static_attributes = ...)]`).
-    pub fn register_metric_set_with_static_attributes<
-        M: StaticMetricSetHandler + Debug + Send + Sync,
+    /// datapoint of the set (see `#[metric_set(registration_attributes = ...)]`).
+    pub fn register_metric_set_with_registration_attributes<
+        M: RegistrationMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
-        static_attrs: &M::StaticAttributes,
+        registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
-        let static_attributes = capture_static_attributes(static_attrs);
+        let static_attributes = capture_static_attributes(registration_attrs);
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
-            metrics.register_with_static_attributes(entity_key, static_attributes)
+            metrics.register_with_registration_attributes(entity_key, static_attributes)
         })
     }
 
-    /// Registers a metric set type carrying static datapoint attributes for an
+    /// Registers a metric set type carrying registration-time datapoint attributes for an
     /// existing entity key.
     #[must_use]
-    pub fn register_metric_set_with_static_attributes_for_entity<
-        M: StaticMetricSetHandler + Debug + Send + Sync,
+    pub fn register_metric_set_with_registration_attributes_for_entity<
+        M: RegistrationMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
         entity_key: EntityKey,
-        static_attrs: &M::StaticAttributes,
+        registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
-        let static_attributes = capture_static_attributes(static_attrs);
+        let static_attributes = capture_static_attributes(registration_attrs);
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
-            metrics.register_with_static_attributes(entity_key, static_attributes)
+            metrics.register_with_registration_attributes(entity_key, static_attributes)
         })
     }
 
-    /// Registers a dynamic metric set, allocating one datapoint bucket per
-    /// combination of the set's dynamic enum attributes (see
-    /// `#[metric_set(dynamic_attributes = ...)]`).
-    pub fn register_metric_set_with_dynamic_attributes<
-        M: DynamicMetricSetHandler + Debug + Send + Sync,
+    /// Registers a measurement metric set, allocating one datapoint bucket per
+    /// combination of the set's measurement enum attributes (see
+    /// `#[metric_set(measurement_attributes = ...)]`).
+    pub fn register_metric_set_with_measurement_attributes<
+        M: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
-    ) -> DynamicMetricSet<M> {
+    ) -> MeasurementMetricSet<M> {
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
-            metrics.register_with_dynamic_attributes::<M>(entity_key)
+            metrics.register_with_measurement_attributes::<M>(entity_key)
         })
     }
 
-    /// Registers a dynamic metric set for an existing entity key.
+    /// Registers a measurement metric set for an existing entity key.
     #[must_use]
-    pub fn register_metric_set_with_dynamic_attributes_for_entity<
-        M: DynamicMetricSetHandler + Debug + Send + Sync,
+    pub fn register_metric_set_with_measurement_attributes_for_entity<
+        M: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
         entity_key: EntityKey,
-    ) -> DynamicMetricSet<M> {
+    ) -> MeasurementMetricSet<M> {
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
-            metrics.register_with_dynamic_attributes::<M>(entity_key)
+            metrics.register_with_measurement_attributes::<M>(entity_key)
         })
     }
 
-    /// Registers a metric set with fixed registration-time attributes and
+    /// Registers a metric set with registration-time attributes and
     /// per-datapoint enum attributes.
     #[must_use]
-    pub fn register_metric_set_with_static_and_dynamic_attributes<
-        M: StaticMetricSetHandler + DynamicMetricSetHandler + Debug + Send + Sync,
+    pub fn register_metric_set_with_registration_and_measurement_attributes<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
-        static_attrs: &M::StaticAttributes,
-    ) -> DynamicMetricSet<M> {
-        let static_attributes = capture_static_attributes(static_attrs);
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        let static_attributes = capture_static_attributes(registration_attrs);
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
-            metrics.register_with_static_and_dynamic_attributes::<M>(entity_key, static_attributes)
+            metrics.register_with_registration_and_measurement_attributes::<M>(
+                entity_key,
+                static_attributes,
+            )
         })
     }
 
-    /// Registers a metric set with fixed and per-datapoint attributes for an
+    /// Registers a metric set with registration-time and per-measurement attributes for an
     /// existing entity key.
     #[must_use]
-    pub fn register_metric_set_with_static_and_dynamic_attributes_for_entity<
-        M: StaticMetricSetHandler + DynamicMetricSetHandler + Debug + Send + Sync,
+    pub fn register_metric_set_with_registration_and_measurement_attributes_for_entity<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
         entity_key: EntityKey,
-        static_attrs: &M::StaticAttributes,
-    ) -> DynamicMetricSet<M> {
-        let static_attributes = capture_static_attributes(static_attrs);
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        let static_attributes = capture_static_attributes(registration_attrs);
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
-            metrics.register_with_static_and_dynamic_attributes::<M>(entity_key, static_attributes)
+            metrics.register_with_registration_and_measurement_attributes::<M>(
+                entity_key,
+                static_attributes,
+            )
         })
     }
 

@@ -95,8 +95,8 @@ signal-specific attributes MUST be:
 - preferably namespaced under the metric namespace as recommended by OTel naming
   guidance
 
-Bounded enum attributes are supported as static registration-time attributes or
-dynamic per-datapoint attributes. See
+Bounded enum attributes are supported as registration-time attributes or
+per-measurement attributes. See
 [Datapoint Enum Attributes for Metrics](datapoint-enum-attributes.md) for the
 declaration and recording APIs.
 

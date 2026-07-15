@@ -820,7 +820,7 @@ pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse arguments: `name = "..."` plus optional
-    // `static_attributes = Path` / `dynamic_attributes = Path`.
+    // `registration_attributes = Path` / `measurement_attributes = Path`.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
     let mut static_attrs: Option<syn::Type> = None;
@@ -833,9 +833,9 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 if ident == "name" {
                     let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
-                } else if ident == "static_attributes" {
+                } else if ident == "registration_attributes" {
                     static_attrs = Some(input.parse()?);
-                } else if ident == "dynamic_attributes" {
+                } else if ident == "measurement_attributes" {
                     dynamic_attrs = Some(input.parse()?);
                 } else {
                     return Err(syn::Error::new(
@@ -892,23 +892,23 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let marker_impl = if let (Some(static_ty), Some(dynamic_ty)) = (&static_attrs, &dynamic_attrs) {
         quote! {
-            impl #crate_root::metrics::StaticMetricSetHandler for #struct_ident {
-                type StaticAttributes = #static_ty;
+            impl #crate_root::metrics::RegistrationMetricSetHandler for #struct_ident {
+                type RegistrationAttributes = #static_ty;
             }
 
-            impl #crate_root::metrics::DynamicMetricSetHandler for #struct_ident {
-                type DynamicAttributes = #dynamic_ty;
+            impl #crate_root::metrics::MeasurementMetricSetHandler for #struct_ident {
+                type MeasurementAttributes = #dynamic_ty;
             }
 
             const _: () = {
                 #crate_root::metrics::check_cardinality(
-                    <#dynamic_ty as #crate_root::attributes::DynamicAttributeSet>::CARDINALITY,
+                    <#dynamic_ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
                 );
                 if #crate_root::attributes::has_datapoint_attribute_key_collision(
                     <#static_ty as #crate_root::attributes::AttributeSetKeySchema>::KEY_SCHEMA,
-                    <#dynamic_ty as #crate_root::attributes::DynamicAttributeSet>::DESCRIPTORS,
+                    <#dynamic_ty as #crate_root::attributes::MeasurementAttributeSet>::DESCRIPTORS,
                 ) {
-                    panic!("static and dynamic datapoint attribute keys must not overlap");
+                    panic!("registration and measurement datapoint attribute keys must not overlap");
                 }
             };
 
@@ -917,11 +917,11 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 pub fn register<R>(
                     registrar: &R,
                     static_attrs: &#static_ty,
-                ) -> #crate_root::metrics::DynamicMetricSet<Self>
+                ) -> #crate_root::metrics::MeasurementMetricSet<Self>
                 where
                     R: #crate_root::metrics::MetricSetRegistrar,
                 {
-                    #crate_root::metrics::MetricSetRegistrar::register_static_and_dynamic_metric_set::<Self>(
+                    #crate_root::metrics::MetricSetRegistrar::register_registration_and_measurement_metric_set::<Self>(
                         registrar,
                         static_attrs,
                     )
@@ -930,8 +930,8 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else if let Some(ty) = &static_attrs {
         quote! {
-            impl #crate_root::metrics::StaticMetricSetHandler for #struct_ident {
-                type StaticAttributes = #ty;
+            impl #crate_root::metrics::RegistrationMetricSetHandler for #struct_ident {
+                type RegistrationAttributes = #ty;
             }
 
             impl #struct_ident {
@@ -943,7 +943,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 where
                     R: #crate_root::metrics::MetricSetRegistrar,
                 {
-                    #crate_root::metrics::MetricSetRegistrar::register_static_metric_set::<Self>(
+                    #crate_root::metrics::MetricSetRegistrar::register_registration_metric_set::<Self>(
                         registrar,
                         static_attrs,
                     )
@@ -952,25 +952,25 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     } else if let Some(ty) = &dynamic_attrs {
         quote! {
-            impl #crate_root::metrics::DynamicMetricSetHandler for #struct_ident {
-                type DynamicAttributes = #ty;
+            impl #crate_root::metrics::MeasurementMetricSetHandler for #struct_ident {
+                type MeasurementAttributes = #ty;
             }
 
             // Compile-time cardinality budget check: hard build error when the
-            // dynamic attribute set's cardinality exceeds the budget.
+            // measurement attribute set's cardinality exceeds the budget.
             const _: () = #crate_root::metrics::check_cardinality(
-                <#ty as #crate_root::attributes::DynamicAttributeSet>::CARDINALITY,
+                <#ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
             );
 
             impl #struct_ident {
                 #[must_use]
                 pub fn register<R>(
                     registrar: &R,
-                ) -> #crate_root::metrics::DynamicMetricSet<Self>
+                ) -> #crate_root::metrics::MeasurementMetricSet<Self>
                 where
                     R: #crate_root::metrics::MetricSetRegistrar,
                 {
-                    #crate_root::metrics::MetricSetRegistrar::register_dynamic_metric_set::<Self>(
+                    #crate_root::metrics::MetricSetRegistrar::register_measurement_metric_set::<Self>(
                         registrar,
                     )
                 }
@@ -1005,7 +1005,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 ///   pub struct MyAttributes { #[attribute_key = "custom.key")] field: String, ... }
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse arguments: `name = "..."` plus an optional bare `dynamic` flag.
+    // Parse arguments: `name = "..."` plus an optional bare `measurement` flag.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
     let mut is_dynamic = false;
@@ -1013,7 +1013,7 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
-                if ident == "dynamic" {
+                if ident == "measurement" {
                     is_dynamic = true;
                 } else if ident == "name" {
                     let _: syn::Token![=] = input.parse()?;
@@ -1052,7 +1052,7 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let mut s = parse_macro_input!(item as ItemStruct);
 
     if is_dynamic {
-        if let Err(error) = normalize_dynamic_attribute_fields(&mut s) {
+        if let Err(error) = normalize_measurement_attribute_fields(&mut s) {
             return error.to_compile_error().into();
         }
     }
@@ -1066,8 +1066,8 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attributes_attr: Attribute = parse_quote!(#[attributes(name = #attributes_name)]);
     s.attrs.push(attributes_attr);
 
-    let dynamic_impl = if is_dynamic {
-        match build_dynamic_attribute_set_impl(&s) {
+    let measurement_impl = if is_dynamic {
+        match build_measurement_attribute_set_impl(&s) {
             Ok(ts) => ts,
             Err(err) => return err.to_compile_error().into(),
         }
@@ -1075,17 +1075,17 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         quote!()
     };
 
-    quote!( #s #dynamic_impl ).into()
+    quote!( #s #measurement_impl ).into()
 }
 
 /// Rejects compositions, which cannot participate in dense bucket indexing.
-fn normalize_dynamic_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
+fn normalize_measurement_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
     let fields = match &mut s.fields {
         Fields::Named(fields) => &mut fields.named,
         _ => {
             return Err(syn::Error::new(
                 s.span(),
-                "dynamic attribute_set requires named fields",
+                "measurement attribute_set requires named fields",
             ));
         }
     };
@@ -1098,17 +1098,17 @@ fn normalize_dynamic_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
         {
             return Err(syn::Error::new(
                 field.span(),
-                "dynamic attribute_set does not support #[compose] fields",
+                "measurement attribute_set does not support #[compose] fields",
             ));
         }
     }
     Ok(())
 }
 
-/// Builds the `DynamicAttributeSet` trait implementation for a `dynamic`
+/// Builds the `MeasurementAttributeSet` trait implementation for a `measurement`
 /// attribute set. The bucket index is a dense mixed-radix encoding where the
 /// first declared field is the low-order digit.
-fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
+fn build_measurement_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
     let struct_ident = s.ident.clone();
 
     let fields = match &s.fields {
@@ -1116,7 +1116,7 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
         _ => {
             return Err(syn::Error::new(
                 s.span(),
-                "dynamic attribute_set requires named fields",
+                "measurement attribute_set requires named fields",
             ));
         }
     };
@@ -1129,7 +1129,7 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
         if field.attrs.iter().any(|a| a.path().is_ident("compose")) {
             return Err(syn::Error::new(
                 field.span(),
-                "dynamic attribute_set does not support #[compose] fields",
+                "measurement attribute_set does not support #[compose] fields",
             ));
         }
         let ident = field.ident.clone().expect("named field must have an ident");
@@ -1143,7 +1143,7 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
         if !seen_keys.insert(key.clone()) {
             return Err(syn::Error::new(
                 field.span(),
-                format!("duplicate dynamic attribute key `{key}`"),
+                format!("duplicate measurement attribute key `{key}`"),
             ));
         }
         field_keys.push(key);
@@ -1154,20 +1154,20 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
     if field_idents.is_empty() {
         return Err(syn::Error::new(
             s.span(),
-            "dynamic attribute_set requires at least one enum field",
+            "measurement attribute_set requires at least one enum field",
         ));
     }
 
     let crate_root = telemetry_crate_root();
 
     Ok(quote! {
-        impl #crate_root::attributes::DynamicAttributeSet for #struct_ident {
+        impl #crate_root::attributes::MeasurementAttributeSet for #struct_ident {
             const CARDINALITY: usize = 1usize
                 #( * <#field_types as #crate_root::attributes::AttributeEnum>::CARDINALITY )*;
 
-            const DESCRIPTORS: &'static [#crate_root::descriptor::DynamicAttributeDescriptor] = &[
+            const DESCRIPTORS: &'static [#crate_root::descriptor::MeasurementAttributeDescriptor] = &[
                 #(
-                    #crate_root::descriptor::DynamicAttributeDescriptor {
+                    #crate_root::descriptor::MeasurementAttributeDescriptor {
                         key: #field_keys,
                         variants: <#field_types as #crate_root::attributes::AttributeEnum>::VARIANTS,
                     },
@@ -1265,10 +1265,10 @@ fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
 mod tests {
     use super::*;
 
-    /// Scenario: dynamic fields resolve to the same explicit attribute key.
+    /// Scenario: measurement fields resolve to the same explicit attribute key.
     /// Guarantees: macro expansion rejects duplicate datapoint keys.
     #[test]
-    fn dynamic_attribute_set_rejects_duplicate_keys() {
+    fn measurement_attribute_set_rejects_duplicate_keys() {
         let attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
@@ -1281,18 +1281,18 @@ mod tests {
         )
         .expect("test attribute set should parse");
 
-        let error = build_dynamic_attribute_set_impl(&attributes)
-            .expect_err("duplicate dynamic keys should fail");
+        let error = build_measurement_attribute_set_impl(&attributes)
+            .expect_err("duplicate measurement keys should fail");
         assert_eq!(
             error.to_string(),
-            "duplicate dynamic attribute key `outcome`"
+            "duplicate measurement attribute key `outcome`"
         );
     }
 
-    /// Scenario: a dynamic attribute set contains a composed field.
+    /// Scenario: a measurement attribute set contains a composed field.
     /// Guarantees: composition is rejected before bucket code generation.
     #[test]
-    fn dynamic_attribute_set_rejects_composed_fields() {
+    fn measurement_attribute_set_rejects_composed_fields() {
         let mut attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
@@ -1303,18 +1303,18 @@ mod tests {
         )
         .expect("test attribute set should parse");
 
-        let error = normalize_dynamic_attribute_fields(&mut attributes)
-            .expect_err("composed dynamic fields should fail");
+        let error = normalize_measurement_attribute_fields(&mut attributes)
+            .expect_err("composed measurement fields should fail");
         assert_eq!(
             error.to_string(),
-            "dynamic attribute_set does not support #[compose] fields"
+            "measurement attribute_set does not support #[compose] fields"
         );
     }
 
-    /// Scenario: a dynamic attribute set omits field annotations.
+    /// Scenario: a measurement attribute set omits field annotations.
     /// Guarantees: every field is accepted as an attribute without a marker.
     #[test]
-    fn dynamic_attribute_set_accepts_unannotated_fields() {
+    fn measurement_attribute_set_accepts_unannotated_fields() {
         let mut attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
@@ -1326,10 +1326,10 @@ mod tests {
         )
         .expect("test attribute set should parse");
 
-        normalize_dynamic_attribute_fields(&mut attributes)
-            .expect("unannotated dynamic fields should be supported");
-        let generated = build_dynamic_attribute_set_impl(&attributes)
-            .expect("every dynamic field should be included as an attribute");
+        normalize_measurement_attribute_fields(&mut attributes)
+            .expect("unannotated measurement fields should be supported");
+        let generated = build_measurement_attribute_set_impl(&attributes)
+            .expect("every measurement field should be included as an attribute");
         assert!(generated.to_string().contains("error.type"));
 
         let fields = match attributes.fields {

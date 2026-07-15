@@ -18,7 +18,8 @@ use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineI
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::MetricSetRegistrar;
 use otap_df_telemetry::metrics::{
-    DynamicMetricSet, DynamicMetricSetHandler, MetricSet, MetricSetHandler, StaticMetricSetHandler,
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+    RegistrationMetricSetHandler,
 };
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::any::Any;
@@ -671,48 +672,49 @@ impl MetricSetRegistrar for PipelineContext {
         self.register_metrics::<M>()
     }
 
-    fn register_static_metric_set<M: StaticMetricSetHandler + Debug + Send + Sync>(
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
         &self,
-        static_attrs: &M::StaticAttributes,
+        registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
         self.register_scoped_metrics(
             |handle, entity_key| {
-                handle.register_metric_set_with_static_attributes_for_entity::<M>(
+                handle.register_metric_set_with_registration_attributes_for_entity::<M>(
                     entity_key,
-                    static_attrs,
+                    registration_attrs,
                 )
             },
             MetricSet::metric_set_key,
             |ctx, handle| {
                 if ctx.node_telemetry_attrs.is_empty() {
-                    handle.register_metric_set_with_static_attributes::<M>(
+                    handle.register_metric_set_with_registration_attributes::<M>(
                         ctx.node_attribute_set(),
-                        static_attrs,
+                        registration_attrs,
                     )
                 } else {
-                    handle.register_metric_set_with_static_attributes::<M>(
+                    handle.register_metric_set_with_registration_attributes::<M>(
                         ctx.node_with_custom_attribute_set(),
-                        static_attrs,
+                        registration_attrs,
                     )
                 }
             },
         )
     }
 
-    fn register_dynamic_metric_set<M: DynamicMetricSetHandler + Debug + Send + Sync>(
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
         &self,
-    ) -> DynamicMetricSet<M> {
+    ) -> MeasurementMetricSet<M> {
         self.register_scoped_metrics(
             |handle, entity_key| {
-                handle.register_metric_set_with_dynamic_attributes_for_entity::<M>(entity_key)
+                handle.register_metric_set_with_measurement_attributes_for_entity::<M>(entity_key)
             },
-            DynamicMetricSet::metric_set_key,
+            MeasurementMetricSet::metric_set_key,
             |ctx, handle| {
                 if ctx.node_telemetry_attrs.is_empty() {
-                    handle
-                        .register_metric_set_with_dynamic_attributes::<M>(ctx.node_attribute_set())
+                    handle.register_metric_set_with_measurement_attributes::<M>(
+                        ctx.node_attribute_set(),
+                    )
                 } else {
-                    handle.register_metric_set_with_dynamic_attributes::<M>(
+                    handle.register_metric_set_with_measurement_attributes::<M>(
                         ctx.node_with_custom_attribute_set(),
                     )
                 }
@@ -720,30 +722,31 @@ impl MetricSetRegistrar for PipelineContext {
         )
     }
 
-    fn register_static_and_dynamic_metric_set<
-        M: StaticMetricSetHandler + DynamicMetricSetHandler + Debug + Send + Sync,
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
         &self,
-        static_attrs: &M::StaticAttributes,
-    ) -> DynamicMetricSet<M> {
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
         self.register_scoped_metrics(
             |handle, entity_key| {
-                handle.register_metric_set_with_static_and_dynamic_attributes_for_entity::<M>(
+                handle
+                    .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
                     entity_key,
-                    static_attrs,
+                    registration_attrs,
                 )
             },
-            DynamicMetricSet::metric_set_key,
+            MeasurementMetricSet::metric_set_key,
             |ctx, handle| {
                 if ctx.node_telemetry_attrs.is_empty() {
-                    handle.register_metric_set_with_static_and_dynamic_attributes::<M>(
+                    handle.register_metric_set_with_registration_and_measurement_attributes::<M>(
                         ctx.node_attribute_set(),
-                        static_attrs,
+                        registration_attrs,
                     )
                 } else {
-                    handle.register_metric_set_with_static_and_dynamic_attributes::<M>(
+                    handle.register_metric_set_with_registration_and_measurement_attributes::<M>(
                         ctx.node_with_custom_attribute_set(),
-                        static_attrs,
+                        registration_attrs,
                     )
                 }
             },

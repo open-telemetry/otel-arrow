@@ -3593,7 +3593,7 @@ mod tests {
         Value,
     }
 
-    #[attribute_set(name = "test.prometheus.signal", dynamic)]
+    #[attribute_set(name = "test.prometheus.signal", measurement)]
     #[derive(Debug, Clone, Copy)]
     struct DatapointSignalAttributes {
         #[attribute_key = "signal"]
@@ -3603,8 +3603,8 @@ mod tests {
     }
 
     #[metric_set(
-        name = "test.prometheus.dynamic",
-        dynamic_attributes = DatapointSignalAttributes
+        name = "test.prometheus.measurement",
+        measurement_attributes = DatapointSignalAttributes
     )]
     #[derive(Debug, Default, Clone)]
     struct DatapointSignalMetrics {
@@ -3620,7 +3620,7 @@ mod tests {
         let registry = TelemetryRegistryHandle::new();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(2);
         let mut metrics = registry
-            .register_metric_set_with_dynamic_attributes::<DatapointSignalMetrics>(
+            .register_metric_set_with_measurement_attributes::<DatapointSignalMetrics>(
                 PrometheusScopeAttributes {
                     foo: "scope".to_string(),
                 },
@@ -3640,8 +3640,8 @@ mod tests {
             .events
             .add(11);
         reporter
-            .report_dynamic(&mut metrics)
-            .expect("dynamic metrics should report");
+            .report_measurement(&mut metrics)
+            .expect("measurement metrics should report");
 
         while let Ok(snapshot) = receiver.try_recv() {
             registry.accumulate_metric_set_snapshot(

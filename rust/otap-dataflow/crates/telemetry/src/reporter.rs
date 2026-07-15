@@ -5,7 +5,8 @@
 
 use crate::error::Error;
 use crate::metrics::{
-    DynamicMetricSet, DynamicMetricSetHandler, MetricSet, MetricSetHandler, MetricSetSnapshot,
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+    MetricSetSnapshot,
 };
 
 /// Outcome of attempting to publish a metrics snapshot.
@@ -80,14 +81,14 @@ impl MetricsReporter {
         }
     }
 
-    /// Report a dynamic metric set: snapshots each touched bucket and sends it.
+    /// Report a measurement metric set: snapshots each touched bucket and sends it.
     ///
     /// A bucket is cleared only after its snapshot is accepted. If the channel
     /// is full, that bucket and the remaining buckets stay pending for retry,
     /// matching [`Self::report`]'s deferred-send behavior.
-    pub fn report_dynamic<M: DynamicMetricSetHandler>(
+    pub fn report_measurement<M: MeasurementMetricSetHandler>(
         &mut self,
-        metrics: &mut DynamicMetricSet<M>,
+        metrics: &mut MeasurementMetricSet<M>,
     ) -> Result<(), Error> {
         for snapshot in metrics.pending_snapshots() {
             let bucket = snapshot.bucket();

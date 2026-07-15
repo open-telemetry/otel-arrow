@@ -5,7 +5,7 @@
 //! [`metrics::MetricSet`].
 
 use crate::descriptor::{
-    AttributeField, AttributeValueType, AttributesDescriptor, DynamicAttributeDescriptor,
+    AttributeField, AttributeValueType, AttributesDescriptor, MeasurementAttributeDescriptor,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -159,27 +159,27 @@ pub enum AttributeKeySchema {
     Composed(&'static [AttributeKeySchema]),
 }
 
-/// Returns whether any static attribute key is also a dynamic attribute key.
+/// Returns whether any registration attribute key is also a measurement attribute key.
 #[doc(hidden)]
 #[must_use]
 pub const fn has_datapoint_attribute_key_collision(
-    static_schema: &[AttributeKeySchema],
-    dynamic: &[DynamicAttributeDescriptor],
+    registration_schema: &[AttributeKeySchema],
+    measurement: &[MeasurementAttributeDescriptor],
 ) -> bool {
     let mut index = 0;
-    while index < static_schema.len() {
-        match static_schema[index] {
-            AttributeKeySchema::Key(static_key) => {
-                let mut dynamic_index = 0;
-                while dynamic_index < dynamic.len() {
-                    if str_eq(static_key, dynamic[dynamic_index].key) {
+    while index < registration_schema.len() {
+        match registration_schema[index] {
+            AttributeKeySchema::Key(registration_key) => {
+                let mut measurement_index = 0;
+                while measurement_index < measurement.len() {
+                    if str_eq(registration_key, measurement[measurement_index].key) {
                         return true;
                     }
-                    dynamic_index += 1;
+                    measurement_index += 1;
                 }
             }
             AttributeKeySchema::Composed(schema) => {
-                if has_datapoint_attribute_key_collision(schema, dynamic) {
+                if has_datapoint_attribute_key_collision(schema, measurement) {
                     return true;
                 }
             }
@@ -227,17 +227,17 @@ pub trait AttributeEnum: Copy {
 }
 
 /// An [`AttributeSetHandler`] whose fields are all [`AttributeEnum`]s and whose
-/// values vary per recorded datapoint.
+/// values vary per recorded measurement.
 ///
 /// The set maps to a dense mixed-radix bucket space: the first declared field is
 /// the low-order digit. [`CARDINALITY`](Self::CARDINALITY) is the product of the
-/// fields' variant counts and equals the number of buckets a dynamic metric set
+/// fields' variant counts and equals the number of buckets a measurement metric set
 /// allocates.
-pub trait DynamicAttributeSet: AttributeSetHandler + Copy {
+pub trait MeasurementAttributeSet: AttributeSetHandler + Copy {
     /// Total number of attribute combinations (product of field variant counts).
     const CARDINALITY: usize;
     /// Per-field descriptors (key + ordered variant strings), declaration order.
-    const DESCRIPTORS: &'static [DynamicAttributeDescriptor];
+    const DESCRIPTORS: &'static [MeasurementAttributeDescriptor];
     /// Computes the dense bucket index for this attribute combination.
     ///
     /// The first declared field is the low-order digit:
@@ -309,23 +309,24 @@ mod tests {
             AttributeKeySchema::Key("signal"),
             AttributeKeySchema::Composed(&[AttributeKeySchema::Key("component")]),
         ];
-        const DYNAMIC_WITH_COLLISION: &[DynamicAttributeDescriptor] =
-            &[DynamicAttributeDescriptor {
+        const MEASUREMENT_WITH_COLLISION: &[MeasurementAttributeDescriptor] =
+            &[MeasurementAttributeDescriptor {
                 key: "component",
                 variants: &["receiver"],
             }];
-        const DISJOINT_DYNAMIC: &[DynamicAttributeDescriptor] = &[DynamicAttributeDescriptor {
-            key: "outcome",
-            variants: &["success", "error"],
-        }];
+        const DISJOINT_MEASUREMENT: &[MeasurementAttributeDescriptor] =
+            &[MeasurementAttributeDescriptor {
+                key: "outcome",
+                variants: &["success", "error"],
+            }];
 
         assert!(has_datapoint_attribute_key_collision(
             STATIC,
-            DYNAMIC_WITH_COLLISION
+            MEASUREMENT_WITH_COLLISION
         ));
         assert!(!has_datapoint_attribute_key_collision(
             STATIC,
-            DISJOINT_DYNAMIC
+            DISJOINT_MEASUREMENT
         ));
     }
 
