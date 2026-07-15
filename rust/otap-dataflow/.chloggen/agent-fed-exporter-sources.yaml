@@ -1,0 +1,14 @@
+change_type: enhancement
+
+component: pipeline
+
+note: Let the Geneva exporter use agent-fed credentials by resolving the `BearerTokenProvider` and `VendorBundle` capabilities instead of driving its own config-service handshake.
+
+issues: [3275]
+
+subtext: |
+  The Geneva exporter binds a fail-closed `AgentFedGenevaSource` when
+  `auth.type=agentfed`, bridging the agent-fed capabilities to
+  geneva-uploader's agent-fed credential source. The Azure Monitor exporter
+  already consumes the `BearerTokenProvider` capability, so an agent-fed
+  host extension bound to that capability serves it with no exporter change.
