@@ -337,18 +337,58 @@ impl RebalanceState {
             .fetch_add(revoked.len() as u64, Ordering::Relaxed);
     }
 
-    /// Handle a `post_rebalance` assign: replace the assigned set with the new
-    /// assignment.
-    fn handle_assign(&self, tpl: &TopicPartitionList) {
-        let assigned_partitions = topic_partitions(tpl);
+    /// Replace the assigned set with the *complete* assignment `full`.
+    ///
+    /// `full` must be the consumer's entire current assignment, not a rebalance
+    /// delta. The `partitions_assigned` metric is incremented only by the number
+    /// of partitions that are newly present (not previously owned), so
+    /// cooperative-sticky rebalances that retain partitions don't re-count them.
+    fn set_assignment(&self, full: &TopicPartitionList) {
+        let full_partitions = topic_partitions(full);
         let mut assigned = self.lock_assigned();
+        // Count partitions that are newly assigned relative to the previous set.
+        let newly_added = full_partitions
+            .iter()
+            .filter(|(topic, partition)| !assigned.contains(topic, *partition))
+            .count();
         assigned.clear();
-        for (topic, partition) in &assigned_partitions {
+        for (topic, partition) in &full_partitions {
             assigned.add_partition(topic, *partition);
         }
         let _ = self
             .partitions_assigned
-            .fetch_add(assigned_partitions.len() as u64, Ordering::Relaxed);
+            .fetch_add(newly_added as u64, Ordering::Relaxed);
+    }
+
+    /// Handle a `post_rebalance` assign by storing the consumer's *complete*
+    /// current assignment.
+    ///
+    /// The `tpl` reported to `post_rebalance` is only the rebalance **delta**
+    /// under the cooperative-sticky protocol (librdkafka calls
+    /// `rd_kafka_incremental_assign` with just the added partitions). Clearing
+    /// and storing only that delta would drop partitions the consumer still
+    /// owns, causing later ACK/NACK feedback for those partitions to be rejected
+    /// as revoked. Since librdkafka applies the assignment before invoking
+    /// `post_rebalance`, querying [`Consumer::assignment`] returns the full,
+    /// current set for both the cooperative and eager protocols.
+    ///
+    /// If the query fails (rare), fall back to the reported delta so behavior is
+    /// no worse than storing the delta directly.
+    fn handle_assign<C: ConsumerContext>(
+        &self,
+        base_consumer: &BaseConsumer<C>,
+        tpl: &TopicPartitionList,
+    ) {
+        match base_consumer.assignment() {
+            Ok(full) => self.set_assignment(&full),
+            Err(e) => {
+                otel_warn!(
+                    "kafka.rebalance.assignment_query_failed",
+                    error = %e,
+                );
+                self.set_assignment(tpl);
+            }
+        }
     }
 }
 
@@ -469,14 +509,14 @@ impl ConsumerContext for RebalancingConsumerContext {
         }
     }
 
-    fn post_rebalance(&self, _base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
+    fn post_rebalance(&self, base_consumer: &BaseConsumer<Self>, rebalance: &Rebalance<'_>) {
         let state = self.state();
         if state.is_auto_commit() {
             return;
         }
         match rebalance {
             Rebalance::Assign(tpl) => {
-                state.handle_assign(tpl);
+                state.handle_assign(base_consumer, tpl);
             }
             Rebalance::Revoke(_) => {
                 // Revocation bookkeeping already happened in pre_rebalance.
@@ -617,27 +657,60 @@ mod tests {
     }
 
     #[test]
-    fn handle_assign_replaces_assignment() {
+    fn set_assignment_replaces_and_counts_new_partitions() {
         let state = RebalanceState::new(false);
 
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition("traces", 0);
         let _ = tpl.add_partition("traces", 1);
-        state.handle_assign(&tpl);
+        state.set_assignment(&tpl);
 
         assert!(state.is_assigned("traces", 0));
         assert!(state.is_assigned("traces", 1));
 
-        // A new assignment replaces (clears) the old one.
+        // A new full assignment replaces the old one.
         let mut tpl2 = TopicPartitionList::new();
         let _ = tpl2.add_partition("metrics", 0);
-        state.handle_assign(&tpl2);
+        state.set_assignment(&tpl2);
 
         assert!(!state.is_assigned("traces", 0));
+        assert!(!state.is_assigned("traces", 1));
         assert!(state.is_assigned("metrics", 0));
 
+        // 2 (initial) + 1 (metrics-0 is newly added).
         let delta = state.drain_metrics();
-        assert_eq!(delta.partitions_assigned, 3); // 2 + 1
+        assert_eq!(delta.partitions_assigned, 3);
+    }
+
+    #[test]
+    fn set_assignment_retains_partitions_across_cooperative_rebalance() {
+        // Regression: under the cooperative-sticky protocol, post_rebalance
+        // reports only the delta, but we store the full assignment queried from
+        // the consumer. Simulate the full set the query would return.
+        let state = RebalanceState::new(false);
+
+        // Initially own partitions 0 and 1.
+        let mut initial = TopicPartitionList::new();
+        let _ = initial.add_partition("traces", 0);
+        let _ = initial.add_partition("traces", 1);
+        state.set_assignment(&initial);
+
+        // After the rebalance: kept 0, dropped 1, gained 2. The full assignment
+        // is {0, 2}.
+        let mut full = TopicPartitionList::new();
+        let _ = full.add_partition("traces", 0);
+        let _ = full.add_partition("traces", 2);
+        state.set_assignment(&full);
+
+        // Retained partition 0 must still be assigned (previously this was
+        // cleared, causing ACK/NACK for it to be rejected as revoked).
+        assert!(state.is_assigned("traces", 0));
+        assert!(state.is_assigned("traces", 2));
+        assert!(!state.is_assigned("traces", 1));
+
+        // Only partition 2 is newly added on the second assignment: 2 + 1.
+        let delta = state.drain_metrics();
+        assert_eq!(delta.partitions_assigned, 3);
     }
 
     #[test]

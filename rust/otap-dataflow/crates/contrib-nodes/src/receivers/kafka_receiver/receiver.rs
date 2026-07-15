@@ -1153,7 +1153,8 @@ mod tests {
     use super::*;
     use crate::receivers::kafka_receiver::config::{
         AttributeValueType, AutoOffsetReset, CommitConfig, CommitMode as ConfigCommitMode,
-        HeaderExtraction, IsolationLevel, KafkaReceiverConfigBuilder, SignalConfig,
+        HeaderExtraction, IsolationLevel, KafkaReceiverConfigBuilder, RebalanceStrategy,
+        SignalConfig,
     };
 
     use crate::common::kafka::MessageFormat;
@@ -3271,20 +3272,47 @@ mod tests {
         mpsc::Sender<NodeControlMsg<OtapPdata>>,
         KeepAlive,
     ) {
-        let kafka_config = KafkaReceiverConfig::try_from(
-            KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-                .with_traces(
-                    SignalConfig::new(vec![traces_topic.to_string()])
-                        .with_encoding(MessageFormat::OtlpProto),
-                )
-                .with_commit(CommitConfig {
-                    mode: ConfigCommitMode::Manual,
-                    interval_ms: Some(commit_interval_ms),
-                })
-                .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                .with_isolation_level(IsolationLevel::ReadUncommitted),
+        setup_manual_traces_harness_with_strategy(
+            brokers,
+            group_id,
+            traces_topic,
+            commit_interval_ms,
+            None,
         )
-        .expect("test config should be valid");
+    }
+
+    /// Like [`setup_manual_traces_harness`] but allows setting the partition
+    /// assignment strategy (e.g. cooperative-sticky for incremental rebalances).
+    #[allow(clippy::type_complexity)]
+    fn setup_manual_traces_harness_with_strategy(
+        brokers: &str,
+        group_id: &str,
+        traces_topic: &str,
+        commit_interval_ms: u64,
+        rebalance_strategy: Option<RebalanceStrategy>,
+    ) -> (
+        Box<KafkaReceiver>,
+        local::ControlChannel<OtapPdata>,
+        local::EffectHandler<OtapPdata>,
+        Receiver<OtapPdata>,
+        mpsc::Sender<NodeControlMsg<OtapPdata>>,
+        KeepAlive,
+    ) {
+        let mut builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+            .with_traces(
+                SignalConfig::new(vec![traces_topic.to_string()])
+                    .with_encoding(MessageFormat::OtlpProto),
+            )
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Manual,
+                interval_ms: Some(commit_interval_ms),
+            })
+            .with_auto_offset_reset(AutoOffsetReset::Earliest)
+            .with_isolation_level(IsolationLevel::ReadUncommitted);
+        if let Some(strategy) = rebalance_strategy {
+            builder = builder.with_rebalance_strategy(strategy);
+        }
+        let kafka_config = KafkaReceiverConfig::try_from(builder).expect("test config is valid");
 
         wire_receiver_harness(kafka_config, 256)
     }
@@ -3578,6 +3606,161 @@ mod tests {
                 );
 
                 // Clean up: shut down receiver A and drop consumer B.
+                ctrl_tx
+                    .send(NodeControlMsg::Shutdown {
+                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
+                        reason: "test complete".to_string(),
+                    })
+                    .expect("send shutdown");
+                let _ = timeout(Duration::from_secs(10), handle).await;
+                drop(consumer_b);
+            })
+            .await;
+    }
+
+    /// Cooperative-sticky retention: under the cooperative protocol a rebalance
+    /// reports only the delta, so a receiver that keeps a partition must still
+    /// treat it as assigned. Regression for storing only the delta (which
+    /// dropped retained partitions and rejected their ACKs as revoked).
+    ///
+    /// Receiver A owns both partitions; consumer B joins the group with the same
+    /// cooperative-sticky strategy, forcing one partition to move to B while A
+    /// retains the other. New records produced to A's retained partition must
+    /// still get committed by A (i.e. its ACKs are not dropped).
+    #[tokio::test]
+    #[ignore]
+    async fn rebalance_cooperative_sticky_retains_owned_partitions() {
+        let (_container, brokers) =
+            start_kafka_container_with_partitions(REBALANCE_TEST_PARTITIONS).await;
+        let producer = create_test_producer(&brokers);
+
+        let topic = "rebalance-coop-traces";
+        let group = "rebalance-coop-group";
+
+        let req = create_traces_with_spans();
+        let mut bytes = vec![];
+        req.encode(&mut bytes).expect("encode");
+
+        // Produce an initial record to each partition.
+        for partition in 0..REBALANCE_TEST_PARTITIONS {
+            let _ = producer
+                .send(
+                    FutureRecord::to(topic)
+                        .payload(&bytes)
+                        .key(&format!("init-{partition}"))
+                        .partition(partition),
+                    Timeout::After(Duration::from_secs(10)),
+                )
+                .await
+                .expect("Failed to send message");
+        }
+
+        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, _handles) =
+            setup_manual_traces_harness_with_strategy(
+                &brokers,
+                group,
+                topic,
+                500,
+                Some(RebalanceStrategy::CooperativeSticky),
+            );
+
+        let local = LocalSet::new();
+        local
+            .run_until(async {
+                let handle = tokio::task::spawn_local(async move {
+                    receiver.start(ctrl_chan, effect_handler).await
+                });
+
+                // A initially owns both partitions: consume and ack the two
+                // initial records.
+                for i in 0..REBALANCE_TEST_PARTITIONS as usize {
+                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                        .await
+                        .unwrap_or_else(|_| panic!("Timed out waiting for initial message {i}"))
+                        .unwrap_or_else(|_| panic!("No initial message received for {i}"));
+                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
+                        ctrl_tx
+                            .send(NodeControlMsg::Ack(ack))
+                            .expect("send ack for initial message");
+                    }
+                }
+
+                // A second cooperative-sticky consumer joins the group, forcing
+                // an incremental rebalance that moves exactly one partition to B
+                // while A retains the other.
+                let consumer_b: StreamConsumer = ClientConfig::new()
+                    .set("bootstrap.servers", &brokers)
+                    .set("group.id", group)
+                    .set("enable.auto.commit", "false")
+                    .set("auto.offset.reset", "earliest")
+                    .set("partition.assignment.strategy", "cooperative-sticky")
+                    .create()
+                    .expect("failed to create consumer B");
+                consumer_b
+                    .subscribe(&[topic])
+                    .expect("consumer B subscribe");
+
+                // Poll B until it is assigned a partition (drives the rebalance).
+                let mut b_partition = None;
+                for _ in 0..40 {
+                    if let Ok(a) = consumer_b.assignment() {
+                        if let Some(elem) = a.elements().first() {
+                            b_partition = Some(elem.partition());
+                            break;
+                        }
+                    }
+                    let _ = timeout(Duration::from_millis(500), consumer_b.recv()).await;
+                }
+                let b_partition =
+                    b_partition.expect("consumer B was never assigned; rebalance did not occur");
+                // The partition A retains is the other one.
+                let a_partition = (REBALANCE_TEST_PARTITIONS - 1) - b_partition;
+
+                // Produce a new record to A's retained partition and have A
+                // consume + ack it. If A wrongly dropped the retained partition
+                // from its assigned set, this ack would be rejected and the
+                // offset would never advance.
+                let _ = producer
+                    .send(
+                        FutureRecord::to(topic)
+                            .payload(&bytes)
+                            .key("post-rebalance")
+                            .partition(a_partition),
+                        Timeout::After(Duration::from_secs(10)),
+                    )
+                    .await
+                    .expect("Failed to send post-rebalance message");
+
+                // A may still receive records for the partition being handed off
+                // before the rebalance settles; keep reading until we get one on
+                // the retained partition and ack everything we see.
+                let mut retained_committed = false;
+                'outer: for _ in 0..40 {
+                    if let Ok(Ok(pdata)) = timeout(Duration::from_secs(5), pdata_rx.recv()).await {
+                        if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
+                            ctrl_tx
+                                .send(NodeControlMsg::Ack(ack))
+                                .expect("send ack post-rebalance");
+                        }
+                    }
+                    // The retained partition must accumulate a committed offset
+                    // that accounts for its initial + post-rebalance records.
+                    for _ in 0..8 {
+                        if committed_offset_for(&brokers, group, topic, a_partition)
+                            .is_some_and(|o| o >= 2)
+                        {
+                            retained_committed = true;
+                            break 'outer;
+                        }
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    }
+                }
+                assert!(
+                    retained_committed,
+                    "retained partition {a_partition} must keep committing after a \
+                     cooperative-sticky rebalance (ACKs must not be dropped)",
+                );
+
                 ctrl_tx
                     .send(NodeControlMsg::Shutdown {
                         deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
