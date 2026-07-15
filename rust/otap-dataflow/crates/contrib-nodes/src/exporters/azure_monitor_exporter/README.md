@@ -294,13 +294,33 @@ applies to log-record attributes only: resource attributes, scope attributes,
 and top-level log-record fields are **not** passed through automatically. They
 are emitted only when you configure them via `resource_mapping`, `scope_mapping`,
 or the other `log_record_mapping` fields, which compose with passthrough and
-continue to emit their own columns. If an attribute key collides with a mapped
-column name, the attribute value wins (the innermost/most-specific value), and
-the column is emitted only once.
+continue to emit their own columns. If a runtime attribute key collides with a
+mapped column name, the attribute value wins (the innermost/most-specific value),
+and the column is emitted only once.
+
+This override is **intentional, not accidental**: a runtime attribute can
+deliberately override a configured `resource_mapping`, `scope_mapping`, or
+`log_record_mapping` column. It lets a producer that has already projected the
+final value into a log attribute (for example, the last projection of a KQL
+transformation that writes the value into an attribute) take precedence over a
+static mapping, without having to remove that mapping from the exporter
+configuration. The innermost-wins rule is the general, consistent behavior:
+runtime attributes are the innermost, most-specific source and therefore win,
+while a non-conflicting configuration still lets explicit mappings apply.
 
 Because passthrough column names come from runtime attribute keys, they are not
 validated for duplicates at config load time the way explicit mappings are;
 collisions are resolved at emit time by the innermost-wins rule above.
+
+**Passthrough expects each attribute key to already be a valid Azure Log
+Analytics column name, not an arbitrary OpenTelemetry attribute key.** The mode
+is designed for producers that have already projected their data into
+DCR-shaped attributes (`"<ColumnName>": <value>`), so the attribute key *is* the
+destination column. The exporter does not translate, sanitize, or namespace the
+key; a raw OTel key such as `service.name` or `http.request.method` (with dots)
+is not a valid column name and will be dropped at ingestion (see the warning
+below). If your attributes use OTel-style keys, map them to valid columns
+explicitly with the `attributes` object form instead of passthrough.
 
 > **Warning -- silent data loss:** Azure Log Analytics only ingests columns that
 > exist in the DCR stream schema and whose names satisfy the column-naming rules

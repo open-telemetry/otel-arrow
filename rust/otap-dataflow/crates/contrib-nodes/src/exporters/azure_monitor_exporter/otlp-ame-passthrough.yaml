@@ -5,6 +5,12 @@
 # `passthrough`. In this mode every log record attribute is emitted as-is as its
 # own top-level "key": value column (the attribute key is the column name).
 #
+# Passthrough expects each attribute key to already be a valid Azure Log
+# Analytics column name (not an arbitrary OpenTelemetry attribute key): it is
+# meant for producers that have already projected their data into DCR-shaped
+# attributes ("<ColumnName>": <value>). The exporter does not translate or
+# sanitize keys.
+#
 # Passthrough applies to log-record attributes only. Resource attributes, scope
 # attributes, and top-level log-record fields are NOT passed through
 # automatically; they are emitted only when explicitly mapped via
