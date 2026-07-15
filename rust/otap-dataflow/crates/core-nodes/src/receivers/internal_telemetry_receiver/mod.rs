@@ -591,34 +591,42 @@ mod tests {
     }
 
     #[test]
-    fn small_max_size_splits_batch_into_multiple_messages() {
+    fn flush_splits_batch_that_overshoots_max_size() {
         let test_runtime = TestRuntime::new();
-        // min_size never reached, so records accumulate through the shutdown
-        // drain; max_size of 1 byte then forces the final flush to split them,
-        // one record per message, independent of min_size.
-        let config = Config {
-            min_size: NonZeroUsize::new(10_000).unwrap(),
-            max_size: NonZeroUsize::new(1).unwrap(),
-            max_batch_duration: Duration::from_secs(60),
-        };
+        // A batch only flushes once it reaches min_size, so the last record can
+        // push its total past max_size. `log_event()` is a fixed fixture, so
+        // every record encodes to the same size; setting min_size == max_size to
+        // one byte under two records means the second record tips the batch over
+        // and the flush splits it into two single-record messages. Built through
+        // parse_config so the split is shown reachable from a valid config, not
+        // a max_size < min_size one the public path would reject.
+        let budget = 2 * record_bytes(&log_event()) - 1;
+        let config = InternalTelemetryReceiver::parse_config(&serde_json::json!({
+            "min_size": budget,
+            "max_size": budget,
+            "max_batch_duration": "60s",
+        }))
+        .expect("min_size == max_size is valid");
         let (receiver, sender) = wire_receiver(&test_runtime, config);
 
         test_runtime
             .set_receiver(receiver)
             .run_test(move |ctx| async move {
-                for _ in 0..3 {
-                    sender.send(ObservedEvent::Log(log_event())).unwrap();
-                }
+                sender.send(ObservedEvent::Log(log_event())).unwrap();
+                sender.send(ObservedEvent::Log(log_event())).unwrap();
                 ctx.sleep(Duration::from_millis(50)).await;
                 ctx.send_shutdown(Instant::now(), "done").await.unwrap();
             })
             .run_validation(|mut ctx| async move {
-                for _ in 0..3 {
+                for _ in 0..2 {
                     let request = decode_logs(ctx.recv().await.expect("a split message"));
                     let scope_logs = &request.resource_logs[0].scope_logs;
                     assert_eq!(scope_logs.len(), 1);
                     assert_eq!(scope_logs[0].log_records.len(), 1);
                 }
+                // Exactly two messages: the receiver has stopped, so the channel
+                // is closed and a double-flush would surface as a third here.
+                assert!(ctx.recv().await.is_err(), "expected exactly two messages");
             });
     }
 
