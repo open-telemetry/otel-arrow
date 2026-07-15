@@ -127,7 +127,7 @@ impl TelemetryRegistryHandle {
         register(&mut registry.metrics, entity_key)
     }
 
-    /// Registers a metric set type with the given static attributes and returns a `MetricSet`
+    /// Registers a metric set type with the given scope attributes and returns a `MetricSet`
     /// instance that can be used to report metrics for that type.
     pub fn register_metric_set<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
@@ -301,7 +301,7 @@ impl TelemetryRegistryHandle {
     }
 
     /// Visits every non-empty datapoint bucket, yielding the per-datapoint
-    /// enum/static attributes (`&[(key, value)]`) in addition to scope attributes,
+    /// enum/registration attributes (`&[(key, value)]`) in addition to scope attributes,
     /// then resets the visited bucket to zero.
     ///
     /// The datapoint attributes are empty for plain metric sets; the primary
@@ -369,7 +369,7 @@ impl TelemetryRegistryHandle {
     }
 }
 
-/// Captures the current (key, value) pairs of a static attribute set as owned
+/// Captures the current (key, value) pairs of a registration attribute set as owned
 /// strings for storage on a registered metric set entry.
 fn capture_static_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(String, String)> {
     attrs

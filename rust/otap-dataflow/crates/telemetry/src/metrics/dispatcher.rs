@@ -81,7 +81,7 @@ impl MetricsDispatcher {
                     };
 
                     // Entity attributes live on the instrumentation scope so OTel Views can
-                    // target them via scope_attributes selectors. Per-datapoint enum/static
+                    // target them via scope_attributes selectors. Per-datapoint enum/registration
                     // attributes (e.g. `signal`) are attached to the data points themselves.
                     let dp_kvs: Vec<opentelemetry::KeyValue> = datapoint_attrs
                         .iter()

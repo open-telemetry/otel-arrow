@@ -3612,11 +3612,11 @@ mod tests {
         events: Counter<u64>,
     }
 
-    /// Scenario: two dynamic attribute buckets share one scope and metric set.
+    /// Scenario: two measurement attribute buckets share one scope and metric set.
     /// Guarantees: Prometheus emits one distinct series with the recorded value
     /// per bucket.
     #[test]
-    fn test_format_prometheus_text_preserves_dynamic_datapoint_attributes() {
+    fn test_format_prometheus_text_preserves_measurement_datapoint_attributes() {
         let registry = TelemetryRegistryHandle::new();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(2);
         let mut metrics = registry
@@ -3676,7 +3676,7 @@ mod tests {
             .collect();
         assert_ne!(
             label_sets[0], label_sets[1],
-            "dynamic buckets must not emit duplicate label sets:\n{output}"
+            "measurement buckets must not emit duplicate label sets:\n{output}"
         );
         assert_eq!(
             output.matches(r#"otel_scope_foo="scope;value""#).count(),
