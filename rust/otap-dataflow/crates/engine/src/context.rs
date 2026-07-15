@@ -16,6 +16,7 @@ use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
+use otap_df_telemetry::metrics::MetricSetRegistrar;
 use otap_df_telemetry::metrics::{
     DynamicMetricSet, DynamicMetricSetHandler, MetricSet, MetricSetHandler, StaticMetricSetHandler,
 };
@@ -472,68 +473,6 @@ impl PipelineContext {
         )
     }
 
-    /// Registers a metric set that carries fixed static enum datapoint attributes
-    /// for the current node entity. The `static_attrs` values are captured once
-    /// and attached to every datapoint of the set
-    /// (see `#[metric_set(static_attributes = ...)]`).
-    #[must_use]
-    pub fn register_metrics_with_static_attributes<
-        M: StaticMetricSetHandler + Debug + Send + Sync,
-    >(
-        &self,
-        static_attrs: &M::Attributes,
-    ) -> MetricSet<M> {
-        self.register_scoped_metrics(
-            |handle, entity_key| {
-                handle.register_metric_set_with_static_attributes_for_entity::<M>(
-                    entity_key,
-                    static_attrs,
-                )
-            },
-            MetricSet::metric_set_key,
-            |ctx, handle| {
-                if ctx.node_telemetry_attrs.is_empty() {
-                    handle.register_metric_set_with_static_attributes::<M>(
-                        ctx.node_attribute_set(),
-                        static_attrs,
-                    )
-                } else {
-                    handle.register_metric_set_with_static_attributes::<M>(
-                        ctx.node_with_custom_attribute_set(),
-                        static_attrs,
-                    )
-                }
-            },
-        )
-    }
-
-    /// Registers a dynamic metric set for the current node entity, allocating one
-    /// datapoint bucket per combination of the set's dynamic enum attributes
-    /// (see `#[metric_set(dynamic_attributes = ...)]`). Record into a bucket with
-    /// [`DynamicMetricSet::with`].
-    #[must_use]
-    pub fn register_metrics_with_dynamic_attributes<
-        M: DynamicMetricSetHandler + Debug + Send + Sync,
-    >(
-        &self,
-    ) -> DynamicMetricSet<M, M::Attributes> {
-        self.register_scoped_metrics(
-            |handle, entity_key| {
-                handle.register_metric_set_with_dynamic_attributes_for_entity::<M>(entity_key)
-            },
-            DynamicMetricSet::metric_set_key,
-            |ctx, handle| {
-                if ctx.node_telemetry_attrs.is_empty() {
-                    handle
-                        .register_metric_set_with_dynamic_attributes::<M>(ctx.node_attribute_set())
-                } else {
-                    handle.register_metric_set_with_dynamic_attributes::<M>(
-                        ctx.node_with_custom_attribute_set(),
-                    )
-                }
-            },
-        )
-    }
     /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
     ///
     /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
@@ -722,6 +661,87 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
         }
+    }
+}
+
+impl MetricSetRegistrar for PipelineContext {
+    fn register_static_metric_set<M: StaticMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        static_attrs: &M::StaticAttributes,
+    ) -> MetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_static_attributes_for_entity::<M>(
+                    entity_key,
+                    static_attrs,
+                )
+            },
+            MetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_static_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        static_attrs,
+                    )
+                } else {
+                    handle.register_metric_set_with_static_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                        static_attrs,
+                    )
+                }
+            },
+        )
+    }
+
+    fn register_dynamic_metric_set<M: DynamicMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> DynamicMetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_dynamic_attributes_for_entity::<M>(entity_key)
+            },
+            DynamicMetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle
+                        .register_metric_set_with_dynamic_attributes::<M>(ctx.node_attribute_set())
+                } else {
+                    handle.register_metric_set_with_dynamic_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                    )
+                }
+            },
+        )
+    }
+
+    fn register_static_and_dynamic_metric_set<
+        M: StaticMetricSetHandler + DynamicMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        static_attrs: &M::StaticAttributes,
+    ) -> DynamicMetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_static_and_dynamic_attributes_for_entity::<M>(
+                    entity_key,
+                    static_attrs,
+                )
+            },
+            DynamicMetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_static_and_dynamic_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        static_attrs,
+                    )
+                } else {
+                    handle.register_metric_set_with_static_and_dynamic_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                        static_attrs,
+                    )
+                }
+            },
+        )
     }
 }
 

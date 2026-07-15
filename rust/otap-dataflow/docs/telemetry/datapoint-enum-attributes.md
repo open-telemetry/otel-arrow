@@ -28,6 +28,8 @@ without creating a separate metric set or instrument for every value.
 For example, a logs-only receiver can use static `signal = logs`. A processor
 which records losses for logs, metrics, and traces should use dynamic `signal`;
 if it also distinguishes expired and dropped records, include dynamic `outcome`.
+One metric set can combine both kinds: use a static attribute for context shared
+by every recording and dynamic attributes for the dimensions that vary.
 
 ## Declare closed values
 
@@ -88,14 +90,54 @@ pub struct JournaldMetrics {
 let attrs = SignalAttributes {
     signal: Signal::Logs,
 };
-let mut metrics =
-    pipeline_ctx.register_metrics_with_static_attributes::<JournaldMetrics>(&attrs);
+let mut metrics = JournaldMetrics::register(&pipeline_ctx, &attrs);
 metrics.records.add(count);
 ```
 
 Use static attributes only for context that remains stable for the lifetime of
 the registered metric set. If the value can change from one recording to the
 next, use a dynamic attribute instead.
+
+## Combined static and dynamic attributes
+
+A metric set can use fixed context and per-record dimensions together. Supply
+both `static_attributes` and `dynamic_attributes`, then register with the fixed
+attribute value and record through `with(...)`.
+
+```rust
+#[attribute_set(name = "receiver.outcome", dynamic)]
+#[derive(Debug, Clone, Copy)]
+pub struct OutcomeAttributes {
+    #[attribute(key = "outcome")]
+    pub outcome: LossOutcome,
+}
+
+#[metric_set(
+    name = "receiver.journald",
+    static_attributes = SignalAttributes,
+    dynamic_attributes = OutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct JournaldMetrics {
+    #[metric(unit = "{log_record}")]
+    pub records: Counter<u64>,
+}
+
+let signal = SignalAttributes {
+    signal: Signal::Logs,
+};
+let mut metrics = JournaldMetrics::register(&pipeline_ctx, &signal);
+metrics
+    .with(OutcomeAttributes {
+        outcome: LossOutcome::Dropped,
+    })
+    .records
+    .add(count);
+```
+
+The static and dynamic attribute sets MUST NOT declare the same key. The macro
+rejects overlapping keys at compile time so every datapoint has one
+unambiguous value for each attribute.
 
 ## Dynamic attributes
 
@@ -121,8 +163,7 @@ pub struct LossMetrics {
     pub lost_items: Counter<u64>,
 }
 
-let mut metrics =
-    pipeline_ctx.register_metrics_with_dynamic_attributes::<LossMetrics>();
+let mut metrics = LossMetrics::register(&pipeline_ctx);
 metrics
     .with(LossAttributes {
         signal: Signal::Metrics,

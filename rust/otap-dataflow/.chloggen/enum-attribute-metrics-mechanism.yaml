@@ -18,9 +18,11 @@ issues: [3430]
 # Use pipe (|) for multiline entries.
 subtext: |
   Introduces the `AttributeEnum` derive, `#[attribute_set(dynamic)]`, and
-  `#[metric_set(static_attributes = ..)]` / `#[metric_set(dynamic_attributes = ..)]`.
+  `#[metric_set(static_attributes = ..)]`, `#[metric_set(dynamic_attributes = ..)]`,
+  and metric sets that combine both.
   Dynamic sets allocate one datapoint bucket per enum-attribute combination
   (dense mixed-radix indexing) and carry per-datapoint attributes through the
   export path. A compile-time budget check rejects with a hard build error when
-  a dynamic set's cardinality exceeds the configured limit. No nodes are migrated
-  in this change.
+  a dynamic set's cardinality exceeds the configured limit, and overlapping
+  static and dynamic attribute keys are rejected at compile time. No nodes are
+  migrated in this change.

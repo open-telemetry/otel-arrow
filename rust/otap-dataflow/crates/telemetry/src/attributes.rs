@@ -141,6 +141,71 @@ pub trait AttributeSetHandler {
     }
 }
 
+/// Compile-time key schema for an [`AttributeSetHandler`].
+///
+/// Generated implementations preserve composed attribute sets so metric-set
+/// macros can validate datapoint attribute keys without a runtime registration
+/// path.
+pub trait AttributeSetKeySchema {
+    /// Keys declared directly by this attribute set or by its composed sets.
+    const KEY_SCHEMA: &'static [AttributeKeySchema];
+}
+
+/// One node in an [`AttributeSetKeySchema`].
+pub enum AttributeKeySchema {
+    /// A key declared directly on an attribute set.
+    Key(&'static str),
+    /// The key schema of a composed attribute set.
+    Composed(&'static [AttributeKeySchema]),
+}
+
+/// Returns whether any static attribute key is also a dynamic attribute key.
+#[doc(hidden)]
+#[must_use]
+pub const fn has_datapoint_attribute_key_collision(
+    static_schema: &[AttributeKeySchema],
+    dynamic: &[DynamicAttributeDescriptor],
+) -> bool {
+    let mut index = 0;
+    while index < static_schema.len() {
+        match static_schema[index] {
+            AttributeKeySchema::Key(static_key) => {
+                let mut dynamic_index = 0;
+                while dynamic_index < dynamic.len() {
+                    if str_eq(static_key, dynamic[dynamic_index].key) {
+                        return true;
+                    }
+                    dynamic_index += 1;
+                }
+            }
+            AttributeKeySchema::Composed(schema) => {
+                if has_datapoint_attribute_key_collision(schema, dynamic) {
+                    return true;
+                }
+            }
+        }
+        index += 1;
+    }
+    false
+}
+
+const fn str_eq(left: &str, right: &str) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 /// A closed-set (`enum`) attribute value whose variants render to stable strings.
 ///
 /// Implemented via `#[derive(AttributeEnum)]`. Because the value space is closed,
@@ -235,6 +300,34 @@ impl AttributeValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scenario: fixed and per-record attribute schemas share or differ in keys.
+    /// Guarantees: only overlapping keys are identified as collisions.
+    #[test]
+    fn datapoint_attribute_key_collision_detection() {
+        const STATIC: &[AttributeKeySchema] = &[
+            AttributeKeySchema::Key("signal"),
+            AttributeKeySchema::Composed(&[AttributeKeySchema::Key("component")]),
+        ];
+        const DYNAMIC_WITH_COLLISION: &[DynamicAttributeDescriptor] =
+            &[DynamicAttributeDescriptor {
+                key: "component",
+                variants: &["receiver"],
+            }];
+        const DISJOINT_DYNAMIC: &[DynamicAttributeDescriptor] = &[DynamicAttributeDescriptor {
+            key: "outcome",
+            variants: &["success", "error"],
+        }];
+
+        assert!(has_datapoint_attribute_key_collision(
+            STATIC,
+            DYNAMIC_WITH_COLLISION
+        ));
+        assert!(!has_datapoint_attribute_key_collision(
+            STATIC,
+            DISJOINT_DYNAMIC
+        ));
+    }
 
     #[test]
     fn test_attribute_iterator_basic() {

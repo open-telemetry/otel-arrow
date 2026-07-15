@@ -11,6 +11,10 @@
 
 use otap_df_telemetry::attributes::{AttributeEnum, DynamicAttributeSet};
 use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::{
+    DynamicMetricSet, DynamicMetricSetHandler, MetricSet, MetricSetRegistrar,
+    StaticMetricSetHandler,
+};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
@@ -37,12 +41,18 @@ pub enum HttpMethod {
     Patch,
 }
 
-// A dynamic attribute set: values vary per recorded datapoint.
+// A dynamic attribute set: every field is a per-record attribute.
 #[attribute_set(name = "test.loss.attrs", dynamic)]
 #[derive(Debug, Clone, Copy)]
 pub struct LossAttributes {
-    #[attribute(key = "signal")]
     pub signal: Signal,
+    pub outcome: LossOutcome,
+}
+
+// A dynamic attribute set that can be combined with static signal attributes.
+#[attribute_set(name = "test.outcome.attrs", dynamic)]
+#[derive(Debug, Clone, Copy)]
+pub struct OutcomeAttributes {
     #[attribute(key = "outcome")]
     pub outcome: LossOutcome,
 }
@@ -77,6 +87,63 @@ pub struct JournaldMetrics {
     /// Number of records read.
     #[metric(unit = "{records}")]
     pub records: Counter<u64>,
+}
+
+#[metric_set(
+    name = "test.journald.outcomes",
+    static_attributes = SignalAttributes,
+    dynamic_attributes = OutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct JournaldOutcomeMetrics {
+    /// Number of records read by outcome.
+    #[metric(unit = "{records}")]
+    pub records: Counter<u64>,
+}
+
+struct TestRegistrar {
+    registry: TelemetryRegistryHandle,
+}
+
+impl TestRegistrar {
+    fn new() -> Self {
+        Self {
+            registry: TelemetryRegistryHandle::new(),
+        }
+    }
+
+    fn scope() -> ScopeAttributes {
+        ScopeAttributes {
+            node: "test".to_string(),
+        }
+    }
+}
+
+impl MetricSetRegistrar for TestRegistrar {
+    fn register_static_metric_set<M: StaticMetricSetHandler + std::fmt::Debug + Send + Sync>(
+        &self,
+        static_attrs: &M::StaticAttributes,
+    ) -> MetricSet<M> {
+        self.registry
+            .register_metric_set_with_static_attributes(Self::scope(), static_attrs)
+    }
+
+    fn register_dynamic_metric_set<M: DynamicMetricSetHandler + std::fmt::Debug + Send + Sync>(
+        &self,
+    ) -> DynamicMetricSet<M> {
+        self.registry
+            .register_metric_set_with_dynamic_attributes(Self::scope())
+    }
+
+    fn register_static_and_dynamic_metric_set<
+        M: StaticMetricSetHandler + DynamicMetricSetHandler + std::fmt::Debug + Send + Sync,
+    >(
+        &self,
+        static_attrs: &M::StaticAttributes,
+    ) -> DynamicMetricSet<M> {
+        self.registry
+            .register_metric_set_with_static_and_dynamic_attributes(Self::scope(), static_attrs)
+    }
 }
 
 /// Scenario: enum variants use default and explicit exported strings.
@@ -246,6 +313,110 @@ fn static_metric_set_export_carries_fixed_attributes() {
         seen,
         vec![(vec![("signal".to_string(), "logs".to_string())], 42)]
     );
+}
+
+/// Scenario: fixed and per-record attributes are bound to one metric set.
+/// Guarantees: every emitted bucket includes the registration-time attribute.
+#[test]
+fn static_and_dynamic_metric_set_export_carries_both_attribute_kinds() {
+    let registry = TelemetryRegistryHandle::new();
+    let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
+
+    let static_attrs = SignalAttributes {
+        signal: Signal::Logs,
+    };
+    let mut metrics = registry
+        .register_metric_set_with_static_and_dynamic_attributes::<JournaldOutcomeMetrics>(
+            ScopeAttributes {
+                node: "journald".to_string(),
+            },
+            &static_attrs,
+        );
+    metrics
+        .with(OutcomeAttributes {
+            outcome: LossOutcome::Dropped,
+        })
+        .records
+        .add(4);
+    metrics
+        .with(OutcomeAttributes {
+            outcome: LossOutcome::Expired,
+        })
+        .records
+        .add(2);
+
+    reporter.report_dynamic(&mut metrics).unwrap();
+    while let Ok(snapshot) = rx.try_recv() {
+        registry.accumulate_metric_set_snapshot(
+            snapshot.key(),
+            snapshot.bucket(),
+            snapshot.get_metrics(),
+        );
+    }
+
+    let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
+    registry.visit_metrics_and_reset_with_datapoint_attrs(
+        |_desc, _scope, dp_attrs, iter| {
+            let attrs = dp_attrs
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect::<Vec<_>>();
+            let total = iter.map(|(_, value)| value.to_u64_lossy()).sum();
+            seen.push((attrs, total));
+        },
+        false,
+    );
+
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            (
+                vec![
+                    ("signal".to_string(), "logs".to_string()),
+                    ("outcome".to_string(), "dropped".to_string()),
+                ],
+                4,
+            ),
+            (
+                vec![
+                    ("signal".to_string(), "logs".to_string()),
+                    ("outcome".to_string(), "expired".to_string()),
+                ],
+                2,
+            ),
+        ]
+    );
+}
+
+/// Scenario: generated metric-set registration methods receive a registrar.
+/// Guarantees: static, dynamic, and combined declarations select their valid API.
+#[test]
+fn generated_metric_set_registration_methods_dispatch_to_registrar() {
+    let registrar = TestRegistrar::new();
+    let signal = SignalAttributes {
+        signal: Signal::Logs,
+    };
+
+    let mut static_metrics = JournaldMetrics::register(&registrar, &signal);
+    static_metrics.records.add(1);
+
+    let mut dynamic_metrics = LossMetrics::register(&registrar);
+    dynamic_metrics
+        .with(LossAttributes {
+            signal: Signal::Metrics,
+            outcome: LossOutcome::Dropped,
+        })
+        .lost_items
+        .add(1);
+
+    let mut combined_metrics = JournaldOutcomeMetrics::register(&registrar, &signal);
+    combined_metrics
+        .with(OutcomeAttributes {
+            outcome: LossOutcome::Expired,
+        })
+        .records
+        .add(1);
 }
 
 /// Scenario: static and dynamic metric sets share a registered entity.

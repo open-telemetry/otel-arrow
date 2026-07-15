@@ -3,9 +3,10 @@
 
 //! Metrics reporter handle.
 
-use crate::attributes::DynamicAttributeSet;
 use crate::error::Error;
-use crate::metrics::{DynamicMetricSet, MetricSet, MetricSetHandler, MetricSetSnapshot};
+use crate::metrics::{
+    DynamicMetricSet, DynamicMetricSetHandler, MetricSet, MetricSetHandler, MetricSetSnapshot,
+};
 
 /// Outcome of attempting to publish a metrics snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,14 +84,10 @@ impl MetricsReporter {
     /// snapshot and sends them. Buckets that fail to send (channel full) are
     /// dropped for this interval, consistent with the loss handling of
     /// [`Self::report`] when the channel is full.
-    pub fn report_dynamic<M, D>(
+    pub fn report_dynamic<M: DynamicMetricSetHandler>(
         &mut self,
-        metrics: &mut DynamicMetricSet<M, D>,
-    ) -> Result<(), Error>
-    where
-        M: MetricSetHandler + Default,
-        D: DynamicAttributeSet,
-    {
+        metrics: &mut DynamicMetricSet<M>,
+    ) -> Result<(), Error> {
         for snapshot in metrics.drain_snapshots() {
             // A `Deferred` outcome (channel full) drops this bucket's snapshot
             // for the interval; the values were already cleared by drain.

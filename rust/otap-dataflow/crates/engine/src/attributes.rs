@@ -5,7 +5,9 @@
 //!
 //! Note: At the moment, these attributes are used for metrics aggregation and reporting.
 
-use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otap_df_telemetry::attributes::{
+    AttributeKeySchema, AttributeSetHandler, AttributeSetKeySchema, AttributeValue,
+};
 use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
 use otap_df_telemetry_macros::attribute_set;
 use std::borrow::Cow;
@@ -285,6 +287,10 @@ impl AttributeSetHandler for CustomAttributeSet {
     fn attribute_values(&self) -> &[AttributeValue] {
         &self.values
     }
+}
+
+impl AttributeSetKeySchema for CustomAttributeSet {
+    const KEY_SCHEMA: &'static [AttributeKeySchema] = &[AttributeKeySchema::Key("custom")];
 }
 
 #[cfg(test)]

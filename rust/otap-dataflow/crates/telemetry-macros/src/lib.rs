@@ -12,6 +12,7 @@
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use std::collections::HashSet;
 use syn::parse_quote;
 use syn::{
     Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, parse_macro_input, spanned::Spanned,
@@ -388,6 +389,8 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 
     // Path to the AttributeEnum trait, used for enum-typed attribute fields.
     let attr_enum_path = quote!(#root::attributes::AttributeEnum);
+    let key_schema_path = quote!(#root::attributes::AttributeKeySchema);
+    let key_schema_trait_path = quote!(#root::attributes::AttributeSetKeySchema);
 
     // Collect attribute fields and composed attribute sets
     let mut attr_field_idents = Vec::new();
@@ -397,6 +400,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let mut attr_iter_values: Vec<proc_macro2::TokenStream> = Vec::new();
 
     let mut composed_field_idents = Vec::new();
+    let mut composed_field_types = Vec::new();
 
     for field in fields {
         let ident = field
@@ -413,6 +417,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         if is_composed {
             // This field should implement AttributeSetHandler
             composed_field_idents.push(ident);
+            composed_field_types.push(field.ty.clone());
             continue;
         }
 
@@ -541,6 +546,16 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     }
 
     let desc_ident = format_ident!("ATTRIBUTES_DESCRIPTOR");
+    let key_schema_entries = quote! {
+        #(
+            #key_schema_path::Key(#attr_field_keys),
+        )*
+        #(
+            #key_schema_path::Composed(
+                <#composed_field_types as #key_schema_trait_path>::KEY_SCHEMA,
+            ),
+        )*
+    };
 
     // Generate the descriptor and iterator implementation
     if composed_field_idents.is_empty() {
@@ -582,6 +597,12 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                         unsafe { ::std::mem::transmute(values.as_slice()) }
                     })
                 }
+            }
+
+            impl #generics #key_schema_trait_path for #struct_ident #generics {
+                const KEY_SCHEMA: &'static [#key_schema_path] = &[
+                    #key_schema_entries
+                ];
             }
         };
         generated.into()
@@ -661,6 +682,12 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                         unsafe { ::std::mem::transmute(values.as_slice()) }
                     })
                 }
+            }
+
+            impl #generics #key_schema_trait_path for #struct_ident #generics {
+                const KEY_SCHEMA: &'static [#key_schema_path] = &[
+                    #key_schema_entries
+                ];
             }
         };
         generated.into()
@@ -846,15 +873,6 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         }
     };
 
-    if static_attrs.is_some() && dynamic_attrs.is_some() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "metric_set cannot specify both `static_attributes` and `dynamic_attributes`",
-        )
-        .to_compile_error()
-        .into();
-    }
-
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
 
@@ -879,16 +897,70 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let crate_root = telemetry_crate_root();
 
-    let marker_impl = if let Some(ty) = &static_attrs {
+    let marker_impl = if let (Some(static_ty), Some(dynamic_ty)) = (&static_attrs, &dynamic_attrs) {
         quote! {
             impl #crate_root::metrics::StaticMetricSetHandler for #struct_ident {
-                type Attributes = #ty;
+                type StaticAttributes = #static_ty;
+            }
+
+            impl #crate_root::metrics::DynamicMetricSetHandler for #struct_ident {
+                type DynamicAttributes = #dynamic_ty;
+            }
+
+            const _: () = {
+                #crate_root::metrics::check_cardinality(
+                    <#dynamic_ty as #crate_root::attributes::DynamicAttributeSet>::CARDINALITY,
+                );
+                if #crate_root::attributes::has_datapoint_attribute_key_collision(
+                    <#static_ty as #crate_root::attributes::AttributeSetKeySchema>::KEY_SCHEMA,
+                    <#dynamic_ty as #crate_root::attributes::DynamicAttributeSet>::DESCRIPTORS,
+                ) {
+                    panic!("static and dynamic datapoint attribute keys must not overlap");
+                }
+            };
+
+            impl #struct_ident {
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                    static_attrs: &#static_ty,
+                ) -> #crate_root::metrics::DynamicMetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_static_and_dynamic_metric_set::<Self>(
+                        registrar,
+                        static_attrs,
+                    )
+                }
+            }
+        }
+    } else if let Some(ty) = &static_attrs {
+        quote! {
+            impl #crate_root::metrics::StaticMetricSetHandler for #struct_ident {
+                type StaticAttributes = #ty;
+            }
+
+            impl #struct_ident {
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                    static_attrs: &#ty,
+                ) -> #crate_root::metrics::MetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_static_metric_set::<Self>(
+                        registrar,
+                        static_attrs,
+                    )
+                }
             }
         }
     } else if let Some(ty) = &dynamic_attrs {
         quote! {
             impl #crate_root::metrics::DynamicMetricSetHandler for #struct_ident {
-                type Attributes = #ty;
+                type DynamicAttributes = #ty;
             }
 
             // Compile-time cardinality budget check: hard build error when the
@@ -896,6 +968,20 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
             const _: () = #crate_root::metrics::check_cardinality(
                 <#ty as #crate_root::attributes::DynamicAttributeSet>::CARDINALITY,
             );
+
+            impl #struct_ident {
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                ) -> #crate_root::metrics::DynamicMetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_dynamic_metric_set::<Self>(
+                        registrar,
+                    )
+                }
+            }
         }
     } else {
         quote!()
@@ -957,6 +1043,12 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
 
+    if is_dynamic {
+        if let Err(error) = normalize_dynamic_attribute_fields(&mut s) {
+            return error.to_compile_error().into();
+        }
+    }
+
     // Ensure the AttributeSetHandler derive is attached
     let derive_attr: Attribute =
         parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
@@ -978,6 +1070,41 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!( #s #dynamic_impl ).into()
 }
 
+/// Marks every dynamic attribute-set field as an attribute and rejects
+/// compositions, which cannot participate in dense bucket indexing.
+fn normalize_dynamic_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
+    let fields = match &mut s.fields {
+        Fields::Named(fields) => &mut fields.named,
+        _ => {
+            return Err(syn::Error::new(
+                s.span(),
+                "dynamic attribute_set requires named fields",
+            ));
+        }
+    };
+
+    for field in fields {
+        if field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("compose"))
+        {
+            return Err(syn::Error::new(
+                field.span(),
+                "dynamic attribute_set does not support #[compose] fields",
+            ));
+        }
+        if !field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("attribute"))
+        {
+            field.attrs.push(parse_quote!(#[attribute]));
+        }
+    }
+    Ok(())
+}
+
 /// Builds the `DynamicAttributeSet` trait implementation for a `dynamic`
 /// attribute set. The bucket index is a dense mixed-radix encoding where the
 /// first declared field is the low-order digit.
@@ -997,13 +1124,13 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
     let mut field_idents = Vec::new();
     let mut field_keys = Vec::new();
     let mut field_types = Vec::new();
+    let mut seen_keys = HashSet::new();
     for field in fields {
-        // Skip composed fields; dynamic sets are flat enum-attribute structs.
         if field.attrs.iter().any(|a| a.path().is_ident("compose")) {
-            continue;
-        }
-        if !field.attrs.iter().any(|a| a.path().is_ident("attribute")) {
-            continue;
+            return Err(syn::Error::new(
+                field.span(),
+                "dynamic attribute_set does not support #[compose] fields",
+            ));
         }
         let ident = field.ident.clone().expect("named field must have an ident");
         let mut key_attr: Option<String> = None;
@@ -1013,6 +1140,12 @@ fn build_dynamic_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::
             }
         }
         let key = key_attr.unwrap_or_else(|| ident.to_string().replace('_', "."));
+        if !seen_keys.insert(key.clone()) {
+            return Err(syn::Error::new(
+                field.span(),
+                format!("duplicate dynamic attribute key `{key}`"),
+            ));
+        }
         field_keys.push(key);
         field_types.push(field.ty.clone());
         field_idents.push(ident);
@@ -1118,4 +1251,93 @@ fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
         Ok(())
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: dynamic fields resolve to the same explicit attribute key.
+    /// Guarantees: macro expansion rejects duplicate datapoint keys.
+    #[test]
+    fn dynamic_attribute_set_rejects_duplicate_keys() {
+        let attributes: ItemStruct = syn::parse_str(
+            r#"
+            struct Attributes {
+                #[attribute(key = "outcome")]
+                dropped: Outcome,
+                #[attribute(key = "outcome")]
+                expired: Outcome,
+            }
+            "#,
+        )
+        .expect("test attribute set should parse");
+
+        let error = build_dynamic_attribute_set_impl(&attributes)
+            .expect_err("duplicate dynamic keys should fail");
+        assert_eq!(
+            error.to_string(),
+            "duplicate dynamic attribute key `outcome`"
+        );
+    }
+
+    /// Scenario: a dynamic attribute set contains a composed field.
+    /// Guarantees: composition is rejected before bucket code generation.
+    #[test]
+    fn dynamic_attribute_set_rejects_composed_fields() {
+        let mut attributes: ItemStruct = syn::parse_str(
+            r#"
+            struct Attributes {
+                #[compose]
+                shared: Shared,
+            }
+            "#,
+        )
+        .expect("test attribute set should parse");
+
+        let error = normalize_dynamic_attribute_fields(&mut attributes)
+            .expect_err("composed dynamic fields should fail");
+        assert_eq!(
+            error.to_string(),
+            "dynamic attribute_set does not support #[compose] fields"
+        );
+    }
+
+    /// Scenario: a dynamic attribute set omits field annotations.
+    /// Guarantees: every field receives the default attribute annotation.
+    #[test]
+    fn dynamic_attribute_set_marks_unannotated_fields() {
+        let mut attributes: ItemStruct = syn::parse_str(
+            r#"
+            struct Attributes {
+                signal: Signal,
+                #[attribute(key = "error.type")]
+                outcome: Outcome,
+            }
+            "#,
+        )
+        .expect("test attribute set should parse");
+
+        normalize_dynamic_attribute_fields(&mut attributes)
+            .expect("unannotated dynamic fields should be supported");
+
+        let fields = match attributes.fields {
+            Fields::Named(fields) => fields.named,
+            _ => unreachable!("test input has named fields"),
+        };
+        assert!(
+            fields[0]
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("attribute"))
+        );
+        assert_eq!(
+            fields[1]
+                .attrs
+                .iter()
+                .filter(|attribute| attribute.path().is_ident("attribute"))
+                .count(),
+            1
+        );
+    }
 }
