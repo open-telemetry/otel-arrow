@@ -20,6 +20,8 @@ use otap_df_engine_macros::capability;
 use serde_json::{Map, Value};
 use std::sync::Arc;
 
+use super::error::CapabilityError;
+
 /// Hands out an agent-fed, vendor-defined attribute bag to data-path nodes.
 #[capability(
     name = "vendor_bundle",
@@ -29,7 +31,10 @@ pub trait VendorBundle {
     /// The vendor-defined attributes as a shared, already-parsed JSON object.
     ///
     /// Opaque to the engine; the consumer defines its own keys. Returned as an
-    /// `Arc` so a read is a refcount bump rather than a re-parse. An empty or
-    /// absent bundle is an empty map.
-    fn attributes(&self) -> Arc<Map<String, Value>>;
+    /// `Arc` so a read is a refcount bump rather than a re-parse.
+    ///
+    /// Returns a [`CapabilityError`] when no bundle is provisioned yet or one
+    /// cannot be produced, so a consumer can distinguish that from an
+    /// "empty but valid" bundle (`Ok` with an empty map).
+    fn attributes(&self) -> Result<Arc<Map<String, Value>>, CapabilityError>;
 }
