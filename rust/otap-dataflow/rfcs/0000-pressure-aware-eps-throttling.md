@@ -451,8 +451,6 @@ per-request or per-scope label cardinality.
   which items do not.
 - What response and retry guidance should non-OTLP receivers use? OTLP/HTTP and
   OTLP/gRPC follow the existing memory-pressure responses.
-- Should configuration validation reject multi-level placements outright in the
-  first version, or accept them with most-specific-wins and warn at startup?
 - How should limits be represented for mixed signal traffic from one scope?
 - Should unidentified traffic share one default bucket, or should missing tenant
   identity reject immediately?
