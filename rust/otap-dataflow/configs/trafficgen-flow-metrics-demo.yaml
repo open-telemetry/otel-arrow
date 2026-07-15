@@ -1,9 +1,10 @@
 # Demonstrates distributed flow metrics with multiple drop decision nodes inside a
 # single flow range:
 #
-# The "ingest_pipeline" flow covers attr1..attr4. The sampler, filter, and
-# transform nodes each drop records and record `signals.dropped` tagged with a
-# `flow.node.decision` attribute of their node name.
+# The "ingest_pipeline" flow covers attr1..attr4. The sampler, filter,
+# transform, and recordset_kql nodes each drop records and record
+# `signals.dropped` tagged with a `flow.node.decision` attribute of their node
+# name.
 #
 # Query metrics while running:
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
@@ -51,13 +52,13 @@ groups:
               # a predictable fraction.
               data_source: synthetic
 
-          # Decision node #1: keeps ~1/3 of log records.
+          # Decision node #1: keeps ~2/3 of log records.
           sampler:
             type: processor:log_sampling
             config:
               policy:
                 ratio:
-                  emit: 1
+                  emit: 2
                   out_of: 3
 
           attr1:
@@ -94,6 +95,13 @@ groups:
             config:
               kql_query: 'logs | where attributes["thread.name"] != "worker-3"'
 
+          # Decision node #4: recordset_kql processor dropping worker-2 via a KQL
+          # `where` predicate, proving it records signals.dropped too.
+          recordset:
+            type: "urn:microsoft:processor:recordset_kql"
+            config:
+              query: "source | where attributes['thread.name'] != 'worker-2'"
+
           attr3:
             type: processor:attribute
             config:
@@ -128,6 +136,8 @@ groups:
           - from: filter
             to: transform
           - from: transform
+            to: recordset
+          - from: recordset
             to: attr4
           - from: attr4
             to: noop
