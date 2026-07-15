@@ -227,7 +227,7 @@ clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-na
 clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
-one_collect = "0.1.34532"
+one_collect = "0.1.34811"
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
@@ -237,7 +237,7 @@ flate2 = "1.1.5"
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = ">=0.3.47, <0.3.52"
+time = ">=0.3.47, <0.3.54"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
