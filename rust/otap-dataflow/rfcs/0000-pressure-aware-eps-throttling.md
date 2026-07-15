@@ -387,6 +387,16 @@ A later implementation should define:
 The configuration should be operator-owned and should avoid unbounded
 per-request or per-scope label cardinality.
 
+### Performance Validation
+
+Before implementation is accepted, the admission path should be measured against
+the same receiver without this policy enabled. The checks should cover
+throughput, CPU cost, memory used by per-scope rate state, and the cost of
+counting accepted items after decode. The first implementation should use the
+existing benchmark and performance-test surfaces where possible, including
+receiver throughput tests and the existing item-count benchmark for the
+post-decode counting cost.
+
 ## Drawbacks
 
 - EPS is not memory ownership. A scope can stay within EPS but send large
