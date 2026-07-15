@@ -28,8 +28,7 @@ config:
 ```
 
 The `opl_expression` can be any expression supported by the
-[OPL](../../../../query-engine-languages/docs/opl-user-guide/) 
-(Observability Processing Language).
+[OPL](../../../../query-engine-languages/docs/opl-user-guide/).
 
 ## Telemetry
 
