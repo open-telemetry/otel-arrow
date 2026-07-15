@@ -68,10 +68,6 @@ use mimalloc::MiMalloc;
 #[cfg(all(not(windows), not(feature = "dhat-heap"), feature = "jemalloc"))]
 use tikv_jemallocator::Jemalloc;
 
-#[allow(non_upper_case_globals)]
-#[unsafe(export_name = "_rjem_malloc_conf")]
-pub static malloc_conf: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
-
 // -----------------------------------------------------------------------------
 // Global allocator selection.
 // -----------------------------------------------------------------------------
