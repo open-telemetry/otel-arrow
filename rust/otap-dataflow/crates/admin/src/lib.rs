@@ -5,6 +5,7 @@
 
 mod convert;
 mod dashboard;
+mod debug;
 mod engine_config;
 pub mod error;
 mod health;
@@ -283,6 +284,7 @@ pub async fn run(
     };
 
     let api_routes = Router::new()
+        .merge(debug::routes())
         .merge(health::routes())
         .merge(telemetry::routes())
         .merge(engine_config::routes())
