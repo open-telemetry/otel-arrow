@@ -3,9 +3,13 @@
 
 //! Metrics dispatcher that handles internal telemetry metrics.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use opentelemetry::metrics::ObservableCounter;
 use opentelemetry::{InstrumentationScope, global, metrics::Meter, metrics::MeterProvider};
+use parking_lot::Mutex;
 use tokio::time::{MissedTickBehavior, interval};
 use tokio_util::sync::CancellationToken;
 
@@ -22,18 +26,146 @@ use crate::{
 pub struct MetricsDispatcher {
     metrics_handler: TelemetryRegistryHandle,
     reporting_interval: std::time::Duration,
+    /// Observable-counter series backing cumulative sums, keyed by scope
+    /// series key, then by metric name. Each series holds one value slot per
+    /// attribute set, shared with an SDK callback registered once per series;
+    /// the SDK reader then performs cumulative/delta temporality conversion
+    /// itself.
+    ///
+    /// The series currently live for the process lifetime. Naive eviction is
+    /// unsafe because dropping these instrument handles does not unregister
+    /// their SDK callbacks; see #3413 for lifecycle-aware pruning.
+    cumulative_series: Mutex<HashMap<String, HashMap<&'static str, CumulativeCounterSeries>>>,
+}
+
+/// One value slot per attribute set reported for a cumulative series, keyed
+/// by the encoded attribute set. Each slot pairs the attribute list passed to
+/// `observe` with the shared atomic holding the latest total (`f64` totals
+/// store their bit pattern).
+type SlotMap = HashMap<String, (Vec<opentelemetry::KeyValue>, Arc<AtomicU64>)>;
+
+/// Backing state for one exported cumulative counter series.
+///
+/// The slot map is shared with an SDK observable-counter callback that
+/// reports every slot's latest total at each SDK collection, one data point
+/// per attribute set. Data points carry no attributes today, so the map holds
+/// a single empty-attribute slot, but the shape is ready for datapoint-level
+/// attributes (#3369). The instrument handle is retained so the registration
+/// lives as long as the series.
+enum CumulativeCounterSeries {
+    /// Series for a `u64` cumulative counter.
+    U64 {
+        slots: Arc<Mutex<SlotMap>>,
+        _instrument: ObservableCounter<u64>,
+    },
+    /// Series for an `f64` cumulative counter; slots store the bit pattern
+    /// of the current value.
+    F64 {
+        slots: Arc<Mutex<SlotMap>>,
+        _instrument: ObservableCounter<f64>,
+    },
+}
+
+impl CumulativeCounterSeries {
+    fn initial_slots(
+        attr_key: &str,
+        attributes: &[opentelemetry::KeyValue],
+        raw: u64,
+    ) -> Arc<Mutex<SlotMap>> {
+        Arc::new(Mutex::new(HashMap::from([(
+            attr_key.to_owned(),
+            (attributes.to_vec(), Arc::new(AtomicU64::new(raw))),
+        )])))
+    }
+
+    fn build(
+        field: &MetricsField,
+        initial: MetricValue,
+        attributes: &[opentelemetry::KeyValue],
+        attr_key: &str,
+        meter: &Meter,
+    ) -> Self {
+        match initial {
+            MetricValue::U64(v) => {
+                let slots = Self::initial_slots(attr_key, attributes, v);
+                let observed = Arc::clone(&slots);
+                let instrument = meter
+                    .u64_observable_counter(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .with_callback(move |observer| {
+                        for (attrs, slot) in observed.lock().values() {
+                            observer.observe(slot.load(Ordering::Relaxed), attrs);
+                        }
+                    })
+                    .build();
+                Self::U64 {
+                    slots,
+                    _instrument: instrument,
+                }
+            }
+            MetricValue::F64(v) => {
+                let slots = Self::initial_slots(attr_key, attributes, v.to_bits());
+                let observed = Arc::clone(&slots);
+                let instrument = meter
+                    .f64_observable_counter(field.name)
+                    .with_description(field.brief)
+                    .with_unit(field.unit)
+                    .with_callback(move |observer| {
+                        for (attrs, slot) in observed.lock().values() {
+                            observer.observe(f64::from_bits(slot.load(Ordering::Relaxed)), attrs);
+                        }
+                    })
+                    .build();
+                Self::F64 {
+                    slots,
+                    _instrument: instrument,
+                }
+            }
+            MetricValue::Mmsc(_) => unreachable!("Counter instrument cannot have Mmsc value"),
+        }
+    }
+
+    /// Records `value` in the slot identified by `attr_key`, creating the
+    /// slot on first sight (even at zero). Zero updates to an existing slot
+    /// are skipped; see [`MetricsDispatcher::observe_cumulative_counter`].
+    fn observe(&self, value: MetricValue, attributes: &[opentelemetry::KeyValue], attr_key: &str) {
+        let (slots, raw) = match (self, value) {
+            (Self::U64 { slots, .. }, MetricValue::U64(v)) => (slots, v),
+            (Self::F64 { slots, .. }, MetricValue::F64(v)) => (slots, v.to_bits()),
+            _ => {
+                debug_assert!(
+                    false,
+                    "metric value type must not change between dispatches"
+                );
+                return;
+            }
+        };
+        let mut slots = slots.lock();
+        if let Some((_, slot)) = slots.get(attr_key) {
+            if !value.is_zero() {
+                slot.store(raw, Ordering::Relaxed);
+            }
+        } else {
+            let _ = slots.insert(
+                attr_key.to_owned(),
+                (attributes.to_vec(), Arc::new(AtomicU64::new(raw))),
+            );
+        }
+    }
 }
 
 impl MetricsDispatcher {
     /// Create a new metrics dispatcher
     #[must_use]
-    pub const fn new(
+    pub fn new(
         metrics_handler: TelemetryRegistryHandle,
         reporting_interval: std::time::Duration,
     ) -> Self {
         Self {
             metrics_handler,
             reporting_interval,
+            cumulative_series: Mutex::new(HashMap::new()),
         }
     }
 
@@ -69,6 +201,7 @@ impl MetricsDispatcher {
         self.metrics_handler
             .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
                 let scope_attributes = Self::to_opentelemetry_attributes(attributes);
+                let scope_key = Self::scope_series_key(descriptor.name, &scope_attributes);
                 let meter = if scope_attributes.is_empty() {
                     meter_provider.meter(descriptor.name)
                 } else {
@@ -82,7 +215,7 @@ impl MetricsDispatcher {
                 // Entity attributes live on the instrumentation scope so OTel Views can
                 // target them via scope_attributes selectors; data points carry none.
                 for (field, value) in metrics_iter {
-                    self.add_opentelemetry_metric(field, value, &[], &meter);
+                    self.add_opentelemetry_metric(field, value, &[], &meter, &scope_key);
                 }
             });
 
@@ -117,26 +250,42 @@ impl MetricsDispatcher {
         opentelemetry::KeyValue::new(key.to_string(), otel_value)
     }
 
+    /// Encodes an attribute list into a stable map key.
+    fn attr_set_key(attributes: &[opentelemetry::KeyValue]) -> String {
+        use std::fmt::Write;
+        let mut key = String::new();
+        for kv in attributes {
+            let _ = write!(key, "\u{1f}{}\u{1f}{}", kv.key, kv.value);
+        }
+        key
+    }
+
+    /// Builds a stable identifier for the series cache from the scope name and
+    /// its entity attributes (which are fixed for a registered metric set).
+    fn scope_series_key(scope_name: &str, attributes: &[opentelemetry::KeyValue]) -> String {
+        let mut key = String::from(scope_name);
+        key.push_str(&Self::attr_set_key(attributes));
+        key
+    }
+
     fn add_opentelemetry_metric(
         &self,
         field: &MetricsField,
         value: MetricValue,
         attributes: &[opentelemetry::KeyValue],
         meter: &Meter,
+        scope_key: &str,
     ) {
         match field.instrument {
             Instrument::Counter => match field.temporality {
                 Some(Temporality::Delta) => {
                     self.add_opentelemetry_counter(field, value, attributes, meter)
                 }
-                Some(Temporality::Cumulative) | None => {
-                    debug_assert!(
-                        field.temporality.is_some(),
-                        "sum-like instrument must have a temporality"
-                    );
-                    // Cumulative counters are exported as gauges to avoid double-counting.
-                    // Note for reviewers: This is a temporary workaround until we figure out a
-                    // better way to handle cumulative sums via the Rust Client SDK.
+                Some(Temporality::Cumulative) => {
+                    self.observe_cumulative_counter(field, value, attributes, meter, scope_key)
+                }
+                None => {
+                    debug_assert!(false, "sum-like instrument must have a temporality");
                     self.add_opentelemetry_gauge(field, value, attributes, meter)
                 }
             },
@@ -149,9 +298,11 @@ impl MetricsDispatcher {
                         field.temporality.is_some(),
                         "sum-like instrument must have a temporality"
                     );
-                    // Cumulative up-down counters are exported as gauges to avoid double-counting.
-                    // Note for reviewers: This is a temporary workaround until we figure out a
-                    // better way to handle cumulative sums via the Rust Client SDK.
+                    // Cumulative up-down counters are still exported as gauges to avoid
+                    // double-counting. They cannot reuse the observable-counter path
+                    // below: the registry zeroes values after each visit, and unlike a
+                    // monotonic total, a legitimate up-down value of zero cannot be
+                    // distinguished from "no fresh observation this interval".
                     self.add_opentelemetry_gauge(field, value, attributes, meter)
                 }
             },
@@ -195,6 +346,41 @@ impl MetricsDispatcher {
                 counter.add(v, attributes);
             }
             MetricValue::Mmsc(_) => unreachable!("Counter instrument cannot have Mmsc value"),
+        }
+    }
+
+    /// Publishes the latest total of a cumulative counter through an SDK
+    /// observable counter, so the configured reader performs the
+    /// cumulative/delta temporality conversion.
+    ///
+    /// The observable instrument and its callback are created once per series
+    /// and cached; later dispatches only update the value slot matching the
+    /// data-point attribute set (one slot per attribute set, so the series
+    /// stays correct when datapoint-level attributes arrive with #3369).
+    ///
+    /// Zero updates to an existing slot are skipped: the registry zeroes
+    /// accumulated values after every visit, so a zero for an already-created
+    /// monotonic slot means "no fresh observation this interval". Initial
+    /// zero values still create the slot so readers can observe a legitimate
+    /// zero starting total.
+    fn observe_cumulative_counter(
+        &self,
+        field: &MetricsField,
+        value: MetricValue,
+        attributes: &[opentelemetry::KeyValue],
+        meter: &Meter,
+        scope_key: &str,
+    ) {
+        let attr_key = Self::attr_set_key(attributes);
+        let mut scopes = self.cumulative_series.lock();
+        if let Some(series) = scopes.get(scope_key).and_then(|s| s.get(field.name)) {
+            series.observe(value, attributes, &attr_key);
+        } else {
+            let series = CumulativeCounterSeries::build(field, value, attributes, &attr_key, meter);
+            let _ = scopes
+                .entry(scope_key.to_owned())
+                .or_default()
+                .insert(field.name, series);
         }
     }
 
@@ -616,7 +802,7 @@ mod tests {
             TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
         // Nothing to assert here. Test the function call and it should not panic.
     }
 
@@ -637,7 +823,7 @@ mod tests {
             TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
         // Nothing to assert here. Test the function call and it should not panic.
     }
 
@@ -658,7 +844,7 @@ mod tests {
             TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
         // Nothing to assert here. Test the function call and it should not panic.
     }
 
@@ -679,7 +865,7 @@ mod tests {
             TelemetryRegistryHandle::new(),
             std::time::Duration::from_secs(10),
         );
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
         // Nothing to assert here. Test the function call and it should not panic.
     }
 
@@ -707,7 +893,7 @@ mod tests {
             sum: 0.0,
             count: 0,
         });
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
 
         // Test with count == 1
         let value = MetricValue::Mmsc(MmscSnapshot {
@@ -716,7 +902,7 @@ mod tests {
             sum: 5.0,
             count: 1,
         });
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
 
         // Test with count == 2
         let value = MetricValue::Mmsc(MmscSnapshot {
@@ -725,7 +911,7 @@ mod tests {
             sum: 10.0,
             count: 2,
         });
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
 
         // Test with count >= 3
         let value = MetricValue::Mmsc(MmscSnapshot {
@@ -734,7 +920,7 @@ mod tests {
             sum: 25.0,
             count: 5,
         });
-        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter);
+        dispatcher.add_opentelemetry_metric(&field, value, &attributes, &meter, "test_scope");
         // Nothing to assert here. Test the function call and it should not panic.
     }
 
@@ -837,6 +1023,352 @@ mod tests {
             found,
             "histogram metric 'latency' not found in exported data"
         );
+    }
+
+    // --- Cumulative counter dispatch tests ---------------------------------
+    //
+    // These cover the observable-counter path for cumulative sums: the
+    // dispatcher publishes the latest total through an SDK async instrument,
+    // and the reader performs the cumulative/delta temporality conversion.
+
+    static CUMULATIVE_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "cumulative_dispatch_test",
+        metrics: &[
+            MetricsField {
+                name: "events_total",
+                unit: "{event}",
+                brief: "lifetime event count",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Cumulative),
+                value_type: MetricValueType::U64,
+            },
+            MetricsField {
+                name: "ticks",
+                unit: "{tick}",
+                brief: "per-interval tick count",
+                instrument: Instrument::Counter,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::U64,
+            },
+        ],
+    };
+
+    #[derive(Debug, Default)]
+    struct CumulativeMetricSet {
+        events_total: crate::instrument::ObserveCounter<u64>,
+        ticks: crate::instrument::Counter<u64>,
+    }
+
+    impl MetricSetHandler for CumulativeMetricSet {
+        fn descriptor(&self) -> &'static MetricsDescriptor {
+            &CUMULATIVE_METRICS_DESCRIPTOR
+        }
+        fn snapshot_values(&self) -> Vec<MetricValue> {
+            vec![
+                MetricValue::from(self.events_total.get()),
+                MetricValue::from(self.ticks.get()),
+            ]
+        }
+        fn clear_values(&mut self) {
+            // Mirrors the derive macro: delta counters reset, observe
+            // counters keep their last observed total.
+            self.ticks.reset();
+        }
+        fn needs_flush(&self) -> bool {
+            true
+        }
+    }
+
+    /// Returns `(value, is_monotonic)` of the single data point exported for
+    /// the u64 sum named `name` in one collected batch, or `None` if the
+    /// metric is absent from the batch.
+    fn find_u64_sum(rm: &ResourceMetrics, name: &str) -> Option<(u64, bool)> {
+        let mut found = None;
+        for sm in rm.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == name {
+                    assert!(
+                        found.is_none(),
+                        "expected exactly one metric named '{name}'"
+                    );
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("expected metric '{name}' to be exported as a u64 Sum");
+                    };
+                    let data_points: Vec<_> = sum.data_points().collect();
+                    assert_eq!(data_points.len(), 1, "expected one data point for '{name}'");
+                    found = Some((data_points[0].value(), sum.is_monotonic()));
+                }
+            }
+        }
+        found
+    }
+
+    /// Snapshots `metric_set` into the registry, dispatches through
+    /// `meter_provider`, and returns the newly collected batch.
+    fn accumulate_and_collect(
+        registry: &TelemetryRegistryHandle,
+        metric_set: &crate::metrics::MetricSet<CumulativeMetricSet>,
+        dispatcher: &MetricsDispatcher,
+        meter_provider: &SdkMeterProvider,
+        exporter: &InMemoryMetricExporter,
+    ) -> ResourceMetrics {
+        let snapshot = metric_set.snapshot();
+        registry.accumulate_metric_set_snapshot(snapshot.key, &snapshot.metrics);
+        dispatcher
+            .dispatch_metrics_to(meter_provider)
+            .expect("dispatch_metrics_to failed");
+        meter_provider.force_flush().expect("force_flush failed");
+        exporter
+            .get_finished_metrics()
+            .expect("get_finished_metrics failed")
+            .pop()
+            .expect("no batch collected")
+    }
+
+    #[test]
+    fn test_cumulative_counter_exported_as_monotonic_sum() {
+        let registry = TelemetryRegistryHandle::new();
+        let mut metric_set = registry.register_metric_set::<CumulativeMetricSet>(ScopeAttrs {
+            descriptor: &NO_ATTRS_DESCRIPTOR,
+            values: vec![],
+        });
+        let dispatcher =
+            MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+
+        metric_set.events_total.observe(10);
+        metric_set.ticks.add(1);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, monotonic) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert!(monotonic, "cumulative counter must export as monotonic sum");
+        assert_eq!(value, 10);
+
+        // A later, larger total replaces the previous one; a cumulative
+        // reader must report 25, not a double-counted 35.
+        metric_set.events_total.observe(25);
+        metric_set.ticks.add(1);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert_eq!(value, 25, "cumulative total must be replaced, not summed");
+    }
+
+    #[test]
+    fn test_cumulative_counter_honors_delta_reader_temporality() {
+        use opentelemetry_sdk::metrics::InMemoryMetricExporterBuilder;
+
+        let registry = TelemetryRegistryHandle::new();
+        let mut metric_set = registry.register_metric_set::<CumulativeMetricSet>(ScopeAttrs {
+            descriptor: &NO_ATTRS_DESCRIPTOR,
+            values: vec![],
+        });
+        let dispatcher =
+            MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
+        let exporter = InMemoryMetricExporterBuilder::new()
+            .with_temporality(opentelemetry_sdk::metrics::Temporality::Delta)
+            .build();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+
+        metric_set.events_total.observe(10);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert_eq!(
+            value, 10,
+            "first delta observation reports the initial total"
+        );
+
+        metric_set.events_total.observe(25);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert_eq!(
+            value, 15,
+            "delta reader must receive the per-interval difference"
+        );
+    }
+
+    #[test]
+    fn test_cumulative_counter_creates_series_on_initial_zero() {
+        let registry = TelemetryRegistryHandle::new();
+        let mut metric_set = registry.register_metric_set::<CumulativeMetricSet>(ScopeAttrs {
+            descriptor: &NO_ATTRS_DESCRIPTOR,
+            values: vec![],
+        });
+        let dispatcher =
+            MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+
+        // The nonzero delta sibling forces a registry visit; the cumulative
+        // counter's first observed total is legitimately zero and should still
+        // create an observable series.
+        metric_set.events_total.observe(0);
+        metric_set.ticks.add(1);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, monotonic) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert!(monotonic, "cumulative counter must export as monotonic sum");
+        assert_eq!(value, 0);
+
+        // A later nonzero value must update the existing series. The helper
+        // asserts that exactly one metric and data point are exported.
+        metric_set.events_total.observe(7);
+        metric_set.ticks.add(1);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert_eq!(value, 7);
+    }
+
+    /// Drives the cumulative path directly with distinct data-point attribute
+    /// sets (the registry cannot yield them yet; see #3369) and verifies each
+    /// set gets its own slot and data point under a single instrument.
+    #[test]
+    fn test_cumulative_counter_reports_one_data_point_per_attribute_set() {
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let meter = meter_provider.meter("dp_attr_dispatch_test");
+        let field = MetricsField {
+            name: "events_total",
+            unit: "{event}",
+            brief: "lifetime event count",
+            instrument: Instrument::Counter,
+            temporality: Some(Temporality::Cumulative),
+            value_type: MetricValueType::U64,
+        };
+        let dispatcher = MetricsDispatcher::new(
+            TelemetryRegistryHandle::new(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let logs = [opentelemetry::KeyValue::new("signal", "logs")];
+        let traces = [opentelemetry::KeyValue::new("signal", "traces")];
+        dispatcher.add_opentelemetry_metric(&field, MetricValue::U64(10), &logs, &meter, "dp");
+        dispatcher.add_opentelemetry_metric(&field, MetricValue::U64(4), &traces, &meter, "dp");
+        // A later total must land in the slot matching its attribute set.
+        dispatcher.add_opentelemetry_metric(&field, MetricValue::U64(25), &logs, &meter, "dp");
+        meter_provider.force_flush().expect("force_flush failed");
+
+        let batch = exporter
+            .get_finished_metrics()
+            .expect("get_finished_metrics failed")
+            .pop()
+            .expect("no batch collected");
+        let mut points = Vec::new();
+        for sm in batch.scope_metrics() {
+            for metric in sm.metrics() {
+                if metric.name() == "events_total" {
+                    let AggregatedMetrics::U64(MetricData::Sum(sum)) = metric.data() else {
+                        panic!("expected a u64 Sum");
+                    };
+                    assert!(sum.is_monotonic());
+                    for dp in sum.data_points() {
+                        let signal = dp
+                            .attributes()
+                            .find(|kv| kv.key.as_str() == "signal")
+                            .map(|kv| kv.value.to_string());
+                        points.push((signal, dp.value()));
+                    }
+                }
+            }
+        }
+        points.sort();
+        assert_eq!(
+            points,
+            vec![
+                (Some("logs".to_string()), 25),
+                (Some("traces".to_string()), 4),
+            ],
+            "each attribute set must report its own slot"
+        );
+    }
+
+    #[test]
+    fn test_cumulative_counter_ignores_zeroed_registry_values() {
+        let registry = TelemetryRegistryHandle::new();
+        let mut metric_set = registry.register_metric_set::<CumulativeMetricSet>(ScopeAttrs {
+            descriptor: &NO_ATTRS_DESCRIPTOR,
+            values: vec![],
+        });
+        let dispatcher =
+            MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
+        let exporter = InMemoryMetricExporter::default();
+        let meter_provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+
+        metric_set.events_total.observe(10);
+        metric_set.ticks.add(1);
+        let batch = accumulate_and_collect(
+            &registry,
+            &metric_set,
+            &dispatcher,
+            &meter_provider,
+            &exporter,
+        );
+        let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert_eq!(value, 10);
+
+        // Simulate an interval where only the delta counter was reported:
+        // the registry visit then yields a zero for the cumulative field,
+        // which must not clobber the previously observed total.
+        let snapshot_key = metric_set.snapshot().key;
+        registry.accumulate_metric_set_snapshot(
+            snapshot_key,
+            &[MetricValue::U64(0), MetricValue::U64(1)],
+        );
+        dispatcher
+            .dispatch_metrics_to(&meter_provider)
+            .expect("dispatch_metrics_to failed");
+        meter_provider.force_flush().expect("force_flush failed");
+        let batch = exporter
+            .get_finished_metrics()
+            .expect("get_finished_metrics failed")
+            .pop()
+            .expect("no batch collected");
+        let (value, _) = find_u64_sum(&batch, "events_total").expect("metric not exported");
+        assert_eq!(value, 10, "zeroed registry value must not reset the total");
     }
 
     #[test]
