@@ -42,6 +42,7 @@
 //   module). These are unique, collision-free vocabulary where a single short
 //   canonical path is worth more than namespacing. `registry` stays `pub`
 //   because `registry::Capabilities` is not re-exported at the root.
+pub mod bearer_token_authorizer;
 pub mod bearer_token_provider;
 pub(crate) mod error;
 pub(crate) mod factory;

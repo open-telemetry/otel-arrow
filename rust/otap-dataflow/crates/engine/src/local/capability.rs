@@ -12,6 +12,10 @@
 //! reference capabilities live under [`crate::testing::capability`] and are
 //! intentionally not re-exported here.
 
+/// Local (!Send) trait variant of the bearer-token-authorizer capability.
+pub mod bearer_token_authorizer {
+    pub use crate::capability::bearer_token_authorizer::local::BearerTokenAuthorizer;
+}
 /// Local (!Send) trait variant of the bearer-token-provider capability.
 pub mod bearer_token_provider {
     pub use crate::capability::bearer_token_provider::local::BearerTokenProvider;
