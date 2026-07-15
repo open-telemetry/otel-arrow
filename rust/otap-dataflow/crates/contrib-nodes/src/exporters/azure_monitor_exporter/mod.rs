@@ -40,6 +40,8 @@ pub use heartbeat::Heartbeat;
 pub use metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
 pub use transformer::Transformer;
 
+use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider;
+
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
 pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monitor";
 
@@ -66,7 +68,7 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
         // on an extension (e.g.`azure_identity_auth`) bound to this node via the
         // `bearer_token_provider` capability to acquire credentials.
         let token_provider = capabilities
-            .require_local::<otap_df_engine::capability::BearerTokenProvider>()
+            .require_local::<BearerTokenProvider>()
             .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
                 error: e.to_string(),
             })?;
