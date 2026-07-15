@@ -73,6 +73,13 @@ pub struct DynamicMetrics {
     pub items: Counter<u64>,
 }
 
+#[metric_set(name = "test.plain")]
+#[derive(Debug, Default, Clone)]
+pub struct PlainMetrics {
+    #[metric(unit = "{items}")]
+    pub items: Counter<u64>,
+}
+
 #[metric_set(name = "test.static", static_attributes = StaticAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct StaticMetrics {
@@ -110,6 +117,14 @@ impl TestRegistrar {
 }
 
 impl MetricSetRegistrar for TestRegistrar {
+    fn register_metric_set<
+        M: otap_df_telemetry::metrics::MetricSetHandler + Default + std::fmt::Debug + Send + Sync,
+    >(
+        &self,
+    ) -> MetricSet<M> {
+        self.registry.register_metric_set(Self::scope())
+    }
+
     fn register_static_metric_set<M: StaticMetricSetHandler + std::fmt::Debug + Send + Sync>(
         &self,
         static_attrs: &M::StaticAttributes,
@@ -421,13 +436,16 @@ fn static_and_dynamic_metric_set_export_carries_both_attribute_kinds() {
 }
 
 /// Scenario: generated metric-set registration methods receive a registrar.
-/// Guarantees: static, dynamic, and combined declarations select their valid API.
+/// Guarantees: plain, static, dynamic, and combined declarations select their valid API.
 #[test]
 fn generated_metric_set_registration_methods_dispatch_to_registrar() {
     let registrar = TestRegistrar::new();
     let signal = StaticAttributes {
         signal: Signal::Logs,
     };
+
+    let mut plain_metrics = PlainMetrics::register(&registrar);
+    plain_metrics.items.add(1);
 
     let mut static_metrics = StaticMetrics::register(&registrar, &signal);
     static_metrics.records.add(1);

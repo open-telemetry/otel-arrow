@@ -977,7 +977,22 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
             }
         }
     } else {
-        quote!()
+        quote! {
+            impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar.
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                ) -> #crate_root::metrics::MetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_metric_set::<Self>(
+                        registrar,
+                    )
+                }
+            }
+        }
     };
 
     quote!( #s #marker_impl ).into()

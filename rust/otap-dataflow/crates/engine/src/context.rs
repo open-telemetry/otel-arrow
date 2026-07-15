@@ -665,6 +665,12 @@ impl PipelineContext {
 }
 
 impl MetricSetRegistrar for PipelineContext {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.register_metrics::<M>()
+    }
+
     fn register_static_metric_set<M: StaticMetricSetHandler + Debug + Send + Sync>(
         &self,
         static_attrs: &M::StaticAttributes,

@@ -330,6 +330,11 @@ pub trait StaticMetricSetHandler: MetricSetHandler + Default {
 /// `register` methods use this trait so callers do not choose among
 /// static/dynamic registration method names.
 pub trait MetricSetRegistrar {
+    /// Registers a metric set without datapoint attributes.
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M>;
+
     /// Registers a metric set with fixed datapoint attributes.
     fn register_static_metric_set<M: StaticMetricSetHandler + Debug + Send + Sync>(
         &self,
