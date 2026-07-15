@@ -26,6 +26,18 @@ python3 tools/sanitycheck.py
 
 Fix any errors before committing.
 
+## Tests
+
+Document every test immediately above its declaration with Rust doc comments:
+
+```rust
+/// Scenario: <the behavior or condition under test>
+/// Guarantees: <the observable invariant protected by the test>
+```
+
+Make both statements specific enough for a reviewer to understand the test's
+intent and the behavior that must not regress without reading its implementation.
+
 ## Component naming conventions
 
 When adding a new component, keep public names consistent across the module,
