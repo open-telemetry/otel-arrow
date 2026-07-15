@@ -11,7 +11,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
-use otap_df_config::{node::NodeUserConfig, validation::validate_typed_config};
+use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -69,7 +69,33 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
     name: PARTITION_PROCESSOR_URN,
     create: create_partition_processor,
     wiring_contract: WiringContract::UNRESTRICTED,
-    validate_config: validate_typed_config::<Config>,
+    validate_config: |value| {
+        let config: Config = serde_json::from_value(value.clone()).map_err(|e| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            }
+        })?;
+
+        // try to parse and plan the OPL expression - this will provide early feedback
+        // about invalid expressions in user's config
+        match config.partition_by {
+            PartitionByConfig::OplExpression(opl_expression) => {
+                let (expr, function_defs) =
+                    OplParser::parse_expr_with_options(&opl_expression, default_parser_options())
+                        .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!("Could not parse OPL Expression: {e:?}"),
+                    })?;
+
+                let _ = Partitioner::try_new(expr, function_defs).map_err(|e| {
+                    otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!("Could not plan partitioner from OPL expression: {e:?}"),
+                    }
+                })?;
+            }
+        };
+
+        Ok(())
+    },
 };
 
 /// partition processor.
