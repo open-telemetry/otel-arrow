@@ -299,6 +299,74 @@ mod tests {
     }
 
     #[test]
+    fn from_header_value_requires_whitespace_separator() {
+        // The `Bearer` prefix is only stripped when followed by whitespace. A
+        // value that merely starts with the letters "Bearer" (no separator) is
+        // NOT a scheme and must be kept verbatim, so we never mangle a token
+        // that happens to begin with "Bearer".
+        assert_eq!(
+            BearerToken::from_header_value("BearerToken").expose_token(),
+            "BearerToken"
+        );
+        assert_eq!(
+            BearerToken::from_header_value("Bearer-eyJ.abc.sig").expose_token(),
+            "Bearer-eyJ.abc.sig"
+        );
+    }
+
+    #[test]
+    fn from_header_value_scheme_only_is_verbatim() {
+        // Just "Bearer" with no token following: no separator, so nothing is
+        // stripped and the value is used verbatim (it will fail validation).
+        assert_eq!(
+            BearerToken::from_header_value("Bearer").expose_token(),
+            "Bearer"
+        );
+    }
+
+    #[test]
+    fn from_header_value_accepts_any_whitespace_separator() {
+        // The separator may be any whitespace (tab, multiple spaces, a mix), not
+        // just a single ASCII space.
+        assert_eq!(
+            BearerToken::from_header_value("Bearer\teyJ.abc.sig").expose_token(),
+            "eyJ.abc.sig"
+        );
+        assert_eq!(
+            BearerToken::from_header_value("Bearer \t  eyJ.abc.sig").expose_token(),
+            "eyJ.abc.sig"
+        );
+    }
+
+    #[test]
+    fn from_header_value_strips_only_the_leading_scheme() {
+        // Only the single leading `Bearer ` scheme is stripped; a second
+        // "Bearer" is part of the token and is preserved (not re-stripped).
+        assert_eq!(
+            BearerToken::from_header_value("Bearer Bearer eyJ.abc.sig").expose_token(),
+            "Bearer eyJ.abc.sig"
+        );
+    }
+
+    #[test]
+    fn from_header_value_empty_or_whitespace_yields_empty_token() {
+        // No token at all: an empty or whitespace-only header value trims to an
+        // empty token (which downstream validation rejects).
+        assert_eq!(BearerToken::from_header_value("").expose_token(), "");
+        assert_eq!(BearerToken::from_header_value("   ").expose_token(), "");
+    }
+
+    #[test]
+    fn new_does_not_strip_scheme() {
+        // `new` is for a bare token; unlike `from_header_value` it never strips a
+        // scheme, so a value that looks like a header is stored verbatim.
+        assert_eq!(
+            BearerToken::new("Bearer eyJ.abc.sig".to_owned()).expose_token(),
+            "Bearer eyJ.abc.sig"
+        );
+    }
+
+    #[test]
     fn debug_never_leaks_the_token() {
         let cred = BearerToken::new("super-secret-token".to_owned());
         let rendered = format!("{cred:?}");
