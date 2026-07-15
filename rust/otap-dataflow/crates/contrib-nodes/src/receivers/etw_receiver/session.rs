@@ -692,6 +692,9 @@ fn run_trace_stats_poller_loop<F>(
 
     while !poll_stop.load(Ordering::Relaxed) {
         std::thread::sleep(poll_interval);
+        if poll_stop.load(Ordering::Relaxed) {
+            break;
+        }
 
         let handle = handle_slot.load(Ordering::SeqCst);
         if handle == 0 {
