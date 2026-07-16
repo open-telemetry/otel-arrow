@@ -68,3 +68,6 @@ collector/cmd/otelarrowcol/otelarrowcol
 tools/pipeline_perf_test/load_generator/loadgen-manifest.yaml.tmp
 
 venv
+
+# Browser/curl cookie files
+gh_cookies.txt
