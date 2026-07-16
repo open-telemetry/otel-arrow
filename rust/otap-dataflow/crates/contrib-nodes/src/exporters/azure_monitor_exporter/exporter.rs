@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::capability::bearer_token_provider::BearerToken;
+use otap_df_engine::capability::auth::BearerToken;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::capability::bearer_token_provider::BearerTokenProvider;
+use otap_df_engine::local::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
@@ -659,7 +659,8 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_engine::Interests;
     use otap_df_engine::capability::CapabilityError;
-    use otap_df_engine::capability::bearer_token_provider::{BearerToken, TokenStream};
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::local::message::LocalReceiver;
@@ -678,11 +679,11 @@ mod tests {
     #[async_trait(?Send)]
     impl BearerTokenProvider for MockTokenProvider {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            Ok(BearerToken::new("test-token".to_owned(), None))
+            Ok(BearerToken::new("test-token".to_owned()))
         }
 
         fn token_stream(&self) -> TokenStream {
-            futures::stream::once(async { BearerToken::new("test-token".to_owned(), None) }).boxed()
+            futures::stream::once(async { BearerToken::new("test-token".to_owned()) }).boxed()
         }
     }
 
@@ -927,7 +928,7 @@ mod tests {
     #[test]
     fn expiry_uses_token_expiry_when_present() {
         let expires_on = Instant::now() + Duration::from_secs(3600);
-        let token = BearerToken::new("secret".to_owned(), Some(expires_on));
+        let token = BearerToken::with_expiry("secret".to_owned(), Some(expires_on));
         assert_eq!(
             TokenExpiry::from_token(&token),
             TokenExpiry::At(tokio::time::Instant::from_std(expires_on))
@@ -938,7 +939,7 @@ mod tests {
     fn non_expiring_token_never_expires_and_stays_usable() {
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        let token = BearerToken::new("secret".to_owned(), None);
+        let token = BearerToken::new("secret".to_owned());
         let expiry = TokenExpiry::from_token(&token);
         assert_eq!(expiry, TokenExpiry::NeverExpires);
         assert!(expiry.is_usable(now, margin));

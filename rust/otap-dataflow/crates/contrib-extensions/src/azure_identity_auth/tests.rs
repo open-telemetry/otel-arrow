@@ -10,7 +10,7 @@ use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions}
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
@@ -445,10 +445,10 @@ async fn token_stream_skips_initial_none() {
 
 #[tokio::test]
 async fn schedule_next_refreshes_before_expiry() {
-    use otap_df_engine::capability::bearer_token_provider::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
     use std::time::{Duration, Instant};
 
-    let token = BearerToken::new(
+    let token = BearerToken::with_expiry(
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(3600)),
     );
@@ -462,12 +462,12 @@ async fn schedule_next_refreshes_before_expiry() {
 
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
-    use otap_df_engine::capability::bearer_token_provider::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
     use std::time::{Duration, Instant};
 
     // Expires in 5s: the refresh target underflows past `now`, so the
     // MIN_TOKEN_REFRESH_INTERVAL_SECS (10s) floor applies.
-    let token = BearerToken::new(
+    let token = BearerToken::with_expiry(
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(5)),
     );
@@ -480,9 +480,9 @@ async fn schedule_next_floors_near_expiry() {
 
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
-    use otap_df_engine::capability::bearer_token_provider::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
 
-    let token = BearerToken::new("t".to_owned(), None);
+    let token = BearerToken::new("t".to_owned());
     let refresh_at = extension::schedule_next(&token);
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
