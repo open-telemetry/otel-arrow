@@ -1,29 +1,13 @@
-# rust/otap-dataflow/crates/contrib-nodes/src/exporters/azure_monitor_exporter/otlp-ame-passthrough.yaml
-# Azure Monitor Exporter Configuration using attribute passthrough mode.
+# Azure Monitor exporter, attribute passthrough mode.
 #
-# This configuration sets `schema.log_record_mapping.attributes` to the string
-# `passthrough`. In this mode every log record attribute is emitted as-is as its
-# own top-level "key": value column (the attribute key is the column name).
+# `schema.log_record_mapping.attributes: passthrough` emits every log record
+# attribute as a top-level column (attribute key = column name). Keys are
+# emitted verbatim, so each must already be a valid DCR column name. Attributes
+# with no matching DCR column are dropped by that column at ingestion (the rest
+# of the record is still ingested); the exporter reports no error.
 #
-# Passthrough expects each attribute key to already be a valid Azure Log
-# Analytics column name (not an arbitrary OpenTelemetry attribute key): it is
-# meant for producers that have already projected their data into DCR-shaped
-# attributes ("<ColumnName>": <value>). The exporter does not translate or
-# sanitize keys.
-#
-# Passthrough applies to log-record attributes only. Resource attributes, scope
-# attributes, and top-level log-record fields are NOT passed through
-# automatically; they are emitted only when explicitly mapped via
-# resource_mapping / scope_mapping / log_record_mapping (which compose with
-# passthrough). Attributes already mapped explicitly are skipped so they are not
-# duplicated.
-#
-# WARNING - silent data loss: Azure Log Analytics only ingests columns defined in
-# the DCR stream schema whose names follow the column-naming rules (letters,
-# digits, underscores; must start with a letter or underscore). Attribute keys
-# are emitted verbatim and are NOT sanitized, so a key such as "service.name"
-# (or any key without a matching, validly-named DCR column) is silently dropped
-# at ingestion. Map such attributes to valid column names explicitly.
+# Passthrough covers log-record attributes only. Resource attributes, scope
+# attributes, and top-level fields are emitted only when explicitly mapped.
 
 version: otel_dataflow/v1
 
@@ -40,9 +24,8 @@ groups:
   default:
     pipelines:
       main:
-        # Authentication is provided by an extension, not exporter config: the
-        # exporter consumes a `bearer_token_provider` capability. Declare an
-        # `azure_identity_auth` extension and bind it to the exporter node below.
+        # Authentication comes from an extension: the exporter consumes a
+        # `bearer_token_provider` capability bound to `azure_identity` below.
         extensions:
           azure_identity:
             type: "urn:microsoft:extension:azure_identity_auth"
@@ -58,7 +41,6 @@ groups:
             config:
               protocols:
                 grpc:
-                  # Listen on all interfaces in container
                   listening_addr: "0.0.0.0:4317"
 
           azure-monitor-exporter:
@@ -72,21 +54,14 @@ groups:
                 dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
                 stream_name: "Custom-MyTable_CL"
                 dcr: "dcr-abc123"
-                # Attribute passthrough: emit each log attribute as-is as its own
-                # top-level "key": value column. No resource/scope or top-level
-                # field mappings are applied here.
-                #
-                # TimeGenerated is not mapped here; Log Analytics auto-populates it
-                # with the ingestion time when a record omits it, so records are not
-                # rejected for a missing timestamp. Map time_unix_nano -> TimeGenerated
-                # under log_record_mapping to set it explicitly.
+                # Passthrough: each log attribute becomes its own top-level
+                # column. Resource/scope/top-level fields are not emitted here.
+                # The exporter auto-injects TimeGenerated from the record's
+                # event time (unless mapped or passed through), so records
+                # always carry a timestamp.
                 schema:
                   log_record_mapping:
                     attributes: passthrough
-
-              # Heartbeat configuration (optional, disabled by default)
-              heartbeat:
-                enabled: false
 
         connections:
           - from: otlp-receiver
