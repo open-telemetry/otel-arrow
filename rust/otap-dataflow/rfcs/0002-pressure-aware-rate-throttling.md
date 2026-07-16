@@ -20,14 +20,13 @@ memory attribution across queues, topics, batchers, retry buffers, exporters, or
 external components. The existing process-wide memory limiter remains the final
 safety guard.
 
-The first version is pipeline-local and per-core: the configured rate limit
-applies to each receiver instance independently, so a scope's effective
-process-wide rate scales with the number of cores and pipelines admitting its
-traffic. Aggregating one scope's rate across receiver instances requires either
-routing that scope to a single pipeline or adding a shared limiter extension,
-and is deferred. Operators who need an exact process-wide per-tenant rate should
-read this version as a pressure-relief mechanism rather than as a precise rate
-limit.
+The first version is pipeline-local and per-core, with
+`aggregation: receiver_instance`. The configured rate limit applies to each
+receiver instance independently, not to the process-wide total. A scope's
+effective process-wide rate therefore depends on both the number of receiver
+instances admitting its traffic and how that traffic is distributed across them.
+Operators who need an exact process-wide per-tenant rate should read this
+version as a pressure-relief mechanism rather than as a precise rate limit.
 
 ## Motivation
 
@@ -164,13 +163,27 @@ limiters at one admission point is out of scope.
 
 In the first version, every resolved limiter is instantiated independently in
 each pipeline runtime and receiver instance, and its rate state is local to that
-instance. The configured rate limit applies per instance, so a scope's effective
-process-wide rate scales with the number of instances admitting its traffic.
+instance. The configuration makes this explicit with
+`aggregation: receiver_instance`. In v1 this field is required, and
+`receiver_instance` is the only supported value.
+
+In `receiver_instance` mode, `allow` applies to each receiver-instance bucket,
+not to the process-wide total for the scope. A tenant sending 8,000 items/s
+through each of four receiver instances is below a local `allow: 10000` in every
+bucket while reaching 32,000 items/s process-wide. The same tenant sending
+12,000 items/s through one receiver instance is over the local limit and can be
+throttled. Distribution may depend on connection topology, core allocation, and
+routing, not only tenant behavior.
+
+This makes v1 a local pressure-relief heuristic, not exact process-wide
+per-tenant fairness. Exact per-tenant rate semantics require tenant affinity or
+shuffle routing to one pipeline, or a shared limiter extension that aggregates
+rate state across instances. Tenant affinity gives exact local semantics but
+trades away parallelism for that tenant.
 
 Process-wide or group-wide aggregation is a separate choice and is deferred. It
-requires either routing a scope's traffic to a single pipeline, or a shared
-limiter extension that aggregates rate state across instances. This RFC does not
-require that shared limiter in the first step.
+can later be added as another `aggregation` value, such as `process`, without
+changing the meaning of `allow` for `receiver_instance`.
 
 Because the first version has no shared state, nested limits across declaration
 levels are out of scope. A nested case is one where a tenant is within its own
@@ -349,6 +362,7 @@ policies:
   resources:
     rate_limits:
       pressure_rate:
+        aggregation: receiver_instance
         unit: request_bytes/second
         optional_tenant_tokens: [customer_tenant]
         # Applies per receiver instance, not process-wide.
@@ -395,8 +409,10 @@ reject unknown fields. The eventual schema must keep strict unknown-field
 rejection, validate declaration placement and receiver binding, verify that the
 receiver supports the configured rate unit on its admission path, and reject at
 startup both unsupported pressure-gate combinations and multi-level placements
-that the first version cannot evaluate. Per-tenant overrides should use ordered
-conditions from the tenant-token policy model if that model is adopted.
+that the first version cannot evaluate. The first version should also reject any
+`aggregation` value other than `receiver_instance`. Per-tenant overrides should
+use ordered conditions from the tenant-token policy model if that model is
+adopted.
 
 A later implementation should define:
 
@@ -437,6 +453,9 @@ units.
   memory pressure.
 - Process-wide per-tenant rate limits require tenant routing or a shared limiter
   extension; a receiver-local limiter does not provide that by itself.
+- Receiver-local aggregation depends on traffic distribution. A scope spread
+  across many receiver instances can admit a higher process-wide rate than the
+  same scope concentrated on one receiver instance.
 - Declaring the policy at group scope gives every pipeline in the group the same
   configuration, not a shared group-wide bucket. Operators who read placement as
   aggregation will be surprised.
