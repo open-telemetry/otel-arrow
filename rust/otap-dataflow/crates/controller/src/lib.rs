@@ -1586,8 +1586,6 @@ impl<
             internal_tracing_setup,
         )?;
 
-        // TODO: This should be validated somewhere, that engine observability pipeline is
-        // defined when ITS is requested. Possibly we could fill in a default.
         let has_internal_pipeline = internal_pipeline_handle.is_some();
         match (has_internal_pipeline, telemetry_config.uses_its_provider()) {
             (false, true) => {
