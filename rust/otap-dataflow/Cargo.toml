@@ -105,7 +105,6 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
-futures-util = "0.3.32"
 futures-timer = "3.0.3"
 futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
