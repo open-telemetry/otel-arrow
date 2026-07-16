@@ -150,9 +150,9 @@ impl TelemetryRegistryHandle {
 
     /// Internal registrar operation for registration-time datapoint attributes.
     ///
-    /// This is public only so engine contexts and generated `MetricSet::register`
-    /// methods can select an entity scope. Component code uses the generated
-    /// `MetricSet::register` method.
+    /// This is public only so engine contexts and generated metric-set `register(...)`
+    /// methods (e.g. `MyMetrics::register`) can select an entity scope. Component code
+    /// must use the generated `MyMetrics::register(...)` method.
     #[doc(hidden)]
     pub fn register_metric_set_with_registration_attributes<
         M: RegistrationMetricSetHandler + Debug + Send + Sync,
