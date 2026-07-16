@@ -1238,14 +1238,12 @@ mod tests {
     use rdkafka::ClientConfig;
     use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
     use rdkafka::message::{Header, OwnedHeaders};
-    use rdkafka::producer::{FutureProducer, FutureRecord};
+    use rdkafka::mocking::MockCluster;
+    use rdkafka::producer::{DefaultProducerContext, FutureProducer, FutureRecord};
     use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
     use rdkafka::util::Timeout;
     use std::collections::HashMap;
     use std::time::Duration;
-    use testcontainers::core::{IntoContainerPort, WaitFor};
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers::{ContainerAsync, GenericImage, ImageExt};
     use tokio::task::LocalSet;
     use tokio::time::timeout;
 
@@ -1516,54 +1514,43 @@ mod tests {
         )
     }
 
-    // ---- Testcontainers Kafka broker helper ----
+    // ---- In-process mock Kafka broker helper ----
+    //
+    // These helpers are the seed of an integration-testing suite built on top of
+    // `rdkafka::mocking::MockCluster`. As the suite grows they are intended to
+    // become shared testing utilities (broker/topic setup, producer wiring, and
+    // harness construction) that streamline writing Kafka integration tests
+    // in-process, with no Docker or external broker.
 
-    /// Starts a Kafka broker in Docker via testcontainers (KRaft mode, no ZooKeeper).
+    /// Starts an in-process librdkafka mock cluster (`rdkafka::mocking::MockCluster`).
     ///
-    /// Returns the container handle (must stay alive for the broker to remain
-    /// running) and the broker address string (`127.0.0.1:<port>`).
-    async fn start_kafka_container() -> (ContainerAsync<GenericImage>, String) {
-        start_kafka_container_with_partitions(1).await
+    /// This backs the integration-testing suite so the tests run in-process with
+    /// no external dependency. Returns the mock cluster handle (which must stay
+    /// alive — and on the current thread, as it is `!Send` — for the broker to
+    /// keep serving) and its `bootstrap.servers` string.
+    ///
+    /// `topics` are pre-created each with a single partition. The mock only
+    /// auto-creates single-partition topics on produce, so tests that need a
+    /// deterministic partition layout (or more than one partition) must list
+    /// their topics here.
+    fn start_mock_kafka(topics: &[&str]) -> (MockCluster<'static, DefaultProducerContext>, String) {
+        start_mock_kafka_with_partitions(1, topics)
     }
 
-    /// Like [`start_kafka_container`] but provisions the broker with
-    /// `num_partitions` default partitions so a single topic can be split across
+    /// Like [`start_mock_kafka`] but pre-creates each topic in `topics` with
+    /// `num_partitions` partitions, so a single topic can be split across
     /// partitions (required to observe partition assignment and revocation).
-    async fn start_kafka_container_with_partitions(
+    fn start_mock_kafka_with_partitions(
         num_partitions: i32,
-    ) -> (ContainerAsync<GenericImage>, String) {
-        let host_port = otap_df_test_net::pick_unused_loopback_tcp_port();
-
-        let container = GenericImage::new("apache/kafka", "4.1.0")
-            .with_wait_for(WaitFor::message_on_stdout("Kafka Server started"))
-            .with_mapped_port(host_port, 9092.tcp())
-            .with_env_var("KAFKA_NODE_ID", "1")
-            .with_env_var("KAFKA_PROCESS_ROLES", "broker,controller")
-            .with_env_var(
-                "KAFKA_LISTENERS",
-                "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093",
-            )
-            .with_env_var(
-                "KAFKA_ADVERTISED_LISTENERS",
-                format!("PLAINTEXT://127.0.0.1:{host_port}"),
-            )
-            .with_env_var("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER")
-            .with_env_var(
-                "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
-                "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
-            )
-            .with_env_var("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@localhost:9093")
-            .with_env_var("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1")
-            .with_env_var("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1")
-            .with_env_var("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1")
-            .with_env_var("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0")
-            .with_env_var("KAFKA_NUM_PARTITIONS", num_partitions.to_string())
-            .start()
-            .await
-            .expect("Failed to start Kafka container");
-
-        let broker_addr = format!("127.0.0.1:{host_port}");
-        (container, broker_addr)
+        topics: &[&str],
+    ) -> (MockCluster<'static, DefaultProducerContext>, String) {
+        let mock = MockCluster::new(1).expect("failed to create mock Kafka cluster");
+        for topic in topics {
+            mock.create_topic(topic, num_partitions, 1)
+                .expect("failed to create topic on mock cluster");
+        }
+        let brokers = mock.bootstrap_servers();
+        (mock, brokers)
     }
 
     /// Creates a [`KafkaReceiver`] with all the engine wiring (control channel,
@@ -2212,14 +2199,14 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ---- Integration tests (Kafka broker via testcontainers) ----
-    // These tests require Docker and are skipped by default in CI.
-    // Run locally with: cargo test -- --ignored
+    // ---- Integration tests (in-process mock Kafka broker) ----
+    // These use the `MockCluster`-based integration-testing suite (see the mock
+    // broker helpers above), so they run in-process with no Docker/external
+    // broker and run by default in CI.
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_traces() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-traces-proto"]);
         let producer = create_test_producer(&brokers);
 
         let req = create_traces_with_spans();
@@ -2271,9 +2258,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_logs() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-logs-proto"]);
         let producer = create_test_producer(&brokers);
 
         let req = create_logs_service_request();
@@ -2325,9 +2311,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_metrics() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-metrics-proto"]);
         let producer = create_test_producer(&brokers);
 
         let req = create_metrics_service_request();
@@ -2379,9 +2364,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_traces_otap() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-traces-otap"]);
         let producer = create_test_producer(&brokers);
 
         let bytes = create_traces_with_spans_otap_bytes();
@@ -2433,9 +2417,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_metrics_otap() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-metrics-otap"]);
         let producer = create_test_producer(&brokers);
 
         let bytes = create_metrics_otap_arrow_records_bytes();
@@ -2486,9 +2469,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_logs_otap() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-logs-otap"]);
         let producer = create_test_producer(&brokers);
 
         let bytes = create_logs_otap_arrow_records_bytes();
@@ -2538,12 +2520,11 @@ mod tests {
             .await;
     }
 
-    // ---- Header extraction integration tests (testcontainers) ----
+    // ---- Header extraction integration tests (in-process mock broker) ----
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_traces_header_extraction() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-traces-headers"]);
         let producer = create_test_producer(&brokers);
 
         // Build a trace request with real spans.
@@ -2655,9 +2636,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_traces_header_extraction_otap() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-traces-headers-otap"]);
         let producer = create_test_producer(&brokers);
 
         // Build OTAP Arrow bytes from a real trace request with spans.
@@ -2989,14 +2969,13 @@ mod tests {
         );
     }
 
-    // ---- Transport header capture policy integration tests (testcontainers) ----
+    // ---- Transport header capture policy integration tests (in-process mock broker) ----
 
     /// Verifies that when a capture policy is configured, matching Kafka message
     /// headers are captured into the OtapPdata context as TransportHeaders.
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_capture_policy_captures_headers() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-capture-policy"]);
         let producer = create_test_producer(&brokers);
 
         let req = create_traces_with_spans();
@@ -3119,9 +3098,8 @@ mod tests {
     /// Verifies that when no capture policy is configured, transport headers
     /// are not set on the OtapPdata context (existing behavior is preserved).
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-no-capture-policy"]);
         let producer = create_test_producer(&brokers);
 
         let req = create_traces_with_spans();
@@ -3178,9 +3156,8 @@ mod tests {
     /// Verifies that the capture policy (transport headers) and resource_attrs_from_headers
     /// (resource attribute injection) work independently and simultaneously.
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_headers() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-capture-and-extract"]);
         let producer = create_test_producer(&brokers);
 
         let req = create_traces_with_spans();
@@ -3297,9 +3274,8 @@ mod tests {
 
     /// Verifies that the capture policy works with OTAP Arrow format messages.
     #[tokio::test]
-    #[ignore]
     async fn test_kafka_receiver_capture_policy_otap_format() {
-        let (_container, brokers) = start_kafka_container().await;
+        let (_mock, brokers) = start_mock_kafka(&["test-capture-policy-otap"]);
         let producer = create_test_producer(&brokers);
 
         let otap_bytes = create_traces_with_spans_otap_bytes();
@@ -3377,12 +3353,13 @@ mod tests {
             .await;
     }
 
-    // ---- Rebalance integration tests (testcontainers Kafka broker) ----
+    // ---- Rebalance integration tests (in-process mock Kafka broker) ----
     //
-    // These exercise the consumer-group rebalance handling end-to-end against a
-    // live broker: partition assignment, manual-commit offset tracking, and the
-    // commit-before-revoke guarantee. They require Docker and are skipped by
-    // default.
+    // These exercise the consumer-group rebalance handling end-to-end via the
+    // shared `MockCluster`-based integration-testing utilities: partition
+    // assignment, manual-commit offset tracking, and the commit-before-revoke
+    // guarantee. Multi-consumer rebalancing is supported by the mock, so no
+    // Docker is required and these run by default.
 
     /// Build a manual-commit [`KafkaReceiver`] harness for a single traces topic,
     /// with an explicit consumer-group id and a safety-net commit timer.
@@ -3528,13 +3505,12 @@ mod tests {
     /// shutdown commit), both partitions must have a committed offset that
     /// accounts for the produced records.
     #[tokio::test]
-    #[ignore]
     async fn rebalance_single_consumer_assigns_and_commits() {
-        let (_container, brokers) =
-            start_kafka_container_with_partitions(REBALANCE_TEST_PARTITIONS).await;
+        let topic = "rebalance-assign-traces";
+        let (_mock, brokers) =
+            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
         let producer = create_test_producer(&brokers);
 
-        let topic = "rebalance-assign-traces";
         let group = "rebalance-assign-group";
 
         let req = create_traces_with_spans();
@@ -3628,13 +3604,12 @@ mod tests {
     /// committed that partition's progress *before* losing it (no data loss /
     /// no re-consumption from an earlier offset by the new owner).
     #[tokio::test]
-    #[ignore]
     async fn rebalance_revoke_commits_before_reassign() {
-        let (_container, brokers) =
-            start_kafka_container_with_partitions(REBALANCE_TEST_PARTITIONS).await;
+        let topic = "rebalance-revoke-traces";
+        let (_mock, brokers) =
+            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
         let producer = create_test_producer(&brokers);
 
-        let topic = "rebalance-revoke-traces";
         let group = "rebalance-revoke-group";
 
         let req = create_traces_with_spans();
@@ -3764,13 +3739,12 @@ mod tests {
     /// retains the other. New records produced to A's retained partition must
     /// still get committed by A (i.e. its ACKs are not dropped).
     #[tokio::test]
-    #[ignore]
     async fn rebalance_cooperative_sticky_retains_owned_partitions() {
-        let (_container, brokers) =
-            start_kafka_container_with_partitions(REBALANCE_TEST_PARTITIONS).await;
+        let topic = "rebalance-coop-traces";
+        let (_mock, brokers) =
+            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
         let producer = create_test_producer(&brokers);
 
-        let topic = "rebalance-coop-traces";
         let group = "rebalance-coop-group";
 
         let req = create_traces_with_spans();
@@ -3919,13 +3893,12 @@ mod tests {
     /// (reassigning everything back to the receiver). A record produced after
     /// the reassignment must be consumed, acked, and committed.
     #[tokio::test]
-    #[ignore]
     async fn rebalance_revoke_then_reassign_preserves_new_records() {
-        let (_container, brokers) =
-            start_kafka_container_with_partitions(REBALANCE_TEST_PARTITIONS).await;
+        let topic = "rebalance-reassign-traces";
+        let (_mock, brokers) =
+            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
         let producer = create_test_producer(&brokers);
 
-        let topic = "rebalance-reassign-traces";
         let group = "rebalance-reassign-group";
 
         let req = create_traces_with_spans();
@@ -4052,14 +4025,13 @@ mod tests {
     /// new Kafka records, perform a bounded final commit, call
     /// `notify_receiver_drained()`, and remain responsive to `Shutdown`.
     #[tokio::test]
-    #[ignore]
     async fn drain_ingress_stops_polling_and_notifies_drained() {
         use otap_df_engine::control::RuntimeControlMsg;
 
-        let (_container, brokers) = start_kafka_container().await;
+        let topic = "drain-ingress-traces";
+        let (_mock, brokers) = start_mock_kafka(&[topic]);
         let producer = create_test_producer(&brokers);
 
-        let topic = "drain-ingress-traces";
         let group = "drain-ingress-group";
 
         let req = create_traces_with_spans();
