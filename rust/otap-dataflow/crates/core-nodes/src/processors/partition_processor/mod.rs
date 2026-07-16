@@ -28,7 +28,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::context::split_contexts::Contexts;
 use otap_df_otap::accessory::slots::Key;
-use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::pdata::OtapPdata;
 use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otap_df_query_engine::parser::default_parser_options;
@@ -276,15 +276,15 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
                         // create context key for inbound batch
-                        let inbound_ctx_key =
-                            self.contexts
-                                .insert_inbound(inbound_context.clone(), None)
-                                .ok_or_else(|| otap_df_engine::error::Error::ProcessorError {
-                                    processor: effect_handler.processor_id(),
-                                    kind: ProcessorErrorKind::Other,
-                                    error: "inbound slots not available".into(),
-                                    source_detail: "".into(),
-                                })?;
+                        let inbound_ctx_key = self
+                            .contexts
+                            .insert_inbound(inbound_context.clone(), None)
+                            .ok_or_else(|| otap_df_engine::error::Error::ProcessorError {
+                                processor: effect_handler.processor_id(),
+                                kind: ProcessorErrorKind::Other,
+                                error: "inbound slots not available".into(),
+                                source_detail: "".into(),
+                            })?;
 
                         let mut outbound_emitted_subscribed = 0;
 
@@ -435,12 +435,16 @@ mod test {
     use super::*;
 
     use otap_df_engine::{
-        FlowMetricAccumulation, capability::registry::Capabilities, context::ControllerContext, control::{
+        FlowMetricAccumulation,
+        capability::registry::Capabilities,
+        context::ControllerContext,
+        control::{
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
-        }, testing::{
+        },
+        testing::{
             processor::{TestContext, TestRuntime},
             test_node,
-        }
+        },
     };
     use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use otap_df_pdata::{
@@ -874,10 +878,7 @@ mod test {
                     let headers = context.take_transport_headers().unwrap();
                     assert!(headers.find_by_name("h1").next().is_some());
 
-                    assert_eq!(
-                        context.peer_addr(),
-                        Some("10.0.0.1:5005".parse().unwrap())
-                    );
+                    assert_eq!(context.peer_addr(), Some("10.0.0.1:5005".parse().unwrap()));
                 }
 
                 // assert headers also preserved for a single partition batch
