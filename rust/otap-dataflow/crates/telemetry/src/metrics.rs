@@ -219,6 +219,8 @@ impl<M: MetricSetHandler> MetricSet<M> {
     pub fn snapshot(&self) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key: self.key,
+            descriptor: self.metrics.descriptor(),
+            measurement_attributes: &[],
             bucket: 0,
             metrics: self.metrics.snapshot_values(),
         }
@@ -266,6 +268,8 @@ impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
 #[derive(Debug)]
 pub struct MetricSetSnapshot {
     pub(crate) key: MetricSetKey,
+    pub(crate) descriptor: &'static MetricsDescriptor,
+    pub(crate) measurement_attributes: &'static [MeasurementAttributeDescriptor],
     /// Bucket index within the set. Always `0` for plain sets and for sets with
     /// only registration attributes; for measurement sets it selects the datapoint whose
     /// enum-attribute combination decodes from this index (see
@@ -281,10 +285,38 @@ impl MetricSetSnapshot {
         self.key
     }
 
+    /// Returns the descriptor for the metric set that produced this snapshot.
+    #[must_use]
+    pub const fn descriptor(&self) -> &'static MetricsDescriptor {
+        self.descriptor
+    }
+
     /// Returns the bucket index this snapshot targets (0 for non-measurement sets).
     #[must_use]
     pub fn bucket(&self) -> usize {
         self.bucket
+    }
+
+    /// Returns the value of a measurement attribute for this snapshot's bucket.
+    #[must_use]
+    pub fn measurement_attribute_value(&self, key: &str) -> Option<&'static str> {
+        let mut rem = self.bucket;
+        for descriptor in self.measurement_attributes {
+            let radix = descriptor.variants.len();
+            debug_assert!(
+                radix > 0,
+                "measurement attribute descriptor must have at least one variant"
+            );
+            if radix == 0 {
+                continue;
+            }
+            let value = descriptor.variants[rem % radix];
+            rem /= radix;
+            if descriptor.key == key {
+                return Some(value);
+            }
+        }
+        None
     }
 
     /// get a reference to the metric values
@@ -448,6 +480,8 @@ impl<M: MeasurementMetricSetHandler> MeasurementMetricSet<M> {
                 if self.buckets[bucket].needs_flush() {
                     out.push(MetricSetSnapshot {
                         key: self.key,
+                        descriptor: self.buckets[bucket].descriptor(),
+                        measurement_attributes: M::MeasurementAttributes::DESCRIPTORS,
                         bucket,
                         metrics: self.buckets[bucket].snapshot_values(),
                     });

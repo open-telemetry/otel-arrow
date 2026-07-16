@@ -225,6 +225,8 @@ mod tests {
     fn create_test_snapshot(key: MetricSetKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
+            descriptor: &MOCK_METRICS_DESCRIPTOR,
+            measurement_attributes: &[],
             bucket: 0,
             metrics: values,
         }
