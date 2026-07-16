@@ -177,8 +177,9 @@ pub enum Error {
 /// A metric field can match more than one view. Each matching view produces an
 /// OTLP metric stream, while a field that matches no views retains its
 /// descriptor-defined stream. Identical results for one source field are
-/// deduplicated using a case-insensitive name and exact description. Mapping
-/// different source fields in the same effective scope to the same
+/// deduplicated using a case-insensitive name, retaining the longest
+/// description because descriptions are not identifying OTLP properties.
+/// Mapping different source fields in the same effective scope to the same
 /// case-insensitive name is rejected when at least one stream was produced by
 /// a view, because their already-aggregated data cannot be merged safely.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -520,7 +521,7 @@ fn resolve_views<'a>(
     scope_views: &[&'a MetricView],
 ) -> SmallVec<[ResolvedStream<'a>; 1]> {
     let mut matched = false;
-    let mut streams = SmallVec::new();
+    let mut streams: SmallVec<[ResolvedStream<'a>; 1]> = SmallVec::new();
 
     for view in scope_views.iter().copied().filter(|view| {
         view.selector
@@ -534,10 +535,14 @@ fn resolve_views<'a>(
             description: view.stream.description.as_deref().unwrap_or(field.brief),
             view_applied: true,
         };
-        if !streams.iter().any(|existing: &ResolvedStream<'_>| {
-            existing.name.eq_ignore_ascii_case(stream.name)
-                && existing.description == stream.description
-        }) {
+        if let Some(existing) = streams
+            .iter_mut()
+            .find(|existing| existing.name.eq_ignore_ascii_case(stream.name))
+        {
+            if stream.description.len() > existing.description.len() {
+                existing.description = stream.description;
+            }
+        } else {
             streams.push(stream);
         }
     }
@@ -1203,7 +1208,7 @@ mod tests {
     }
 
     #[test]
-    fn matching_views_deduplicate_names_case_insensitively_with_description_identity() {
+    fn matching_views_deduplicate_names_case_insensitively_and_keep_longest_description() {
         let renamed_stream = MetricViewStream {
             name: Some("viewed.gauge".to_owned()),
             description: None,
@@ -1236,8 +1241,8 @@ mod tests {
                 selector: MetricViewSelector::default(),
                 stream: renamed_stream,
             },
-            // A different description makes this a distinct stream even
-            // though its name is equal ignoring ASCII case.
+            // Description is not part of OTLP stream identity. The longest
+            // description is retained when otherwise identical streams differ.
             MetricView {
                 selector: MetricViewSelector {
                     scope_name: Some("test.f64_gauge".to_owned()),
@@ -1247,6 +1252,18 @@ mod tests {
                 stream: MetricViewStream {
                     name: Some("Viewed.Gauge".to_owned()),
                     description: Some("Viewed gauge description".to_owned()),
+                },
+            },
+            // A shorter description after the longest one must not replace it.
+            MetricView {
+                selector: MetricViewSelector {
+                    scope_name: Some("test.f64_gauge".to_owned()),
+                    scope_attributes: HashMap::new(),
+                    instrument_name: Some("gauge.f64".to_owned()),
+                },
+                stream: MetricViewStream {
+                    name: Some("VIEWED.GAUGE".to_owned()),
+                    description: Some("Short".to_owned()),
                 },
             },
         ];
@@ -1270,18 +1287,12 @@ mod tests {
         );
         let scope = only_scope(&request);
         assert_eq!(scope.scope.as_ref().expect("scope").name, "test.f64_gauge");
-        assert_eq!(scope.metrics.len(), 2);
+        assert_eq!(scope.metrics.len(), 1);
 
         let renamed = metric_named(scope, "viewed.gauge");
-        assert_eq!(renamed.description, "Floating-point gauge");
+        assert_eq!(renamed.description, "Viewed gauge description");
         assert_eq!(renamed.unit, "1");
         assert!(renamed.metadata.is_empty());
-
-        let description_only = metric_named(scope, "Viewed.Gauge");
-        assert_eq!(description_only.description, "Viewed gauge description");
-        assert_eq!(description_only.unit, "1");
-        assert_eq!(description_only.metadata, renamed.metadata);
-        assert_eq!(description_only.data, renamed.data);
 
         let Some(metric::Data::Gauge(gauge)) = renamed.data.as_ref() else {
             panic!("expected gauge data")
