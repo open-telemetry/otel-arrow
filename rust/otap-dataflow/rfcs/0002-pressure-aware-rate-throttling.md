@@ -239,7 +239,7 @@ receiver should use a **post-charge token bucket with bounded debt**:
 1. A request arrives.
 2. The receiver resolves the scope from transport metadata, receiver identity,
    or static configuration.
-3. If process memory is at soft pressure and the bucket balance is not
+3. If process memory is at or above soft pressure and the bucket balance is not
    positive, the receiver rejects the whole request.
 4. Otherwise the receiver admits, reads, and decodes the request.
 5. The receiver charges the actual item count after decode. The bucket balance
@@ -249,10 +249,13 @@ Rejected requests do not update exact item count because their weight is
 unknown. There is no accepted-history decay; token refill replaces it. Admission
 resumes when refill brings the balance positive again.
 
-Under sustained over-limit offered load, admitted rate is bounded by the
-configured rate because each admitted request pays its true weight before more
-work is admitted. Maximum overshoot is bounded by the configured burst and debt
-limits plus the receiver's existing maximum request size.
+While the pressure gate is active under sustained over-limit offered load, the
+admitted rate is bounded by the configured rate because each admitted request
+pays its true weight before more work is admitted. For item-based units, this
+requires the debt floor to hold the largest chargeable request. A smaller floor
+would clamp away part of the charge and allow sustained admitted rate above the
+configured rate. Maximum instantaneous overshoot is bounded by the configured
+burst and debt limits plus the receiver's existing maximum request size.
 
 The debt floor must also apply while memory is normal. The gate only rejects
 when pressure is active, but the bucket should keep charging and refilling in
@@ -296,18 +299,19 @@ Keeping them as separate inputs avoids putting process state into a per-request
 matching path.
 
 ```text
-if process_pressure == Hard:
+if process_pressure == Hard and the global limiter rejects this request:
     reject normal ingress using the existing global limiter behavior
-else if process_pressure == Soft and the scope bucket cannot admit:
+else if process_pressure >= Soft and the scope bucket cannot admit:
     throttle this scope
 else:
     admit
 ```
 
-This gives soft pressure an admission-control meaning for this policy. The
-existing phase-1 memory limiter behavior remains unchanged: its mode controls
-global hard-pressure shedding. The pressure-aware rate policy consumes the
-pressure level as an input signal and has its own `mode`.
+This gives soft pressure an admission-control meaning for this policy, and the
+gate remains active at higher pressure levels. The existing phase-1 memory
+limiter behavior remains unchanged: its mode controls global hard-pressure
+shedding. The pressure-aware rate policy consumes the pressure level as an
+input signal and has its own `mode`.
 
 If process memory measurement is not configured, a pressure-aware rate policy
 has no pressure source and should fail startup validation rather than silently
@@ -422,6 +426,10 @@ the admission point in both cases, and each receiver instance keeps its own rate
 state in both cases. Both shapes are the same bucket key described in "Policy
 application and bucket key", with and without the tenant-token component.
 
+In the sketch, `optional_tenant_tokens` says which resolved tokens may subdivide
+the policy into buckets. The receiver's `config.tenant_tokens` says which tokens
+the receiver should resolve from its request context.
+
 This example is not accepted by the current v1 schema. `rate_limit` does not
 exist in the configuration model today, and `Policies` rejects unknown fields.
 The eventual schema must keep strict unknown-field rejection, validate
@@ -429,11 +437,12 @@ declaration placement and receiver compatibility, verify that the receiver
 supports the configured rate unit on its admission path, and reject at startup
 both unsupported pressure-gate combinations and multi-level placements that the
 first version cannot evaluate. The first version should also reject any
-`aggregation` value other than `receiver_instance`, reject a pressure-aware rate
-policy when no process pressure source is configured, and reject configs that
-set both singleton `rate_limit` and reserved plural `rate_limits`. Per-tenant
-overrides should use ordered conditions from the tenant-token policy model if
-that model is adopted.
+`aggregation` value other than `receiver_instance`, treat `pressure: soft` as
+the only supported v1 pressure gate, reject a pressure-aware rate policy when no
+process pressure source is configured, and reject configs that set both
+singleton `rate_limit` and reserved plural `rate_limits`. Per-tenant overrides
+should use ordered conditions from the tenant-token policy model if that model
+is adopted.
 
 A later implementation should define:
 
@@ -444,6 +453,7 @@ A later implementation should define:
   validated or rejected,
 - how post-charge debt is represented in the token-bucket limiter,
 - rate policy mode and would-throttle reporting in `observe_only`,
+- receiver-level override and disable syntax,
 - how the pressure gate is expressed, and how it composes with tenant-token
   conditions,
 - burst and debt bounds,
