@@ -1011,8 +1011,8 @@ mod tests {
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        MetricsField, Temporality,
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument,
+        MeasurementAttributeDescriptor, MetricValueType, MetricsField, Temporality,
     };
     use crate::entity::EntityRegistry;
     use std::fmt::Debug;
@@ -1085,6 +1085,32 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum MockMeasurementAttributes {
+        First,
+        Second,
+    }
+
+    impl MeasurementAttributeSet for MockMeasurementAttributes {
+        const CARDINALITY: usize = 2;
+        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] =
+            &[MeasurementAttributeDescriptor {
+                key: "outcome",
+                variants: &["first", "second"],
+            }];
+
+        fn bucket_index(&self) -> usize {
+            match self {
+                Self::First => 0,
+                Self::Second => 1,
+            }
+        }
+    }
+
+    impl MeasurementMetricSetHandler for MockMetricSet {
+        type MeasurementAttributes = MockMeasurementAttributes;
+    }
+
     #[derive(Debug)]
     struct MockAttributeSet {
         values: Vec<AttributeValue>,
@@ -1124,6 +1150,47 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         assert_eq!(metric_set.entity_key(), entity_key);
         assert_eq!(metrics.len(), 1);
+    }
+
+    #[test]
+    fn test_metric_set_snapshot_carries_descriptor() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let snapshot = metric_set.snapshot();
+
+        assert_eq!(snapshot.descriptor().name, "test_metrics");
+        assert_eq!(snapshot.bucket(), 0);
+        assert_eq!(snapshot.measurement_attribute_value("outcome"), None);
+    }
+
+    #[test]
+    fn test_measurement_metric_set_get_and_snapshot_decode_attributes() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut registry = MetricSetRegistry::default();
+        let mut metrics: MeasurementMetricSet<MockMetricSet> =
+            registry.register_with_measurement_attributes(entity_key);
+
+        assert_eq!(
+            metrics.get(MockMeasurementAttributes::First).values[0],
+            MetricValue::U64(0)
+        );
+        metrics.with(MockMeasurementAttributes::Second).values[0] = MetricValue::U64(7);
+
+        let snapshots = metrics.pending_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].descriptor().name, "test_metrics");
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("second")
+        );
+        assert_eq!(
+            snapshots[0].get_metrics(),
+            &[MetricValue::U64(7), MetricValue::U64(0)]
+        );
     }
 
     #[test]

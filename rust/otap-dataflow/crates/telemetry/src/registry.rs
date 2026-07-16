@@ -383,10 +383,12 @@ fn capture_registration_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::attributes::{
+        AttributeSetHandler, AttributeSetKeySchema, AttributeValue, MeasurementAttributeSet,
+    };
     use crate::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        MetricsField, Temporality,
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument,
+        MeasurementAttributeDescriptor, MetricValueType, MetricsField, Temporality,
     };
     use std::fmt::Debug;
 
@@ -459,6 +461,22 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct MockMeasurementAttributes;
+
+    impl MeasurementAttributeSet for MockMeasurementAttributes {
+        const CARDINALITY: usize = 1;
+        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] =
+            &[MeasurementAttributeDescriptor {
+                key: "outcome",
+                variants: &["success"],
+            }];
+
+        fn bucket_index(&self) -> usize {
+            0
+        }
+    }
+
     #[derive(Debug)]
     struct MockAttributeSet {
         // Store the attribute values as owned data that we can return references to
@@ -482,6 +500,19 @@ mod tests {
         }
     }
 
+    impl AttributeSetKeySchema for MockAttributeSet {
+        const KEY_SCHEMA: &'static [crate::attributes::AttributeKeySchema] =
+            &[crate::attributes::AttributeKeySchema::Key("test_key")];
+    }
+
+    impl RegistrationMetricSetHandler for MockMetricSet {
+        type RegistrationAttributes = MockAttributeSet;
+    }
+
+    impl MeasurementMetricSetHandler for MockMetricSet {
+        type MeasurementAttributes = MockMeasurementAttributes;
+    }
+
     #[test]
     fn test_telemetry_registry_new() {
         let telemetry_registry = TelemetryRegistryHandle::new();
@@ -501,6 +532,39 @@ mod tests {
         assert_eq!(telemetry_registry_clone.metric_set_count(), 1);
         assert_eq!(telemetry_registry.entity_count(), 1);
         assert_eq!(telemetry_registry_clone.entity_count(), 1);
+    }
+
+    #[test]
+    fn test_registration_attribute_metric_set_routes() {
+        let registry = TelemetryRegistryHandle::new();
+        let registration_attributes = MockAttributeSet::new("registration".to_string());
+
+        let registered: MetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_attributes(
+                MockAttributeSet::new("new-entity".to_string()),
+                &registration_attributes,
+            );
+        let entity = registry.register_entity(MockAttributeSet::new("existing-entity".to_string()));
+        let existing: MetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_attributes_for_entity(
+                entity,
+                &registration_attributes,
+            );
+        let combined: MeasurementMetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_and_measurement_attributes(
+                MockAttributeSet::new("combined-entity".to_string()),
+                &registration_attributes,
+            );
+        let combined_existing: MeasurementMetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_and_measurement_attributes_for_entity(
+                entity,
+                &registration_attributes,
+            );
+
+        assert_ne!(registered.entity_key(), existing.entity_key());
+        assert_eq!(existing.entity_key(), entity);
+        assert_ne!(combined.entity_key(), combined_existing.entity_key());
+        assert_eq!(combined_existing.entity_key(), entity);
     }
 
     #[test]
