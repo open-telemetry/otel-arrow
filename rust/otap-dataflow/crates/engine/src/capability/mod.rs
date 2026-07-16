@@ -43,10 +43,10 @@
 //   canonical path is worth more than namespacing. `registry` stays `pub`
 //   because `registry::Capabilities` is not re-exported at the root.
 pub mod bearer_token_provider;
-pub mod vendor_bundle;
 pub(crate) mod error;
 pub(crate) mod factory;
 pub mod registry;
+pub mod vendor_bundle;
 
 pub use error::{CapabilityError, CapabilityErrorSource};
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
