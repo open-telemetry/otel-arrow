@@ -69,7 +69,7 @@ The basic behavior is:
 | Memory normal | Observe scoped rate only. |
 | Memory soft and scope over rate | Throttle or reject new work for that scope. |
 | Memory soft and scope within rate | Continue admitting that scope's work. |
-| Memory hard | Existing global hard-pressure shedding applies, unchanged. |
+| Memory hard | Global hard-pressure shedding applies; the scope gate also stays active for requests the global limiter admits. |
 <!-- markdownlint-enable MD013 -->
 
 This is a fairness heuristic, not evidence that an over-limit scope caused or
@@ -158,7 +158,9 @@ catalog. Compatible receivers apply the effective `rate_limit` policy
 automatically. A receiver can provide an inline override or explicitly disable
 the policy when needed. This follows the existing hierarchical policy model:
 top-level policy provides the default, group policy replaces it for a group, and
-pipeline policy replaces it for a pipeline.
+pipeline policy replaces it for a pipeline. The existing `transport_headers`
+policy is the closest precedent: an effective policy applies to compatible
+nodes, while a node can override it when needed.
 
 This RFC constrains the first version to one effective pressure-aware rate
 limiter per compatible receiver. Composing several rate limits at one admission
@@ -307,6 +309,9 @@ else:
     admit
 ```
 
+When the rate policy mode is `observe_only`, the "throttle this scope" branch
+records a would-throttle decision instead of rejecting.
+
 This gives soft pressure an admission-control meaning for this policy, and the
 gate remains active at higher pressure levels. The existing phase-1 memory
 limiter behavior remains unchanged: its mode controls global hard-pressure
@@ -430,6 +435,10 @@ In the sketch, `optional_tenant_tokens` says which resolved tokens may subdivide
 the policy into buckets. The receiver's `config.tenant_tokens` says which tokens
 the receiver should resolve from its request context.
 
+The `cardinality` block bounds the number of tracked scope buckets. If that
+limit is exceeded, `failure_mode: reject` avoids creating unbounded new bucket
+state while the process is already under pressure.
+
 This example is not accepted by the current v1 schema. `rate_limit` does not
 exist in the configuration model today, and `Policies` rejects unknown fields.
 The eventual schema must keep strict unknown-field rejection, validate
@@ -438,11 +447,14 @@ supports the configured rate unit on its admission path, and reject at startup
 both unsupported pressure-gate combinations and multi-level placements that the
 first version cannot evaluate. The first version should also reject any
 `aggregation` value other than `receiver_instance`, treat `pressure: soft` as
-the only supported v1 pressure gate, reject a pressure-aware rate policy when no
-process pressure source is configured, and reject configs that set both
-singleton `rate_limit` and reserved plural `rate_limits`. Per-tenant overrides
-should use ordered conditions from the tenant-token policy model if that model
-is adopted.
+the only supported v1 pressure gate, require an explicit rate policy `mode`,
+reject a pressure-aware rate policy when no process pressure source is
+configured, and reject configs that set both singleton `rate_limit` and reserved
+plural `rate_limits`. Per-tenant overrides should use ordered conditions from
+the tenant-token policy model if that model is adopted.
+
+The first version must emit would-throttle counters in `observe_only` mode so
+operators can evaluate the policy before enforcing it.
 
 A later implementation should define:
 
@@ -452,7 +464,6 @@ A later implementation should define:
 - which declaration scopes accept the policy, and how a multi-level placement is
   validated or rejected,
 - how post-charge debt is represented in the token-bucket limiter,
-- rate policy mode and would-throttle reporting in `observe_only`,
 - receiver-level override and disable syntax,
 - how the pressure gate is expressed, and how it composes with tenant-token
   conditions,
