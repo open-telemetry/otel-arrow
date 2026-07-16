@@ -196,4 +196,57 @@ mod tests {
         let out = filter_record_batch_by_column_eq(&batch, "severity_text", "ERROR");
         assert_eq!(out.num_rows(), 2);
     }
+
+    #[test]
+    fn resource_and_scope_filters_are_passthrough() {
+        let mut host = HostState::new();
+        let handle = host
+            .table
+            .push(HostBatchData {
+                record_batch: batch_with_severity(&["ERROR", "INFO", "WARN"]),
+            })
+            .expect("push input batch");
+
+        let out = <HostState as otel_kernels::Host>::filter_by_attribute_eq(
+            &mut host,
+            handle,
+            AttrScope::Resource,
+            "severity_text".to_string(),
+            "ERROR".to_string(),
+        );
+        assert_eq!(
+            host.table
+                .get(&out)
+                .expect("resource scope output in table")
+                .record_batch
+                .num_rows(),
+            3
+        );
+
+        let out = <HostState as otel_kernels::Host>::filter_by_attribute_eq(
+            &mut host,
+            out,
+            AttrScope::Scope,
+            "severity_text".to_string(),
+            "ERROR".to_string(),
+        );
+        assert_eq!(
+            host.table
+                .get(&out)
+                .expect("scope output in table")
+                .record_batch
+                .num_rows(),
+            3
+        );
+    }
+
+    #[test]
+    fn invalid_handle_reports_zero_rows() {
+        let mut host = HostState::new();
+        let invalid = Resource::<HostBatchData>::new_own(u32::MAX);
+        assert_eq!(
+            <HostState as otel_kernels::Host>::batch_num_rows(&mut host, invalid),
+            0
+        );
+    }
 }

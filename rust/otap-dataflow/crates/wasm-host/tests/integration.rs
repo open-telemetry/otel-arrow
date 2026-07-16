@@ -18,6 +18,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::context::ControllerContext;
+use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::message::Message;
 use otap_df_engine::testing::{node::test_node, processor::TestRuntime};
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
@@ -130,6 +131,10 @@ fn wasm_processor_filters_error_severity_end_to_end() {
 
     phase
         .run_test(|mut ctx| async move {
+            ctx.process(Message::Control(NodeControlMsg::TimerTick {}))
+                .await
+                .expect("process control");
+
             let input = logs_with_severities(&["ERROR", "INFO", "ERROR", "WARN"]);
             ctx.process(Message::PData(input))
                 .await

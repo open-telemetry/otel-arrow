@@ -197,6 +197,42 @@ fn create_wasm_processor(
     ))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_engine::testing::node::test_node;
+
+    #[test]
+    fn create_wasm_processor_rejects_invalid_config_shape() {
+        let node = test_node("wasm-test");
+        let mut node_config = NodeUserConfig::new_processor_config(WASM_PROCESSOR_URN);
+        node_config.config = serde_json::json!("not an object");
+        let processor_config = ProcessorConfig::new("wasm-test");
+
+        let result = create_wasm_processor(node, Arc::new(node_config), &processor_config);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidUserConfig { .. })),
+            "invalid user config JSON should be rejected"
+        );
+    }
+
+    #[test]
+    fn create_wasm_processor_rejects_missing_wasm_file() {
+        let node = test_node("wasm-test");
+        let mut node_config = NodeUserConfig::new_processor_config(WASM_PROCESSOR_URN);
+        node_config.config = serde_json::json!({
+            "wasm_path": "/definitely/missing/wasm-host-plugin.wasm"
+        });
+        let processor_config = ProcessorConfig::new("wasm-test");
+
+        let result = create_wasm_processor(node, Arc::new(node_config), &processor_config);
+        assert!(
+            matches!(result, Err(ConfigError::InvalidUserConfig { .. })),
+            "missing wasm component file should map to InvalidUserConfig"
+        );
+    }
+}
+
 /// Register [`WasmProcessor`] as an OTAP processor factory.
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static WASM_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
