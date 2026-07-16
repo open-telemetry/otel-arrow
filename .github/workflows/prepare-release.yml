@@ -36,7 +36,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
+          client-id: ${{ vars.OTELBOT_ARROW_CLIENT_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
 
       - name: Get GitHub App User ID

@@ -33,3 +33,6 @@ axum = { workspace = true }
 tower = { workspace = true }
 include_dir = { workspace = true }
 mime_guess = { workspace = true }
+
+[dev-dependencies]
+otap-df-telemetry-macros = { workspace = true }

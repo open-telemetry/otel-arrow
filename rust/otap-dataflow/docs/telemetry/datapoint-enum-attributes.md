@@ -1,321 +1,243 @@
-# Datapoint-level enum attributes for metrics
+# Datapoint enum attributes for metrics
 
-Status: Draft. Tracking issue:
-[#3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
-Scope: design only.
+Metric sets support bounded signal-specific attributes that are emitted on each
+metric datapoint. Use them for categorical dimensions that are needed to
+interpret a measurement, such as `signal`, `outcome`, or an HTTP method. Do not
+use them for identifiers, raw error messages, paths, or any other unbounded
+value; follow the [Attributes Guide](attributes-guide.md).
 
-## 1. Summary
+An enum attribute belongs to an existing `#[metric_set]`. It does not create a
+new instrument or metric set. The framework stores one bucket for each permitted
+measurement attribute combination and exports only buckets that received a
+recording.
 
-Nine nodes hand-roll per-signal counters (logs/metrics/spans) with ~6 naming
-schemes and mislabeled units (#3300). An earlier draft standardized *two* export
-shapes (name-split "granular" vs attribute-split "agnostic") and let operators
-pick. This revision is simpler and more general:
+## Why this exists
 
-1. **One format.** Signal is a **datapoint attribute** (`signal` =
-   `logs`/`metrics`/`traces`), matching the Collector's `otelcol.signal`
-   ([RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md#processors)).
-2. **Generalize.** `signal` is one case of **bounded enum attributes that vary
-   per datapoint** (e.g. `outcome` = `success`/`error`, or
-   `http.response.status_code`). Define the mechanism once, with a
-   **static/dynamic** qualifier per attribute.
-3. **Keep `metric_set` as the unit.** This is *not* a new instrument family; the
-   `metric_set` stays the unit of declaration, registration, registry state, and
-   admin/UI visibility. Enum attributes are extra dimensions on a set's
-   snapshots/datapoints, not separate sets or instruments. Sets with no enum
-   attributes keep today's behavior and hot path.
+Multiple nodes currently hand-roll per-signal counters for logs, metrics, and
+traces, using several metric naming schemes. Enum attributes provide one uniform
+metric-set pattern for those dimensions and for other bounded outcomes, without
+creating a separate metric set or instrument for every value.
 
-### Why a single format
+## Choose registration or measurement attributes
 
-Agnostic is the default and canonical shape, and it stays the source of truth:
-it carries `signal` explicitly, so any downstream consumer can reconstruct the
-name-split ("granular") view operators may want for legacy dashboards. The
-reverse - rebuilding `signal` from split names - is lossier, so agnostic is the
-better format to emit and store.
+| Kind | When | Supply | Cost |
+| --- | --- | --- | --- |
+| Registration | Fixed at registration. | At registration. | Plain-set cost. |
+| Measurement | Varies by recording. | `with(...)`. | Bounded lookup. |
 
-The granular reshape belongs in the **ITS (Introspective Telemetry Service)
-metrics system**, not at the export boundary: either as a native capability of
-the ITS metrics receiver, or as an OPL function that partitions a
-signal-attributed metric into canonical granular names, e.g.
+For example, a logs-only receiver can use registration `signal = logs`. A
+processor which records losses for logs, metrics, and traces should use
+measurement `signal`; if it also distinguishes expired and dropped records,
+include measurement `outcome`. One metric set can combine both kinds: use a
+registration attribute for context shared by every recording and measurement
+attributes for the dimensions that vary.
 
-```text
-metrics | split_signal("consumed_items")
-// consumed_items {item} -> consumed_log_records {log_record}
-//                        / consumed_metric_points {data_point}
-//                        / consumed_spans {span}
-```
+## Declare closed values
 
-This needs OPL to gain data-point field access and a regroup/partition step
-(neither exists today), so the split is a future ITS capability. Migrating the
-hand-rolled counters to the agnostic shape is therefore gated on ITS being able
-to produce the legacy shape when a consumer needs it - not on this RFC.
-
-### Why generalize to enum attributes
-
-The same need recurs beyond `signal`: `outcome` (`success`/`error`),
-`http.response.status_code`, error classes. Modeling all as **enum attributes**
-(closed set) with a static/dynamic qualifier solves per-signal as a side effect,
-matching `metrics-guide.md`'s "small enum such as a 'state' dimension".
-
-## 2. Goals and non-goals
-
-**Goals:** define enum attributes (static/dynamic) **on the existing
-`metric_set`**; write instrumentation once; keep the hot path and static
-descriptor; keep `metric_set` as the unit of registration and admin/UI
-visibility.
-
-**Non-goals:** a new instrument family (this reuses `metric_set`); renaming
-every counter (#3300 cleanup); a second name-split shape.
-
-## 3. Background: metrics flow today
-
-1. **Declare** `#[metric_set]` + `#[metric(unit)]` fields.
-2. **Generate** a static `MetricsDescriptor` + `MetricSetHandler`
-   (`telemetry-macros/src/lib.rs`).
-3. **Increment** fields directly (`.add`/`.inc`).
-4. **Aggregate** into a registry keyed by `EntityKey`.
-5. **Export**: dispatcher maps names/scope attrs, and hard-codes data-point
-   attributes to `&[]` (`dispatcher.rs` `dispatch_metrics_to`, ~line 85).
-
-A per-datapoint attribute has nowhere to go today: `signal` varies per
-increment, not per entity. **Adding a per-data-point attribute path is the
-single biggest piece of work** - and with one format it is the *only* new
-mechanism. `semconv/` (Weaver) is used only for event `live-check` today.
-
-## 4. Enum attributes: static vs dynamic
-
-Enum attributes are **declared per metric set**, not per field. An attribute is
-a closed-set (`enum`) value; each variant derives its string form via an
-`AttributeEnum` derive, so keys/values are known at compile time. Two
-qualifiers:
-
-- **Static** - value fixed at registration; no per-call argument (e.g. a
-  logs-only set dedicated to `signal = logs`). Every datapoint in the set
-  carries it.
-- **Dynamic** - value chosen when instrumentation records the metric. A set may
-  declare several (e.g. `signal` + `outcome`, or `http.response.status_code` on
-  an HTTP receiver). Each recorded datapoint carries one variant per dynamic
-  attribute.
-
-Attributes are grouped into reusable `#[attribute_set]` structs (one enum field
-per attribute), and a `metric_set` references them:
-
-- `static_attributes = <Set>` - static; the values are supplied once at
-  registration and apply to the whole set.
-- `dynamic_attributes = <Set>` - dynamic; the values are supplied per record via
-  a bound view (see section 5).
+Derive `AttributeEnum` for every value type. Variant order defines the internal
+bucket order, so do not reorder existing variants. Values default to snake case.
+Use `#[attribute_value]` where an OpenTelemetry semantic convention specifies a
+different wire value.
 
 ```rust
 #[derive(Debug, Clone, Copy, AttributeEnum)]
-pub enum Signal { Logs, Metrics, Traces }
-
-#[derive(Debug, Clone, Copy, AttributeEnum)]
-pub enum LossOutcome { Dropped, Expired }
-
-// A dynamic set: values vary per record.
-#[attribute_set(name = "durable_buffer.loss.attrs", dynamic)]
-#[derive(Debug, Clone, Copy)]
-pub struct DurableBufferLossAttributes {
-    #[attribute(key = "signal")]
-    pub signal: Signal,
-    #[attribute(key = "outcome")]
-    pub outcome: LossOutcome,
+pub enum Signal {
+    Logs,
+    Metrics,
+    Traces,
 }
 
-// A static set: value fixed once at registration.
-#[attribute_set(name = "signal.attrs")]
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum LossOutcome {
+    Dropped,
+    Expired,
+}
+
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum HttpMethod {
+    #[attribute_value = "GET"]
+    Get,
+    #[attribute_value = "POST"]
+    Post,
+}
+```
+
+The framework derives the exported strings and knows the complete cardinality at
+compile time. A measurement metric set whose total combinations exceed the
+2000-series budget fails to compile. Keep the product of all enum variants
+deliberately small.
+
+## Registration attributes
+
+Declare a regular `#[attribute_set]`, attach it to the metric set with
+`registration_attributes`, and pass the value by reference when registering. The
+value applies to every datapoint from that registration.
+
+Every non-composed field in an attribute set becomes an attribute. Its key
+defaults to the field name with underscores replaced by dots. Use
+`#[attribute_key = "..."]` only when the exported key differs from that default.
+
+```rust
+#[attribute_set(name = "receiver.signal")]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalAttributes {
-    #[attribute(key = "signal")]
     pub signal: Signal,
 }
-```
 
-Because every attribute is a closed `enum`, the **worst-case cardinality of a
-set is known at compile time** - the product of its dynamic attributes' variant
-counts (static attributes contribute a factor of 1). The Rust OpenTelemetry SDK
-enforces a runtime cardinality limit per instrument (overflow series collapse
-into `otel.metric.overflow`), silently losing fidelity. Since our bound is
-compile-time, codegen can emit a build warning when a set would exceed that
-limit (or a configured budget), catching blow-ups (e.g. an accidental
-`http.response.status_code` x `signal` product) before they ship - a guarantee
-free-form string attributes cannot offer.
-
-## 5. Worked example: durable_buffer_processor (dynamic)
-
-`durable_buffer_processor` (`otap.processor.durable_buffer`, `mod.rs`) hand-rolls
-eight loss counters - two item-level aggregates plus two per-signal triples:
-
-```text
-dropped_items {item}  dropped_log_records {log_record}
-                      dropped_metric_datapoints {data_point}
-                      dropped_spans {span}
-expired_items {item}  expired_log_records {log_record}
-                      expired_metric_datapoints {data_point}
-                      expired_spans {span}
-```
-
-### Declaration
-
-Using the `DurableBufferLossAttributes` set from section 4 (`signal` +
-`outcome`), all eight collapse into a single `lost_items` counter on one metric
-set:
-
-```rust
-#[metric_set(
-    name = "otap.processor.durable_buffer.loss",
-    dynamic_attributes = DurableBufferLossAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct DurableBufferLossMetrics {
-    #[metric(unit = "{item}")]
-    pub lost_items: Counter<u64>,
-}
-```
-
-| Metric       | Unit     | Dynamic attributes                                          |
-| ------------ | -------- | ----------------------------------------------------------- |
-| `lost_items` | `{item}` | `signal` = logs/metrics/traces; `outcome` = dropped/expired |
-
-### Registration and recording
-
-A dynamic set registers with no values; the recorder supplies the per-record
-variants through a generated `with(...)` that takes the attribute struct and
-returns a bound view of the whole set:
-
-```rust
-let mut loss = pipeline_ctx.register_dynamic_metrics::<DurableBufferLossMetrics>();
-
-loss.with(DurableBufferLossAttributes {
-        signal: Signal::Logs,
-        outcome: LossOutcome::Expired,
-    })
-    .lost_items
-    .add(120);
-```
-
-When the attributes are loop-invariant, the returned view can be hoisted so the
-bucket resolves once:
-
-```rust
-let h = loss.with(DurableBufferLossAttributes { signal, outcome }); // resolved once
-for b in batches { h.lost_items.add(b.len() as u64); }
-```
-
-When they vary per iteration, the bucket is resolved each time - cheap integer
-arithmetic plus one `Vec` index (below), no hashing or allocation.
-
-### Indexing
-
-Codegen computes a **dense mixed-radix bucket index** from the enum variant
-indexes (declaration order) - the same idea as flattening nested loops into one
-array index:
-
-```text
-Signal:      Logs=0   Metrics=1   Traces=2     (radix 3)
-LossOutcome: Dropped=0 Expired=1                (radix 2)
-```
-
-`signal` is the low-order digit (radix 3) and `outcome` the high-order digit, so
-`bucket = signal + outcome * 3`. The full 3 x 2 space maps to a flat `Vec` of
-length 6:
-
-```text
-bucket  signal   outcome    formula
-  0     Logs     Dropped    0 + 0*3
-  1     Metrics  Dropped    1 + 0*3
-  2     Traces   Dropped    2 + 0*3
-  3     Logs     Expired    0 + 1*3
-  4     Metrics  Expired    1 + 1*3
-  5     Traces   Expired    2 + 1*3
-```
-
-The set is one struct holding `buckets: [DurableBufferLossMetrics; 6]` (or a
-`Vec` sized at registration) plus a `touched: BitSet` of 6 bits. So the
-`loss.with(...)` call above resolves to:
-
-```rust
-// with(Attrs { signal: Metrics, outcome: Expired }).lost_items.add(80)
-let bucket = 1 /*Metrics*/ + 1 /*Expired*/ * 3;   // = 4
-buckets[bucket].lost_items.add(80);
-touched.set(bucket);                              // mark 4 as live
-```
-
-Buckets 0/1/2 (`Dropped`) and 3/4/5 (`Expired`) are exactly the former
-`dropped_*` / `expired_*` triples, now addressed by arithmetic - no hashing, no
-per-record allocation.
-
-### Export
-
-Reporting iterates only the `touched` bits. If a run only lost logs to expiry
-and metrics to drops, just buckets 3 and 1 are touched, emitting two datapoints
-(`{signal=logs, outcome=expired}` and `{signal=metrics, outcome=dropped}`); the
-four never-hit combinations cost nothing beyond their zeroed slots.
-
-## 6. Worked example: journald (static)
-
-The opposite case: a component that only ever produces one value binds it at
-registration, with no per-record argument. `journald` is a logs-only receiver,
-so `signal` is fixed for the whole set via `static_attributes` (the
-`SignalAttributes` set from section 4):
-
-```rust
-#[metric_set(name = "receiver.journald", static_attributes = SignalAttributes)]
+#[metric_set(name = "receiver.journald", registration_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct JournaldMetrics {
     #[metric(unit = "{log_record}")]
-    pub consumed: Counter<u64>,
+    pub records: Counter<u64>,
+}
+
+let attrs = SignalAttributes {
+    signal: Signal::Logs,
+};
+let mut metrics = JournaldMetrics::register(&pipeline_ctx, &attrs);
+metrics.records.add(count);
+```
+
+Use registration attributes only for context that remains stable for the
+lifetime of the registered metric set. If the value can change from one
+recording to the next, use a measurement attribute instead.
+
+## Combined registration and measurement attributes
+
+A metric set can use fixed context and per-record dimensions together. Supply
+both `registration_attributes` and `measurement_attributes`, then register with
+the fixed attribute value and record through `with(...)`.
+
+```rust
+#[attribute_set(name = "receiver.outcome", measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct OutcomeAttributes {
+    #[attribute_key = "result"]
+    pub outcome: LossOutcome,
+}
+
+#[metric_set(
+    name = "receiver.journald",
+    registration_attributes = SignalAttributes,
+    measurement_attributes = OutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct JournaldMetrics {
+    #[metric(unit = "{log_record}")]
+    pub records: Counter<u64>,
+}
+
+let signal = SignalAttributes {
+    signal: Signal::Logs,
+};
+let mut metrics = JournaldMetrics::register(&pipeline_ctx, &signal);
+metrics
+    .with(OutcomeAttributes {
+        outcome: LossOutcome::Dropped,
+    })
+    .records
+    .add(count);
+```
+
+The registration and measurement attribute sets MUST NOT declare the same key.
+The macro rejects overlapping keys at compile time so every datapoint has one
+unambiguous value for each attribute.
+
+## Measurement attributes
+
+Mark the attribute set as `measurement`, attach it to the metric set with
+`measurement_attributes`, and use the generated `with(...)` method before
+recording. `with(...)` returns a view of the whole metric set for that attribute
+combination.
+
+```rust
+#[attribute_set(name = "processor.loss", measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct LossAttributes {
+    pub signal: Signal,
+    #[attribute_key = "result"]
+    pub outcome: LossOutcome,
+}
+
+#[metric_set(name = "processor.loss", measurement_attributes = LossAttributes)]
+#[derive(Debug, Default, Clone)]
+pub struct LossMetrics {
+    #[metric(unit = "{item}")]
+    pub lost_items: Counter<u64>,
+}
+
+let mut metrics = LossMetrics::register(&pipeline_ctx);
+metrics
+    .with(LossAttributes {
+        signal: Signal::Metrics,
+        outcome: LossOutcome::Expired,
+    })
+    .lost_items
+    .add(count);
+```
+
+When the attributes are loop-invariant, retain the view and record through it
+repeatedly:
+
+```rust
+let loss = metrics.with(LossAttributes {
+    signal: Signal::Logs,
+    outcome: LossOutcome::Dropped,
+});
+for batch in batches {
+    loss.lost_items.add(batch.len() as u64);
 }
 ```
 
-The value is supplied once at registration and recording is unchanged - the
-fixed attribute is implicit, and the set has a single bucket:
+Measurement buckets are event-driven. A bucket is reported only in intervals
+where the component records through its `with(...)` view. Use a plain or
+registration metric set for continuously sampled gauges and observed values.
 
-```rust
-let mut journald = pipeline_ctx.register_metrics_with_static_attributes::<JournaldMetrics>(
-    SignalAttributes { signal: Signal::Logs },
-);
+## Export behavior
 
-journald.consumed.add(n);            // exported with signal=logs
-```
+Registration and measurement enum attributes are datapoint attributes:
 
-## 7. Design notes
+- OTLP metrics carry them on the metric datapoint.
+- The admin Prometheus endpoint emits them as unprefixed series labels.
+- Entity attributes remain scope attributes (`otel_scope_*` labels in the
+  Prometheus endpoint), and resource attributes remain resource metadata
+  (`target_info` labels).
 
-- **`metric_set` stays the unit** of declaration, registration, registry state,
-  and admin/UI visibility. Enum attributes are extra dimensions on the set's
-  snapshots/datapoints, not separate sets or separately generated instruments.
-- **Single recording form.** `with(...)` is self-documenting (each attribute
-  named), order-independent, and always correct regardless of the attributes'
-  types. A terser alternative is possible (open questions), but the doc keeps one
-  form for consistency. Avoid a per-field positional `add(Signal::Logs,
-  LossOutcome::Expired, n)`: it re-attaches attributes to individual fields
-  (losing the metric-set framing), is order-sensitive, and cannot share a bucket
-  across fields.
-- **No runtime hashmap.** The dense mixed-radix bucketing above keeps the hot
-  path to index arithmetic plus one `Vec` index. Net effect: no impact for sets
-  without enum attributes; minimal cost for dynamic sets; no node-side explosion
-  of hand-written per-signal/per-outcome metric sets.
+This separation means two measurement buckets that share the same component
+scope remain distinct Prometheus series. See the [Attributes
+Guide](attributes-guide.md#how-the-layers-are-rendered) for the complete layer
+mapping.
 
-## 8. Open questions
+When separate OpenTelemetry keys map to the same Prometheus label after name
+conversion, their values are joined with `;` in original-key order. Avoid such
+collisions when defining new attributes: the combined value cannot be queried as
+either original dimension independently.
 
-- **Keys.** Exact attribute keys (`otelcol.signal` vs `otap.*`; likewise
-  `outcome`).
-- **Cardinality.** How many dynamic attrs per set; keep the combined space
-  bounded - `http.response.status_code` is the high-cardinality case (dozens of
-  values) vs `signal`/`outcome` (a handful). The dense `Vec<M>` allocates one
-  slot per possible combination, so this budget also bounds per-set memory.
-- **Granular via ITS.** Whether the legacy name-split shape is delivered as a
-  native capability of the ITS metrics receiver or as an OPL `split_signal`
-  function, and what OPL support (data-point field access, partition) that
-  requires.
-- **Recording shorthand.** Whether to later add an alternative to the
-  struct-bound view (section 7) - e.g. builder setters
-  `.signal(...).outcome(...)` - trading extra codegen for less boilerplate.
+## Appendix: design constraints
 
-## References
+- `metric_set` remains the unit of declaration, registration, aggregation, and
+  admin visibility. Enum attributes add datapoint dimensions; they do not create
+  a new metric family or a separate metric set per value.
+- Measurement combinations use a dense bucket indexed by enum variant order. The
+  first declared attribute is the low-order dimension. For `signal` with three
+  values followed by `outcome` with two values, the bucket is `signal_index +
+  outcome_index * 3`. The six combinations occupy one contiguous bucket array.
+- `with(...)` resolves that bucket with integer arithmetic and an array lookup;
+  it does not allocate or use a hash table. Reuse a bound view when attributes
+  stay constant across a loop.
+- The framework reports only measurement buckets that received a recording since
+  the preceding report. This keeps unused combinations out of the exported
+  metrics.
 
-- #3300; Collector [component-telemetry
-  RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
-- `metrics-guide.md`, `semantic-conventions-guide.md`,
-  `stability-compatibility-guide.md`.
-- `telemetry-macros/src/lib.rs`, `telemetry/src/metrics/dispatcher.rs`,
-  `durable_buffer_processor/mod.rs`, `semconv/README.md`.
+## Component-author checklist
+
+1. Reuse an OpenTelemetry semantic-convention key and value where one exists.
+2. Define the closed enum values and document their semantics.
+3. Choose registration only when the value is fixed for registration; otherwise
+   choose measurement.
+4. Keep measurement cardinality small and meaningful under aggregation.
+5. Register through `PipelineContext` and record through the returned metric
+   set.
+6. Treat enum values and attribute keys as stable telemetry API; follow the
+   [Stability and Compatibility Guide](stability-compatibility-guide.md) before
+   changing them.
