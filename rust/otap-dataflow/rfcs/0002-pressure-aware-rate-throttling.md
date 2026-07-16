@@ -58,8 +58,9 @@ When process memory is normal, the receiver records the configured rate signal
 but does not reject only because a scope is over its configured rate. When
 process memory enters soft pressure, receivers throttle scopes whose measured
 rate is above their configured limit. Scopes within their configured rate
-continue normally. If memory reaches hard pressure, the existing global
-hard-pressure shedding remains the final backstop.
+continue normally. If memory reaches hard pressure, global hard-pressure
+shedding applies as the final backstop, and the scope gate stays active for
+requests the global limiter admits.
 
 The basic behavior is:
 
@@ -327,9 +328,9 @@ The policy mode controls scoped throttling:
 <!-- markdownlint-disable MD013 -->
 | Memory limiter mode | Rate policy mode | Behavior |
 | --- | --- | --- |
-| `enforce` | `enforce` | Hard pressure sheds globally; soft pressure can throttle scoped traffic. |
-| `enforce` | `observe_only` | Hard pressure sheds globally; soft pressure records would-throttle decisions only. |
-| `observe_only` | `enforce` | No global hard-pressure shedding; soft pressure can throttle scoped traffic. This is useful for experiments, but it has no global hard backstop. |
+| `enforce` | `enforce` | Hard pressure sheds globally; soft or higher pressure can throttle scoped traffic. |
+| `enforce` | `observe_only` | Hard pressure sheds globally; soft or higher pressure records would-throttle decisions only. |
+| `observe_only` | `enforce` | No global hard-pressure shedding; soft or higher pressure can throttle scoped traffic. This is useful for experiments, but it has no global hard backstop. |
 | `observe_only` | `observe_only` | Both policies observe; nothing is enforced. |
 <!-- markdownlint-enable MD013 -->
 
@@ -598,6 +599,6 @@ units.
   extension.
 - Feed retained-work accounting into later decisions so the engine can throttle
   tenants whose accepted work remains buffered even when current rate is low.
-- Add administrative metrics showing throttled tenants, over-limit duration,
-  accepted rate, rejected rate, configured unit, and process pressure at the
-  time of throttling.
+- Add richer administrative metrics beyond the v1 would-throttle counter, such
+  as throttled tenants, over-limit duration, accepted rate, rejected rate,
+  configured unit, and process pressure at the time of throttling.
