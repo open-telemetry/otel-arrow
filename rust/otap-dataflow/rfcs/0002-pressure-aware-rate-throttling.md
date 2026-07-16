@@ -300,13 +300,25 @@ else:
 ```
 
 This gives soft pressure an admission-control meaning for this policy. The
-existing phase-1 memory limiter behavior remains unchanged: hard pressure is
-still the global shedding backstop. If the process memory limiter is not
-configured, this policy has no process-pressure trigger and should observe
-configured rates without pressure-based throttling. If the process memory
-limiter is configured in `observe_only` mode, this policy should observe only
-too. If it is configured in `enforce` mode, hard pressure continues to shed
-normal ingress globally, while soft pressure can trigger scoped rate throttling.
+existing phase-1 memory limiter behavior remains unchanged: its mode controls
+global hard-pressure shedding. The pressure-aware rate policy consumes the
+pressure level as an input signal and has its own `mode`.
+
+If process memory measurement is not configured, a pressure-aware rate policy
+has no pressure source and should fail startup validation rather than silently
+run a policy that can never trigger.
+
+The policy mode controls scoped throttling:
+
+<!-- markdownlint-disable MD013 -->
+| Memory limiter mode | Rate policy mode | Behavior |
+| --- | --- | --- |
+| `enforce` | `enforce` | Hard pressure sheds globally; soft pressure can throttle scoped traffic. |
+| `enforce` | `observe_only` | Hard pressure sheds globally; soft pressure records would-throttle decisions only. |
+| `observe_only` | `enforce` | No global hard-pressure shedding; soft pressure can throttle scoped traffic. This is useful for experiments, but it has no global hard backstop. |
+| `observe_only` | `observe_only` | Both policies observe; nothing is enforced. |
+<!-- markdownlint-enable MD013 -->
+
 Adopting this policy would require updating the phase-1 memory limiter
 documentation that describes soft pressure as informational only.
 
@@ -362,6 +374,7 @@ policies:
   resources:
     rate_limits:
       pressure_rate:
+        mode: enforce
         aggregation: receiver_instance
         unit: request_bytes/second
         optional_tenant_tokens: [customer_tenant]
@@ -410,9 +423,10 @@ rejection, validate declaration placement and receiver binding, verify that the
 receiver supports the configured rate unit on its admission path, and reject at
 startup both unsupported pressure-gate combinations and multi-level placements
 that the first version cannot evaluate. The first version should also reject any
-`aggregation` value other than `receiver_instance`. Per-tenant overrides should
-use ordered conditions from the tenant-token policy model if that model is
-adopted.
+`aggregation` value other than `receiver_instance`, and reject a pressure-aware
+rate policy when no process pressure source is configured. Per-tenant overrides
+should use ordered conditions from the tenant-token policy model if that model
+is adopted.
 
 A later implementation should define:
 
@@ -422,6 +436,7 @@ A later implementation should define:
 - which declaration scopes accept the policy, and how a multi-level placement is
   validated or rejected,
 - how post-charge debt is represented in the token-bucket limiter,
+- rate policy mode and would-throttle reporting in `observe_only`,
 - how the pressure gate is expressed, and how it composes with tenant-token
   conditions,
 - burst and debt bounds,
