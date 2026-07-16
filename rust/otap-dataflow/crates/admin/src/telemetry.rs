@@ -21,7 +21,6 @@ use axum::{Json, Router};
 use otap_df_admin_types::telemetry as api;
 use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-use otap_df_telemetry::common_attributes::MetricSignal;
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
 use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
@@ -2571,6 +2570,7 @@ mod tests {
     #[test]
     fn test_aggregate_metric_groups_group_by_attribute() {
         use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+        use otap_df_telemetry::common_attributes::MetricSignal;
         use otap_df_telemetry::descriptor::{
             AttributeField, AttributeValueType, AttributesDescriptor,
         };
