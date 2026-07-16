@@ -11,7 +11,7 @@ use super::otlp_bridge::{
     process_protobuf_otlp_export_logs_service_request_using_pipeline,
 };
 use async_trait::async_trait;
-use data_engine_recordset::RecordSetEngineDiagnosticLevel;
+use data_engine_recordset::{RecordSetEngineCounters, RecordSetEngineDiagnosticLevel};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -23,6 +23,7 @@ use otap_df_engine::{
     local::processor::{EffectHandler, Processor},
     message::Message,
     process_duration::ComputeDuration,
+    processor::ProcessorRuntimeRequirements,
 };
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::{OtapPayload, OtlpProtoBytes};
@@ -45,6 +46,13 @@ pub struct RecordsetKqlProcessor {
     config: RecordsetKqlProcessorConfig,
     pipeline: BridgePipeline,
     compute_duration: ComputeDuration,
+}
+
+/// Result of processing a single signal payload: the transformed bytes plus the
+/// engine counters observed while producing them.
+struct ProcessedSignal {
+    payload: OtlpProtoBytes,
+    counters: RecordSetEngineCounters,
 }
 
 impl RecordsetKqlProcessor {
@@ -150,9 +158,9 @@ impl RecordsetKqlProcessor {
         });
 
         match result {
-            Ok(processed_bytes) => {
+            Ok(ProcessedSignal { payload, counters }) => {
                 // Convert back to OtapPayload and reconstruct OtapPdata
-                let payload: OtapPayload = processed_bytes.into();
+                let payload: OtapPayload = payload.into();
                 // Note! we are recomputing the number of matched items, which
                 // the engine could tell us.
                 let output_items = payload.num_items() as u64;
@@ -161,7 +169,12 @@ impl RecordsetKqlProcessor {
                     "recordset_kql_processor.success",
                     input_items,
                     output_items,
+                    dropped_items = counters.dropped as u64,
                 );
+
+                // No-op unless this node is a decision node in a flow that
+                // enables `signals.dropped`.
+                effect_handler.record_flow_signals_dropped(counters.dropped as u64);
 
                 let processed_data = OtapPdata::new(ctx, payload);
 
@@ -191,7 +204,7 @@ impl RecordsetKqlProcessor {
         &self,
         bytes: bytes::Bytes,
         signal: SignalType,
-    ) -> Result<OtlpProtoBytes, Error> {
+    ) -> Result<ProcessedSignal, Error> {
         let response = process_protobuf_otlp_export_logs_service_request_using_pipeline(
             &self.pipeline,
             RecordSetEngineDiagnosticLevel::Warn,
@@ -199,12 +212,16 @@ impl RecordsetKqlProcessor {
         )
         .map_err(|e| Self::map_bridge_error(e, signal))?;
 
-        let included_records = response
+        let counters = response.counters;
+        let output_records = response
             .into_otlp_bytes()
             .map_err(|e| Self::map_bridge_error(e, signal))?
             .0;
 
-        Ok(OtlpProtoBytes::ExportLogsRequest(included_records.into()))
+        Ok(ProcessedSignal {
+            payload: OtlpProtoBytes::ExportLogsRequest(output_records.into()),
+            counters,
+        })
     }
 
     fn map_bridge_error(error: BridgeError, signal: SignalType) -> Error {
@@ -216,6 +233,11 @@ impl RecordsetKqlProcessor {
 
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for RecordsetKqlProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // Filtering (e.g. a KQL `where`) can drop signal items.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -1113,5 +1135,28 @@ mod tests {
                 assert!(counts.contains(&1), "Should have a bin with count=1");
             },
         );
+    }
+
+    /// The processor always declares drop decisions (correct for every query
+    /// shape) so the `signals.dropped` flow metric can be wired.
+    #[test]
+    fn test_declares_drop_decisions() {
+        fn declares_drops(query: &str) -> bool {
+            let telemetry_registry_handle = TelemetryRegistryHandle::new();
+            let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+            let pipeline_ctx =
+                controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+            let config = RecordsetKqlProcessorConfig {
+                query: query.to_string(),
+                bridge_options: None,
+            };
+            let processor = RecordsetKqlProcessor::with_pipeline_ctx(pipeline_ctx, config)
+                .expect("processor builds");
+            processor.runtime_requirements().makes_drop_decisions
+        }
+
+        assert!(declares_drops("source | where severityText == \"ERROR\""));
+        assert!(declares_drops("source | extend foo = 1"));
+        assert!(declares_drops("source | summarize Count = count()"));
     }
 }

@@ -241,6 +241,7 @@ attribute in the project, but a shared reference for how to introduce and evolve
 telemetry:
 
 - [Attributes Guide](attributes-guide.md)
+- [Datapoint Enum Attributes for Metrics](datapoint-enum-attributes.md)
 - [System Metrics Guide](metrics-guide.md)
 - [System Events Guide](events-guide.md)
 - [System Traces Draft - Not For Review](tracing-draft-not-for-review.md)
