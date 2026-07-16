@@ -9,8 +9,8 @@
 
 #![allow(missing_docs)]
 
+use otap_df_config::SignalType;
 use otap_df_telemetry::attributes::{AttributeEnum, AttributeSetHandler, MeasurementAttributeSet};
-use otap_df_telemetry::common_attributes::MetricSignal;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::{
     MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetRegistrar,
@@ -30,7 +30,7 @@ pub enum LossOutcome {
 #[attribute_set(datapoint, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct ImplicitMeasurementAttributes {
-    pub signal: MetricSignal,
+    pub signal: SignalType,
     pub outcome: LossOutcome,
 }
 
@@ -54,7 +54,7 @@ pub struct LegacyMeasurementAttributes {
 #[derive(Debug, Clone, Copy)]
 pub struct RegistrationAttributes {
     #[attribute_key = "registration.signal"]
-    pub signal: MetricSignal,
+    pub signal: SignalType,
 }
 
 #[attribute_set(datapoint, registration)]
@@ -231,14 +231,14 @@ impl MetricSetRegistrar for ExistingEntityRegistrar {
 /// Scenario: the shared signal enum uses canonical exported strings.
 /// Guarantees: descriptors expose stable strings, indexes, and cardinality.
 #[test]
-fn metric_signal_uses_canonical_values() {
-    assert_eq!(MetricSignal::Logs.as_str(), "logs");
-    assert_eq!(MetricSignal::Metrics.as_str(), "metrics");
-    assert_eq!(MetricSignal::Traces.as_str(), "traces");
-    assert_eq!(MetricSignal::CARDINALITY, 3);
-    assert_eq!(MetricSignal::VARIANTS, &["logs", "metrics", "traces"]);
-    assert_eq!(MetricSignal::Logs.variant_index(), 0);
-    assert_eq!(MetricSignal::Traces.variant_index(), 2);
+fn signal_type_uses_canonical_values() {
+    assert_eq!(SignalType::Logs.as_str(), "logs");
+    assert_eq!(SignalType::Metrics.as_str(), "metrics");
+    assert_eq!(SignalType::Traces.as_str(), "traces");
+    assert_eq!(SignalType::CARDINALITY, 3);
+    assert_eq!(SignalType::VARIANTS, &["traces", "metrics", "logs"]);
+    assert_eq!(SignalType::Traces.variant_index(), 0);
+    assert_eq!(SignalType::Logs.variant_index(), 2);
 }
 
 /// Scenario: a two-field enum attribute set selects datapoint buckets.
@@ -257,18 +257,18 @@ fn measurement_attribute_set_descriptors_and_bucketing() {
     let descriptors = ImplicitMeasurementAttributes::DESCRIPTORS;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].key, "signal");
-    assert_eq!(descriptors[0].variants, &["logs", "metrics", "traces"]);
+    assert_eq!(descriptors[0].variants, &["traces", "metrics", "logs"]);
     assert_eq!(descriptors[1].key, "outcome");
     assert_eq!(descriptors[1].variants, &["dropped", "expired"]);
 
     // First declared field (signal) is the low-order digit; radix 3 then 2.
     let idx = |signal, outcome| ImplicitMeasurementAttributes { signal, outcome }.bucket_index();
-    assert_eq!(idx(MetricSignal::Logs, LossOutcome::Dropped), 0);
-    assert_eq!(idx(MetricSignal::Metrics, LossOutcome::Dropped), 1);
-    assert_eq!(idx(MetricSignal::Traces, LossOutcome::Dropped), 2);
-    assert_eq!(idx(MetricSignal::Logs, LossOutcome::Expired), 3);
-    assert_eq!(idx(MetricSignal::Metrics, LossOutcome::Expired), 4);
-    assert_eq!(idx(MetricSignal::Traces, LossOutcome::Expired), 5);
+    assert_eq!(idx(SignalType::Traces, LossOutcome::Dropped), 0);
+    assert_eq!(idx(SignalType::Metrics, LossOutcome::Dropped), 1);
+    assert_eq!(idx(SignalType::Logs, LossOutcome::Dropped), 2);
+    assert_eq!(idx(SignalType::Traces, LossOutcome::Expired), 3);
+    assert_eq!(idx(SignalType::Metrics, LossOutcome::Expired), 4);
+    assert_eq!(idx(SignalType::Logs, LossOutcome::Expired), 5);
 }
 
 /// Scenario: a measurement set uses an `attribute_value` override.
@@ -283,21 +283,21 @@ fn measurement_metric_set_export_carries_datapoint_attributes() {
     // Record into two distinct buckets, one of them twice to check aggregation.
     metrics
         .with(ImplicitMeasurementAttributes {
-            signal: MetricSignal::Metrics,
+            signal: SignalType::Metrics,
             outcome: LossOutcome::Expired,
         })
         .items
         .add(80);
     metrics
         .with(ImplicitMeasurementAttributes {
-            signal: MetricSignal::Logs,
+            signal: SignalType::Logs,
             outcome: LossOutcome::Dropped,
         })
         .items
         .add(5);
     metrics
         .with(ImplicitMeasurementAttributes {
-            signal: MetricSignal::Logs,
+            signal: SignalType::Logs,
             outcome: LossOutcome::Dropped,
         })
         .items
@@ -363,7 +363,7 @@ fn measurement_metric_set_retries_deferred_bucket() {
     let registrar = TestRegistrar::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
     let attrs = ImplicitMeasurementAttributes {
-        signal: MetricSignal::Logs,
+        signal: SignalType::Logs,
         outcome: LossOutcome::Dropped,
     };
     let mut metrics = MeasurementMetrics::register(&registrar);
@@ -396,7 +396,7 @@ fn measurement_metric_set_get_is_read_only_and_with_marks_the_bucket() {
     let registrar = TestRegistrar::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
     let attrs = ImplicitMeasurementAttributes {
-        signal: MetricSignal::Metrics,
+        signal: SignalType::Metrics,
         outcome: LossOutcome::Dropped,
     };
     let mut metrics = MeasurementMetrics::register(&registrar);
@@ -423,7 +423,7 @@ fn registration_metric_set_export_carries_fixed_attributes() {
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
     let registration_attrs = RegistrationAttributes {
-        signal: MetricSignal::Logs,
+        signal: SignalType::Logs,
     };
     let mut metrics = RegistrationMetrics::register(&registrar, &registration_attrs);
 
@@ -470,7 +470,7 @@ fn registration_and_measurement_metric_set_export_carries_both_attribute_kinds()
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
     let registration_attrs = RegistrationAttributes {
-        signal: MetricSignal::Logs,
+        signal: SignalType::Logs,
     };
     let mut metrics = MixedMetrics::register(&registrar, &registration_attrs);
     metrics
@@ -538,7 +538,7 @@ fn registration_and_measurement_metric_set_export_carries_both_attribute_kinds()
 fn generated_metric_set_registration_methods_dispatch_to_registrar() {
     let registrar = TestRegistrar::new();
     let signal = RegistrationAttributes {
-        signal: MetricSignal::Logs,
+        signal: SignalType::Logs,
     };
 
     let mut plain_metrics = PlainMetrics::register(&registrar);
@@ -550,7 +550,7 @@ fn generated_metric_set_registration_methods_dispatch_to_registrar() {
     let mut measurement_metrics = MeasurementMetrics::register(&registrar);
     measurement_metrics
         .with(ImplicitMeasurementAttributes {
-            signal: MetricSignal::Metrics,
+            signal: SignalType::Metrics,
             outcome: LossOutcome::Dropped,
         })
         .items
@@ -596,7 +596,7 @@ fn register_metric_sets_for_existing_entity() {
     };
 
     let registration_attrs = RegistrationAttributes {
-        signal: MetricSignal::Traces,
+        signal: SignalType::Traces,
     };
     let mut metrics = RegistrationMetrics::register(&registrar, &registration_attrs);
     let mut loss = MeasurementMetrics::register(&registrar);
@@ -606,7 +606,7 @@ fn register_metric_sets_for_existing_entity() {
 
     metrics.records.add(7);
     loss.with(ImplicitMeasurementAttributes {
-        signal: MetricSignal::Traces,
+        signal: SignalType::Traces,
         outcome: LossOutcome::Dropped,
     })
     .items
@@ -663,7 +663,7 @@ fn read_only_visit_preserves_datapoint_values() {
 
     let mut loss = MeasurementMetrics::register(&registrar);
     loss.with(ImplicitMeasurementAttributes {
-        signal: MetricSignal::Metrics,
+        signal: SignalType::Metrics,
         outcome: LossOutcome::Expired,
     })
     .items

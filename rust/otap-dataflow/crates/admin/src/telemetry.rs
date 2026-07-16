@@ -2326,11 +2326,11 @@ mod tests {
         ShutdownStatus,
     };
     use axum::body::{Body, to_bytes};
+    use otap_df_config::SignalType;
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
     use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-    use otap_df_telemetry::common_attributes::MetricSignal;
     use otap_df_telemetry::descriptor::{
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
@@ -3585,7 +3585,7 @@ mod tests {
     #[derive(Debug, Clone, Copy)]
     struct DatapointSignalAttributes {
         #[attribute_key = "signal"]
-        signal: MetricSignal,
+        signal: SignalType,
         #[attribute_key = "otel.scope.foo"]
         scope_foo: DatapointCollision,
     }
@@ -3615,14 +3615,14 @@ mod tests {
             );
         metrics
             .with(DatapointSignalAttributes {
-                signal: MetricSignal::Logs,
+                signal: SignalType::Logs,
                 scope_foo: DatapointCollision::Value,
             })
             .events
             .add(7);
         metrics
             .with(DatapointSignalAttributes {
-                signal: MetricSignal::Metrics,
+                signal: SignalType::Metrics,
                 scope_foo: DatapointCollision::Value,
             })
             .events

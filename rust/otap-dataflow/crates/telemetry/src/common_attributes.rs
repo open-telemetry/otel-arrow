@@ -3,20 +3,28 @@
 
 //! Reusable closed-set attributes for internal telemetry metrics.
 
+use crate::attributes::AttributeEnum;
+use otap_df_config::SignalType;
 use otap_df_telemetry_macros::AttributeEnum;
 
-/// Signal carried by a telemetry datapoint.
-///
-/// Components that support multiple OpenTelemetry signals should use this
-/// closed-set attribute instead of defining a component-local equivalent.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum MetricSignal {
-    /// Log records.
-    Logs,
-    /// Metric data points.
-    Metrics,
-    /// Spans.
-    Traces,
+// SignalType belongs to the configuration model because it describes pipeline
+// data independently of telemetry. Implement the telemetry-specific trait here
+// to reuse that canonical type without making config depend on telemetry.
+// This avoids boilerplate conversion between config::SignalType and a separate
+// telemetry::MetricSignalType.
+//
+// Other closed-set attributes use the `AttributeEnum` macro to implement the trait automatically.
+impl AttributeEnum for SignalType {
+    const CARDINALITY: usize = 3;
+    const VARIANTS: &'static [&'static str] = &["traces", "metrics", "logs"];
+
+    fn variant_index(self) -> usize {
+        match self {
+            Self::Traces => 0,
+            Self::Metrics => 1,
+            Self::Logs => 2,
+        }
+    }
 }
 
 /// Outcome of a pipeline component operation.

@@ -92,21 +92,13 @@ schema name because they are emitted directly on metric datapoints.
 // This component only works on logs.
 
 use otap_df_telemetry::instrument::Counter;
+use otap_df_config::SignalType;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-
-// `MetricSignal` is available from `common_attributes`; it is repeated here
-// so this example is self-contained.
-#[derive(Debug, Clone, Copy, AttributeEnum)]
-pub enum MetricSignal {
-    Logs,
-    Metrics,
-    Traces,
-}
 
 #[attribute_set(datapoint, registration)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalAttributes {
-    pub signal: MetricSignal,
+    pub signal: SignalType,
 }
 
 #[metric_set(name = "component.records", registration_attributes = SignalAttributes)]
@@ -119,7 +111,7 @@ pub struct RecordMetrics {
 let mut metrics = RecordMetrics::register(
     &pipeline_ctx,
     &SignalAttributes {
-        signal: MetricSignal::Logs,
+        signal: SignalType::Logs,
     },
 );
 metrics.records.add(count); // Emits `records{signal="logs"}` in the `component.records` scope.
@@ -140,16 +132,8 @@ combination.
 // This component has multiple possible outcomes.
 
 use otap_df_telemetry::instrument::Counter;
+use otap_df_config::SignalType;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-
-// `MetricSignal` is available from `common_attributes`; it is repeated here
-// so this example is self-contained.
-#[derive(Debug, Clone, Copy, AttributeEnum)]
-pub enum MetricSignal {
-    Logs,
-    Metrics,
-    Traces,
-}
 
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum LossOutcome {
@@ -160,7 +144,7 @@ pub enum LossOutcome {
 #[attribute_set(datapoint, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct LossAttributes {
-    pub signal: MetricSignal,
+    pub signal: SignalType,
     #[attribute_key = "result"]
     pub outcome: LossOutcome,
 }
@@ -175,7 +159,7 @@ pub struct LossMetrics {
 let mut metrics = LossMetrics::register(&pipeline_ctx);
 metrics
     .with(LossAttributes {
-        signal: MetricSignal::Metrics,
+        signal: SignalType::Metrics,
         outcome: LossOutcome::Expired,
     })
     .lost_items
@@ -183,7 +167,7 @@ metrics
 
 // When attributes are loop-invariant, retain the view and record through it repeatedly.
 let mut loss = metrics.with(LossAttributes {
-    signal: MetricSignal::Logs,
+    signal: SignalType::Logs,
     outcome: LossOutcome::Dropped,
 });
 for batch in batches {
@@ -205,16 +189,8 @@ the fixed attribute value and record through `with(...)`.
 // This component only works on logs but also has multiple possible outcomes.
 
 use otap_df_telemetry::instrument::Counter;
+use otap_df_config::SignalType;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
-
-// `MetricSignal` is available from `common_attributes`; it is repeated here
-// so this example is self-contained.
-#[derive(Debug, Clone, Copy, AttributeEnum)]
-pub enum MetricSignal {
-    Logs,
-    Metrics,
-    Traces,
-}
 
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum LossOutcome {
@@ -225,7 +201,7 @@ pub enum LossOutcome {
 #[attribute_set(datapoint, registration)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalAttributes {
-    pub signal: MetricSignal,
+    pub signal: SignalType,
 }
 
 #[attribute_set(datapoint, measurement)]
@@ -247,7 +223,7 @@ pub struct RecordMetrics {
 }
 
 let signal = SignalAttributes {
-    signal: MetricSignal::Logs,
+    signal: SignalType::Logs,
 };
 let mut metrics = RecordMetrics::register(&pipeline_ctx, &signal);
 metrics
