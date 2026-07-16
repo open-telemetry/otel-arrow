@@ -120,8 +120,9 @@ Notes:
   overridden.
 - Engine-global signals (e.g. the `memory_rss` metric) carry no scope
   attributes; their identity comes entirely from the Resource layer.
-- Today, no self-telemetry attributes are emitted on the signal-specific
-  (data-point / log-record) layer.
+- Metric sets support bounded enum attributes on the signal-specific data-point
+  layer. See
+  [Datapoint Enum Attributes for Metrics](datapoint-enum-attributes.md).
 
 ### Core rule
 
