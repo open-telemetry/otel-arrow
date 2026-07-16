@@ -211,23 +211,36 @@ rate units more naturally.
 Receivers admit whole requests or batches, not individual items inside an
 accepted batch. This matters for item-based units because admission happens
 before decode, and the exact item count of a request may only be known after
-decode. An item-based implementation can therefore use **receiver-local
-accepted-item history** rather than reserving item weight before admission:
+decode.
+
+For units known before admission, such as `request_bytes/second`, the receiver
+can use a normal token-bucket check because it knows the request weight before
+admission. For item-based units whose weight is known only after decode, the
+receiver should use a **post-charge token bucket with bounded debt**:
 
 1. A request arrives.
 2. The receiver resolves the scope from transport metadata, receiver identity,
    or static configuration.
-3. If process memory is at soft pressure and that scope's recent accepted item
-   rate is over its configured item-rate limit, the receiver rejects the whole
-   request.
+3. If process memory is at soft pressure and the bucket balance is not
+   positive, the receiver rejects the whole request.
 4. Otherwise the receiver admits, reads, and decodes the request.
-5. The receiver counts the actual items and updates that scope's rate state.
+5. The receiver charges the actual item count after decode. The bucket balance
+   may go negative only to a bounded debt floor.
 
-The consequence for item-based units is that admission decisions are made on the
-scope's recent history, not on the request in hand. A scope goes over its limit,
-and the next request for that scope pays for it. This is deliberate: it keeps a
-receiver from having to know an item count before paying the cost of decoding or
-scanning the request.
+Rejected requests do not update exact item count because their weight is
+unknown. There is no accepted-history decay; token refill replaces it. Admission
+resumes when refill brings the balance positive again.
+
+Under sustained over-limit offered load, admitted rate is bounded by the
+configured rate because each admitted request pays its true weight before more
+work is admitted. Maximum overshoot is bounded by the configured burst and debt
+limits plus the receiver's existing maximum request size.
+
+The debt floor must also apply while memory is normal. The gate only rejects
+when pressure is active, but the bucket should keep charging and refilling in
+normal memory so pressure starts from current state. The debt floor keeps a
+scope from accumulating unbounded debt before soft pressure and bounds the
+worst-case lockout after pressure starts to `max_debt / rate`.
 
 The first implementation resolves tenant tokens only from trusted transport
 metadata, receiver identity, or static configuration. Resource-attribute
@@ -236,18 +249,15 @@ unless the receiver explicitly accepts the cost of decoding before admission.
 
 Byte-based units do not have the same pre-decode item-count problem because the
 receiver can usually measure request or body bytes before accepting more work.
-The implementation must define how rate history is aged or reset, and whether
-rejected requests update it.
+Rejected byte-based requests can still update the bucket when the request weight
+is known before refusal.
 
-This history-based shape is not one of the two built-in limiters described in
-[otel-arrow#3389](https://github.com/open-telemetry/otel-arrow/pull/3389), which
-offers a token bucket for rate limits and a semaphore for resource limits. A
-token bucket sized in telemetry items assumes the receiver knows a request's
-item weight at admission time, which some receivers do not. Item-based
-pressure-aware throttling runs into that pre-decode weight problem and can
-sidestep it by using accepted-item history. Whether that arrives as an
-additional built-in rate limiter shape or as a policy extension is an open
-question for the tenant-token model.
+This aligns with the token-bucket limiter described in
+[otel-arrow#3389](https://github.com/open-telemetry/otel-arrow/pull/3389), but
+item-based units need one extra capability: post-charge negative balance with a
+bounded debt floor. Without that, a telemetry-item bucket would require knowing
+the full request weight before admission, which some receivers cannot do
+cheaply.
 
 ### Admission Decision
 
@@ -270,7 +280,7 @@ matching path.
 ```text
 if process_pressure == Hard:
     reject normal ingress using the existing global limiter behavior
-else if process_pressure == Soft and scope_rate > configured_rate:
+else if process_pressure == Soft and the scope bucket cannot admit:
     throttle this scope
 else:
     admit
@@ -284,9 +294,8 @@ configured rates without pressure-based throttling. If the process memory
 limiter is configured in `observe_only` mode, this policy should observe only
 too. If it is configured in `enforce` mode, hard pressure continues to shed
 normal ingress globally, while soft pressure can trigger scoped rate throttling.
-Adopting this policy
-would require updating the phase-1 memory limiter documentation that describes
-soft pressure as informational only.
+Adopting this policy would require updating the phase-1 memory limiter
+documentation that describes soft pressure as informational only.
 
 The exact rejection response is receiver-specific. OTLP/HTTP should preserve the
 existing memory-pressure response shape: HTTP 503 with `Retry-After`. OTLP/gRPC
@@ -298,20 +307,14 @@ define equivalent protocol-specific refusal behavior.
 Configured rate limits should allow bounded spikes. A tenant should not be
 throttled forever because of a short spike.
 
-Spike tolerance comes from the width of the rate history window rather than from
-a separate burst allowance. A window wide enough to average over normal traffic
-absorbs a short spike; a narrow window reacts faster but throttles on noise.
-That trade-off is the main parameter to settle during implementation.
+Spike tolerance comes from token-bucket burst capacity. Recovery comes from
+token refill. For post-charge item buckets, negative balance is bounded by the
+debt floor, and admission resumes only after refill brings the balance positive.
 
-The policy should also use admission recovery hysteresis before unthrottling so
-the same scope does not rapidly switch between admitted and rejected on every
-sample. This is separate from the memory limiter's own hysteresis, which governs
-leaving soft pressure; the two operate on independent axes and both apply. Rate
-measurements should continue while memory is normal so entering soft pressure
-uses current history instead of starting from an empty window.
-
-Receivers should continue updating scoped rate state while throttling so
-receiver-local admission can detect when the scope becomes eligible again.
+This is separate from the memory limiter's own hysteresis, which governs leaving
+soft pressure. Rate state should continue to update while memory is normal, so
+entering soft pressure uses current bucket state instead of starting from an
+empty or full bucket.
 
 ### Interaction With Retained-Work Accounting
 
@@ -331,9 +334,7 @@ This RFC does not define the final configuration schema. The sketch below is
 illustrative only. It borrows the tenant-token and `rate_limits` vocabulary
 proposed in
 [otel-arrow#3389](https://github.com/open-telemetry/otel-arrow/pull/3389); if
-that design changes, this shape changes with it. It deliberately does not name a
-built-in limiter block, because receiver-local rate history may not match one of
-that design's built-ins.
+that design changes, this shape changes with it.
 
 ```yaml
 tenant_tokens:
@@ -352,9 +353,12 @@ policies:
         optional_tenant_tokens: [customer_tenant]
         # Applies per receiver instance, not process-wide.
         allow: 10485760
-        # Width of the rate history window used to compute the
-        # recent rate. Wider absorbs spikes; narrower reacts faster.
+        # Token refill interval for the configured rate.
         interval: 1s
+        # Burst and debt fields are illustrative. Exact schema names are
+        # unresolved and should align with the tenant-token limiter model.
+        burst: 10485760
+        max_debt: 10485760
         # Proposed policy-level gate: apply this limit only while process
         # memory is at or above soft pressure. Driven by the pressure level
         # the receiver already receives, not by a tenant-token condition.
@@ -401,12 +405,10 @@ A later implementation should define:
 - per-tenant-token rate overrides,
 - which declaration scopes accept the policy, and how a multi-level placement is
   validated or rejected,
-- whether the history-based limiter is an additional built-in shape or a policy
-  extension,
+- how post-charge debt is represented in the token-bucket limiter,
 - how the pressure gate is expressed, and how it composes with tenant-token
   conditions,
-- rate history window width, ageing, and reset,
-- admission recovery hysteresis,
+- burst and debt bounds,
 - live-update behavior for limiter state.
 
 The configuration should be operator-owned and should avoid unbounded
@@ -440,10 +442,9 @@ units.
   aggregation will be surprised.
 - The configured rate unit must be defined carefully across receivers and
   signals.
-- For item-based units, admission decisions may use the scope's recent
-  accepted-item history rather than the request in hand, because item count is
-  not always known before decode. A scope that goes over its limit may be
-  throttled on its next request, not the one that crossed the line.
+- For item-based units, a receiver may admit one request before knowing the
+  exact item count. That request is charged after decode, so overshoot is
+  bounded but not zero.
 - If pressure is caused by a stuck exporter, retry backlog, or other downstream
   retention site, throttling a current high-rate scope may not reduce pressure.
 - Unidentified traffic must still be bounded. If tenant identity is optional,
@@ -484,11 +485,8 @@ units.
 
 - Which tenant-token extractor source should the first implementation use?
 - Which rate units should each receiver support natively?
-- How should rate history age, and should rejected requests update it?
-- How wide should the rate history window be by default, and should it be
-  configurable per policy?
-- Should the accepted-item history limiter be an additional built-in rate
-  limiter shape, or a policy extension?
+- How should post-charge debt be represented in the token-bucket limiter model?
+- What default burst and debt bounds should be used?
 - Should item-based units for encoded OTLP be rejected, or allowed only with an
   explicit decode or scan cost?
 - What response and retry guidance should non-OTLP receivers use? OTLP/HTTP and
