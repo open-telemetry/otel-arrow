@@ -151,7 +151,7 @@ opentelemetry-proto.workspace = true
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["test-utils"] }
 otap-df-pdata = { workspace = true, features = ["testing"] }
-portpicker.workspace = true
+otap-df-test-net.workspace = true
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true

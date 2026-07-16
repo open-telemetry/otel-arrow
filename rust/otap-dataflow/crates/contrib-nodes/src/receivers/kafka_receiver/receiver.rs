@@ -1532,7 +1532,7 @@ mod tests {
     async fn start_kafka_container_with_partitions(
         num_partitions: i32,
     ) -> (ContainerAsync<GenericImage>, String) {
-        let host_port = portpicker::pick_unused_port().expect("no free port available");
+        let host_port = otap_df_test_net::pick_unused_loopback_tcp_port();
 
         let container = GenericImage::new("apache/kafka", "4.1.0")
             .with_wait_for(WaitFor::message_on_stdout("Kafka Server started"))
