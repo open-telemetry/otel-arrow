@@ -41,7 +41,7 @@ config:
 | `traces` | object | *none* | Per-signal config for traces (see [Per-Signal Configuration](#per-signal-configuration)). |
 | `metrics` | object | *none* | Per-signal config for metrics. |
 | `logs` | object | *none* | Per-signal config for logs. |
-| `timeout_ms` | integer | `5000` | Request timeout in milliseconds (`message.timeout.ms`). |
+| `timeout_ms` | integer | `5000` | Request timeout in milliseconds (`message.timeout.ms`). Must be in the range `1` to `30000`. `0` is rejected because librdkafka interprets it as an infinite delivery timeout, which would let a broker outage block the exporter from shutting down. |
 | `compression` | string | *none* | Compression type: `gzip`, `snappy`, `lz4`, or `zstd`. |
 | `required_acks` | string | `"one"` | Required broker acks: `none` (0), `one` (1), or `all` (-1). |
 | `max_message_bytes` | integer | `1000000` | Maximum message size in bytes (`message.max.bytes`). |

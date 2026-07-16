@@ -418,7 +418,10 @@ impl KafkaExporter {
             record = record.key(key);
         }
 
-        // Send to Kafka with timeout
+        // Send to Kafka with timeout. `timeout_ms` is validated to be within
+        // (0, 30s] at config time (see `KafkaExporterConfig`), so this await is
+        // always bounded and can never block shutdown indefinitely: a `0` would
+        // otherwise map to librdkafka's infinite `message.timeout.ms`.
         let timeout = Duration::from_millis(self.config.timeout_ms());
         match self.producer.send(record, timeout).await {
             Ok(_delivery) => {
@@ -461,6 +464,38 @@ impl KafkaExporter {
             }
         }
     }
+
+    /// Drain in-flight deliveries on shutdown, bounded by `deadline`.
+    ///
+    /// Flushes the producer so queued messages get one final chance to be
+    /// delivered, then purges anything still queued so we never block past the
+    /// deadline.
+    async fn drain_and_flush(
+        &mut self,
+        deadline: std::time::Instant,
+        effect_handler: &EffectHandler<OtapPdata>,
+    ) {
+        effect_handler.info("Flushing Kafka producer").await;
+
+        // Flush for the time remaining until the shutdown deadline (saturating
+        // at zero if it has already passed), matching the parquet exporter's
+        // deadline-bounded shutdown flush.
+        let flush_timeout = deadline
+            .checked_duration_since(std::time::Instant::now())
+            .unwrap_or(Duration::ZERO);
+
+        if let Err(e) = self.producer.flush(flush_timeout) {
+            otap_df_telemetry::otel_warn!(
+                "kafka.exporter.shutdown.flush_failed",
+                error = %e,
+            );
+            // Flush timed out or failed; purge anything still queued (in-flight
+            // and not-yet-queued) so the producer drop does not block. Purged
+            // messages trigger their delivery callbacks with a purge error.
+            self.producer
+                .purge(rdkafka::producer::PurgeConfig::default().queue().inflight());
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -485,7 +520,7 @@ impl Exporter<OtapPdata> for KafkaExporter {
 
         let ack_nack_reporter = EffectHandlerReporter::new(&effect_handler);
 
-        // Main event loop
+        // Main event loop.
         loop {
             match inbox.recv().await? {
                 Message::PData(pdata) => {
@@ -510,27 +545,24 @@ impl Exporter<OtapPdata> for KafkaExporter {
                         .info(&format!("Kafka exporter: received Nack - {}", nack.reason))
                         .await;
                 }
-                Message::Control(NodeControlMsg::Shutdown { .. }) => {
+                Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     effect_handler.info("Shutting down Kafka exporter").await;
                     _ = timer_cancel_handle.cancel().await;
-                    break;
+
+                    // Graceful shutdown: ingress is already closed by the
+                    // engine's receiver-first drain, so just drain our in-flight
+                    // deliveries by flushing (bounded by `deadline`), then purge
+                    // anything still queued so we never block past the deadline.
+                    self.drain_and_flush(deadline, &effect_handler).await;
+
+                    effect_handler.info("Kafka exporter stopped").await;
+                    return Ok(TerminalState::new(deadline, [self.metrics.snapshot()]));
                 }
                 Message::Control(_) => {
                     // Ignore other control messages
                 }
             }
         }
-
-        // Flush any pending messages
-        effect_handler.info("Flushing Kafka producer").await;
-        self.producer
-            .flush(Duration::from_secs(5))
-            .map_err(|e| EngineError::InternalError {
-                message: format!("Failed to flush Kafka producer: {}", e),
-            })?;
-
-        effect_handler.info("Kafka exporter stopped").await;
-        Ok(TerminalState::default())
     }
 }
 

@@ -524,6 +524,25 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
             );
         }
 
+        // Validate the request timeout. `timeout_ms` is assigned to librdkafka's
+        // `message.timeout.ms`, where a value of `0` means an *infinite* delivery
+        // timeout. Because the exporter awaits each delivery inline, an infinite
+        // (or unreasonably large) timeout would let a broker outage block the
+        // main loop from ever servicing the Shutdown control message. Reject `0`
+        // and anything above `MAX_TIMEOUT_MS` so shutdown always stays bounded.
+        if builder.timeout_ms == 0 {
+            return Err(
+                "timeout_ms must be > 0; a value of 0 sets message.timeout.ms to infinite in \
+                 librdkafka and can prevent the exporter from shutting down"
+                    .to_string(),
+            );
+        }
+        if builder.timeout_ms > MAX_TIMEOUT_MS {
+            return Err(format!(
+                "timeout_ms must be <= {MAX_TIMEOUT_MS} (30s); larger values can delay shutdown"
+            ));
+        }
+
         // Validate topic names for each configured signal
         if let Some(ref signal) = builder.traces {
             validate_kafka_topic(&signal.topic).map_err(|e| format!("traces.topic: {e}"))?;
@@ -694,6 +713,13 @@ impl KafkaExporterConfig {
 }
 
 // ---- Default functions for serde ----
+
+/// Maximum accepted `timeout_ms` (30 seconds).
+///
+/// `timeout_ms` maps to librdkafka's `message.timeout.ms`. Values above this
+/// ceiling (and `0`, which librdkafka interprets as infinite) are rejected at
+/// config validation time so the exporter's shutdown path always stays bounded.
+pub(crate) const MAX_TIMEOUT_MS: u64 = 30_000;
 
 /// Default timeout in milliseconds.
 fn default_timeout_ms() -> u64 {
@@ -981,6 +1007,41 @@ mod tests {
             .with_metrics(SignalConfig::new("m".into(), MessageFormat::OtlpProto))
             .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
         assert!(KafkaExporterConfig::try_from(builder).is_ok());
+    }
+
+    #[test]
+    fn test_try_from_zero_timeout_fails() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(0);
+        let err = KafkaExporterConfig::try_from(builder).unwrap_err();
+        assert!(err.contains("timeout_ms"));
+    }
+
+    #[test]
+    fn test_try_from_excessive_timeout_fails() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(MAX_TIMEOUT_MS + 1);
+        let err = KafkaExporterConfig::try_from(builder).unwrap_err();
+        assert!(err.contains("timeout_ms"));
+    }
+
+    #[test]
+    fn test_try_from_max_timeout_succeeds() {
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto))
+            .with_timeout_ms(MAX_TIMEOUT_MS);
+        assert!(KafkaExporterConfig::try_from(builder).is_ok());
+    }
+
+    #[test]
+    fn test_try_from_default_timeout_succeeds() {
+        // The serde default (5000) must remain valid.
+        let builder = KafkaExporterConfigBuilder::new("kafka:9092", "test")
+            .with_logs(SignalConfig::new("l".into(), MessageFormat::OtlpProto));
+        let config = KafkaExporterConfig::try_from(builder).unwrap();
+        assert_eq!(config.timeout_ms(), 5000);
     }
 
     #[test]
