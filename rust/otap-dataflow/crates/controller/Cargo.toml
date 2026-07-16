@@ -27,12 +27,22 @@ otap-df-admin = { workspace = true }
 sysinfo = { workspace = true }
 thiserror = { workspace = true }
 miette = { workspace = true }
+bytes = { workspace = true }
 core_affinity = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 smallvec = { workspace = true }
 chrono = { workspace = true }
+futures-util = { workspace = true }
+prost = { workspace = true }
 serde_json = { workspace = true }
 serde = { workspace = true }
+tokio-tungstenite = { workspace = true }
 humantime-serde = { workspace = true }
 linkme = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+axum = { workspace = true }
+otap-df-test-net = { workspace = true }

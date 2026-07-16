@@ -852,7 +852,6 @@ mod test {
     use otap_df_telemetry::reporter::MetricsReporter;
 
     use parking_lot::lock_api::Mutex;
-    use portpicker::pick_unused_port;
     use prost::Message;
     use tokio::runtime::Runtime;
     use tokio_util::sync::CancellationToken;
@@ -1108,7 +1107,7 @@ mod test {
 
         otap_df_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = pick_unused_port().expect("no free port available");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
 
         let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
@@ -1431,7 +1430,7 @@ mod test {
 
     #[test]
     fn test_exports_otlp_signals() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1556,7 +1555,7 @@ mod test {
     }
 
     fn run_error_status_code_test(status: u16, retryable: bool) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1645,7 +1644,7 @@ mod test {
 
     #[test]
     fn test_handles_connection_refused_errors() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1722,7 +1721,7 @@ mod test {
 
     #[test]
     fn test_handles_partial_success() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1818,7 +1817,7 @@ mod test {
 
     #[test]
     fn test_handles_response_body_too_large() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1931,7 +1930,7 @@ mod test {
 
     #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2015,7 +2014,7 @@ mod test {
 
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2101,7 +2100,7 @@ mod test {
 
     #[test]
     fn test_export_otap_signals() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2216,15 +2215,15 @@ mod test {
 
     #[test]
     pub fn test_uses_endpoint_overrides_if_provided() {
-        let logs_port = pick_unused_port().unwrap();
+        let logs_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let logs_endpoint_addr = format!("127.0.0.1:{}", logs_port);
         let logs_endpoint = format!("http://{logs_endpoint_addr}/v1/logs");
 
-        let metrics_port = pick_unused_port().unwrap();
+        let metrics_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let metrics_endpoint_addr = format!("127.0.0.1:{}", metrics_port);
         let metrics_endpoint = format!("http://{metrics_endpoint_addr}/v1/metrics");
 
-        let traces_port = pick_unused_port().unwrap();
+        let traces_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let traces_endpoint_addr = format!("127.0.0.1:{}", traces_port);
         let traces_endpoint = format!("http://{traces_endpoint_addr}/v1/traces");
 
@@ -2317,7 +2316,7 @@ mod test {
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
     ) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("https://localhost:{port}");
 
@@ -2421,7 +2420,7 @@ mod test {
         expected_err_content: &'static str,
         expect_permanent_nack: bool,
     ) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("https://localhost:{port}");
 
@@ -3005,7 +3004,7 @@ mod test {
         let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
         client.write_to_dir(path, "client");
 
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint = format!("https://localhost:{port}");
 
         let config = Config {
@@ -3060,7 +3059,7 @@ mod test {
         let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
         client.write_to_dir(path, "client");
 
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint = format!("https://localhost:{port}");
 
         let config = Config {
@@ -3143,7 +3142,7 @@ mod test {
         compression: Option<otap_df_otap::compression::CompressionMethod>,
         expected_encoding: Option<&'static str>,
     ) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 

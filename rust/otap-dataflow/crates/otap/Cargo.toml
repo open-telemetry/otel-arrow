@@ -97,7 +97,7 @@ azure = ["object_store/azure", "object_store/cloud", "dep:azure_identity", "dep:
 aws = ["object_store/aws", "object_store/cloud"]
 
 [dev-dependencies]
-portpicker.workspace = true
+otap-df-test-net.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 tokio-util.workspace = true

@@ -31,6 +31,7 @@ path = "src/main.rs"
 
 [dependencies]
 otap-df-config.workspace = true
+otap-df-contrib-extensions.workspace = true
 otap-df-contrib-nodes.workspace = true
 otap-df-controller.workspace = true
 otap-df-core-nodes.workspace = true
@@ -50,6 +51,7 @@ otap-df-admin-types = { path = "crates/admin-types" }
 otap-df-pdata-otlp-macros = { path = "./crates/pdata/src/otlp/macros"}
 otap-df-pdata-otlp-model = { path = "./crates/pdata/src/otlp/model"}
 otap-df-config = { path = "crates/config" }
+otap-df-contrib-extensions = { path = "crates/contrib-extensions" }
 otap-df-contrib-nodes = { path = "crates/contrib-nodes" }
 otap-df-control-channel = { path = "crates/control-channel" }
 otap-df-controller = { path = "crates/controller" }
@@ -57,6 +59,7 @@ otap-df-core-nodes = { path = "crates/core-nodes" }
 otap-df-engine = { path = "crates/engine" }
 otap-df-otap = { path = "crates/otap" }
 otap-test-tls-certs = { package = "otap-df-test-tls-certs", path = "crates/otap-test-tls-certs" }
+otap-df-test-net = { path = "crates/otap-test-net" }
 otap-df-pdata = { path = "crates/pdata" }
 otap-df-pdata-views = { path = "crates/pdata-views" }
 otap-df-telemetry = { path = "crates/telemetry" }
@@ -78,7 +81,7 @@ arrow-select = { version = "58.3" }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
-axum = "0.8.4"
+axum = { version = "0.8.4", features = ["ws"] }
 base64 = "0.22.1"
 bitflags = "2.10"
 bytes = "1.11.1"
@@ -100,6 +103,7 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
+futures-util = "0.3.32"
 futures-timer = "3.0.3"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
@@ -107,6 +111,7 @@ http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
 iso8601 = "0.6.3"
+insta = { version = "1.44", features = ["redactions"] }
 itoa = "1"
 itertools = "0.15.0"
 k8s-openapi = { version = "0.28.0", features = ["latest"] }
@@ -114,8 +119,7 @@ kube = {version = "4.0.0", features = ["derive"] }
 linkme = "0.3.35"
 local-sync = "0.1.1"
 miette = { version="7.6.0", features = ["fancy"] }
-mimalloc = { version = "0.1.48", features = ["extended", "v3", "debug"] }
-libmimalloc-sys = { version = "0.1.44", features = ["extended", "v3"] }
+mimalloc = { version = "0.1.52", features = ["extended", "debug"] }
 tikv-jemallocator = { version = "0.7.0" }
 tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 tikv-jemalloc-sys = "0.7.0"
@@ -146,7 +150,6 @@ paste = "1"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
 pest = "2.8"
 pest_derive = "2.8"
-portpicker = "0.1.1"
 pretty_assertions = "1.4.1"
 proc-macro2 = "1.0"
 prometheus = "0.14.0"
@@ -169,6 +172,7 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
+serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 crc32fast = "1.4.2"
 replace_with = "0.1.8"
@@ -185,6 +189,7 @@ thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false }
 tokio = { version = "1.48.0", features = ["rt", "time", "net", "io-util", "sync", "macros", "rt-multi-thread", "fs", "io-std", "process", "signal"] }
+tokio-tungstenite = { version = "0.29.0" }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
 tonic = { version = "0.14", default-features = false, features = [
@@ -208,19 +213,21 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "ab9567f42896343abac635d7823c73ae368ffe8c" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
+clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
+clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
-one_collect = "0.1.34532"
+one_collect = "0.1.34811"
 
 azure_core = {version = "1.0.0", default-features = false }
 azure_identity = {version = "1.0.0", default-features = false }
@@ -230,7 +237,7 @@ flate2 = "1.1.5"
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = ">=0.3.47, <0.3.52"
+time = ">=0.3.47, <0.3.54"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -257,7 +264,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "66bfea4e84253996965c708c23a6eb38b0d848aa" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "c0a28d7541afd51dc763b7dea3458ebb3aee4d52" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }
@@ -297,11 +304,20 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 # Contrib exporters (opt-in) - now in contrib-nodes
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
-azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# The Azure Monitor exporter requires the Azure Identity auth extension to
+# authenticate outbound requests, so enabling it pulls in that extension.
+azure-monitor-exporter = [
+    "otap-df-contrib-nodes/azure-monitor-exporter",
+    "azure-identity-auth-extension",
+]
+# Contrib extensions (opt-in) - in contrib-extensions
+contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
+azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
+clickhouse-exporter = ["otap-df-contrib-nodes/clickhouse-exporter"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
