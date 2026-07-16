@@ -304,7 +304,12 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 # Contrib exporters (opt-in) - now in contrib-nodes
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
-azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# The Azure Monitor exporter requires the Azure Identity auth extension to
+# authenticate outbound requests, so enabling it pulls in that extension.
+azure-monitor-exporter = [
+    "otap-df-contrib-nodes/azure-monitor-exporter",
+    "azure-identity-auth-extension",
+]
 # Contrib extensions (opt-in) - in contrib-extensions
 contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
