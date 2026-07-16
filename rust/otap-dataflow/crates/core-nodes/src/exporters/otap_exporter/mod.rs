@@ -196,6 +196,13 @@ fn validate_config(config: &Value) -> Result<(), otap_df_config::error::Error> {
     Ok(())
 }
 
+enum EnqueueResult {
+    Done,
+    /// The stream queue was full. The caller should wait for capacity while
+    /// continuing to poll the control channel, then retry.
+    QueueFull(StreamBatch, Instant),
+}
+
 impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
@@ -296,63 +303,30 @@ impl OTAPExporter {
         sender: &Sender<StreamBatch>,
         pdata: OtapPdata,
         message: OtapArrowRecords,
-        pdata_metrics_rx: &mut Receiver<PDataMetricsUpdate>,
-        effect_handler: &local::EffectHandler<OtapPdata>,
-    ) -> Result<(), Error> {
+    ) -> Result<EnqueueResult, Error> {
         let queue_depth = sender.max_capacity() - sender.capacity();
         self.async_metrics
             .stream_enqueue_depth
             .record(queue_depth as f64);
         let enqueue_start = Instant::now();
-        let mut pending = Some((pdata, message));
 
-        loop {
-            let item = pending
-                .take()
-                .expect("stream enqueue loop must retain the pending batch");
-            match sender.try_send(item) {
-                Ok(()) => {
-                    self.async_metrics
-                        .stream_enqueue_duration_ns
-                        .record(elapsed_nanos(enqueue_start));
-                    return Ok(());
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => {
-                    pending = Some(item);
-                }
-                Err(tokio::sync::mpsc::error::TrySendError::Closed(_item)) => {
-                    self.async_metrics
-                        .stream_enqueue_duration_ns
-                        .record(elapsed_nanos(enqueue_start));
-                    return Ok(());
-                }
+        match sender.try_send((pdata, message)) {
+            Ok(()) => {
+                self.async_metrics
+                    .stream_enqueue_duration_ns
+                    .record(elapsed_nanos(enqueue_start));
+                Ok(EnqueueResult::Done)
             }
-
-            tokio::select! {
-                permit = sender.reserve() => {
-                    match permit {
-                        Ok(permit) => {
-                            permit.send(pending
-                                .take()
-                                .expect("stream enqueue reserve must retain the pending batch"));
-                            self.async_metrics
-                                .stream_enqueue_duration_ns
-                                .record(elapsed_nanos(enqueue_start));
-                            return Ok(());
-                        }
-                        Err(_) => {
-                            self.async_metrics
-                                .stream_enqueue_duration_ns
-                                .record(elapsed_nanos(enqueue_start));
-                            return Ok(());
-                        }
-                    }
-                }
-                metrics_update = pdata_metrics_rx.recv() => {
-                    if let Some(update) = metrics_update {
-                        self.handle_pdata_metrics_update(update, effect_handler).await?;
-                    }
-                }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => {
+                // Queue is full — return to caller so it can wait for capacity
+                // while still polling the control channel in the main select.
+                Ok(EnqueueResult::QueueFull(item, enqueue_start))
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.async_metrics
+                    .stream_enqueue_duration_ns
+                    .record(elapsed_nanos(enqueue_start));
+                Ok(EnqueueResult::Done)
             }
         }
     }
@@ -540,9 +514,33 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
         );
 
         // Loop until a Shutdown event is received.
+        let mut pending: Option<(Sender<StreamBatch>, StreamBatch, Instant)> = None;
         loop {
+            let pending_sender_inner = pending.as_ref().map(|(sender, _, _)| sender.clone());
+            let pending_send_promise = match pending_sender_inner.as_ref() {
+                Some(sender) => futures::future::Either::Left(sender.reserve()),
+                None => futures::future::Either::Right(std::future::pending()),
+            };
+
             tokio::select! {
-                msg = msg_chan.recv() => match msg? {
+                permit = pending_send_promise => {
+                    match permit {
+                        Ok(permit) => {
+                            let (_, item, enqueue_start) = pending.take().expect("pending batch retained");
+                            self.async_metrics
+                                .stream_enqueue_duration_ns
+                                .record(elapsed_nanos(enqueue_start));
+                            permit.send(item);
+                        }
+                        Err(_) => {
+                            let (_, _, enqueue_start) = pending.take().expect("pending batch retained");
+                            self.async_metrics
+                                .stream_enqueue_duration_ns
+                                .record(elapsed_nanos(enqueue_start));
+                        }
+                    }
+                }
+                msg = msg_chan.recv_when(pending.is_none()) => match msg? {
                     // handle control messages
                     Message::Control(NodeControlMsg::TimerTick { .. })
                     | Message::Control(NodeControlMsg::Config { .. }) => {}
@@ -610,14 +608,16 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             SignalType::Metrics => least_loaded_stream_sender(&metrics_senders),
                             SignalType::Traces => least_loaded_stream_sender(&traces_senders),
                         };
-                        self.enqueue_stream_batch(
-                            sender,
-                            pdata,
-                            message,
-                            &mut pdata_metrics_rx,
-                            &effect_handler,
-                        )
-                        .await?;
+
+                        // Try to enqueue. If the stream queue is full, store the item
+                        // as pending. In the next iteration, we will wait for capacity
+                        // while continuing to poll the control channel.
+                        if let EnqueueResult::QueueFull(item, enqueue_start) = self
+                            .enqueue_stream_batch(sender, pdata, message)
+                            .await?
+                        {
+                            pending = Some((sender.clone(), item, enqueue_start));
+                        }
                     }
                     _ => {
                         return Err(Error::ExporterError {
