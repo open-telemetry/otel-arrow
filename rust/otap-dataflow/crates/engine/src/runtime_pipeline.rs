@@ -30,7 +30,7 @@ use crate::pipeline_ctrl::{
     snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
@@ -141,8 +141,15 @@ pub struct RuntimePipeline<PData: Debug> {
     telemetry_policy: TelemetryPolicy,
 }
 
-async fn flush_metrics_reporter(metrics_reporter: &MetricsReporter, phase: &'static str) {
-    if let Err(err) = metrics_reporter.flush().await {
+async fn flush_metrics_reporter(
+    metrics_reporter: &MetricsReporter,
+    phase: &'static str,
+    terminal_metrics_deadline: &TerminalMetricsDeadline,
+) {
+    if let Err(err) = metrics_reporter
+        .flush_until(terminal_metrics_deadline.get())
+        .await
+    {
         otap_df_telemetry::otel_warn!(
             "metrics.collection.flush.fail",
             phase,
@@ -155,13 +162,15 @@ async fn flush_metrics_reporter(metrics_reporter: &MetricsReporter, phase: &'sta
 pub(crate) async fn report_terminal_metrics(
     metrics_reporter: &MetricsReporter,
     terminal_state: TerminalState,
+    terminal_metrics_deadline: &TerminalMetricsDeadline,
 ) {
     let deadline = terminal_state.deadline();
+    terminal_metrics_deadline.record(deadline);
     report_metric_snapshots(
         metrics_reporter,
         terminal_state.into_metrics(),
         "terminal",
-        deadline,
+        terminal_metrics_deadline.get(),
     )
     .await;
 }
@@ -368,10 +377,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // from `start()` via `EffectHandler::signal_ready()`. The engine
         // awaits the registered probes via `wait_all_ready` before
         // spawning data-path tasks.
+        let terminal_metrics_deadline = TerminalMetricsDeadline::default();
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
             &local_tasks,
             metrics_reporter.clone(),
+            terminal_metrics_deadline.clone(),
             &ext_ctx,
             ext_monitor,
         );
@@ -462,6 +473,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let exporter_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let fut = async move {
                 match exporter
                     .start_with_completion_metrics(
@@ -474,11 +486,21 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .await
                 {
                     Ok(terminal_state) => {
-                        report_terminal_metrics(&final_metrics_reporter, terminal_state).await;
+                        report_terminal_metrics(
+                            &final_metrics_reporter,
+                            terminal_state,
+                            &exporter_terminal_metrics_deadline,
+                        )
+                        .await;
                         Ok(())
                     }
                     Err(err) => {
-                        flush_metrics_reporter(&final_metrics_reporter, "terminal_error").await;
+                        flush_metrics_reporter(
+                            &final_metrics_reporter,
+                            "terminal_error",
+                            &exporter_terminal_metrics_deadline,
+                        )
+                        .await;
                         Err(err)
                     }
                 }
@@ -525,6 +547,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             // Extract flow metric roles for this processor node.
             let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
             let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
@@ -578,9 +601,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_signals_dropped_metric,
                         flow_active,
                         flow_needs_timing,
+                        processor_terminal_metrics_deadline.clone(),
                     )
                     .await;
-                flush_metrics_reporter(&final_metrics_reporter, "terminal").await;
+                flush_metrics_reporter(
+                    &final_metrics_reporter,
+                    "terminal",
+                    &processor_terminal_metrics_deadline,
+                )
+                .await;
                 result
             };
             if let Some(handle) = telemetry_handle {
@@ -617,6 +646,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let fut = async move {
                 match receiver
                     .start(
@@ -628,11 +658,21 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     .await
                 {
                     Ok(terminal_state) => {
-                        report_terminal_metrics(&final_metrics_reporter, terminal_state).await;
+                        report_terminal_metrics(
+                            &final_metrics_reporter,
+                            terminal_state,
+                            &receiver_terminal_metrics_deadline,
+                        )
+                        .await;
                         Ok(())
                     }
                     Err(err) => {
-                        flush_metrics_reporter(&final_metrics_reporter, "terminal_error").await;
+                        flush_metrics_reporter(
+                            &final_metrics_reporter,
+                            "terminal_error",
+                            &receiver_terminal_metrics_deadline,
+                        )
+                        .await;
                         Err(err)
                     }
                 }
@@ -680,9 +720,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let manager_metrics_reporter = metrics_reporter.clone();
         let manager_telemetry_policy = telemetry_policy.clone();
         let manager_memory_pressure_rx = memory_pressure_rx;
+        let manager_terminal_metrics_deadline = terminal_metrics_deadline.clone();
         let dispatcher_pipeline_context = pipeline_context.clone();
         let dispatcher_metrics_reporter = metrics_reporter.clone();
         let dispatcher_telemetry_policy = telemetry_policy.clone();
+        let dispatcher_terminal_metrics_deadline = terminal_metrics_deadline.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
@@ -696,6 +738,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 manager_telemetry_policy,
                 channel_metrics,
                 node_metric_handles,
+                manager_terminal_metrics_deadline,
             );
             manager.run().await
         }));
@@ -709,6 +752,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 dispatcher_metrics_reporter,
                 control_plane_metrics_flush_interval,
                 dispatcher_telemetry_policy,
+                dispatcher_terminal_metrics_deadline,
             );
             dispatcher.run().await
         }));
@@ -784,7 +828,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     extension_lifecycle
                         .monitor_tick(std::time::Instant::now(), &mut final_monitor_reporter);
                     if let Err(err) = extension_lifecycle
-                        .finish_metrics_reporting(&final_monitor_reporter)
+                        .finish_metrics_reporting_until(
+                            &final_monitor_reporter,
+                            terminal_metrics_deadline.get(),
+                        )
                         .await
                     {
                         otap_df_telemetry::otel_warn!(
@@ -806,7 +853,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         &final_metrics_reporter,
                         final_snapshots,
                         "pipeline_final",
-                        std::time::Instant::now() + Duration::from_secs(5),
+                        terminal_metrics_deadline.get(),
                     )
                     .await;
 
@@ -968,6 +1015,7 @@ mod tests {
         report_terminal_metrics(
             &reporter,
             TerminalState::new(std::time::Instant::now(), [metric_set.snapshot()]),
+            &TerminalMetricsDeadline::default(),
         )
         .await;
 

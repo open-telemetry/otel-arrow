@@ -288,6 +288,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
             interval
         });
         let mut logs_channel_open = true;
+        let mut pending_metric_export = None;
 
         loop {
             tokio::select! {
@@ -297,6 +298,11 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                 ctrl_msg = ctrl_msg_recv.recv() => {
                     match ctrl_msg {
                         Ok(NodeControlMsg::DrainIngress { deadline, .. }) => {
+                            // Cancel an interval export that may be waiting on a
+                            // full downstream channel. Dropping its transaction
+                            // restores the drained values before the bounded
+                            // terminal attempt below.
+                            drop(pending_metric_export.take());
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
                                     if let Some(log_tap) = log_tap.as_ref() {
@@ -315,6 +321,7 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
+                            drop(pending_metric_export.take());
                             // Drain any remaining logs from channel before shutdown
                             while let Ok(event) = logs_receiver.try_recv() {
                                 if let ObservedEvent::Log(log_event) = event {
@@ -344,13 +351,23 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                     }
                 }
 
+                result = async {
+                    pending_metric_export
+                        .as_mut()
+                        .expect("metric export branch requires an in-flight export")
+                        .await
+                }, if pending_metric_export.is_some() => {
+                    pending_metric_export = None;
+                    result?;
+                }
+
                 // Drain and emit registry metrics at the configured cold-path interval.
-                _ = Self::next_metrics_tick(&mut metrics_interval) => {
-                    Self::send_metric_batch(
+                _ = Self::next_metrics_tick(&mut metrics_interval), if pending_metric_export.is_none() => {
+                    pending_metric_export = Some(Box::pin(Self::send_metric_batch(
                         &effect_handler,
                         &registry,
                         metrics_encoder.as_ref(),
-                    ).await?;
+                    )));
                 }
 
                 // Receive logs from the channel
@@ -703,6 +720,87 @@ mod tests {
                 retry.metric_sets[0].values,
                 vec![otap_df_telemetry::metrics::MetricValue::U64(9)]
             );
+        }));
+    }
+
+    #[test]
+    fn shutdown_interrupts_periodic_metric_export_blocked_by_downstream_backpressure() {
+        let (runtime, local_tasks) = setup_test_runtime();
+        runtime.block_on(local_tasks.run_until(async move {
+            let registry = TelemetryRegistryHandle::new();
+            let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
+                registry.register_metric_set(EmptyAttributes());
+            registry.accumulate_metric_set_snapshot(
+                metric_set.metric_set_key(),
+                &[otap_df_telemetry::metrics::MetricValue::U64(9)],
+            );
+
+            let (logs_sender, logs_receiver) = flume::bounded(1);
+            let receiver = InternalTelemetryReceiver::new_with_telemetry(
+                Config {
+                    metrics: MetricsConfig {
+                        interval: Some(Duration::from_millis(10)),
+                        views: Vec::new(),
+                    },
+                },
+                otap_df_telemetry::InternalTelemetrySettings {
+                    logs_receiver,
+                    resource_bytes: ResourceLogs::default().encode_to_vec().into(),
+                    registry: registry.clone(),
+                    metrics_interval: Some(Duration::from_millis(10)),
+                    log_tap: None,
+                },
+            );
+
+            let (output_tx, output_rx) = create_not_send_channel(1);
+            output_tx
+                .send(OtapPdata::new(
+                    Context::default(),
+                    OtlpProtoBytes::ExportMetricsRequest(Bytes::new()).into(),
+                ))
+                .expect("downstream blocker should enqueue");
+            let mut outputs = HashMap::new();
+            let _ = outputs.insert("".into(), EngineSender::Local(LocalSender::mpsc(output_tx)));
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+            let effect_handler = local::EffectHandler::new(
+                test_node("internal_telemetry_receiver"),
+                outputs,
+                None,
+                runtime_ctrl_tx,
+                metrics_reporter,
+            );
+
+            let (ctrl_tx, ctrl_rx) = create_not_send_channel::<NodeControlMsg<OtapPdata>>(1);
+            let ctrl_channel =
+                local::ControlChannel::new(EngineReceiver::Local(LocalReceiver::mpsc(ctrl_rx)));
+            let receiver_task = tokio::task::spawn_local(async move {
+                Box::new(receiver).start(ctrl_channel, effect_handler).await
+            });
+
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            ctrl_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: StdInstant::now() + Duration::from_millis(100),
+                    reason: "test shutdown".to_owned(),
+                })
+                .expect("shutdown control should enqueue");
+
+            let result = tokio::time::timeout(Duration::from_millis(500), receiver_task)
+                .await
+                .expect("shutdown must interrupt the blocked periodic export")
+                .expect("receiver task should join");
+            assert!(result.is_err(), "the bounded final export should time out");
+
+            let retry = registry.drain_metric_export_batch();
+            assert_eq!(retry.metric_sets.len(), 1);
+            assert_eq!(
+                retry.metric_sets[0].values,
+                vec![otap_df_telemetry::metrics::MetricValue::U64(9)]
+            );
+
+            drop(output_rx);
+            drop(logs_sender);
         }));
     }
 

@@ -2669,7 +2669,7 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     );
     register_runtime_instance_with_sender(
         &runtime,
-        observability_key,
+        observability_key.clone(),
         observability_sender,
         RuntimeInstanceLifecycle::Active,
     );
@@ -2721,6 +2721,12 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
         deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(4),
         "observability should receive the caller's five-second shutdown budget"
     );
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(
+        runtime.wait_for_global_shutdown_completion(),
+        "the phased shutdown coordinator should complete after observability exits"
+    );
+    assert!(runtime.all_instances_exited());
 
     runtime
         .request_shutdown_all(5)
@@ -2750,7 +2756,7 @@ fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
     );
     register_runtime_instance_with_sender(
         &runtime,
-        observability_key,
+        observability_key.clone(),
         observability_sender,
         RuntimeInstanceLifecycle::Active,
     );
@@ -2775,6 +2781,9 @@ fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
     let _ = observability_notifications
         .recv_timeout(Duration::from_secs(1))
         .expect("observability should stop once the producer has exited");
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline

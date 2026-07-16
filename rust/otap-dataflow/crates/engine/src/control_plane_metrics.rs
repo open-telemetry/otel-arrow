@@ -724,7 +724,10 @@ impl RuntimeControlMetricsState {
     }
 
     /// Performs the actor's final reliable handoff before its registered key is dropped.
-    pub(crate) async fn finish_reporting(&mut self) -> Result<(), TelemetryError> {
+    pub(crate) async fn finish_reporting_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
         if self.metrics.is_none() {
             return Ok(());
         }
@@ -736,11 +739,16 @@ impl RuntimeControlMetricsState {
                 .expect("metrics presence checked above")
                 .metrics
                 .snapshot();
-            if self.reporter.report_snapshot_reliably(snapshot).await? == ReportOutcome::Sent {
+            if self
+                .reporter
+                .report_snapshot_reliably_until(snapshot, deadline)
+                .await?
+                == ReportOutcome::Sent
+            {
                 self.dirty = false;
             }
         }
-        self.reporter.flush().await
+        self.reporter.flush_until(deadline).await
     }
 }
 
@@ -950,7 +958,10 @@ impl PipelineCompletionMetricsState {
     }
 
     /// Performs the actor's final reliable handoff before its registered key is dropped.
-    pub(crate) async fn finish_reporting(&mut self) -> Result<(), TelemetryError> {
+    pub(crate) async fn finish_reporting_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
         if self.metrics.is_none() {
             return Ok(());
         }
@@ -962,10 +973,15 @@ impl PipelineCompletionMetricsState {
                 .expect("metrics presence checked above")
                 .metrics
                 .snapshot();
-            if self.reporter.report_snapshot_reliably(snapshot).await? == ReportOutcome::Sent {
+            if self
+                .reporter
+                .report_snapshot_reliably_until(snapshot, deadline)
+                .await?
+                == ReportOutcome::Sent
+            {
                 self.dirty = false;
             }
         }
-        self.reporter.flush().await
+        self.reporter.flush_until(deadline).await
     }
 }

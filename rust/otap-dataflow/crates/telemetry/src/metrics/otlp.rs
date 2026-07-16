@@ -78,8 +78,11 @@
 //! Aggregation and reset policy intentionally remain in the registry rather
 //! than in this encoder. During an atomic drain, delta sums and histograms are
 //! reset, cumulative sums and gauges retain their latest values, and the next
-//! delta window begins. The encoder only performs the owned, lock-free
-//! projection described above.
+//! delta window begins. Multiple registered metric-set keys can still resolve
+//! to the same descriptor and entity attributes. Before projection, the
+//! encoder coalesces those keys into one OTLP stream identity, adding sums and
+//! histograms and retaining the last gauge value. The work remains owned and
+//! lock-free.
 //!
 //! OTLP integer data points are signed `i64`, whereas internal counters can be
 //! `u64`. Values above `i64::MAX` are saturated instead of wrapping. Attribute
@@ -272,6 +275,28 @@ type ProjectedSources<'a> = SmallVec<[ProjectedStream<'a>; 1]>;
 type ScopeStreams<'a> = HashMap<CaseInsensitiveName<'a>, ProjectedSources<'a>>;
 type CollisionIndex<'a> = HashMap<ScopeIdentity, ScopeStreams<'a>>;
 
+/// Exact source identity that must become one OTLP instrumentation scope.
+#[derive(Hash, PartialEq, Eq)]
+struct MetricSetIdentity {
+    descriptor: usize,
+    attributes: usize,
+}
+
+/// Avoids cloning the common case where a source identity occurs only once.
+enum CoalescedMetricSet<'a> {
+    Borrowed(&'a MetricSetExport),
+    Owned(MetricSetExport),
+}
+
+impl CoalescedMetricSet<'_> {
+    fn as_metric_set(&self) -> &MetricSetExport {
+        match self {
+            Self::Borrowed(metric_set) => metric_set,
+            Self::Owned(metric_set) => metric_set,
+        }
+    }
+}
+
 impl MetricsOtlpEncoder {
     /// Creates an encoder from the resource fragment shared with internal logs.
     ///
@@ -301,28 +326,24 @@ impl MetricsOtlpEncoder {
 
     /// Encodes a registry export batch. Empty batches produce no pdata.
     pub fn encode(&self, batch: &MetricExportBatch) -> Result<Option<OtlpProtoBytes>, Error> {
-        let mut scope_metrics = Vec::with_capacity(batch.metric_sets.len());
-        if self.views.is_empty() {
-            for metric_set in &batch.metric_sets {
-                if let Some(scope) =
-                    encode_metric_set_without_views(metric_set, batch.time_unix_nano)?
-                {
-                    scope_metrics.push(scope);
-                }
-            }
+        let scope_metrics = if batch
+            .metric_sets
+            .iter()
+            .any(|metric_set| metric_set.identity_may_repeat)
+        {
+            let metric_sets = coalesce_metric_sets(&batch.metric_sets)?;
+            self.encode_metric_sets(
+                metric_sets.iter().map(CoalescedMetricSet::as_metric_set),
+                metric_sets.len(),
+                batch.time_unix_nano,
+            )?
         } else {
-            let mut collisions = CollisionIndex::with_capacity(batch.metric_sets.len());
-            for metric_set in &batch.metric_sets {
-                if let Some(scope) = encode_metric_set_with_views(
-                    metric_set,
-                    batch.time_unix_nano,
-                    &self.views,
-                    &mut collisions,
-                )? {
-                    scope_metrics.push(scope);
-                }
-            }
-        }
+            self.encode_metric_sets(
+                batch.metric_sets.iter(),
+                batch.metric_sets.len(),
+                batch.time_unix_nano,
+            )?
+        };
 
         if scope_metrics.is_empty() {
             return Ok(None);
@@ -334,6 +355,116 @@ impl MetricsOtlpEncoder {
         Ok(Some(OtlpProtoBytes::ExportMetricsRequest(Bytes::from(
             request.encode_to_vec(),
         ))))
+    }
+
+    fn encode_metric_sets<'a>(
+        &self,
+        metric_sets: impl Iterator<Item = &'a MetricSetExport>,
+        metric_set_count: usize,
+        time_unix_nano: u64,
+    ) -> Result<Vec<ScopeMetrics>, Error> {
+        let mut scope_metrics = Vec::with_capacity(metric_set_count);
+        if self.views.is_empty() {
+            for metric_set in metric_sets {
+                if let Some(scope) = encode_metric_set_without_views(metric_set, time_unix_nano)? {
+                    scope_metrics.push(scope);
+                }
+            }
+        } else {
+            let mut collisions = CollisionIndex::with_capacity(metric_set_count);
+            for metric_set in metric_sets {
+                if let Some(scope) = encode_metric_set_with_views(
+                    metric_set,
+                    time_unix_nano,
+                    &self.views,
+                    &mut collisions,
+                )? {
+                    scope_metrics.push(scope);
+                }
+            }
+        }
+        Ok(scope_metrics)
+    }
+}
+
+/// Coalesces independently registered keys that map to the same OTLP scope.
+///
+/// Separate keys represent separate producers. Their sum-like values and
+/// histograms therefore contribute to the same aggregate regardless of
+/// temporality, while gauges use deterministic last-value semantics matching
+/// registry iteration order.
+fn coalesce_metric_sets(
+    metric_sets: &[MetricSetExport],
+) -> Result<Vec<CoalescedMetricSet<'_>>, Error> {
+    if metric_sets.len() <= 1 {
+        if let Some(metric_set) = metric_sets.first() {
+            validate_metric_set(metric_set)?;
+        }
+        return Ok(metric_sets
+            .first()
+            .map(CoalescedMetricSet::Borrowed)
+            .into_iter()
+            .collect());
+    }
+
+    let mut identities = HashMap::with_capacity(metric_sets.len());
+    let mut coalesced = Vec::with_capacity(metric_sets.len());
+    for metric_set in metric_sets {
+        validate_metric_set(metric_set)?;
+        let identity = MetricSetIdentity {
+            descriptor: std::ptr::from_ref(metric_set.descriptor) as usize,
+            // Registry entity attributes are interned, so equal attribute
+            // sets in a registry batch share this allocation.
+            attributes: Arc::as_ptr(&metric_set.attributes) as usize,
+        };
+        if let Some(&index) = identities.get(&identity) {
+            let target = &mut coalesced[index];
+            if let CoalescedMetricSet::Borrowed(original) = target {
+                *target = CoalescedMetricSet::Owned((*original).clone());
+            }
+            let CoalescedMetricSet::Owned(target) = target else {
+                unreachable!("duplicate metric-set identity must be owned before merging")
+            };
+            merge_metric_set(target, metric_set);
+        } else {
+            let index = coalesced.len();
+            let _ = identities.insert(identity, index);
+            coalesced.push(CoalescedMetricSet::Borrowed(metric_set));
+        }
+    }
+    Ok(coalesced)
+}
+
+fn validate_metric_set(metric_set: &MetricSetExport) -> Result<(), Error> {
+    validate_value_count(metric_set)?;
+    for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
+        validate_value_kind(field, *value)?;
+    }
+    Ok(())
+}
+
+fn merge_metric_set(target: &mut MetricSetExport, incoming: &MetricSetExport) {
+    target.delta_start_time_unix_nano = target
+        .delta_start_time_unix_nano
+        .min(incoming.delta_start_time_unix_nano);
+    target.cumulative_start_time_unix_nano = target
+        .cumulative_start_time_unix_nano
+        .min(incoming.cumulative_start_time_unix_nano);
+
+    for ((field, current), incoming) in target
+        .descriptor
+        .metrics
+        .iter()
+        .zip(&mut target.values)
+        .zip(&incoming.values)
+    {
+        match field.instrument {
+            Instrument::Gauge => *current = *incoming,
+            Instrument::Counter
+            | Instrument::UpDownCounter
+            | Instrument::Histogram
+            | Instrument::Mmsc => current.add_in_place(*incoming),
+        }
     }
 }
 
@@ -1032,6 +1163,7 @@ mod tests {
             values,
             delta_start_time_unix_nano: DELTA_START,
             cumulative_start_time_unix_nano: CUMULATIVE_START,
+            identity_may_repeat: true,
         }
     }
 
@@ -1436,6 +1568,85 @@ mod tests {
                 .expect("non-empty request"),
         );
         assert_eq!(only_scope(&request).metrics.len(), 2);
+    }
+
+    #[test]
+    fn coalesces_duplicate_metric_set_identities_into_one_otlp_scope() {
+        let attributes = empty_attributes();
+        let first = metric_set(
+            &ALL_METRICS_DESCRIPTOR,
+            attributes.clone(),
+            vec![
+                MetricValue::U64(2),
+                MetricValue::U64(10),
+                MetricValue::F64(-1.0),
+                MetricValue::F64(3.0),
+                MetricValue::F64(4.0),
+                MetricValue::Mmsc(MmscSnapshot {
+                    min: 1.0,
+                    max: 3.0,
+                    sum: 4.0,
+                    count: 2,
+                }),
+            ],
+        );
+        let mut second = metric_set(
+            &ALL_METRICS_DESCRIPTOR,
+            attributes,
+            vec![
+                MetricValue::U64(5),
+                MetricValue::U64(20),
+                MetricValue::F64(2.0),
+                MetricValue::F64(8.0),
+                MetricValue::F64(6.0),
+                MetricValue::Mmsc(MmscSnapshot {
+                    min: 0.0,
+                    max: 5.0,
+                    sum: 8.0,
+                    count: 2,
+                }),
+            ],
+        );
+        second.delta_start_time_unix_nano = 8;
+        second.cumulative_start_time_unix_nano = 3;
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![first, second],
+        };
+
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("duplicate identities should be coalesced")
+                .expect("coalesced metrics should produce a request"),
+        );
+        let scope = only_scope(&request);
+
+        let (delta, _) = number_point(metric_named(scope, "counter.delta"));
+        assert_eq!(delta.value, Some(number_data_point::Value::AsInt(7)));
+        assert_eq!(delta.start_time_unix_nano, 8);
+
+        let (cumulative, _) = number_point(metric_named(scope, "counter.cumulative"));
+        assert_eq!(cumulative.value, Some(number_data_point::Value::AsInt(30)));
+        assert_eq!(cumulative.start_time_unix_nano, 3);
+
+        let gauge = metric_named(scope, "gauge");
+        let Some(metric::Data::Gauge(gauge)) = gauge.data.as_ref() else {
+            panic!("expected gauge metric")
+        };
+        assert_eq!(
+            gauge.data_points[0].value,
+            Some(number_data_point::Value::AsDouble(8.0))
+        );
+
+        let mmsc = metric_named(scope, "histogram.mmsc");
+        let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
+            panic!("expected histogram metric")
+        };
+        assert_eq!(histogram.data_points[0].min, Some(0.0));
+        assert_eq!(histogram.data_points[0].max, Some(5.0));
+        assert_eq!(histogram.data_points[0].sum, Some(12.0));
+        assert_eq!(histogram.data_points[0].count, 4);
     }
 
     #[test]

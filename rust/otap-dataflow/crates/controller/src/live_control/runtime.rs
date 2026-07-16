@@ -432,11 +432,17 @@ impl<
         // Producer keys include active instances whose sender was already
         // released by an earlier request because they still need to exit before
         // observability can be stopped.
-        let (mut producer_keys, mut producer_senders, mut observability_senders) = {
+        let (
+            mut producer_keys,
+            mut producer_senders,
+            mut observability_senders,
+            coordinator_reserved,
+        ) = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let coordinator_active = state.global_shutdown_coordinators > 0;
             let mut producer_keys = Vec::new();
             let mut producer_senders = Vec::new();
             let mut observability_senders = Vec::new();
@@ -450,7 +456,7 @@ impl<
                     == SYSTEM_PIPELINE_GROUP_ID
                     && deployed_key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID;
                 if is_observability {
-                    if let Some(sender) = instance.control_sender.take() {
+                    if !coordinator_active && let Some(sender) = instance.control_sender.take() {
                         // Taking the sender is the idempotence marker for the
                         // asynchronous observability-shutdown coordinator.
                         observability_senders.push((deployed_key.clone(), sender));
@@ -463,7 +469,20 @@ impl<
                 }
             }
 
-            (producer_keys, producer_senders, observability_senders)
+            let coordinator_reserved = !coordinator_active
+                && (!producer_keys.is_empty() || !observability_senders.is_empty());
+            state.global_shutdown_requested = true;
+            if coordinator_reserved {
+                state.global_shutdown_coordinators += 1;
+            }
+            self.state_changed.notify_all();
+
+            (
+                producer_keys,
+                producer_senders,
+                observability_senders,
+                coordinator_reserved,
+            )
         };
 
         let sort_key = |deployed_key: &DeployedPipelineKey| {
@@ -511,21 +530,28 @@ impl<
 
         dispatch(producer_senders, &mut failures);
 
-        if !observability_senders.is_empty() {
+        if coordinator_reserved {
             let restore_senders = observability_senders.clone();
             let runtime = Arc::clone(self);
             if let Err(error) = thread::Builder::new()
                 .name("global-observability-shutdown".to_owned())
                 .spawn(move || {
-                    runtime.complete_global_observability_shutdown(
-                        producer_keys,
-                        observability_senders,
-                        deadline,
-                        shutdown_timeout,
-                    );
+                    let completion = catch_unwind(AssertUnwindSafe(|| {
+                        runtime.complete_global_observability_shutdown(
+                            producer_keys,
+                            observability_senders,
+                            deadline,
+                            shutdown_timeout,
+                        );
+                    }));
+                    runtime.finish_global_shutdown_coordinator();
+                    if let Err(payload) = completion {
+                        std::panic::resume_unwind(payload);
+                    }
                 })
             {
                 self.restore_observability_senders(&restore_senders);
+                self.finish_global_shutdown_coordinator();
                 return Err(ControlPlaneError::Internal {
                     message: format!(
                         "failed to start global observability shutdown coordinator: {error}"
@@ -612,6 +638,7 @@ impl<
         // selected by the caller instead of collapsing that phase to one second
         // after producers have consumed their own drain budget.
         let observability_deadline = Instant::now() + shutdown_timeout;
+        let mut observability_keys = Vec::new();
         for (deployed_key, sender) in observability_senders {
             let final_error = loop {
                 match sender.try_send_shutdown(observability_deadline, "global shutdown".to_owned())
@@ -650,8 +677,57 @@ impl<
                         deployed_instance_label(&deployed_key)
                     ));
                 }
+            } else {
+                observability_keys.push(deployed_key);
             }
         }
+
+        for deployed_key in observability_keys {
+            if let Err(error) =
+                self.wait_for_global_shutdown_exit(&deployed_key, observability_deadline)
+            {
+                self.record_async_global_shutdown_failure(format!(
+                    "system observability shutdown did not complete: {error}"
+                ));
+            }
+        }
+    }
+
+    /// Marks one finite phased-shutdown coordinator complete and wakes teardown.
+    fn finish_global_shutdown_coordinator(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.global_shutdown_coordinators = state.global_shutdown_coordinators.saturating_sub(1);
+        self.state_changed.notify_all();
+    }
+
+    /// Waits for all phased global-shutdown coordinators to exhaust their finite budgets.
+    ///
+    /// Returns `true` when an engine-wide shutdown request was observed. A `false`
+    /// result lets controller teardown retain its fallback for unrelated wakeups.
+    pub(crate) fn wait_for_global_shutdown_completion(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.global_shutdown_coordinators > 0 {
+            state = self
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+        state.global_shutdown_requested
+    }
+
+    /// Returns whether every registered runtime instance has exited.
+    pub(crate) fn all_instances_exited(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances
+            == 0
     }
 
     /// Restores system observability senders if the coordinator could not start.

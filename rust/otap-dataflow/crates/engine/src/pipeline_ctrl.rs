@@ -25,6 +25,7 @@ use crate::control_plane_metrics::{PipelineCompletionMetricsState, RuntimeContro
 use crate::error::Error;
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::pipeline_metrics::PipelineMetricsMonitor;
+use crate::terminal_state::TerminalMetricsDeadline;
 use crate::{Interests, RequestOutcome, Unwindable};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::MetricLevel;
@@ -308,6 +309,8 @@ pub struct RuntimeCtrlMsgManager<PData> {
     /// LocalSet runtime.
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     runtime_control_metrics: RuntimeControlMetricsState,
+    /// One absolute deadline shared by all pipeline terminal metric handoffs.
+    terminal_metrics_deadline: TerminalMetricsDeadline,
 }
 
 impl<PData> RuntimeCtrlMsgManager<PData> {
@@ -325,6 +328,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         telemetry_policy: TelemetryPolicy,
         channel_metrics: Vec<crate::channel_metrics::ChannelMetricsHandle>,
         node_metric_handles: Rc<RefCell<Vec<Option<NodeMetricHandles>>>>,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Self {
         let mut result = Self {
             runtime_control_metrics: RuntimeControlMetricsState::new(
@@ -350,6 +354,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
             node_metric_handles,
             telemetry: telemetry_policy,
             pending_sends: VecDeque::new(),
+            terminal_metrics_deadline,
         };
 
         // Register telemetry timers for all nodes centrally, using the
@@ -478,6 +483,7 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                     consecutive_runtime_ctrl += 1;
                     match msg {
                         RuntimeControlMsg::Shutdown { deadline, reason } => {
+                            self.terminal_metrics_deadline.record(deadline);
                             if is_draining_ingress {
                                 continue;
                             }
@@ -734,12 +740,16 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         // The monitor owns registered metric-set keys. Take and reliably hand
         // off one final sample before it is dropped so a full collector channel
         // cannot turn the terminal pipeline/Tokio measurements into tombstones.
+        let terminal_metrics_deadline = self.terminal_metrics_deadline.get();
         if let Some(pipeline_metrics_monitor) = pipeline_metrics_monitor.as_mut() {
             if self.telemetry.pipeline_metrics {
                 pipeline_metrics_monitor.update_pipeline_metrics();
                 if let Err(err) = self
                     .metrics_reporter
-                    .report_reliably(pipeline_metrics_monitor.metrics_mut())
+                    .report_reliably_until(
+                        pipeline_metrics_monitor.metrics_mut(),
+                        terminal_metrics_deadline,
+                    )
                     .await
                 {
                     otel_warn!(
@@ -753,7 +763,10 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 pipeline_metrics_monitor.update_tokio_metrics();
                 if let Err(err) = self
                     .metrics_reporter
-                    .report_reliably(pipeline_metrics_monitor.tokio_metrics_mut())
+                    .report_reliably_until(
+                        pipeline_metrics_monitor.tokio_metrics_mut(),
+                        terminal_metrics_deadline,
+                    )
                     .await
                 {
                     otel_warn!(
@@ -763,7 +776,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
                 }
             }
 
-            if let Err(err) = self.metrics_reporter.flush().await {
+            if let Err(err) = self
+                .metrics_reporter
+                .flush_until(terminal_metrics_deadline)
+                .await
+            {
                 otel_warn!(
                     "pipeline.metrics.final_collection.flush.fail",
                     error = err.to_string()
@@ -774,7 +791,11 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
         // Flush one last time on actor exit so late counters and zero-valued
         // backlog transitions are not lost if the loop terminates before the
         // next periodic interval elapses.
-        if let Err(err) = self.runtime_control_metrics.finish_reporting().await {
+        if let Err(err) = self
+            .runtime_control_metrics
+            .finish_reporting_until(terminal_metrics_deadline)
+            .await
+        {
             otel_warn!(
                 "pipeline.runtime_control.metrics.final_reporting.fail",
                 error = err.to_string()
@@ -981,6 +1002,7 @@ pub struct PipelineCompletionMsgDispatcher<PData> {
     pending_sends: VecDeque<(usize, NodeControlMsg<PData>)>,
     completion_metrics: PipelineCompletionMetricsState,
     control_plane_metrics_flush_interval: Duration,
+    terminal_metrics_deadline: TerminalMetricsDeadline,
 }
 
 impl<PData> PipelineCompletionMsgDispatcher<PData> {
@@ -993,6 +1015,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         metrics_reporter: MetricsReporter,
         control_plane_metrics_flush_interval: Duration,
         telemetry_policy: TelemetryPolicy,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Self {
         Self {
             pipeline_completion_msg_receiver,
@@ -1005,6 +1028,7 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                 metrics_reporter,
                 telemetry_policy.runtime_metrics,
             ),
+            terminal_metrics_deadline,
         }
     }
 
@@ -1186,7 +1210,11 @@ impl<PData: Unwindable> PipelineCompletionMsgDispatcher<PData> {
         // Flush one final completion snapshot on exit so short-lived completion
         // bursts are still observed even if the dispatcher stops before the
         // next periodic interval.
-        if let Err(err) = self.completion_metrics.finish_reporting().await {
+        if let Err(err) = self
+            .completion_metrics
+            .finish_reporting_until(self.terminal_metrics_deadline.get())
+            .await
+        {
             otel_warn!(
                 "pipeline.completion.metrics.final_reporting.fail",
                 error = err.to_string()
@@ -1463,6 +1491,7 @@ mod tests {
             TelemetryPolicy::default(),
             Vec::new(),
             empty_node_metric_handles(),
+            TerminalMetricsDeadline::default(),
         );
 
         (manager, pipeline_tx, pipeline_entity_guard)
@@ -1941,6 +1970,7 @@ mod tests {
                     TelemetryPolicy::default(),
                     Vec::new(),
                     empty_node_metric_handles(),
+                    TerminalMetricsDeadline::default(),
                 );
                 let duration = Duration::from_millis(50);
 
@@ -2571,6 +2601,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 // Start the manager in the background
@@ -2643,6 +2674,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 // Start the manager in the background
@@ -3240,6 +3272,7 @@ mod tests {
             telemetry_policy.clone(),
             Vec::new(),
             node_metric_handles.clone(),
+            TerminalMetricsDeadline::default(),
         );
 
         MetricsTestHarness {
@@ -3487,6 +3520,7 @@ mod tests {
             },
             Vec::new(),
             empty_node_metric_handles(),
+            TerminalMetricsDeadline::default(),
         );
         let runtime_metrics_key = manager.runtime_control_metrics.metric_set_key();
 
@@ -3565,6 +3599,7 @@ mod tests {
             },
             Vec::new(),
             empty_node_metric_handles(),
+            TerminalMetricsDeadline::default(),
         );
 
         MemoryPressureFanoutHarness {
@@ -3672,6 +3707,7 @@ mod tests {
                 runtime_metrics: metric_level,
                 flow_metrics: Vec::new(),
             },
+            TerminalMetricsDeadline::default(),
         );
         let completion_metrics_key = dispatcher.completion_metrics.metric_set_key();
 
@@ -3834,6 +3870,7 @@ mod tests {
                     metrics_reporter.clone(),
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     telemetry_policy.clone(),
+                    TerminalMetricsDeadline::default(),
                 );
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
                 let dispatcher_handle =
@@ -6013,6 +6050,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 let manager_handle = tokio::task::spawn_local(async move { manager.run().await });
@@ -6137,6 +6175,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 // Pre-load the shared return channel: [DeliverAck{A}, DeliverAck{A}, DeliverAck{B}]
@@ -6282,6 +6321,7 @@ mod tests {
                     MetricsReporter::create_new_and_receiver(16).1,
                     TEST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
                     TelemetryPolicy::default(),
+                    TerminalMetricsDeadline::default(),
                 );
 
                 let node_a_tx = return_tx.clone();

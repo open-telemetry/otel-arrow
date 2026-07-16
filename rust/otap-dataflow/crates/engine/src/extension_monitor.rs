@@ -346,16 +346,17 @@ impl ExtensionMetricsMonitor {
         }
     }
 
-    pub(crate) async fn finish_reporting(
+    pub(crate) async fn finish_reporting_until(
         &mut self,
         reporter: &MetricsReporter,
+        deadline: Instant,
     ) -> Result<(), TelemetryError> {
         for entry in &mut self.entries {
             let _ = reporter
-                .report_reliably(&mut entry.lifecycle_metrics)
+                .report_reliably_until(&mut entry.lifecycle_metrics, deadline)
                 .await?;
         }
-        reporter.flush().await
+        reporter.flush_until(deadline).await
     }
 
     /// Returns the lifecycle state for `key`, or `None` if absent.

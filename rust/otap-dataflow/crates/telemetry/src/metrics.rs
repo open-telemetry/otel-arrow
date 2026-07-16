@@ -18,7 +18,7 @@ use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
@@ -307,6 +307,8 @@ pub struct MetricSetExport {
     pub delta_start_time_unix_nano: u64,
     /// Time at which this metric set was registered.
     pub cumulative_start_time_unix_nano: u64,
+    /// Whether this registry may contain another key with the same OTLP source identity.
+    pub(crate) identity_may_repeat: bool,
 }
 
 /// Registry metadata needed to resolve one metric set in an export transaction.
@@ -496,6 +498,8 @@ impl<'a> core::iter::FusedIterator for MetricsIterator<'a> {}
 #[derive(Default)]
 pub struct MetricSetRegistry {
     pub(crate) metrics: SlotMap<MetricSetKey, MetricsEntry>,
+    identity_counts: HashMap<(usize, EntityKey), usize>,
+    duplicate_identity_count: usize,
 }
 
 pub(crate) enum MetricSetUnregister {
@@ -520,6 +524,12 @@ impl MetricSetRegistry {
     ) -> MetricSet<T> {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
+        let identity = (std::ptr::from_ref(descriptor) as usize, entity_key);
+        let count = self.identity_counts.entry(identity).or_default();
+        *count += 1;
+        if *count == 2 {
+            self.duplicate_identity_count += 1;
+        }
 
         let metrics_key = self.metrics.insert(MetricsEntry::new(
             descriptor,
@@ -610,10 +620,29 @@ impl MetricSetRegistry {
             entry.pending_unregister = true;
             Some(MetricSetUnregister::Deferred)
         } else {
-            self.metrics
-                .remove(metrics_key)
+            self.remove_entry(metrics_key)
                 .map(|entry| MetricSetUnregister::Removed(entry.entity_key))
         }
+    }
+
+    fn remove_entry(&mut self, metrics_key: MetricSetKey) -> Option<MetricsEntry> {
+        let entry = self.metrics.remove(metrics_key)?;
+        let identity = (
+            std::ptr::from_ref(entry.metrics_descriptor) as usize,
+            entry.entity_key,
+        );
+        let mut remove_identity = false;
+        if let Some(count) = self.identity_counts.get_mut(&identity) {
+            if *count == 2 {
+                self.duplicate_identity_count = self.duplicate_identity_count.saturating_sub(1);
+            }
+            *count = count.saturating_sub(1);
+            remove_identity = *count == 0;
+        }
+        if remove_identity {
+            let _ = self.identity_counts.remove(&identity);
+        }
+        Some(entry)
     }
 
     /// Returns the total number of registered metrics sets.
@@ -653,7 +682,7 @@ impl MetricSetRegistry {
             }
         }
         for (metrics_key, entity_key) in completed_unregisters {
-            let _ = self.metrics.remove(metrics_key);
+            let _ = self.remove_entry(metrics_key);
             let _ = entities.unregister(entity_key);
         }
     }
@@ -708,6 +737,7 @@ impl MetricSetRegistry {
                     values: entry.metric_values.clone(),
                     delta_start_time_unix_nano: entry.delta_start_time_unix_nano,
                     cumulative_start_time_unix_nano: entry.registered_at_unix_nano,
+                    identity_may_repeat: self.duplicate_identity_count > 0,
                 });
 
                 for (field, value) in entry
@@ -766,7 +796,7 @@ impl MetricSetRegistry {
             }
         }
         for (metrics_key, entity_key) in completed_unregisters {
-            let _ = self.metrics.remove(metrics_key);
+            let _ = self.remove_entry(metrics_key);
             let _ = entities.unregister(entity_key);
         }
     }
@@ -1090,6 +1120,31 @@ mod tests {
         let _metric_set2: MetricSet<MockMetricSet> = metrics.register(entity_key2);
 
         assert_eq!(metrics.len(), 2);
+    }
+
+    #[test]
+    fn export_marks_only_current_duplicate_metric_identities() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut metrics = MetricSetRegistry::default();
+        let first: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let second: MetricSet<MockMetricSet> = metrics.register(entity_key);
+
+        metrics.accumulate_snapshot(first.key, &[MetricValue::U64(1), MetricValue::U64(2)]);
+        metrics.accumulate_snapshot(second.key, &[MetricValue::U64(3), MetricValue::U64(4)]);
+        let duplicate_batch = metrics.drain_export_batch(&mut entities, 10);
+        assert!(
+            duplicate_batch
+                .metric_sets
+                .iter()
+                .all(|metric_set| metric_set.identity_may_repeat)
+        );
+
+        assert!(metrics.unregister(second.key, false).is_some());
+        metrics.accumulate_snapshot(first.key, &[MetricValue::U64(5), MetricValue::U64(6)]);
+        let unique_batch = metrics.drain_export_batch(&mut entities, 20);
+        assert_eq!(unique_batch.metric_sets.len(), 1);
+        assert!(!unique_batch.metric_sets[0].identity_may_repeat);
     }
 
     #[test]

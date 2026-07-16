@@ -31,6 +31,7 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
+use crate::terminal_state::TerminalMetricsDeadline;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -39,12 +40,6 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-/// Fallback budget for processor terminal metrics, whose wrapper does not
-/// receive the pipeline shutdown deadline carried by
-/// [`crate::terminal_state::TerminalState`].
-const TERMINAL_METRICS_REPORTING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// FlowMetric-relevant slice of a processor `EffectHandler`'s surface.
 ///
@@ -593,6 +588,7 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             false,
             false,
+            TerminalMetricsDeadline::default(),
         )
         .await
     }
@@ -612,6 +608,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
         flow_needs_timing: bool,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
@@ -667,7 +664,7 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                let terminal_metrics_deadline = Instant::now() + TERMINAL_METRICS_REPORTING_TIMEOUT;
+                let terminal_metrics_deadline = terminal_metrics_deadline.get();
                 if effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
@@ -751,7 +748,7 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
-                let terminal_metrics_deadline = Instant::now() + TERMINAL_METRICS_REPORTING_TIMEOUT;
+                let terminal_metrics_deadline = terminal_metrics_deadline.get();
                 if effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
@@ -1470,6 +1467,7 @@ mod tests {
                             None,
                             true,
                             true,
+                            crate::terminal_state::TerminalMetricsDeadline::default(),
                         )
                         .await
                 });

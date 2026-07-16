@@ -1643,7 +1643,7 @@ impl<
             admin_tracing_setup.clone(),
             move |cancellation_token| async move {
                 use otap_df_engine::engine_metrics::EngineMetricsMonitor;
-                use std::time::Duration;
+                use std::time::{Duration, Instant};
                 use tokio::time::{MissedTickBehavior, interval};
 
                 // TODO: Make this interval configurable via engine config.
@@ -1662,7 +1662,8 @@ impl<
                 loop {
                     tokio::select! {
                         _ = cancellation_token.cancelled() => {
-                            if let Err(err) = monitor.finish_reporting().await {
+                            let deadline = Instant::now() + Duration::from_secs(5);
+                            if let Err(err) = monitor.finish_reporting_until(deadline).await {
                                 otel_warn!(
                                     "engine.metrics.final_reporting.fail",
                                     error = err.to_string()
@@ -1770,7 +1771,8 @@ impl<
                         message = "Failed to shut down launched pipelines after controller extension startup failed"
                     );
                 }
-                if !runtime.wait_until_all_instances_exit_for(Duration::from_secs(12)) {
+                let _ = runtime.wait_for_global_shutdown_completion();
+                if !runtime.all_instances_exited() {
                     otel_warn!(
                         "controller.extension_startup_pipeline_shutdown_timeout",
                         message = "Timed out waiting for pipelines and system observability to stop after controller extension startup failed"
@@ -1824,13 +1826,19 @@ impl<
             }
         }
 
-        if run_mode == RunMode::ParkMainThread
-            && !runtime.wait_until_all_instances_exit_for(Duration::from_secs(12))
-        {
-            otel_warn!(
-                "controller.pipeline_shutdown_timeout",
-                message = "Timed out waiting for pipelines and system observability to stop before telemetry collector shutdown"
-            );
+        if run_mode == RunMode::ParkMainThread {
+            let global_shutdown_requested = runtime.wait_for_global_shutdown_completion();
+            let all_instances_exited = if global_shutdown_requested {
+                runtime.all_instances_exited()
+            } else {
+                runtime.wait_until_all_instances_exit_for(Duration::from_secs(12))
+            };
+            if !all_instances_exited {
+                otel_warn!(
+                    "controller.pipeline_shutdown_timeout",
+                    message = "Timed out waiting for pipelines and system observability to stop before telemetry collector shutdown"
+                );
+            }
         }
 
         // All telemetry producers and pipelines have finished; shut down the
