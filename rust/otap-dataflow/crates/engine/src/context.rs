@@ -16,8 +16,12 @@ use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
-use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
+use otap_df_telemetry::metrics::MetricSetRegistrar;
+use otap_df_telemetry::metrics::{
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+    RegistrationMetricSetHandler,
+};
+use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -413,34 +417,38 @@ impl PipelineContext {
         metrics
     }
 
-    /// Registers a metric set for the current node entity.
-    #[must_use]
-    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
+    /// Shared entity-resolution skeleton for the `register_*_metrics` family.
+    ///
+    /// Resolves the current node's telemetry scope in priority order — active node
+    /// telemetry handle, then ambient node entity key — and registers the metric set
+    /// via `for_entity`. When registering against an active node handle, the resulting
+    /// metric-set key (obtained through `metric_set_key`) is tracked so the set is
+    /// unregistered as part of node cleanup.
+    ///
+    /// Tests often construct nodes directly without the engine's entity scoping, so a
+    /// final fallback registers the set against this context's own attribute set via
+    /// `with_scope` (test builds only); production builds panic.
+    fn register_scoped_metrics<R>(
         &self,
-    ) -> MetricSet<T> {
+        for_entity: impl FnOnce(&TelemetryRegistryHandle, EntityKey) -> R,
+        metric_set_key: impl FnOnce(&R) -> MetricSetKey,
+        with_scope: impl FnOnce(&Self, &TelemetryRegistryHandle) -> R,
+    ) -> R {
+        let handle = &self.controller_context.telemetry_registry_handle;
         if let Some(telemetry) = current_node_telemetry_handle() {
-            telemetry.register_metric_set::<T>()
+            let metrics = for_entity(handle, telemetry.entity_key());
+            telemetry.track_metric_set(metric_set_key(&metrics));
+            metrics
         } else if let Some(entity_key) = node_entity_key() {
-            self.controller_context
-                .telemetry_registry_handle
-                .register_metric_set_for_entity::<T>(entity_key)
+            for_entity(handle, entity_key)
         } else {
-            // Tests often construct nodes directly without the engine's entity scoping. So the
-            // following code path is only enabled for test builds.
             #[cfg(feature = "test-utils")]
             {
-                if self.node_telemetry_attrs.is_empty() {
-                    self.controller_context
-                        .telemetry_registry_handle
-                        .register_metric_set::<T>(self.node_attribute_set())
-                } else {
-                    self.controller_context
-                        .telemetry_registry_handle
-                        .register_metric_set::<T>(self.node_with_custom_attribute_set())
-                }
+                with_scope(self, handle)
             }
             #[cfg(not(feature = "test-utils"))]
             {
+                let _ = with_scope;
                 panic!(
                     "node entity key not set; ensure node entity is registered and instrumented"
                 );
@@ -448,7 +456,25 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a metric set for the current node entity extended with a topic attribute.
+    /// Registers a metric set for the current node entity.
+    #[must_use]
+    pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<T> {
+        self.register_scoped_metrics(
+            |handle, entity_key| handle.register_metric_set_for_entity::<T>(entity_key),
+            MetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set::<T>(ctx.node_attribute_set())
+                } else {
+                    handle.register_metric_set::<T>(ctx.node_with_custom_attribute_set())
+                }
+            },
+        )
+    }
+
+    /// Registers a metric set for the current node entity, scoped by an additional `topic` attribute.
     ///
     /// This is used by topic-aware nodes so their metric series can be filtered by `topic`.
     #[must_use]
@@ -636,6 +662,95 @@ impl PipelineContext {
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
         }
+    }
+}
+
+impl MetricSetRegistrar for PipelineContext {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.register_metrics::<M>()
+    }
+
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_registration_attributes_for_entity::<M>(
+                    entity_key,
+                    registration_attrs,
+                )
+            },
+            MetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_registration_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        registration_attrs,
+                    )
+                } else {
+                    handle.register_metric_set_with_registration_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                        registration_attrs,
+                    )
+                }
+            },
+        )
+    }
+
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle.register_metric_set_with_measurement_attributes_for_entity::<M>(entity_key)
+            },
+            MeasurementMetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_measurement_attributes::<M>(
+                        ctx.node_attribute_set(),
+                    )
+                } else {
+                    handle.register_metric_set_with_measurement_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                    )
+                }
+            },
+        )
+    }
+
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        self.register_scoped_metrics(
+            |handle, entity_key| {
+                handle
+                    .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
+                    entity_key,
+                    registration_attrs,
+                )
+            },
+            MeasurementMetricSet::metric_set_key,
+            |ctx, handle| {
+                if ctx.node_telemetry_attrs.is_empty() {
+                    handle.register_metric_set_with_registration_and_measurement_attributes::<M>(
+                        ctx.node_attribute_set(),
+                        registration_attrs,
+                    )
+                } else {
+                    handle.register_metric_set_with_registration_and_measurement_attributes::<M>(
+                        ctx.node_with_custom_attribute_set(),
+                        registration_attrs,
+                    )
+                }
+            },
+        )
     }
 }
 
