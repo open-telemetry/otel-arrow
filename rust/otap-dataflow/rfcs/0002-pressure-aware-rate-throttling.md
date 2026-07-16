@@ -448,7 +448,8 @@ per-request or per-scope label cardinality.
 ### Performance Validation
 
 Before implementation is accepted, the admission path should be measured against
-the same receiver without this policy enabled. The checks should cover
+the latest baseline implementation that does not include this rate limiter. The
+checks should cover
 throughput, CPU cost, memory used by per-scope rate state, and the cost of
 measuring the configured rate unit.
 
