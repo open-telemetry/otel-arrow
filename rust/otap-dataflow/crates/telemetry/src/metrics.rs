@@ -309,6 +309,19 @@ pub struct MetricSetExport {
     pub cumulative_start_time_unix_nano: u64,
 }
 
+/// Registry metadata needed to resolve one metric set in an export transaction.
+///
+/// Checkpoints have the same order and length as
+/// [`MetricExportBatch::metric_sets`]. The corresponding exported values stay
+/// in that batch so beginning a transaction does not clone them a second time.
+#[derive(Debug)]
+pub(crate) struct MetricExportCheckpoint {
+    /// Identifies the registry entry whose values are represented by the batch.
+    metric_set_key: MetricSetKey,
+    /// Restores the original delta window if delivery is rolled back.
+    delta_start_time_unix_nano: u64,
+}
+
 /// A registered metrics entry containing all necessary information for metrics aggregation.
 pub struct MetricsEntry {
     /// The static descriptor describing the metrics structure
@@ -331,6 +344,11 @@ pub struct MetricsEntry {
     /// Whether at least one producer snapshot has updated the export accumulator.
     export_dirty: bool,
 
+    /// Whether resettable values from this entry are owned by an uncommitted
+    /// batch. While set, another drain skips the entry and unregistration is
+    /// deferred so commit or rollback can still find it.
+    export_in_flight: bool,
+
     /// Whether at least one producer snapshot has updated the admin accumulator.
     pub(crate) admin_observed: bool,
 
@@ -346,6 +364,7 @@ impl Debug for MetricsEntry {
             .field("admin_metric_values", &self.admin_metric_values)
             .field("entity_key", &self.entity_key)
             .field("export_dirty", &self.export_dirty)
+            .field("export_in_flight", &self.export_in_flight)
             .field("admin_observed", &self.admin_observed)
             .field("pending_unregister", &self.pending_unregister)
             .finish()
@@ -369,6 +388,7 @@ impl MetricsEntry {
             registered_at_unix_nano,
             delta_start_time_unix_nano: registered_at_unix_nano,
             export_dirty: false,
+            export_in_flight: false,
             admin_observed: false,
             pending_unregister: false,
         }
@@ -586,7 +606,7 @@ impl MetricSetRegistry {
         defer_dirty_unregistration: bool,
     ) -> Option<MetricSetUnregister> {
         let entry = self.metrics.get_mut(metrics_key)?;
-        if defer_dirty_unregistration && entry.export_dirty {
+        if entry.export_in_flight || (defer_dirty_unregistration && entry.export_dirty) {
             entry.pending_unregister = true;
             Some(MetricSetUnregister::Deferred)
         } else {
@@ -614,6 +634,9 @@ impl MetricSetRegistry {
     {
         let mut completed_unregisters = Vec::new();
         for (metrics_key, entry) in &mut self.metrics {
+            if entry.export_in_flight {
+                continue;
+            }
             let values = &mut entry.metric_values;
             if keep_all_zeroes || entry.export_dirty || values.iter().any(|&v| !v.is_zero()) {
                 let desc = entry.metrics_descriptor;
@@ -625,7 +648,7 @@ impl MetricSetRegistry {
                 values.iter_mut().for_each(MetricValue::reset);
                 entry.export_dirty = false;
             }
-            if entry.pending_unregister && !entry.export_dirty {
+            if entry.pending_unregister && !entry.export_dirty && !entry.export_in_flight {
                 completed_unregisters.push((metrics_key, entry.entity_key));
             }
         }
@@ -636,11 +659,29 @@ impl MetricSetRegistry {
     }
 
     /// Copies the pending export accumulator into an owned batch.
+    #[cfg(test)]
     pub(crate) fn drain_export_batch(
         &mut self,
         entities: &mut EntityRegistry,
         requested_time_unix_nano: u64,
     ) -> MetricExportBatch {
+        let (batch, checkpoints) = self.begin_export_batch(entities, requested_time_unix_nano);
+        self.commit_export_batch(entities, &checkpoints);
+        batch
+    }
+
+    /// Starts a transactional export by moving resettable values into an owned batch.
+    ///
+    /// Each included entry is marked in flight. Delta sums, histograms, and
+    /// MMSC values are reset for the next collection window; gauges and
+    /// cumulative sums retain their current values. The returned checkpoints
+    /// must be passed with the batch to either [`Self::commit_export_batch`] or
+    /// [`Self::rollback_export_batch`].
+    pub(crate) fn begin_export_batch(
+        &mut self,
+        entities: &EntityRegistry,
+        requested_time_unix_nano: u64,
+    ) -> (MetricExportBatch, Vec<MetricExportCheckpoint>) {
         let time_unix_nano = self
             .metrics
             .values()
@@ -649,12 +690,18 @@ impl MetricSetRegistry {
                     .max(entry.delta_start_time_unix_nano)
             });
         let mut metric_sets = Vec::new();
+        let mut checkpoints = Vec::new();
 
-        let mut completed_unregisters = Vec::new();
         for (metrics_key, entry) in &mut self.metrics {
+            let mut exported_now = false;
             if entry.export_dirty
+                && !entry.export_in_flight
                 && let Some(attributes) = entities.get_shared(entry.entity_key)
             {
+                checkpoints.push(MetricExportCheckpoint {
+                    metric_set_key: metrics_key,
+                    delta_start_time_unix_nano: entry.delta_start_time_unix_nano,
+                });
                 metric_sets.push(MetricSetExport {
                     descriptor: entry.metrics_descriptor,
                     attributes,
@@ -680,22 +727,90 @@ impl MetricSetRegistry {
                     }
                 }
                 entry.export_dirty = false;
+                entry.export_in_flight = true;
+                exported_now = true;
             }
 
             // Empty collection intervals still delimit the next delta window.
-            entry.delta_start_time_unix_nano = time_unix_nano;
+            if !entry.export_in_flight || exported_now {
+                entry.delta_start_time_unix_nano = time_unix_nano;
+            }
+        }
+
+        (
+            MetricExportBatch {
+                time_unix_nano,
+                metric_sets,
+            },
+            checkpoints,
+        )
+    }
+
+    /// Commits an export after downstream delivery succeeds.
+    ///
+    /// This releases the in-flight entries and completes deferred
+    /// unregistration unless a newer snapshot arrived during delivery.
+    pub(crate) fn commit_export_batch(
+        &mut self,
+        entities: &mut EntityRegistry,
+        checkpoints: &[MetricExportCheckpoint],
+    ) {
+        let mut completed_unregisters = Vec::new();
+        for checkpoint in checkpoints {
+            let Some(entry) = self.metrics.get_mut(checkpoint.metric_set_key) else {
+                continue;
+            };
+            entry.export_in_flight = false;
             if entry.pending_unregister && !entry.export_dirty {
-                completed_unregisters.push((metrics_key, entry.entity_key));
+                completed_unregisters.push((checkpoint.metric_set_key, entry.entity_key));
             }
         }
         for (metrics_key, entity_key) in completed_unregisters {
             let _ = self.metrics.remove(metrics_key);
             let _ = entities.unregister(entity_key);
         }
+    }
 
-        MetricExportBatch {
-            time_unix_nano,
-            metric_sets,
+    /// Restores a batch when encoding or downstream delivery fails.
+    ///
+    /// Resettable values are merged with snapshots collected while delivery
+    /// was in flight. Gauges and cumulative sums already retain the newest
+    /// current value, so rollback only marks them dirty for the retry. The
+    /// original delta-window start is restored for all instruments.
+    pub(crate) fn rollback_export_batch(
+        &mut self,
+        batch: &MetricExportBatch,
+        checkpoints: &[MetricExportCheckpoint],
+    ) {
+        debug_assert_eq!(batch.metric_sets.len(), checkpoints.len());
+        for (metric_set, checkpoint) in batch.metric_sets.iter().zip(checkpoints) {
+            let Some(entry) = self.metrics.get_mut(checkpoint.metric_set_key) else {
+                continue;
+            };
+            if !entry.export_in_flight {
+                continue;
+            }
+
+            for ((field, current), exported) in entry
+                .metrics_descriptor
+                .metrics
+                .iter()
+                .zip(&mut entry.metric_values)
+                .zip(&metric_set.values)
+            {
+                let is_delta_sum = matches!(
+                    field.instrument,
+                    Instrument::Counter | Instrument::UpDownCounter
+                ) && field.temporality == Some(Temporality::Delta);
+                if is_delta_sum
+                    || matches!(field.instrument, Instrument::Histogram | Instrument::Mmsc)
+                {
+                    current.add_in_place(*exported);
+                }
+            }
+            entry.delta_start_time_unix_nano = checkpoint.delta_start_time_unix_nano;
+            entry.export_dirty = true;
+            entry.export_in_flight = false;
         }
     }
 
@@ -1216,6 +1331,55 @@ mod tests {
                 MetricValue::U64(0),
             ]
         );
+    }
+
+    #[test]
+    fn test_rollback_export_batch_merges_delta_and_retains_latest_current_values() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+        let metric_set: MetricSet<MockMixedMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+        let original_start = metrics
+            .metrics
+            .get(metrics_key)
+            .expect("metric set entry")
+            .delta_start_time_unix_nano;
+
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[
+                MetricValue::U64(3),
+                MetricValue::U64(10),
+                MetricValue::U64(7),
+                MetricValue::U64(2),
+            ],
+        );
+        let (batch, checkpoints) = metrics.begin_export_batch(&entities, original_start + 10);
+        assert_eq!(batch.metric_sets.len(), 1);
+
+        metrics.accumulate_snapshot(
+            metrics_key,
+            &[
+                MetricValue::U64(4),
+                MetricValue::U64(12),
+                MetricValue::U64(9),
+                MetricValue::U64(5),
+            ],
+        );
+        metrics.rollback_export_batch(&batch, &checkpoints);
+
+        let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
+        assert_eq!(
+            entry.metric_values,
+            vec![
+                MetricValue::U64(7),
+                MetricValue::U64(12),
+                MetricValue::U64(9),
+                MetricValue::U64(7),
+            ]
+        );
+        assert_eq!(entry.delta_start_time_unix_nano, original_start);
     }
 
     #[test]

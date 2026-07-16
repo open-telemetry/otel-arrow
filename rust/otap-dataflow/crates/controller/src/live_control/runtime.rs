@@ -424,7 +424,8 @@ impl<
         self: &Arc<Self>,
         timeout_secs: u64,
     ) -> Result<(), ControlPlaneError> {
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
+        let shutdown_timeout = Duration::from_secs(timeout_secs.max(1));
+        let deadline = Instant::now() + shutdown_timeout;
 
         // Snapshot under the state lock, then send outside the lock so runtime
         // callbacks can report exits while shutdown dispatch is in progress.
@@ -520,6 +521,7 @@ impl<
                         producer_keys,
                         observability_senders,
                         deadline,
+                        shutdown_timeout,
                     );
                 })
             {
@@ -561,11 +563,13 @@ impl<
         &self,
         producer_keys: Vec<DeployedPipelineKey>,
         observability_senders: Vec<(DeployedPipelineKey, Arc<dyn PipelineAdminSender>)>,
-        deadline: Instant,
+        producer_deadline: Instant,
+        shutdown_timeout: Duration,
     ) {
         let mut wait_failures = Vec::new();
         for deployed_key in &producer_keys {
-            if let Err(error) = self.wait_for_global_shutdown_exit(deployed_key, deadline) {
+            if let Err(error) = self.wait_for_global_shutdown_exit(deployed_key, producer_deadline)
+            {
                 wait_failures.push(error);
             }
         }
@@ -604,18 +608,19 @@ impl<
             return;
         }
 
+        // Observability is a distinct shutdown phase. Give it the same budget
+        // selected by the caller instead of collapsing that phase to one second
+        // after producers have consumed their own drain budget.
+        let observability_deadline = Instant::now() + shutdown_timeout;
         for (deployed_key, sender) in observability_senders {
-            let retry_deadline = Instant::now() + Duration::from_secs(1);
             let final_error = loop {
-                match sender.try_send_shutdown(
-                    Instant::now() + Duration::from_secs(1),
-                    "global shutdown".to_owned(),
-                ) {
+                match sender.try_send_shutdown(observability_deadline, "global shutdown".to_owned())
+                {
                     Ok(()) => break None,
                     Err(error) => match self.instance_exit(&deployed_key) {
                         Some(RuntimeInstanceExit::Success) => break None,
                         Some(RuntimeInstanceExit::Error(exit)) => break Some(exit.message),
-                        None if Instant::now() < retry_deadline => {
+                        None if Instant::now() < observability_deadline => {
                             thread::sleep(Duration::from_millis(10));
                         }
                         None => break Some(error.to_string()),

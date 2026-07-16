@@ -151,20 +151,36 @@ async fn flush_metrics_reporter(metrics_reporter: &MetricsReporter, phase: &'sta
     }
 }
 
+/// Reports snapshots carried by a terminal state within its shutdown deadline.
 pub(crate) async fn report_terminal_metrics(
     metrics_reporter: &MetricsReporter,
     terminal_state: TerminalState,
 ) {
-    report_metric_snapshots(metrics_reporter, terminal_state.into_metrics(), "terminal").await;
+    let deadline = terminal_state.deadline();
+    report_metric_snapshots(
+        metrics_reporter,
+        terminal_state.into_metrics(),
+        "terminal",
+        deadline,
+    )
+    .await;
 }
 
+/// Best-effort reports a sequence of snapshots and flushes the collector.
+///
+/// Reporting continues after individual failures, but every operation shares
+/// one absolute `deadline` so a long sequence cannot extend shutdown.
 async fn report_metric_snapshots(
     metrics_reporter: &MetricsReporter,
     snapshots: impl IntoIterator<Item = MetricSetSnapshot>,
     phase: &'static str,
+    deadline: std::time::Instant,
 ) {
     for snapshot in snapshots {
-        match metrics_reporter.report_snapshot_reliably(snapshot).await {
+        match metrics_reporter
+            .report_snapshot_reliably_until(snapshot, deadline)
+            .await
+        {
             Ok(ReportOutcome::Sent) => {}
             Ok(ReportOutcome::Deferred) => {
                 otap_df_telemetry::otel_warn!(
@@ -182,7 +198,13 @@ async fn report_metric_snapshots(
             }
         }
     }
-    flush_metrics_reporter(metrics_reporter, phase).await;
+    if let Err(err) = metrics_reporter.flush_until(deadline).await {
+        otap_df_telemetry::otel_warn!(
+            "metrics.collection.flush.fail",
+            phase,
+            error = err.to_string()
+        );
+    }
 }
 
 /// Build a flat edge list from a pipeline's connections, resolving node
@@ -784,6 +806,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         &final_metrics_reporter,
                         final_snapshots,
                         "pipeline_final",
+                        std::time::Instant::now() + Duration::from_secs(5),
                     )
                     .await;
 

@@ -630,6 +630,15 @@ mod tests {
             ))
             .expect("second snapshot should fill the channel");
 
+        let error = reporter
+            .report_snapshot_reliably_until(
+                create_test_snapshot(key, vec![MetricValue::from(3u64), MetricValue::from(3u64)]),
+                std::time::Instant::now() + Duration::from_millis(20),
+            )
+            .await
+            .expect_err("reliable reporting must honor its terminal deadline");
+        assert!(matches!(error, Error::ShutdownError(_)));
+
         {
             let reliable_reporter = reporter.clone();
             let reliable_report = async move {

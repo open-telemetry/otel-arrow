@@ -39,6 +39,12 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Fallback budget for processor terminal metrics, whose wrapper does not
+/// receive the pipeline shutdown deadline carried by
+/// [`crate::terminal_state::TerminalState`].
+const TERMINAL_METRICS_REPORTING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// FlowMetric-relevant slice of a processor `EffectHandler`'s surface.
 ///
@@ -661,18 +667,20 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
+                let terminal_metrics_deadline = Instant::now() + TERMINAL_METRICS_REPORTING_TIMEOUT;
                 if effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
                 {
-                    effect_handler
-                        .report_flow_metrics_reliably()
+                    if let Err(error) = effect_handler
+                        .report_flow_metrics_reliably(terminal_metrics_deadline)
                         .await
-                        .map_err(|error| Error::InternalError {
-                            message: format!(
-                                "failed to report final processor flow metrics: {error}"
-                            ),
-                        })?;
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.flow_metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
                 let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
                 let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
@@ -685,14 +693,15 @@ impl<PData> ProcessorWrapper<PData> {
                     )
                     .await;
                 while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
-                    let _ = metrics_reporter
-                        .report_snapshot_reliably(snapshot)
+                    if let Err(error) = metrics_reporter
+                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
                         .await
-                        .map_err(|error| Error::InternalError {
-                            message: format!(
-                                "failed to report final processor component metrics: {error}"
-                            ),
-                        })?;
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
                 process_result?
             }
@@ -742,18 +751,20 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
+                let terminal_metrics_deadline = Instant::now() + TERMINAL_METRICS_REPORTING_TIMEOUT;
                 if effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
                 {
-                    effect_handler
-                        .report_flow_metrics_reliably()
+                    if let Err(error) = effect_handler
+                        .report_flow_metrics_reliably(terminal_metrics_deadline)
                         .await
-                        .map_err(|error| Error::InternalError {
-                            message: format!(
-                                "failed to report final processor flow metrics: {error}"
-                            ),
-                        })?;
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.flow_metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
                 let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
                 let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
@@ -766,14 +777,15 @@ impl<PData> ProcessorWrapper<PData> {
                     )
                     .await;
                 while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
-                    let _ = metrics_reporter
-                        .report_snapshot_reliably(snapshot)
+                    if let Err(error) = metrics_reporter
+                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
                         .await
-                        .map_err(|error| Error::InternalError {
-                            message: format!(
-                                "failed to report final processor component metrics: {error}"
-                            ),
-                        })?;
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
                 process_result?
             }

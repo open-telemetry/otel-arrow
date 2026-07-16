@@ -381,7 +381,13 @@ impl<PData> EffectHandler<PData> {
     }
 
     /// Drains and reliably hands off final flow metrics during processor shutdown.
-    pub(crate) async fn report_flow_metrics_reliably(&mut self) -> Result<(), TelemetryError> {
+    ///
+    /// Every metric set shares the same absolute `deadline`, bounding the
+    /// complete handoff rather than giving each set a fresh timeout.
+    pub(crate) async fn report_flow_metrics_reliably(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
         let reporter = self.core.metrics_reporter.clone();
         if let Some((metrics, acc_mutex)) = self.flow.incoming.signals_incoming.as_mut() {
             let drained = {
@@ -391,7 +397,7 @@ impl<PData> EffectHandler<PData> {
                 std::mem::take(&mut *guard)
             };
             metrics.signals_incoming.merge(drained);
-            let _ = reporter.report_reliably(metrics).await?;
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
             let drained = {
@@ -401,7 +407,7 @@ impl<PData> EffectHandler<PData> {
                 std::mem::take(&mut *guard)
             };
             metrics.compute_duration.merge(drained);
-            let _ = reporter.report_reliably(metrics).await?;
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.signals_outgoing.as_mut() {
             let drained = {
@@ -411,7 +417,7 @@ impl<PData> EffectHandler<PData> {
                 std::mem::take(&mut *guard)
             };
             metrics.signals_outgoing.merge(drained);
-            let _ = reporter.report_reliably(metrics).await?;
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         if let Some((metrics, acc_mutex)) = self.flow.decision.signals_dropped.as_mut() {
             let drained = {
@@ -421,7 +427,7 @@ impl<PData> EffectHandler<PData> {
                 std::mem::take(&mut *guard)
             };
             metrics.signals_dropped.merge(drained);
-            let _ = reporter.report_reliably(metrics).await?;
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         Ok(())
     }

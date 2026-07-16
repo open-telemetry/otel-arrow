@@ -401,6 +401,31 @@ fn notifying_admin_sender() -> (
     )
 }
 
+struct DeadlineNotifyingPipelineAdminSender {
+    notification: std::sync::mpsc::Sender<(String, Instant)>,
+}
+
+impl PipelineAdminSender for DeadlineNotifyingPipelineAdminSender {
+    fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.notification
+            .send((reason, deadline))
+            .map_err(|error| EngineError::RuntimeMsgError {
+                error: error.to_string(),
+            })
+    }
+}
+
+fn deadline_notifying_admin_sender() -> (
+    Arc<dyn PipelineAdminSender>,
+    std::sync::mpsc::Receiver<(String, Instant)>,
+) {
+    let (notification, receiver) = std::sync::mpsc::channel();
+    (
+        Arc::new(DeadlineNotifyingPipelineAdminSender { notification }),
+        receiver,
+    )
+}
+
 fn launched_runtime_instance(
     pipeline_group_id: &str,
     pipeline_id: &str,
@@ -2629,7 +2654,7 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     );
     let (regular_sender0, regular_notifications0) = notifying_admin_sender();
     let (regular_sender1, regular_notifications1) = notifying_admin_sender();
-    let (observability_sender, observability_notifications) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = deadline_notifying_admin_sender();
     register_runtime_instance_with_sender(
         &runtime,
         regular_key0.clone(),
@@ -2688,11 +2713,13 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     );
     runtime.note_instance_exit(regular_key1, RuntimeInstanceExit::Success);
 
-    assert_eq!(
-        observability_notifications
-            .recv_timeout(Duration::from_secs(1))
-            .expect("observability should receive shutdown after producers exit"),
-        "global shutdown"
+    let (reason, deadline) = observability_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should receive shutdown after producers exit");
+    assert_eq!(reason, "global shutdown");
+    assert!(
+        deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(4),
+        "observability should receive the caller's five-second shutdown budget"
     );
 
     runtime

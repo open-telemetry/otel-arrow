@@ -963,6 +963,73 @@ groups: {}
     }
 
     #[test]
+    fn from_yaml_rejects_receiver_metrics_when_only_logs_use_its() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      providers:
+        engine: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics:
+              interval: 2s
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("receiver metrics must require the ITS metrics provider during validation");
+        assert!(
+            err.to_string().contains(
+                "internal telemetry receiver 'itr' metrics configuration requires engine internal metrics to use the ITS provider"
+            ),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_yaml_accepts_empty_receiver_metrics_when_only_logs_use_its() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      providers:
+        engine: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml)
+            .expect("an empty receiver metrics block does not enable metrics");
+        assert!(!config.engine.telemetry.metrics.uses_its_provider());
+        assert!(config.engine.telemetry.uses_its_provider());
+    }
+
+    #[test]
     fn from_yaml_accepts_custom_config() {
         let yaml = r#"
 version: otel_dataflow/v1

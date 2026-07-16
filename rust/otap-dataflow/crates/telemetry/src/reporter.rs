@@ -6,7 +6,17 @@
 use crate::error::Error;
 use crate::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::{OwnedRwLockReadGuard, RwLock, oneshot, watch};
+use tokio::time::Instant as TokioInstant;
+
+/// Finite fallback for terminal callers that do not carry a shutdown deadline.
+const DEFAULT_RELIABLE_REPORT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Uses the existing shutdown error surface to avoid expanding the public error enum.
+fn reporting_deadline_exceeded() -> Error {
+    Error::ShutdownError("metrics reporting deadline exceeded".to_owned())
+}
 
 /// Ordered messages consumed by the production internal metrics collector.
 #[derive(Debug)]
@@ -265,9 +275,33 @@ impl MetricsReporter {
     /// and return [`Error::MetricsCollectorNotRunning`]. Reporters created by
     /// the internal telemetry system use an ordered collector barrier.
     pub async fn flush(&self) -> Result<(), Error> {
+        self.flush_until(Instant::now() + DEFAULT_RELIABLE_REPORT_TIMEOUT)
+            .await
+    }
+
+    /// Waits until every previously accepted snapshot has reached the registry,
+    /// but never beyond `deadline`.
+    pub async fn flush_until(&self, deadline: Instant) -> Result<(), Error> {
+        let flush = async {
+            match &self.metrics_sender {
+                MetricsSender::Direct(_) => Err(Error::MetricsCollectorNotRunning),
+                MetricsSender::Collector { flusher, .. } => flusher.flush().await,
+            }
+        };
+        tokio::time::timeout_at(TokioInstant::from_std(deadline), flush)
+            .await
+            .map_err(|_| reporting_deadline_exceeded())?
+    }
+
+    /// Performs the underlying reliable send; public entry points wrap this
+    /// future in either an explicit or fallback deadline.
+    async fn report_snapshot_reliably_unbounded(
+        &self,
+        snapshot: MetricSetSnapshot,
+    ) -> Result<ReportOutcome, Error> {
         match &self.metrics_sender {
-            MetricsSender::Direct(_) => Err(Error::MetricsCollectorNotRunning),
-            MetricsSender::Collector { flusher, .. } => flusher.flush().await,
+            MetricsSender::Direct(_) => self.try_report_snapshot_with_outcome(snapshot),
+            MetricsSender::Collector { flusher, .. } => flusher.send_snapshot(snapshot).await,
         }
     }
 
@@ -281,10 +315,25 @@ impl MetricsReporter {
         &self,
         snapshot: MetricSetSnapshot,
     ) -> Result<ReportOutcome, Error> {
-        match &self.metrics_sender {
-            MetricsSender::Direct(_) => self.try_report_snapshot_with_outcome(snapshot),
-            MetricsSender::Collector { flusher, .. } => flusher.send_snapshot(snapshot).await,
-        }
+        self.report_snapshot_reliably_until(
+            snapshot,
+            Instant::now() + DEFAULT_RELIABLE_REPORT_TIMEOUT,
+        )
+        .await
+    }
+
+    /// Reliably publishes a snapshot, but never waits beyond `deadline`.
+    pub async fn report_snapshot_reliably_until(
+        &self,
+        snapshot: MetricSetSnapshot,
+        deadline: Instant,
+    ) -> Result<ReportOutcome, Error> {
+        tokio::time::timeout_at(
+            TokioInstant::from_std(deadline),
+            self.report_snapshot_reliably_unbounded(snapshot),
+        )
+        .await
+        .map_err(|_| reporting_deadline_exceeded())?
     }
 
     /// Reliably reports and clears a hot metric set when backed by the internal collector.
@@ -292,10 +341,22 @@ impl MetricsReporter {
         &self,
         metrics: &mut MetricSet<M>,
     ) -> Result<ReportOutcome, Error> {
+        self.report_reliably_until(metrics, Instant::now() + DEFAULT_RELIABLE_REPORT_TIMEOUT)
+            .await
+    }
+
+    /// Reliably reports and clears a hot metric set, but never waits beyond `deadline`.
+    pub async fn report_reliably_until<M: MetricSetHandler>(
+        &self,
+        metrics: &mut MetricSet<M>,
+        deadline: Instant,
+    ) -> Result<ReportOutcome, Error> {
         if !metrics.needs_flush() {
             return Ok(ReportOutcome::Sent);
         }
-        let outcome = self.report_snapshot_reliably(metrics.snapshot()).await?;
+        let outcome = self
+            .report_snapshot_reliably_until(metrics.snapshot(), deadline)
+            .await?;
         if outcome == ReportOutcome::Sent {
             metrics.clear_values();
         }

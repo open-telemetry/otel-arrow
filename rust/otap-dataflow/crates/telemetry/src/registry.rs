@@ -8,8 +8,8 @@ use crate::attributes::AttributeSetHandler;
 use crate::descriptor::MetricsDescriptor;
 use crate::entity::{EntityRegistry, RegisterOutcome};
 use crate::metrics::{
-    MetricExportBatch, MetricSet, MetricSetHandler, MetricSetRegistry, MetricSetUnregister,
-    MetricValue, MetricsIterator,
+    MetricExportBatch, MetricExportCheckpoint, MetricSet, MetricSetHandler, MetricSetRegistry,
+    MetricSetUnregister, MetricValue, MetricsIterator,
 };
 use crate::otel_debug;
 use crate::reporter::MetricsFlushHandle;
@@ -40,6 +40,56 @@ new_key_type! {
 pub struct TelemetryRegistryHandle {
     pub(crate) registry: Arc<Mutex<TelemetryRegistry>>,
     metrics_flusher: Arc<Mutex<Option<MetricsFlushHandle>>>,
+}
+
+/// An owned metrics export that is committed only after downstream delivery.
+///
+/// Dropping this value without calling [`Self::commit`] restores resettable
+/// values to the registry, merging them with values accumulated while the
+/// export was in flight. Current-value instruments retain their newest value
+/// and are marked dirty so the next export retries them.
+#[derive(Debug)]
+#[must_use = "an uncommitted metrics export is rolled back when dropped"]
+pub struct MetricExportTransaction {
+    registry: TelemetryRegistryHandle,
+    /// Kept in an `Option` so commit can take ownership and disarm [`Drop`].
+    batch: Option<MetricExportBatch>,
+    /// Parallel to `batch.metric_sets`; maps owned values back to registry entries.
+    checkpoints: Vec<MetricExportCheckpoint>,
+}
+
+impl MetricExportTransaction {
+    /// Returns the owned batch to encode and deliver.
+    #[must_use]
+    pub fn batch(&self) -> &MetricExportBatch {
+        self.batch.as_ref().expect("export transaction has a batch")
+    }
+
+    /// Commits successful delivery and returns the exported batch.
+    #[must_use]
+    pub fn commit(mut self) -> MetricExportBatch {
+        {
+            let mut reg = self.registry.registry.lock();
+            let TelemetryRegistry {
+                entities, metrics, ..
+            } = &mut *reg;
+            metrics.commit_export_batch(entities, &self.checkpoints);
+        }
+        self.checkpoints.clear();
+        self.batch.take().expect("export transaction has a batch")
+    }
+}
+
+impl Drop for MetricExportTransaction {
+    fn drop(&mut self) {
+        if let Some(batch) = &self.batch {
+            self.registry
+                .registry
+                .lock()
+                .metrics
+                .rollback_export_batch(batch, &self.checkpoints);
+        }
+    }
 }
 
 /// The main telemetry registry maintaining both entity and metric set registries.
@@ -218,15 +268,41 @@ impl TelemetryRegistryHandle {
     /// neither holds the registry mutex.
     #[must_use]
     pub fn drain_metric_export_batch(&self) -> MetricExportBatch {
-        self.drain_metric_export_batch_at(crate::metrics::unix_time_nanos())
+        self.begin_metric_export_batch().commit()
     }
 
+    #[cfg(test)]
     pub(crate) fn drain_metric_export_batch_at(&self, time_unix_nano: u64) -> MetricExportBatch {
+        self.begin_metric_export_batch_at(time_unix_nano).commit()
+    }
+
+    /// Starts an export transaction that rolls back unless delivery is committed.
+    ///
+    /// Encoding and downstream delivery happen without holding the registry
+    /// lock. Call [`MetricExportTransaction::commit`] only after delivery has
+    /// succeeded; errors and future cancellation safely trigger rollback.
+    pub fn begin_metric_export_batch(&self) -> MetricExportTransaction {
+        self.begin_metric_export_batch_at(crate::metrics::unix_time_nanos())
+    }
+
+    /// Starts a transaction using an explicit collection time.
+    ///
+    /// The explicit timestamp keeps registry tests deterministic; production
+    /// callers use [`Self::begin_metric_export_batch`].
+    pub(crate) fn begin_metric_export_batch_at(
+        &self,
+        time_unix_nano: u64,
+    ) -> MetricExportTransaction {
         let mut reg = self.registry.lock();
         let TelemetryRegistry {
             entities, metrics, ..
         } = &mut *reg;
-        metrics.drain_export_batch(entities, time_unix_nano)
+        let (batch, checkpoints) = metrics.begin_export_batch(entities, time_unix_nano);
+        MetricExportTransaction {
+            registry: self.clone(),
+            batch: Some(batch),
+            checkpoints,
+        }
     }
 
     /// Visits the admin metrics accumulator, then resets only that accumulator.
@@ -542,5 +618,42 @@ mod tests {
                 .is_empty(),
             "the second window must be exported exactly once"
         );
+    }
+
+    #[test]
+    fn test_dropped_export_restores_values_and_defers_unregistration() {
+        let telemetry_registry = TelemetryRegistryHandle::new();
+        let metric_set: MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("retry".to_owned()));
+        let metrics_key = metric_set.metric_set_key();
+
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            &[MetricValue::U64(3), MetricValue::U64(5)],
+        );
+        let export = telemetry_registry.begin_metric_export_batch_at(u64::MAX);
+        assert_eq!(
+            export.batch().metric_sets[0].values,
+            vec![MetricValue::U64(3), MetricValue::U64(5)]
+        );
+
+        // Values collected while delivery is in flight belong to the next
+        // window, but must be merged with the failed window on rollback.
+        telemetry_registry.accumulate_metric_set_snapshot(
+            metrics_key,
+            &[MetricValue::U64(7), MetricValue::U64(11)],
+        );
+        assert!(telemetry_registry.unregister_metric_set(metrics_key));
+        assert_eq!(telemetry_registry.metric_set_count(), 1);
+        drop(export);
+
+        let retry = telemetry_registry.begin_metric_export_batch_at(u64::MAX);
+        assert_eq!(
+            retry.batch().metric_sets[0].values,
+            vec![MetricValue::U64(10), MetricValue::U64(16)]
+        );
+        let _ = retry.commit();
+        assert_eq!(telemetry_registry.metric_set_count(), 0);
+        assert_eq!(telemetry_registry.entity_count(), 0);
     }
 }

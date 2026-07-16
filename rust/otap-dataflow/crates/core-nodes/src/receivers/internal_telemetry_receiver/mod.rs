@@ -388,7 +388,10 @@ impl InternalTelemetryReceiver {
         }
     }
 
-    /// Drain accumulated registry metrics and send one direct OTLP request.
+    /// Attempts one final metric export within the pipeline shutdown deadline.
+    ///
+    /// Timing out cancels [`Self::send_metric_batch`]; its uncommitted export
+    /// transaction is then dropped and restores the drained registry values.
     async fn send_metric_batch_until(
         effect_handler: &local::EffectHandler<OtapPdata>,
         registry: &TelemetryRegistryHandle,
@@ -405,7 +408,11 @@ impl InternalTelemetryReceiver {
         })?
     }
 
-    /// Drain accumulated registry metrics and send one direct OTLP request.
+    /// Flushes pending snapshots and transactionally sends one direct OTLP request.
+    ///
+    /// The registry lock is released before encoding and downstream delivery.
+    /// The batch is committed only after the downstream channel accepts it;
+    /// encoding errors, send errors, and cancellation roll it back on drop.
     async fn send_metric_batch(
         effect_handler: &local::EffectHandler<OtapPdata>,
         registry: &TelemetryRegistryHandle,
@@ -421,20 +428,22 @@ impl InternalTelemetryReceiver {
             .map_err(|error| Error::InternalError {
                 message: format!("failed to flush internal metrics collector: {error}"),
             })?;
-        let batch = registry.drain_metric_export_batch();
+        let export = registry.begin_metric_export_batch();
         let Some(metrics) =
             encoder
-                .encode(&batch)
+                .encode(export.batch())
                 .map_err(|error| Error::PdataConversionError {
                     error: error.to_string(),
                 })?
         else {
+            let _ = export.commit();
             return Ok(());
         };
 
         effect_handler
             .send_message(OtapPdata::new(Context::default(), metrics.into()))
             .await?;
+        let _ = export.commit();
         Ok(())
     }
 
@@ -474,6 +483,7 @@ mod tests {
     use otap_df_engine::testing::{create_not_send_channel, setup_test_runtime, test_node};
     use otap_df_pdata::OtapPayload;
     use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
     use otap_df_telemetry::instrument::Counter;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -649,6 +659,51 @@ mod tests {
         Config::default()
             .validate_metrics_enabled(false)
             .expect("an empty metrics config is valid when metrics are disabled");
+    }
+
+    #[test]
+    fn failed_downstream_send_restores_drained_metric_batch() {
+        let (runtime, local_tasks) = setup_test_runtime();
+        runtime.block_on(local_tasks.run_until(async move {
+            let registry = TelemetryRegistryHandle::new();
+            let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
+                registry.register_metric_set(EmptyAttributes());
+            registry.accumulate_metric_set_snapshot(
+                metric_set.metric_set_key(),
+                &[otap_df_telemetry::metrics::MetricValue::U64(9)],
+            );
+            let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec())
+                .expect("valid empty OTLP resource");
+
+            let (output_tx, output_rx) = create_not_send_channel(1);
+            drop(output_rx);
+            let mut outputs = HashMap::new();
+            let _ = outputs.insert("".into(), EngineSender::Local(LocalSender::mpsc(output_tx)));
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+            let effect_handler = local::EffectHandler::new(
+                test_node("internal_telemetry_receiver"),
+                outputs,
+                None,
+                runtime_ctrl_tx,
+                metrics_reporter,
+            );
+
+            let _error = InternalTelemetryReceiver::send_metric_batch(
+                &effect_handler,
+                &registry,
+                Some(&encoder),
+            )
+            .await
+            .expect_err("closed downstream must fail delivery");
+
+            let retry = registry.drain_metric_export_batch();
+            assert_eq!(retry.metric_sets.len(), 1);
+            assert_eq!(
+                retry.metric_sets[0].values,
+                vec![otap_df_telemetry::metrics::MetricValue::U64(9)]
+            );
+        }));
     }
 
     #[test]
