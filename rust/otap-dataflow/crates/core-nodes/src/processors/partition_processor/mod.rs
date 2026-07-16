@@ -446,7 +446,7 @@ mod test {
             test_node,
         },
     };
-    use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
+    use otap_df_otap::{pdata::Context, testing::{TestCallData, next_ack, next_nack}};
     use otap_df_pdata::{
         OtlpProtoBytes, TryFromWithOptions,
         otap::Logs,
