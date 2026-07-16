@@ -6903,6 +6903,7 @@ dependencies = [
  "otap-df-config",
  "otap-df-pdata",
  "otap-df-pdata-views",
+ "otap-df-telemetry-macros",
  "parking_lot",
  "prometheus",
  "prost",

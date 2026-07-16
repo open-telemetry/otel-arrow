@@ -25,8 +25,8 @@ creating a separate metric set or instrument for every value.
 | Registration | Fixed at registration. | At registration. | Plain-set cost. |
 | Measurement | Varies by recording. | `with(...)`. | Bounded lookup. |
 
-For example, a logs-only receiver can use registration `signal = logs`. A
-processor which records losses for logs, metrics, and traces should use
+For example, a component that only handles logs can use registration `signal =
+logs`. A component which records losses for logs, metrics, and traces should use
 measurement `signal`; if it also distinguishes expired and dropped records,
 include measurement `outcome`. One metric set can combine both kinds: use a
 registration attribute for context shared by every recording and measurement
@@ -40,12 +40,7 @@ Use `#[attribute_value]` where an OpenTelemetry semantic convention specifies a
 different wire value.
 
 ```rust
-#[derive(Debug, Clone, Copy, AttributeEnum)]
-pub enum Signal {
-    Logs,
-    Metrics,
-    Traces,
-}
+use otap_df_telemetry_macros::AttributeEnum;
 
 #[derive(Debug, Clone, Copy, AttributeEnum)]
 pub enum LossOutcome {
@@ -67,99 +62,110 @@ compile time. A measurement metric set whose total combinations exceed the
 2000-series budget fails to compile. Keep the product of all enum variants
 deliberately small.
 
-## Registration attributes
+## Registration API
 
-Declare a regular `#[attribute_set]`, attach it to the metric set with
-`registration_attributes`, and pass the value by reference when registering. The
-value applies to every datapoint from that registration.
+Component code always registers through the generated `MyMetrics::register(...)`
+method. Pass the component's `PipelineContext` as the first argument:
+`MyMetrics::register(&pipeline_ctx)` for metric sets without registration
+attributes, or `MyMetrics::register(&pipeline_ctx, &attrs)` when they are
+declared. `PipelineContext` is the registrar; it selects the metric set's entity
+scope and telemetry registry.
+
+The lower-level registrar and registry methods are intentionally hidden from
+generated documentation: they exist so macro-generated code can select the
+component's entity scope and so pre-existing metric declarations can continue to
+register during migration. Do not call them from new component instrumentation.
+
+## Registration-time attributes
+
+Declare `#[attribute_set(datapoint, registration)]`, attach it to the metric set
+with `registration_attributes`, and pass the value when registering. The value
+applies to every datapoint from that registration.
 
 Every non-composed field in an attribute set becomes an attribute. Its key
 defaults to the field name with underscores replaced by dots. Use
 `#[attribute_key = "..."]` only when the exported key differs from that default.
+Unlike scope and entity attribute sets, registration attributes do not need a
+schema name because they are emitted directly on metric datapoints.
 
 ```rust
-#[attribute_set(name = "receiver.signal")]
-#[derive(Debug, Clone, Copy)]
-pub struct SignalAttributes {
-    pub signal: Signal,
+// This component only works on logs.
+
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+
+// `MetricSignal` is available from `common_attributes`; it is repeated here
+// so this example is self-contained.
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum MetricSignal {
+    Logs,
+    Metrics,
+    Traces,
 }
 
-#[metric_set(name = "receiver.journald", registration_attributes = SignalAttributes)]
+#[attribute_set(datapoint, registration)]
+#[derive(Debug, Clone, Copy)]
+pub struct SignalAttributes {
+    pub signal: MetricSignal,
+}
+
+#[metric_set(name = "component.records", registration_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct JournaldMetrics {
+pub struct RecordMetrics {
     #[metric(unit = "{log_record}")]
     pub records: Counter<u64>,
 }
 
-let attrs = SignalAttributes {
-    signal: Signal::Logs,
-};
-let mut metrics = JournaldMetrics::register(&pipeline_ctx, &attrs);
-metrics.records.add(count);
+let mut metrics = RecordMetrics::register(
+    &pipeline_ctx,
+    &SignalAttributes {
+        signal: MetricSignal::Logs,
+    },
+);
+metrics.records.add(count); // Emits `records{signal="logs"}` in the `component.records` scope.
 ```
 
 Use registration attributes only for context that remains stable for the
 lifetime of the registered metric set. If the value can change from one
 recording to the next, use a measurement attribute instead.
 
-## Combined registration and measurement attributes
+## Measurement-time attributes
 
-A metric set can use fixed context and per-record dimensions together. Supply
-both `registration_attributes` and `measurement_attributes`, then register with
-the fixed attribute value and record through `with(...)`.
-
-```rust
-#[attribute_set(name = "receiver.outcome", measurement)]
-#[derive(Debug, Clone, Copy)]
-pub struct OutcomeAttributes {
-    #[attribute_key = "result"]
-    pub outcome: LossOutcome,
-}
-
-#[metric_set(
-    name = "receiver.journald",
-    registration_attributes = SignalAttributes,
-    measurement_attributes = OutcomeAttributes
-)]
-#[derive(Debug, Default, Clone)]
-pub struct JournaldMetrics {
-    #[metric(unit = "{log_record}")]
-    pub records: Counter<u64>,
-}
-
-let signal = SignalAttributes {
-    signal: Signal::Logs,
-};
-let mut metrics = JournaldMetrics::register(&pipeline_ctx, &signal);
-metrics
-    .with(OutcomeAttributes {
-        outcome: LossOutcome::Dropped,
-    })
-    .records
-    .add(count);
-```
-
-The registration and measurement attribute sets MUST NOT declare the same key.
-The macro rejects overlapping keys at compile time so every datapoint has one
-unambiguous value for each attribute.
-
-## Measurement attributes
-
-Mark the attribute set as `measurement`, attach it to the metric set with
-`measurement_attributes`, and use the generated `with(...)` method before
+Use `#[attribute_set(datapoint, measurement)]`, attach the type to the metric
+set with `measurement_attributes`, and use the generated `with(...)` method when
 recording. `with(...)` returns a view of the whole metric set for that attribute
 combination.
 
 ```rust
-#[attribute_set(name = "processor.loss", measurement)]
+// This component has multiple possible outcomes.
+
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+
+// `MetricSignal` is available from `common_attributes`; it is repeated here
+// so this example is self-contained.
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum MetricSignal {
+    Logs,
+    Metrics,
+    Traces,
+}
+
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum LossOutcome {
+    Dropped,
+    Expired,
+}
+
+#[attribute_set(datapoint, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct LossAttributes {
-    pub signal: Signal,
+    pub signal: MetricSignal,
     #[attribute_key = "result"]
     pub outcome: LossOutcome,
 }
 
-#[metric_set(name = "processor.loss", measurement_attributes = LossAttributes)]
+#[metric_set(name = "component.loss", measurement_attributes = LossAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct LossMetrics {
     #[metric(unit = "{item}")]
@@ -169,29 +175,92 @@ pub struct LossMetrics {
 let mut metrics = LossMetrics::register(&pipeline_ctx);
 metrics
     .with(LossAttributes {
-        signal: Signal::Metrics,
+        signal: MetricSignal::Metrics,
         outcome: LossOutcome::Expired,
     })
     .lost_items
-    .add(count);
-```
+    .add(count); // Emits `lost_items{signal="metrics", result="expired"}` in the `component.loss` scope.
 
-When the attributes are loop-invariant, retain the view and record through it
-repeatedly:
-
-```rust
-let loss = metrics.with(LossAttributes {
-    signal: Signal::Logs,
+// When attributes are loop-invariant, retain the view and record through it repeatedly.
+let mut loss = metrics.with(LossAttributes {
+    signal: MetricSignal::Logs,
     outcome: LossOutcome::Dropped,
 });
 for batch in batches {
-    loss.lost_items.add(batch.len() as u64);
+    loss.lost_items.add(batch.len() as u64); // Emits `lost_items{signal="logs", result="dropped"}` in the `component.loss` scope.
 }
 ```
 
 Measurement buckets are event-driven. A bucket is reported only in intervals
 where the component records through its `with(...)` view. Use a plain or
 registration metric set for continuously sampled gauges and observed values.
+
+## Combined registration and measurement attributes
+
+A metric set can use fixed context and per-record dimensions together. Supply
+both `registration_attributes` and `measurement_attributes`, then register with
+the fixed attribute value and record through `with(...)`.
+
+```rust
+// This component only works on logs but also has multiple possible outcomes.
+
+use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+
+// `MetricSignal` is available from `common_attributes`; it is repeated here
+// so this example is self-contained.
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum MetricSignal {
+    Logs,
+    Metrics,
+    Traces,
+}
+
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub enum LossOutcome {
+    Dropped,
+    Expired,
+}
+
+#[attribute_set(datapoint, registration)]
+#[derive(Debug, Clone, Copy)]
+pub struct SignalAttributes {
+    pub signal: MetricSignal,
+}
+
+#[attribute_set(datapoint, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct OutcomeAttributes {
+    #[attribute_key = "result"]
+    pub outcome: LossOutcome,
+}
+
+#[metric_set(
+    name = "component.records",
+    registration_attributes = SignalAttributes,
+    measurement_attributes = OutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct RecordMetrics {
+    #[metric(unit = "{log_record}")]
+    pub records: Counter<u64>,
+}
+
+let signal = SignalAttributes {
+    signal: MetricSignal::Logs,
+};
+let mut metrics = RecordMetrics::register(&pipeline_ctx, &signal);
+metrics
+    .with(OutcomeAttributes {
+        outcome: LossOutcome::Dropped,
+    })
+    .records
+    .add(count); // Emits `records{signal="logs", result="dropped"}` in the `component.records` scope.
+```
+
+The registration and measurement attribute sets MUST NOT declare the same key.
+The macro rejects overlapping keys at compile time so every datapoint has one
+unambiguous value for each attribute.
 
 ## Export behavior
 

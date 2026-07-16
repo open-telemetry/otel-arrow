@@ -159,7 +159,10 @@ pub enum AttributeKeySchema {
     Composed(&'static [AttributeKeySchema]),
 }
 
-/// Returns whether any registration attribute key is also a measurement attribute key.
+/// Checks for an overlapping registration and measurement attribute key.
+///
+/// This is public only because generated `#[metric_set]` code evaluates it in a
+/// compile-time assertion.
 #[doc(hidden)]
 #[must_use]
 pub const fn has_datapoint_attribute_key_collision(
@@ -226,14 +229,13 @@ pub trait AttributeEnum: Copy {
     }
 }
 
-/// An [`AttributeSetHandler`] whose fields are all [`AttributeEnum`]s and whose
-/// values vary per recorded measurement.
+/// A set of [`AttributeEnum`]s whose values vary per recorded measurement.
 ///
 /// The set maps to a dense mixed-radix bucket space: the first declared field is
 /// the low-order digit. [`CARDINALITY`](Self::CARDINALITY) is the product of the
 /// fields' variant counts and equals the number of buckets a measurement metric set
 /// allocates.
-pub trait MeasurementAttributeSet: AttributeSetHandler + Copy {
+pub trait MeasurementAttributeSet: Copy {
     /// Total number of attribute combinations (product of field variant counts).
     const CARDINALITY: usize;
     /// Per-field descriptors (key + ordered variant strings), declaration order.

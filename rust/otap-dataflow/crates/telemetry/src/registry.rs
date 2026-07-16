@@ -148,9 +148,12 @@ impl TelemetryRegistryHandle {
         self.register_metric_set_for_existing_entity(entity_key, MetricSetRegistry::register::<T>)
     }
 
-    /// Registers a metric set type carrying registration-time datapoint attributes,
-    /// captured from `static_attrs` at registration and attached to every
-    /// datapoint of the set (see `#[metric_set(registration_attributes = ...)]`).
+    /// Internal registrar operation for registration-time datapoint attributes.
+    ///
+    /// This is public only so engine contexts and generated `MetricSet::register`
+    /// methods can select an entity scope. Component code uses the generated
+    /// `MetricSet::register` method.
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_attributes<
         M: RegistrationMetricSetHandler + Debug + Send + Sync,
     >(
@@ -158,15 +161,15 @@ impl TelemetryRegistryHandle {
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
-            metrics.register_with_registration_attributes(entity_key, static_attributes)
+            metrics.register_with_registration_attributes(entity_key, registration_attributes)
         })
     }
 
-    /// Registers a metric set type carrying registration-time datapoint attributes for an
-    /// existing entity key.
+    /// Internal registrar operation for an existing entity key.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_attributes_for_entity<
         M: RegistrationMetricSetHandler + Debug + Send + Sync,
     >(
@@ -174,15 +177,14 @@ impl TelemetryRegistryHandle {
         entity_key: EntityKey,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
-            metrics.register_with_registration_attributes(entity_key, static_attributes)
+            metrics.register_with_registration_attributes(entity_key, registration_attributes)
         })
     }
 
-    /// Registers a measurement metric set, allocating one datapoint bucket per
-    /// combination of the set's measurement enum attributes (see
-    /// `#[metric_set(measurement_attributes = ...)]`).
+    /// Internal registrar operation for a measurement metric set.
+    #[doc(hidden)]
     pub fn register_metric_set_with_measurement_attributes<
         M: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -194,8 +196,9 @@ impl TelemetryRegistryHandle {
         })
     }
 
-    /// Registers a measurement metric set for an existing entity key.
+    /// Internal registrar operation for a measurement metric set on an existing entity.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_measurement_attributes_for_entity<
         M: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -207,9 +210,9 @@ impl TelemetryRegistryHandle {
         })
     }
 
-    /// Registers a metric set with registration-time attributes and
-    /// per-datapoint enum attributes.
+    /// Internal registrar operation for registration and measurement attributes.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_and_measurement_attributes<
         M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -217,18 +220,18 @@ impl TelemetryRegistryHandle {
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MeasurementMetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
             metrics.register_with_registration_and_measurement_attributes::<M>(
                 entity_key,
-                static_attributes,
+                registration_attributes,
             )
         })
     }
 
-    /// Registers a metric set with registration-time and per-measurement attributes for an
-    /// existing entity key.
+    /// Internal registrar operation for combined attributes on an existing entity.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_and_measurement_attributes_for_entity<
         M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -236,11 +239,11 @@ impl TelemetryRegistryHandle {
         entity_key: EntityKey,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MeasurementMetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
             metrics.register_with_registration_and_measurement_attributes::<M>(
                 entity_key,
-                static_attributes,
+                registration_attributes,
             )
         })
     }
@@ -369,9 +372,8 @@ impl TelemetryRegistryHandle {
     }
 }
 
-/// Captures the current (key, value) pairs of a registration attribute set as owned
-/// strings for storage on a registered metric set entry.
-fn capture_static_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(String, String)> {
+/// Captures registration attributes as owned strings for storage on a metric set entry.
+fn capture_registration_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(String, String)> {
     attrs
         .iter_attributes()
         .map(|(k, v)| (k.to_string(), v.to_string_value()))

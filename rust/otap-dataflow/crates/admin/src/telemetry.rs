@@ -21,6 +21,7 @@ use axum::{Json, Router};
 use otap_df_admin_types::telemetry as api;
 use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+use otap_df_telemetry::common_attributes::MetricSignal;
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
 use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
@@ -3583,21 +3584,15 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Copy, AttributeEnum)]
-    enum DatapointSignal {
-        Logs,
-        Metrics,
-    }
-
-    #[derive(Debug, Clone, Copy, AttributeEnum)]
     enum DatapointCollision {
         Value,
     }
 
-    #[attribute_set(name = "test.prometheus.signal", measurement)]
+    #[attribute_set(datapoint, measurement)]
     #[derive(Debug, Clone, Copy)]
     struct DatapointSignalAttributes {
         #[attribute_key = "signal"]
-        signal: DatapointSignal,
+        signal: MetricSignal,
         #[attribute_key = "otel.scope.foo"]
         scope_foo: DatapointCollision,
     }
@@ -3627,14 +3622,14 @@ mod tests {
             );
         metrics
             .with(DatapointSignalAttributes {
-                signal: DatapointSignal::Logs,
+                signal: MetricSignal::Logs,
                 scope_foo: DatapointCollision::Value,
             })
             .events
             .add(7);
         metrics
             .with(DatapointSignalAttributes {
-                signal: DatapointSignal::Metrics,
+                signal: MetricSignal::Metrics,
                 scope_foo: DatapointCollision::Value,
             })
             .events

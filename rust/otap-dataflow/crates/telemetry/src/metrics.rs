@@ -324,11 +324,13 @@ pub trait RegistrationMetricSetHandler: MetricSetHandler + Default {
     type RegistrationAttributes: AttributeSetHandler;
 }
 
-/// Registers metric sets in a context that supplies their entity scope.
+/// Implementation detail used by generated [`metric_set`](otap_df_telemetry_macros::metric_set)
+/// `register` methods.
 ///
-/// Implementations own the scope-selection policy. Generated metric-set
-/// `register` methods use this trait so callers do not choose among
-/// registration/measurement registration method names.
+/// This trait is public so macro expansions can use it outside this crate.
+/// Contexts implement it to select the owning entity scope; component code must
+/// use the generated `MyMetrics::register(...)` method instead.
+#[doc(hidden)]
 pub trait MetricSetRegistrar {
     /// Registers a metric set without datapoint attributes.
     fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
@@ -399,6 +401,16 @@ impl<M: MeasurementMetricSetHandler> MeasurementMetricSet<M> {
         debug_assert!(bucket < self.buckets.len(), "bucket index out of range");
         self.touched[bucket / 64] |= 1u64 << (bucket % 64);
         &mut self.buckets[bucket]
+    }
+
+    /// Returns an existing bucket without marking it for reporting.
+    /// Useful for testing.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, attrs: M::MeasurementAttributes) -> &M {
+        let bucket = attrs.bucket_index();
+        debug_assert!(bucket < self.buckets.len(), "bucket index out of range");
+        &self.buckets[bucket]
     }
 
     /// Returns the metric set key associated with this measurement metric set.
@@ -668,7 +680,7 @@ impl MetricSetRegistry {
     >(
         &mut self,
         entity_key: EntityKey,
-        static_attributes: Vec<(String, String)>,
+        registration_attributes: Vec<(String, String)>,
     ) -> MetricSet<T> {
         let metrics = T::default();
         let descriptor = metrics.descriptor();
@@ -681,7 +693,7 @@ impl MetricSetRegistry {
                 entity_key,
                 1,
                 &[],
-                static_attributes,
+                registration_attributes,
             ));
 
         MetricSet {
@@ -721,7 +733,7 @@ impl MetricSetRegistry {
     pub(crate) fn register_with_registration_and_measurement_attributes<M>(
         &mut self,
         entity_key: EntityKey,
-        static_attributes: Vec<(String, String)>,
+        registration_attributes: Vec<(String, String)>,
     ) -> MeasurementMetricSet<M>
     where
         M: MeasurementMetricSetHandler + Debug + Send + Sync,
@@ -737,7 +749,7 @@ impl MetricSetRegistry {
                 entity_key,
                 M::MeasurementAttributes::CARDINALITY,
                 M::MeasurementAttributes::DESCRIPTORS,
-                static_attributes,
+                registration_attributes,
             ));
 
         MeasurementMetricSet::new(metrics_key, entity_key)
