@@ -275,16 +275,10 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     _ => {
                         // there are multiple partitions - need to emit while shuffling contexts..
 
-                        // save the original headers - they will be cloned for each batch
-                        let original_headers = inbound_context
-                            .transport_headers()
-                            .cloned()
-                            .unwrap_or_default();
-
                         // create context key for inbound batch
                         let inbound_ctx_key =
                             self.contexts
-                                .insert_inbound(inbound_context, None)
+                                .insert_inbound(inbound_context.clone(), None)
                                 .ok_or_else(|| otap_df_engine::error::Error::ProcessorError {
                                     processor: effect_handler.processor_id(),
                                     kind: ProcessorErrorKind::Other,
@@ -325,8 +319,9 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })?;
 
                             // set the transport header
-                            let mut pdata_context = Context::default();
-                            let mut headers = original_headers.clone();
+                            let mut pdata_context = inbound_context.clone();
+                            let mut headers =
+                                pdata_context.take_transport_headers().unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
                                 self.header_name.clone(),
                                 &self.serialization_strategy,
@@ -440,15 +435,12 @@ mod test {
     use super::*;
 
     use otap_df_engine::{
-        capability::registry::Capabilities,
-        context::ControllerContext,
-        control::{
+        FlowMetricAccumulation, capability::registry::Capabilities, context::ControllerContext, control::{
             PipelineCompletionMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
-        },
-        testing::{
+        }, testing::{
             processor::{TestContext, TestRuntime},
             test_node,
-        },
+        }
     };
     use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use otap_df_pdata::{
@@ -818,7 +810,7 @@ mod test {
     }
 
     #[test]
-    fn test_preserves_existing_headers() {
+    fn test_preserves_existing_context_including_headers() {
         let runtime = TestRuntime::<OtapPdata>::new();
         let expression = "attributes[\"x\"]";
         let header_name = "partition-header";
@@ -867,15 +859,25 @@ mod test {
                 let mut headers = context.take_transport_headers().unwrap_or_default();
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
-                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
+                let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                pdata.start_flow_metric();
+                pdata.add_flow_compute(5);
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
 
-                for out in ctx.drain_pdata().await {
+                for mut out in ctx.drain_pdata().await {
+                    let flow = out.take_flow_compute();
+                    assert_eq!(flow, Some(5));
                     let (mut context, _) = out.into_parts();
                     let headers = context.take_transport_headers().unwrap();
                     assert!(headers.find_by_name("h1").next().is_some());
+
+                    assert_eq!(
+                        context.peer_addr(),
+                        Some("10.0.0.1:5005".parse().unwrap())
+                    );
                 }
 
                 // assert headers also preserved for a single partition batch
