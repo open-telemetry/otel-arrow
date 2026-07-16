@@ -41,10 +41,7 @@ use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::registry::{EntityKey, TelemetryRegistryHandle};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
-use std::time::{Duration, Instant};
-
-/// Maximum total time spent handing off the final engine metrics snapshot.
-const TERMINAL_REPORTING_TIMEOUT: Duration = Duration::from_secs(5);
+use std::time::Instant;
 
 /// Engine-wide metrics emitted once per engine instance.
 #[metric_set(name = "engine")]
@@ -167,17 +164,11 @@ impl EngineMetricsMonitor {
         self.reporter.report(&mut self.metrics)
     }
 
-    /// Samples and reliably hands off the final engine-wide metric values.
+    /// Samples and reliably hands off final values without exceeding `deadline`.
     ///
     /// The collector barrier completes before this monitor unregisters its
     /// metric-set key, preventing an accepted terminal snapshot from arriving
     /// after the registry entry has been removed.
-    pub async fn finish_reporting(&mut self) -> Result<(), otap_df_telemetry::error::Error> {
-        self.finish_reporting_until(Instant::now() + TERMINAL_REPORTING_TIMEOUT)
-            .await
-    }
-
-    /// Samples and reliably hands off final values without exceeding `deadline`.
     pub async fn finish_reporting_until(
         &mut self,
         deadline: Instant,
@@ -266,7 +257,7 @@ mod tests {
 
         // Do a small busy-spin so there is measurable CPU time.
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(10) {
+        while start.elapsed() < std::time::Duration::from_millis(10) {
             let _ = std::hint::black_box(0u64.wrapping_add(1));
         }
 

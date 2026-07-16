@@ -364,6 +364,31 @@ impl<M: MetricSetHandler + Default + Debug + Send + Sync> Drop for RegisteredMet
     }
 }
 
+/// Completes the reliable handoff shared by actor-owned metric states.
+async fn finish_registered_metric_set_reporting<M>(
+    reporter: &MetricsReporter,
+    registered: Option<&RegisteredMetricSet<M>>,
+    dirty: &mut bool,
+    deadline: Instant,
+) -> Result<(), TelemetryError>
+where
+    M: MetricSetHandler + Default + Debug + Send + Sync,
+{
+    let Some(registered) = registered else {
+        return Ok(());
+    };
+
+    if *dirty
+        && reporter
+            .report_snapshot_reliably_until(registered.metrics.snapshot(), deadline)
+            .await?
+            == ReportOutcome::Sent
+    {
+        *dirty = false;
+    }
+    reporter.flush_until(deadline).await
+}
+
 pub(crate) struct RuntimeControlMetricsState {
     level: MetricLevel,
     reporter: MetricsReporter,
@@ -728,27 +753,14 @@ impl RuntimeControlMetricsState {
         &mut self,
         deadline: Instant,
     ) -> Result<(), TelemetryError> {
-        if self.metrics.is_none() {
-            return Ok(());
-        }
         self.report_if_needed()?;
-        if self.dirty {
-            let snapshot = self
-                .metrics
-                .as_ref()
-                .expect("metrics presence checked above")
-                .metrics
-                .snapshot();
-            if self
-                .reporter
-                .report_snapshot_reliably_until(snapshot, deadline)
-                .await?
-                == ReportOutcome::Sent
-            {
-                self.dirty = false;
-            }
-        }
-        self.reporter.flush_until(deadline).await
+        finish_registered_metric_set_reporting(
+            &self.reporter,
+            self.metrics.as_ref(),
+            &mut self.dirty,
+            deadline,
+        )
+        .await
     }
 }
 
@@ -962,26 +974,13 @@ impl PipelineCompletionMetricsState {
         &mut self,
         deadline: Instant,
     ) -> Result<(), TelemetryError> {
-        if self.metrics.is_none() {
-            return Ok(());
-        }
         self.report_if_needed()?;
-        if self.dirty {
-            let snapshot = self
-                .metrics
-                .as_ref()
-                .expect("metrics presence checked above")
-                .metrics
-                .snapshot();
-            if self
-                .reporter
-                .report_snapshot_reliably_until(snapshot, deadline)
-                .await?
-                == ReportOutcome::Sent
-            {
-                self.dirty = false;
-            }
-        }
-        self.reporter.flush_until(deadline).await
+        finish_registered_metric_set_reporting(
+            &self.reporter,
+            self.metrics.as_ref(),
+            &mut self.dirty,
+            deadline,
+        )
+        .await
     }
 }
