@@ -2329,7 +2329,14 @@ mod tests {
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otap_df_telemetry::common_attributes::MetricSignal;
+    use otap_df_telemetry::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
+        Temporality,
+    };
+    use otap_df_telemetry::instrument::MmscSnapshot;
+    use otap_df_telemetry::metrics::MetricSetHandler;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -2569,13 +2576,6 @@ mod tests {
     /// selected group keys (`env`, `region`) and preserves grouped attributes.
     #[test]
     fn test_aggregate_metric_groups_group_by_attribute() {
-        use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-        use otap_df_telemetry::common_attributes::MetricSignal;
-        use otap_df_telemetry::descriptor::{
-            AttributeField, AttributeValueType, AttributesDescriptor,
-        };
-        use otap_df_telemetry::metrics::MetricSetHandler;
-
         // Mock Attributes: [env, region]
         static MOCK_ATTR_DESC: AttributesDescriptor = AttributesDescriptor {
             name: "test_attrs",
@@ -2851,8 +2851,6 @@ mod tests {
     /// sub-metrics with expected HELP/TYPE lines.
     #[test]
     fn test_agg_prometheus_mmsc_metrics() {
-        use otap_df_telemetry::instrument::MmscSnapshot;
-
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
             brief: &MMSC_METRICS_DESCRIPTOR,
@@ -2910,8 +2908,6 @@ mod tests {
     /// Ensures line-protocol rendering outputs all MMSC sub-fields for a metric.
     #[test]
     fn test_agg_line_protocol_mmsc_metrics() {
-        use otap_df_telemetry::instrument::MmscSnapshot;
-
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
             brief: &MMSC_METRICS_DESCRIPTOR,
@@ -3478,12 +3474,9 @@ mod tests {
     // End-to-end integration test: format_prometheus_text with real metrics
     // -------------------------------------------------------------------
 
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-    use otap_df_telemetry::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, MetricValueType,
-    };
+    use otap_df_telemetry::descriptor::MetricValueType;
     use otap_df_telemetry::instrument::Counter;
-    use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
+    use otap_df_telemetry::metrics::MetricValue;
     use otap_df_telemetry::reporter::MetricsReporter;
     use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
