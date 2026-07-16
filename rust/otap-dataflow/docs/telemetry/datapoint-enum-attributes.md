@@ -253,6 +253,20 @@ scope remain distinct Prometheus series. See the [Attributes
 Guide](attributes-guide.md#how-the-layers-are-rendered) for the complete layer
 mapping.
 
+## Terminal handoff
+
+Nodes that return a terminal state must include every metric snapshot created
+since the last collection interval. Use `terminal_snapshots()` for every metric
+set. A plain metric set returns its one bucket; a measurement set returns only
+touched, non-empty buckets. Both clear their returned values because terminal
+handoff transfers ownership.
+
+```rust
+let mut snapshots = operational_metrics.terminal_snapshots();
+snapshots.extend(outcome_metrics.terminal_snapshots());
+TerminalState::new(deadline, snapshots);
+```
+
 When separate OpenTelemetry keys map to the same Prometheus label after name
 conversion, their values are joined with `;` in original-key order. Avoid such
 collisions when defining new attributes: the combined value cannot be queried as

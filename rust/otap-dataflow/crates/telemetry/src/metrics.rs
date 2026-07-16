@@ -226,6 +226,18 @@ impl<M: MetricSetHandler> MetricSet<M> {
         }
     }
 
+    /// Takes the snapshot for terminal handoff and clears the metric set.
+    ///
+    /// This uses the same ownership-transfer semantics as
+    /// [`MeasurementMetricSet::terminal_snapshots`]. Plain sets always return
+    /// one snapshot because they have exactly one bucket.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let snapshot = self.snapshot();
+        self.clear_values();
+        vec![snapshot]
+    }
+
     /// Returns the entity key associated with this metric set.
     #[must_use]
     pub const fn entity_key(&self) -> EntityKey {
@@ -491,6 +503,24 @@ impl<M: MeasurementMetricSetHandler> MeasurementMetricSet<M> {
             }
         }
         out
+    }
+
+    /// Takes snapshots for all touched, non-empty buckets during terminal handoff.
+    ///
+    /// Unlike reporter-driven collection, terminal handoff transfers ownership of
+    /// every returned snapshot. The corresponding buckets are therefore cleared
+    /// immediately and cannot be returned again.
+    ///
+    /// This retains measurement sets' event-driven behavior: untouched and empty
+    /// buckets are omitted rather than emitting every possible attribute
+    /// combination.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let snapshots = self.pending_snapshots();
+        for snapshot in &snapshots {
+            self.clear_bucket(snapshot.bucket());
+        }
+        snapshots
     }
 
     pub(crate) fn clear_bucket(&mut self, bucket: usize) {
@@ -1167,6 +1197,20 @@ mod tests {
     }
 
     #[test]
+    fn test_metric_set_terminal_snapshots_take_plain_bucket() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut registry = MetricSetRegistry::default();
+        let mut metrics: MetricSet<MockMetricSet> = registry.register(entity_key);
+        metrics.values[0] = MetricValue::U64(7);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].get_metrics()[0], MetricValue::U64(7));
+        assert_eq!(metrics.values[0], MetricValue::U64(0));
+    }
+
+    #[test]
     fn test_measurement_metric_set_get_and_snapshot_decode_attributes() {
         let mut entities = EntityRegistry::default();
         let entity_key = register_entity(&mut entities, "value");
@@ -1191,6 +1235,30 @@ mod tests {
             snapshots[0].get_metrics(),
             &[MetricValue::U64(7), MetricValue::U64(0)]
         );
+    }
+
+    #[test]
+    fn test_measurement_metric_set_terminal_snapshots_take_touched_buckets() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut registry = MetricSetRegistry::default();
+        let mut metrics: MeasurementMetricSet<MockMetricSet> =
+            registry.register_with_measurement_attributes(entity_key);
+
+        metrics.with(MockMeasurementAttributes::Second).values[0] = MetricValue::U64(7);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].bucket(), 1);
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("second")
+        );
+        assert_eq!(
+            metrics.get(MockMeasurementAttributes::Second).values[0],
+            MetricValue::U64(0)
+        );
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 
     #[test]
