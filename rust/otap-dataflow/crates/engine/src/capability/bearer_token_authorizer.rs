@@ -8,15 +8,20 @@
 //! token**. Given the token presented on an inbound request, it returns a
 //! single allow/deny [`AuthzDecision`].
 //!
-//! A `BearerTokenAuthorizer` performs **both** authentication (establishing who
-//! the caller is from the token) and authorization (deciding whether that
-//! caller may act), behind one call, so a receiver depends on this single
-//! capability rather than orchestrating the steps itself. For example, a
-//! Kubernetes service-account-token authorizer validates the token via the
-//! `TokenReview` API (authentication) and then checks the returned service
-//! account against a configured allow-list (authorization) — deriving both the
-//! trust source and the allowed identities from its own configuration, so the
-//! caller supplies only the token.
+//! A `BearerTokenAuthorizer` performs **authentication** (establishing who the
+//! caller is from the token) and **admission** (deciding whether that token is
+//! acceptable — e.g. against a configured allow-list), behind one call, so a
+//! receiver depends on this single capability rather than orchestrating the
+//! steps itself. For example, a Kubernetes service-account-token authorizer
+//! validates the token via the `TokenReview` API (authentication) and then
+//! checks the returned service account against a configured allow-list
+//! (admission) — deriving both the trust source and the allowed identities from
+//! its own configuration, so the caller supplies only the token.
+//!
+//! It admits on the token alone; it does not perform contextual, per-request
+//! authorization (route, tenant, signal, or action scoping), which needs
+//! request context it never receives and belongs downstream — consuming the
+//! [`AuthorizedIdentity`] this capability emits.
 //!
 //! This capability is bearer-specific by design (the credential is always a
 //! token string) and **transport- and library-agnostic**: the token is carried
@@ -117,7 +122,12 @@ fn strip_bearer_prefix(header_value: &str) -> Option<&str> {
 /// audience; other authorizers populate them from their own token model. Both
 /// are optional so an authorizer that allows without a meaningful identity (e.g.
 /// a static allow-list) can return an empty identity.
+///
+/// Marked `#[non_exhaustive]`: as the input to downstream per-tenant/route
+/// authorization it is expected to grow (e.g. OIDC groups/claims), and this
+/// keeps such additions non-breaking.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AuthorizedIdentity {
     subject: Option<String>,
     audience: Option<String>,
@@ -157,7 +167,29 @@ impl AuthorizedIdentity {
     }
 }
 
-/// The outcome of an authorization decision.
+/// Why a request was denied.
+///
+/// Coarse and scheme-agnostic so it is safe to use as a low-cardinality metric
+/// label. Scheme-specific detail (`invalid_aud`, `expired`, a service-account
+/// name, an IP, …) belongs in [`AuthzDecision::Deny::detail`] for logs, or in an
+/// authorizer's own metrics — never inflate this enum with per-request values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DenyReason {
+    /// No credential was presented (maps to HTTP 401 / gRPC `UNAUTHENTICATED`).
+    MissingCredential,
+    /// A credential was presented but authentication failed — malformed,
+    /// expired, bad signature, or untrusted issuer/audience (401 /
+    /// `UNAUTHENTICATED`).
+    InvalidCredential,
+    /// Authentication succeeded, but the identity is not allowed by the
+    /// authorizer's own admission policy / allow-list (HTTP 403 / gRPC
+    /// `PERMISSION_DENIED`). This is admission, not contextual per-request
+    /// authorization — that needs request context and belongs downstream.
+    NotPermitted,
+}
+
+/// The outcome of an admission decision.
 ///
 /// A [`Deny`](AuthzDecision::Deny) is a **successful** decision, not an error:
 /// the authorizer reached a verdict and the answer was "no". An error from
@@ -165,17 +197,20 @@ impl AuthorizedIdentity {
 /// decision at all (see that method's docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthzDecision {
-    /// The request is permitted, carrying the authenticated identity so a
+    /// The request is admitted, carrying the authenticated identity so a
     /// consumer can propagate it downstream (e.g. for multi-tenant routing).
     Allow {
         /// The authenticated principal the authorizer identified.
         identity: AuthorizedIdentity,
     },
-    /// The request is denied, optionally with a human-readable reason (safe to
-    /// surface to operators; do not leak policy internals to untrusted callers).
+    /// The request is denied.
     Deny {
-        /// Why the request was denied, if the authorizer supplied a reason.
-        reason: Option<String>,
+        /// Coarse, low-cardinality category — safe to use as a metric label.
+        reason: DenyReason,
+        /// Optional human-readable detail for logs only; never use as a metric
+        /// label. Safe to surface to operators, but do not leak policy
+        /// internals to untrusted callers.
+        detail: Option<String>,
     },
 }
 
@@ -195,18 +230,24 @@ impl AuthzDecision {
         }
     }
 
-    /// Constructs a [`Deny`](AuthzDecision::Deny) decision with a reason.
+    /// Constructs a [`Deny`](AuthzDecision::Deny) with a coarse `reason` and no
+    /// detail.
     #[must_use]
-    pub fn deny(reason: impl Into<String>) -> Self {
+    pub fn deny(reason: DenyReason) -> Self {
         Self::Deny {
-            reason: Some(reason.into()),
+            reason,
+            detail: None,
         }
     }
 
-    /// Constructs a [`Deny`](AuthzDecision::Deny) decision with no reason.
+    /// Constructs a [`Deny`](AuthzDecision::Deny) with a coarse `reason` and a
+    /// human-readable `detail` (for logs only — never a metric label).
     #[must_use]
-    pub fn denied() -> Self {
-        Self::Deny { reason: None }
+    pub fn deny_with_detail(reason: DenyReason, detail: impl Into<String>) -> Self {
+        Self::Deny {
+            reason,
+            detail: Some(detail.into()),
+        }
     }
 
     /// Returns `true` for any [`Allow`](AuthzDecision::Allow).
@@ -225,11 +266,11 @@ impl AuthzDecision {
     }
 }
 
-/// Authenticates and authorizes an inbound bearer token against a configured
+/// Authenticates and admits an inbound bearer token against a configured
 /// policy.
 #[capability(
     name = "bearer_token_authorizer",
-    description = "Authenticates and authorizes an inbound bearer token against a configured policy"
+    description = "Authenticates and admits an inbound bearer token against a configured policy"
 )]
 pub trait BearerTokenAuthorizer {
     /// Decides whether the caller presenting `credential` is permitted.
@@ -240,11 +281,20 @@ pub trait BearerTokenAuthorizer {
     ///
     /// The authorizer **authenticates** the token (verifying its
     /// signature/authenticity, expiry, issuer, audience, or via an external
-    /// check such as a Kubernetes `TokenReview`) and then **authorizes** the
-    /// resulting identity — both steps behind this one call, so a receiver need
-    /// not authenticate separately. The trust source and the allowed identities
-    /// come from the authorizer's own configuration, so the caller supplies
-    /// only the credential.
+    /// check such as a Kubernetes `TokenReview`) and then **admits** the
+    /// resulting identity against its own policy (e.g. an allow-list) — both
+    /// steps behind this one call, so a receiver need not authenticate
+    /// separately. The trust source and the allowed identities come from the
+    /// authorizer's own configuration, so the caller supplies only the
+    /// credential. Admission is on the token alone; contextual per-request
+    /// authorization (route, tenant, signal, action) is a downstream concern.
+    ///
+    /// Decision caching and freshness are the implementation's concern: an
+    /// authorizer that wants to avoid a backend round-trip per request (e.g. a
+    /// `TokenReview` call) should cache internally, keyed by the opaque token
+    /// and bounded by its own TTL. [`AuthzDecision::Allow`] deliberately carries
+    /// no expiry or validity window, so callers stay simple and never manage
+    /// freshness.
     ///
     /// Returns `Ok(`[`AuthzDecision::Allow`]`)` or `Ok(`[`AuthzDecision::Deny`]`)`
     /// when the authorizer reaches a verdict — a deny (including an
@@ -395,19 +445,28 @@ mod tests {
             Some(&AuthorizedIdentity::new())
         );
 
-        assert!(!AuthzDecision::denied().is_allowed());
-        assert!(!AuthzDecision::deny("rbac_failed").is_allowed());
-        assert_eq!(AuthzDecision::denied().identity(), None);
+        assert!(!AuthzDecision::deny(DenyReason::MissingCredential).is_allowed());
+        assert!(
+            !AuthzDecision::deny_with_detail(DenyReason::NotPermitted, "rbac_failed").is_allowed()
+        );
+        assert_eq!(
+            AuthzDecision::deny(DenyReason::InvalidCredential).identity(),
+            None
+        );
 
         assert_eq!(
-            AuthzDecision::deny("nope"),
+            AuthzDecision::deny_with_detail(DenyReason::NotPermitted, "nope"),
             AuthzDecision::Deny {
-                reason: Some("nope".to_owned())
+                reason: DenyReason::NotPermitted,
+                detail: Some("nope".to_owned())
             }
         );
         assert_eq!(
-            AuthzDecision::denied(),
-            AuthzDecision::Deny { reason: None }
+            AuthzDecision::deny(DenyReason::MissingCredential),
+            AuthzDecision::Deny {
+                reason: DenyReason::MissingCredential,
+                detail: None
+            }
         );
     }
 }
