@@ -57,6 +57,17 @@ flate2 = { workspace = true, optional = true }
 http = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 ryu = { workspace = true, optional = true }
+
+# ClickHouse exporter dependencies (optional, behind feature flag)
+clickhouse = { workspace = true, optional = true }
+clickhouse-ext-arrow = { workspace = true, optional = true }
+secrecy = { workspace = true, optional = true }
+serde-transcode = { workspace = true, optional = true }
+serde_cbor = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+paste = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
@@ -107,6 +118,22 @@ contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
     "kafka-exporter",
+    "clickhouse-exporter",
+]
+clickhouse-exporter = [
+    "dep:clickhouse",
+    "dep:clickhouse-ext-arrow",
+    "dep:secrecy",
+    "dep:serde-transcode",
+    "dep:serde_cbor",
+    "dep:arrow-array",
+    "dep:arrow-schema",
+    "dep:base64",
+    "dep:paste",
+    "dep:uuid",
+    "dep:chrono",
+    "dep:itoa",
+    "dep:ryu",
 ]
 geneva-exporter = [
     "dep:geneva-uploader",
@@ -146,6 +173,7 @@ resource-validator-processor = []
 axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
+insta = { workspace = true }
 criterion = { workspace = true, features = ["html_reports"] }
 data_engine_expressions.workspace = true
 data_engine_recordset.workspace = true
