@@ -100,9 +100,10 @@ config:
     dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
     stream_name: "Custom-MyLogTable_CL"
     dcr: "dcr-abc123def456"
-    # Schema mapping is optional; only the sections you configure are emitted.
-    # Unmapped resource/scope attributes and log-record fields are dropped, not
-    # passed through.
+    # Schema mapping is optional; only the sections you configure are emitted
+    # (plus the mandatory TimeGenerated column, auto-injected from the record's
+    # event time). Unmapped resource/scope attributes and log-record fields are
+    # dropped, not passed through.
     schema:
       # Map OTLP resource attributes to Azure fields.
       resource_mapping:

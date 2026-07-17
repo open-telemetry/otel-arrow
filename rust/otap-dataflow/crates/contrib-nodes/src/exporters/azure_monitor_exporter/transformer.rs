@@ -73,7 +73,6 @@ impl LogRecordField {
         } else if s.eq_ignore_ascii_case("body") {
             Some(Self::Body)
         } else if s.eq_ignore_ascii_case("event_name") {
-            // Add this
             Some(Self::EventName)
         } else {
             None
@@ -1012,8 +1011,9 @@ mod tests {
     #[test]
     fn test_passthrough_mode() {
         let mut config = create_test_config();
-        // `attributes: passthrough` emits all log attributes into one dynamic
-        // column, with no resource/scope/field mappings.
+        // `attributes: passthrough` emits every log attribute as its own
+        // top-level column (one column per attribute key), with no
+        // resource/scope/field mappings.
         config.api.schema = SchemaConfig {
             resource_mapping: HashMap::new(),
             scope_mapping: HashMap::new(),

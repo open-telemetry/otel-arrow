@@ -79,8 +79,8 @@ fn create_config() -> Config {
     }
 }
 
-/// Config that emits all log record attributes as-is into a single dynamic
-/// column via `attributes: passthrough`.
+/// Config that emits every log record attribute as-is as its own top-level
+/// column (one column per attribute key) via `attributes: passthrough`.
 fn create_passthrough_config() -> Config {
     use otap_df_contrib_nodes::exporters::azure_monitor_exporter::config::{
         ApiConfig, HeartbeatConfig, SchemaConfig,

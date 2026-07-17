@@ -112,11 +112,13 @@ pub struct ApiConfig {
 
     /// Schema mapping configuration.
     ///
-    /// When omitted (or left empty), no mappings are applied and rows are
-    /// emitted empty. Only the sections you configure are emitted; unmapped
-    /// resource attributes, scope attributes, and log-record fields are dropped,
-    /// not passed through. See [`SchemaConfig`] for per-section mapping,
-    /// including attribute passthrough on `log_record_mapping`.
+    /// When omitted (or left empty), no mappings are applied: only the
+    /// mandatory `TimeGenerated` column is auto-injected (from the record's
+    /// event time), and every other section is empty. Only the sections you
+    /// configure are emitted; unmapped resource attributes, scope attributes,
+    /// and log-record fields are dropped, not passed through. See
+    /// [`SchemaConfig`] for per-section mapping, including attribute passthrough
+    /// on `log_record_mapping`.
     #[serde(default)]
     pub schema: SchemaConfig,
 
