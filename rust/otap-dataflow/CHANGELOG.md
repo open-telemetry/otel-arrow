@@ -109,7 +109,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   Not yet usable: this is internal-only foundation work with no behavior change. It adds the
   `TopicBroadcastAckMode` enum, a consensus-capable publish tracker, and a reserve/commit ring split,
   all gated behind callers that still pass `First`. The `all` mode is not wired into the broadcast
-  engine and is not configurable yet — those land in follow-up PRs under #2252.
+  engine and is not configurable yet - those land in follow-up PRs under #2252.
 
 - `engine`: `otap-df-ctl` now lets library embedders override the CLI identity used in output. A new `Branding` type (binary name + output-envelope `schemaVersion`) and a `run_with_terminal_and_diagnostics_branded` entrypoint allow a downstream binary that embeds the library to emit help, shell completions, and machine-readable JSON envelopes under its own identity instead of `dfctl`. The standalone `dfctl` binary and the existing public entrypoints are unchanged; they use the default `dfctl` / `dfctl/v1` branding. ([#3370](https://github.com/open-telemetry/otel-arrow/issues/3370))
   Initial scope covers the binary name and envelope `schemaVersion`. Schema catalog identifiers, schema `$id` URLs, `DFCTL_*` environment-variable prefixes, and the interactive TUI command hints remain `dfctl`-branded and may be addressed in follow-ups.
@@ -203,7 +203,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   spec). When two scopes emit the same metric name with different descriptions
   (e.g. `cpu_utilization`, `pending_sends.buffered`), the exporter keeps the
   first `# HELP` and logs an "Instrument description conflict" warning on every
-  scrape. No data is lost — each scope remains a distinct time series — so the
+  scrape. No data is lost - each scope remains a distinct time series - so the
   warning was pure noise. The internal-telemetry log filter now adds a
   field-scoped directive
   (`opentelemetry-prometheus[{metric_description}]=error`) that silences only
@@ -227,7 +227,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   The exporter's enqueue loop now checks for shutdown signals while waiting for
   queue capacity, and gRPC connection attempts are abortable on shutdown.
 
-- `pipeline`: The journald receiver now follows newly appended entries when `start_at: end` and no checkpoint exists — including on an empty journal, or one whose filters match none of the existing entries. Previously it sought the journal tail but never anchored the read head, so the follow loop never advanced onto new entries: a fresh `start_at: end` receiver emitted no records and never committed a checkpoint. ([#3395](https://github.com/open-telemetry/otel-arrow/issues/3395))
+- `pipeline`: The journald receiver now follows newly appended entries when `start_at: end` and no checkpoint exists - including on an empty journal, or one whose filters match none of the existing entries. Previously it sought the journal tail but never anchored the read head, so the follow loop never advanced onto new entries: a fresh `start_at: end` receiver emitted no records and never committed a checkpoint. ([#3395](https://github.com/open-telemetry/otel-arrow/issues/3395))
   `sd_journal_seek_tail()` parks the read head after the most recent entry without making any entry current; from there a bare `sd_journal_next()` advances toward a following entry, finds none, and returns `0` (the EOF marker) without anchoring; it does not move backward. (It is `sd_journal_step_one()`, not `sd_journal_next()`, that libsystemd documents as behaving like `sd_journal_previous()` at the tail.) The fresh `StartAt::End` start now issues `sd_journal_seek_tail()` then a single `sd_journal_previous()` to anchor on the last existing entry, so the worker's first `next()` steps forward onto genuinely new entries. When `previous()` finds no entry (empty or fully-filtered journal) the head is repositioned with `sd_journal_seek_head()` to avoid a permanent stall at the tail. This is the accepted best-effort idiom (see systemd/systemd#17662); across rotated or multi-file journals the tail position is approximate, and `start_at: end` has no durable resume anchor until the first checkpoint commit.
 - `pipeline`: OTLP gRPC exporter now classifies gRPC status codes as retryable or permanent per the OTLP specification. The OTLP gRPC receiver maps permanent NACKs to INTERNAL and transient NACKs to UNAVAILABLE. ([#1920](https://github.com/open-telemetry/otel-arrow/issues/1920))
 - `pipeline`: Report durable buffer per-signal data-loss metrics as synchronous Counters, lowers cost to export delta temporality. ([#3117](https://github.com/open-telemetry/otel-arrow/issues/3117))
