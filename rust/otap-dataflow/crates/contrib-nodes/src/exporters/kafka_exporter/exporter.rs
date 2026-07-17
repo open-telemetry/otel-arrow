@@ -770,9 +770,38 @@ pub mod test_support {
     }
 
     #[cfg(test)]
-    mod unit_tests {
+    mod tests {
         use super::*;
+        use crate::common::kafka::MSG_FORMAT_HEADER;
+        use crate::exporters::kafka_exporter::config::PartitionerStrategy;
         use crate::exporters::kafka_exporter::config::TlsConfig;
+        use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
+        use bytes::Bytes;
+        use otap_df_config::node::NodeUserConfig;
+        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+        use otap_df_engine::Interests;
+        use otap_df_engine::config::ExporterConfig;
+        use otap_df_engine::control::{
+            Controllable, NodeControlMsg, PipelineCompletionMsgReceiver, RuntimeCtrlMsgReceiver,
+            pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
+        };
+        use otap_df_engine::exporter::ExporterWrapper;
+        use otap_df_engine::local::message::{LocalReceiver, LocalSender};
+        use otap_df_engine::message::{Receiver, Sender};
+        use otap_df_engine::node::NodeWithPDataReceiver;
+        use otap_df_engine::testing::{create_not_send_channel, test_node};
+        use otap_df_otap::pdata::Context;
+        use otap_df_pdata::OtlpProtoBytes;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use prost::Message as _;
+        use rdkafka::config::ClientConfig;
+        use rdkafka::consumer::{Consumer, StreamConsumer};
+        use rdkafka::message::{BorrowedHeaders, Headers, Message as _};
+        use rdkafka::mocking::MockCluster;
+        use rdkafka::producer::DefaultProducerContext;
+        use std::time::Instant;
+        use tokio::task::LocalSet;
+        use tokio::time::{Duration, timeout};
 
         /// Tests that payload is properly cloned for both OTLP and OTAP serialization formats.
         /// This ensures no borrow-after-move errors occur when the encoder consumes the payload.
@@ -1069,6 +1098,560 @@ pub mod test_support {
                 "permanent nack reason should mention the offending topic, got: {}",
                 permanent_reasons[0]
             );
+        }
+
+        // ---- Integration tests (in-process mock Kafka broker) ----
+        //
+        // These use `rdkafka::mocking::MockCluster`, an in-process librdkafka mock
+        // broker, so the tests run with no Docker/external broker and run by default
+        // in CI. Each test drives a fully-wired `KafkaExporter` through the engine's
+        // `ExporterWrapper` (control channel, pdata channel, effect handler), then
+        // consumes the produced records back from the mock broker to assert on the
+        // topic, payload bytes, message-format header, and partition key.
+        /// Opaque bundle of channel handles whose lifetimes must outlive the
+        /// running exporter (dropping them would close their channels).
+        #[allow(dead_code)]
+        struct KeepAlive(Vec<Box<dyn std::any::Any>>);
+
+        /// All the plumbing needed to drive an exporter in a test. The
+        /// [`ExporterWrapper`] itself is returned separately so it can be moved
+        /// into the spawned task while the harness stays borrowed for its
+        /// channels.
+        struct Harness {
+            pdata_tx: Sender<OtapPdata>,
+            control_tx: Sender<NodeControlMsg<OtapPdata>>,
+            runtime_ctrl_tx: otap_df_engine::control::RuntimeCtrlMsgSender<OtapPdata>,
+            completion_tx: otap_df_engine::control::PipelineCompletionMsgSender<OtapPdata>,
+            metrics_reporter: MetricsReporter,
+            _keep_alive: KeepAlive,
+        }
+
+        /// Starts an in-process librdkafka mock cluster
+        /// (`rdkafka::mocking::MockCluster`) and pre-creates the given `topics`,
+        /// each with a single partition.
+        ///
+        /// Returns the mock cluster handle (which must stay alive -- and on the
+        /// current thread, as it is `!Send` -- for the broker to keep serving)
+        /// and its `bootstrap.servers` string.
+        fn start_mock_kafka(
+            topics: &[&str],
+        ) -> (MockCluster<'static, DefaultProducerContext>, String) {
+            let mock = MockCluster::new(1).expect("failed to create mock Kafka cluster");
+            for topic in topics {
+                mock.create_topic(topic, 1, 1)
+                    .expect("failed to create topic on mock cluster");
+            }
+            let brokers = mock.bootstrap_servers();
+            (mock, brokers)
+        }
+
+        /// Creates a `StreamConsumer` subscribed to `topics` on the mock broker,
+        /// used to read back the records the exporter produced.
+        fn create_test_consumer(brokers: &str, topics: &[&str]) -> StreamConsumer {
+            let consumer: StreamConsumer = ClientConfig::new()
+                .set("bootstrap.servers", brokers)
+                .set("group.id", "test-consumer-group")
+                .set("auto.offset.reset", "earliest")
+                .set("enable.auto.commit", "false")
+                .set("session.timeout.ms", "6000")
+                .create()
+                .expect("failed to create test consumer");
+            consumer
+                .subscribe(topics)
+                .expect("failed to subscribe test consumer");
+            consumer
+        }
+
+        /// Wires a fully-formed [`KafkaExporter`] into an [`ExporterWrapper`]
+        /// (control channel, pdata channel, effect handler) so it can be driven
+        /// in a test. Returns the wrapper and the [`Harness`] of channel handles.
+        fn wire_exporter_harness(
+            config: KafkaExporterConfig,
+        ) -> (ExporterWrapper<OtapPdata>, Harness) {
+            let pipeline_ctx = pipeline_context();
+            let node_config = Arc::new(NodeUserConfig::new_exporter_config(KAFKA_EXPORTER_URN));
+            let exporter_config = ExporterConfig::new("test-kafka-exporter");
+            let node_id = test_node(exporter_config.name.clone());
+
+            let mut exporter = ExporterWrapper::local(
+                KafkaExporter::new(pipeline_ctx, config).expect("kafka exporter config is valid"),
+                node_id.clone(),
+                node_config,
+                &exporter_config,
+            );
+
+            let control_tx = exporter.control_sender();
+
+            let (pdata_tx, pdata_rx) = create_not_send_channel::<OtapPdata>(32);
+            let pdata_tx = Sender::Local(LocalSender::mpsc(pdata_tx));
+            let pdata_rx = Receiver::Local(LocalReceiver::mpsc(pdata_rx));
+            exporter
+                .set_pdata_receiver(node_id, pdata_rx)
+                .expect("failed to set pdata receiver");
+
+            let (runtime_ctrl_tx, runtime_ctrl_rx): (_, RuntimeCtrlMsgReceiver<OtapPdata>) =
+                runtime_ctrl_msg_channel(16);
+            let (completion_tx, completion_rx): (_, PipelineCompletionMsgReceiver<OtapPdata>) =
+                pipeline_completion_msg_channel(16);
+            let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+
+            // Keep the read ends alive for the duration of the test; dropping
+            // them would close the channels the exporter writes to.
+            let keep_alive = KeepAlive(vec![
+                Box::new(runtime_ctrl_rx),
+                Box::new(completion_rx),
+                Box::new(metrics_rx),
+            ]);
+
+            let harness = Harness {
+                pdata_tx,
+                control_tx,
+                runtime_ctrl_tx,
+                completion_tx,
+                metrics_reporter,
+                _keep_alive: keep_alive,
+            };
+            (exporter, harness)
+        }
+
+        /// Spawns `exporter.start(...)` on the given current-thread `LocalSet`
+        /// (required for the `!Send` mock cluster).
+        fn spawn_exporter(
+            local: &LocalSet,
+            harness: &Harness,
+            exporter: ExporterWrapper<OtapPdata>,
+        ) {
+            let runtime_ctrl_tx = harness.runtime_ctrl_tx.clone();
+            let completion_tx = harness.completion_tx.clone();
+            let metrics_reporter = harness.metrics_reporter.clone();
+            let _handle = local.spawn_local(async move {
+                let _ = exporter
+                    .start(
+                        runtime_ctrl_tx,
+                        completion_tx,
+                        metrics_reporter,
+                        Interests::empty(),
+                    )
+                    .await;
+            });
+        }
+
+        /// Builds an [`ExportLogsServiceRequest`] with a single log record so
+        /// tests exercise a real OTLP payload (required for OTAP encoding).
+        fn logs_request_bytes() -> Vec<u8> {
+            use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::logs::v1::{
+                LogRecord, ResourceLogs, ScopeLogs,
+            };
+
+            let req = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord {
+                            time_unix_nano: 1,
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            req.encode_to_vec()
+        }
+
+        /// Wraps OTLP logs bytes into an [`OtapPdata`], optionally carrying a
+        /// single transport header.
+        fn logs_pdata(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
+            let proto = OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes));
+            let mut context = Context::default();
+            if let Some((wire_name, value)) = header {
+                let mut headers = TransportHeaders::new();
+                headers.push(TransportHeader {
+                    name: wire_name.to_ascii_lowercase(),
+                    wire_name: wire_name.to_string(),
+                    value_kind: ValueKind::Text,
+                    value: value.as_bytes().to_vec(),
+                });
+                context.set_transport_headers(headers);
+            }
+            OtapPdata::new(context, proto.into())
+        }
+
+        /// Builds an [`ExportTraceServiceRequest`] with a single span, returned
+        /// as OTLP proto bytes wrapped in an [`OtapPdata`].
+        fn traces_pdata() -> (OtapPdata, Vec<u8>) {
+            use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
+
+            let req = ExportTraceServiceRequest {
+                resource_spans: vec![ResourceSpans {
+                    scope_spans: vec![ScopeSpans {
+                        spans: vec![Span {
+                            trace_id: vec![1u8; 16],
+                            span_id: vec![1u8; 8],
+                            name: "span-1".to_string(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+            };
+            let bytes = req.encode_to_vec();
+            let proto = OtlpProtoBytes::ExportTracesRequest(Bytes::from(bytes.clone()));
+            (OtapPdata::new(Context::default(), proto.into()), bytes)
+        }
+
+        /// Builds an [`ExportMetricsServiceRequest`] with a single scope,
+        /// returned as OTLP proto bytes wrapped in an [`OtapPdata`].
+        fn metrics_pdata() -> (OtapPdata, Vec<u8>) {
+            use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+            use otap_df_pdata::proto::opentelemetry::metrics::v1::{ResourceMetrics, ScopeMetrics};
+
+            let req = ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics {
+                    scope_metrics: vec![ScopeMetrics::default()],
+                    ..Default::default()
+                }],
+            };
+            let bytes = req.encode_to_vec();
+            let proto = OtlpProtoBytes::ExportMetricsRequest(Bytes::from(bytes.clone()));
+            (OtapPdata::new(Context::default(), proto.into()), bytes)
+        }
+
+        /// Reads the message-format header value from a consumed record.
+        fn format_header_value(headers: &BorrowedHeaders) -> Vec<u8> {
+            for i in 0..headers.count() {
+                let h = headers.get(i);
+                if h.key == MSG_FORMAT_HEADER {
+                    return h.value.map(<[u8]>::to_vec).unwrap_or_default();
+                }
+            }
+            panic!("record is missing the {MSG_FORMAT_HEADER} header");
+        }
+
+        /// Sends a graceful `Shutdown` control message with a short deadline.
+        async fn send_shutdown(control_tx: &Sender<NodeControlMsg<OtapPdata>>) {
+            control_tx
+                .send(NodeControlMsg::Shutdown {
+                    deadline: Instant::now() + Duration::from_millis(500),
+                    reason: "test done".into(),
+                })
+                .await
+                .expect("send shutdown");
+        }
+
+        #[tokio::test]
+        async fn exports_logs_otlp_to_mock_broker() {
+            let topic = "it-logs-otlp";
+            let (_mock, brokers) = start_mock_kafka(&[topic]);
+            let consumer = create_test_consumer(&brokers, &[topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let payload = logs_request_bytes();
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    harness
+                        .pdata_tx
+                        .send(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let msg = timeout(Duration::from_secs(30), consumer.recv())
+                        .await
+                        .expect("timed out consuming record")
+                        .expect("consume error");
+
+                    assert_eq!(msg.topic(), topic);
+                    assert_eq!(msg.payload().expect("payload"), payload.as_slice());
+                    let headers = msg.headers().expect("record should carry headers");
+                    assert_eq!(format_header_value(headers), MSG_FORMAT_OTLP);
+
+                    send_shutdown(&harness.control_tx).await;
+                })
+                .await;
+        }
+
+        #[tokio::test]
+        async fn exports_traces_otlp_to_mock_broker() {
+            let topic = "it-traces-otlp";
+            let (_mock, brokers) = start_mock_kafka(&[topic]);
+            let consumer = create_test_consumer(&brokers, &[topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_traces(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let (pdata, payload) = traces_pdata();
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    harness.pdata_tx.send(pdata).await.expect("send pdata");
+
+                    let msg = timeout(Duration::from_secs(30), consumer.recv())
+                        .await
+                        .expect("timed out consuming record")
+                        .expect("consume error");
+
+                    assert_eq!(msg.topic(), topic);
+                    assert_eq!(msg.payload().expect("payload"), payload.as_slice());
+                    let headers = msg.headers().expect("record should carry headers");
+                    assert_eq!(format_header_value(headers), MSG_FORMAT_OTLP);
+
+                    send_shutdown(&harness.control_tx).await;
+                })
+                .await;
+        }
+
+        #[tokio::test]
+        async fn exports_metrics_otlp_to_mock_broker() {
+            let topic = "it-metrics-otlp";
+            let (_mock, brokers) = start_mock_kafka(&[topic]);
+            let consumer = create_test_consumer(&brokers, &[topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_metrics(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let (pdata, payload) = metrics_pdata();
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    harness.pdata_tx.send(pdata).await.expect("send pdata");
+
+                    let msg = timeout(Duration::from_secs(30), consumer.recv())
+                        .await
+                        .expect("timed out consuming record")
+                        .expect("consume error");
+
+                    assert_eq!(msg.topic(), topic);
+                    assert_eq!(msg.payload().expect("payload"), payload.as_slice());
+                    let headers = msg.headers().expect("record should carry headers");
+                    assert_eq!(format_header_value(headers), MSG_FORMAT_OTLP);
+
+                    send_shutdown(&harness.control_tx).await;
+                })
+                .await;
+        }
+
+        #[tokio::test]
+        async fn exports_logs_otap_sets_otap_format_header() {
+            use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
+
+            let topic = "it-logs-otap";
+            let (_mock, brokers) = start_mock_kafka(&[topic]);
+            let consumer = create_test_consumer(&brokers, &[topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtapProto))
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let payload = logs_request_bytes();
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    harness
+                        .pdata_tx
+                        .send(logs_pdata(payload.clone(), None))
+                        .await
+                        .expect("send pdata");
+
+                    let msg = timeout(Duration::from_secs(30), consumer.recv())
+                        .await
+                        .expect("timed out consuming record")
+                        .expect("consume error");
+
+                    assert_eq!(msg.topic(), topic);
+                    let headers = msg.headers().expect("record should carry headers");
+                    assert_eq!(format_header_value(headers), MSG_FORMAT_OTAP);
+
+                    // OTAP payload must decode as a BatchArrowRecords wire message.
+                    let decoded = BatchArrowRecords::decode(msg.payload().expect("payload"));
+                    assert!(
+                        decoded.is_ok(),
+                        "OTAP payload should decode as BatchArrowRecords"
+                    );
+
+                    send_shutdown(&harness.control_tx).await;
+                })
+                .await;
+        }
+
+        #[tokio::test]
+        async fn routes_to_topic_from_transport_header() {
+            let static_topic = "it-static-topic";
+            let dynamic_topic = "it-dynamic-topic";
+            let (_mock, brokers) = start_mock_kafka(&[static_topic, dynamic_topic]);
+            let consumer = create_test_consumer(&brokers, &[dynamic_topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_logs(
+                        SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
+                            .with_topic_from_transport_header("x-target-topic"),
+                    )
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let payload = logs_request_bytes();
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    harness
+                        .pdata_tx
+                        .send(logs_pdata(
+                            payload.clone(),
+                            Some(("X-Target-Topic", dynamic_topic)),
+                        ))
+                        .await
+                        .expect("send pdata");
+
+                    // The consumer only subscribes to the dynamic topic, so
+                    // receiving a record proves header-based routing worked.
+                    let msg = timeout(Duration::from_secs(30), consumer.recv())
+                        .await
+                        .expect("timed out consuming record")
+                        .expect("consume error");
+                    assert_eq!(msg.topic(), dynamic_topic);
+
+                    send_shutdown(&harness.control_tx).await;
+                })
+                .await;
+        }
+
+        #[tokio::test]
+        async fn sets_partition_key_from_transport_headers() {
+            let topic = "it-partition-key";
+            let (_mock, brokers) = start_mock_kafka(&[topic]);
+            let consumer = create_test_consumer(&brokers, &[topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_logs(
+                        SignalConfig::new(topic.into(), MessageFormat::OtlpProto)
+                            .with_partition_by_transport_headers(true),
+                    )
+                    .with_partitioning_strategy(PartitionerStrategy::Murmur2Random)
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let payload = logs_request_bytes();
+
+            // Compute the expected key from the same transport header the pdata carries.
+            let pdata = logs_pdata(payload, Some(("X-Tenant-Id", "tenant-123")));
+            let expected_key = {
+                let (context, _payload) = pdata.clone().into_parts();
+                let headers = context
+                    .transport_headers()
+                    .expect("pdata should carry transport headers");
+                partition_key_from_transport_headers(headers)
+                    .expect("headers should produce a partition key")
+            };
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    harness.pdata_tx.send(pdata).await.expect("send pdata");
+
+                    let msg = timeout(Duration::from_secs(30), consumer.recv())
+                        .await
+                        .expect("timed out consuming record")
+                        .expect("consume error");
+
+                    let key = msg.key().expect("record should carry a partition key");
+                    assert_eq!(key, expected_key.as_bytes());
+
+                    send_shutdown(&harness.control_tx).await;
+                })
+                .await;
+        }
+
+        #[tokio::test]
+        async fn shutdown_flushes_buffered_records() {
+            let topic = "it-shutdown-flush";
+            let (_mock, brokers) = start_mock_kafka(&[topic]);
+            let consumer = create_test_consumer(&brokers, &[topic]);
+
+            let config: KafkaExporterConfig =
+                KafkaExporterConfigBuilder::new(&brokers, "it-client")
+                    .with_logs(SignalConfig::new(topic.into(), MessageFormat::OtlpProto))
+                    .try_into()
+                    .expect("config should be valid");
+
+            let (exporter, harness) = wire_exporter_harness(config);
+            let payload = logs_request_bytes();
+
+            let local = LocalSet::new();
+            local
+                .run_until(async {
+                    spawn_exporter(&local, &harness, exporter);
+
+                    // Enqueue several records, then request a graceful shutdown
+                    // with a generous deadline. The exporter awaits each
+                    // delivery inline, so all records must be consumable
+                    // afterward.
+                    for _ in 0..3 {
+                        harness
+                            .pdata_tx
+                            .send(logs_pdata(payload.clone(), None))
+                            .await
+                            .expect("send pdata");
+                    }
+
+                    harness
+                        .control_tx
+                        .send(NodeControlMsg::Shutdown {
+                            deadline: Instant::now() + Duration::from_secs(10),
+                            reason: "flush test".into(),
+                        })
+                        .await
+                        .expect("send shutdown");
+
+                    for i in 0..3 {
+                        let msg = timeout(Duration::from_secs(30), consumer.recv())
+                            .await
+                            .unwrap_or_else(|_| panic!("timed out consuming record {i}"))
+                            .unwrap_or_else(|_| panic!("consume error for record {i}"));
+                        assert_eq!(msg.topic(), topic);
+                        assert_eq!(msg.payload().expect("payload"), payload.as_slice());
+                    }
+                })
+                .await;
         }
     }
 }
