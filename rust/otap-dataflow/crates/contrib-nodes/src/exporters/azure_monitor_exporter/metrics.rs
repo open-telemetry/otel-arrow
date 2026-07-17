@@ -290,6 +290,8 @@ mod tests {
         AzureMonitorExporterMetricsTracker::register(&pipeline_ctx)
     }
 
+    /// Scenario: Export attempts complete with successful and failed outcomes.
+    /// Guarantees: Each outcome records items, batches, and messages in its own metric bucket.
     #[test]
     fn export_metrics_are_partitioned_by_outcome() {
         let mut metrics = new_test_tracker();
@@ -307,12 +309,16 @@ mod tests {
         assert_eq!(failure.messages.get(), 5);
     }
 
+    /// Scenario: HTTP attempts receive successful, throttled, and network-error responses.
+    /// Guarantees: Attempts and latency are partitioned by their bounded response dimension.
     #[test]
     fn http_attempts_are_partitioned_by_response() {
         let mut metrics = new_test_tracker();
         metrics.record_http_attempt(HttpResponse::Http2xx, 10.0);
         metrics.record_http_attempt(HttpResponse::Http2xx, 20.0);
+        metrics.record_http_attempt(HttpResponse::Http400, 25.0);
         metrics.record_http_attempt(HttpResponse::Http429, 30.0);
+        metrics.record_http_attempt(HttpResponse::Http404, 35.0);
         metrics.record_http_attempt(HttpResponse::NetworkError, 40.0);
 
         assert_eq!(metrics.http_for(HttpResponse::Http2xx).responses.get(), 2);
@@ -320,13 +326,17 @@ mod tests {
             metrics.http_for(HttpResponse::Http2xx).latency.get().sum,
             30.0
         );
+        assert_eq!(metrics.http_for(HttpResponse::Http400).responses.get(), 1);
         assert_eq!(metrics.http_for(HttpResponse::Http429).responses.get(), 1);
+        assert_eq!(metrics.http_for(HttpResponse::Http404).responses.get(), 1);
         assert_eq!(
             metrics.http_for(HttpResponse::NetworkError).responses.get(),
             1
         );
     }
 
+    /// Scenario: State mapping gauges are updated for every supported mapping type.
+    /// Guarantees: Each mapping type retains its independently reported gauge value.
     #[test]
     fn state_mappings_are_partitioned_by_mapping_type() {
         let mut metrics = new_test_tracker();
@@ -366,6 +376,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Heartbeat sends succeed and fail.
+    /// Guarantees: Heartbeat counts are partitioned by export outcome.
     #[test]
     fn heartbeat_metrics_are_partitioned_by_outcome() {
         let mut metrics = new_test_tracker();
@@ -395,6 +407,8 @@ mod tests {
         );
     }
 
+    /// Scenario: A measurement metric bucket is recorded and terminal snapshots are requested twice.
+    /// Guarantees: The touched bucket is emitted once and cleared after terminal handoff.
     #[test]
     fn terminal_snapshots_include_touched_measurement_metrics() {
         let mut metrics = new_test_tracker();
@@ -418,6 +432,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Operational and measurement metrics are recorded before reporting.
+    /// Guarantees: Reporting emits both the operational and touched measurement metric sets.
     #[test]
     fn operational_metrics_are_reported() {
         let mut metrics = new_test_tracker();

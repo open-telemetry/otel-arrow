@@ -328,8 +328,10 @@ impl LogsIngestionClient {
 fn http_response_for_status(status: u16) -> HttpResponse {
     match status {
         200..=299 => HttpResponse::Http2xx,
+        400 => HttpResponse::Http400,
         401 => HttpResponse::Http401,
         403 => HttpResponse::Http403,
+        404 => HttpResponse::Http404,
         413 => HttpResponse::Http413,
         429 => HttpResponse::Http429,
         500..=599 => HttpResponse::Http5xx,
@@ -379,8 +381,12 @@ mod tests {
             .expect("failed to create HTTP client")
     }
 
+    /// Scenario: Azure Monitor returns classified client-error and unclassified HTTP statuses.
+    /// Guarantees: 400 and 404 have dedicated metric buckets; other statuses use `Other`.
     #[test]
-    fn classifies_unexpected_status_as_other_response() {
+    fn classifies_client_error_and_unexpected_statuses() {
+        assert_eq!(http_response_for_status(400), HttpResponse::Http400);
+        assert_eq!(http_response_for_status(404), HttpResponse::Http404);
         assert_eq!(http_response_for_status(418), HttpResponse::Other);
     }
 
