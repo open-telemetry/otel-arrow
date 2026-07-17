@@ -9,9 +9,9 @@ pub mod geneva_exporter;
 #[cfg(feature = "azure-monitor-exporter")]
 pub mod azure_monitor_exporter;
 
-/// Kafka Exporter for Apache Kafka
-#[cfg(feature = "kafka-exporter")]
-pub mod kafka_exporter;
 /// ClickHouse Exporter for columnar telemetry storage
 #[cfg(feature = "clickhouse-exporter")]
 pub mod clickhouse_exporter;
+/// Kafka Exporter for Apache Kafka
+#[cfg(feature = "kafka-exporter")]
+pub mod kafka_exporter;
