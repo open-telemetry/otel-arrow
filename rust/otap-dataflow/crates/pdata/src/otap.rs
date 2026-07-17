@@ -26,6 +26,7 @@ pub mod batching_tests;
 /// filter support for the filter processor
 pub mod filter;
 pub mod groups;
+pub mod memory;
 pub mod raw_batch_store;
 pub mod schema;
 #[allow(missing_docs)]
@@ -89,6 +90,24 @@ impl OtapArrowRecords {
             Self::Metrics(_) => Metrics::allowed_payload_types(),
             Self::Traces(_) => Traces::allowed_payload_types(),
         }
+    }
+
+    /// Deduped Arrow-owned buffer capacity retained by this batch set.
+    ///
+    /// This is logical retained memory, not RSS: it excludes allocator,
+    /// struct, and `Arc` overhead, reports zero for externally owned buffers,
+    /// and two separately retained pdatas that share buffers (e.g. split
+    /// outputs) each report the full shared allocation. Sums across
+    /// independently retained pdatas can therefore exceed process RSS; do not
+    /// compare them against RSS or cgroup limits.
+    #[must_use]
+    pub fn retained_memory_bytes(&self) -> usize {
+        let mut seen = memory::CountedAllocations::default();
+        self.allowed_payload_types()
+            .iter()
+            .filter_map(|payload_type| self.get(*payload_type))
+            .map(|batch| memory::record_batch_pinned_bytes(batch, &mut seen))
+            .sum()
     }
 
     /// Get the root payload type for the signal type represented by this OTAP batch
