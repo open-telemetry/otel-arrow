@@ -3,6 +3,19 @@
 If working on Rust code (i.e., the `rust/` directory), read and follow all
 instructions in [rust/otap-dataflow/AGENTS.md](rust/otap-dataflow/AGENTS.md).
 
+## Tests
+
+Document every test immediately above its declaration using the language's
+customary comment syntax:
+
+```text
+<comment> Scenario: <the behavior or condition under test>
+<comment> Guarantees: <the observable invariant protected by the test>
+```
+
+Make both statements specific enough for a reviewer to understand the test's
+intent and the behavior that must not regress without reading its implementation.
+
 ## Changelog entries
 
 If your change is user-facing, add a changelog entry by **copying
