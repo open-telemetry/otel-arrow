@@ -823,8 +823,8 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     // `registration_attributes = Path` / `measurement_attributes = Path`.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
-    let mut static_attrs: Option<syn::Type> = None;
-    let mut dynamic_attrs: Option<syn::Type> = None;
+    let mut registration_attrs: Option<syn::Type> = None;
+    let mut measurement_attrs: Option<syn::Type> = None;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
@@ -834,9 +834,9 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
                 } else if ident == "registration_attributes" {
-                    static_attrs = Some(input.parse()?);
+                    registration_attrs = Some(input.parse()?);
                 } else if ident == "measurement_attributes" {
-                    dynamic_attrs = Some(input.parse()?);
+                    measurement_attrs = Some(input.parse()?);
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -890,67 +890,71 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     let crate_root = telemetry_crate_root();
 
-    let marker_impl = if let (Some(static_ty), Some(dynamic_ty)) = (&static_attrs, &dynamic_attrs) {
+    let marker_impl = if let (Some(registration_ty), Some(measurement_ty)) =
+        (&registration_attrs, &measurement_attrs)
+    {
         quote! {
             impl #crate_root::metrics::RegistrationMetricSetHandler for #struct_ident {
-                type RegistrationAttributes = #static_ty;
+                type RegistrationAttributes = #registration_ty;
             }
 
             impl #crate_root::metrics::MeasurementMetricSetHandler for #struct_ident {
-                type MeasurementAttributes = #dynamic_ty;
+                type MeasurementAttributes = #measurement_ty;
             }
 
             const _: () = {
                 #crate_root::metrics::check_cardinality(
-                    <#dynamic_ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
+                    <#measurement_ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
                 );
-                if #crate_root::attributes::has_datapoint_attribute_key_collision(
-                    <#static_ty as #crate_root::attributes::AttributeSetKeySchema>::KEY_SCHEMA,
-                    <#dynamic_ty as #crate_root::attributes::MeasurementAttributeSet>::DESCRIPTORS,
+                if #crate_root::attributes::has_item_attribute_key_collision(
+                    <#registration_ty as #crate_root::attributes::AttributeSetKeySchema>::KEY_SCHEMA,
+                    <#measurement_ty as #crate_root::attributes::MeasurementAttributeSet>::DESCRIPTORS,
                 ) {
-                    panic!("registration and measurement datapoint attribute keys must not overlap");
+                    panic!("registration and measurement item attribute keys must not overlap");
                 }
             };
 
             impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar and fixed attributes.
                 #[must_use]
                 pub fn register<R>(
                     registrar: &R,
-                    static_attrs: &#static_ty,
+                    registration_attrs: &#registration_ty,
                 ) -> #crate_root::metrics::MeasurementMetricSet<Self>
                 where
                     R: #crate_root::metrics::MetricSetRegistrar,
                 {
                     #crate_root::metrics::MetricSetRegistrar::register_registration_and_measurement_metric_set::<Self>(
                         registrar,
-                        static_attrs,
+                        registration_attrs,
                     )
                 }
             }
         }
-    } else if let Some(ty) = &static_attrs {
+    } else if let Some(ty) = &registration_attrs {
         quote! {
             impl #crate_root::metrics::RegistrationMetricSetHandler for #struct_ident {
                 type RegistrationAttributes = #ty;
             }
 
             impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar and fixed attributes.
                 #[must_use]
                 pub fn register<R>(
                     registrar: &R,
-                    static_attrs: &#ty,
+                    registration_attrs: &#ty,
                 ) -> #crate_root::metrics::MetricSet<Self>
                 where
                     R: #crate_root::metrics::MetricSetRegistrar,
                 {
                     #crate_root::metrics::MetricSetRegistrar::register_registration_metric_set::<Self>(
                         registrar,
-                        static_attrs,
+                        registration_attrs,
                     )
                 }
             }
         }
-    } else if let Some(ty) = &dynamic_attrs {
+    } else if let Some(ty) = &measurement_attrs {
         quote! {
             impl #crate_root::metrics::MeasurementMetricSetHandler for #struct_ident {
                 type MeasurementAttributes = #ty;
@@ -963,6 +967,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
             );
 
             impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar.
                 #[must_use]
                 pub fn register<R>(
                     registrar: &R,
@@ -998,27 +1003,36 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!( #s #marker_impl ).into()
 }
 
-/// Attribute macro that injects `#[derive(AttributeSetHandler)]` and wires up the AttributeSetHandler derive
-/// and descriptor name via a container attribute.
-/// Usage:
-///   #[otap_df_telemetry_macros::attribute_set(name = "my.attributes")]
-///   pub struct MyAttributes { #[attribute_key = "custom.key")] field: String, ... }
+/// Declares either a named scope/entity attribute set or an emitted-item
+/// attribute set.
+///
+/// ```ignore
+/// #[attribute_set(name = "node.scope")] // scope or entity attributes
+/// #[attribute_set(item, registration)] // fixed item attributes
+/// #[attribute_set(item, measurement)] // per-recording metric item attributes
+/// ```
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse arguments: `name = "..."` plus an optional bare `measurement` flag.
+    // Parse `name = "..."` or the bare item modes.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
-    let mut is_dynamic = false;
+    let mut is_item = false;
+    let mut is_registration = false;
+    let mut is_measurement = false;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
-                if ident == "measurement" {
-                    is_dynamic = true;
-                } else if ident == "name" {
+                if ident == "name" {
                     let _: syn::Token![=] = input.parse()?;
                     let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
+                } else if ident == "item" {
+                    is_item = true;
+                } else if ident == "registration" {
+                    is_registration = true;
+                } else if ident == "measurement" {
+                    is_measurement = true;
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -1036,28 +1050,69 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         return err.to_compile_error().into();
     }
 
-    let attributes_name = match name_val {
-        Some(n) => n,
-        None => {
-            return syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "missing `name = \"...\"` in attribute_set attribute",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
-
-    if is_dynamic {
-        if let Err(error) = normalize_measurement_attribute_fields(&mut s) {
-            return error.to_compile_error().into();
-        }
+    if is_registration && !is_item {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`registration` requires `item`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if is_measurement && !is_item && name_val.is_none() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`measurement` requires `item`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if name_val.is_some() && (is_item || is_registration) {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`name` and item modes cannot be combined",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if is_item && is_registration == is_measurement {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`item` requires exactly one of `registration` or `measurement`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !is_item && name_val.is_none() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "missing `name = \"...\"` or `item, registration|measurement` in attribute_set attribute",
+        )
+        .to_compile_error()
+        .into();
     }
 
-    // Ensure the AttributeSetHandler derive is attached
+    let measurement_impl = if is_measurement {
+        match build_measurement_attribute_set_impl_for_fields(&s.ident, &s.fields, s.span()) {
+            Ok(measurement_impl) => measurement_impl,
+            Err(error) => return error.to_compile_error().into(),
+        }
+    } else {
+        proc_macro2::TokenStream::new()
+    };
+    let attributes_name = match name_val {
+        Some(name) if name.is_empty() => {
+            return syn::Error::new(s.span(), "attribute set name must not be empty")
+                .to_compile_error()
+                .into();
+        }
+        Some(name) => name,
+        None => format!("{}.item", to_snake_case(&s.ident.to_string())),
+    };
+
+    // All item attribute sets implement AttributeSetHandler so future signal
+    // emitters can serialize their values without depending on metric buckets.
     let derive_attr: Attribute =
         parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
     s.attrs.push(derive_attr);
@@ -1066,57 +1121,22 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attributes_attr: Attribute = parse_quote!(#[attributes(name = #attributes_name)]);
     s.attrs.push(attributes_attr);
 
-    let measurement_impl = if is_dynamic {
-        match build_measurement_attribute_set_impl(&s) {
-            Ok(ts) => ts,
-            Err(err) => return err.to_compile_error().into(),
-        }
-    } else {
-        quote!()
-    };
-
     quote!( #s #measurement_impl ).into()
 }
 
-/// Rejects compositions, which cannot participate in dense bucket indexing.
-fn normalize_measurement_attribute_fields(s: &mut ItemStruct) -> syn::Result<()> {
-    let fields = match &mut s.fields {
-        Fields::Named(fields) => &mut fields.named,
-        _ => {
-            return Err(syn::Error::new(
-                s.span(),
-                "measurement attribute_set requires named fields",
-            ));
-        }
-    };
-
-    for field in fields {
-        if field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("compose"))
-        {
-            return Err(syn::Error::new(
-                field.span(),
-                "measurement attribute_set does not support #[compose] fields",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Builds the `MeasurementAttributeSet` trait implementation for a `measurement`
-/// attribute set. The bucket index is a dense mixed-radix encoding where the
+/// Builds the `MeasurementAttributeSet` trait implementation. The bucket index is a dense mixed-radix encoding where the
 /// first declared field is the low-order digit.
-fn build_measurement_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macro2::TokenStream> {
-    let struct_ident = s.ident.clone();
-
-    let fields = match &s.fields {
+fn build_measurement_attribute_set_impl_for_fields(
+    struct_ident: &syn::Ident,
+    fields: &Fields,
+    span: proc_macro2::Span,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let fields = match fields {
         Fields::Named(named) => &named.named,
         _ => {
             return Err(syn::Error::new(
-                s.span(),
-                "measurement attribute_set requires named fields",
+                span,
+                "measurement attributes require named fields",
             ));
         }
     };
@@ -1129,7 +1149,7 @@ fn build_measurement_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macr
         if field.attrs.iter().any(|a| a.path().is_ident("compose")) {
             return Err(syn::Error::new(
                 field.span(),
-                "measurement attribute_set does not support #[compose] fields",
+                "measurement attributes do not support #[compose] fields",
             ));
         }
         let ident = field.ident.clone().expect("named field must have an ident");
@@ -1153,8 +1173,8 @@ fn build_measurement_attribute_set_impl(s: &ItemStruct) -> syn::Result<proc_macr
 
     if field_idents.is_empty() {
         return Err(syn::Error::new(
-            s.span(),
-            "measurement attribute_set requires at least one enum field",
+            span,
+            "measurement attributes require at least one enum field",
         ));
     }
 
@@ -1266,7 +1286,7 @@ mod tests {
     use super::*;
 
     /// Scenario: measurement fields resolve to the same explicit attribute key.
-    /// Guarantees: macro expansion rejects duplicate datapoint keys.
+    /// Guarantees: macro expansion rejects duplicate item keys.
     #[test]
     fn measurement_attribute_set_rejects_duplicate_keys() {
         let attributes: ItemStruct = syn::parse_str(
@@ -1281,8 +1301,12 @@ mod tests {
         )
         .expect("test attribute set should parse");
 
-        let error = build_measurement_attribute_set_impl(&attributes)
-            .expect_err("duplicate measurement keys should fail");
+        let error = build_measurement_attribute_set_impl_for_fields(
+            &attributes.ident,
+            &attributes.fields,
+            attributes.span(),
+        )
+        .expect_err("duplicate measurement keys should fail");
         assert_eq!(
             error.to_string(),
             "duplicate measurement attribute key `outcome`"
@@ -1293,7 +1317,7 @@ mod tests {
     /// Guarantees: composition is rejected before bucket code generation.
     #[test]
     fn measurement_attribute_set_rejects_composed_fields() {
-        let mut attributes: ItemStruct = syn::parse_str(
+        let attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
                 #[compose]
@@ -1303,11 +1327,15 @@ mod tests {
         )
         .expect("test attribute set should parse");
 
-        let error = normalize_measurement_attribute_fields(&mut attributes)
-            .expect_err("composed measurement fields should fail");
+        let error = build_measurement_attribute_set_impl_for_fields(
+            &attributes.ident,
+            &attributes.fields,
+            attributes.span(),
+        )
+        .expect_err("composed measurement fields should fail");
         assert_eq!(
             error.to_string(),
-            "measurement attribute_set does not support #[compose] fields"
+            "measurement attributes do not support #[compose] fields"
         );
     }
 
@@ -1315,7 +1343,7 @@ mod tests {
     /// Guarantees: every field is accepted as an attribute without a marker.
     #[test]
     fn measurement_attribute_set_accepts_unannotated_fields() {
-        let mut attributes: ItemStruct = syn::parse_str(
+        let attributes: ItemStruct = syn::parse_str(
             r#"
             struct Attributes {
                 signal: Signal,
@@ -1326,10 +1354,12 @@ mod tests {
         )
         .expect("test attribute set should parse");
 
-        normalize_measurement_attribute_fields(&mut attributes)
-            .expect("unannotated measurement fields should be supported");
-        let generated = build_measurement_attribute_set_impl(&attributes)
-            .expect("every measurement field should be included as an attribute");
+        let generated = build_measurement_attribute_set_impl_for_fields(
+            &attributes.ident,
+            &attributes.fields,
+            attributes.span(),
+        )
+        .expect("every measurement field should be included as an attribute");
         assert!(generated.to_string().contains("error.type"));
 
         let fields = match attributes.fields {

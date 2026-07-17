@@ -97,7 +97,7 @@ signal-specific attributes MUST be:
 
 Bounded enum attributes are supported as registration-time attributes or
 per-measurement attributes. See
-[Datapoint Enum Attributes for Metrics](datapoint-enum-attributes.md) for the
+[Item Attributes for Metrics](item-attributes.md) for the
 declaration and recording APIs.
 
 ### Minimal metric declarations

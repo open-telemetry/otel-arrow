@@ -456,8 +456,12 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a metric set for the current node entity.
+    /// Compatibility registration for metric sets declared before `#[metric_set]`.
+    ///
+    /// New component metrics use their generated `MyMetrics::register(self)`
+    /// method, which chooses the correct registration shape automatically.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {

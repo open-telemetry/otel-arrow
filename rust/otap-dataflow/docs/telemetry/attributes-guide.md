@@ -122,7 +122,7 @@ Notes:
   attributes; their identity comes entirely from the Resource layer.
 - Metric sets support bounded enum attributes on the signal-specific data-point
   layer. See
-  [Datapoint Enum Attributes for Metrics](datapoint-enum-attributes.md).
+  [Item Attributes for Metrics](item-attributes.md).
 
 ### Core rule
 
