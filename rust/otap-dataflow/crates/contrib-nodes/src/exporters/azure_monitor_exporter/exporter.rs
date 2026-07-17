@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::SignalType;
 use otap_df_engine::ConsumerEffectHandlerExtension;
-use otap_df_engine::capability::BearerToken;
+use otap_df_engine::capability::bearer_token_provider::BearerToken;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::local::capability::BearerTokenProvider;
+use otap_df_engine::local::capability::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::terminal_state::TerminalState;
@@ -549,7 +549,7 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                 maybe_token = token_stream.next(), if token_stream_active => {
                     match maybe_token {
                         Some(token) => {
-                            match HeaderValue::from_str(&format!("Bearer {}", token.expose_secret())) {
+                            match HeaderValue::from_str(&format!("Bearer {}", token.expose_token())) {
                                 Ok(header) => {
                                     self.client_pool.update_auth(header.clone());
                                     if let Some(ref mut hb) = self.heartbeat {
@@ -659,7 +659,7 @@ mod tests {
     use otap_df_channel::mpsc;
     use otap_df_engine::Interests;
     use otap_df_engine::capability::CapabilityError;
-    use otap_df_engine::capability::{BearerToken, TokenStream};
+    use otap_df_engine::capability::bearer_token_provider::{BearerToken, TokenStream};
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::local::exporter::EffectHandler;
     use otap_df_engine::local::message::LocalReceiver;

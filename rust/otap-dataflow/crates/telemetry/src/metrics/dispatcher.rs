@@ -67,24 +67,32 @@ impl MetricsDispatcher {
     /// observe the emitted instrumentation scopes and data points.
     fn dispatch_metrics_to(&self, meter_provider: &dyn MeterProvider) -> Result<(), Error> {
         self.metrics_handler
-            .visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-                let scope_attributes = Self::to_opentelemetry_attributes(attributes);
-                let meter = if scope_attributes.is_empty() {
-                    meter_provider.meter(descriptor.name)
-                } else {
-                    meter_provider.meter_with_scope(
-                        InstrumentationScope::builder(descriptor.name)
-                            .with_attributes(scope_attributes)
-                            .build(),
-                    )
-                };
+            .visit_metrics_and_reset_with_datapoint_attrs(
+                |descriptor, attributes, datapoint_attrs, metrics_iter| {
+                    let scope_attributes = Self::to_opentelemetry_attributes(attributes);
+                    let meter = if scope_attributes.is_empty() {
+                        meter_provider.meter(descriptor.name)
+                    } else {
+                        meter_provider.meter_with_scope(
+                            InstrumentationScope::builder(descriptor.name)
+                                .with_attributes(scope_attributes)
+                                .build(),
+                        )
+                    };
 
-                // Entity attributes live on the instrumentation scope so OTel Views can
-                // target them via scope_attributes selectors; data points carry none.
-                for (field, value) in metrics_iter {
-                    self.add_opentelemetry_metric(field, value, &[], &meter);
-                }
-            });
+                    // Entity attributes live on the instrumentation scope so OTel Views can
+                    // target them via scope_attributes selectors. Per-datapoint enum/registration
+                    // attributes (e.g. `signal`) are attached to the data points themselves.
+                    let dp_kvs: Vec<opentelemetry::KeyValue> = datapoint_attrs
+                        .iter()
+                        .map(|(k, v)| opentelemetry::KeyValue::new(k.to_string(), v.to_string()))
+                        .collect();
+                    for (field, value) in metrics_iter {
+                        self.add_opentelemetry_metric(field, value, &dp_kvs, &meter);
+                    }
+                },
+                false,
+            );
 
         Ok(())
     }
@@ -456,7 +464,7 @@ mod tests {
         metric_set.requests.add(count);
 
         let snapshot = metric_set.snapshot();
-        registry.accumulate_metric_set_snapshot(snapshot.key, &snapshot.metrics);
+        registry.accumulate_metric_set_snapshot(snapshot.key, snapshot.bucket, &snapshot.metrics);
 
         let dispatcher =
             MetricsDispatcher::new(registry.clone(), std::time::Duration::from_secs(1));
@@ -797,7 +805,7 @@ mod tests {
 
         // Snapshot and accumulate into the registry.
         let snapshot = metric_set.snapshot();
-        registry.accumulate_metric_set_snapshot(snapshot.key, &snapshot.metrics);
+        registry.accumulate_metric_set_snapshot(snapshot.key, snapshot.bucket, &snapshot.metrics);
 
         // Dispatch through the real code path via the shared in-memory harness.
         let dispatcher =
