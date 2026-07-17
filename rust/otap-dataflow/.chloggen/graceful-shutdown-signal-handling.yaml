@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add OS signal handling (SIGINT/SIGTERM) for graceful pipeline shutdown with double-signal force-exit convention.
+note: Add OS signal handling for graceful pipeline shutdown (SIGINT/SIGTERM on Unix; Ctrl-C, Ctrl-Break, console close, and system shutdown on Windows) with a double-signal force-exit convention.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2325]
