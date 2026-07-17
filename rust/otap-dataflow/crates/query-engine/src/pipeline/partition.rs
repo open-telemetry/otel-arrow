@@ -13,8 +13,8 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use arrow::array::{
-    AnyDictionaryArray, Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, DynComparator,
-    StructArray, UInt8Array, make_comparator,
+    AnyDictionaryArray, Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, StructArray,
+    UInt8Array, make_comparator,
 };
 use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
 use arrow::compute::SortOptions;
@@ -431,6 +431,11 @@ fn partition_simple_array(
         .map(|i| !cmp.cmp(i, i + 1).is_eq())
         .collect();
 
+    let precomputed_groups = match &cmp {
+        ArrayComparator::DictGrouped(groups) => Some(groups.as_ref()),
+        _ => None,
+    };
+
     let result = partition_at_boundaries(
         array.as_ref(),
         boundaries,
@@ -439,6 +444,7 @@ fn partition_simple_array(
         range_coalescer,
         id_bitmap_pool,
         &|i1, i2| Ok(cmp.cmp(i1, i2)),
+        precomputed_groups,
     );
 
     cmp.return_to_pool(group_id_pool);
@@ -469,6 +475,7 @@ fn partition_any_value_struct_array(
         range_coalescer,
         id_bitmap_pool,
         &|i1, i2| comparator.cmp(i1, i2),
+        None,
     );
 
     comparator.return_to_pool(group_id_pool);
@@ -502,9 +509,10 @@ fn partition_at_boundaries(
     range_coalescer: &mut PartitionRangeCoalescer,
     id_bitmap_pool: &mut IdBitmapPool,
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+    pre_computed_groups: Option<&[u32]>,
 ) -> Result<()> {
     let num_rows = boundaries.len() + 1;
-    for group in range_coalescer.coalesce_groups(num_rows, boundaries, &cmp)? {
+    for group in range_coalescer.coalesce_groups(num_rows, boundaries, &cmp, pre_computed_groups)? {
         let selection_vec = BooleanArray::from(BooleanBuffer::new(
             group.selection_vec_builder.into(),
             0,
@@ -556,7 +564,7 @@ impl GroupIdPool {
 /// different keys.
 enum ArrayComparator {
     /// Non-dictionary array: delegates to arrow's [`DynComparator`].
-    Standard(DynComparator),
+    Standard(Box<dyn Fn(usize, usize) -> Ordering>),
 
     /// Dictionary-encoded array: pre-computed row index -> group id mapping.
     ///
@@ -564,9 +572,6 @@ enum ArrayComparator {
     /// `u32::MAX` as a sentinel group id so that all nulls compare as equal.
     DictGrouped(Vec<u32>),
 }
-
-/// Sentinel group id assigned to null rows in [`ArrayComparator::DictGrouped`].
-const NULL_GROUP_ID: u32 = u32::MAX;
 
 impl ArrayComparator {
     /// Creates a new comparator for the given array.
@@ -597,8 +602,8 @@ impl ArrayComparator {
 
         // Phase 1: group duplicate dictionary values.
         // `value_to_group[v]` is the group id for dictionary value index `v`.
-        let value_to_group = if num_values == 0 {
-            Vec::new()
+        let (value_to_group, mut next_group_id) = if num_values == 0 {
+            (Vec::new(), 0u32)
         } else {
             let values_cmp = make_comparator(&values, &values, SortOptions::default())?;
             let mut value_to_group = vec![0u32; num_values];
@@ -622,12 +627,25 @@ impl ArrayComparator {
                     }
                 }
             }
-            value_to_group
+            (value_to_group, group_representatives.len() as u32)
         };
 
         // Phase 2: map each row to its group id using the dictionary's normalized keys.
+        // Null rows are assigned the next sequential group id so that all nulls compare
+        // as equal and group ids remain contiguous (avoiding sentinel values like u32::MAX
+        // that would cause problems when used as direct indices into the coalescing groups).
         let normalized_keys = dict.normalized_keys();
         let num_rows = normalized_keys.len();
+        let null_group_id = if nulls.is_some_and(|n| n.null_count() > 0) {
+            let id = next_group_id;
+            next_group_id += 1;
+            Some(id)
+        } else {
+            None
+        };
+        // suppress unused variable warning — next_group_id is intentionally kept up-to-date
+        // for clarity even though it's not read after this point.
+        let _ = next_group_id;
 
         let mut row_group_ids = pool.take();
         row_group_ids.resize(num_rows, 0);
@@ -635,7 +653,8 @@ impl ArrayComparator {
         for (row, &key) in normalized_keys.iter().enumerate() {
             let is_null = nulls.is_some_and(|n| n.is_null(row));
             row_group_ids[row] = if is_null {
-                NULL_GROUP_ID
+                // safety: null_group_id is Some when there are null rows
+                null_group_id.expect("null group id set when nulls present")
             } else {
                 value_to_group[key]
             };
@@ -710,8 +729,15 @@ impl PartitionRangeCoalescer {
         source_len: usize,
         partition_boundaries: BooleanBuffer,
         cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+        pre_computed_groups: Option<&[u32]>,
     ) -> Result<impl IntoIterator<Item = CoalescingGroup>> {
-        coalesce_groups(source_len, partition_boundaries, cmp, &mut self.groups)?;
+        coalesce_groups(
+            source_len,
+            partition_boundaries,
+            cmp,
+            pre_computed_groups,
+            &mut self.groups,
+        )?;
 
         // return iterator of results
         Ok(self.groups.drain(..))
@@ -730,18 +756,27 @@ fn coalesce_groups(
     source_len: usize,
     partition_boundaries: BooleanBuffer,
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+    pre_computed_groups: Option<&[u32]>,
     groups: &mut Vec<CoalescingGroup>,
 ) -> Result<()> {
     let mut current = 0;
     for idx in partition_boundaries.set_indices() {
         let t = current;
         current = idx + 1;
-        append_range_to_groups(source_len, t..current, cmp, groups)?;
+        append_range_to_groups(source_len, t..current, cmp, pre_computed_groups, groups)?;
     }
 
     let last = partition_boundaries.len() + 1;
     if current != last {
-        append_range_to_groups(source_len, current..last, cmp, groups)?;
+        append_range_to_groups(source_len, current..last, cmp, pre_computed_groups, groups)?;
+    }
+
+    // When pre-computed groups are used, placeholder entries may have been created for
+    // group ids that exist in the dictionary values array but are never referenced by any
+    // row key. These placeholders have `representative_row == source_len` (out of bounds)
+    // and an empty selection vec. Filter them out.
+    if pre_computed_groups.is_some() {
+        groups.retain(|g| g.representative_row < source_len);
     }
 
     Ok(())
@@ -754,20 +789,42 @@ fn append_range_to_groups(
     source_len: usize,
     range: Range<usize>,
     cmp: &dyn Fn(usize, usize) -> Result<Ordering>,
+    pre_computed_groups: Option<&[u32]>,
     groups: &mut Vec<CoalescingGroup>,
 ) -> Result<()> {
     // try to find a group whose value matches the value of the rows in the passed range
     let mut match_idx = None;
-    for (idx, group) in groups.iter().enumerate() {
-        if cmp(group.representative_row, range.start)?.is_eq() {
-            match_idx = Some(idx);
-            break;
+    match pre_computed_groups {
+        Some(pre_computed_groups) => {
+            let group = pre_computed_groups[range.start] as usize;
+            // push placeholder groups ...
+            while groups.len() <= group {
+                groups.push(CoalescingGroup {
+                    representative_row: source_len, // <- placeholder, will be updated later
+                    selection_vec_builder: MutableBuffer::from_len_zeroed(bit_util::ceil(
+                        source_len, 8,
+                    )),
+                })
+            }
+            match_idx = Some(group);
+        }
+        None => {
+            for (idx, group) in groups.iter().enumerate() {
+                if cmp(group.representative_row, range.start)?.is_eq() {
+                    match_idx = Some(idx);
+                    break;
+                }
+            }
         }
     }
 
     if let Some(idx) = match_idx {
         // set the bits in the selection vec for this group
-        set_range_bits(range, &mut groups[idx].selection_vec_builder);
+        let group = &mut groups[idx];
+        if group.representative_row > range.start {
+            group.representative_row = range.start;
+        }
+        set_range_bits(range, &mut group.selection_vec_builder);
     } else {
         // create a new group
         let mut group = CoalescingGroup {
