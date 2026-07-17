@@ -121,7 +121,8 @@ dependency bumps):
 - Include `chore` in the PR title.
 - Apply the `chore` label (for maintainers).
 - Apply the `skipchangelog` label (for maintainers).
-- Documentation-only PRs (all changed files are under a `docs/` directory).
+- Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
+  directory).
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
 
