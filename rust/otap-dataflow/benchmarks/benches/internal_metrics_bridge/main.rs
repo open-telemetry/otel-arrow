@@ -49,11 +49,11 @@ const WORKLOAD_KIND: &str = "representative";
 #[derive(Debug, Clone, Hash)]
 struct BenchmarkAttributes {
     /// Unique entity identifier.
-    #[attribute(key = "benchmark.entity.id")]
+    #[attribute_key = "benchmark.entity.id"]
     entity_id: u64,
 
     /// Stable workload discriminator used by scope-attribute views.
-    #[attribute(key = "benchmark.workload.kind")]
+    #[attribute_key = "benchmark.workload.kind"]
     workload_kind: String,
 }
 

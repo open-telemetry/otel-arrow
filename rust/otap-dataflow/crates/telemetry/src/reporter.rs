@@ -4,7 +4,10 @@
 //! Metrics reporter handle.
 
 use crate::error::Error;
-use crate::metrics::{MetricSet, MetricSetHandler, MetricSetSnapshot};
+use crate::metrics::{
+    MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetHandler,
+    MetricSetSnapshot,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{OwnedRwLockReadGuard, RwLock, oneshot, watch};
@@ -246,6 +249,25 @@ impl MetricsReporter {
                 Ok(ReportOutcome::Deferred)
             }
         }
+    }
+
+    /// Report a measurement metric set: snapshots each touched bucket and sends it.
+    ///
+    /// A bucket is cleared only after its snapshot is accepted. If the channel
+    /// is full, that bucket and the remaining buckets stay pending for retry,
+    /// matching [`Self::report`]'s deferred-send behavior.
+    pub fn report_measurement<M: MeasurementMetricSetHandler>(
+        &mut self,
+        metrics: &mut MeasurementMetricSet<M>,
+    ) -> Result<(), Error> {
+        for snapshot in metrics.pending_snapshots() {
+            let bucket = snapshot.bucket();
+            match self.try_report_snapshot_with_outcome(snapshot)? {
+                ReportOutcome::Sent => metrics.clear_bucket(bucket),
+                ReportOutcome::Deferred => break,
+            }
+        }
+        Ok(())
     }
 
     /// Report an already materialized snapshot.

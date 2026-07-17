@@ -120,7 +120,7 @@ struct TestMetrics {
 #[derive(Debug, Clone)]
 struct TestAttributes {
     /// Test route used to select one metric-set entity.
-    #[attribute(key = "test.route")]
+    #[attribute_key = "test.route"]
     route: String,
 }
 

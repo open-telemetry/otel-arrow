@@ -687,6 +687,7 @@ mod tests {
                 registry.register_metric_set(EmptyAttributes());
             registry.accumulate_metric_set_snapshot(
                 metric_set.metric_set_key(),
+                0,
                 &[otap_df_telemetry::metrics::MetricValue::U64(9)],
             );
             let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec())
@@ -732,6 +733,7 @@ mod tests {
                 registry.register_metric_set(EmptyAttributes());
             registry.accumulate_metric_set_snapshot(
                 metric_set.metric_set_key(),
+                0,
                 &[otap_df_telemetry::metrics::MetricValue::U64(9)],
             );
 

@@ -40,7 +40,7 @@
 //! ```text
 //! ExportMetricsServiceRequest
 //! `-- ResourceMetrics                         process resource
-//!     `-- ScopeMetrics                        one per metric set + entity
+//!     `-- ScopeMetrics                        one per metric-set schema + entity
 //!         |-- InstrumentationScope
 //!         |   |-- name                        metric-set descriptor name
 //!         |   `-- attributes                  entity attributes
@@ -55,9 +55,10 @@
 //! the corresponding [`MetricValue`] supplies its data-point value.
 //!
 //! Entity attributes are placed on `InstrumentationScope` rather than repeated
-//! on every data point. Resource attributes come from the process-level
-//! `ResourceMetrics` prototype retained by [`MetricsOtlpEncoder`]. Data-point
-//! attributes are therefore empty.
+//! on every data point. Measurement and registration attributes identify a
+//! metric-set bucket and are attached to its data points. Resource attributes
+//! come from the process-level `ResourceMetrics` prototype retained by
+//! [`MetricsOtlpEncoder`].
 //!
 //! # Instrument mapping
 //!
@@ -111,7 +112,7 @@ use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsSe
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
-    ResourceMetrics, ScopeMetrics, Sum,
+    ResourceMetrics, ScopeMetrics, Sum, metric,
 };
 use prost::Message;
 use smallvec::SmallVec;
@@ -277,9 +278,10 @@ type CollisionIndex<'a> = HashMap<ScopeIdentity, ScopeStreams<'a>>;
 
 /// Exact source identity that must become one OTLP instrumentation scope.
 #[derive(Hash, PartialEq, Eq)]
-struct MetricSetIdentity {
+struct MetricSetIdentity<'a> {
     descriptor: usize,
     attributes: usize,
+    datapoint_attributes: &'a [(String, String)],
 }
 
 /// Avoids cloning the common case where a source identity occurs only once.
@@ -364,10 +366,16 @@ impl MetricsOtlpEncoder {
         time_unix_nano: u64,
     ) -> Result<Vec<ScopeMetrics>, Error> {
         let mut scope_metrics = Vec::with_capacity(metric_set_count);
+        let mut scope_identities = HashMap::with_capacity(metric_set_count);
         if self.views.is_empty() {
             for metric_set in metric_sets {
                 if let Some(scope) = encode_metric_set_without_views(metric_set, time_unix_nano)? {
-                    scope_metrics.push(scope);
+                    append_scope_metrics(
+                        &mut scope_metrics,
+                        &mut scope_identities,
+                        metric_set,
+                        scope,
+                    );
                 }
             }
         } else {
@@ -379,11 +387,84 @@ impl MetricsOtlpEncoder {
                     &self.views,
                     &mut collisions,
                 )? {
-                    scope_metrics.push(scope);
+                    append_scope_metrics(
+                        &mut scope_metrics,
+                        &mut scope_identities,
+                        metric_set,
+                        scope,
+                    );
                 }
             }
         }
         Ok(scope_metrics)
+    }
+}
+
+/// Combines bucket-local points into the same metric streams without merging
+/// their values. Distinct data-point attributes therefore remain distinct OTLP
+/// points, while independently registered producers with the same attributes
+/// have already been numerically coalesced above this layer.
+fn append_scope_metrics(
+    scope_metrics: &mut Vec<ScopeMetrics>,
+    identities: &mut HashMap<(usize, usize), usize>,
+    metric_set: &MetricSetExport,
+    incoming: ScopeMetrics,
+) {
+    let identity = (
+        std::ptr::from_ref(metric_set.descriptor) as usize,
+        Arc::as_ptr(&metric_set.attributes) as usize,
+    );
+    if let Some(index) = identities.get(&identity).copied() {
+        merge_scope_metric_points(&mut scope_metrics[index], incoming);
+    } else {
+        let index = scope_metrics.len();
+        let _ = identities.insert(identity, index);
+        scope_metrics.push(incoming);
+    }
+}
+
+fn merge_scope_metric_points(target: &mut ScopeMetrics, incoming: ScopeMetrics) {
+    for incoming_metric in incoming.metrics {
+        let target_metric = target.metrics.iter_mut().find(|target_metric| {
+            target_metric.name == incoming_metric.name
+                && target_metric.description == incoming_metric.description
+                && target_metric.unit == incoming_metric.unit
+                && metric_data_compatible(target_metric, &incoming_metric)
+        });
+        if let Some(target_metric) = target_metric {
+            append_metric_points(target_metric, incoming_metric);
+        } else {
+            target.metrics.push(incoming_metric);
+        }
+    }
+}
+
+fn metric_data_compatible(left: &Metric, right: &Metric) -> bool {
+    match (left.data.as_ref(), right.data.as_ref()) {
+        (Some(metric::Data::Gauge(_)), Some(metric::Data::Gauge(_))) => true,
+        (Some(metric::Data::Sum(left)), Some(metric::Data::Sum(right))) => {
+            left.aggregation_temporality == right.aggregation_temporality
+                && left.is_monotonic == right.is_monotonic
+        }
+        (Some(metric::Data::Histogram(left)), Some(metric::Data::Histogram(right))) => {
+            left.aggregation_temporality == right.aggregation_temporality
+        }
+        _ => false,
+    }
+}
+
+fn append_metric_points(target: &mut Metric, incoming: Metric) {
+    match (target.data.as_mut(), incoming.data) {
+        (Some(metric::Data::Gauge(target)), Some(metric::Data::Gauge(mut incoming))) => {
+            target.data_points.append(&mut incoming.data_points);
+        }
+        (Some(metric::Data::Sum(target)), Some(metric::Data::Sum(mut incoming))) => {
+            target.data_points.append(&mut incoming.data_points);
+        }
+        (Some(metric::Data::Histogram(target)), Some(metric::Data::Histogram(mut incoming))) => {
+            target.data_points.append(&mut incoming.data_points);
+        }
+        _ => unreachable!("metric stream compatibility was checked before merging"),
     }
 }
 
@@ -416,6 +497,7 @@ fn coalesce_metric_sets(
             // Registry entity attributes are interned, so equal attribute
             // sets in a registry batch share this allocation.
             attributes: Arc::as_ptr(&metric_set.attributes) as usize,
+            datapoint_attributes: &metric_set.datapoint_attributes,
         };
         if let Some(&index) = identities.get(&identity) {
             let target = &mut coalesced[index];
@@ -476,6 +558,7 @@ fn encode_metric_set_without_views(
     validate_value_count(metric_set)?;
 
     let mut metrics = Vec::with_capacity(metric_set.values.len());
+    let datapoint_attributes = encode_datapoint_attributes(metric_set);
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
         validate_value_kind(field, *value)?;
         if let Some(metric) = encode_metric(
@@ -485,6 +568,7 @@ fn encode_metric_set_without_views(
             time_unix_nano,
             field.name,
             field.brief,
+            &datapoint_attributes,
         )? {
             metrics.push(metric);
         }
@@ -506,6 +590,7 @@ fn encode_metric_set_with_views<'a>(
     validate_value_count(metric_set)?;
 
     let mut metrics = Vec::with_capacity(metric_set.values.len());
+    let datapoint_attributes = encode_datapoint_attributes(metric_set);
     // Scope selectors are invariant across all fields in this metric set, so
     // evaluate them once before resolving the per-instrument selectors.
     let scope_views = views
@@ -528,6 +613,7 @@ fn encode_metric_set_with_views<'a>(
                 time_unix_nano,
                 stream.name,
                 stream.description,
+                &datapoint_attributes,
             )? {
                 register_projected_stream(
                     scope_streams,
@@ -614,6 +700,14 @@ fn build_scope_metrics(metric_set: &MetricSetExport, metrics: Vec<Metric>) -> Sc
     ScopeMetrics::new(scope, metrics)
 }
 
+fn encode_datapoint_attributes(metric_set: &MetricSetExport) -> Vec<KeyValue> {
+    metric_set
+        .datapoint_attributes
+        .iter()
+        .map(|(key, value)| KeyValue::new(key.clone(), AnyValue::new_string(value.clone())))
+        .collect()
+}
+
 /// Adds one stream to the collision index for its effective scope.
 fn register_projected_stream<'a>(
     scope_streams: &mut ScopeStreams<'a>,
@@ -696,6 +790,7 @@ fn encode_metric(
     time_unix_nano: u64,
     name: &str,
     description: &str,
+    datapoint_attributes: &[KeyValue],
 ) -> Result<Option<Metric>, Error> {
     let data = match field.instrument {
         Instrument::Counter | Instrument::UpDownCounter => {
@@ -706,28 +801,25 @@ fn encode_metric(
                 Temporality::Delta => metric_set.delta_start_time_unix_nano,
                 Temporality::Cumulative => metric_set.cumulative_start_time_unix_nano,
             };
-            let point = number_data_point(value, start_time, time_unix_nano);
-            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Sum(Sum::new(
+            let point = number_data_point(value, start_time, time_unix_nano, datapoint_attributes);
+            metric::Data::Sum(Sum::new(
                 encode_temporality(temporality),
                 matches!(field.instrument, Instrument::Counter),
                 vec![point],
             ))
         }
         Instrument::Gauge => {
-            let point = number_data_point(value, 0, time_unix_nano);
-            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Gauge(Gauge::new(vec![
-                point,
-            ]))
+            let point = number_data_point(value, 0, time_unix_nano, datapoint_attributes);
+            metric::Data::Gauge(Gauge::new(vec![point]))
         }
         Instrument::Histogram => {
             let point = scalar_histogram_data_point(
                 value,
                 metric_set.delta_start_time_unix_nano,
                 time_unix_nano,
+                datapoint_attributes,
             );
-            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Histogram(
-                Histogram::new(AggregationTemporality::Delta, vec![point]),
-            )
+            metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
         }
         Instrument::Mmsc => {
             let MetricValue::Mmsc(snapshot) = value else {
@@ -737,6 +829,7 @@ fn encode_metric(
                 return Ok(None);
             }
             let mut point = HistogramDataPoint::build()
+                .attributes(datapoint_attributes.to_vec())
                 .start_time_unix_nano(metric_set.delta_start_time_unix_nano)
                 .time_unix_nano(time_unix_nano)
                 .count(snapshot.count)
@@ -748,9 +841,7 @@ fn encode_metric(
                 point = point.sum(snapshot.sum);
             }
             let point = point.finish();
-            otap_df_pdata::proto::opentelemetry::metrics::v1::metric::Data::Histogram(
-                Histogram::new(AggregationTemporality::Delta, vec![point]),
-            )
+            metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
         }
     };
 
@@ -794,8 +885,10 @@ fn number_data_point(
     value: MetricValue,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
+    datapoint_attributes: &[KeyValue],
 ) -> NumberDataPoint {
     let builder = NumberDataPoint::build()
+        .attributes(datapoint_attributes.to_vec())
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano);
     match value {
@@ -814,6 +907,7 @@ fn scalar_histogram_data_point(
     value: MetricValue,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
+    datapoint_attributes: &[KeyValue],
 ) -> HistogramDataPoint {
     const DEFAULT_BOUNDS: [f64; 15] = [
         0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0,
@@ -833,6 +927,7 @@ fn scalar_histogram_data_point(
     bucket_counts[bucket] = 1;
 
     let mut point = HistogramDataPoint::build()
+        .attributes(datapoint_attributes.to_vec())
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano)
         .count(1u64)
@@ -1160,6 +1255,7 @@ mod tests {
         MetricSetExport {
             descriptor,
             attributes,
+            datapoint_attributes: Vec::new(),
             values,
             delta_start_time_unix_nano: DELTA_START,
             cumulative_start_time_unix_nano: CUMULATIVE_START,
@@ -1923,7 +2019,7 @@ mod tests {
         ];
 
         for (value, expected_bucket, expected_value) in cases {
-            let point = scalar_histogram_data_point(value, DELTA_START, COLLECTION_TIME);
+            let point = scalar_histogram_data_point(value, DELTA_START, COLLECTION_TIME, &[]);
             assert_eq!(point.count, 1);
             assert_eq!(
                 point.sum,

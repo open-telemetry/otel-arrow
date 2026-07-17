@@ -124,7 +124,7 @@ impl InternalCollector {
         match message {
             MetricsCollectionMessage::Snapshot(metrics) => self
                 .registry
-                .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics),
+                .accumulate_metric_set_snapshot(metrics.key, metrics.bucket, &metrics.metrics),
             MetricsCollectionMessage::Flush(ack_sender) => {
                 let _ = ack_sender.send(());
             }
@@ -348,6 +348,7 @@ mod tests {
     fn create_test_snapshot(key: MetricSetKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
+            bucket: 0,
             metrics: values,
         }
     }
