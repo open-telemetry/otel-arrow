@@ -1995,18 +1995,25 @@ impl<
     }
 
     /// Spawns a dedicated background thread that listens for OS termination
-    /// signals (SIGINT / SIGTERM on Unix, Ctrl-C on all platforms) and
-    /// initiates a graceful pipeline shutdown via the control plane.
+    /// signals (SIGINT / SIGTERM on Unix; Ctrl-C, Ctrl-Break, console close, and
+    /// system shutdown on Windows) and initiates a graceful pipeline shutdown
+    /// via the control plane.
     ///
     /// Follows the same double-signal convention used by the OpenTelemetry
     /// Collector (Go):
     /// - **First signal** → initiates graceful shutdown (drain pipelines).
     /// - **Second signal** → forces immediate process exit (`std::process::exit(1)`).
     ///
-    /// This allows Kubernetes (or any process manager that sends SIGTERM) to
-    /// trigger an orderly drain of in-flight telemetry data before the pod is
-    /// killed. If the graceful drain hangs, a second signal provides an escape
-    /// hatch.
+    /// This allows Kubernetes (or any process manager that sends SIGTERM, or
+    /// CTRL_SHUTDOWN_EVENT on Windows) to trigger an orderly drain of in-flight
+    /// telemetry data before the pod is killed. If the graceful drain hangs, a
+    /// second signal provides an escape hatch.
+    ///
+    /// On Windows, CTRL_CLOSE_EVENT and CTRL_SHUTDOWN_EVENT are subject to an
+    /// OS-imposed grace period (a few seconds by default) after which the
+    /// process is force-terminated regardless of the drain deadline; the drain
+    /// is best-effort in that case and the second-signal escape hatch does not
+    /// apply.
     ///
     /// The spawned thread's `JoinHandle` is intentionally dropped — the thread
     /// will terminate either via `process::exit(1)` on a second signal, or when
@@ -2594,13 +2601,29 @@ struct TerminationSignals {
     ctrl_c: tokio::signal::windows::CtrlC,
     #[cfg(windows)]
     ctrl_break: tokio::signal::windows::CtrlBreak,
+    // CTRL_CLOSE (console window closed) and CTRL_SHUTDOWN (system shutdown /
+    // container stop) are the Windows equivalents of SIGTERM: Docker,
+    // containerd, and Kubernetes deliver CTRL_SHUTDOWN_EVENT to a Windows
+    // container's process on stop. Without these, orchestrated shutdown would
+    // skip the graceful drain on Windows.
+    //
+    // Note: for these three events Windows enforces its own grace period (a few
+    // seconds by default) and then force-terminates the process regardless of
+    // the 60 s drain deadline. The drain is therefore best-effort under
+    // CTRL_CLOSE/CTRL_SHUTDOWN, and the "second signal forces exit" escape hatch
+    // does not apply because the OS reaps the process itself.
+    #[cfg(windows)]
+    ctrl_close: tokio::signal::windows::CtrlClose,
+    #[cfg(windows)]
+    ctrl_shutdown: tokio::signal::windows::CtrlShutdown,
 }
 
 impl TerminationSignals {
     /// Registers the platform's termination-signal streams.
     ///
-    /// On Unix this listens for both SIGINT and SIGTERM; on Windows for Ctrl-C
-    /// and Ctrl-Break; elsewhere only Ctrl-C (SIGINT equivalent) is supported.
+    /// On Unix this listens for both SIGINT and SIGTERM; on Windows for Ctrl-C,
+    /// Ctrl-Break, console close, and system shutdown; elsewhere only Ctrl-C
+    /// (SIGINT equivalent) is supported.
     fn register() -> Self {
         #[cfg(unix)]
         {
@@ -2615,11 +2638,13 @@ impl TerminationSignals {
 
         #[cfg(windows)]
         {
-            use tokio::signal::windows::{ctrl_break, ctrl_c};
+            use tokio::signal::windows::{ctrl_break, ctrl_c, ctrl_close, ctrl_shutdown};
 
             Self {
                 ctrl_c: ctrl_c().expect("failed to register Ctrl-C handler"),
                 ctrl_break: ctrl_break().expect("failed to register Ctrl-Break handler"),
+                ctrl_close: ctrl_close().expect("failed to register Ctrl-Close handler"),
+                ctrl_shutdown: ctrl_shutdown().expect("failed to register Ctrl-Shutdown handler"),
             }
         }
 
@@ -2644,6 +2669,8 @@ impl TerminationSignals {
             tokio::select! {
                 _ = self.ctrl_break.recv() => "CTRL_BREAK",
                 _ = self.ctrl_c.recv() => "CTRL_C",
+                _ = self.ctrl_close.recv() => "CTRL_CLOSE",
+                _ = self.ctrl_shutdown.recv() => "CTRL_SHUTDOWN",
             }
         }
 
@@ -4301,5 +4328,28 @@ groups:
             }
         }
         assert_eq!(broadcast_messages, 1);
+    }
+
+    /// Registering the platform's termination-signal streams must succeed inside
+    /// a Tokio runtime without panicking. On Windows this exercises the
+    /// registration of all four console control events (Ctrl-C, Ctrl-Break,
+    /// Ctrl-Close, Ctrl-Shutdown); on Unix it registers SIGINT and SIGTERM.
+    ///
+    /// This guards against a platform-specific regression where a signal source
+    /// is unavailable or the `signal` Tokio feature is missing — `register()`
+    /// would otherwise panic only at runtime on the affected OS.
+    #[test]
+    fn termination_signals_register_on_current_platform() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build signal-handler runtime");
+
+        rt.block_on(async {
+            // `register()` panics on failure, so a successful return is the
+            // assertion. Drop the streams immediately to unregister.
+            let signals = TerminationSignals::register();
+            drop(signals);
+        });
     }
 }
