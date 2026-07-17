@@ -328,8 +328,9 @@ impl InternalTelemetryReceiver {
     }
 
     /// Encode and send the accumulated batch, grouping records by scope. A batch
-    /// that would exceed `max_size` is split (see [`chunk_end`]) so every
-    /// message stays within that budget. Clears the batch; a no-op when empty.
+    /// over `max_size` is split (see [`chunk_end`]) to keep messages near that
+    /// budget, though a lone oversized record is still sent whole. Clears the
+    /// batch; a no-op when empty.
     async fn flush_batch(
         effect_handler: &local::EffectHandler<OtapPdata>,
         batch: &mut Vec<LogEvent>,

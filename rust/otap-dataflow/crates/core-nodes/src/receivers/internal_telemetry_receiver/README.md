@@ -32,7 +32,8 @@ config: {}
 Batching is on by default: records accumulate until `min_size` bytes are
 reached (or `max_batch_duration` elapses), and those sharing a scope are
 combined into one `ScopeLogs` message instead of being emitted one per message.
-A batch that would exceed `max_size` is split across several messages instead.
+A batch that would exceed `max_size` is split across several messages instead (a
+single record larger than `max_size` is still sent whole).
 The empty config shown above uses the defaults below; override any field as
 needed:
 
