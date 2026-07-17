@@ -102,8 +102,12 @@ jobs:
           sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
       - name: Update Rust lockfile
-        run: cargo check --manifest-path rust/otap-dataflow/Cargo.toml -p otap-df
+        run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
 
       - name: Extract release notes for PR body
         id: changelog
