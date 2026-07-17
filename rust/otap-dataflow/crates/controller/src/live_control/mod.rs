@@ -158,6 +158,7 @@ impl<
                 next_shutdown_id: 0,
                 next_thread_id: 1,
                 first_error: None,
+                instance_wait_released: false,
             }),
             state_changed: Condvar::new(),
         }

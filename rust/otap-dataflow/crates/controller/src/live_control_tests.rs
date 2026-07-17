@@ -2968,6 +2968,63 @@ fn register_launched_instance_reconciles_early_exit_without_leaking_active_count
     assert!(!state.runtime_instances.contains_key(&deployed_key));
 }
 
+/// Scenario: a controller extension fails at runtime while a pipeline instance
+/// is still active and never drains (e.g. the graceful shutdown request stalls).
+/// Guarantees: `release_instance_wait` unblocks `wait_until_all_instances_exit`
+/// unconditionally, so the main controller thread proceeds to teardown instead
+/// of hanging. Regression test for the removed `thread::park`/`unpark` escape
+/// hatch — the condvar wait is now the only wake path and must honor the latch.
+#[test]
+fn release_instance_wait_unblocks_wait_with_active_instances() {
+    let runtime = test_runtime(&empty_engine_config());
+
+    // Simulate a launched, still-active pipeline instance that never exits.
+    runtime.register_launched_instance(launched_runtime_instance("g1", "p1", 0, 0));
+    assert_eq!(
+        runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .active_instances,
+        1
+    );
+
+    let waiter = {
+        let runtime = Arc::clone(&runtime);
+        thread::spawn(move || runtime.wait_until_all_instances_exit())
+    };
+
+    // The waiter must stay blocked while the instance is active and unreleased.
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        !waiter.is_finished(),
+        "waiter should block while an instance is active"
+    );
+
+    // Fatal-shutdown escape hatch: release the wait without the instance draining.
+    runtime.release_instance_wait();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !waiter.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "release_instance_wait did not unblock wait_until_all_instances_exit"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    waiter.join().expect("waiter thread should not panic");
+
+    let state = runtime
+        .state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    assert_eq!(
+        state.active_instances, 1,
+        "release must not fabricate an instance exit"
+    );
+    assert!(state.instance_wait_released);
+}
+
 /// Scenario: a completed rollout has advanced the committed active generation,
 /// but observed state still contains the older generation for the same core.
 /// Guarantees: controller cleanup compacts observed state to the selected

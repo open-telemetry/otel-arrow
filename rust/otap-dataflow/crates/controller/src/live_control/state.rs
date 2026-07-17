@@ -487,6 +487,12 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_thread_id: usize,
     /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
+    /// One-way latch that releases `wait_until_all_instances_exit` even while
+    /// runtime instances are still active. Set when the engine must tear down
+    /// regardless of whether the graceful drain completes — e.g. a controller
+    /// extension failed at runtime — so the main thread never blocks forever on
+    /// a stalled drain.
+    pub(super) instance_wait_released: bool,
 }
 
 #[derive(Debug)]
