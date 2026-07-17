@@ -349,7 +349,22 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                                 // preserve the inbound flow metrics counter, but partition
                                 // its value across the various outbound batches relative to the
-                                // proportion of inbound rows present in the outbound batch
+                                // proportion of inbound rows present in the outbound batch.
+                                //
+                                // The assumption here is that, since the flow count is the time
+                                // accrued processing the batch upstream, that each row took
+                                // roughly the same amount of time to process. This might not be
+                                // exactly true, but doing the split like this anyway at least
+                                // gives a good approximation of how much time was spent upstream
+                                // processing the data in the outbound batch.
+                                //
+                                // Assuming each batch eventually reaches the end of the flow
+                                // metrics sequence, the total compute duration sum will be
+                                // accurate. If some, however, some outbound batches are dropped
+                                // or routed elsewhere, we still get a good approximation of the
+                                // the total compute duration for the outbound batches whose flow
+                                // counters are accumulated eventually for the total compute
+                                // duration sum metric
                                 let partition_flow_count_ns = (flow_metrics_counter
                                     * outbound_batch_num_items as u64)
                                     / inbound_batch_num_items as u64;
