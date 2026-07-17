@@ -66,13 +66,22 @@ from ..common.docker import (
 )
 from ....core.strategies.monitoring_strategy import MonitoringStrategy
 from ....runner.registry import monitoring_registry, PluginMeta
-from .perf_support import ensure_perf_binary
+from .perf_support import (
+    ensure_perf_binary,
+    perf_privilege_prefix,
+    read_perf_event_paranoid,
+)
 
 if TYPE_CHECKING:
     from ....impl.component.managed_component import ManagedComponent
 
 
 STRATEGY_NAME = "docker_component"
+
+# Guards a one-time, human-visible diagnostic when perf counter collection
+# fails, so CI logs surface the root cause without spamming every poll.
+_perf_failure_warned = False
+_perf_failure_lock = threading.Lock()
 
 
 @dataclass
@@ -462,6 +471,9 @@ def _collect_container_perf_counters(
 ) -> dict[str, float]:
     perf_bin = ensure_perf_binary(logger)
     if not perf_bin:
+        _warn_perf_unavailable_once(
+            logger, "perf binary is not available on PATH and could not be installed"
+        )
         return {}
 
     try:
@@ -475,6 +487,7 @@ def _collect_container_perf_counters(
         return {}
 
     command = [
+        *perf_privilege_prefix(),
         perf_bin,
         "stat",
         "-x",
@@ -500,4 +513,31 @@ def _collect_container_perf_counters(
         logger.debug("failed running perf stat for pid %s: %s", pid, exc)
         return {}
 
-    return _parse_perf_stat_output(result.stderr)
+    metrics = _parse_perf_stat_output(result.stderr)
+    if not metrics:
+        _warn_perf_unavailable_once(
+            logger,
+            "perf stat produced no counter values (rc=%s). "
+            "perf_event_paranoid=%s. stderr: %s"
+            % (
+                result.returncode,
+                read_perf_event_paranoid(),
+                (result.stderr or "").strip()[:500],
+            ),
+        )
+    return metrics
+
+
+def _warn_perf_unavailable_once(logger: LoggerAdapter, message: str) -> None:
+    """Emit a single human-visible warning explaining why perf failed.
+
+    Perf collection runs every poll interval, so repeated warnings would flood
+    the logs. This keeps exactly one diagnostic per process to aid CI triage.
+    """
+
+    global _perf_failure_warned
+    with _perf_failure_lock:
+        if _perf_failure_warned:
+            return
+        _perf_failure_warned = True
+    logger.warning("CPU cycle (perf) collection unavailable: %s", message)

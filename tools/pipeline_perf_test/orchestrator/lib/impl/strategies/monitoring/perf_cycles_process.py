@@ -28,7 +28,7 @@ from ....core.strategies.monitoring_strategy import MonitoringStrategy
 from ....core.strategies.monitoring_strategy import MonitoringStrategyConfig
 from ....runner.registry import PluginMeta, monitoring_registry
 from ..deployment.process import ComponentProcessRuntime
-from .perf_support import ensure_perf_binary
+from .perf_support import ensure_perf_binary, perf_privilege_prefix
 
 if TYPE_CHECKING:
     from ....impl.component.managed_component import ManagedComponent
@@ -182,6 +182,7 @@ def _collect_perf_counters(
         return {}
 
     command = [
+        *perf_privilege_prefix(),
         perf_bin,
         "stat",
         "-x",
