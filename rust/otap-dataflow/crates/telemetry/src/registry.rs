@@ -698,6 +698,8 @@ mod tests {
         assert_eq!(telemetry_registry_clone.entity_count(), 1);
     }
 
+    /// Scenario: a dirty metric set is unregistered while deferred unregistration is enabled.
+    /// Guarantees: the last accumulated values are exported exactly once before the registry entry is removed.
     #[test]
     fn test_dirty_unregistration_is_retained_until_one_final_export() {
         let telemetry_registry = TelemetryRegistryHandle::new();
