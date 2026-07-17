@@ -16,7 +16,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 usage() {
-    echo "Usage: $0 --version <ver> [--file <path>] [--allow-missing] [output_file]"
+    echo "Usage: $0 --version <ver> [--file <path>] [--allow-missing] [--omit-subtext] [output_file]"
     echo ""
     echo "Extract a release section from a chloggen-managed CHANGELOG.md."
     echo "Output preserves the section as rendered by chloggen and can be"
@@ -28,6 +28,7 @@ usage() {
     echo "Options:"
     echo "  --file <path>       CHANGELOG file to read (default: CHANGELOG.md)."
     echo "  --allow-missing     Exit 0 with empty output if the version section is absent."
+    echo "  --omit-subtext      Exclude indented entry subtext from the extracted output."
     echo "  output_file         Output file (default: /tmp/release_content.txt)."
     echo ""
     echo "Examples:"
@@ -40,6 +41,7 @@ VERSION=""
 FILE="CHANGELOG.md"
 OUTPUT_FILE=""
 ALLOW_MISSING=false
+OMIT_SUBTEXT=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -53,6 +55,10 @@ while [ $# -gt 0 ]; do
             ;;
         --allow-missing)
             ALLOW_MISSING=true
+            shift
+            ;;
+        --omit-subtext)
+            OMIT_SUBTEXT=true
             shift
             ;;
         -h|--help)
@@ -120,6 +126,11 @@ CONTENT=$(echo "$CONTENT" | awk '
         for (i = first; i <= last; i++) print lines[i]
     }
 ')
+
+if [ "$OMIT_SUBTEXT" = true ]; then
+    # Chloggen renders optional entry subtext as indented continuation lines.
+    CONTENT=$(echo "$CONTENT" | awk '!/^  /')
+fi
 
 if [ -z "$CONTENT" ]; then
     if [ "$ALLOW_MISSING" = true ]; then
