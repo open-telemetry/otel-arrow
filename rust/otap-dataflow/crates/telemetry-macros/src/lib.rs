@@ -1009,7 +1009,7 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// ```ignore
 /// #[attribute_set(name = "node.scope")] // scope or entity attributes
 /// #[attribute_set(item, registration)] // fixed item attributes
-/// #[attribute_set(item, measurement)] // per-measurement item attributes
+/// #[attribute_set(item, measurement)] // per-recording metric item attributes
 /// ```
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {

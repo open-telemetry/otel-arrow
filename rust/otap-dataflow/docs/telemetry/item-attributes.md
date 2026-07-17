@@ -1,6 +1,6 @@
 # Item attributes for metrics
 
-Metric sets support bounded attributes that are emitted on each telemetry item.
+Metric sets support bounded attributes that are emitted on each metric item.
 Use them for categorical dimensions that are needed to interpret a measurement,
 such as `signal`, `outcome`, or an HTTP method. Do not use them for identifiers,
 raw error messages, paths, or any other unbounded value; follow the [Attributes
