@@ -61,4 +61,6 @@ pub enum HttpResponse {
     Http5xx,
     /// A transport failure before a response was received.
     NetworkError,
+    /// A response that is not otherwise classified.
+    Other,
 }

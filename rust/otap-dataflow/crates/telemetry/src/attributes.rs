@@ -144,7 +144,7 @@ pub trait AttributeSetHandler {
 /// Compile-time key schema for an [`AttributeSetHandler`].
 ///
 /// Generated implementations preserve composed attribute sets so metric-set
-/// macros can validate datapoint attribute keys without a runtime registration
+/// macros can validate item attribute keys without a runtime registration
 /// path.
 pub trait AttributeSetKeySchema {
     /// Keys declared directly by this attribute set or by its composed sets.
@@ -165,7 +165,7 @@ pub enum AttributeKeySchema {
 /// compile-time assertion.
 #[doc(hidden)]
 #[must_use]
-pub const fn has_datapoint_attribute_key_collision(
+pub const fn has_item_attribute_key_collision(
     registration_schema: &[AttributeKeySchema],
     measurement: &[MeasurementAttributeDescriptor],
 ) -> bool {
@@ -182,7 +182,7 @@ pub const fn has_datapoint_attribute_key_collision(
                 }
             }
             AttributeKeySchema::Composed(schema) => {
-                if has_datapoint_attribute_key_collision(schema, measurement) {
+                if has_item_attribute_key_collision(schema, measurement) {
                     return true;
                 }
             }
@@ -214,7 +214,7 @@ const fn str_eq(left: &str, right: &str) -> bool {
 /// Implemented via `#[derive(AttributeEnum)]`. Because the value space is closed,
 /// the total number of variants ([`AttributeEnum::CARDINALITY`]) and each
 /// variant's ordinal ([`AttributeEnum::variant_index`]) are known at compile
-/// time, enabling dense mixed-radix bucketing of per-datapoint attributes and a
+/// time, enabling dense mixed-radix bucketing of per-item attributes and a
 /// compile-time cardinality bound.
 pub trait AttributeEnum: Copy {
     /// Number of variants in the enum.
@@ -306,7 +306,7 @@ mod tests {
     /// Scenario: fixed and per-record attribute schemas share or differ in keys.
     /// Guarantees: only overlapping keys are identified as collisions.
     #[test]
-    fn datapoint_attribute_key_collision_detection() {
+    fn item_attribute_key_collision_detection() {
         const STATIC: &[AttributeKeySchema] = &[
             AttributeKeySchema::Key("signal"),
             AttributeKeySchema::Composed(&[AttributeKeySchema::Key("component")]),
@@ -322,11 +322,11 @@ mod tests {
                 variants: &["success", "error"],
             }];
 
-        assert!(has_datapoint_attribute_key_collision(
+        assert!(has_item_attribute_key_collision(
             STATIC,
             MEASUREMENT_WITH_COLLISION
         ));
-        assert!(!has_datapoint_attribute_key_collision(
+        assert!(!has_item_attribute_key_collision(
             STATIC,
             DISJOINT_MEASUREMENT
         ));

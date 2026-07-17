@@ -1,10 +1,10 @@
-# Datapoint enum attributes for metrics
+# Item attributes for metrics
 
-Metric sets support bounded signal-specific attributes that are emitted on each
-metric datapoint. Use them for categorical dimensions that are needed to
-interpret a measurement, such as `signal`, `outcome`, or an HTTP method. Do not
-use them for identifiers, raw error messages, paths, or any other unbounded
-value; follow the [Attributes Guide](attributes-guide.md).
+Metric sets support bounded attributes that are emitted on each telemetry item.
+Use them for categorical dimensions that are needed to interpret a measurement,
+such as `signal`, `outcome`, or an HTTP method. Do not use them for identifiers,
+raw error messages, paths, or any other unbounded value; follow the [Attributes
+Guide](attributes-guide.md).
 
 An enum attribute belongs to an existing `#[metric_set]`. It does not create a
 new instrument or metric set. The framework stores one bucket for each permitted
@@ -78,15 +78,15 @@ register during migration. Do not call them from new component instrumentation.
 
 ## Registration-time attributes
 
-Declare `#[attribute_set(datapoint, registration)]`, attach it to the metric set
+Declare `#[attribute_set(item, registration)]`, attach it to the metric set
 with `registration_attributes`, and pass the value when registering. The value
-applies to every datapoint from that registration.
+applies to every emitted item from that registration.
 
 Every non-composed field in an attribute set becomes an attribute. Its key
 defaults to the field name with underscores replaced by dots. Use
 `#[attribute_key = "..."]` only when the exported key differs from that default.
 Unlike scope and entity attribute sets, registration attributes do not need a
-schema name because they are emitted directly on metric datapoints.
+schema name because they are emitted directly on telemetry items.
 
 ```rust
 // This component only works on logs.
@@ -95,7 +95,7 @@ use otap_df_telemetry::instrument::Counter;
 use otap_df_config::SignalType;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-#[attribute_set(datapoint, registration)]
+#[attribute_set(item, registration)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalAttributes {
     pub signal: SignalType,
@@ -123,10 +123,15 @@ recording to the next, use a measurement attribute instead.
 
 ## Measurement-time attributes
 
-Use `#[attribute_set(datapoint, measurement)]`, attach the type to the metric
+Use `#[attribute_set(item, measurement)]`, attach the type to the metric
 set with `measurement_attributes`, and use the generated `with(...)` method when
 recording. `with(...)` returns a view of the whole metric set for that attribute
 combination.
+
+Every item attribute set also implements `AttributeSetHandler`. A future log or
+trace emitter can serialize the same typed values through `iter_attributes()`;
+only metric sets use the additional dense-bucket implementation generated for
+`measurement`.
 
 ```rust
 // This component has multiple possible outcomes.
@@ -141,7 +146,7 @@ pub enum LossOutcome {
     Expired,
 }
 
-#[attribute_set(datapoint, measurement)]
+#[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct LossAttributes {
     pub signal: SignalType,
@@ -198,13 +203,13 @@ pub enum LossOutcome {
     Expired,
 }
 
-#[attribute_set(datapoint, registration)]
+#[attribute_set(item, registration)]
 #[derive(Debug, Clone, Copy)]
 pub struct SignalAttributes {
     pub signal: SignalType,
 }
 
-#[attribute_set(datapoint, measurement)]
+#[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct OutcomeAttributes {
     #[attribute_key = "result"]
@@ -235,12 +240,12 @@ metrics
 ```
 
 The registration and measurement attribute sets MUST NOT declare the same key.
-The macro rejects overlapping keys at compile time so every datapoint has one
+The macro rejects overlapping keys at compile time so every emitted item has one
 unambiguous value for each attribute.
 
 ## Export behavior
 
-Registration and measurement enum attributes are datapoint attributes:
+Registration and measurement enum attributes are item attributes:
 
 - OTLP metrics carry them on the metric datapoint.
 - The admin Prometheus endpoint emits them as unprefixed series labels.
@@ -275,7 +280,7 @@ either original dimension independently.
 ## Appendix: design constraints
 
 - `metric_set` remains the unit of declaration, registration, aggregation, and
-  admin visibility. Enum attributes add datapoint dimensions; they do not create
+  admin visibility. Enum attributes add item dimensions; they do not create
   a new metric family or a separate metric set per value.
 - Measurement combinations use a dense bucket indexed by enum variant order. The
   first declared attribute is the low-order dimension. For `signal` with three

@@ -148,7 +148,7 @@ impl TelemetryRegistryHandle {
         self.register_metric_set_for_existing_entity(entity_key, MetricSetRegistry::register::<T>)
     }
 
-    /// Internal registrar operation for registration-time datapoint attributes.
+    /// Internal registrar operation for registration-time item attributes.
     ///
     /// This is public only so engine contexts and generated metric-set `register(...)`
     /// methods (e.g. `MyMetrics::register`) can select an entity scope. Component code
@@ -297,20 +297,20 @@ impl TelemetryRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        self.visit_metrics_and_reset_with_datapoint_attrs(
+        self.visit_metrics_and_reset_with_item_attrs(
             |desc, attrs, _dp, iter| f(desc, attrs, iter),
             keep_all_zeroes,
         );
     }
 
-    /// Visits every non-empty datapoint bucket, yielding the per-datapoint
+    /// Visits every non-empty item bucket, yielding the per-item
     /// enum/registration attributes (`&[(key, value)]`) in addition to scope attributes,
     /// then resets the visited bucket to zero.
     ///
-    /// The datapoint attributes are empty for plain metric sets; the primary
+    /// The item attributes are empty for plain metric sets; the primary
     /// consumer is the metrics dispatcher, which attaches them to the emitted
     /// OpenTelemetry data points.
-    pub fn visit_metrics_and_reset_with_datapoint_attrs<F>(&self, f: F, keep_all_zeroes: bool)
+    pub fn visit_metrics_and_reset_with_item_attrs<F>(&self, f: F, keep_all_zeroes: bool)
     where
         for<'a> F: FnMut(
             &'static MetricsDescriptor,
@@ -321,7 +321,7 @@ impl TelemetryRegistryHandle {
     {
         let mut reg = self.registry.lock();
         let TelemetryRegistry { entities, metrics } = &mut *reg;
-        metrics.visit_and_reset_with_datapoint_attrs(entities, f, keep_all_zeroes);
+        metrics.visit_and_reset_with_item_attrs(entities, f, keep_all_zeroes);
     }
 
     /// Generates a SemConvRegistry from the current MetricSetRegistry.
@@ -349,15 +349,15 @@ impl TelemetryRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        self.visit_current_metrics_with_datapoint_attrs(
+        self.visit_current_metrics_with_item_attrs(
             |desc, attrs, _dp, iter| f(desc, attrs, iter),
             keep_all_zeroes,
         );
     }
 
-    /// Read-only variant of [`Self::visit_metrics_and_reset_with_datapoint_attrs`]
+    /// Read-only variant of [`Self::visit_metrics_and_reset_with_item_attrs`]
     /// that does not reset bucket values.
-    pub fn visit_current_metrics_with_datapoint_attrs<F>(&self, f: F, keep_all_zeroes: bool)
+    pub fn visit_current_metrics_with_item_attrs<F>(&self, f: F, keep_all_zeroes: bool)
     where
         for<'a> F: FnMut(
             &'static MetricsDescriptor,
@@ -368,7 +368,7 @@ impl TelemetryRegistryHandle {
     {
         let reg = self.registry.lock();
         reg.metrics
-            .visit_current_with_datapoint_attrs(&reg.entities, f, keep_all_zeroes);
+            .visit_current_with_item_attrs(&reg.entities, f, keep_all_zeroes);
     }
 }
 

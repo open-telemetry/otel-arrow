@@ -1277,12 +1277,12 @@ fn format_prometheus_text(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
-                     datapoint_attributes: &[(&str, &str)],
+                     item_attributes: &[(&str, &str)],
                      metrics_iter: MetricsIterator<'_>| {
-        // Scope and datapoint attributes may sanitize to the same Prometheus
+        // Scope and item attributes may sanitize to the same Prometheus
         // label. Merge them before rendering to preserve both values.
         let mut base_labels = String::new();
-        let merged = merge_prometheus_metric_labels(descriptor, attributes, datapoint_attributes);
+        let merged = merge_prometheus_metric_labels(descriptor, attributes, item_attributes);
         for (key, value) in &merged {
             if !base_labels.is_empty() {
                 base_labels.push(',');
@@ -1309,10 +1309,10 @@ fn format_prometheus_text(
 
     if reset {
         telemetry_registry
-            .visit_metrics_and_reset_with_datapoint_attrs(|d, a, dp, m| visit(d, a, dp, m), false);
+            .visit_metrics_and_reset_with_item_attrs(|d, a, item, m| visit(d, a, item, m), false);
     } else {
         telemetry_registry
-            .visit_current_metrics_with_datapoint_attrs(|d, a, dp, m| visit(d, a, dp, m), false);
+            .visit_current_metrics_with_item_attrs(|d, a, item, m| visit(d, a, item, m), false);
     }
 
     // Emit all metric families as contiguous groups (Prometheus spec requirement).
@@ -1321,7 +1321,7 @@ fn format_prometheus_text(
     out
 }
 
-/// Merges scope and datapoint attributes into valid Prometheus labels.
+/// Merges scope and item attributes into valid Prometheus labels.
 ///
 /// The OpenTelemetry Prometheus compatibility specification requires values from
 /// different OpenTelemetry keys that map to the same Prometheus label to be
@@ -1330,7 +1330,7 @@ fn format_prometheus_text(
 fn merge_prometheus_metric_labels(
     descriptor: &MetricsDescriptor,
     scope_attributes: &dyn AttributeSetHandler,
-    datapoint_attributes: &[(&str, &str)],
+    item_attributes: &[(&str, &str)],
 ) -> HashMap<String, String> {
     let mut entries = Vec::new();
 
@@ -1350,7 +1350,7 @@ fn merge_prometheus_metric_labels(
         entries.push((key.to_string(), label_key, value.to_string_value()));
     }
 
-    for (key, value) in datapoint_attributes {
+    for (key, value) in item_attributes {
         entries.push((
             (*key).to_string(),
             sanitize_prom_label_key(key),
@@ -3581,7 +3581,7 @@ mod tests {
         Value,
     }
 
-    #[attribute_set(datapoint, measurement)]
+    #[attribute_set(item, measurement)]
     #[derive(Debug, Clone, Copy)]
     struct DatapointSignalAttributes {
         #[attribute_key = "signal"]
@@ -3604,7 +3604,7 @@ mod tests {
     /// Guarantees: Prometheus emits one distinct series with the recorded value
     /// per bucket.
     #[test]
-    fn test_format_prometheus_text_preserves_measurement_datapoint_attributes() {
+    fn test_format_prometheus_text_preserves_measurement_item_attributes() {
         let registry = TelemetryRegistryHandle::new();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(2);
         let mut metrics = registry
@@ -3645,7 +3645,7 @@ mod tests {
             .filter(|line| line.starts_with("events_total{"))
             .collect();
 
-        assert_eq!(samples.len(), 2, "expected two datapoint series:\n{output}");
+        assert_eq!(samples.len(), 2, "expected two item series:\n{output}");
         assert!(
             samples
                 .iter()
@@ -3669,7 +3669,7 @@ mod tests {
         assert_eq!(
             output.matches(r#"otel_scope_foo="scope;value""#).count(),
             2,
-            "scope and datapoint collisions should merge values:\n{output}"
+            "scope and item collisions should merge values:\n{output}"
         );
     }
 

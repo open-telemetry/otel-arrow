@@ -1,10 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! End-to-end tests for the datapoint-level enum-attribute mechanism for metric
+//! End-to-end tests for the item-level enum-attribute mechanism for metric
 //! sets: the `AttributeEnum` derive and `attribute_set` modes,
 //! `#[metric_set(registration_attributes = ..)]` / `#[metric_set(measurement_attributes = ..)]`,
-//! dense mixed-radix bucketing, and the export path that carries per-datapoint
+//! dense mixed-radix bucketing, and the export path that carries per-item
 //! attributes through the registry.
 
 #![allow(missing_docs)]
@@ -27,7 +27,7 @@ pub enum LossOutcome {
 }
 
 /// Measurement fields use their field names as keys without annotations.
-#[attribute_set(datapoint, measurement)]
+#[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct ImplicitMeasurementAttributes {
     pub signal: SignalType,
@@ -35,7 +35,7 @@ pub struct ImplicitMeasurementAttributes {
 }
 
 /// An explicit key override changes the exported key from `outcome` to `result`.
-#[attribute_set(datapoint, measurement)]
+#[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]
 pub struct ExplicitMeasurementAttributes {
     #[attribute_key = "result"]
@@ -50,14 +50,14 @@ pub struct LegacyMeasurementAttributes {
 }
 
 /// Registration fields also use their field names as keys without annotations.
-#[attribute_set(datapoint, registration)]
+#[attribute_set(item, registration)]
 #[derive(Debug, Clone, Copy)]
 pub struct RegistrationAttributes {
     #[attribute_key = "registration.signal"]
     pub signal: SignalType,
 }
 
-#[attribute_set(datapoint, registration)]
+#[attribute_set(item, registration)]
 #[derive(Debug, Clone)]
 pub struct TextRegistrationAttributes {
     pub label: String,
@@ -241,7 +241,7 @@ fn signal_type_uses_canonical_values() {
     assert_eq!(SignalType::Logs.variant_index(), 2);
 }
 
-/// Scenario: a two-field enum attribute set selects datapoint buckets.
+/// Scenario: a two-field enum attribute set selects item buckets.
 /// Guarantees: descriptors and mixed-radix indexes match declaration order.
 #[test]
 fn measurement_attribute_set_descriptors_and_bucketing() {
@@ -271,10 +271,27 @@ fn measurement_attribute_set_descriptors_and_bucketing() {
     assert_eq!(idx(SignalType::Logs, LossOutcome::Expired), 5);
 }
 
-/// Scenario: a measurement set uses an `attribute_value` override.
-/// Guarantees: the measurement datapoint carries the overridden enum wire value.
+/// Item measurement attributes remain serializable outside the metrics bucket model.
 #[test]
-fn measurement_metric_set_export_carries_datapoint_attributes() {
+fn measurement_item_attributes_implement_attribute_set_handler() {
+    let attrs = ExplicitMeasurementAttributes {
+        outcome: LossOutcome::Expired,
+    };
+
+    assert_eq!(attrs.schema_name(), "explicit_measurement_attributes.item");
+    assert_eq!(
+        attrs
+            .iter_attributes()
+            .map(|(key, value)| (key, value.to_string_value()))
+            .collect::<Vec<_>>(),
+        vec![("result", "expired".to_string())]
+    );
+}
+
+/// Scenario: a measurement set uses an `attribute_value` override.
+/// Guarantees: the measurement item carries the overridden enum wire value.
+#[test]
+fn measurement_metric_set_export_carries_item_attributes() {
     let registrar = TestRegistrar::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
@@ -317,21 +334,19 @@ fn measurement_metric_set_export_carries_datapoint_attributes() {
     }
     assert_eq!(snapshot_count, 2, "two touched buckets => two snapshots");
 
-    // Visit and verify the decoded per-datapoint attributes and aggregated values.
+    // Visit and verify the decoded per-item attributes and aggregated values.
     let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
-    registrar
-        .registry
-        .visit_metrics_and_reset_with_datapoint_attrs(
-            |_desc, _scope, dp_attrs, iter| {
-                let attrs = dp_attrs
-                    .iter()
-                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                    .collect::<Vec<_>>();
-                let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
-                seen.push((attrs, total));
-            },
-            false,
-        );
+    registrar.registry.visit_metrics_and_reset_with_item_attrs(
+        |_desc, _scope, dp_attrs, iter| {
+            let attrs = dp_attrs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<Vec<_>>();
+            let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
+            seen.push((attrs, total));
+        },
+        false,
+    );
 
     seen.sort();
     assert_eq!(
@@ -416,7 +431,7 @@ fn measurement_metric_set_get_is_read_only_and_with_marks_the_bucket() {
 }
 
 /// Scenario: a registration set uses `attribute_key` and `attribute_value` overrides.
-/// Guarantees: the registration datapoint carries both overridden key and enum wire value.
+/// Guarantees: the registration item carries both overridden key and enum wire value.
 #[test]
 fn registration_metric_set_export_carries_fixed_attributes() {
     let registrar = TestRegistrar::new();
@@ -439,19 +454,17 @@ fn registration_metric_set_export_carries_fixed_attributes() {
     }
 
     let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
-    registrar
-        .registry
-        .visit_metrics_and_reset_with_datapoint_attrs(
-            |_desc, _scope, dp_attrs, iter| {
-                let attrs = dp_attrs
-                    .iter()
-                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                    .collect::<Vec<_>>();
-                let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
-                seen.push((attrs, total));
-            },
-            false,
-        );
+    registrar.registry.visit_metrics_and_reset_with_item_attrs(
+        |_desc, _scope, dp_attrs, iter| {
+            let attrs = dp_attrs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect::<Vec<_>>();
+            let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
+            seen.push((attrs, total));
+        },
+        false,
+    );
 
     assert_eq!(
         seen,
@@ -496,19 +509,17 @@ fn registration_and_measurement_metric_set_export_carries_both_attribute_kinds()
     }
 
     let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
-    registrar
-        .registry
-        .visit_metrics_and_reset_with_datapoint_attrs(
-            |_desc, _scope, dp_attrs, iter| {
-                let attrs = dp_attrs
-                    .iter()
-                    .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
-                    .collect::<Vec<_>>();
-                let total = iter.map(|(_, value)| value.to_u64_lossy()).sum();
-                seen.push((attrs, total));
-            },
-            false,
-        );
+    registrar.registry.visit_metrics_and_reset_with_item_attrs(
+        |_desc, _scope, dp_attrs, iter| {
+            let attrs = dp_attrs
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect::<Vec<_>>();
+            let total = iter.map(|(_, value)| value.to_u64_lossy()).sum();
+            seen.push((attrs, total));
+        },
+        false,
+    );
 
     seen.sort();
     assert_eq!(
@@ -579,7 +590,7 @@ fn registration_attributes_are_borrowed() {
 }
 
 /// Scenario: registration and measurement metric sets share a registered entity.
-/// Guarantees: both sets retain their datapoint attributes after reporting.
+/// Guarantees: both sets retain their item attributes after reporting.
 #[test]
 fn register_metric_sets_for_existing_entity() {
     let registry = TelemetryRegistryHandle::new();
@@ -624,7 +635,7 @@ fn register_metric_sets_for_existing_entity() {
     }
 
     let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
-    registry.visit_metrics_and_reset_with_datapoint_attrs(
+    registry.visit_metrics_and_reset_with_item_attrs(
         |_desc, _scope, dp_attrs, iter| {
             let attrs = dp_attrs
                 .iter()
@@ -654,10 +665,10 @@ fn register_metric_sets_for_existing_entity() {
     );
 }
 
-/// Scenario: a measurement datapoint is read from the registry without reset.
+/// Scenario: a measurement item is read from the registry without reset.
 /// Guarantees: repeated reads return the same attributes and values.
 #[test]
-fn read_only_visit_preserves_datapoint_values() {
+fn read_only_visit_preserves_item_values() {
     let registrar = TestRegistrar::new();
     let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
 
@@ -680,19 +691,17 @@ fn read_only_visit_preserves_datapoint_values() {
     // Visiting without reset must return the same value on repeated calls.
     let read = || {
         let mut seen: Vec<(Vec<(String, String)>, u64)> = Vec::new();
-        registrar
-            .registry
-            .visit_current_metrics_with_datapoint_attrs(
-                |_desc, _scope, dp_attrs, iter| {
-                    let attrs = dp_attrs
-                        .iter()
-                        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                        .collect::<Vec<_>>();
-                    let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
-                    seen.push((attrs, total));
-                },
-                false,
-            );
+        registrar.registry.visit_current_metrics_with_item_attrs(
+            |_desc, _scope, dp_attrs, iter| {
+                let attrs = dp_attrs
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                    .collect::<Vec<_>>();
+                let total = iter.map(|(_, v)| v.to_u64_lossy()).sum();
+                seen.push((attrs, total));
+            },
+            false,
+        );
         seen
     };
     let first = read();

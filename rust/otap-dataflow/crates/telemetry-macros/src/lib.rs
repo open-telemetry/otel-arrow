@@ -906,11 +906,11 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 #crate_root::metrics::check_cardinality(
                     <#measurement_ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
                 );
-                if #crate_root::attributes::has_datapoint_attribute_key_collision(
+                if #crate_root::attributes::has_item_attribute_key_collision(
                     <#registration_ty as #crate_root::attributes::AttributeSetKeySchema>::KEY_SCHEMA,
                     <#measurement_ty as #crate_root::attributes::MeasurementAttributeSet>::DESCRIPTORS,
                 ) {
-                    panic!("registration and measurement datapoint attribute keys must not overlap");
+                    panic!("registration and measurement item attribute keys must not overlap");
                 }
             };
 
@@ -1003,20 +1003,20 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!( #s #marker_impl ).into()
 }
 
-/// Declares either a named scope/entity attribute set or a metric datapoint
+/// Declares either a named scope/entity attribute set or an emitted-item
 /// attribute set.
 ///
 /// ```ignore
 /// #[attribute_set(name = "node.scope")] // scope or entity attributes
-/// #[attribute_set(datapoint, registration)] // fixed metric attributes
-/// #[attribute_set(datapoint, measurement)] // per-measurement metric attributes
+/// #[attribute_set(item, registration)] // fixed item attributes
+/// #[attribute_set(item, measurement)] // per-measurement item attributes
 /// ```
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse `name = "..."` or the bare datapoint modes.
+    // Parse `name = "..."` or the bare item modes.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
-    let mut is_datapoint = false;
+    let mut is_item = false;
     let mut is_registration = false;
     let mut is_measurement = false;
     if let Err(err) = syn::parse::Parser::parse2(
@@ -1027,8 +1027,8 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                     let _: syn::Token![=] = input.parse()?;
                     let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
-                } else if ident == "datapoint" {
-                    is_datapoint = true;
+                } else if ident == "item" {
+                    is_item = true;
                 } else if ident == "registration" {
                     is_registration = true;
                 } else if ident == "measurement" {
@@ -1052,42 +1052,42 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
-    if is_registration && !is_datapoint {
+    if is_registration && !is_item {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "`registration` requires `datapoint`",
+            "`registration` requires `item`",
         )
         .to_compile_error()
         .into();
     }
-    if is_measurement && !is_datapoint && name_val.is_none() {
+    if is_measurement && !is_item && name_val.is_none() {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "`measurement` requires `datapoint`",
+            "`measurement` requires `item`",
         )
         .to_compile_error()
         .into();
     }
-    if name_val.is_some() && (is_datapoint || is_registration) {
+    if name_val.is_some() && (is_item || is_registration) {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "`name` and datapoint modes cannot be combined",
+            "`name` and item modes cannot be combined",
         )
         .to_compile_error()
         .into();
     }
-    if is_datapoint && is_registration == is_measurement {
+    if is_item && is_registration == is_measurement {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "`datapoint` requires exactly one of `registration` or `measurement`",
+            "`item` requires exactly one of `registration` or `measurement`",
         )
         .to_compile_error()
         .into();
     }
-    if !is_datapoint && name_val.is_none() {
+    if !is_item && name_val.is_none() {
         return syn::Error::new(
             proc_macro2::Span::call_site(),
-            "missing `name = \"...\"` or `datapoint, registration|measurement` in attribute_set attribute",
+            "missing `name = \"...\"` or `item, registration|measurement` in attribute_set attribute",
         )
         .to_compile_error()
         .into();
@@ -1101,17 +1101,6 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::new()
     };
-    if is_measurement && is_datapoint {
-        if let Fields::Named(fields) = &mut s.fields {
-            for field in &mut fields.named {
-                field
-                    .attrs
-                    .retain(|attribute| !attribute.path().is_ident("attribute_key"));
-            }
-        }
-        return quote!(#s #measurement_impl).into();
-    }
-
     let attributes_name = match name_val {
         Some(name) if name.is_empty() => {
             return syn::Error::new(s.span(), "attribute set name must not be empty")
@@ -1119,12 +1108,11 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
                 .into();
         }
         Some(name) => name,
-        None => format!("{}.datapoint", to_snake_case(&s.ident.to_string())),
+        None => format!("{}.item", to_snake_case(&s.ident.to_string())),
     };
 
-    // Datapoint registration attributes still use AttributeSetHandler internally
-    // so their values can be captured at registration time.
-    // Ensure the AttributeSetHandler derive is attached
+    // All item attribute sets implement AttributeSetHandler so future signal
+    // emitters can serialize their values without depending on metric buckets.
     let derive_attr: Attribute =
         parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
     s.attrs.push(derive_attr);
@@ -1298,7 +1286,7 @@ mod tests {
     use super::*;
 
     /// Scenario: measurement fields resolve to the same explicit attribute key.
-    /// Guarantees: macro expansion rejects duplicate datapoint keys.
+    /// Guarantees: macro expansion rejects duplicate item keys.
     #[test]
     fn measurement_attribute_set_rejects_duplicate_keys() {
         let attributes: ItemStruct = syn::parse_str(
