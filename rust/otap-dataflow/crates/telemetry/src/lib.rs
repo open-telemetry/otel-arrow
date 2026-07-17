@@ -38,6 +38,8 @@ use tracing_init::ProviderSetup;
 
 pub mod attributes;
 pub mod collector;
+/// Reusable enum attributes for internal telemetry.
+pub mod common_attributes;
 pub mod descriptor;
 pub mod error;
 /// Event types for lifecycle and log events.

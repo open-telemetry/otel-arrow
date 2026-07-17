@@ -144,7 +144,7 @@ pub trait AttributeSetHandler {
 /// Compile-time key schema for an [`AttributeSetHandler`].
 ///
 /// Generated implementations preserve composed attribute sets so metric-set
-/// macros can validate datapoint attribute keys without a runtime registration
+/// macros can validate item attribute keys without a runtime registration
 /// path.
 pub trait AttributeSetKeySchema {
     /// Keys declared directly by this attribute set or by its composed sets.
@@ -159,10 +159,13 @@ pub enum AttributeKeySchema {
     Composed(&'static [AttributeKeySchema]),
 }
 
-/// Returns whether any registration attribute key is also a measurement attribute key.
+/// Checks for an overlapping registration and measurement attribute key.
+///
+/// This is public only because generated `#[metric_set]` code evaluates it in a
+/// compile-time assertion.
 #[doc(hidden)]
 #[must_use]
-pub const fn has_datapoint_attribute_key_collision(
+pub const fn has_item_attribute_key_collision(
     registration_schema: &[AttributeKeySchema],
     measurement: &[MeasurementAttributeDescriptor],
 ) -> bool {
@@ -179,7 +182,7 @@ pub const fn has_datapoint_attribute_key_collision(
                 }
             }
             AttributeKeySchema::Composed(schema) => {
-                if has_datapoint_attribute_key_collision(schema, measurement) {
+                if has_item_attribute_key_collision(schema, measurement) {
                     return true;
                 }
             }
@@ -211,7 +214,7 @@ const fn str_eq(left: &str, right: &str) -> bool {
 /// Implemented via `#[derive(AttributeEnum)]`. Because the value space is closed,
 /// the total number of variants ([`AttributeEnum::CARDINALITY`]) and each
 /// variant's ordinal ([`AttributeEnum::variant_index`]) are known at compile
-/// time, enabling dense mixed-radix bucketing of per-datapoint attributes and a
+/// time, enabling dense mixed-radix bucketing of per-item attributes and a
 /// compile-time cardinality bound.
 pub trait AttributeEnum: Copy {
     /// Number of variants in the enum.
@@ -226,14 +229,13 @@ pub trait AttributeEnum: Copy {
     }
 }
 
-/// An [`AttributeSetHandler`] whose fields are all [`AttributeEnum`]s and whose
-/// values vary per recorded measurement.
+/// A set of [`AttributeEnum`]s whose values vary per recorded measurement.
 ///
 /// The set maps to a dense mixed-radix bucket space: the first declared field is
 /// the low-order digit. [`CARDINALITY`](Self::CARDINALITY) is the product of the
 /// fields' variant counts and equals the number of buckets a measurement metric set
 /// allocates.
-pub trait MeasurementAttributeSet: AttributeSetHandler + Copy {
+pub trait MeasurementAttributeSet: Copy {
     /// Total number of attribute combinations (product of field variant counts).
     const CARDINALITY: usize;
     /// Per-field descriptors (key + ordered variant strings), declaration order.
@@ -304,7 +306,7 @@ mod tests {
     /// Scenario: fixed and per-record attribute schemas share or differ in keys.
     /// Guarantees: only overlapping keys are identified as collisions.
     #[test]
-    fn datapoint_attribute_key_collision_detection() {
+    fn item_attribute_key_collision_detection() {
         const STATIC: &[AttributeKeySchema] = &[
             AttributeKeySchema::Key("signal"),
             AttributeKeySchema::Composed(&[AttributeKeySchema::Key("component")]),
@@ -320,11 +322,11 @@ mod tests {
                 variants: &["success", "error"],
             }];
 
-        assert!(has_datapoint_attribute_key_collision(
+        assert!(has_item_attribute_key_collision(
             STATIC,
             MEASUREMENT_WITH_COLLISION
         ));
-        assert!(!has_datapoint_attribute_key_collision(
+        assert!(!has_item_attribute_key_collision(
             STATIC,
             DISJOINT_MEASUREMENT
         ));

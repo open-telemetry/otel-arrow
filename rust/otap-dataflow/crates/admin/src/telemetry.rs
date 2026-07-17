@@ -1277,12 +1277,12 @@ fn format_prometheus_text(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
-                     datapoint_attributes: &[(&str, &str)],
+                     item_attributes: &[(&str, &str)],
                      metrics_iter: MetricsIterator<'_>| {
-        // Scope and datapoint attributes may sanitize to the same Prometheus
+        // Scope and item attributes may sanitize to the same Prometheus
         // label. Merge them before rendering to preserve both values.
         let mut base_labels = String::new();
-        let merged = merge_prometheus_metric_labels(descriptor, attributes, datapoint_attributes);
+        let merged = merge_prometheus_metric_labels(descriptor, attributes, item_attributes);
         for (key, value) in &merged {
             if !base_labels.is_empty() {
                 base_labels.push(',');
@@ -1308,13 +1308,13 @@ fn format_prometheus_text(
     };
 
     if reset {
-        telemetry_registry.visit_admin_metrics_and_reset_with_datapoint_attrs(
-            |d, a, dp, m| visit(d, a, dp, m),
+        telemetry_registry.visit_admin_metrics_and_reset_with_item_attrs(
+            |d, a, item, m| visit(d, a, item, m),
             false,
         );
     } else {
         telemetry_registry
-            .visit_current_metrics_with_datapoint_attrs(|d, a, dp, m| visit(d, a, dp, m), false);
+            .visit_current_metrics_with_item_attrs(|d, a, item, m| visit(d, a, item, m), false);
     }
 
     // Emit all metric families as contiguous groups (Prometheus spec requirement).
@@ -1323,7 +1323,7 @@ fn format_prometheus_text(
     out
 }
 
-/// Merges scope and datapoint attributes into valid Prometheus labels.
+/// Merges scope and item attributes into valid Prometheus labels.
 ///
 /// The OpenTelemetry Prometheus compatibility specification requires values from
 /// different OpenTelemetry keys that map to the same Prometheus label to be
@@ -1332,7 +1332,7 @@ fn format_prometheus_text(
 fn merge_prometheus_metric_labels(
     descriptor: &MetricsDescriptor,
     scope_attributes: &dyn AttributeSetHandler,
-    datapoint_attributes: &[(&str, &str)],
+    item_attributes: &[(&str, &str)],
 ) -> HashMap<String, String> {
     let mut entries = Vec::new();
 
@@ -1352,7 +1352,7 @@ fn merge_prometheus_metric_labels(
         entries.push((key.to_string(), label_key, value.to_string_value()));
     }
 
-    for (key, value) in datapoint_attributes {
+    for (key, value) in item_attributes {
         entries.push((
             (*key).to_string(),
             sanitize_prom_label_key(key),
@@ -2328,10 +2328,17 @@ mod tests {
         ShutdownStatus,
     };
     use axum::body::{Body, to_bytes};
+    use otap_df_config::SignalType;
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otap_df_telemetry::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
+        Temporality,
+    };
+    use otap_df_telemetry::instrument::MmscSnapshot;
+    use otap_df_telemetry::metrics::MetricSetHandler;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -2571,12 +2578,6 @@ mod tests {
     /// selected group keys (`env`, `region`) and preserves grouped attributes.
     #[test]
     fn test_aggregate_metric_groups_group_by_attribute() {
-        use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-        use otap_df_telemetry::descriptor::{
-            AttributeField, AttributeValueType, AttributesDescriptor,
-        };
-        use otap_df_telemetry::metrics::MetricSetHandler;
-
         // Mock Attributes: [env, region]
         static MOCK_ATTR_DESC: AttributesDescriptor = AttributesDescriptor {
             name: "test_attrs",
@@ -2852,8 +2853,6 @@ mod tests {
     /// sub-metrics with expected HELP/TYPE lines.
     #[test]
     fn test_agg_prometheus_mmsc_metrics() {
-        use otap_df_telemetry::instrument::MmscSnapshot;
-
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
             brief: &MMSC_METRICS_DESCRIPTOR,
@@ -2911,8 +2910,6 @@ mod tests {
     /// Ensures line-protocol rendering outputs all MMSC sub-fields for a metric.
     #[test]
     fn test_agg_line_protocol_mmsc_metrics() {
-        use otap_df_telemetry::instrument::MmscSnapshot;
-
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
             brief: &MMSC_METRICS_DESCRIPTOR,
@@ -3479,12 +3476,9 @@ mod tests {
     // End-to-end integration test: format_prometheus_text with real metrics
     // -------------------------------------------------------------------
 
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-    use otap_df_telemetry::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, MetricValueType,
-    };
+    use otap_df_telemetry::descriptor::MetricValueType;
     use otap_df_telemetry::instrument::Counter;
-    use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
+    use otap_df_telemetry::metrics::MetricValue;
     use otap_df_telemetry::reporter::MetricsReporter;
     use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
@@ -3585,21 +3579,15 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Copy, AttributeEnum)]
-    enum DatapointSignal {
-        Logs,
-        Metrics,
-    }
-
-    #[derive(Debug, Clone, Copy, AttributeEnum)]
     enum DatapointCollision {
         Value,
     }
 
-    #[attribute_set(name = "test.prometheus.signal", measurement)]
+    #[attribute_set(item, measurement)]
     #[derive(Debug, Clone, Copy)]
     struct DatapointSignalAttributes {
         #[attribute_key = "signal"]
-        signal: DatapointSignal,
+        signal: SignalType,
         #[attribute_key = "otel.scope.foo"]
         scope_foo: DatapointCollision,
     }
@@ -3618,7 +3606,7 @@ mod tests {
     /// Guarantees: Prometheus emits one distinct series with the recorded value
     /// per bucket.
     #[test]
-    fn test_format_prometheus_text_preserves_measurement_datapoint_attributes() {
+    fn test_format_prometheus_text_preserves_measurement_item_attributes() {
         let registry = TelemetryRegistryHandle::new();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(2);
         let mut metrics = registry
@@ -3629,14 +3617,14 @@ mod tests {
             );
         metrics
             .with(DatapointSignalAttributes {
-                signal: DatapointSignal::Logs,
+                signal: SignalType::Logs,
                 scope_foo: DatapointCollision::Value,
             })
             .events
             .add(7);
         metrics
             .with(DatapointSignalAttributes {
-                signal: DatapointSignal::Metrics,
+                signal: SignalType::Metrics,
                 scope_foo: DatapointCollision::Value,
             })
             .events
@@ -3659,7 +3647,7 @@ mod tests {
             .filter(|line| line.starts_with("events_total{"))
             .collect();
 
-        assert_eq!(samples.len(), 2, "expected two datapoint series:\n{output}");
+        assert_eq!(samples.len(), 2, "expected two item series:\n{output}");
         assert!(
             samples
                 .iter()
@@ -3683,7 +3671,7 @@ mod tests {
         assert_eq!(
             output.matches(r#"otel_scope_foo="scope;value""#).count(),
             2,
-            "scope and datapoint collisions should merge values:\n{output}"
+            "scope and item collisions should merge values:\n{output}"
         );
     }
 

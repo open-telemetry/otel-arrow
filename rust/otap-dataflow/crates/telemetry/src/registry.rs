@@ -221,9 +221,12 @@ impl TelemetryRegistryHandle {
         self.register_metric_set_for_existing_entity(entity_key, MetricSetRegistry::register::<T>)
     }
 
-    /// Registers a metric set type carrying registration-time datapoint attributes,
-    /// captured from `static_attrs` at registration and attached to every
-    /// datapoint of the set (see `#[metric_set(registration_attributes = ...)]`).
+    /// Internal registrar operation for registration-time item attributes.
+    ///
+    /// This is public only so engine contexts and generated metric-set `register(...)`
+    /// methods (e.g. `MyMetrics::register`) can select an entity scope. Component code
+    /// must use the generated `MyMetrics::register(...)` method.
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_attributes<
         M: RegistrationMetricSetHandler + Debug + Send + Sync,
     >(
@@ -231,15 +234,15 @@ impl TelemetryRegistryHandle {
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
-            metrics.register_with_registration_attributes(entity_key, static_attributes)
+            metrics.register_with_registration_attributes(entity_key, registration_attributes)
         })
     }
 
-    /// Registers a metric set type carrying registration-time datapoint attributes for an
-    /// existing entity key.
+    /// Internal registrar operation for an existing entity key.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_attributes_for_entity<
         M: RegistrationMetricSetHandler + Debug + Send + Sync,
     >(
@@ -247,15 +250,14 @@ impl TelemetryRegistryHandle {
         entity_key: EntityKey,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
-            metrics.register_with_registration_attributes(entity_key, static_attributes)
+            metrics.register_with_registration_attributes(entity_key, registration_attributes)
         })
     }
 
-    /// Registers a measurement metric set, allocating one datapoint bucket per
-    /// combination of the set's measurement enum attributes (see
-    /// `#[metric_set(measurement_attributes = ...)]`).
+    /// Internal registrar operation for a measurement metric set.
+    #[doc(hidden)]
     pub fn register_metric_set_with_measurement_attributes<
         M: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -267,8 +269,9 @@ impl TelemetryRegistryHandle {
         })
     }
 
-    /// Registers a measurement metric set for an existing entity key.
+    /// Internal registrar operation for a measurement metric set on an existing entity.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_measurement_attributes_for_entity<
         M: MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -280,9 +283,9 @@ impl TelemetryRegistryHandle {
         })
     }
 
-    /// Registers a metric set with registration-time attributes and
-    /// per-datapoint enum attributes.
+    /// Internal registrar operation for registration and measurement attributes.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_and_measurement_attributes<
         M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -290,18 +293,18 @@ impl TelemetryRegistryHandle {
         scope_attrs: impl AttributeSetHandler + Send + Sync + 'static,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MeasurementMetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_new_entity(scope_attrs, |metrics, entity_key| {
             metrics.register_with_registration_and_measurement_attributes::<M>(
                 entity_key,
-                static_attributes,
+                registration_attributes,
             )
         })
     }
 
-    /// Registers a metric set with registration-time and per-measurement attributes for an
-    /// existing entity key.
+    /// Internal registrar operation for combined attributes on an existing entity.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metric_set_with_registration_and_measurement_attributes_for_entity<
         M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
     >(
@@ -309,11 +312,11 @@ impl TelemetryRegistryHandle {
         entity_key: EntityKey,
         registration_attrs: &M::RegistrationAttributes,
     ) -> MeasurementMetricSet<M> {
-        let static_attributes = capture_static_attributes(registration_attrs);
+        let registration_attributes = capture_registration_attributes(registration_attrs);
         self.register_metric_set_for_existing_entity(entity_key, |metrics, entity_key| {
             metrics.register_with_registration_and_measurement_attributes::<M>(
                 entity_key,
-                static_attributes,
+                registration_attributes,
             )
         })
     }
@@ -373,20 +376,20 @@ impl TelemetryRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        self.visit_metrics_and_reset_with_datapoint_attrs(
+        self.visit_metrics_and_reset_with_item_attrs(
             |desc, attrs, _dp, iter| f(desc, attrs, iter),
             keep_all_zeroes,
         );
     }
 
-    /// Visits every non-empty datapoint bucket, yielding the per-datapoint
+    /// Visits every non-empty item bucket, yielding the per-item
     /// enum/registration attributes (`&[(key, value)]`) in addition to scope attributes,
     /// then resets the visited bucket to zero.
     ///
-    /// The datapoint attributes are empty for plain metric sets; the primary
+    /// The item attributes are empty for plain metric sets; the primary
     /// consumer is the metrics dispatcher, which attaches them to the emitted
     /// OpenTelemetry data points.
-    pub fn visit_metrics_and_reset_with_datapoint_attrs<F>(&self, f: F, keep_all_zeroes: bool)
+    pub fn visit_metrics_and_reset_with_item_attrs<F>(&self, f: F, keep_all_zeroes: bool)
     where
         for<'a> F: FnMut(
             &'static MetricsDescriptor,
@@ -399,7 +402,7 @@ impl TelemetryRegistryHandle {
         let TelemetryRegistry {
             entities, metrics, ..
         } = &mut *reg;
-        metrics.visit_and_reset_with_datapoint_attrs(entities, f, keep_all_zeroes);
+        metrics.visit_and_reset_with_item_attrs(entities, f, keep_all_zeroes);
     }
 
     /// Atomically drains the pending metrics export accumulator into an owned batch.
@@ -462,14 +465,14 @@ impl TelemetryRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        self.visit_admin_metrics_and_reset_with_datapoint_attrs(
-            |desc, attrs, _dp, iter| f(desc, attrs, iter),
+        self.visit_admin_metrics_and_reset_with_item_attrs(
+            |desc, attrs, _item, iter| f(desc, attrs, iter),
             keep_all_zeroes,
         );
     }
 
-    /// Visits and resets the admin accumulator with per-datapoint attributes.
-    pub fn visit_admin_metrics_and_reset_with_datapoint_attrs<F>(&self, f: F, keep_all_zeroes: bool)
+    /// Visits and resets the admin accumulator with per-item attributes.
+    pub fn visit_admin_metrics_and_reset_with_item_attrs<F>(&self, f: F, keep_all_zeroes: bool)
     where
         for<'a> F: FnMut(
             &'static MetricsDescriptor,
@@ -510,15 +513,15 @@ impl TelemetryRegistryHandle {
         for<'a> F:
             FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
     {
-        self.visit_current_metrics_with_datapoint_attrs(
+        self.visit_current_metrics_with_item_attrs(
             |desc, attrs, _dp, iter| f(desc, attrs, iter),
             keep_all_zeroes,
         );
     }
 
-    /// Read-only variant of [`Self::visit_metrics_and_reset_with_datapoint_attrs`]
+    /// Read-only variant of [`Self::visit_metrics_and_reset_with_item_attrs`]
     /// that does not reset bucket values.
-    pub fn visit_current_metrics_with_datapoint_attrs<F>(&self, f: F, keep_all_zeroes: bool)
+    pub fn visit_current_metrics_with_item_attrs<F>(&self, f: F, keep_all_zeroes: bool)
     where
         for<'a> F: FnMut(
             &'static MetricsDescriptor,
@@ -529,13 +532,12 @@ impl TelemetryRegistryHandle {
     {
         let reg = self.registry.lock();
         reg.metrics
-            .visit_current_with_datapoint_attrs(&reg.entities, f, keep_all_zeroes);
+            .visit_current_with_item_attrs(&reg.entities, f, keep_all_zeroes);
     }
 }
 
-/// Captures the current (key, value) pairs of a registration attribute set as owned
-/// strings for storage on a registered metric set entry.
-fn capture_static_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(String, String)> {
+/// Captures registration attributes as owned strings for storage on a metric set entry.
+fn capture_registration_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(String, String)> {
     attrs
         .iter_attributes()
         .map(|(k, v)| (k.to_string(), v.to_string_value()))
@@ -545,10 +547,12 @@ fn capture_static_attributes(attrs: &dyn AttributeSetHandler) -> Vec<(String, St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::attributes::{AttributeSetHandler, AttributeValue};
+    use crate::attributes::{
+        AttributeSetHandler, AttributeSetKeySchema, AttributeValue, MeasurementAttributeSet,
+    };
     use crate::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        MetricsField, Temporality,
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument,
+        MeasurementAttributeDescriptor, MetricValueType, MetricsField, Temporality,
     };
     use std::fmt::Debug;
 
@@ -621,6 +625,22 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    struct MockMeasurementAttributes;
+
+    impl MeasurementAttributeSet for MockMeasurementAttributes {
+        const CARDINALITY: usize = 1;
+        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] =
+            &[MeasurementAttributeDescriptor {
+                key: "outcome",
+                variants: &["success"],
+            }];
+
+        fn bucket_index(&self) -> usize {
+            0
+        }
+    }
+
     #[derive(Debug)]
     struct MockAttributeSet {
         // Store the attribute values as owned data that we can return references to
@@ -642,6 +662,19 @@ mod tests {
         fn attribute_values(&self) -> &[AttributeValue] {
             &self.attribute_values
         }
+    }
+
+    impl AttributeSetKeySchema for MockAttributeSet {
+        const KEY_SCHEMA: &'static [crate::attributes::AttributeKeySchema] =
+            &[crate::attributes::AttributeKeySchema::Key("test_key")];
+    }
+
+    impl RegistrationMetricSetHandler for MockMetricSet {
+        type RegistrationAttributes = MockAttributeSet;
+    }
+
+    impl MeasurementMetricSetHandler for MockMetricSet {
+        type MeasurementAttributes = MockMeasurementAttributes;
     }
 
     #[test]
@@ -716,6 +749,39 @@ mod tests {
         assert!(telemetry_registry.unregister_metric_set(metrics_key));
         assert_eq!(telemetry_registry.metric_set_count(), 0);
         assert_eq!(telemetry_registry.entity_count(), 0);
+    }
+
+    #[test]
+    fn test_registration_attribute_metric_set_routes() {
+        let registry = TelemetryRegistryHandle::new();
+        let registration_attributes = MockAttributeSet::new("registration".to_string());
+
+        let registered: MetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_attributes(
+                MockAttributeSet::new("new-entity".to_string()),
+                &registration_attributes,
+            );
+        let entity = registry.register_entity(MockAttributeSet::new("existing-entity".to_string()));
+        let existing: MetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_attributes_for_entity(
+                entity,
+                &registration_attributes,
+            );
+        let combined: MeasurementMetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_and_measurement_attributes(
+                MockAttributeSet::new("combined-entity".to_string()),
+                &registration_attributes,
+            );
+        let combined_existing: MeasurementMetricSet<MockMetricSet> = registry
+            .register_metric_set_with_registration_and_measurement_attributes_for_entity(
+                entity,
+                &registration_attributes,
+            );
+
+        assert_ne!(registered.entity_key(), existing.entity_key());
+        assert_eq!(existing.entity_key(), entity);
+        assert_ne!(combined.entity_key(), combined_existing.entity_key());
+        assert_eq!(combined_existing.entity_key(), entity);
     }
 
     #[test]

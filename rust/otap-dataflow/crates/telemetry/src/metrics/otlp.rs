@@ -497,7 +497,7 @@ fn coalesce_metric_sets(
             // Registry entity attributes are interned, so equal attribute
             // sets in a registry batch share this allocation.
             attributes: Arc::as_ptr(&metric_set.attributes) as usize,
-            datapoint_attributes: &metric_set.datapoint_attributes,
+            datapoint_attributes: &metric_set.item_attributes,
         };
         if let Some(&index) = identities.get(&identity) {
             let target = &mut coalesced[index];
@@ -702,7 +702,7 @@ fn build_scope_metrics(metric_set: &MetricSetExport, metrics: Vec<Metric>) -> Sc
 
 fn encode_datapoint_attributes(metric_set: &MetricSetExport) -> Vec<KeyValue> {
     metric_set
-        .datapoint_attributes
+        .item_attributes
         .iter()
         .map(|(key, value)| KeyValue::new(key.clone(), AnyValue::new_string(value.clone())))
         .collect()
@@ -1255,7 +1255,7 @@ mod tests {
         MetricSetExport {
             descriptor,
             attributes,
-            datapoint_attributes: Vec::new(),
+            item_attributes: Vec::new(),
             values,
             delta_start_time_unix_nano: DELTA_START,
             cumulative_start_time_unix_nano: CUMULATIVE_START,
