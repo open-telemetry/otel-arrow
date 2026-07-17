@@ -13,6 +13,7 @@ use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
 use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
+use tracing_subscriber::filter::FilterExt;
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
@@ -158,18 +159,14 @@ impl ProviderSetup {
                 let layer =
                     StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
                 Dispatch::new(
-                    Registry::default()
-                        .with(filter)
-                        .with(layer.with_filter(event_filter.clone())),
+                    Registry::default().with(layer.with_filter(filter.and(event_filter.clone()))),
                 )
             }
 
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
                 Dispatch::new(
-                    Registry::default()
-                        .with(filter)
-                        .with(layer.with_filter(event_filter.clone())),
+                    Registry::default().with(layer.with_filter(filter.and(event_filter.clone()))),
                 )
             }
         }

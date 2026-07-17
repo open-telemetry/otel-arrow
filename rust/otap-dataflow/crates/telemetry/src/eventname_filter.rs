@@ -31,13 +31,12 @@
 //!
 //! # Runtime dynamism (the important part)
 //!
-//! `tracing` caches per-callsite [`Interest`]. If [`callsite_enabled`] returned
-//! [`Interest::always`] or [`Interest::never`], the decision would be cached
-//! once per callsite and later changes to the pattern set would silently have
-//! no effect. To keep the set changeable at runtime, [`callsite_enabled`]
-//! returns [`Interest::sometimes`], which forces `enabled` to run on every
-//! event. The active mode lives behind an [`ArcSwap`] so a control plane can
-//! swap it in without blocking readers and without rebuilding the subscriber.
+//! `tracing` caches per-callsite [`Interest`], and an event's metadata name is
+//! static for the lifetime of that callsite. [`callsite_enabled`] therefore
+//! resolves the current policy once and returns [`Interest::always`] or
+//! [`Interest::never`], keeping policy checks off the per-event hot path. A
+//! policy update swaps the mode through [`ArcSwap`] and rebuilds tracing's
+//! interest cache so every existing callsite is resolved against the new mode.
 //!
 //! [`EnvFilter`]: tracing_subscriber::EnvFilter
 //! [`callsite_enabled`]: tracing_subscriber::layer::Filter::callsite_enabled
@@ -190,6 +189,11 @@ impl EventNameFilter {
 }
 
 impl EventNameFilterHandle {
+    fn replace_mode(&self, mode: Mode) {
+        self.mode.store(Arc::new(mode));
+        tracing::callsite::rebuild_interest_cache();
+    }
+
     /// Applies a validated EventName filter configuration atomically.
     pub fn apply_config(&self, config: &EventsConfig) {
         if !config.deny.is_empty() {
@@ -209,7 +213,7 @@ impl EventNameFilterHandle {
 
     /// Let every EventName pass (the default).
     pub fn allow_all(&self) {
-        self.mode.store(Arc::new(Mode::AllowAll));
+        self.replace_mode(Mode::AllowAll);
     }
 
     /// Pass only EventNames matching one of `specs`. An empty set drops every
@@ -219,8 +223,7 @@ impl EventNameFilterHandle {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.mode
-            .store(Arc::new(Mode::Allow(Patterns::compile(specs))));
+        self.replace_mode(Mode::Allow(Patterns::compile(specs)));
     }
 
     /// Pass every EventName except those matching one of `specs`. A spec ending
@@ -230,8 +233,7 @@ impl EventNameFilterHandle {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        self.mode
-            .store(Arc::new(Mode::Deny(Patterns::compile(specs))));
+        self.replace_mode(Mode::Deny(Patterns::compile(specs)));
     }
 }
 
@@ -243,12 +245,12 @@ impl<S: Subscriber> Filter<S> for EventNameFilter {
         self.mode.load().allows(meta.name())
     }
 
-    fn callsite_enabled(&self, _meta: &'static Metadata<'static>) -> Interest {
-        // The decision depends on the mutable mode, so it must be re-evaluated
-        // per event. Returning `sometimes()` (rather than `always`/`never`)
-        // defeats `tracing`'s per-callsite interest cache and is what makes
-        // runtime enable/disable actually take effect.
-        Interest::sometimes()
+    fn callsite_enabled(&self, meta: &'static Metadata<'static>) -> Interest {
+        if self.mode.load().allows(meta.name()) {
+            Interest::always()
+        } else {
+            Interest::never()
+        }
     }
 }
 
@@ -288,8 +290,8 @@ mod tests {
     /// Exercises a *single* callsite repeatedly across mode changes. This is the
     /// core proof that runtime toggling works: because each `emit_start()` call
     /// hits the same callsite, a stale cached `Interest` would freeze the very
-    /// first decision. The assertions below only hold because
-    /// `callsite_enabled` returns `Interest::sometimes()`.
+    /// first decision. The assertions below prove that rebuilding the interest
+    /// cache after each policy update refreshes that cached decision.
     #[test]
     fn same_callsite_re_evaluates_across_mode_changes() {
         let count = Arc::new(AtomicUsize::new(0));
