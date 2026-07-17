@@ -37,7 +37,11 @@ pub use error::Error;
 pub use exporter::AzureMonitorExporter;
 pub use gzip_batcher::{FinalizeResult, GzipBatcher, GzipResult, PushResult};
 pub use heartbeat::Heartbeat;
-pub use metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
+pub use metrics::{
+    AzureMonitorExporterExportMetrics, AzureMonitorExporterHeartbeatMetrics,
+    AzureMonitorExporterHttpMetrics, AzureMonitorExporterMetricsRc,
+    AzureMonitorExporterOperationalMetrics, ExportSignalAttributes,
+};
 pub use transformer::Transformer;
 
 use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider;

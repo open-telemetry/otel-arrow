@@ -6,11 +6,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use otap_df_config::SignalType;
+use otap_df_engine::context::PipelineContext;
+use otap_df_telemetry::common_attributes::{HttpResponse, Outcome};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, MmscSnapshot};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Shared handle to the metrics tracker.
 ///
@@ -18,52 +21,10 @@ use otap_df_telemetry_macros::metric_set;
 /// so `Rc<RefCell<…>>` is sufficient—no `Arc`/`Mutex` overhead needed.
 pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsTracker>>;
 
-/// Telemetry metrics for the Azure Monitor Exporter.
+/// Metrics without bounded item dimensions.
 #[metric_set(name = "exporter.azure_monitor")]
 #[derive(Debug, Default, Clone)]
-pub struct AzureMonitorExporterMetrics {
-    /// Number of rows successfully exported.
-    #[metric(unit = "{row}")]
-    pub successful_rows: Counter<u64>,
-    /// Number of batches successfully exported.
-    #[metric(unit = "{batch}")]
-    pub successful_batches: Counter<u64>,
-    /// Number of messages successfully exported.
-    #[metric(unit = "{message}")]
-    pub successful_messages: Counter<u64>,
-    /// Number of rows that failed to export.
-    #[metric(unit = "{row}")]
-    pub failed_rows: Counter<u64>,
-    /// Number of batches that failed to export.
-    #[metric(unit = "{batch}")]
-    pub failed_batches: Counter<u64>,
-    /// Number of messages that failed to export.
-    #[metric(unit = "{message}")]
-    pub failed_messages: Counter<u64>,
-    /// Client HTTP success latency in milliseconds (min/max/sum/count).
-    #[metric(unit = "ms")]
-    pub laclient_http_success_latency: Mmsc,
-    /// Number of HTTP 2xx (success) responses.
-    #[metric(unit = "{response}")]
-    pub laclient_http_2xx: Counter<u64>,
-    /// Number of HTTP 401 (unauthorized) responses.
-    #[metric(unit = "{response}")]
-    pub laclient_http_401: Counter<u64>,
-    /// Number of HTTP 403 (forbidden) responses.
-    #[metric(unit = "{response}")]
-    pub laclient_http_403: Counter<u64>,
-    /// Number of HTTP 413 (payload too large) responses.
-    #[metric(unit = "{response}")]
-    pub laclient_http_413: Counter<u64>,
-    /// Number of HTTP 429 (rate limited) responses.
-    #[metric(unit = "{response}")]
-    pub laclient_http_429: Counter<u64>,
-    /// Number of HTTP 5xx (server error) responses.
-    #[metric(unit = "{response}")]
-    pub laclient_http_5xx: Counter<u64>,
-    /// Number of network errors (connect, timeout, etc.) before receiving an HTTP response.
-    #[metric(unit = "{error}")]
-    pub laclient_network_errors: Counter<u64>,
+pub struct AzureMonitorExporterOperationalMetrics {
     /// Compressed batch size in bytes (min/max/sum/count).
     /// Recorded once per batch; HTTP retries do not produce additional observations.
     #[metric(unit = "By")]
@@ -79,29 +40,113 @@ pub struct AzureMonitorExporterMetrics {
     /// requests awaiting completion, including records being retried).
     #[metric(unit = "{log}")]
     pub in_flight_log_records: Gauge<u64>,
-    /// Current number of batch-to-message mappings (leak detector).
-    #[metric(unit = "{entry}")]
-    pub batch_to_msg_count: Gauge<u64>,
-    /// Current number of message-to-batch mappings (leak detector).
-    #[metric(unit = "{entry}")]
-    pub msg_to_batch_count: Gauge<u64>,
-    /// Current number of message-to-data mappings (leak detector).
-    #[metric(unit = "{entry}")]
-    pub msg_to_data_count: Gauge<u64>,
     /// Number of log entries rejected for exceeding the batch size limit.
     #[metric(unit = "{entry}")]
     pub log_entries_too_large: Counter<u64>,
-    /// Number of successful heartbeat sends.
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+/// Attributes that partition completed exports by outcome.
+pub struct ExportOutcomeAttributes {
+    /// Outcome of the completed export.
+    pub outcome: Outcome,
+}
+
+#[attribute_set(item, registration)]
+#[derive(Debug, Clone, Copy)]
+/// Fixed signal context for Azure Monitor exports.
+pub struct ExportSignalAttributes {
+    /// Signal exported by this logs-only component.
+    pub signal: SignalType,
+}
+
+/// Export completion metrics partitioned by outcome.
+#[metric_set(
+    name = "exporter.azure_monitor.exports",
+    registration_attributes = ExportSignalAttributes,
+    measurement_attributes = ExportOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct AzureMonitorExporterExportMetrics {
+    /// Number of items resolved by export outcome.
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+    /// Number of batches resolved by export outcome.
+    #[metric(unit = "{batch}")]
+    pub batches: Counter<u64>,
+    /// Number of messages resolved by export outcome.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+/// Attributes that partition HTTP attempts by response category.
+pub struct HttpResponseAttributes {
+    /// Response category from an HTTP export attempt.
+    pub response: HttpResponse,
+}
+
+/// HTTP export attempts partitioned by response category.
+#[metric_set(
+    name = "exporter.azure_monitor.http",
+    measurement_attributes = HttpResponseAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct AzureMonitorExporterHttpMetrics {
+    /// Number of HTTP export attempts by response category.
+    #[metric(unit = "{response}")]
+    pub responses: Counter<u64>,
+    /// HTTP export attempt latency in milliseconds (min/max/sum/count).
+    #[metric(unit = "ms")]
+    pub latency: Mmsc,
+}
+
+#[derive(Debug, Clone, Copy, AttributeEnum)]
+pub(super) enum StateMapping {
+    BatchToMessage,
+    MessageToBatch,
+    MessageToData,
+}
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+struct StateMappingAttributes {
+    mapping: StateMapping,
+}
+
+/// Exporter state-map entry counts partitioned by mapping type.
+#[metric_set(
+    name = "exporter.azure_monitor.state",
+    measurement_attributes = StateMappingAttributes
+)]
+#[derive(Debug, Default, Clone)]
+struct AzureMonitorExporterStateMetrics {
+    /// Current number of entries in the exporter state mapping.
+    #[metric(unit = "{entry}")]
+    mappings: Gauge<u64>,
+}
+
+/// Heartbeat send metrics partitioned by outcome.
+#[metric_set(
+    name = "exporter.azure_monitor.heartbeats",
+    measurement_attributes = ExportOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct AzureMonitorExporterHeartbeatMetrics {
+    /// Number of heartbeat sends resolved by outcome.
     #[metric(unit = "{heartbeat}")]
-    pub heartbeats: Counter<u64>,
+    pub sends: Counter<u64>,
 }
 
 /// Full metrics tracker for the Azure Monitor exporter.
-///
-/// Wraps a [`MetricSet<AzureMonitorExporterMetrics>`] (registered with the
-/// telemetry system for automatic collection).
 pub struct AzureMonitorExporterMetricsTracker {
-    metrics: MetricSet<AzureMonitorExporterMetrics>,
+    operational_metrics: MetricSet<AzureMonitorExporterOperationalMetrics>,
+    export_metrics: MeasurementMetricSet<AzureMonitorExporterExportMetrics>,
+    http_metrics: MeasurementMetricSet<AzureMonitorExporterHttpMetrics>,
+    state_metrics: MeasurementMetricSet<AzureMonitorExporterStateMetrics>,
+    heartbeat_metrics: MeasurementMetricSet<AzureMonitorExporterHeartbeatMetrics>,
 }
 
 impl std::fmt::Debug for AzureMonitorExporterMetricsTracker {
@@ -112,401 +157,276 @@ impl std::fmt::Debug for AzureMonitorExporterMetricsTracker {
 }
 
 impl AzureMonitorExporterMetricsTracker {
-    /// Create a new stats tracker wrapping a registered metric set.
+    /// Register the exporter's metric sets with the telemetry system.
     #[must_use]
-    pub fn new(metrics: MetricSet<AzureMonitorExporterMetrics>) -> Self {
-        Self { metrics }
+    pub(super) fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            operational_metrics: AzureMonitorExporterOperationalMetrics::register(pipeline_ctx),
+            export_metrics: AzureMonitorExporterExportMetrics::register(
+                pipeline_ctx,
+                &ExportSignalAttributes {
+                    signal: SignalType::Logs,
+                },
+            ),
+            http_metrics: AzureMonitorExporterHttpMetrics::register(pipeline_ctx),
+            state_metrics: AzureMonitorExporterStateMetrics::register(pipeline_ctx),
+            heartbeat_metrics: AzureMonitorExporterHeartbeatMetrics::register(pipeline_ctx),
+        }
     }
 
     /// Report metrics to the telemetry system.
-    ///
-    /// Snapshots current metric values, sends them over the telemetry channel,
-    /// and resets delta counters on success. Call this from the node's
-    /// `CollectTelemetry` handler.
-    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
-        reporter.report(&mut self.metrics)
+    pub(super) fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter
+            .report(&mut self.operational_metrics)
+            .and_then(|()| reporter.report_measurement(&mut self.export_metrics))
+            .and_then(|()| reporter.report_measurement(&mut self.http_metrics))
+            .and_then(|()| reporter.report_measurement(&mut self.state_metrics))
+            .and_then(|()| reporter.report_measurement(&mut self.heartbeat_metrics))
     }
 
-    /// Access the underlying metric set.
+    /// Take snapshots of every metric set for terminal state reporting.
+    #[must_use]
+    pub(super) fn terminal_snapshots(
+        &mut self,
+    ) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
+        let mut snapshots = self.operational_metrics.terminal_snapshots();
+        snapshots.extend(self.export_metrics.terminal_snapshots());
+        snapshots.extend(self.http_metrics.terminal_snapshots());
+        snapshots.extend(self.state_metrics.terminal_snapshots());
+        snapshots.extend(self.heartbeat_metrics.terminal_snapshots());
+        snapshots
+    }
+
     #[inline]
     #[must_use]
-    pub fn metrics(&self) -> &MetricSet<AzureMonitorExporterMetrics> {
-        &self.metrics
+    pub(super) fn export_for(&self, outcome: Outcome) -> &AzureMonitorExporterExportMetrics {
+        self.export_metrics.get(ExportOutcomeAttributes { outcome })
     }
 
-    /// Mutably access the underlying metric set.
-    #[inline]
-    pub fn metrics_mut(&mut self) -> &mut MetricSet<AzureMonitorExporterMetrics> {
-        &mut self.metrics
-    }
-
-    // ── Metric accessors (delegated) ────────────────────────────────
-
-    /// Get the total number of successfully exported rows.
     #[inline]
     #[must_use]
-    pub fn successful_row_count(&self) -> u64 {
-        self.metrics.successful_rows.get()
+    pub(super) fn http_for(&self, response: HttpResponse) -> &AzureMonitorExporterHttpMetrics {
+        self.http_metrics.get(HttpResponseAttributes { response })
     }
 
-    /// Get the total number of successfully exported batches.
     #[inline]
     #[must_use]
-    pub fn successful_batch_count(&self) -> u64 {
-        self.metrics.successful_batches.get()
+    pub(super) fn batch_size(&self) -> MmscSnapshot {
+        self.operational_metrics.batch_size.get()
     }
 
-    /// Get the total number of successfully exported messages.
     #[inline]
-    #[must_use]
-    pub fn successful_msg_count(&self) -> u64 {
-        self.metrics.successful_messages.get()
+    pub(super) fn record_export(&mut self, outcome: Outcome, items: u64, messages: u64) {
+        let metrics = self
+            .export_metrics
+            .with(ExportOutcomeAttributes { outcome });
+        metrics.items.add(items);
+        metrics.batches.inc();
+        metrics.messages.add(messages);
     }
 
-    /// Get the total number of rows that failed to export.
     #[inline]
-    #[must_use]
-    pub fn failed_row_count(&self) -> u64 {
-        self.metrics.failed_rows.get()
+    pub(super) fn record_http_attempt(&mut self, response: HttpResponse, latency_ms: f64) {
+        let metrics = self.http_metrics.with(HttpResponseAttributes { response });
+        metrics.responses.inc();
+        metrics.latency.record(latency_ms);
     }
 
-    /// Get the total number of batches that failed to export.
     #[inline]
-    #[must_use]
-    pub fn failed_batch_count(&self) -> u64 {
-        self.metrics.failed_batches.get()
+    pub(super) fn add_batch_size(&mut self, size_bytes: f64) {
+        self.operational_metrics.batch_size.record(size_bytes);
     }
 
-    /// Get the total number of messages that failed to export.
     #[inline]
-    #[must_use]
-    pub fn failed_msg_count(&self) -> u64 {
-        self.metrics.failed_messages.get()
+    pub(super) fn add_batch_uncompressed_size(&mut self, size_bytes: f64) {
+        self.operational_metrics
+            .batch_uncompressed_size
+            .record(size_bytes);
     }
 
-    /// Get the client HTTP success latency snapshot (min/max/sum/count).
     #[inline]
-    #[must_use]
-    pub fn client_success_latency(&self) -> MmscSnapshot {
-        self.metrics.laclient_http_success_latency.get()
+    pub(super) fn set_in_flight_exports(&mut self, count: u64) {
+        self.operational_metrics.in_flight_exports.set(count);
     }
 
-    /// Get the batch size snapshot (min/max/sum/count) in bytes.
     #[inline]
-    #[must_use]
-    pub fn batch_size(&self) -> MmscSnapshot {
-        self.metrics.batch_size.get()
+    pub(super) fn set_in_flight_log_records(&mut self, count: u64) {
+        self.operational_metrics.in_flight_log_records.set(count);
     }
 
-    /// Get the uncompressed batch size snapshot (min/max/sum/count) in bytes.
     #[inline]
-    #[must_use]
-    pub fn batch_uncompressed_size(&self) -> MmscSnapshot {
-        self.metrics.batch_uncompressed_size.get()
+    pub(super) fn set_state_mapping(&mut self, mapping: StateMapping, count: u64) {
+        self.state_metrics
+            .with(StateMappingAttributes { mapping })
+            .mappings
+            .set(count);
     }
 
-    /// Get the current in-flight exports gauge value.
     #[inline]
-    #[must_use]
-    pub fn in_flight_exports(&self) -> u64 {
-        self.metrics.in_flight_exports.get()
+    pub(super) fn add_log_entry_too_large(&mut self) {
+        self.operational_metrics.log_entries_too_large.inc();
     }
 
-    /// Get the current in-flight log records gauge value.
     #[inline]
-    #[must_use]
-    pub fn in_flight_log_records(&self) -> u64 {
-        self.metrics.in_flight_log_records.get()
-    }
-
-    /// Get the current batch_to_msg map size.
-    #[inline]
-    #[must_use]
-    pub fn batch_to_msg_count(&self) -> u64 {
-        self.metrics.batch_to_msg_count.get()
-    }
-
-    /// Get the current msg_to_batch map size.
-    #[inline]
-    #[must_use]
-    pub fn msg_to_batch_count(&self) -> u64 {
-        self.metrics.msg_to_batch_count.get()
-    }
-
-    /// Get the current msg_to_data map size.
-    #[inline]
-    #[must_use]
-    pub fn msg_to_data_count(&self) -> u64 {
-        self.metrics.msg_to_data_count.get()
-    }
-
-    // ── Mutation helpers ────────────────────────────────────────────
-
-    /// Increment successful row count.
-    #[inline]
-    pub fn add_rows(&mut self, row_count: u64) {
-        self.metrics.successful_rows.add(row_count);
-    }
-
-    /// Increment successful batch count.
-    #[inline]
-    pub fn add_batch(&mut self) {
-        self.metrics.successful_batches.inc();
-    }
-
-    /// Increment successful message count.
-    #[inline]
-    pub fn add_messages(&mut self, msg_count: u64) {
-        self.metrics.successful_messages.add(msg_count);
-    }
-
-    /// Increment failed row count.
-    #[inline]
-    pub fn add_failed_rows(&mut self, row_count: u64) {
-        self.metrics.failed_rows.add(row_count);
-    }
-
-    /// Increment failed batch count.
-    #[inline]
-    pub fn add_failed_batch(&mut self) {
-        self.metrics.failed_batches.inc();
-    }
-
-    /// Increment failed message count.
-    #[inline]
-    pub fn add_failed_messages(&mut self, msg_count: u64) {
-        self.metrics.failed_messages.add(msg_count);
-    }
-
-    /// Record a client HTTP success latency observation in milliseconds.
-    #[inline]
-    pub fn add_client_success_latency(&mut self, latency_ms: f64) {
-        self.metrics
-            .laclient_http_success_latency
-            .record(latency_ms);
-    }
-
-    /// Record a compressed batch size observation in bytes.
-    #[inline]
-    pub fn add_batch_size(&mut self, size_bytes: f64) {
-        self.metrics.batch_size.record(size_bytes);
-    }
-
-    /// Record an uncompressed batch size observation in bytes.
-    #[inline]
-    pub fn add_batch_uncompressed_size(&mut self, size_bytes: f64) {
-        self.metrics.batch_uncompressed_size.record(size_bytes);
-    }
-
-    /// Set the current number of in-flight exports.
-    #[inline]
-    pub fn set_in_flight_exports(&mut self, count: u64) {
-        self.metrics.in_flight_exports.set(count);
-    }
-
-    /// Set the current number of in-flight log records.
-    #[inline]
-    pub fn set_in_flight_log_records(&mut self, count: u64) {
-        self.metrics.in_flight_log_records.set(count);
-    }
-
-    /// Set the current batch_to_msg map size.
-    #[inline]
-    pub fn set_batch_to_msg_count(&mut self, count: u64) {
-        self.metrics.batch_to_msg_count.set(count);
-    }
-
-    /// Set the current msg_to_batch map size.
-    #[inline]
-    pub fn set_msg_to_batch_count(&mut self, count: u64) {
-        self.metrics.msg_to_batch_count.set(count);
-    }
-
-    /// Set the current msg_to_data map size.
-    #[inline]
-    pub fn set_msg_to_data_count(&mut self, count: u64) {
-        self.metrics.msg_to_data_count.set(count);
-    }
-
-    /// Increment the network error counter.
-    #[inline]
-    pub fn add_network_error(&mut self) {
-        self.metrics.laclient_network_errors.inc();
-    }
-
-    /// Increment the log-entry-too-large counter.
-    #[inline]
-    pub fn add_log_entry_too_large(&mut self) {
-        self.metrics.log_entries_too_large.inc();
-    }
-
-    /// Increment the heartbeat success counter.
-    #[inline]
-    pub fn add_heartbeat(&mut self) {
-        self.metrics.heartbeats.inc();
-    }
-
-    /// Record an HTTP response status code.
-    ///
-    /// Increments the appropriate status-class counter.
-    pub fn record_laclient_status_code(&mut self, status: u16) {
-        match status {
-            200..=299 => self.metrics.laclient_http_2xx.inc(),
-            401 => self.metrics.laclient_http_401.inc(),
-            403 => self.metrics.laclient_http_403.inc(),
-            413 => self.metrics.laclient_http_413.inc(),
-            429 => self.metrics.laclient_http_429.inc(),
-            500..=599 => self.metrics.laclient_http_5xx.inc(),
-            _ => {}
-        }
+    pub(super) fn record_heartbeat(&mut self, outcome: Outcome) {
+        self.heartbeat_metrics
+            .with(ExportOutcomeAttributes { outcome })
+            .sends
+            .inc();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use otap_df_engine::context::ControllerContext;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
 
-    /// Helper to create a metrics tracker with a test-registered metric set.
     fn new_test_tracker() -> AzureMonitorExporterMetricsTracker {
         let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        AzureMonitorExporterMetricsTracker::new(metric_set)
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        AzureMonitorExporterMetricsTracker::register(&pipeline_ctx)
     }
 
     #[test]
-    fn test_stats_initialization() {
-        let stats = new_test_tracker();
-        assert_eq!(stats.successful_row_count(), 0);
-        assert_eq!(stats.failed_row_count(), 0);
+    fn export_metrics_are_partitioned_by_outcome() {
+        let mut metrics = new_test_tracker();
+        metrics.record_export(Outcome::Success, 100, 50);
+        metrics.record_export(Outcome::Failure, 10, 5);
+
+        let success = metrics.export_for(Outcome::Success);
+        assert_eq!(success.items.get(), 100);
+        assert_eq!(success.batches.get(), 1);
+        assert_eq!(success.messages.get(), 50);
+
+        let failure = metrics.export_for(Outcome::Failure);
+        assert_eq!(failure.items.get(), 10);
+        assert_eq!(failure.batches.get(), 1);
+        assert_eq!(failure.messages.get(), 5);
     }
 
     #[test]
-    fn test_stats_counters() {
-        let mut stats = new_test_tracker();
+    fn http_attempts_are_partitioned_by_response() {
+        let mut metrics = new_test_tracker();
+        metrics.record_http_attempt(HttpResponse::Http2xx, 10.0);
+        metrics.record_http_attempt(HttpResponse::Http2xx, 20.0);
+        metrics.record_http_attempt(HttpResponse::Http429, 30.0);
+        metrics.record_http_attempt(HttpResponse::NetworkError, 40.0);
 
-        stats.add_rows(100);
-        stats.add_batch();
-        stats.add_messages(50);
-
-        assert_eq!(stats.successful_row_count(), 100);
-        assert_eq!(stats.successful_batch_count(), 1);
-        assert_eq!(stats.successful_msg_count(), 50);
-
-        stats.add_failed_rows(10);
-        stats.add_failed_batch();
-        stats.add_failed_messages(5);
-
-        assert_eq!(stats.failed_row_count(), 10);
-        assert_eq!(stats.failed_batch_count(), 1);
-        assert_eq!(stats.failed_msg_count(), 5);
+        assert_eq!(metrics.http_for(HttpResponse::Http2xx).responses.get(), 2);
+        assert_eq!(
+            metrics.http_for(HttpResponse::Http2xx).latency.get().sum,
+            30.0
+        );
+        assert_eq!(metrics.http_for(HttpResponse::Http429).responses.get(), 1);
+        assert_eq!(
+            metrics.http_for(HttpResponse::NetworkError).responses.get(),
+            1
+        );
     }
 
     #[test]
-    fn test_client_success_latency_histogram() {
-        let mut stats = new_test_tracker();
+    fn state_mappings_are_partitioned_by_mapping_type() {
+        let mut metrics = new_test_tracker();
+        metrics.set_state_mapping(StateMapping::BatchToMessage, 1);
+        metrics.set_state_mapping(StateMapping::MessageToBatch, 2);
+        metrics.set_state_mapping(StateMapping::MessageToData, 3);
 
-        stats.add_client_success_latency(100.0);
-        stats.add_client_success_latency(200.0);
-        stats.add_client_success_latency(50.0);
-
-        let snap = stats.client_success_latency();
-        assert_eq!(snap.count, 3);
-        assert_eq!(snap.min, 50.0);
-        assert_eq!(snap.max, 200.0);
-        assert_eq!(snap.sum, 350.0);
+        assert_eq!(
+            metrics
+                .state_metrics
+                .get(StateMappingAttributes {
+                    mapping: StateMapping::BatchToMessage,
+                })
+                .mappings
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .state_metrics
+                .get(StateMappingAttributes {
+                    mapping: StateMapping::MessageToBatch,
+                })
+                .mappings
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .state_metrics
+                .get(StateMappingAttributes {
+                    mapping: StateMapping::MessageToData,
+                })
+                .mappings
+                .get(),
+            3
+        );
     }
 
     #[test]
-    fn test_record_laclient_status_code() {
-        let mut stats = new_test_tracker();
+    fn heartbeat_metrics_are_partitioned_by_outcome() {
+        let mut metrics = new_test_tracker();
+        metrics.record_heartbeat(Outcome::Success);
+        metrics.record_heartbeat(Outcome::Failure);
+        metrics.record_heartbeat(Outcome::Failure);
 
-        // 2xx range
-        stats.record_laclient_status_code(200);
-        stats.record_laclient_status_code(204);
-        stats.record_laclient_status_code(299);
-        assert_eq!(stats.metrics().laclient_http_2xx.get(), 3);
-
-        // Specific error codes
-        stats.record_laclient_status_code(401);
-        assert_eq!(stats.metrics().laclient_http_401.get(), 1);
-
-        stats.record_laclient_status_code(403);
-        assert_eq!(stats.metrics().laclient_http_403.get(), 1);
-
-        stats.record_laclient_status_code(413);
-        assert_eq!(stats.metrics().laclient_http_413.get(), 1);
-
-        stats.record_laclient_status_code(429);
-        assert_eq!(stats.metrics().laclient_http_429.get(), 1);
-
-        // 5xx range
-        stats.record_laclient_status_code(500);
-        stats.record_laclient_status_code(503);
-        stats.record_laclient_status_code(599);
-        assert_eq!(stats.metrics().laclient_http_5xx.get(), 3);
-
-        // Ignored status codes — counters should remain unchanged
-        stats.record_laclient_status_code(100); // 1xx
-        stats.record_laclient_status_code(301); // 3xx
-        stats.record_laclient_status_code(404); // 4xx not tracked individually
-        stats.record_laclient_status_code(418); // 4xx not tracked individually
-        stats.record_laclient_status_code(600); // out of range
-
-        assert_eq!(stats.metrics().laclient_http_2xx.get(), 3);
-        assert_eq!(stats.metrics().laclient_http_401.get(), 1);
-        assert_eq!(stats.metrics().laclient_http_403.get(), 1);
-        assert_eq!(stats.metrics().laclient_http_413.get(), 1);
-        assert_eq!(stats.metrics().laclient_http_429.get(), 1);
-        assert_eq!(stats.metrics().laclient_http_5xx.get(), 3);
+        assert_eq!(
+            metrics
+                .heartbeat_metrics
+                .get(ExportOutcomeAttributes {
+                    outcome: Outcome::Success,
+                })
+                .sends
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .heartbeat_metrics
+                .get(ExportOutcomeAttributes {
+                    outcome: Outcome::Failure,
+                })
+                .sends
+                .get(),
+            2
+        );
     }
 
     #[test]
-    fn test_network_error_counter() {
-        let mut stats = new_test_tracker();
+    fn terminal_snapshots_include_touched_measurement_metrics() {
+        let mut metrics = new_test_tracker();
+        metrics.record_export(Outcome::Success, 10, 1);
 
-        assert_eq!(stats.metrics().laclient_network_errors.get(), 0);
+        let snapshots = metrics.terminal_snapshots();
+        let export_snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.descriptor().name == "exporter.azure_monitor.exports")
+            .expect("export metrics should be included in terminal snapshots");
+        assert_eq!(
+            export_snapshot.measurement_attribute_value("outcome"),
+            Some("success")
+        );
 
-        stats.add_network_error();
-        assert_eq!(stats.metrics().laclient_network_errors.get(), 1);
-
-        stats.add_network_error();
-        stats.add_network_error();
-        assert_eq!(stats.metrics().laclient_network_errors.get(), 3);
+        let next_snapshots = metrics.terminal_snapshots();
+        assert!(
+            next_snapshots
+                .iter()
+                .all(|snapshot| snapshot.descriptor().name != "exporter.azure_monitor.exports")
+        );
     }
 
     #[test]
-    fn test_in_flight_log_records_gauge() {
-        let mut stats = new_test_tracker();
+    fn operational_metrics_are_reported() {
+        let mut metrics = new_test_tracker();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
+        metrics.add_batch_size(42.0);
+        metrics.record_export(Outcome::Success, 42, 1);
 
-        assert_eq!(stats.in_flight_log_records(), 0);
+        metrics.report(&mut reporter).unwrap();
 
-        stats.set_in_flight_log_records(250);
-        assert_eq!(stats.in_flight_log_records(), 250);
-        assert_eq!(stats.metrics().in_flight_log_records.get(), 250);
-
-        // Gauge tracks the latest point-in-time value.
-        stats.set_in_flight_log_records(0);
-        assert_eq!(stats.in_flight_log_records(), 0);
-    }
-
-    #[test]
-    fn test_report() {
-        let mut stats = new_test_tracker();
-        let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(16);
-
-        stats.add_rows(42);
-        stats.add_batch();
-
-        // Report should succeed and reset delta counters
-        stats.report(&mut reporter).unwrap();
-        assert_eq!(stats.successful_row_count(), 0);
-        assert_eq!(stats.successful_batch_count(), 0);
-
-        // Verify snapshot was sent
-        let snapshot = rx.try_recv().unwrap();
-        assert!(!snapshot.get_metrics().is_empty());
+        assert_eq!(receiver.try_iter().count(), 2);
     }
 }
