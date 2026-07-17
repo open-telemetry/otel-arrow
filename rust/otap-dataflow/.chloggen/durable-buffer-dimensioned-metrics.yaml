@@ -1,0 +1,4 @@
+change_type: breaking
+component: pipeline
+note: Consolidate durable buffer processor metrics into bounded dimensions for signal, outcome, and loss reason.
+issues: [3300]
