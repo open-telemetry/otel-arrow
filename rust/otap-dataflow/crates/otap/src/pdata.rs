@@ -838,9 +838,9 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         // overhead off the per-node hot path. At the end node this
         // reflects the post-process count — what is actually leaving
         // the flow_metric range. Recorded unconditionally (including 0)
-        // so signals.outgoing.count stays in lockstep with
+        // so produced.items.count stays in lockstep with
         // compute.duration.count and 0-out traversals stay visible.
-        handler.record_flow_signals_outgoing(data.num_items() as u64);
+        handler.record_flow_produced_items(data.num_items() as u64);
     }
 }
 
@@ -853,12 +853,12 @@ impl FlowMetricHook for OtapPdata {
     /// i.e. before `process()` runs and may filter or drop them. This
     /// gives the true input volume to compare against the end-node
     /// output volume recorded in [`flow_accumulate`]. Recorded
-    /// unconditionally (including 0) so signals.incoming.count stays in
+    /// unconditionally (including 0) so consumed.items.count stays in
     /// lockstep with compute.duration.count and 0-in traversals stay
     /// visible.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         if handler.is_flow_start() {
-            handler.record_flow_signals_incoming(self.num_items() as u64);
+            handler.record_flow_consumed_items(self.num_items() as u64);
         }
     }
 }
@@ -1060,14 +1060,14 @@ mod test {
             self.stop_total_calls.set(self.stop_total_calls.get() + 1);
         }
 
-        fn record_flow_signals_incoming(&self, signals: u64) {
-            self.start_signals.set(signals);
+        fn record_flow_consumed_items(&self, items: u64) {
+            self.start_signals.set(items);
             self.start_signals_calls
                 .set(self.start_signals_calls.get() + 1);
         }
 
-        fn record_flow_signals_outgoing(&self, signals: u64) {
-            self.stop_signals.set(signals);
+        fn record_flow_produced_items(&self, items: u64) {
+            self.stop_signals.set(items);
             self.stop_signals_calls
                 .set(self.stop_signals_calls.get() + 1);
         }
@@ -1095,7 +1095,7 @@ mod test {
     }
 
     /// A 0-item batch must still produce one record() call on each MMSC,
-    /// so signals.incoming.count, signals.outgoing.count, and
+    /// so consumed.items.count, produced.items.count, and
     /// compute.duration.count stay in lockstep with the number of
     /// traversals. Hiding 0-item batches would diverge the counts and
     /// erase a useful starvation/over-filter signal.
@@ -1121,7 +1121,7 @@ mod test {
         assert_eq!(
             end_handler.stop_total_calls.get(),
             end_handler.stop_signals_calls.get(),
-            "compute.duration and signals.outgoing must record together for parity"
+            "compute.duration and produced.items must record together for parity"
         );
         assert_eq!(end_handler.stop_signals.get(), 0);
         assert!(end_handler.stop_total.get() > 0);

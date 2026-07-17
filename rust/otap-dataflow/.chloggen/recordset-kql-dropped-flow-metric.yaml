@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Record the `signals.dropped` flow metric from the recordset_kql processor
+note: Record the `dropped.items` flow metric from the recordset_kql processor
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2859]
@@ -19,7 +19,7 @@ issues: [2859]
 subtext: |
   The recordset_kql processor now declares the drop-decision capability and records
   the number of records it filters out, so a telemetry policy that enables
-  `signals_dropped` can observe dropped counts for the node (e.g. a KQL `where`
+  `dropped_items` can observe dropped counts for the node (e.g. a KQL `where`
   filter). Records folded into a `summarize` aggregation are excluded from the
   dropped count: the recordset engine now reports summarized records separately from
   genuinely filtered ones, so aggregation is no longer miscounted as dropping.

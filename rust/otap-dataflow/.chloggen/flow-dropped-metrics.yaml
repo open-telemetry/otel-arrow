@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add `signals.dropped` flow metric recorded per drop decision node
+note: Add `dropped.items` flow metric recorded per drop decision node
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2859]
@@ -17,9 +17,9 @@ issues: [2859]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Flow metrics declared in the telemetry policy can now enable `signals_dropped`.
+  Flow metrics declared in the telemetry policy can now enable `dropped_items`.
   A processor that declares the drop capability and lies within such a flow records
   its dropped count, attributed per decision node via the new `flow.node.decision`
   scope attribute (so a flow may contain multiple decision nodes). Flow-wide kept is
-  read from `signals.outgoing`. `filter_processor` and `log_sampling_processor` are
+  read from `produced.items`. `filter_processor` and `log_sampling_processor` are
   the first consumers. Single-node flow ranges (`start == end`) are now supported.

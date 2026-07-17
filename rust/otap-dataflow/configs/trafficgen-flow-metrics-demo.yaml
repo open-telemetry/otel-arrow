@@ -3,7 +3,7 @@
 #
 # The "ingest_pipeline" flow covers attr1..attr4. The sampler, filter,
 # transform, and recordset_kql nodes each drop records and record
-# `signals.dropped` tagged with a `flow.node.decision` attribute of their node
+# `dropped.items` tagged with a `flow.node.decision` attribute of their node
 # name.
 #
 # Query metrics while running:
@@ -34,9 +34,9 @@ groups:
                 metrics:
                   [
                     compute_duration,
-                    signals_incoming,
-                    signals_outgoing,
-                    signals_dropped,
+                    consumed_items,
+                    produced_items,
+                    dropped_items,
                   ]
 
         nodes:
@@ -89,14 +89,14 @@ groups:
                       value: worker-1
 
           # Decision node #3: transform processor dropping worker-3 via a KQL
-          # `where` predicate, proving it records signals.dropped too.
+          # `where` predicate, proving it records dropped.items too.
           transform:
             type: processor:transform
             config:
               kql_query: 'logs | where attributes["thread.name"] != "worker-3"'
 
           # Decision node #4: recordset_kql processor dropping worker-2 via a KQL
-          # `where` predicate, proving it records signals.dropped too.
+          # `where` predicate, proving it records dropped.items too.
           recordset:
             type: "urn:microsoft:processor:recordset_kql"
             config:

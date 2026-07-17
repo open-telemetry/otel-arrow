@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Record the `signals.dropped` flow metric from the transform processor
+note: Record the `dropped.items` flow metric from the transform processor
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2859]
@@ -19,5 +19,5 @@ issues: [2859]
 subtext: |
   The transform processor now declares the drop-decision capability and records the
   number of records removed by the query engine's filter (`where`) stages, so a
-  telemetry policy that enables `signals_dropped` can observe dropped counts for a
+  telemetry policy that enables `dropped_items` can observe dropped counts for a
   transform node.
