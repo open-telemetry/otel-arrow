@@ -65,7 +65,8 @@
 //! **Operational guidance:**
 //!
 //! - Monitor `resolved{outcome="permanently_rejected"}` to detect permanent failures (data loss)
-//! - Monitor `retries_scheduled` metric to detect persistently failing data
+//! - Monitor `retries.scheduled` in the `processor.durable_buffer` metric scope to detect
+//!   persistently failing data
 //! - Use `retention_size_cap` to bound storage; `drop_oldest` policy evicts
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery

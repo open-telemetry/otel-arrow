@@ -116,12 +116,13 @@ All events are emitted from
 When adding or changing telemetry in this module:
 
 1. **Metrics**
-     - If you add a field to `DurableBufferMetrics` in
-       `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs`,
-       add/update the corresponding row in the **Metrics** table.
-     - The effective emitted name is
-       `processor.durable_buffer.<field_name>` (or the `name` override
-       in the `#[metric(...)]` attribute if present).
+     - Declare metric sets, attributes, and instruments in
+       `crates/core-nodes/src/processors/durable_buffer_processor/metrics.rs`,
+       then add/update the corresponding row in the **Metrics** table.
+     - The effective emitted metric name is `<scope>.<instrument>` (for
+       example, `processor.durable_buffer.items.consumed`). The scope is set
+       by `#[metric_set(name = "...")]`; the instrument name is derived from
+       the field name or overridden by `#[metric(name = "...")]`.
      - Note the instrument type (`Counter`, `Gauge`, or `ObserveCounter`) in
        the **Instrument** column.
 
@@ -134,7 +135,7 @@ When adding or changing telemetry in this module:
 
 3. **Review checklist (quick)**
      - Search for new metric fields: `#[metric(` in
-       `crates/core-nodes/src/processors/durable_buffer_processor/mod.rs`.
+       `crates/core-nodes/src/processors/durable_buffer_processor/metrics.rs`.
      - Search for new log events: `otel_(trace|debug|info|warn|error)!(` in
        `crates/core-nodes/src/processors/durable_buffer_processor/**`.
      - Confirm this document still matches current source files.
