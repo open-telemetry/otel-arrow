@@ -27,13 +27,11 @@
 
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
-use crate::eventname_filter::EventNameFilter;
+use crate::eventname_filter::{EventNameFilter, EventNameFilterHandle};
 use crate::registry::TelemetryRegistryHandle;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
-use otap_df_config::settings::telemetry::logs::{
-    EventsConfig, LogLevel, LoggingProviders, ProviderMode,
-};
+use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
 use self_tracing::LogContextFn;
 use std::sync::Arc;
 use tracing_init::ProviderSetup;
@@ -172,20 +170,6 @@ impl std::fmt::Debug for InternalTelemetrySettings {
 pub mod entity;
 pub mod testing;
 
-/// Builds an [`EventNameFilter`] from `logs.events` configuration.
-///
-/// `deny` and `allow` are mutually exclusive (enforced by config validation);
-/// when both are empty the filter allows all EventNames.
-fn event_filter_from_config(events: &EventsConfig) -> EventNameFilter {
-    if !events.deny.is_empty() {
-        EventNameFilter::denying(&events.deny)
-    } else if !events.allow.is_empty() {
-        EventNameFilter::allowing(&events.allow)
-    } else {
-        EventNameFilter::allow_all()
-    }
-}
-
 /// The internal telemetry system - unified entry point for all telemetry.
 ///
 /// This system manages:
@@ -212,6 +196,9 @@ pub struct InternalTelemetrySystem {
     /// EventName filter built from `logs.events`, applied on top of the level
     /// filter. Shared (cloned) into every per-thread `TracingSetup`.
     event_filter: EventNameFilter,
+
+    /// Runtime handle used to apply reconciled `logs.events` configuration.
+    event_filter_handle: EventNameFilterHandle,
 
     /// Entity key providers for associating log events with their source entity context.
     context_fn: LogContextFn,
@@ -286,13 +273,17 @@ impl InternalTelemetrySystem {
             )
         };
 
+        let (event_filter, event_filter_handle) = EventNameFilter::new();
+        event_filter_handle.apply_config(&config.logs.events);
+
         Ok(Self {
             registry: telemetry_registry,
             collector,
             metrics_reporter,
             log_level: config.logs.level.clone(),
             provider_modes: config.logs.providers.clone(),
-            event_filter: event_filter_from_config(&config.logs.events),
+            event_filter,
+            event_filter_handle,
             context_fn,
             console_async_reporter,
             its_reporter,
@@ -345,6 +336,12 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub fn engine_tracing_setup(&self) -> TracingSetup {
         self.tracing_setup_for(self.provider_modes.engine)
+    }
+
+    /// Returns the handle used to update EventName filtering at runtime.
+    #[must_use]
+    pub fn event_filter_handle(&self) -> EventNameFilterHandle {
+        self.event_filter_handle.clone()
     }
 
     /// Returns a `TracingSetup` for admin threads.

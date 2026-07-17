@@ -1,0 +1,4 @@
+change_type: enhancement
+component: observability
+note: Add runtime EventName filtering for internal telemetry logs through static and remotely reconciled engine configuration.
+issues: [3387]

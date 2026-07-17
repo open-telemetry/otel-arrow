@@ -1180,6 +1180,8 @@ impl<
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.event_filter_handle
+            .apply_config(&desired_config.engine.telemetry.logs.events);
         if delete_missing {
             state.live_config = desired_config.clone();
             return;
