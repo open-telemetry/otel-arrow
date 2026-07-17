@@ -1,7 +1,6 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use super::config::AuthMethod;
 use http::StatusCode;
 use http::header::InvalidHeaderValue;
 
@@ -22,13 +21,10 @@ pub enum Error {
 
     // ==================== Authentication Errors ====================
     /// Authentication/authorization error.
-    #[error("Auth error ({kind}){}", source.as_ref().map(|e| format!(": {}", e)).unwrap_or_default())]
+    #[error("Auth error ({kind}){}", body.as_ref().map(|b| format!(": {b}")).unwrap_or_default())]
     Auth {
         /// The kind of authentication error.
         kind: AuthErrorKind,
-        /// The underlying Azure error, if any.
-        #[source]
-        source: Option<azure_core::error::Error>,
         /// Response body for HTTP auth errors (401/403).
         body: Option<String>,
     },
@@ -122,10 +118,6 @@ pub enum Error {
     #[error("Channel receive error")]
     ChannelRecv(#[source] otap_df_channel::error::RecvError),
 
-    /// Failed to create auth handler.
-    #[error("Failed to create auth handler: {0}")]
-    AuthHandlerCreation(#[source] Box<Error>),
-
     /// Client pool initialization failed.
     #[error("Client pool initialization failed")]
     ClientPoolInit(#[source] Box<Error>),
@@ -149,12 +141,6 @@ pub enum Error {
 /// Authentication error classification.
 #[derive(Debug, Clone)]
 pub enum AuthErrorKind {
-    /// Failed to create credential (during setup).
-    CreateCredential { method: AuthMethod },
-    /// Failed to acquire token.
-    TokenAcquisition,
-    /// Token refresh failed during retry.
-    TokenRefresh,
     /// Server returned 401.
     Unauthorized,
     /// Server returned 403.
@@ -164,9 +150,6 @@ pub enum AuthErrorKind {
 impl std::fmt::Display for AuthErrorKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::CreateCredential { method } => write!(f, "create credential: {method:?}"),
-            Self::TokenAcquisition => write!(f, "token acquisition"),
-            Self::TokenRefresh => write!(f, "token refresh"),
             Self::Unauthorized => write!(f, "unauthorized"),
             Self::Forbidden => write!(f, "forbidden"),
         }
@@ -242,45 +225,11 @@ impl Error {
         Self::Network { kind, source }
     }
 
-    /// Creates a credential creation error.
-    #[must_use]
-    pub fn create_credential(method: AuthMethod, source: azure_core::error::Error) -> Self {
-        Self::Auth {
-            kind: AuthErrorKind::CreateCredential { method },
-            source: Some(source),
-            body: None,
-        }
-    }
-
-    /// Creates a token acquisition error.
-    #[must_use]
-    pub fn token_acquisition(source: azure_core::error::Error) -> Self {
-        Self::Auth {
-            kind: AuthErrorKind::TokenAcquisition,
-            source: Some(source),
-            body: None,
-        }
-    }
-
-    /// Creates a token acquisition timeout error.
-    #[must_use]
-    pub fn token_acquisition_timeout(timeout: std::time::Duration) -> Self {
-        Self::Auth {
-            kind: AuthErrorKind::TokenAcquisition,
-            source: Some(azure_core::error::Error::new(
-                azure_core::error::ErrorKind::Other,
-                format!("token acquisition timed out after {}s", timeout.as_secs()),
-            )),
-            body: None,
-        }
-    }
-
     /// Creates an unauthorized (401) error.
     #[must_use]
     pub fn unauthorized(body: String) -> Self {
         Self::Auth {
             kind: AuthErrorKind::Unauthorized,
-            source: None,
             body: Some(body),
         }
     }
@@ -290,7 +239,6 @@ impl Error {
     pub fn forbidden(body: String) -> Self {
         Self::Auth {
             kind: AuthErrorKind::Forbidden,
-            source: None,
             body: Some(body),
         }
     }
@@ -342,44 +290,22 @@ mod tests {
     // ==================== Auth Error Tests ====================
 
     #[test]
-    fn test_auth_create_credential_message() {
-        let azure_error = azure_core::error::Error::with_message(
-            azure_core::error::ErrorKind::Credential,
-            "managed identity not available",
-        );
-        let error = Error::create_credential(AuthMethod::ManagedIdentity, azure_error);
-        assert_eq!(
-            error.to_string(),
-            "Auth error (create credential: ManagedIdentity): managed identity not available"
-        );
-        assert!(error.source().is_some());
-    }
-
-    #[test]
-    fn test_auth_token_acquisition_message() {
-        let azure_error = azure_core::error::Error::with_message(
-            azure_core::error::ErrorKind::Credential,
-            "token expired",
-        );
-        let error = Error::token_acquisition(azure_error);
-        assert_eq!(
-            error.to_string(),
-            "Auth error (token acquisition): token expired"
-        );
-        assert!(error.source().is_some());
-    }
-
-    #[test]
     fn test_auth_unauthorized_message() {
         let error = Error::unauthorized("invalid token".to_string());
-        assert_eq!(error.to_string(), "Auth error (unauthorized)");
+        assert_eq!(
+            error.to_string(),
+            "Auth error (unauthorized): invalid token"
+        );
         assert!(error.source().is_none());
     }
 
     #[test]
     fn test_auth_forbidden_message() {
         let error = Error::forbidden("insufficient permissions".to_string());
-        assert_eq!(error.to_string(), "Auth error (forbidden)");
+        assert_eq!(
+            error.to_string(),
+            "Auth error (forbidden): insufficient permissions"
+        );
         assert!(error.source().is_none());
     }
 
@@ -475,13 +401,6 @@ mod tests {
             }
             .is_retryable()
         );
-        assert!(
-            !Error::token_acquisition(azure_core::error::Error::with_message(
-                azure_core::error::ErrorKind::Credential,
-                "test"
-            ))
-            .is_retryable()
-        );
     }
 
     // ==================== Display Tests ====================
@@ -497,18 +416,6 @@ mod tests {
 
     #[test]
     fn test_auth_error_kind_display() {
-        assert_eq!(
-            AuthErrorKind::CreateCredential {
-                method: AuthMethod::ManagedIdentity
-            }
-            .to_string(),
-            "create credential: ManagedIdentity"
-        );
-        assert_eq!(
-            AuthErrorKind::TokenAcquisition.to_string(),
-            "token acquisition"
-        );
-        assert_eq!(AuthErrorKind::TokenRefresh.to_string(), "token refresh");
         assert_eq!(AuthErrorKind::Unauthorized.to_string(), "unauthorized");
         assert_eq!(AuthErrorKind::Forbidden.to_string(), "forbidden");
     }
@@ -567,17 +474,6 @@ mod tests {
         let recv_error = otap_df_channel::error::RecvError::Closed;
         let error = Error::ChannelRecv(recv_error);
         assert_eq!(error.to_string(), "Channel receive error");
-        assert!(error.source().is_some());
-    }
-
-    #[test]
-    fn test_auth_handler_creation_message() {
-        let inner = Error::Config("test".to_string());
-        let error = Error::AuthHandlerCreation(Box::new(inner));
-        assert_eq!(
-            error.to_string(),
-            "Failed to create auth handler: Configuration error: test"
-        );
         assert!(error.source().is_some());
     }
 

@@ -34,8 +34,8 @@ fn test_project_keep() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.included_records.len(), 1);
-    assert_eq!(results.dropped_records.len(), 0);
+    assert_eq!(results.counters.included, 1);
+    assert_eq!(results.counters.dropped, 0);
 
     let log = results.included_records.first().unwrap().get_record();
 
@@ -71,8 +71,8 @@ fn test_project_away() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.included_records.len(), 1);
-    assert_eq!(results.dropped_records.len(), 0);
+    assert_eq!(results.counters.included, 1);
+    assert_eq!(results.counters.dropped, 0);
 
     let log = results.included_records.first().unwrap().get_record();
 
@@ -109,8 +109,9 @@ fn test_summarize_count_only() {
 
     assert_eq!(results.summaries.included_summaries.len(), 1);
     assert_eq!(results.summaries.dropped_summaries.len(), 0);
-    assert_eq!(results.included_records.len(), 0);
-    assert_eq!(results.dropped_records.len(), 2);
+    assert_eq!(results.counters.included, 0);
+    assert_eq!(results.counters.dropped, 0);
+    assert_eq!(results.counters.summarized, 2);
 
     let summary = results.summaries.included_summaries.first().unwrap();
 
@@ -163,8 +164,9 @@ fn test_summarize_count_and_group_by() {
 
     assert_eq!(results.summaries.included_summaries.len(), 2);
     assert_eq!(results.summaries.dropped_summaries.len(), 0);
-    assert_eq!(results.included_records.len(), 0);
-    assert_eq!(results.dropped_records.len(), 3);
+    assert_eq!(results.counters.included, 0);
+    assert_eq!(results.counters.dropped, 0);
+    assert_eq!(results.counters.summarized, 3);
 
     let mut summaries = results.summaries.included_summaries;
     summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
@@ -242,8 +244,9 @@ fn test_summarize_count_and_group_by_with_bin() {
 
     assert_eq!(results.summaries.included_summaries.len(), 2);
     assert_eq!(results.summaries.dropped_summaries.len(), 0);
-    assert_eq!(results.included_records.len(), 0);
-    assert_eq!(results.dropped_records.len(), 3);
+    assert_eq!(results.counters.included, 0);
+    assert_eq!(results.counters.dropped, 0);
+    assert_eq!(results.counters.summarized, 3);
 
     let mut summaries = results.summaries.included_summaries;
     summaries.sort_by(|l, r| l.summary_id.cmp(&r.summary_id));
@@ -321,8 +324,9 @@ fn test_summarize_with_pipeline() {
 
     assert_eq!(results.summaries.included_summaries.len(), 1);
     assert_eq!(results.summaries.dropped_summaries.len(), 1);
-    assert_eq!(results.included_records.len(), 0);
-    assert_eq!(results.dropped_records.len(), 3);
+    assert_eq!(results.counters.included, 0);
+    assert_eq!(results.counters.dropped, 0);
+    assert_eq!(results.counters.summarized, 3);
 
     let summary = results.summaries.included_summaries.first().unwrap();
 
@@ -384,8 +388,8 @@ fn test_strlen_function() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.included_records.len(), 1);
-    assert_eq!(results.dropped_records.len(), 0);
+    assert_eq!(results.counters.included, 1);
+    assert_eq!(results.counters.dropped, 0);
 
     let log = results.included_records.first().unwrap().get_record();
 
@@ -438,8 +442,8 @@ fn test_strcat_function() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.included_records.len(), 1);
-    assert_eq!(results.dropped_records.len(), 0);
+    assert_eq!(results.counters.included, 1);
+    assert_eq!(results.counters.dropped, 0);
 
     let log = results.included_records.first().unwrap().get_record();
 
@@ -485,8 +489,8 @@ fn test_replace_string_function() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.included_records.len(), 1);
-    assert_eq!(results.dropped_records.len(), 0);
+    assert_eq!(results.counters.included, 1);
+    assert_eq!(results.counters.dropped, 0);
 
     let log = results.included_records.first().unwrap().get_record();
 
@@ -544,8 +548,8 @@ fn test_substring_function() {
 
         let results = process_records(&pipeline, &engine, &mut request);
 
-        assert_eq!(results.included_records.len(), 1);
-        assert_eq!(results.dropped_records.len(), 0);
+        assert_eq!(results.counters.included, 1);
+        assert_eq!(results.counters.dropped, 0);
 
         let log = results.included_records.first().unwrap().get_record();
 
@@ -590,8 +594,8 @@ fn test_coalesce_function() {
 
         let results = process_records(&pipeline, &engine, &mut request);
 
-        assert_eq!(results.included_records.len(), 1);
-        assert_eq!(results.dropped_records.len(), 0);
+        assert_eq!(results.counters.included, 1);
+        assert_eq!(results.counters.dropped, 0);
 
         let log = results.included_records.first().unwrap().get_record();
 
@@ -637,8 +641,8 @@ fn test_now_global_variable() {
 
     let results = process_records(&pipeline, &engine, &mut request);
 
-    assert_eq!(results.included_records.len(), 1);
-    assert_eq!(results.dropped_records.len(), 0);
+    assert_eq!(results.counters.included, 1);
+    assert_eq!(results.counters.dropped, 0);
 
     let log = results.included_records.first().unwrap().get_record();
 

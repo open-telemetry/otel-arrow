@@ -13,30 +13,66 @@ The Azure Monitor Exporter sends OpenTelemetry logs to Azure using the
 the format expected by Azure Log Analytics and provides configurable schema
 mapping for custom log tables.
 
+The exporter does not acquire credentials itself. It authenticates using OAuth
+bearer tokens supplied by the
+[`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+extension, which it consumes through the `bearer_token_provider` capability. The
+extension owns all credential acquisition and token refresh; the exporter simply
+reacts to each token it publishes. See [Authentication](#authentication) for how
+to wire the two together.
+
 Telemetry reference: [telemetry.md](telemetry.md)
 
 ## Getting Started
 
-Configure the Azure Logs Ingestion API target and authentication method:
+Declare an `azure_identity_auth` extension and bind it to the exporter node via
+the `bearer_token_provider` capability, then point the exporter at your Azure
+Logs Ingestion target:
 
 ```yaml
-type: urn:microsoft:exporter:azure_monitor
-config:
-  api:
-    dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
-    stream_name: "Custom-MyLogTable_CL"
-    dcr: "dcr-abc123def456"
-  auth:
-    method: msi
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: managed_identity   # or "development", "workload_identity"
+              scope: "https://monitor.azure.com/.default"
+
+        nodes:
+          azure-monitor-exporter:
+            type: "urn:microsoft:exporter:azure_monitor"
+            # Bind the capability to the extension instance declared above.
+            capabilities:
+              bearer_token_provider: azure_identity
+            config:
+              api:
+                dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
+                stream_name: "Custom-MyLogTable_CL"
+                dcr: "dcr-abc123def456"
 ```
 
 ## Build df_engine with Azure Monitor Exporter
 
-From the `otap-dataflow` directory:
+The exporter requires a bound `bearer_token_provider`. Build it together with the
+`azure_identity_auth` extension that supplies one. From the `otap-dataflow`
+directory:
 
 ```bash
-cargo build --release --features azure-monitor-exporter
+cargo build --release \
+  --features azure-monitor-exporter,azure-identity-auth-extension
 ```
+
+The `azure_identity_auth` extension talks to Azure over TLS and needs a
+process-wide `rustls` crypto provider. The workspace binary's default build
+already enables `crypto-ring`; if you build a custom binary, enable exactly one
+`crypto-*` feature (`crypto-ring`, `crypto-aws-lc`, `crypto-openssl`, or
+`crypto-symcrypt`), otherwise token acquisition panics at runtime with "No
+provider set". See the
+[extension README](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+for details.
 
 ## Verify the exporter is registered
 
@@ -48,11 +84,16 @@ You should see `urn:microsoft:exporter:azure_monitor` in the Exporters list.
 
 ## Configuration
 
-The Azure Monitor Exporter requires Azure authentication and Data Collection Rule
-configuration:
+The exporter's own `config` covers the Data Collection Rule target, schema
+mapping, and heartbeat. Authentication is configured on the bound
+`azure_identity_auth` extension, not here (see [Authentication](#authentication)).
 
 ```yaml
 type: urn:microsoft:exporter:azure_monitor
+# Bind the bearer token provider to an azure_identity_auth extension instance
+# declared in the pipeline's `extensions:` section.
+capabilities:
+  bearer_token_provider: azure_identity
 config:
   # Azure Monitor API configuration (required).
   api:
@@ -80,11 +121,6 @@ config:
         "attributes":
           "message": "ParsedMessage"
 
-  # Authentication configuration. Use "msi" for managed identity or "dev" for
-  # local Azure developer credentials.
-  auth:
-    method: msi
-
   # Optional heartbeat rows.
   heartbeat:
     enabled: false
@@ -93,36 +129,61 @@ config:
 
 ### Authentication
 
-The exporter uses Azure SDK authentication. The following `auth.method` values
-are supported:
+The exporter obtains OAuth bearer tokens from the
+[`azure_identity_auth`](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+extension through the `bearer_token_provider` capability. Wiring has two parts:
 
-- `managedidentity` (aliases: `msi`, `managed_identity`) - managed identity.
-  Set `client_id` to use a user-assigned identity; omit it to use the
+1. Declare the extension instance in the pipeline's `extensions:` section.
+2. Bind it on the exporter node via the node's `capabilities:` map, e.g.
+   `bearer_token_provider: <instance-name>`.
+
+The authentication flow is chosen by the extension's `method` field:
+
+- `managed_identity` (aliases: `msi`, `managedidentity`) - Azure Managed
+  Identity. Set `client_id` for a user-assigned identity; omit it for the
   system-assigned identity.
 - `development` (aliases: `dev`, `developer`, `cli`) - local Azure developer
   credentials (Azure CLI / Azure Developer CLI).
-- `workloadidentity` (aliases: `wif`, `workload_identity`) - Workload Identity
+- `workload_identity` (aliases: `wif`, `workloadidentity`) - Workload Identity
   Federation. Reads a projected federated ServiceAccount token and exchanges it
   with Entra ID for an access token. Useful for Kubernetes workloads without a
-  managed identity (e.g. self-hosted or non-AKS clusters).
-
-For `workload_identity`, the following fields are used (each falls back to the
-corresponding environment variable injected by the Azure Workload Identity
-webhook when omitted):
-
-- `client_id` - application (client) ID; defaults to `AZURE_CLIENT_ID`.
-- `tenant_id` - Entra tenant ID; defaults to `AZURE_TENANT_ID`.
-- `token_file_path` - path to the federated token file; defaults to
-  `AZURE_FEDERATED_TOKEN_FILE`.
+  managed identity (e.g. self-hosted or non-AKS clusters). Uses `client_id`,
+  `tenant_id`, and `token_file_path`, each falling back to the standard
+  `AZURE_CLIENT_ID` / `AZURE_TENANT_ID` / `AZURE_FEDERATED_TOKEN_FILE`
+  environment variables injected by the Azure Workload Identity webhook.
 
 ```yaml
-auth:
-  method: workload_identity
-  # All fields optional; fall back to the standard AZURE_* environment variables.
-  client_id: "00000000-0000-0000-0000-000000000000"
-  tenant_id: "11111111-1111-1111-1111-111111111111"
-  token_file_path: "/var/run/secrets/azure/tokens/azure-identity-token"
+groups:
+  default:
+    pipelines:
+      main:
+        extensions:
+          azure_identity:
+            type: "urn:microsoft:extension:azure_identity_auth"
+            config:
+              method: workload_identity
+              scope: "https://monitor.azure.com/.default"
+              # All fields below are optional; fall back to the standard AZURE_* env vars.
+              client_id: "00000000-0000-0000-0000-000000000000"
+              tenant_id: "11111111-1111-1111-1111-111111111111"
+              token_file_path: "/var/run/secrets/azure/tokens/azure-identity-token"
+
+        nodes:
+          azure-monitor-exporter:
+            type: "urn:microsoft:exporter:azure_monitor"
+            capabilities:
+              bearer_token_provider: azure_identity
+            config:
+              api:
+                dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
+                stream_name: "Custom-MyLogTable_CL"
+                dcr: "dcr-abc123def456"
 ```
+
+For the full extension configuration reference (including `scope` and
+`startup_timeout`), see the
+[`azure_identity_auth` extension README](../../../../contrib-extensions/src/azure_identity_auth/README.md)
+and its [design doc](../../../../../docs/azure-identity-auth-extension.md).
 
 ## Usage
 
@@ -219,7 +280,9 @@ Before using the Azure Monitor Exporter, you need to set up Azure Log Analytics:
 
 3. **Create a Data Collection Rule (DCR)** with a custom log table
 
-4. **Configure authentication** (service principal or managed identity)
+4. **Configure authentication** on the bound `azure_identity_auth` extension
+   (managed identity, workload identity, or developer credentials) and grant
+   the identity permission to publish to the DCR
 
 5. **Get the DCR endpoint URL** from the Azure portal
 
@@ -237,7 +300,8 @@ https://my-workspace.eastus-1.ingest.monitor.azure.com/dataCollectionRules/dcr-a
 
 - [x] **Gzip compression** - Automatic request compression
 
-- [x] **Azure authentication** - Uses Azure SDK credential chain
+- [x] **Azure authentication** - Bearer tokens supplied by the
+  `azure_identity_auth` extension via the `bearer_token_provider` capability
 
 - [x] **Error handling** - Detailed error messages and retry logic
 

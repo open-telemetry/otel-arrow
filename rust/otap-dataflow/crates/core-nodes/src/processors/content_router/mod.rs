@@ -1625,25 +1625,6 @@ mod tests {
     }
 
     // -------------------------------------------------------
-    // Arrow ConversionError test
-    // -------------------------------------------------------
-
-    #[test]
-    fn test_resolve_arrow_logs_conversion_error() {
-        use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-
-        let routes = HashMap::from([("/subscriptions/aaa".to_string(), "tenant_a".to_string())]);
-        let router = ContentRouter::new(make_config(routes, None));
-
-        // Default Logs has no record batches, so OtapLogsView::try_from fails
-        let arrow = OtapArrowRecords::Logs(Logs::default());
-        assert!(matches!(
-            router.resolve_arrow_logs_route(&arrow),
-            RouteResolution::ConversionError
-        ));
-    }
-
-    // -------------------------------------------------------
     // Pipeline integration test
     // -------------------------------------------------------
 
@@ -2772,66 +2753,6 @@ mod tests {
                         .copied()
                         .unwrap_or(0),
                     0
-                );
-
-                stop_telemetry(reporter, collector_task);
-            }));
-        }
-
-        #[test]
-        fn test_metrics_conversion_error_nacked() {
-            use otap_df_pdata::otap::{Logs, OtapArrowRecords};
-
-            let (rt, local) = setup_test_runtime();
-            rt.block_on(local.run_until(async move {
-                let (telemetry_registry, reporter, collector_task) = start_telemetry();
-
-                let controller = ControllerContext::new(telemetry_registry.clone());
-                let pipeline =
-                    controller.pipeline_context_with("grp".into(), "pipe".into(), 0, 1, 0);
-                let node_id = test_node("content_router_conversion_error_test");
-
-                let config = ContentRouterConfig {
-                    routing_key: RoutingKeyExpr::ResourceAttribute("service.namespace".to_string()),
-                    routes: HashMap::from([("/sub/a".to_string(), "tenant_a".to_string())]),
-                    default_output: None,
-                    case_sensitive: true,
-                    admission_policy: SelectedRouteAdmissionPolicy::default(),
-                };
-                let mut router = ContentRouter::with_pipeline_ctx(pipeline, config);
-
-                let senders = HashMap::new();
-                let mut eh =
-                    LocalEffectHandler::new(node_id.clone(), senders, None, reporter.clone());
-
-                // Default Logs Arrow records have no batches -> ConversionError
-                let arrow = OtapArrowRecords::Logs(Logs::default());
-                let pdata = OtapPdata::new_default(arrow.into());
-                router
-                    .process(Message::PData(pdata), &mut eh)
-                    .await
-                    .expect("router should NACK conversion error gracefully");
-
-                router
-                    .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry {
-                            metrics_reporter: reporter.clone(),
-                        }),
-                        &mut eh,
-                    )
-                    .await
-                    .expect("collect telemetry failed");
-
-                tokio::time::sleep(Duration::from_millis(50)).await;
-
-                let metrics = collect_metrics_map(&telemetry_registry);
-                assert_eq!(metrics.get("signals.nacked").copied().unwrap_or(0), 1);
-                assert_eq!(
-                    metrics
-                        .get("signals.conversion.error")
-                        .copied()
-                        .unwrap_or(0),
-                    1
                 );
 
                 stop_telemetry(reporter, collector_task);

@@ -6,7 +6,6 @@ use reqwest::header::HeaderValue;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::time::Duration;
 
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
@@ -16,97 +15,9 @@ pub struct Config {
     /// API configuration for Azure Monitor
     pub api: ApiConfig,
 
-    /// Authentication configuration
-    #[serde(default)]
-    pub auth: AuthConfig,
-
     /// Heartbeat configuration
     #[serde(default)]
     pub heartbeat: HeartbeatConfig,
-}
-
-/// Authentication method for Azure
-#[derive(Debug, Deserialize, Clone, PartialEq, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AuthMethod {
-    /// Use Managed Identity (system or user-assigned with client_id)
-    #[serde(alias = "msi", alias = "managed_identity")]
-    #[default]
-    ManagedIdentity,
-
-    /// Use developer tools (Azure CLI, Azure Developer CLI)
-    #[serde(alias = "dev", alias = "developer", alias = "cli")]
-    Development,
-
-    /// Use Workload Identity Federation (federated ServiceAccount token).
-    /// Reads the federated assertion from a projected token file and exchanges
-    /// it with Entra ID for an access token. Suitable for Kubernetes workloads
-    /// without managed identity (e.g. self-hosted clusters using WIF).
-    #[serde(alias = "wif", alias = "workload_identity")]
-    WorkloadIdentity,
-}
-
-/// Authentication configuration for Azure
-#[derive(Debug, Deserialize, Clone)]
-pub struct AuthConfig {
-    /// Authentication method to use
-    #[serde(default)]
-    pub method: AuthMethod,
-
-    /// Client ID of the Entra identity.
-    /// For ManagedIdentity: the user-assigned identity client ID (optional; if
-    /// omitted the system-assigned identity is used).
-    /// For WorkloadIdentity: the application (client) ID; defaults to the
-    /// `AZURE_CLIENT_ID` environment variable when omitted.
-    pub client_id: Option<String>,
-
-    /// Tenant ID of the Entra identity. Only used when method is
-    /// WorkloadIdentity; defaults to the `AZURE_TENANT_ID` environment
-    /// variable when omitted.
-    pub tenant_id: Option<String>,
-
-    /// Path to the federated token file to read the assertion from. Only used
-    /// when method is WorkloadIdentity; defaults to the
-    /// `AZURE_FEDERATED_TOKEN_FILE` environment variable when omitted.
-    pub token_file_path: Option<PathBuf>,
-
-    /// OAuth scope for token acquisition (defaults to "https://monitor.azure.com/.default")
-    #[serde(default = "default_scope")]
-    pub scope: String,
-}
-
-impl AuthConfig {
-    /// Returns a human-readable name for the configured authentication method.
-    #[must_use]
-    pub fn auth_method_name(&self) -> &'static str {
-        match self.method {
-            AuthMethod::ManagedIdentity => {
-                if self.client_id.is_some() {
-                    "user_assigned_managed_identity"
-                } else {
-                    "system_assigned_managed_identity"
-                }
-            }
-            AuthMethod::Development => "developer_tools",
-            AuthMethod::WorkloadIdentity => "workload_identity",
-        }
-    }
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            method: AuthMethod::default(),
-            client_id: None,
-            tenant_id: None,
-            token_file_path: None,
-            scope: default_scope(),
-        }
-    }
-}
-
-fn default_scope() -> String {
-    "https://monitor.azure.com/.default".to_string()
 }
 
 /// Default heartbeat frequency.
@@ -234,13 +145,6 @@ pub struct SchemaConfig {
 impl Config {
     /// Validate the configuration
     pub fn validate(&self) -> Result<(), Error> {
-        // Validate auth configuration
-        if self.auth.scope.is_empty() {
-            return Err(Error::Config(
-                "Invalid configuration: auth scope must be non-empty".to_string(),
-            ));
-        }
-
         // Validate API configuration
         if self.api.dcr_endpoint.is_empty() {
             return Err(Error::Config(
@@ -362,7 +266,6 @@ mod tests {
     fn test_config() -> Config {
         Config {
             api: test_api_config(),
-            auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),
         }
     }
@@ -371,13 +274,6 @@ mod tests {
     fn test_valid_config() {
         let config = Config {
             api: test_api_config(),
-            auth: AuthConfig {
-                scope: "https://monitor.azure.com/.default".to_string(),
-                client_id: Some("myclientid".to_string()),
-                tenant_id: None,
-                token_file_path: None,
-                method: AuthMethod::ManagedIdentity,
-            },
             ..test_config()
         };
 

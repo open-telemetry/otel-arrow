@@ -18,7 +18,6 @@ use std::sync::Arc;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 
-mod auth;
 mod client;
 /// Configuration types for the Azure Monitor Exporter.
 pub mod config;
@@ -55,7 +54,7 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &otap_df_engine::capability::registry::Capabilities| {
         // Deserialize user config JSON into typed Config
         let cfg: Config = serde_json::from_value(node_config.config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -63,8 +62,17 @@ pub static AZURE_MONITOR_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory 
             }
         })?;
 
+        // Resolve the bound bearer token provider capability. The exporter relies
+        // on an extension (e.g.`azure_identity_auth`) bound to this node via the
+        // `bearer_token_provider` capability to acquire credentials.
+        let token_provider = capabilities
+            .require_local::<otap_df_engine::capability::BearerTokenProvider>()
+            .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
+                error: e.to_string(),
+            })?;
+
         Ok(ExporterWrapper::local(
-            AzureMonitorExporter::new(pipeline_ctx, cfg).map_err(|e| {
+            AzureMonitorExporter::new(pipeline_ctx, cfg, token_provider).map_err(|e| {
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: e.to_string(),
                 }
