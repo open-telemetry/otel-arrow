@@ -107,3 +107,18 @@ pub struct AttributesDescriptor {
     /// Ordered attribute field metadata.
     pub fields: &'static [AttributeField],
 }
+
+/// Descriptor for a single per-measurement enum attribute.
+///
+/// Measurement attributes vary per recorded item. Because the value space is a
+/// closed `enum`, the ordered string forms of every variant are known at compile
+/// time. The number of variants is the attribute's radix in the mixed-radix
+/// bucket index used to address a metric set's items.
+#[derive(Debug, Clone, Copy, Serialize)]
+pub struct MeasurementAttributeDescriptor {
+    /// Attribute key (e.g. "signal").
+    pub key: &'static str,
+    /// Ordered string forms of the enum variants (declaration order).
+    /// `variants.len()` is the attribute's radix.
+    pub variants: &'static [&'static str],
+}

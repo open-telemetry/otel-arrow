@@ -47,8 +47,11 @@ impl InternalCollector {
     /// them into the `registry`.
     pub fn collect_pending(&self) {
         while let Ok(metrics) = self.metrics_receiver.try_recv() {
-            self.registry
-                .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
+            self.registry.accumulate_metric_set_snapshot(
+                metrics.key,
+                metrics.bucket,
+                &metrics.metrics,
+            );
         }
     }
 
@@ -59,8 +62,11 @@ impl InternalCollector {
         loop {
             match self.metrics_receiver.recv_async().await {
                 Ok(metrics) => {
-                    self.registry
-                        .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
+                    self.registry.accumulate_metric_set_snapshot(
+                        metrics.key,
+                        metrics.bucket,
+                        &metrics.metrics,
+                    );
                 }
                 Err(_) => {
                     // Channel closed, exit the loop
@@ -219,6 +225,9 @@ mod tests {
     fn create_test_snapshot(key: MetricSetKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
+            descriptor: &MOCK_METRICS_DESCRIPTOR,
+            measurement_attributes: &[],
+            bucket: 0,
             metrics: values,
         }
     }

@@ -70,8 +70,8 @@ jobs:
           # Get all changed files
           all_changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD")
 
-          # Treat PR as docs-only when all changed files are under any docs/ directory.
-          non_doc_files=$(printf '%s\n' "$all_changed" | grep -v '^$' | grep -v -E '(^|.*/)docs/' || true)
+          # Treat PR as docs-only when all changed files are under any docs/ or rfcs/ directory.
+          non_doc_files=$(printf '%s\n' "$all_changed" | grep -v '^$' | grep -v -E '(^|.*/)(docs|rfcs)/' || true)
 
           if [ -z "$non_doc_files" ]; then
             echo "is_doc_only=true" >> "$GITHUB_OUTPUT"

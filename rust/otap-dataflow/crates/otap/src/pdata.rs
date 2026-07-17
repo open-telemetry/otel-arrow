@@ -361,6 +361,12 @@ impl Context {
         self.transport_headers.as_ref()
     }
 
+    /// Takes and returns the captured transport headers, if any.
+    #[must_use]
+    pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
+        self.transport_headers.take()
+    }
+
     /// Set the transport headers for this context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
         self.transport_headers = Some(headers);

@@ -9,8 +9,10 @@
 
 pub mod dispatcher;
 
-use crate::attributes::AttributeSetHandler;
-use crate::descriptor::{Instrument, MetricsDescriptor, MetricsField, Temporality};
+use crate::attributes::{AttributeSetHandler, MeasurementAttributeSet};
+use crate::descriptor::{
+    Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField, Temporality,
+};
 use crate::entity::EntityRegistry;
 use crate::instrument::MmscSnapshot;
 use crate::registry::{EntityKey, MetricSetKey};
@@ -20,6 +22,33 @@ use slotmap::SlotMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::ops::{Deref, DerefMut};
+
+/// The default per-set cardinality budget used by the compile-time check emitted
+/// by the `#[metric_set]` macro.
+///
+/// This mirrors the Rust OpenTelemetry SDK's default per-instrument cardinality
+/// limit: once a single instrument exceeds it, overflow series collapse into a
+/// single `otel.metric.overflow` series, silently losing fidelity. Because a
+/// measurement metric set's worst-case cardinality (the product of its enum
+/// attributes' variant counts) is known at compile time, the macro rejects at
+/// build time any set whose product would exceed this budget.
+pub const CARDINALITY_BUDGET: usize = 2000;
+
+/// Compile-time cardinality guard used by generated `#[metric_set]` code.
+///
+/// Generated code for a measurement metric set evaluates
+/// `check_cardinality(<D as MeasurementAttributeSet>::CARDINALITY)` in a `const`
+/// item. The function panics in a `const` context when the cardinality exceeds
+/// [`CARDINALITY_BUDGET`], which the compiler surfaces as a hard build error at
+/// the metric-set declaration site; within budget it is a no-op.
+#[track_caller]
+pub const fn check_cardinality(cardinality: usize) {
+    assert!(
+        cardinality <= CARDINALITY_BUDGET,
+        "metric set worst-case cardinality exceeds CARDINALITY_BUDGET; \
+         reduce the number of measurement enum attributes or their variants"
+    );
+}
 
 /// Numeric metric value — a scalar integer or float, or a pre-aggregated MMSC summary.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -190,8 +219,23 @@ impl<M: MetricSetHandler> MetricSet<M> {
     pub fn snapshot(&self) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key: self.key,
+            descriptor: self.metrics.descriptor(),
+            measurement_attributes: &[],
+            bucket: 0,
             metrics: self.metrics.snapshot_values(),
         }
+    }
+
+    /// Takes the snapshot for terminal handoff and clears the metric set.
+    ///
+    /// This uses the same ownership-transfer semantics as
+    /// [`MeasurementMetricSet::terminal_snapshots`]. Plain sets always return
+    /// one snapshot because they have exactly one bucket.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let snapshot = self.snapshot();
+        self.clear_values();
+        vec![snapshot]
     }
 
     /// Returns the entity key associated with this metric set.
@@ -236,6 +280,13 @@ impl<M: MetricSetHandler> From<MetricSet<M>> for MetricSetSnapshot {
 #[derive(Debug)]
 pub struct MetricSetSnapshot {
     pub(crate) key: MetricSetKey,
+    pub(crate) descriptor: &'static MetricsDescriptor,
+    pub(crate) measurement_attributes: &'static [MeasurementAttributeDescriptor],
+    /// Bucket index within the set. Always `0` for plain sets and for sets with
+    /// only registration attributes; for measurement sets it selects the item whose
+    /// enum-attribute combination decodes from this index (see
+    /// [`MeasurementAttributeSet::bucket_index`]).
+    pub(crate) bucket: usize,
     pub(crate) metrics: Vec<MetricValue>,
 }
 
@@ -244,6 +295,40 @@ impl MetricSetSnapshot {
     #[must_use]
     pub fn key(&self) -> MetricSetKey {
         self.key
+    }
+
+    /// Returns the descriptor for the metric set that produced this snapshot.
+    #[must_use]
+    pub const fn descriptor(&self) -> &'static MetricsDescriptor {
+        self.descriptor
+    }
+
+    /// Returns the bucket index this snapshot targets (0 for non-measurement sets).
+    #[must_use]
+    pub fn bucket(&self) -> usize {
+        self.bucket
+    }
+
+    /// Returns the value of a measurement attribute for this snapshot's bucket.
+    #[must_use]
+    pub fn measurement_attribute_value(&self, key: &str) -> Option<&'static str> {
+        let mut rem = self.bucket;
+        for descriptor in self.measurement_attributes {
+            let radix = descriptor.variants.len();
+            debug_assert!(
+                radix > 0,
+                "measurement attribute descriptor must have at least one variant"
+            );
+            if radix == 0 {
+                continue;
+            }
+            let value = descriptor.variants[rem % radix];
+            rem /= radix;
+            if descriptor.key == key {
+                return Some(value);
+            }
+        }
+        None
     }
 
     /// get a reference to the metric values
@@ -265,15 +350,210 @@ pub trait MetricSetHandler {
     fn needs_flush(&self) -> bool;
 }
 
+/// A [`MetricSetHandler`] that binds a set of measurement (per-item) enum
+/// attributes, generated by `#[metric_set(measurement_attributes = ...)]`.
+///
+/// The associated [`MeasurementAttributes`](Self::MeasurementAttributes) type identifies
+/// the [`MeasurementAttributeSet`] whose variants address the set's buckets.
+pub trait MeasurementMetricSetHandler: MetricSetHandler + Default {
+    /// The measurement attribute set whose combinations index this set's items.
+    type MeasurementAttributes: MeasurementAttributeSet;
+}
+
+/// A [`MetricSetHandler`] that binds a set of registration-time attributes,
+/// generated by `#[metric_set(registration_attributes = ...)]`.
+pub trait RegistrationMetricSetHandler: MetricSetHandler + Default {
+    /// The attribute set supplied at registration and attached to every
+    /// item of this set.
+    type RegistrationAttributes: AttributeSetHandler;
+}
+
+/// Implementation detail used by generated [`metric_set`](otap_df_telemetry_macros::metric_set)
+/// `register` methods.
+///
+/// This trait is public so macro expansions can use it outside this crate.
+/// Contexts implement it to select the owning entity scope; component code must
+/// use the generated `MyMetrics::register(...)` method instead.
+#[doc(hidden)]
+pub trait MetricSetRegistrar {
+    /// Registers a metric set without item attributes.
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M>;
+
+    /// Registers a metric set with registration-time item attributes.
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M>;
+
+    /// Registers a metric set with bounded per-measurement attributes.
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M>;
+
+    /// Registers a metric set with registration-time and per-measurement attributes.
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M>;
+}
+
+/// A registered measurement metric set: a dense array of per-bucket metric structs
+/// addressed by a [`MeasurementAttributeSet`]'s mixed-radix bucket index.
+///
+/// Recording resolves a bucket by arithmetic (no hashing, no allocation) via
+/// [`with`](Self::with), which returns a mutable view of the whole metric struct
+/// for that attribute combination. A `touched` bitset tracks which buckets have
+/// been written so only live items are reported.
+pub struct MeasurementMetricSet<M: MeasurementMetricSetHandler> {
+    pub(crate) key: MetricSetKey,
+    pub(crate) entity_key: EntityKey,
+    pub(crate) buckets: Vec<M>,
+    pub(crate) touched: Vec<u64>,
+}
+
+impl<M: MeasurementMetricSetHandler + Debug> Debug for MeasurementMetricSet<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MeasurementMetricSet")
+            .field("key", &self.key)
+            .field("entity_key", &self.entity_key)
+            .field("buckets", &self.buckets.len())
+            .finish()
+    }
+}
+
+impl<M: MeasurementMetricSetHandler> MeasurementMetricSet<M> {
+    pub(crate) fn new(key: MetricSetKey, entity_key: EntityKey) -> Self {
+        let mut buckets = Vec::with_capacity(M::MeasurementAttributes::CARDINALITY);
+        buckets.resize_with(M::MeasurementAttributes::CARDINALITY, M::default);
+        Self {
+            key,
+            entity_key,
+            buckets,
+            touched: vec![0u64; M::MeasurementAttributes::CARDINALITY.div_ceil(64)],
+        }
+    }
+
+    /// Returns a mutable view of the metric struct for the given attribute
+    /// combination, marking its bucket as touched so it is reported.
+    #[inline]
+    pub fn with(&mut self, attrs: M::MeasurementAttributes) -> &mut M {
+        let bucket = attrs.bucket_index();
+        debug_assert!(bucket < self.buckets.len(), "bucket index out of range");
+        self.touched[bucket / 64] |= 1u64 << (bucket % 64);
+        &mut self.buckets[bucket]
+    }
+
+    /// Returns an existing bucket without marking it for reporting.
+    /// Useful for testing.
+    #[must_use]
+    #[inline]
+    pub fn get(&self, attrs: M::MeasurementAttributes) -> &M {
+        let bucket = attrs.bucket_index();
+        debug_assert!(bucket < self.buckets.len(), "bucket index out of range");
+        &self.buckets[bucket]
+    }
+
+    /// Returns the metric set key associated with this measurement metric set.
+    #[must_use]
+    pub const fn metric_set_key(&self) -> MetricSetKey {
+        self.key
+    }
+
+    /// Returns the entity key associated with this measurement metric set.
+    #[must_use]
+    pub const fn entity_key(&self) -> EntityKey {
+        self.entity_key
+    }
+
+    #[inline]
+    fn is_touched(&self, bucket: usize) -> bool {
+        (self.touched[bucket / 64] >> (bucket % 64)) & 1 == 1
+    }
+
+    /// Produces one snapshot per touched bucket without clearing reported values.
+    ///
+    /// Empty touched buckets are cleared because they have no values to retry. A
+    /// caller must invoke [`Self::clear_bucket`] only after it successfully sends
+    /// a returned snapshot.
+    ///
+    /// Reporting is intentionally **event-driven**: only buckets recorded into
+    /// since the last drain are exported. So an `always_flush` instrument (e.g.
+    /// `Gauge`/`Observe*`) in a measurement set is exported only for intervals in
+    /// which its combination was recorded, not every cycle. A plain (non-measurement)
+    /// set is usually the better fit for continuously-sampled values.
+    pub(crate) fn pending_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut out = Vec::new();
+        for bucket in 0..self.buckets.len() {
+            if self.is_touched(bucket) {
+                if self.buckets[bucket].needs_flush() {
+                    out.push(MetricSetSnapshot {
+                        key: self.key,
+                        descriptor: self.buckets[bucket].descriptor(),
+                        measurement_attributes: M::MeasurementAttributes::DESCRIPTORS,
+                        bucket,
+                        metrics: self.buckets[bucket].snapshot_values(),
+                    });
+                } else {
+                    self.clear_bucket(bucket);
+                }
+            }
+        }
+        out
+    }
+
+    /// Takes snapshots for all touched, non-empty buckets during terminal handoff.
+    ///
+    /// Unlike reporter-driven collection, terminal handoff transfers ownership of
+    /// every returned snapshot. The corresponding buckets are therefore cleared
+    /// immediately and cannot be returned again.
+    ///
+    /// This retains measurement sets' event-driven behavior: untouched and empty
+    /// buckets are omitted rather than emitting every possible attribute
+    /// combination.
+    #[must_use]
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let snapshots = self.pending_snapshots();
+        for snapshot in &snapshots {
+            self.clear_bucket(snapshot.bucket());
+        }
+        snapshots
+    }
+
+    pub(crate) fn clear_bucket(&mut self, bucket: usize) {
+        self.buckets[bucket].clear_values();
+        self.touched[bucket / 64] &= !(1u64 << (bucket % 64));
+    }
+}
+
 /// A registered metrics entry containing all necessary information for metrics aggregation.
 pub struct MetricsEntry {
     /// The static descriptor describing the metrics structure
     pub metrics_descriptor: &'static MetricsDescriptor,
-    /// Current snapshot values stored as a vector
+    /// Current snapshot values stored as a vector.
+    ///
+    /// Length is `bucket_count * metrics_descriptor.metrics.len()`: the values
+    /// for bucket `b` occupy the slice `[b * fields .. (b + 1) * fields]`. Plain
+    /// sets have `bucket_count == 1` and this is exactly the field values.
     pub metric_values: Vec<MetricValue>,
 
     /// Entity key for the associated attribute set
     pub entity_key: EntityKey,
+
+    /// Number of item buckets (1 for plain and registration-only sets, the
+    /// [`MeasurementAttributeSet::CARDINALITY`] for measurement sets).
+    pub bucket_count: usize,
+
+    /// Per-item enum attribute descriptors used to decode a bucket index into
+    /// item attributes at export time (empty for non-measurement sets).
+    pub measurement_attributes: &'static [MeasurementAttributeDescriptor],
+
+    /// Fixed (key, value) attributes attached to every item of this set,
+    /// captured at registration (empty for sets without registration attributes).
+    pub registration_attributes: Vec<(String, String)>,
 }
 
 impl Debug for MetricsEntry {
@@ -282,12 +562,13 @@ impl Debug for MetricsEntry {
             .field("metrics_descriptor", &self.metrics_descriptor)
             .field("metric_values", &self.metric_values)
             .field("entity_key", &self.entity_key)
+            .field("bucket_count", &self.bucket_count)
             .finish()
     }
 }
 
 impl MetricsEntry {
-    /// Creates a new metrics entry
+    /// Creates a new plain metrics entry (single bucket, no per-item attributes).
     #[must_use]
     pub const fn new(
         metrics_descriptor: &'static MetricsDescriptor,
@@ -298,6 +579,35 @@ impl MetricsEntry {
             metrics_descriptor,
             metric_values,
             entity_key,
+            bucket_count: 1,
+            measurement_attributes: &[],
+            registration_attributes: Vec::new(),
+        }
+    }
+
+    /// Creates a metrics entry with registration-time attributes and `bucket_count` measurement
+    /// buckets. The value vector is pre-sized to `bucket_count * fields` zeroed
+    /// slots.
+    #[must_use]
+    pub fn new_with_item_attributes(
+        metrics_descriptor: &'static MetricsDescriptor,
+        zeroed_bucket: &[MetricValue],
+        entity_key: EntityKey,
+        bucket_count: usize,
+        measurement_attributes: &'static [MeasurementAttributeDescriptor],
+        registration_attributes: Vec<(String, String)>,
+    ) -> Self {
+        let mut metric_values = Vec::with_capacity(bucket_count * zeroed_bucket.len());
+        for _ in 0..bucket_count {
+            metric_values.extend_from_slice(zeroed_bucket);
+        }
+        Self {
+            metrics_descriptor,
+            metric_values,
+            entity_key,
+            bucket_count,
+            measurement_attributes,
+            registration_attributes,
         }
     }
 }
@@ -427,21 +737,105 @@ impl MetricSetRegistry {
         }
     }
 
-    /// Merges a metrics snapshot into the registered instance keyed by `metrics_key`.
+    /// Registers a metric set carrying registration-time item attributes captured
+    /// once at registration.
+    pub(crate) fn register_with_registration_attributes<
+        T: MetricSetHandler + Default + Debug + Send + Sync,
+    >(
+        &mut self,
+        entity_key: EntityKey,
+        registration_attributes: Vec<(String, String)>,
+    ) -> MetricSet<T> {
+        let metrics = T::default();
+        let descriptor = metrics.descriptor();
+
+        let metrics_key = self.metrics.insert(MetricsEntry::new_with_item_attributes(
+            descriptor,
+            &metrics.snapshot_values(),
+            entity_key,
+            1,
+            &[],
+            registration_attributes,
+        ));
+
+        MetricSet {
+            key: metrics_key,
+            entity_key,
+            metrics,
+        }
+    }
+
+    /// Registers a measurement metric set with one bucket per attribute combination.
+    pub(crate) fn register_with_measurement_attributes<M>(
+        &mut self,
+        entity_key: EntityKey,
+    ) -> MeasurementMetricSet<M>
+    where
+        M: MeasurementMetricSetHandler + Debug + Send + Sync,
+    {
+        let zeroed_bucket = M::default().snapshot_values();
+        let descriptor = M::default().descriptor();
+
+        let metrics_key = self.metrics.insert(MetricsEntry::new_with_item_attributes(
+            descriptor,
+            &zeroed_bucket,
+            entity_key,
+            M::MeasurementAttributes::CARDINALITY,
+            M::MeasurementAttributes::DESCRIPTORS,
+            Vec::new(),
+        ));
+
+        MeasurementMetricSet::new(metrics_key, entity_key)
+    }
+
+    /// Registers a metric set with registration-time attributes and one bucket per measurement
+    /// attribute combination.
+    pub(crate) fn register_with_registration_and_measurement_attributes<M>(
+        &mut self,
+        entity_key: EntityKey,
+        registration_attributes: Vec<(String, String)>,
+    ) -> MeasurementMetricSet<M>
+    where
+        M: MeasurementMetricSetHandler + Debug + Send + Sync,
+    {
+        let zeroed_bucket = M::default().snapshot_values();
+        let descriptor = M::default().descriptor();
+
+        let metrics_key = self.metrics.insert(MetricsEntry::new_with_item_attributes(
+            descriptor,
+            &zeroed_bucket,
+            entity_key,
+            M::MeasurementAttributes::CARDINALITY,
+            M::MeasurementAttributes::DESCRIPTORS,
+            registration_attributes,
+        ));
+
+        MeasurementMetricSet::new(metrics_key, entity_key)
+    }
+
+    /// Merges a metrics snapshot into the bucket `bucket` of the registered
+    /// instance keyed by `metrics_key`.
     pub(crate) fn accumulate_snapshot(
         &mut self,
         metrics_key: MetricSetKey,
-        metrics_values: &[MetricValue], // snapshot values
+        bucket: usize,
+        metrics_values: &[MetricValue], // snapshot values for a single bucket
     ) {
         if let Some(entry) = self.metrics.get_mut(metrics_key) {
+            let fields_len = entry.metrics_descriptor.metrics.len();
             debug_assert_eq!(
-                entry.metrics_descriptor.metrics.len(),
+                fields_len,
                 metrics_values.len(),
                 "descriptor.metrics and snapshot values length must match"
             );
+            debug_assert!(bucket < entry.bucket_count, "bucket index out of range");
+            let start = bucket * fields_len;
+            let Some(bucket_slice) = entry.metric_values.get_mut(start..start + fields_len) else {
+                debug_assert!(false, "bucket slice out of range");
+                return;
+            };
 
-            entry
-                .metric_values
+            bucket_slice
                 .iter_mut()
                 .zip(metrics_values)
                 .zip(entry.metrics_descriptor.metrics.iter())
@@ -486,27 +880,87 @@ impl MetricSetRegistry {
         self.metrics.len()
     }
 
-    /// Visits only metric sets, yields a zero-alloc iterator
-    /// of (MetricsField, value), then resets the values to zero.
-    pub(crate) fn visit_metrics_and_reset<F>(
+    /// Visits every non-empty item bucket of every metric set, yielding the
+    /// per-item enum/registration attributes alongside a zero-alloc iterator of
+    /// `(MetricsField, value)`, then resets the visited bucket to zero.
+    pub(crate) fn visit_and_reset_with_item_attrs<F>(
         &mut self,
         entities: &EntityRegistry,
         mut f: F,
         keep_all_zeroes: bool,
     ) where
-        for<'a> F:
-            FnMut(&'static MetricsDescriptor, &'a dyn AttributeSetHandler, MetricsIterator<'a>),
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            &'a [(&'a str, &'a str)],
+            MetricsIterator<'a>,
+        ),
     {
         for entry in self.metrics.values_mut() {
-            let values = &mut entry.metric_values;
-            if keep_all_zeroes || values.iter().any(|&v| !v.is_zero()) {
-                let desc = entry.metrics_descriptor;
-                if let Some(attrs) = entities.get(entry.entity_key) {
-                    f(desc, attrs, MetricsIterator::new(desc.metrics, values));
+            let MetricsEntry {
+                metrics_descriptor: desc,
+                metric_values,
+                entity_key,
+                bucket_count,
+                measurement_attributes,
+                registration_attributes,
+            } = entry;
+            let Some(attrs) = entities.get(*entity_key) else {
+                continue;
+            };
+            let fields_len = desc.metrics.len();
+            let mut dp: Vec<(&str, &str)> = Vec::new();
+            for bucket in 0..*bucket_count {
+                let start = bucket * fields_len;
+                let slice = &mut metric_values[start..start + fields_len];
+                if keep_all_zeroes || slice.iter().any(|v| !v.is_zero()) {
+                    decode_bucket_item_attrs(
+                        measurement_attributes,
+                        registration_attributes,
+                        bucket,
+                        &mut dp,
+                    );
+                    f(desc, attrs, &dp, MetricsIterator::new(desc.metrics, slice));
+                    slice.iter_mut().for_each(MetricValue::reset);
                 }
+            }
+        }
+    }
 
-                // Zero after reporting.
-                values.iter_mut().for_each(MetricValue::reset);
+    /// Read-only variant of [`Self::visit_and_reset_with_item_attrs`] that
+    /// does not reset bucket values.
+    pub(crate) fn visit_current_with_item_attrs<F>(
+        &self,
+        entities: &EntityRegistry,
+        mut f: F,
+        keep_all_zeroes: bool,
+    ) where
+        for<'a> F: FnMut(
+            &'static MetricsDescriptor,
+            &'a dyn AttributeSetHandler,
+            &'a [(&'a str, &'a str)],
+            MetricsIterator<'a>,
+        ),
+    {
+        for entry in self.metrics.values() {
+            let Some(attrs) = entities.get(entry.entity_key) else {
+                continue;
+            };
+            let desc = entry.metrics_descriptor;
+            let fields_len = desc.metrics.len();
+            let mut dp: Vec<(&str, &str)> = Vec::new();
+            for bucket in 0..entry.bucket_count {
+                let start = bucket * fields_len;
+                let slice = &entry.metric_values[start..start + fields_len];
+                if keep_all_zeroes || slice.iter().any(|v| !v.is_zero()) {
+                    decode_bucket_item_attrs(
+                        entry.measurement_attributes,
+                        &entry.registration_attributes,
+                        bucket,
+                        &mut dp,
+                    );
+                    f(desc, attrs, &dp, MetricsIterator::new(desc.metrics, slice));
+                }
             }
         }
     }
@@ -545,13 +999,44 @@ impl MetricSetRegistry {
     }
 }
 
+/// Decodes a dense mixed-radix `bucket` index into item attributes.
+///
+/// Registration attributes are emitted first (fixed key/value pairs), followed by the
+/// measurement enum attributes. For the measurement axis the first declared attribute is
+/// the low-order digit: `variant_index = (rem % radix); rem /= radix`.
+fn decode_bucket_item_attrs<'a>(
+    measurement: &'a [MeasurementAttributeDescriptor],
+    registration_attrs: &'a [(String, String)],
+    bucket: usize,
+    out: &mut Vec<(&'a str, &'a str)>,
+) {
+    out.clear();
+    for (k, v) in registration_attrs {
+        out.push((k.as_str(), v.as_str()));
+    }
+    let mut rem = bucket;
+    for d in measurement {
+        debug_assert!(
+            !d.variants.is_empty(),
+            "measurement attribute descriptor must have at least one variant"
+        );
+        if d.variants.is_empty() {
+            continue;
+        }
+        let radix = d.variants.len();
+        let vidx = rem % radix;
+        rem /= radix;
+        out.push((d.key, d.variants[vidx]));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricValueType,
-        MetricsField, Temporality,
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument,
+        MeasurementAttributeDescriptor, MetricValueType, MetricsField, Temporality,
     };
     use crate::entity::EntityRegistry;
     use std::fmt::Debug;
@@ -624,6 +1109,32 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum MockMeasurementAttributes {
+        First,
+        Second,
+    }
+
+    impl MeasurementAttributeSet for MockMeasurementAttributes {
+        const CARDINALITY: usize = 2;
+        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] =
+            &[MeasurementAttributeDescriptor {
+                key: "outcome",
+                variants: &["first", "second"],
+            }];
+
+        fn bucket_index(&self) -> usize {
+            match self {
+                Self::First => 0,
+                Self::Second => 1,
+            }
+        }
+    }
+
+    impl MeasurementMetricSetHandler for MockMetricSet {
+        type MeasurementAttributes = MockMeasurementAttributes;
+    }
+
     #[derive(Debug)]
     struct MockAttributeSet {
         values: Vec<AttributeValue>,
@@ -666,6 +1177,85 @@ mod tests {
     }
 
     #[test]
+    fn test_metric_set_snapshot_carries_descriptor() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut metrics = MetricSetRegistry::default();
+
+        let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
+        let snapshot = metric_set.snapshot();
+
+        assert_eq!(snapshot.descriptor().name, "test_metrics");
+        assert_eq!(snapshot.bucket(), 0);
+        assert_eq!(snapshot.measurement_attribute_value("outcome"), None);
+    }
+
+    #[test]
+    fn test_metric_set_terminal_snapshots_take_plain_bucket() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut registry = MetricSetRegistry::default();
+        let mut metrics: MetricSet<MockMetricSet> = registry.register(entity_key);
+        metrics.values[0] = MetricValue::U64(7);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].get_metrics()[0], MetricValue::U64(7));
+        assert_eq!(metrics.values[0], MetricValue::U64(0));
+    }
+
+    #[test]
+    fn test_measurement_metric_set_get_and_snapshot_decode_attributes() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut registry = MetricSetRegistry::default();
+        let mut metrics: MeasurementMetricSet<MockMetricSet> =
+            registry.register_with_measurement_attributes(entity_key);
+
+        assert_eq!(
+            metrics.get(MockMeasurementAttributes::First).values[0],
+            MetricValue::U64(0)
+        );
+        metrics.with(MockMeasurementAttributes::Second).values[0] = MetricValue::U64(7);
+
+        let snapshots = metrics.pending_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].descriptor().name, "test_metrics");
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("second")
+        );
+        assert_eq!(
+            snapshots[0].get_metrics(),
+            &[MetricValue::U64(7), MetricValue::U64(0)]
+        );
+    }
+
+    #[test]
+    fn test_measurement_metric_set_terminal_snapshots_take_touched_buckets() {
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "value");
+        let mut registry = MetricSetRegistry::default();
+        let mut metrics: MeasurementMetricSet<MockMetricSet> =
+            registry.register_with_measurement_attributes(entity_key);
+
+        metrics.with(MockMeasurementAttributes::Second).values[0] = MetricValue::U64(7);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].bucket(), 1);
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("outcome"),
+            Some("second")
+        );
+        assert_eq!(
+            metrics.get(MockMeasurementAttributes::Second).values[0],
+            MetricValue::U64(0)
+        );
+        assert!(metrics.terminal_snapshots().is_empty());
+    }
+
+    #[test]
     fn test_unregister() {
         let mut entities = EntityRegistry::default();
         let entity_key = register_entity(&mut entities, "test_value");
@@ -701,13 +1291,17 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(15)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(10), MetricValue::U64(20)],
+        );
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(5), MetricValue::U64(15)]);
 
         let mut accumulated_values = Vec::new();
-        metrics.visit_metrics_and_reset(
+        metrics.visit_and_reset_with_item_attrs(
             &entities,
-            |_desc, _attrs, iter| {
+            |_desc, _attrs, _dp, iter| {
                 for (_field, value) in iter {
                     accumulated_values.push(value);
                 }
@@ -726,7 +1320,11 @@ mod tests {
         let mut metrics = MetricSetRegistry::default();
         let invalid_key = MetricSetKey::default();
 
-        metrics.accumulate_snapshot(invalid_key, &[MetricValue::U64(10), MetricValue::U64(20)]);
+        metrics.accumulate_snapshot(
+            invalid_key,
+            0,
+            &[MetricValue::U64(10), MetricValue::U64(20)],
+        );
         assert_eq!(metrics.len(), 0);
     }
 
@@ -742,14 +1340,19 @@ mod tests {
 
         metrics.accumulate_snapshot(
             metrics_key,
+            0,
             &[MetricValue::U64(u64::MAX), MetricValue::U64(u64::MAX - 5)],
         );
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10), MetricValue::U64(10)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(10), MetricValue::U64(10)],
+        );
 
         let mut accumulated_values = Vec::new();
-        metrics.visit_metrics_and_reset(
+        metrics.visit_and_reset_with_item_attrs(
             &entities,
-            |_desc, _attrs, iter| {
+            |_desc, _attrs, _dp, iter| {
                 for (_field, value) in iter {
                     accumulated_values.push(value);
                 }
@@ -774,8 +1377,8 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(u64::MAX)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(1)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(u64::MAX)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(1)]);
     }
 
     #[test]
@@ -787,14 +1390,18 @@ mod tests {
         let metric_set: MetricSet<MockMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(100), MetricValue::U64(0)]);
+        metrics.accumulate_snapshot(
+            metrics_key,
+            0,
+            &[MetricValue::U64(100), MetricValue::U64(0)],
+        );
 
         let mut visit_count = 0;
         let mut collected_values = Vec::new();
 
-        metrics.visit_metrics_and_reset(
+        metrics.visit_and_reset_with_item_attrs(
             &entities,
-            |desc, _attrs, iter| {
+            |desc, _attrs, _dp, iter| {
                 visit_count += 1;
                 assert_eq!(desc.name, "test_metrics");
 
@@ -817,9 +1424,9 @@ mod tests {
         visit_count = 0;
         collected_values.clear();
 
-        metrics.visit_metrics_and_reset(
+        metrics.visit_and_reset_with_item_attrs(
             &entities,
-            |_desc, _attrs, _iter| {
+            |_desc, _attrs, _dp, _iter| {
                 visit_count += 1;
             },
             false,
@@ -973,8 +1580,8 @@ mod tests {
         let metric_set: MetricSet<MockGaugeMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(5), MetricValue::U64(10)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(2), MetricValue::U64(3)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(5), MetricValue::U64(10)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(2), MetricValue::U64(3)]);
 
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
         assert_eq!(
@@ -1038,8 +1645,8 @@ mod tests {
         let metric_set: MetricSet<MockCumulativeCounterMetricSet> = metrics.register(entity_key);
         let metrics_key = metric_set.key;
 
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(10)]);
-        metrics.accumulate_snapshot(metrics_key, &[MetricValue::U64(15)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(10)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[MetricValue::U64(15)]);
 
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
         assert_eq!(entry.metric_values, vec![MetricValue::U64(15)]);
@@ -1221,6 +1828,7 @@ mod tests {
         // First snapshot: min=2, max=8, sum=15, count=3
         metrics.accumulate_snapshot(
             metrics_key,
+            0,
             &[MetricValue::Mmsc(MmscSnapshot {
                 min: 2.0,
                 max: 8.0,
@@ -1232,6 +1840,7 @@ mod tests {
         // Second snapshot: min=1, max=10, sum=20, count=4
         metrics.accumulate_snapshot(
             metrics_key,
+            0,
             &[MetricValue::Mmsc(MmscSnapshot {
                 min: 1.0,
                 max: 10.0,

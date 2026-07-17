@@ -10,7 +10,7 @@ use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions}
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
@@ -252,12 +252,12 @@ async fn get_token_slow_path_then_fast_path_caches() {
     let ext = make_extension(credential);
 
     let first = ext.get_token().await.expect("first acquisition");
-    assert_eq!(first.expose_secret(), "tok");
+    assert_eq!(first.expose_token(), "tok");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Fresh cached token is returned without another credential call.
     let second = ext.get_token().await.expect("cached acquisition");
-    assert_eq!(second.expose_secret(), "tok");
+    assert_eq!(second.expose_token(), "tok");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -314,14 +314,14 @@ async fn clones_share_one_token_cache() {
 
     // Consumer A's first call takes the slow path and fetches exactly once.
     let a = consumer_a.get_token().await.expect("A acquires");
-    assert_eq!(a.expose_secret(), "shared");
+    assert_eq!(a.expose_token(), "shared");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Consumer B (a separate clone) sees the same cached token on the fast
     // path -- no second credential call. This proves clones share one cache
     // and refresh loop rather than each keeping its own.
     let b = consumer_b.get_token().await.expect("B acquires");
-    assert_eq!(b.expose_secret(), "shared");
+    assert_eq!(b.expose_token(), "shared");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -335,7 +335,7 @@ async fn clones_share_one_token_cache() {
         .next()
         .await
         .expect("stream yields the shared token");
-    assert_eq!(streamed.expose_secret(), "shared");
+    assert_eq!(streamed.expose_token(), "shared");
 }
 
 // ── Metrics tracker tests ─────────────────────────────────────
@@ -408,7 +408,7 @@ async fn token_stream_yields_published_token() {
     // Acquiring a token publishes it onto the watch channel.
     let _ = ext.get_token().await.expect("token acquired");
     let published = stream.next().await.expect("stream yields a value");
-    assert_eq!(published.expose_secret(), "streamed");
+    assert_eq!(published.expose_token(), "streamed");
 }
 
 #[tokio::test]
@@ -438,14 +438,14 @@ async fn token_stream_skips_initial_none() {
         .await
         .expect("stream yields after publish")
         .expect("stream is not closed");
-    assert_eq!(published.expose_secret(), "streamed");
+    assert_eq!(published.expose_token(), "streamed");
 }
 
 // ── schedule_next timing tests ────────────────────────────────
 
 #[tokio::test]
 async fn schedule_next_refreshes_before_expiry() {
-    use otap_df_engine::capability::BearerToken;
+    use otap_df_engine::capability::bearer_token_provider::BearerToken;
     use std::time::{Duration, Instant};
 
     let token = BearerToken::new(
@@ -462,7 +462,7 @@ async fn schedule_next_refreshes_before_expiry() {
 
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
-    use otap_df_engine::capability::BearerToken;
+    use otap_df_engine::capability::bearer_token_provider::BearerToken;
     use std::time::{Duration, Instant};
 
     // Expires in 5s: the refresh target underflows past `now`, so the
@@ -480,7 +480,7 @@ async fn schedule_next_floors_near_expiry() {
 
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
-    use otap_df_engine::capability::BearerToken;
+    use otap_df_engine::capability::bearer_token_provider::BearerToken;
 
     let token = BearerToken::new("t".to_owned(), None);
     let refresh_at = extension::schedule_next(&token);
@@ -492,4 +492,67 @@ async fn schedule_next_pushes_non_expiring_far_out() {
         secs > 300 * 24 * 60 * 60,
         "expected far-future refresh, got {secs}s"
     );
+}
+
+// ── retry backoff tests ───────────────────────────────────────
+
+#[test]
+fn retry_backoff_grows_exponentially_and_caps() {
+    // Zero prior failures starts at the base retry interval (10s).
+    assert_eq!(extension::retry_backoff_secs(0), 10);
+    // Each consecutive failure doubles the base delay.
+    assert_eq!(extension::retry_backoff_secs(1), 20);
+    assert_eq!(extension::retry_backoff_secs(2), 40);
+    assert_eq!(extension::retry_backoff_secs(3), 80);
+    assert_eq!(extension::retry_backoff_secs(4), 160);
+    // Growth is clamped at the max (300s) and stays there.
+    assert_eq!(extension::retry_backoff_secs(5), 300);
+    assert_eq!(extension::retry_backoff_secs(6), 300);
+    // A very large failure count must not overflow the shift.
+    assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
+}
+
+// ── jitter_refresh tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn jitter_refresh_preserves_min_interval_floor() {
+    use std::time::Duration;
+
+    // A target exactly at the 10s minimum-refresh floor has no slack to jitter,
+    // so it must be returned unchanged rather than pulled toward `now` (which
+    // would busy-loop the refresh task while the token is still fresh).
+    let target = tokio::time::Instant::now() + Duration::from_secs(10);
+    for _ in 0..1000 {
+        assert_eq!(
+            extension::jitter_refresh(target),
+            target,
+            "near-floor target must not be jittered earlier"
+        );
+    }
+}
+
+#[tokio::test]
+async fn jitter_refresh_stays_within_bounds() {
+    use std::time::Duration;
+
+    // A far-out target is jittered earlier by at most REFRESH_JITTER_SECS (60s)
+    // and never earlier than the 10s floor from `now`.
+    let now = tokio::time::Instant::now();
+    let target = now + Duration::from_secs(3600);
+    let floor = now + Duration::from_secs(10);
+    for _ in 0..1000 {
+        let jittered = extension::jitter_refresh(target);
+        assert!(
+            jittered <= target,
+            "jitter must only move the refresh earlier"
+        );
+        assert!(
+            jittered >= target - Duration::from_secs(60),
+            "jitter must not exceed REFRESH_JITTER_SECS"
+        );
+        assert!(
+            jittered >= floor,
+            "jitter must not precede the min-interval floor"
+        );
+    }
 }

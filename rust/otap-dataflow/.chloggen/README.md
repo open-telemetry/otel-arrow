@@ -38,7 +38,8 @@ workflow honors any of:
 - `chore` (case-insensitive) anywhere in the PR title.
 - The `chore` label (for maintainers).
 - The `skipchangelog` label (for maintainers).
-- Documentation-only PRs (all changed files are under a `docs/` directory).
+- Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
+  directory).
 - The `dependencies` label (auto-applied by Renovate).
 - Bot authors (`dependabot[bot]`, `renovate[bot]`, `otelbot`).
 
