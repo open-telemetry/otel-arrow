@@ -28,7 +28,7 @@ use otap_df_engine::{
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::context::split_contexts::Contexts;
 use otap_df_otap::accessory::slots::Key;
-use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::pdata::{Context, OtapPdata};
 use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otap_df_query_engine::parser::default_parser_options;
@@ -319,15 +319,20 @@ impl Processor<OtapPdata> for PartitionProcessor {
                             })?;
 
                             // set the transport header
-                            let mut pdata_context = inbound_context.clone();
-                            let mut headers =
-                                pdata_context.take_transport_headers().unwrap_or_default();
+                            let mut pdata_context = Context::default();
+                            let mut headers = inbound_context
+                                .transport_headers()
+                                .cloned()
+                                .unwrap_or_default();
                             headers.push(partition_value_to_transport_header(
                                 self.header_name.clone(),
                                 &self.serialization_strategy,
                                 partition.value,
                             ));
                             pdata_context.set_transport_headers(headers);
+                            if let Some(peer_addr) = inbound_context.peer_addr() {
+                                pdata_context.set_peer_addr(peer_addr);
+                            }
 
                             let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
 
@@ -435,7 +440,6 @@ mod test {
     use super::*;
 
     use otap_df_engine::{
-        FlowMetricAccumulation,
         capability::registry::Capabilities,
         context::ControllerContext,
         control::{
@@ -867,16 +871,12 @@ mod test {
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
-                let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
-                pdata.start_flow_metric();
-                pdata.add_flow_compute(5);
+                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
 
-                for mut out in ctx.drain_pdata().await {
-                    let flow = out.take_flow_compute();
-                    assert_eq!(flow, Some(5));
+                for out in ctx.drain_pdata().await {
                     let (mut context, _) = out.into_parts();
                     let headers = context.take_transport_headers().unwrap();
                     assert!(headers.find_by_name("h1").next().is_some());

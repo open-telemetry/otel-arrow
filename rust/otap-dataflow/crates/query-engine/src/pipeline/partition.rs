@@ -13,8 +13,8 @@ use std::cmp::Ordering;
 use std::ops::Range;
 
 use arrow::array::{
-    Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, DynComparator, StructArray,
-    UInt8Array, make_comparator,
+    AnyDictionaryArray, Array, ArrayRef, ArrowNativeTypeOp, AsArray, BooleanArray, DynComparator,
+    StructArray, UInt8Array, make_comparator,
 };
 use arrow::buffer::{BooleanBuffer, MutableBuffer, NullBuffer};
 use arrow::compute::SortOptions;
@@ -64,6 +64,9 @@ pub struct Partitioner {
     /// ID bitmap pool - used when taking rows that belong to the same partition
     id_bitmap_pool: IdBitmapPool,
 
+    /// Pool of reusable buffers for [`ArrayComparator`] group id mappings.
+    group_id_pool: GroupIdPool,
+
     /// Reusable buffer of partition results
     partitions: Vec<Partition>,
 }
@@ -88,6 +91,7 @@ impl Partitioner {
             session_ctx: Pipeline::create_session_context(),
             id_bitmap_pool: IdBitmapPool::new(),
             range_coalescer: PartitionRangeCoalescer::new(),
+            group_id_pool: GroupIdPool::new(),
             partitions: Vec::new(),
         })
     }
@@ -108,6 +112,7 @@ impl Partitioner {
             &mut self.partitions,
             &mut self.range_coalescer,
             &mut self.id_bitmap_pool,
+            &mut self.group_id_pool,
         )?;
 
         // return iterator of results
@@ -356,6 +361,7 @@ fn partition(
     result_partitions: &mut Vec<Partition>,
     range_coalescer: &mut PartitionRangeCoalescer,
     id_bitmap_pool: &mut IdBitmapPool,
+    group_id_pool: &mut GroupIdPool,
 ) -> Result<()> {
     // nothing to evaluate
     if otap_batch.num_items() == 0 {
@@ -384,6 +390,7 @@ fn partition(
                     result_partitions,
                     range_coalescer,
                     id_bitmap_pool,
+                    group_id_pool,
                 )
             } else {
                 partition_simple_array(
@@ -392,6 +399,7 @@ fn partition(
                     result_partitions,
                     range_coalescer,
                     id_bitmap_pool,
+                    group_id_pool,
                 )
             }
         }
@@ -416,21 +424,25 @@ fn partition_simple_array(
     result: &mut Vec<Partition>,
     range_coalescer: &mut PartitionRangeCoalescer,
     id_bitmap_pool: &mut IdBitmapPool,
+    group_id_pool: &mut GroupIdPool,
 ) -> Result<()> {
-    let cmp = make_comparator(&array, &array, SortOptions::default())?;
+    let cmp = ArrayComparator::try_new(&array, group_id_pool)?;
     let boundaries: BooleanBuffer = (0..array.len() - 1)
-        .map(|i| !cmp(i, i + 1).is_eq())
+        .map(|i| !cmp.cmp(i, i + 1).is_eq())
         .collect();
 
-    partition_at_boundaries(
+    let result = partition_at_boundaries(
         array.as_ref(),
         boundaries,
         otap_batch,
         result,
         range_coalescer,
         id_bitmap_pool,
-        &|i1, i2| Ok(cmp(i1, i2)),
-    )
+        &|i1, i2| Ok(cmp.cmp(i1, i2)),
+    );
+
+    cmp.return_to_pool(group_id_pool);
+    result
 }
 
 /// Populate the `result` vec with partitions of the OTAP batch based on which rows in the passed
@@ -441,14 +453,15 @@ fn partition_any_value_struct_array(
     result: &mut Vec<Partition>,
     range_coalescer: &mut PartitionRangeCoalescer,
     id_bitmap_pool: &mut IdBitmapPool,
+    group_id_pool: &mut GroupIdPool,
 ) -> Result<()> {
-    let comparator = AnyValueStructComparator::try_new(array)?;
+    let comparator = AnyValueStructComparator::try_new(array, group_id_pool)?;
     let boundaries: BooleanBuffer = (0..array.len() - 1)
         .map(|i| comparator.cmp(i, i + 1).map(|ord| !ord.is_eq()))
         .collect::<Result<Vec<bool>>>()?
         .into();
 
-    partition_at_boundaries(
+    let result = partition_at_boundaries(
         array,
         boundaries,
         otap_batch,
@@ -456,7 +469,10 @@ fn partition_any_value_struct_array(
         range_coalescer,
         id_bitmap_pool,
         &|i1, i2| comparator.cmp(i1, i2),
-    )
+    );
+
+    comparator.return_to_pool(group_id_pool);
+    result
 }
 
 /// Populate the `result` vec with partitions from `boundaries`, which represents indices where
@@ -501,6 +517,151 @@ fn partition_at_boundaries(
     }
 
     Ok(())
+}
+
+/// A pool of reusable `Vec<u32>` buffers used by [`ArrayComparator`] for pre-computed
+/// row-to-group-id mappings. This avoids re-allocating these buffers on every batch.
+struct GroupIdPool {
+    pool: Vec<Vec<u32>>,
+}
+
+impl GroupIdPool {
+    fn new() -> Self {
+        Self { pool: Vec::new() }
+    }
+
+    /// Takes a buffer from the pool (reusing an existing allocation) or creates a new one.
+    fn take(&mut self) -> Vec<u32> {
+        self.pool.pop().unwrap_or_default()
+    }
+
+    /// Returns a buffer to the pool so its allocation can be reused in future batches.
+    fn give_back(&mut self, mut buf: Vec<u32>) {
+        buf.clear();
+        self.pool.push(buf);
+    }
+}
+
+/// A comparator for arrow arrays that optimizes comparisons on dictionary-encoded arrays.
+///
+/// For non-dictionary arrays, this delegates to arrow's [`make_comparator`] ([`DynComparator`]).
+///
+/// For dictionary-encoded arrays (common in OTAP, especially `Dictionary(UInt8|UInt16, Utf8)`),
+/// this pre-computes a mapping from each row index to a "group id" where rows with equal
+/// dictionary values share the same group id. Comparisons then reduce to integer comparisons
+/// on the group ids (O(1)) instead of comparing the underlying values (e.g. string comparisons
+/// which are O(n) in string length).
+///
+/// The group id mapping also correctly handles dictionaries with duplicate values mapped to
+/// different keys.
+enum ArrayComparator {
+    /// Non-dictionary array: delegates to arrow's [`DynComparator`].
+    Standard(DynComparator),
+
+    /// Dictionary-encoded array: pre-computed row index -> group id mapping.
+    ///
+    /// Two rows are equal iff they have the same group id. Null rows are assigned
+    /// `u32::MAX` as a sentinel group id so that all nulls compare as equal.
+    DictGrouped(Vec<u32>),
+}
+
+/// Sentinel group id assigned to null rows in [`ArrayComparator::DictGrouped`].
+const NULL_GROUP_ID: u32 = u32::MAX;
+
+impl ArrayComparator {
+    /// Creates a new comparator for the given array.
+    ///
+    /// If the array is dictionary-encoded, pre-computes a group id mapping using a buffer
+    /// from `pool`. For non-dictionary arrays, falls back to [`make_comparator`].
+    fn try_new(array: &ArrayRef, pool: &mut GroupIdPool) -> Result<Self> {
+        if let Some(dict) = array.as_any_dictionary_opt() {
+            Self::try_new_dict_grouped(dict, array.nulls(), pool)
+        } else {
+            let cmp = make_comparator(array, array, SortOptions::default())?;
+            Ok(Self::Standard(cmp))
+        }
+    }
+
+    /// Build a [`DictGrouped`](ArrayComparator::DictGrouped) comparator for a dictionary array.
+    ///
+    /// Steps:
+    /// 1. Group the dictionary *values* by equality, producing a `value_index -> group_id` map.
+    /// 2. Map each row's dictionary key to its corresponding group id, handling nulls.
+    fn try_new_dict_grouped(
+        dict: &dyn AnyDictionaryArray,
+        nulls: Option<&NullBuffer>,
+        pool: &mut GroupIdPool,
+    ) -> Result<Self> {
+        let values = dict.values();
+        let num_values = values.len();
+
+        // Phase 1: group duplicate dictionary values.
+        // `value_to_group[v]` is the group id for dictionary value index `v`.
+        let value_to_group = if num_values == 0 {
+            Vec::new()
+        } else {
+            let values_cmp = make_comparator(&values, &values, SortOptions::default())?;
+            let mut value_to_group = vec![0u32; num_values];
+            // representative value index for each group
+            let mut group_representatives: Vec<usize> = Vec::new();
+
+            for (v, group_id_slot) in value_to_group.iter_mut().enumerate() {
+                let mut found_group = None;
+                for (group_id, &rep) in group_representatives.iter().enumerate() {
+                    if values_cmp(v, rep).is_eq() {
+                        found_group = Some(group_id as u32);
+                        break;
+                    }
+                }
+                match found_group {
+                    Some(gid) => *group_id_slot = gid,
+                    None => {
+                        let gid = group_representatives.len() as u32;
+                        *group_id_slot = gid;
+                        group_representatives.push(v);
+                    }
+                }
+            }
+            value_to_group
+        };
+
+        // Phase 2: map each row to its group id using the dictionary's normalized keys.
+        let normalized_keys = dict.normalized_keys();
+        let num_rows = normalized_keys.len();
+
+        let mut row_group_ids = pool.take();
+        row_group_ids.resize(num_rows, 0);
+
+        for (row, &key) in normalized_keys.iter().enumerate() {
+            let is_null = nulls.is_some_and(|n| n.is_null(row));
+            row_group_ids[row] = if is_null {
+                NULL_GROUP_ID
+            } else {
+                value_to_group[key]
+            };
+        }
+
+        Ok(Self::DictGrouped(row_group_ids))
+    }
+
+    /// Compare the values at two row indices for equality/ordering.
+    ///
+    /// For partitioning, only equality matters. For [`DictGrouped`](ArrayComparator::DictGrouped),
+    /// the ordering between non-equal values is stable but not necessarily meaningful
+    /// (it reflects group id order, not lexicographic order of the underlying values).
+    fn cmp(&self, i: usize, j: usize) -> Ordering {
+        match self {
+            Self::Standard(cmp) => cmp(i, j),
+            Self::DictGrouped(group_ids) => group_ids[i].cmp(&group_ids[j]),
+        }
+    }
+
+    /// Consumes this comparator and returns the group id buffer (if any) to the pool.
+    fn return_to_pool(self, pool: &mut GroupIdPool) {
+        if let Self::DictGrouped(buf) = self {
+            pool.give_back(buf);
+        }
+    }
 }
 
 /// This type is responsible for grouping boundary-delineated partitions that have the same
@@ -654,19 +815,25 @@ fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
 /// Wrapper around the fields from an AnyValue struct array that will compare the attribute values
 /// at two indices. This is functionally equivalent to arrow's [`make_comparator`], but its
 /// comparison implementation understands the semantics of how OTAP represents AnyValues.
+///
+/// Uses [`ArrayComparator`] for each value column, which optimizes comparisons on
+/// dictionary-encoded columns by pre-computing group id mappings.
 struct AnyValueStructComparator<'a> {
     type_col: &'a UInt8Array,
     struct_nulls: Option<&'a NullBuffer>,
-    str_comparator: Option<DynComparator>,
-    int_comparator: Option<DynComparator>,
-    float_comparator: Option<DynComparator>,
-    bool_comparator: Option<DynComparator>,
-    bytes_comparator: Option<DynComparator>,
-    ser_comparator: Option<DynComparator>,
+    str_comparator: Option<ArrayComparator>,
+    int_comparator: Option<ArrayComparator>,
+    float_comparator: Option<ArrayComparator>,
+    bool_comparator: Option<ArrayComparator>,
+    bytes_comparator: Option<ArrayComparator>,
+    ser_comparator: Option<ArrayComparator>,
 }
 
 impl<'a> AnyValueStructComparator<'a> {
-    fn try_new(anyval_struct_arr: &'a StructArray) -> Result<Self> {
+    fn try_new(
+        anyval_struct_arr: &'a StructArray,
+        group_id_pool: &mut GroupIdPool,
+    ) -> Result<Self> {
         let type_col_arr = anyval_struct_arr
             .column_by_name(consts::ATTRIBUTE_TYPE)
             .ok_or_else(|| otap_df_pdata::error::Error::ColumnNotFound {
@@ -687,27 +854,27 @@ impl<'a> AnyValueStructComparator<'a> {
             struct_nulls: anyval_struct_arr.nulls(),
             str_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_STR)
-                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .map(|col| ArrayComparator::try_new(col, group_id_pool))
                 .transpose()?,
             int_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_INT)
-                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .map(|col| ArrayComparator::try_new(col, group_id_pool))
                 .transpose()?,
             float_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_DOUBLE)
-                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .map(|col| ArrayComparator::try_new(col, group_id_pool))
                 .transpose()?,
             bool_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_BOOL)
-                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .map(|col| ArrayComparator::try_new(col, group_id_pool))
                 .transpose()?,
             bytes_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_BYTES)
-                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .map(|col| ArrayComparator::try_new(col, group_id_pool))
                 .transpose()?,
             ser_comparator: anyval_struct_arr
                 .column_by_name(consts::ATTRIBUTE_SER)
-                .map(|col| make_comparator(col, col, SortOptions::default()))
+                .map(|col| ArrayComparator::try_new(col, group_id_pool))
                 .transpose()?,
         })
     }
@@ -740,7 +907,7 @@ impl<'a> AnyValueStructComparator<'a> {
 
                 if type1 == AttributeValueType::Str as u8 {
                     return Ok(if let Some(cmp) = self.str_comparator.as_ref() {
-                        cmp(i1, i2)
+                        cmp.cmp(i1, i2)
                     } else {
                         Ordering::Equal
                     });
@@ -748,7 +915,7 @@ impl<'a> AnyValueStructComparator<'a> {
 
                 if type1 == AttributeValueType::Int as u8 {
                     return Ok(if let Some(cmp) = self.int_comparator.as_ref() {
-                        cmp(i1, i2)
+                        cmp.cmp(i1, i2)
                     } else {
                         Ordering::Equal
                     });
@@ -756,7 +923,7 @@ impl<'a> AnyValueStructComparator<'a> {
 
                 if type1 == AttributeValueType::Double as u8 {
                     return Ok(if let Some(cmp) = self.float_comparator.as_ref() {
-                        cmp(i1, i2)
+                        cmp.cmp(i1, i2)
                     } else {
                         Ordering::Equal
                     });
@@ -764,7 +931,7 @@ impl<'a> AnyValueStructComparator<'a> {
 
                 if type1 == AttributeValueType::Bool as u8 {
                     return Ok(if let Some(cmp) = self.bool_comparator.as_ref() {
-                        cmp(i1, i2)
+                        cmp.cmp(i1, i2)
                     } else {
                         Ordering::Equal
                     });
@@ -772,7 +939,7 @@ impl<'a> AnyValueStructComparator<'a> {
 
                 if type1 == AttributeValueType::Bytes as u8 {
                     return Ok(if let Some(cmp) = self.bytes_comparator.as_ref() {
-                        cmp(i1, i2)
+                        cmp.cmp(i1, i2)
                     } else {
                         Ordering::Equal
                     });
@@ -782,7 +949,7 @@ impl<'a> AnyValueStructComparator<'a> {
                     || type1 == AttributeValueType::Map as u8
                 {
                     return Ok(if let Some(cmp) = self.ser_comparator.as_ref() {
-                        cmp(i1, i2)
+                        cmp.cmp(i1, i2)
                     } else {
                         Ordering::Equal
                     });
@@ -795,6 +962,28 @@ impl<'a> AnyValueStructComparator<'a> {
             other => Ok(other),
         }
     }
+
+    /// Consumes this comparator and returns all group id buffers to the pool.
+    fn return_to_pool(self, pool: &mut GroupIdPool) {
+        if let Some(cmp) = self.str_comparator {
+            cmp.return_to_pool(pool);
+        }
+        if let Some(cmp) = self.int_comparator {
+            cmp.return_to_pool(pool);
+        }
+        if let Some(cmp) = self.float_comparator {
+            cmp.return_to_pool(pool);
+        }
+        if let Some(cmp) = self.bool_comparator {
+            cmp.return_to_pool(pool);
+        }
+        if let Some(cmp) = self.bytes_comparator {
+            cmp.return_to_pool(pool);
+        }
+        if let Some(cmp) = self.ser_comparator {
+            cmp.return_to_pool(pool);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -802,10 +991,11 @@ mod test {
     use std::sync::Arc;
 
     use arrow::array::{
-        BinaryArray, BooleanArray, Float64Array, Int64Array, StringArray, StructArray, UInt8Array,
+        ArrayRef, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array,
+        StringArray, StructArray, UInt8Array, UInt16Array,
     };
     use arrow::buffer::{BooleanBuffer, NullBuffer};
-    use arrow::datatypes::{DataType, Field, Fields};
+    use arrow::datatypes::{DataType, Field, Fields, UInt8Type, UInt16Type};
     use otap_df_pdata::otlp::attributes::AttributeValueType;
     use otap_df_pdata::proto::OtlpProtoMessage;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
@@ -820,7 +1010,9 @@ mod test {
     use otap_df_query_engine_languages::opl::parser::OplParser;
 
     use crate::parser::default_parser_options;
-    use crate::pipeline::partition::{AnyValueStructComparator, PartitionValue, Partitioner};
+    use crate::pipeline::partition::{
+        AnyValueStructComparator, ArrayComparator, GroupIdPool, PartitionValue, Partitioner,
+    };
 
     #[test]
     fn test_partition_logs_by_severity_number() {
@@ -1333,7 +1525,8 @@ mod test {
             None,
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
 
         assert!(comparator.cmp(0, 1).unwrap().is_eq()); // equivalent strings
         assert!(comparator.cmp(1, 2).unwrap().is_ne()); // non-equivalent strings
@@ -1361,7 +1554,8 @@ mod test {
             None,
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
 
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
@@ -1387,7 +1581,8 @@ mod test {
             None,
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
         assert!(comparator.cmp(2, 3).unwrap().is_ne());
@@ -1412,7 +1607,8 @@ mod test {
             None,
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
         assert!(comparator.cmp(2, 3).unwrap().is_ne());
@@ -1442,7 +1638,8 @@ mod test {
             None,
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
         assert!(comparator.cmp(2, 3).unwrap().is_ne());
@@ -1467,7 +1664,8 @@ mod test {
             None,
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
     }
@@ -1491,7 +1689,8 @@ mod test {
 
         // since the values columns are missing, we assume they are all null so effectively
         // the partition has equivalent values
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
         assert!(comparator.cmp(2, 3).unwrap().is_eq());
@@ -1525,7 +1724,8 @@ mod test {
 
         // since the values columns are missing, we assume they are all null so effectively
         // the partition has equivalent values
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
         assert!(comparator.cmp(2, 3).unwrap().is_eq());
@@ -1560,10 +1760,203 @@ mod test {
             ]))),
         );
 
-        let comparator = AnyValueStructComparator::try_new(&anyval_struct).unwrap();
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
         assert!(comparator.cmp(0, 1).unwrap().is_eq());
         assert!(comparator.cmp(1, 2).unwrap().is_ne());
         assert!(comparator.cmp(2, 3).unwrap().is_eq());
         assert!(comparator.cmp(3, 4).unwrap().is_ne());
+    }
+
+    #[test]
+    fn test_array_comparator_dict_encoded_strings() {
+        // Dictionary with values: ["foo", "bar", "baz"]
+        // Keys: [0, 1, 0, 2, 1]
+        // Logical array: ["foo", "bar", "foo", "baz", "bar"]
+        let values = StringArray::from(vec!["foo", "bar", "baz"]);
+        let keys = UInt8Array::from(vec![0u8, 1, 0, 2, 1]);
+        let dict = DictionaryArray::new(keys, Arc::new(values));
+        let array: ArrayRef = Arc::new(dict);
+
+        let mut pool = GroupIdPool::new();
+        let cmp = ArrayComparator::try_new(&array, &mut pool).unwrap();
+
+        // "foo" == "foo"
+        assert!(cmp.cmp(0, 2).is_eq());
+        // "bar" == "bar"
+        assert!(cmp.cmp(1, 4).is_eq());
+        // "foo" != "bar"
+        assert!(cmp.cmp(0, 1).is_ne());
+        // "foo" != "baz"
+        assert!(cmp.cmp(0, 3).is_ne());
+        // "bar" != "baz"
+        assert!(cmp.cmp(1, 3).is_ne());
+
+        cmp.return_to_pool(&mut pool);
+    }
+
+    #[test]
+    fn test_array_comparator_dict_with_duplicate_values() {
+        // Dictionary with duplicate values: ["foo", "bar", "foo"]
+        // Key 0 and key 2 both map to "foo" - this is the key case we're optimizing for.
+        // Keys: [0, 1, 2, 0, 1]
+        // Logical array: ["foo", "bar", "foo", "foo", "bar"]
+        let values = StringArray::from(vec!["foo", "bar", "foo"]);
+        let keys = UInt8Array::from(vec![0u8, 1, 2, 0, 1]);
+        let dict = DictionaryArray::new(keys, Arc::new(values));
+        let array: ArrayRef = Arc::new(dict);
+
+        let mut pool = GroupIdPool::new();
+        let cmp = ArrayComparator::try_new(&array, &mut pool).unwrap();
+
+        // row 0 (key=0, "foo") == row 2 (key=2, "foo") -- different keys, same value
+        assert!(cmp.cmp(0, 2).is_eq());
+        // row 0 (key=0, "foo") == row 3 (key=0, "foo") -- same key
+        assert!(cmp.cmp(0, 3).is_eq());
+        // row 2 (key=2, "foo") == row 3 (key=0, "foo") -- different keys, same value
+        assert!(cmp.cmp(2, 3).is_eq());
+        // row 0 ("foo") != row 1 ("bar")
+        assert!(cmp.cmp(0, 1).is_ne());
+        // row 1 ("bar") == row 4 ("bar")
+        assert!(cmp.cmp(1, 4).is_eq());
+
+        cmp.return_to_pool(&mut pool);
+    }
+
+    #[test]
+    fn test_array_comparator_dict_with_nulls() {
+        // Dictionary: values=["a", "b"], keys=[0, null, 1, null, 0]
+        let values = StringArray::from(vec!["a", "b"]);
+        let keys = UInt8Array::from(vec![Some(0u8), None, Some(1), None, Some(0)]);
+        let dict = DictionaryArray::new(keys, Arc::new(values));
+        let array: ArrayRef = Arc::new(dict);
+
+        let mut pool = GroupIdPool::new();
+        let cmp = ArrayComparator::try_new(&array, &mut pool).unwrap();
+
+        // row 0 ("a") == row 4 ("a")
+        assert!(cmp.cmp(0, 4).is_eq());
+        // row 1 (null) == row 3 (null)
+        assert!(cmp.cmp(1, 3).is_eq());
+        // row 0 ("a") != row 1 (null)
+        assert!(cmp.cmp(0, 1).is_ne());
+        // row 0 ("a") != row 2 ("b")
+        assert!(cmp.cmp(0, 2).is_ne());
+
+        cmp.return_to_pool(&mut pool);
+    }
+
+    #[test]
+    fn test_array_comparator_dict_uint16_keys() {
+        // Test with UInt16 key type (common in OTAP for higher-cardinality dicts)
+        let values = StringArray::from(vec!["alpha", "beta", "alpha"]);
+        let keys = UInt16Array::from(vec![0u16, 1, 2, 0, 1]);
+        let dict: DictionaryArray<UInt16Type> = DictionaryArray::new(keys, Arc::new(values));
+        let array: ArrayRef = Arc::new(dict);
+
+        let mut pool = GroupIdPool::new();
+        let cmp = ArrayComparator::try_new(&array, &mut pool).unwrap();
+
+        // row 0 (key=0, "alpha") == row 2 (key=2, "alpha") -- deduped
+        assert!(cmp.cmp(0, 2).is_eq());
+        // row 0 (key=0, "alpha") == row 3 (key=0, "alpha")
+        assert!(cmp.cmp(0, 3).is_eq());
+        // row 0 ("alpha") != row 1 ("beta")
+        assert!(cmp.cmp(0, 1).is_ne());
+        // row 1 ("beta") == row 4 ("beta")
+        assert!(cmp.cmp(1, 4).is_eq());
+
+        cmp.return_to_pool(&mut pool);
+    }
+
+    #[test]
+    fn test_array_comparator_non_dict_falls_back_to_standard() {
+        // Plain (non-dict) string array should use Standard variant
+        let array: ArrayRef = Arc::new(StringArray::from(vec!["a", "b", "a", "c"]));
+
+        let mut pool = GroupIdPool::new();
+        let cmp = ArrayComparator::try_new(&array, &mut pool).unwrap();
+
+        assert!(cmp.cmp(0, 2).is_eq());
+        assert!(cmp.cmp(0, 1).is_ne());
+        assert!(cmp.cmp(1, 3).is_ne());
+
+        // Standard variant should not return anything to the pool
+        cmp.return_to_pool(&mut pool);
+        assert!(pool.pool.is_empty());
+    }
+
+    #[test]
+    fn test_group_id_pool_reuses_allocations() {
+        let mut pool = GroupIdPool::new();
+        assert!(pool.pool.is_empty());
+
+        // Take creates a new buffer
+        let buf = pool.take();
+        assert!(pool.pool.is_empty());
+
+        // Give back returns it
+        pool.give_back(buf);
+        assert_eq!(pool.pool.len(), 1);
+
+        // Take reuses the allocation
+        let buf = pool.take();
+        assert!(pool.pool.is_empty());
+
+        // Use it, then return
+        let mut buf = buf;
+        buf.resize(100, 42);
+        pool.give_back(buf);
+
+        // The returned buffer should be cleared but still have capacity
+        let buf = pool.take();
+        assert!(buf.is_empty());
+        assert!(buf.capacity() >= 100);
+        pool.give_back(buf);
+    }
+
+    #[test]
+    fn test_anyval_comparator_dict_encoded_str_column() {
+        // Test AnyValueStructComparator with a dict-encoded string column.
+        // This is the common case in OTAP: attribute string values are dict-encoded.
+        let values = StringArray::from(vec!["hello", "world", "hello"]);
+        let keys = UInt8Array::from(vec![0u8, 0, 1, 2, 1]);
+        let dict_str: DictionaryArray<UInt8Type> = DictionaryArray::new(keys, Arc::new(values));
+
+        let anyval_struct = StructArray::new(
+            Fields::from(vec![
+                Field::new(consts::ATTRIBUTE_TYPE, DataType::UInt8, false),
+                Field::new(
+                    consts::ATTRIBUTE_STR,
+                    DataType::Dictionary(Box::new(DataType::UInt8), Box::new(DataType::Utf8)),
+                    true,
+                ),
+            ]),
+            vec![
+                Arc::new(UInt8Array::from_iter_values([
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                    AttributeValueType::Str as u8,
+                ])),
+                Arc::new(dict_str),
+            ],
+            None,
+        );
+
+        let mut pool = GroupIdPool::new();
+        let comparator = AnyValueStructComparator::try_new(&anyval_struct, &mut pool).unwrap();
+
+        // row 0 ("hello") == row 1 ("hello") -- same key
+        assert!(comparator.cmp(0, 1).unwrap().is_eq());
+        // row 0 ("hello") != row 2 ("world")
+        assert!(comparator.cmp(0, 2).unwrap().is_ne());
+        // row 0 (key=0, "hello") == row 3 (key=2, "hello") -- different keys, same value
+        assert!(comparator.cmp(0, 3).unwrap().is_eq());
+        // row 2 ("world") == row 4 ("world")
+        assert!(comparator.cmp(2, 4).unwrap().is_eq());
+
+        comparator.return_to_pool(&mut pool);
     }
 }
