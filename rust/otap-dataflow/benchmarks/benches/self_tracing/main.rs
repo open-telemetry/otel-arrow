@@ -28,6 +28,7 @@ use std::thread;
 use std::time::SystemTime;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::FilterExt;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
@@ -261,6 +262,13 @@ fn emit_disabled_level() {
     otap_df_telemetry::otel_info!("benchmark.disabled_level", value = std::hint::black_box(42));
 }
 
+fn emit_disabled_level_with_filter() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_level_with_filter",
+        value = std::hint::black_box(42)
+    );
+}
+
 fn emit_enabled_allow_all() {
     otap_df_telemetry::otel_info!(
         "benchmark.enabled_allow_all",
@@ -278,6 +286,20 @@ fn emit_enabled_exact_match() {
 fn emit_disabled_exact_miss() {
     otap_df_telemetry::otel_info!(
         "benchmark.disabled_exact_miss",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_enabled_prefix_match() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_prefix_match",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_disabled_prefix_miss() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_prefix_miss",
         value = std::hint::black_box(42)
     );
 }
@@ -310,8 +332,7 @@ fn run_its_emission_bench(
     let dispatch = match event_filter {
         Some(filter) => tracing::Dispatch::new(
             tracing_subscriber::registry()
-                .with(EnvFilter::new(level))
-                .with(ItsNoopLayer { reporter }.with_filter(filter)),
+                .with(ItsNoopLayer { reporter }.with_filter(EnvFilter::new(level).and(filter))),
         ),
         None => tracing::Dispatch::new(
             tracing_subscriber::registry()
@@ -347,6 +368,15 @@ fn bench_its_emission(c: &mut Criterion) {
     _ = group.bench_function("disabled/baseline_level_off", |b| {
         run_its_emission_bench(b, "off", None, emit_disabled_level, false);
     });
+    _ = group.bench_function("disabled/level_off_with_filter_allow_all", |b| {
+        run_its_emission_bench(
+            b,
+            "off",
+            Some(EventNameFilter::allow_all()),
+            emit_disabled_level_with_filter,
+            false,
+        );
+    });
     _ = group.bench_function("enabled/event_filter_allow_all", |b| {
         run_its_emission_bench(
             b,
@@ -374,6 +404,45 @@ fn bench_its_emission(c: &mut Criterion) {
             false,
         );
     });
+    _ = group.bench_function("enabled/event_filter_prefix_match", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allowing(["benchmark.enabled_prefix*"])),
+            emit_enabled_prefix_match,
+            true,
+        );
+    });
+    _ = group.bench_function("disabled/event_filter_prefix_miss", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allowing(["benchmark.some_other_prefix*"])),
+            emit_disabled_prefix_miss,
+            false,
+        );
+    });
+
+    group.finish();
+}
+
+fn bench_event_filter_policy_update(c: &mut Criterion) {
+    let mut group = c.benchmark_group("event_filter_policy_update");
+
+    for pattern_count in [1, 10, 100] {
+        let patterns = (0..pattern_count)
+            .map(|index| format!("benchmark.event_{index}"))
+            .collect::<Vec<_>>();
+        let (_filter, handle) = EventNameFilter::new();
+
+        _ = group.bench_with_input(
+            BenchmarkId::new("exact_patterns", pattern_count),
+            &patterns,
+            |b, patterns| {
+                b.iter(|| handle.allow(std::hint::black_box(patterns)));
+            },
+        );
+    }
 
     group.finish();
 }
@@ -533,7 +602,7 @@ mod bench_entry {
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
                   bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic,
-                  bench_its_emission
+                  bench_its_emission, bench_event_filter_policy_update
     );
 }
 
