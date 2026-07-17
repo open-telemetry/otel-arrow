@@ -774,7 +774,8 @@ fn coalesce_groups(
     // When pre-computed groups are used, placeholder entries may have been created for
     // group ids that exist in the dictionary values array but are never referenced by any
     // row key. These placeholders have `representative_row == source_len` (out of bounds)
-    // and an empty selection vec. Filter them out.
+    // and an empty selection vec. Filter them out. This is a somewhat rare case, but we
+    // handle it here to avoid producing empty partitions.
     if pre_computed_groups.is_some() {
         groups.retain(|g| g.representative_row < source_len);
     }
