@@ -445,3 +445,17 @@ fn resource_only_view_keyed_decode_allows_missing_requested_resource_attr() {
     }
     assert!(resources.next().is_none());
 }
+
+#[test]
+fn resource_only_view_missing_logs_batch_yields_empty_view() {
+    let otap_records = OtapArrowRecords::Logs(Default::default());
+
+    let decoded_resources =
+        DecodedOtapLogsResources::clone_and_decode_keyed(&otap_records, b"service.name")
+            .expect("missing root should decode as an empty resource set");
+    let resources_view = decoded_resources
+        .resources_view()
+        .expect("missing root should yield an empty resource-only view");
+
+    assert!(resources_view.resources().next().is_none());
+}

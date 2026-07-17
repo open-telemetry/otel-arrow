@@ -25,10 +25,12 @@ pub struct OtapLogsResourcesView<'a> {
 
 impl<'a> OtapLogsResourcesView<'a> {
     pub(super) fn new(
-        logs_batch: &'a RecordBatch,
+        logs_batch: Option<&'a RecordBatch>,
         resource_attrs: Option<&'a RecordBatch>,
     ) -> Result<Self, Error> {
-        ensure_plain_encoded_columns(ArrowPayloadType::Logs, logs_batch, &[RESOURCE_ID_COL_PATH])?;
+        if let Some(batch) = logs_batch {
+            ensure_plain_encoded_columns(ArrowPayloadType::Logs, batch, &[RESOURCE_ID_COL_PATH])?;
+        }
         if let Some(batch) = resource_attrs {
             ensure_plain_encoded_columns(
                 ArrowPayloadType::ResourceAttrs,
@@ -37,7 +39,7 @@ impl<'a> OtapLogsResourcesView<'a> {
             )?;
         }
 
-        let resource_ids = distinct_resource_ids(logs_batch);
+        let resource_ids = logs_batch.map(distinct_resource_ids).unwrap_or_default();
         let resource_attrs_map = resource_attrs
             .map(build_attribute_index)
             .unwrap_or_default();

@@ -21,7 +21,7 @@ use super::view::OtapLogsResourcesView;
 /// so routing and validation paths can inspect resources without materializing
 /// scope/log attribute IDs or constructing a full logs view.
 pub struct DecodedOtapLogsResources {
-    logs_batch: RecordBatch,
+    logs_batch: Option<RecordBatch>,
     resource_attrs: Option<RecordBatch>,
 }
 
@@ -52,11 +52,12 @@ impl DecodedOtapLogsResources {
     where
         F: FnOnce(&RecordBatch) -> Result<RecordBatch, Error>,
     {
-        let logs_batch = records
-            .get(ArrowPayloadType::Logs)
-            .ok_or(Error::RecordBatchNotFound {
-                payload_type: ArrowPayloadType::Logs,
-            })?;
+        let Some(logs_batch) = records.get(ArrowPayloadType::Logs) else {
+            return Ok(Self {
+                logs_batch: None,
+                resource_attrs: None,
+            });
+        };
         let logs_batch = remove_transport_optimized_resource_id(logs_batch)?;
 
         let resource_attrs = records
@@ -65,14 +66,14 @@ impl DecodedOtapLogsResources {
             .transpose()?;
 
         Ok(Self {
-            logs_batch,
+            logs_batch: Some(logs_batch),
             resource_attrs,
         })
     }
 
     /// Create a resource-only logs view over the decoded batches.
     pub fn resources_view(&self) -> Result<OtapLogsResourcesView<'_>, Error> {
-        OtapLogsResourcesView::new(&self.logs_batch, self.resource_attrs.as_ref())
+        OtapLogsResourcesView::new(self.logs_batch.as_ref(), self.resource_attrs.as_ref())
     }
 }
 
