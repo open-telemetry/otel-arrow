@@ -136,8 +136,18 @@ pull requests targeting `main`.
 Testing is crucial to ensure code reliability. When contributing:
 
 - Write unit tests for new features and bug fixes.
-- Run the test suite before submitting a pull request to verify changes. -Ensure
-test coverage remains high, and add tests for edge cases when applicable.
+- Document every test immediately above the test declaration with:
+
+  ```text
+  <comment> Scenario: <the behavior or condition under test>
+  <comment> Guarantees: <the observable invariant protected by the test>
+  ```
+
+  Use the language's customary comment syntax. Keep both statements specific
+  enough that a reviewer can understand the test's intent and the behavior that
+  must not regress without reading its implementation.
+- Run the test suite before submitting a pull request to verify changes.
+- Ensure test coverage remains high, and add tests for edge cases when applicable.
 
 ### Community Standards and Style Guides
 
