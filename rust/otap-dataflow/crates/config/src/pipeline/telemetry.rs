@@ -1,8 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTel SDK-specific telemetry configuration. Note: this is presently
-//! used only for internal metrics reporting, not for internal logging.
+//! Engine-wide internal telemetry configuration.
 
 pub mod metrics;
 
@@ -34,13 +33,20 @@ pub struct TelemetryConfig {
 }
 
 impl TelemetryConfig {
-    /// Validates the telemetry configuration, including all metric readers.
+    /// Returns `true` when at least one internal signal is routed through ITS.
+    #[must_use]
+    pub const fn uses_its_provider(&self) -> bool {
+        self.logs.providers.uses_its_provider() || self.metrics.uses_its_provider()
+    }
+
+    /// Validates the telemetry configuration for every internal signal.
     pub fn validate(&self) -> Result<(), crate::error::Error> {
         if self.reporting_interval.is_zero() {
             return Err(crate::error::Error::InvalidUserConfig {
                 error: "engine.telemetry.reporting_interval must be greater than zero".to_string(),
             });
         }
+        self.logs.validate()?;
         self.metrics.validate()
     }
 
@@ -472,7 +478,25 @@ mod tests {
         } else {
             panic!("Expected service.version to be a String attribute value");
         }
+        assert!(config.metrics.uses_opentelemetry_provider());
         assert_eq!(config.metrics.readers.len(), 1);
+    }
+
+    #[test]
+    fn test_telemetry_config_detects_metrics_its_provider() {
+        let config: TelemetryConfig = serde_yaml::from_str(
+            r#"
+            metrics:
+                provider: its
+            "#,
+        )
+        .expect("ITS metrics config should deserialize");
+
+        assert!(config.metrics.uses_its_provider());
+        assert!(config.uses_its_provider());
+        config
+            .validate()
+            .expect("ITS metrics config should validate");
     }
 
     #[test]
@@ -536,6 +560,8 @@ mod tests {
         assert_eq!(config.reporting_channel_size, 100);
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
         assert!(config.resource.is_empty());
+        assert!(config.metrics.uses_opentelemetry_provider());
+        assert!(!config.uses_its_provider());
         assert_eq!(config.metrics.readers.len(), 0);
     }
 

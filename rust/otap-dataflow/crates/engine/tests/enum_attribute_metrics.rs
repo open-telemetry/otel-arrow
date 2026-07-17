@@ -10,8 +10,13 @@
 #![allow(missing_docs)]
 
 use otap_df_config::SignalType;
+use otap_df_pdata::OtlpProtoBytes;
+use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
+use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
 use otap_df_telemetry::attributes::{AttributeEnum, AttributeSetHandler, MeasurementAttributeSet};
 use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::otlp::MetricsOtlpEncoder;
 use otap_df_telemetry::metrics::{
     MeasurementMetricSet, MeasurementMetricSetHandler, MetricSet, MetricSetRegistrar,
     RegistrationMetricSetHandler,
@@ -19,6 +24,7 @@ use otap_df_telemetry::metrics::{
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
+use prost::Message;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum LossOutcome {
@@ -366,6 +372,100 @@ fn measurement_metric_set_export_carries_item_attributes() {
                 ],
                 80,
             ),
+        ]
+    );
+}
+
+/// Scenario: measurement buckets are drained through the ITS export bridge.
+/// Guarantees: OTLP emits one stream containing distinct attributed points,
+/// rather than combining bucket values or duplicating the metric stream.
+#[test]
+fn measurement_metric_set_its_export_preserves_bucket_points() {
+    let registry = TelemetryRegistryHandle::new();
+    let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(64);
+    let mut metrics = registry
+        .register_metric_set_with_measurement_attributes::<MeasurementMetrics>(
+            TestScopeAttributes {
+                scope: "its".to_string(),
+            },
+        );
+
+    metrics
+        .with(ImplicitMeasurementAttributes {
+            signal: SignalType::Logs,
+            outcome: LossOutcome::Dropped,
+        })
+        .items
+        .add(7);
+    metrics
+        .with(ImplicitMeasurementAttributes {
+            signal: SignalType::Metrics,
+            outcome: LossOutcome::Expired,
+        })
+        .items
+        .add(80);
+    reporter.report_measurement(&mut metrics).unwrap();
+    while let Ok(snapshot) = rx.try_recv() {
+        registry.accumulate_metric_set_snapshot(
+            snapshot.key(),
+            snapshot.bucket(),
+            snapshot.get_metrics(),
+        );
+    }
+
+    let batch = registry.drain_metric_export_batch();
+    assert_eq!(batch.metric_sets.len(), 2);
+    let encoder = MetricsOtlpEncoder::new(&ResourceLogs::default().encode_to_vec()).unwrap();
+    let encoded = encoder.encode(&batch).unwrap().expect("non-empty metrics");
+    let OtlpProtoBytes::ExportMetricsRequest(bytes) = encoded else {
+        panic!("expected an OTLP metrics request");
+    };
+    let request = ExportMetricsServiceRequest::decode(bytes).unwrap();
+    let [resource] = request.resource_metrics.as_slice() else {
+        panic!("expected one resource metrics message");
+    };
+    let [scope] = resource.scope_metrics.as_slice() else {
+        panic!("measurement buckets must share one instrumentation scope");
+    };
+    let [metric] = scope.metrics.as_slice() else {
+        panic!("measurement buckets must share one metric stream");
+    };
+    let Some(metric::Data::Sum(sum)) = metric.data.as_ref() else {
+        panic!("measurement counter must be an OTLP sum");
+    };
+
+    let mut points = sum
+        .data_points
+        .iter()
+        .map(|point| {
+            let attributes = point
+                .attributes
+                .iter()
+                .map(|attribute| {
+                    let value = attribute
+                        .value
+                        .as_ref()
+                        .and_then(|value| value.value.as_ref())
+                        .map(|value| match value {
+                            otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(value) => value.as_str(),
+                            _ => panic!("expected string datapoint attribute"),
+                        })
+                        .expect("datapoint attribute value");
+                    (attribute.key.as_str(), value)
+                })
+                .collect::<Vec<_>>();
+            let Some(number_data_point::Value::AsInt(value)) = point.value else {
+                panic!("expected an integer datapoint");
+            };
+            (attributes, value)
+        })
+        .collect::<Vec<_>>();
+    points.sort_by_key(|(_, value)| *value);
+    assert_eq!(
+        points,
+        vec![
+            (vec![("signal", "logs"), ("outcome", "dropped")], 7),
+            (vec![("signal", "metrics"), ("outcome", "expired")], 80),
         ]
     );
 }

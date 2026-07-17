@@ -709,6 +709,60 @@ impl PipelineContext {
     }
 }
 
+impl MetricSetRegistrar for EntityMetricSetRegistrar<'_> {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.pipeline_context
+            .register_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M> {
+        self.pipeline_context
+            .register_measurement_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+}
+
 impl MetricSetRegistrar for PipelineContext {
     fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,

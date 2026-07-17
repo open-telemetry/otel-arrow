@@ -145,15 +145,20 @@ pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_te
 /// Settings for internal telemetry consumption by the Internal Telemetry Receiver.
 ///
 /// This bundles the receiver end of the logs channel, pre-encoded resource bytes,
-/// and a telemetry registry handle for resolving entity keys to scope attributes.
+/// and a telemetry registry handle for resolving and exporting internal data.
 #[derive(Clone)]
 pub struct InternalTelemetrySettings {
     /// Receiver end of the logs channel for `ObservedEvent::Log` events.
     pub logs_receiver: flume::Receiver<ObservedEvent>,
-    /// Pre-encoded OTLP resource bytes (ResourceLogs.resource + schema_url fields).
+    /// Pre-encoded OTLP resource and schema fields shared by logs and metrics.
     pub resource_bytes: bytes::Bytes,
     /// Handle to the telemetry registry for looking up entity attributes.
     pub registry: TelemetryRegistryHandle,
+    /// Default registry export interval when internal metrics are routed through ITS.
+    /// The internal telemetry receiver may override this cold-path interval in
+    /// its node configuration. `None` leaves metrics to the configured SDK
+    /// provider or disables them.
+    pub metrics_interval: Option<std::time::Duration>,
     /// Optional retained-log sink shared with admin consumers.
     pub log_tap: Option<log_tap::InternalLogTapHandle>,
 }
@@ -163,6 +168,7 @@ impl std::fmt::Debug for InternalTelemetrySettings {
         f.debug_struct("InternalTelemetrySettings")
             .field("resource_bytes", &self.resource_bytes)
             .field("registry", &self.registry)
+            .field("metrics_interval", &self.metrics_interval)
             .finish_non_exhaustive()
     }
 }
@@ -195,7 +201,7 @@ pub struct InternalTelemetrySystem {
 
     // === OTel SDK Subsystem ===
     /// OTel SDK meter provider for metrics export.
-    sdk_meter_provider: SdkMeterProvider,
+    sdk_meter_provider: Option<SdkMeterProvider>,
 
     /// Tokio runtime for OTLP exporters (kept alive).
     _otel_runtime: Option<tokio::runtime::Runtime>,
@@ -229,15 +235,14 @@ impl InternalTelemetrySystem {
     /// Depending on logging provider mode choices, multiple telemetry backends can be
     /// initialized:
     ///
-    /// OpenTelemetry: the OTel logging provider is created if any
-    /// service::telemetry::logs::providers uses this choice.  Note: the OTel meter
-    /// provider is created unconditionally.
+    /// OpenTelemetry: the OTel metrics SDK is created only when selected by
+    /// `engine.telemetry.metrics.provider`.
     ///
     /// ConsoleAsync: the ObservedEventReporer is passed in, having been created for
     /// use by the admin component unconditionally, to support the ConsoleAsync mode.
     ///
-    /// ITS: if any logging provider is configured with for the internal telemetry system,
-    /// an InternalReceiver will be returned.
+    /// ITS: if logs or metrics select the internal telemetry system, settings
+    /// for an internal telemetry receiver are returned.
     ///
     /// **Note:** The global tracing subscriber is NOT initialized here. Call
     /// `init_global_subscriber()` when ready to start logging.
@@ -249,28 +254,32 @@ impl InternalTelemetrySystem {
         context_fn: LogContextFn,
         log_tap_handle: Option<log_tap::InternalLogTapHandle>,
     ) -> Result<Self, Error> {
-        // Validate logs config
+        // Validate signal providers and SDK-specific configuration.
         config
-            .logs
             .validate()
             .map_err(|e| Error::ConfigurationError(e.to_string()))?;
 
         // 1. Create internal metrics subsystem
         let (collector, metrics_reporter) =
             collector::InternalCollector::new(config, telemetry_registry.clone());
+        let collector = Arc::new(collector);
         let dispatcher = Arc::new(metrics::dispatcher::MetricsDispatcher::new(
             telemetry_registry.clone(),
             config.reporting_interval,
         ));
 
-        // 2. Create OTel SDK providers
-        // OTel Logger is only needed for OpenTelemetry mode
-        let otel_client = otel_sdk::OpentelemetryClient::new(config)?;
-        let sdk_meter_provider = otel_client.meter_provider().clone();
-        let otel_runtime = otel_client.into_runtime();
+        // 2. Create the OTel metrics SDK only when explicitly selected.
+        let (sdk_meter_provider, otel_runtime) = if config.metrics.uses_opentelemetry_provider() {
+            let otel_client = otel_sdk::OpentelemetryClient::new(config)?;
+            let sdk_meter_provider = otel_client.meter_provider().clone();
+            (Some(sdk_meter_provider), otel_client.into_runtime())
+        } else {
+            (None, None)
+        };
 
-        // 3. Create ITS channel if any provider uses ITS mode
-        let (its_reporter, its_settings) = if config.logs.providers.uses_its_provider() {
+        // 3. Create ITS transport when either logs or metrics use ITS. The
+        // reporter is retained in metrics-only mode to keep the channel open.
+        let (its_reporter, its_settings) = if config.uses_its_provider() {
             let (sender, logs_receiver) = flume::bounded(config.reporting_channel_size);
             let reporter = if let Some(log_tap) = &log_tap_handle {
                 ObservedEventReporter::new(logging_send_policy.clone(), sender)
@@ -285,6 +294,10 @@ impl InternalTelemetrySystem {
                     logs_receiver,
                     resource_bytes,
                     registry: telemetry_registry.clone(),
+                    metrics_interval: config
+                        .metrics
+                        .uses_its_provider()
+                        .then_some(config.reporting_interval),
                     log_tap: log_tap_handle.clone(),
                 }),
             )
@@ -294,7 +307,7 @@ impl InternalTelemetrySystem {
 
         Ok(Self {
             registry: telemetry_registry,
-            collector: Arc::new(collector),
+            collector,
             metrics_reporter,
             dispatcher,
             sdk_meter_provider,
@@ -421,9 +434,9 @@ impl InternalTelemetrySystem {
 
     /// Shuts down the OpenTelemetry SDK providers.
     pub fn shutdown_otel(self) -> Result<(), Error> {
-        let meter_shutdown_result = self.sdk_meter_provider.shutdown();
-
-        if let Err(e) = meter_shutdown_result {
+        if let Some(meter_provider) = self.sdk_meter_provider
+            && let Err(e) = meter_provider.shutdown()
+        {
             return Err(Error::ShutdownError(e.to_string()));
         }
 
@@ -455,6 +468,7 @@ mod tests {
     use super::*;
     use otap_df_config::pipeline::telemetry::{
         AttributeValue::I64 as OTelI64, AttributeValue::String as OTelString,
+        metrics::MetricsProvider,
     };
     use otap_df_config::settings::telemetry::logs::{
         InternalLogTapConfig, LoggingProviders, LogsConfig, ProviderMode,
@@ -480,6 +494,82 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    fn test_system(config: &TelemetryConfig) -> InternalTelemetrySystem {
+        InternalTelemetrySystem::new(
+            config,
+            TelemetryRegistryHandle::new(),
+            Some(test_reporter()),
+            SendPolicy::default(),
+            LogContext::new,
+            None,
+        )
+        .expect("should create internal telemetry system")
+    }
+
+    #[test]
+    fn default_metrics_provider_uses_sdk_without_its_settings() {
+        let its = test_system(&TelemetryConfig::default());
+
+        assert!(its.sdk_meter_provider.is_some());
+        assert!(its.internal_telemetry_settings().is_none());
+        its.shutdown_otel().expect("SDK shutdown should succeed");
+    }
+
+    #[test]
+    fn its_metrics_provider_uses_internal_settings_without_sdk() {
+        let reporting_interval = Duration::from_millis(137);
+        let mut config = TelemetryConfig {
+            reporting_interval,
+            ..TelemetryConfig::default()
+        };
+        config.metrics.provider = MetricsProvider::Its;
+
+        let its = test_system(&config);
+        let settings = its
+            .internal_telemetry_settings()
+            .expect("ITS metrics should provide receiver settings");
+
+        assert!(its.sdk_meter_provider.is_none());
+        assert_eq!(settings.metrics_interval, Some(reporting_interval));
+        assert!(
+            its.its_reporter().is_some(),
+            "metrics-only ITS must retain its sender"
+        );
+        its.shutdown_otel()
+            .expect("shutdown without an SDK should succeed");
+    }
+
+    #[test]
+    fn its_logs_with_opentelemetry_metrics_keep_sdk_without_metric_ticks() {
+        let providers = LoggingProviders {
+            global: ProviderMode::Noop,
+            engine: ProviderMode::ITS,
+            internal: ProviderMode::Noop,
+            admin: ProviderMode::Noop,
+        };
+        let its = test_system(&config_with_providers(providers));
+        let settings = its
+            .internal_telemetry_settings()
+            .expect("ITS logs should provide receiver settings");
+
+        assert!(its.sdk_meter_provider.is_some());
+        assert_eq!(settings.metrics_interval, None);
+        its.shutdown_otel().expect("SDK shutdown should succeed");
+    }
+
+    #[test]
+    fn disabled_metrics_provider_has_no_sdk_or_its_settings() {
+        let mut config = TelemetryConfig::default();
+        config.metrics.provider = MetricsProvider::None;
+
+        let its = test_system(&config);
+
+        assert!(its.sdk_meter_provider.is_none());
+        assert!(its.internal_telemetry_settings().is_none());
+        its.shutdown_otel()
+            .expect("shutdown without an SDK should succeed");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use otap_df_config::SignalType;
 use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::{attribute_set, metric_set};
 use std::borrow::Cow;
@@ -177,6 +177,10 @@ impl ChannelSenderMetricsState {
     ) -> Result<(), TelemetryError> {
         metrics_reporter.report(&mut self.metrics)
     }
+
+    fn snapshot(&self) -> Option<MetricSetSnapshot> {
+        (!self.metrics.is_empty()).then(|| self.metrics.snapshot())
+    }
 }
 
 pub(crate) struct ChannelReceiverMetricsState {
@@ -211,6 +215,11 @@ impl ChannelReceiverMetricsState {
     ) -> Result<(), TelemetryError> {
         self.metrics.capacity.set(self.capacity);
         metrics_reporter.report(&mut self.metrics)
+    }
+
+    fn snapshot(&mut self) -> MetricSetSnapshot {
+        self.metrics.capacity.set(self.capacity);
+        self.metrics.snapshot()
     }
 }
 
@@ -250,6 +259,27 @@ impl ChannelMetricsHandle {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<MetricSetSnapshot> {
+        match self {
+            ChannelMetricsHandle::LocalSender(metrics) => metrics
+                .try_borrow()
+                .ok()
+                .and_then(|metrics| metrics.snapshot()),
+            ChannelMetricsHandle::SharedSender(metrics) => metrics
+                .try_lock()
+                .ok()
+                .and_then(|metrics| metrics.snapshot()),
+            ChannelMetricsHandle::LocalReceiver(metrics) => metrics
+                .try_borrow_mut()
+                .ok()
+                .map(|mut metrics| metrics.snapshot()),
+            ChannelMetricsHandle::SharedReceiver(metrics) => metrics
+                .try_lock()
+                .ok()
+                .map(|mut metrics| metrics.snapshot()),
         }
     }
 }

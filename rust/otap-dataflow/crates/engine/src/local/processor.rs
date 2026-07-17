@@ -352,6 +352,38 @@ impl<PData> EffectHandler<PData> {
         }
     }
 
+    /// Drains and reliably hands off final flow metrics during processor shutdown.
+    ///
+    /// Every metric set shares the same absolute `deadline`, bounding the
+    /// complete handoff rather than giving each set a fresh timeout.
+    pub(crate) async fn report_flow_metrics_reliably(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
+        let reporter = self.core.metrics_reporter.clone();
+        if let Some((metrics, acc_cell)) = self.flow.incoming.signals_incoming.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_incoming.merge(acc);
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
+        }
+        if let Some((metrics, acc_cell)) = self.flow.end.duration.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.compute_duration.merge(acc);
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
+        }
+        if let Some((metrics, acc_cell)) = self.flow.end.signals_outgoing.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_outgoing.merge(acc);
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
+        }
+        if let Some((metrics, acc_cell)) = self.flow.decision.signals_dropped.as_mut() {
+            let acc = acc_cell.replace(Mmsc::default());
+            metrics.signals_dropped.merge(acc);
+            let _ = reporter.report_reliably_until(metrics, deadline).await?;
+        }
+        Ok(())
+    }
+
     /// Time a synchronous, fallible closure if process-duration timing
     /// is enabled.
     ///
