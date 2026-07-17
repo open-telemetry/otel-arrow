@@ -24,10 +24,10 @@ groups:
             type: urn:otel:exporter:clickhouse
             config:
               endpoint: http://{{clickhouse_hostname}}:8123
-              database: otap_perf
+              database: {{clickhouse_database}}
               username: default
               password: test
-              async_insert: false
+              async_insert: {{clickhouse_async_insert | lower}}
         connections:
           - from: receiver
             to: exporter

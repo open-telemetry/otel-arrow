@@ -14,7 +14,9 @@ queries:
         start.test_name,
         start.timestamp AS start_ts,
         stop.timestamp AS stop_ts
-      FROM event_times start
+      FROM metadata_row
+      JOIN event_times start
+        ON metadata_row."test.name" = start.test_name
       JOIN event_times stop ON start.test_name = stop.test_name
       WHERE start.event_name = 'observation_start'
         AND stop.event_name = 'observation_stop'
