@@ -222,7 +222,7 @@ fn rejects_encoded_log_id_columns() {
             logs_batch_with_id_encodings(log_id_encoding, resource_id_encoding, scope_id_encoding);
 
         assert_transport_error(
-            OtapLogsView::new(&batch, None, None, None),
+            OtapLogsView::new(Some(&batch), None, None, None),
             ArrowPayloadType::Logs,
             expected_column,
         );
@@ -237,18 +237,18 @@ fn rejects_encoded_attr_parent_id_columns() {
     let log_attrs = attrs_batch_with_parent_encoding(consts::metadata::encodings::QUASI_DELTA);
 
     assert_transport_error(
-        OtapLogsView::new(&logs_batch, Some(&resource_attrs), None, None),
+        OtapLogsView::new(Some(&logs_batch), Some(&resource_attrs), None, None),
         ArrowPayloadType::ResourceAttrs,
         consts::PARENT_ID,
     );
     assert_transport_error(
-        OtapLogsView::new(&logs_batch, None, Some(&scope_attrs), None),
+        OtapLogsView::new(Some(&logs_batch), None, Some(&scope_attrs), None),
         ArrowPayloadType::ScopeAttrs,
         consts::PARENT_ID,
     );
 
     assert_transport_error(
-        OtapLogsView::new(&logs_batch, None, None, Some(&log_attrs)),
+        OtapLogsView::new(Some(&logs_batch), None, None, Some(&log_attrs)),
         ArrowPayloadType::LogAttrs,
         consts::PARENT_ID,
     );
