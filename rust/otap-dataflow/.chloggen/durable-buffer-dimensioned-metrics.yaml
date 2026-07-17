@@ -1,4 +1,4 @@
 change_type: breaking
 component: pipeline
-note: Consolidate durable buffer processor metrics into bounded dimensions for signal, outcome, and loss reason.
+note: Consolidate durable buffer processor metrics into bounded dimensions for signal, outcome, and loss reason, including expired segment losses.
 issues: [3300]

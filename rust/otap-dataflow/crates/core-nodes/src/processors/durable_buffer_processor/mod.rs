@@ -786,6 +786,10 @@ impl DurableBuffer {
             .observe(engine.force_dropped_items());
         self.metrics
             .loss_for(LossReason::Expired)
+            .segments
+            .observe(engine.expired_segments());
+        self.metrics
+            .loss_for(LossReason::Expired)
             .bundles
             .observe(engine.expired_bundles());
         self.metrics
@@ -1766,6 +1770,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                             engine.force_dropped_segments(),
                             engine.force_dropped_bundles(),
                             engine.force_dropped_items(),
+                            engine.expired_segments(),
                             engine.expired_bundles(),
                             engine.expired_items(),
                             engine.clone(),
@@ -1781,6 +1786,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         dropped_segs,
                         dropped_buns,
                         dropped_items,
+                        expired_segs,
                         expired_buns,
                         expired_items,
                         engine,
@@ -1815,6 +1821,10 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                             .loss_for(LossReason::DropOldest)
                             .items
                             .observe(dropped_items);
+                        self.metrics
+                            .loss_for(LossReason::Expired)
+                            .segments
+                            .observe(expired_segs);
                         self.metrics
                             .loss_for(LossReason::Expired)
                             .bundles
@@ -2846,6 +2856,8 @@ mod tests {
             .validate(|_| async {});
     }
 
+    /// Scenario: DropOldest and max_age retention each remove log segments.
+    /// Guarantees: Per-signal item loss stays interval-scoped and aggregate expiry loss includes the expired segment count.
     #[tokio::test]
     async fn test_per_signal_dropped_expired_metrics() {
         let (mut processor, engine, subscriber_id, _temp_dir) =
@@ -2902,6 +2914,17 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(engine.cleanup_expired_segments().unwrap(), 1);
         assert_eq!(sample(&mut processor), (0, 3));
+        assert_eq!(
+            processor
+                .metrics
+                .loss_metrics
+                .get(LossAttributes {
+                    reason: LossReason::Expired,
+                })
+                .segments
+                .get(),
+            1
+        );
 
         // Interval 3: drop a 4-record segment. Dropped reports only this interval's
         // 4 (not the lifetime 9); expired was reset and reads 0.
