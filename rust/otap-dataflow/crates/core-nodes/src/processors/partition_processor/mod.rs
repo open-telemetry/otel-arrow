@@ -22,8 +22,8 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::wiring_contract::WiringContract;
 use otap_df_engine::{
-    ConsumerEffectHandlerExtension, Interests, MessageSourceLocalEffectHandlerExtension,
-    ProcessorFactory, ProducerEffectHandlerExtension,
+    ConsumerEffectHandlerExtension, FlowMetricAccumulation, Interests,
+    MessageSourceLocalEffectHandlerExtension, ProcessorFactory, ProducerEffectHandlerExtension,
 };
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::context::split_contexts::Contexts;
@@ -218,11 +218,19 @@ impl Processor<OtapPdata> for PartitionProcessor {
                     // Not handled - nothing to do
                 }
             },
-            Message::PData(pdata) => {
+            Message::PData(mut pdata) => {
+                // get/preserve the original flow_metric ns counter
+                let flow_metrics_counter = pdata.take_flow_compute();
+                if let Some(flow) = flow_metrics_counter {
+                    pdata.start_flow_metric();
+                    pdata.add_flow_compute(flow);
+                }
+
                 let (mut inbound_context, payload) = pdata.into_parts();
                 let signal_type = payload.signal_type();
                 let mut otap_batch: OtapArrowRecords = payload.try_into_with_default()?;
                 otap_batch.decode_transport_optimized_ids()?;
+                let inbound_batch_num_items = otap_batch.num_items();
 
                 let mut partitions = match self.partitioner.partition(otap_batch) {
                     Ok(partitions) => {
@@ -334,7 +342,19 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                 pdata_context.set_peer_addr(peer_addr);
                             }
 
+                            let outbound_batch_num_items = partition.batch.num_items();
                             let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
+                            if let Some(flow_metrics_counter) = flow_metrics_counter {
+                                pdata.start_flow_metric();
+
+                                // preserve the inbound flow metrics counter, but partition
+                                // its value across the various outbound batches relative to the
+                                // proportion of inbound rows present in the outbound batch
+                                let partition_flow_count_ns = (flow_metrics_counter
+                                    * outbound_batch_num_items as u64)
+                                    / inbound_batch_num_items as u64;
+                                pdata.add_flow_compute(partition_flow_count_ns);
+                            }
 
                             if !outbound_ctx_key.is_null() {
                                 effect_handler.subscribe_to(
@@ -871,17 +891,32 @@ mod test {
                 headers.push(TransportHeader::text("h1", "header1", "hello world"));
                 context.set_transport_headers(headers);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
-                let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
+                pdata.start_flow_metric();
+                pdata.add_flow_compute(8);
                 ctx.process(Message::PData(pdata))
                     .await
                     .expect("no process error");
 
-                for out in ctx.drain_pdata().await {
+                for mut out in ctx.drain_pdata().await {
+                    let flow_counter = out.take_flow_compute();
                     let (mut context, _) = out.into_parts();
                     let headers = context.take_transport_headers().unwrap();
                     assert!(headers.find_by_name("h1").next().is_some());
-
                     assert_eq!(context.peer_addr(), Some("10.0.0.1:5005".parse().unwrap()));
+
+                    // assert the flow counter is distributed outbound batches in proportion
+                    // to their size relative to the input
+                    let partition_header = headers.find_by_name(header_name).next().unwrap();
+                    if partition_header.value == "0".as_bytes().to_vec() {
+                        assert_eq!(flow_counter, Some(4));
+                    }
+                    if partition_header.value == "1".as_bytes().to_vec() {
+                        assert_eq!(flow_counter, Some(2));
+                    }
+                    if partition_header.value == "2".as_bytes().to_vec() {
+                        assert_eq!(flow_counter, Some(2));
+                    }
                 }
 
                 // assert headers also preserved for a single partition batch
