@@ -24,6 +24,16 @@ jobs:
     if: contains(github.event.pull_request.labels.*.name, 'pipelineperf')
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
+      # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
+      # at the start and end of every job. Required when running directly on the
+      # shared bare-metal host (no job-level container) per
+      # https://github.com/open-telemetry/community/blob/main/docs/how-to-use-bare-metal-runner.md
+      - name: Route temp files to RUNNER_TEMP
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
@@ -64,10 +74,10 @@ jobs:
           echo "=== /tmp usage ==="
           sudo du -h --max-depth=1 /tmp 2>/dev/null | sort -rh | head -10
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
@@ -76,7 +86,7 @@ jobs:
 
       - name: Set up Python (non-OL8)
         if: ${{ steps.detect_os.outputs.id != 'ol' }}
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 

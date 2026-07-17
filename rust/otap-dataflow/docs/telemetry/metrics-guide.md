@@ -95,8 +95,27 @@ signal-specific attributes MUST be:
 - preferably namespaced under the metric namespace as recommended by OTel naming
   guidance
 
-Support status for bounded signal-specific attributes is tracked in
-[implementation-gaps.md](implementation-gaps.md).
+Bounded enum attributes are supported as registration-time attributes or
+per-measurement attributes. See
+[Datapoint Enum Attributes for Metrics](datapoint-enum-attributes.md) for the
+declaration and recording APIs.
+
+### Minimal metric declarations
+
+The north-star design is a minimal set of metric declarations that describes an
+entity's behavior without creating a separate counter for each signal, outcome,
+or other bounded dimension. Model those dimensions as attributes on one metric
+set when they are needed to interpret the measurement.
+
+For example, prefer one `lost_items` counter with bounded `signal` and `outcome`
+attributes over distinct `dropped_logs`, `dropped_metrics`, `expired_logs`, and
+similar counters. Do not introduce signal-specific or outcome-specific counters
+when a bounded attribute set expresses the same meaning.
+
+This follows the OpenTelemetry Collector's
+[component universal telemetry RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+
+For more information, see [issue #3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and

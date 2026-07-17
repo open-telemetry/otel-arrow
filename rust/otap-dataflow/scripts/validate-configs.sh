@@ -26,7 +26,8 @@ else
     # Note: --all-features cannot be used because jemalloc and mimalloc are
     # mutually exclusive (compile_error! in non-test builds).
     cargo build \
-        --features azure,aws,contrib-exporters,contrib-processors,contrib-receivers,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor,user_events-eventheader \
+        --locked \
+        --features azure,aws,contrib-exporters,contrib-processors,contrib-receivers,recordset-kql-processor,azure-monitor-exporter,azure-identity-auth-extension,geneva-exporter,condense-attributes-processor,resource-validator-processor,user_events-eventheader \
         --manifest-path "$PROJECT_DIR/Cargo.toml"
     BINARY="$PROJECT_DIR/target/debug/df_engine"
 fi
