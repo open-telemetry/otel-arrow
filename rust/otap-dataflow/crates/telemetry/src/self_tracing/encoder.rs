@@ -12,7 +12,7 @@ use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::time::SystemTime;
 use tracing::Level;
 
@@ -588,11 +588,44 @@ fn encode_any_value(
     Ok(())
 }
 
-/// Encode a LogEvent as a complete ExportLogsServiceRequest.
+/// Encode one `ScopeLogs` block: the `InstrumentationScope` (name plus the
+/// entity-key attributes) followed by each referenced record as its own
+/// length-delimited `LogRecord`.
+fn encode_scope_logs(
+    buf: &mut ProtoBuffer,
+    target: &str,
+    context: &[EntityKey],
+    events: &[LogEvent],
+    indices: &[usize],
+    scope_cache: &mut ScopeToBytesMap,
+) -> EncodeResult {
+    buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
+        // ScopeLogs.scope (field 1, InstrumentationScope message)
+        buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
+            buf.encode_string(INSTRUMENTATION_SCOPE_NAME, target)?;
+            for entity_key in context {
+                let scope_bytes = scope_cache.get_or_encode(*entity_key);
+                buf.extend_from_slice(&scope_bytes)?;
+            }
+            Ok(())
+        })?;
+        // ScopeLogs.log_records (field 2, repeated LogRecord): one entry each.
+        for &idx in indices {
+            buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
+                let mut encoder = DirectLogRecordEncoder::new(buf);
+                let _ = encoder.encode_log_record(events[idx].time, &events[idx].record);
+                Ok(())
+            })?;
+        }
+        Ok(())
+    })
+}
+
+/// Encode a single `LogEvent` as a complete `ExportLogsServiceRequest`.
 ///
-/// This version resolves entity keys from the log record's context to populate
-/// the InstrumentationScope.attributes field. The scope cache is used to avoid
-/// re-encoding entity attributes for each log event.
+/// The fast path used when batching is disabled: one scope encoded directly,
+/// with no grouping map. Output is identical to passing a one-element slice to
+/// [`encode_export_logs_request_batch`].
 pub fn encode_export_logs_request(
     buf: &mut ProtoBuffer,
     event: &LogEvent,
@@ -600,39 +633,67 @@ pub fn encode_export_logs_request(
     scope_cache: &mut ScopeToBytesMap,
 ) {
     buf.clear();
-
-    // ExportLogsServiceRequest.resource_logs (field 1, repeated ResourceLogs)
     let _: EncodeResult = buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
-        // ResourceLogs.resource (field 1, Resource message)
-        // Copy pre-encoded resource bytes directly
         buf.extend_from_slice(resource_bytes)?;
-
-        // ResourceLogs.scope_logs (field 2, repeated ScopeLogs)
-        buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
-            // ScopeLogs.scope (field 1, InstrumentationScope message)
-            buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) — the crate
-                // that emitted the event (i.e. the tracing target,
-                // `env!("CARGO_PKG_NAME")` at the call site). Pairing
-                // scope.name with the bare `event.name` encoded below
-                // keeps `event.name` aligned with the
-                // `rust/otap-dataflow/semconv/` registry.
-                buf.encode_string(INSTRUMENTATION_SCOPE_NAME, event.record.callsite().target())?;
-                for entity_key in event.record.context.iter() {
-                    let scope_bytes = scope_cache.get_or_encode(*entity_key);
-                    buf.extend_from_slice(&scope_bytes)?;
-                }
-                Ok(())
-            })?;
-
-            // ScopeLogs.log_records (field 2, repeated LogRecord)
-            buf.encode_len_delimited(SCOPE_LOGS_LOG_RECORDS, |buf| {
-                let mut encoder = DirectLogRecordEncoder::new(buf);
-                let _ = encoder.encode_log_record(event.time, &event.record);
-                Ok(())
-            })
-        })
+        encode_scope_logs(
+            buf,
+            event.record.callsite().target(),
+            &event.record.context,
+            std::slice::from_ref(event),
+            &[0],
+            scope_cache,
+        )
     });
+}
+
+/// Encode a batch of `LogEvent`s as a single `ExportLogsServiceRequest`.
+///
+/// Records are grouped by scope identity: the emitting crate
+/// (`InstrumentationScope.name`, i.e. the tracing target / `CARGO_PKG_NAME` at
+/// the call site) plus the entity-key context that defines the scope
+/// attributes. Each distinct scope becomes one `ScopeLogs` message carrying all
+/// of its records, rather than one message per record. Scopes are ordered by
+/// that identity (target, then entity-key context); records within a scope keep
+/// arrival order.
+///
+/// The single-event case takes the [`encode_export_logs_request`] fast path, so
+/// the common batching-disabled flow does not build the grouping map.
+///
+/// Callers must keep each batch small enough to stay under the intended OTLP
+/// transport/payload size; the receiver does this by splitting on a byte budget
+/// first.
+pub fn encode_export_logs_request_batch(
+    buf: &mut ProtoBuffer,
+    events: &[LogEvent],
+    resource_bytes: &Bytes,
+    scope_cache: &mut ScopeToBytesMap,
+) {
+    match events {
+        [] => buf.clear(),
+        [event] => encode_export_logs_request(buf, event, resource_bytes, scope_cache),
+        _ => {
+            buf.clear();
+            // Bucket event indices by scope identity = (target, entity-key
+            // context). A BTreeMap is the codebase's grouping idiom (cf.
+            // `build_attribute_index`) and orders scopes by that key: target
+            // first, then the entity-key slice.
+            let mut groups: BTreeMap<(&str, &[EntityKey]), Vec<usize>> = BTreeMap::new();
+            for (i, event) in events.iter().enumerate() {
+                let target = event.record.callsite().target();
+                let context = event.record.context.as_slice();
+                groups.entry((target, context)).or_default().push(i);
+            }
+
+            let _: EncodeResult =
+                buf.encode_len_delimited(EXPORT_LOGS_REQUEST_RESOURCE_LOGS, |buf| {
+                    buf.extend_from_slice(resource_bytes)?;
+                    for (&(target, context), indices) in &groups {
+                        encode_scope_logs(buf, target, context, events, indices, scope_cache)?;
+                    }
+                    Ok(())
+                });
+        }
+    }
 }
 
 #[cfg(test)]
@@ -713,6 +774,42 @@ mod tests {
             .build();
         let bytes = encode_resource_to_bytes(&resource);
         assert!(bytes.windows(8).any(|w| w == b"test-svc"));
+    }
+
+    #[test]
+    fn encode_export_logs_request_batch_groups_records_by_scope() {
+        let registry = TelemetryRegistryHandle::new();
+        let key_a = registry.register_entity(TestScopeAttributes::new("pipeline-a", 1));
+        let key_b = registry.register_entity(TestScopeAttributes::new("pipeline-b", 2));
+        let mut scope_cache = ScopeToBytesMap::new(registry.clone());
+
+        let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(1_705_321_845_000_000_000);
+        let event_for = |entity_key| LogEvent {
+            time,
+            record: __log_record_impl!(Level::INFO, "test.batch.encoding")
+                .into_record(LogContext::from_buf([entity_key])),
+        };
+
+        // Two records for scope A and one for scope B, interleaved by arrival.
+        let events = vec![event_for(key_a), event_for(key_b), event_for(key_a)];
+
+        let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
+        let mut buf = ProtoBuffer::default();
+        encode_export_logs_request_batch(&mut buf, &events, &resource_bytes, &mut scope_cache);
+
+        let decoded = ExportLogsServiceRequest::decode(buf.into_bytes().as_ref()).unwrap();
+        let scope_logs = &decoded.resource_logs.first().unwrap().scope_logs;
+
+        // One ScopeLogs per distinct entity-key set (scope A with 2 records,
+        // scope B with 1), no singletons. Scope order follows entity-key
+        // ordering, so assert on the multiset of record counts, not position.
+        assert_eq!(scope_logs.len(), 2);
+        let mut record_counts: Vec<usize> =
+            scope_logs.iter().map(|sl| sl.log_records.len()).collect();
+        record_counts.sort_unstable();
+        assert_eq!(record_counts, vec![1, 2]);
+        let total_records: usize = record_counts.iter().sum();
+        assert_eq!(total_records, events.len());
     }
 
     #[test]
