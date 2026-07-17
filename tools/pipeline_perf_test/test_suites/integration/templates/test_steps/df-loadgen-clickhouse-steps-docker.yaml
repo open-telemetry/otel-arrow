@@ -1,0 +1,177 @@
+steps:
+  - name: Deploy ClickHouse
+    action:
+      component_action:
+        phase: deploy
+        target: clickhouse
+    hooks:
+      run:
+        post:
+          - ready_check_http:
+              url: http://localhost:8123/ping
+              method: GET
+              expected_status_code: 200
+
+  - name: Deploy Dataflow Engine
+    action:
+      component_action:
+        phase: deploy
+        target: df-engine
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: '{{engine_config_template}}'
+              output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
+              variables:
+                clickhouse_hostname: clickhouse
+        post:
+          - ready_check_http:
+              url: http://localhost:8086/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+
+  - name: Deploy Load Generator
+    action:
+      component_action:
+        phase: deploy
+        target: load-generator
+    hooks:
+      run:
+        pre:
+          - render_template:
+              template_path: './test_suites/integration/templates/configs/loadgen/config.yaml.j2'
+              output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+              variables:
+                max_batch_size: {{max_batch_size | default(512)}}
+                signals_per_second: {{signals_per_second | default(100000)}}
+                generation_strategy: pre_generated
+                metric_weight: 0
+                trace_weight: 0
+                log_weight: 100
+                engine_hostname: df-engine
+                loadgen_exporter_type: '{{loadgen_exporter_type}}'
+                data_source: semantic_conventions
+        post:
+          - ready_check_http:
+              url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
+              method: GET
+              expected_status_code: 200
+
+  - name: Monitor All
+    action:
+      multi_component_action:
+        phase: start_monitoring
+        targets:
+          - clickhouse
+          - load-generator
+          - df-engine
+
+  - name: Wait for data
+    action:
+      wait:
+        delay_seconds: {{wait_for_data_interval | default(5)}}
+
+  - name: Observe Load
+    action:
+      wait:
+        delay_seconds: {{observation_interval | default(20)}}
+    hooks:
+      run:
+        pre:
+          - record_event:
+              name: observation_start
+        post:
+          - record_event:
+              name: observation_stop
+
+  - name: Stop Load Generator
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
+
+  - name: Stop Engine
+    hooks:
+      run:
+        pre:
+          - send_http_request:
+              url: http://localhost:8086/api/v1/groups/shutdown?wait=true&timeout_secs={{drain_timeout_secs | default(60)}}
+              method: POST
+              headers:
+                "Content-Type": "application/json"
+              timeout: {{drain_timeout_secs | default(60) | int + 5}}
+              raise_for_status: false
+              on_error:
+                continue: true
+    action:
+      no_op: {}
+
+  - name: Wait For Metrics Update
+    action:
+      wait:
+        delay_seconds: 1
+
+  - name: Stop Monitoring All
+    action:
+      multi_component_action:
+        phase: stop_monitoring
+        targets:
+          - clickhouse
+          - load-generator
+          - df-engine
+
+  - name: Validate ClickHouse Rows
+    action:
+      no_op: {}
+    hooks:
+      run:
+        post:
+          - run_command:
+              command: >-
+                rows=$(curl --fail --silent --show-error --user default:test
+                --data-binary 'SELECT count() FROM otap_perf.otel_logs'
+                http://localhost:8123) && test "${rows}" -gt 0 &&
+                echo "ClickHouse persisted ${rows} log rows"
+
+  - name: Destroy All
+    action:
+      multi_component_action:
+        phase: destroy
+        targets:
+          - load-generator
+          - df-engine
+          - clickhouse
+
+  - name: Run Report
+    action:
+      wait:
+        delay_seconds: 0
+    hooks:
+      run:
+        post:
+          - print_container_logs: {}
+          - sql_report:
+              name: ClickHouse Integration Report - Logs
+              report_config_file: ./test_suites/integration/configs/clickhouse_report_logs.yaml
+              output:
+                - format:
+                    template: {}
+                  destination:
+                    console: {}
+                - format:
+                    template:
+                      path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                  destination:
+                    file:
+                      directory: results/{{result_dir | default('clickhouse')}}/gh-actions-benchmark
