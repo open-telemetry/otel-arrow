@@ -1,4 +1,4 @@
-change_type: enhancement
+change_type: breaking
 component: pipeline
 note: Consolidate Azure Monitor exporter completion, HTTP response and latency, state mapping, and heartbeat metrics into bounded dimensioned metric sets.
 issues: [3499]
