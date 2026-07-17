@@ -25,6 +25,8 @@ steps:
               output_path: ./test_suites/integration/configs/engine/config.rendered.yaml
               variables:
                 clickhouse_hostname: clickhouse
+                clickhouse_database: '{{clickhouse_database}}'
+                clickhouse_async_insert: {{clickhouse_async_insert}}
         post:
           - ready_check_http:
               url: http://localhost:8086/api/v1/telemetry/metrics?reset=false
@@ -140,9 +142,9 @@ steps:
           - run_command:
               command: >-
                 rows=$(curl --fail --silent --show-error --user default:test
-                --data-binary 'SELECT count() FROM otap_perf.otel_logs'
+                --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
                 http://localhost:8123) && test "${rows}" -gt 0 &&
-                echo "ClickHouse persisted ${rows} log rows"
+                echo "ClickHouse {{clickhouse_database}} persisted ${rows} log rows"
 
   - name: Destroy All
     action:

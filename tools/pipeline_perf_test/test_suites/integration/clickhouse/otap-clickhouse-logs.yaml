@@ -59,13 +59,27 @@ components:
         allocated_cores: 4
 
 tests:
-  - name: OTAP-CLICKHOUSE-LOGS
+  - name: OTAP-CLICKHOUSE-LOGS-SYNC
     from_template:
       path: test_suites/integration/templates/test_steps/df-loadgen-clickhouse-steps-docker.yaml
       variables:
         engine_config_template: test_suites/integration/templates/configs/engine/clickhouse/otap-clickhouse-logs.yaml.j2
+        clickhouse_database: otap_perf_sync
+        clickhouse_async_insert: false
+        loadgen_exporter_type: otap
+        max_batch_size: 512
+        signals_per_second: 50000
+        observation_interval: 60
+        result_dir: clickhouse
+  - name: OTAP-CLICKHOUSE-LOGS-ASYNC
+    from_template:
+      path: test_suites/integration/templates/test_steps/df-loadgen-clickhouse-steps-docker.yaml
+      variables:
+        engine_config_template: test_suites/integration/templates/configs/engine/clickhouse/otap-clickhouse-logs.yaml.j2
+        clickhouse_database: otap_perf_async
+        clickhouse_async_insert: true
         loadgen_exporter_type: otap
         max_batch_size: 512
         signals_per_second: 100000
-        observation_interval: 20
+        observation_interval: 60
         result_dir: clickhouse
