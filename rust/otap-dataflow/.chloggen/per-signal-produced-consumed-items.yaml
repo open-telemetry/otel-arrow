@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add per-signal item counts to the node.producer/node.consumer metric sets
+note: Add node produced and consumed request and item counts with signal and outcome datapoint attributes
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3300, 3436]
@@ -17,11 +17,4 @@ issues: [3300, 3436]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Every pipeline node can now record per-signal item counts alongside the
-  existing request-outcome counters: `produced.{log_records,metric_points,spans}`
-  on `node.producer` and `consumed.{log_records,metric_points,spans}` on
-  `node.consumer`. Because counting items is expensive, the counts are opt-in: 
-  enable them for all nodes with `telemetry.runtime_metrics: detailed`, 
-  or per node with `telemetry.produced_consumed_item_counts: true`. Counts are 
-  stamped on the pdata frame at send/receive time and recorded during ack/nack unwinding,
-  so they are emitted for receivers, processors, and exporters uniformly.
+  Every pipeline node records `produced.requests` on `node.producer` and `consumed.requests` on `node.consumer`, each dimensioned by `signal` and `outcome` datapoint attributes. Nodes that opt in to item counting also record `produced.items` and `consumed.items` with the same dimensions. Enable item counting for all nodes with `telemetry.runtime_metrics: detailed`, or per node with `telemetry.produced_consumed_item_counts: true`. Counts are stamped on the pdata frame at send/receive time and recorded during ack/nack unwinding, so they are emitted for receivers, processors, and exporters uniformly.

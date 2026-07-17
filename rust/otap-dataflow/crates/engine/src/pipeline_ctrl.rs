@@ -11,7 +11,7 @@
 //! Note 2: Other runtime-control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
+use crate::channel_metrics::{ConsumedMetrics, NodeMetricAttributes, ProducedMetrics};
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::context::PipelineContext;
@@ -30,9 +30,10 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::MetricLevel;
 use otap_df_config::SignalType;
 use otap_df_config::policy::TelemetryPolicy;
+use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{otel_debug, otel_warn};
@@ -195,9 +196,9 @@ pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-request metrics for the node's input channel.
-    pub(crate) input: Option<MetricSet<ConsumedMetrics>>,
+    pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
     /// Produced-request metrics indexed by output port.
-    pub(crate) outputs: Vec<MetricSet<ProducedMetrics>>,
+    pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -209,10 +210,10 @@ pub(crate) fn report_node_metrics_with_handles(
     let mut handles_guard = node_metric_handles.borrow_mut();
     for handles in handles_guard.iter_mut().flatten() {
         if let Some(input) = &mut handles.input {
-            metrics_reporter.report(input)?;
+            metrics_reporter.report_measurement(input)?;
         }
         for output in &mut handles.outputs {
-            metrics_reporter.report(output)?;
+            metrics_reporter.report_measurement(output)?;
         }
         if let Some(completion_emission) = &handles.completion_emission {
             let mut completion_emission = completion_emission
@@ -1008,59 +1009,45 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
         if let Some(Some(handles)) = handles_guard.get_mut(node_id) {
             if interests.contains(Interests::CONSUMER_METRICS) {
                 if let Some(input) = &mut handles.input {
-                    match outcome {
-                        RequestOutcome::Success => input.consumed_success.inc(),
-                        RequestOutcome::Failure => input.consumed_failure.inc(),
-                        RequestOutcome::Refused => input.consumed_refused.inc(),
-                    }
-                    if consumed_items > 0 {
-                        match signal {
-                            Some(SignalType::Logs) => {
-                                input.consumed_log_records.add(consumed_items as u64)
-                            }
-                            Some(SignalType::Metrics) => {
-                                input.consumed_metric_points.add(consumed_items as u64)
-                            }
-                            Some(SignalType::Traces) => {
-                                input.consumed_spans.add(consumed_items as u64)
-                            }
-                            None => {}
+                    if let Some(signal) = signal {
+                        let outcome = match outcome {
+                            RequestOutcome::Success => Outcome::Success,
+                            RequestOutcome::Failure => Outcome::Failure,
+                            RequestOutcome::Refused => Outcome::Refused,
+                        };
+                        let input = input.with(NodeMetricAttributes { signal, outcome });
+                        input.consumed_requests.inc();
+                        if consumed_items > 0 {
+                            input.consumed_items.add(consumed_items as u64);
                         }
-                    }
-                    if route.entry_time_ns > 0 && now_ns > 0 {
-                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                        input.consumed_duration_ns.record(duration_ns as f64);
+                        if route.entry_time_ns > 0 && now_ns > 0 {
+                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                            input.consumed_duration_ns.record(duration_ns as f64);
+                        }
                     }
                 }
             }
             if interests.contains(Interests::PRODUCER_METRICS) {
                 let port = route.output_port_index as usize;
                 if let Some(output) = handles.outputs.get_mut(port) {
-                    match outcome {
-                        RequestOutcome::Success => output.produced_success.inc(),
-                        RequestOutcome::Failure => output.produced_failure.inc(),
-                        RequestOutcome::Refused => output.produced_refused.inc(),
-                    }
-                    if produced_items > 0 {
-                        match signal {
-                            Some(SignalType::Logs) => {
-                                output.produced_log_records.add(produced_items as u64)
-                            }
-                            Some(SignalType::Metrics) => {
-                                output.produced_metric_points.add(produced_items as u64)
-                            }
-                            Some(SignalType::Traces) => {
-                                output.produced_spans.add(produced_items as u64)
-                            }
-                            None => {}
+                    if let Some(signal) = signal {
+                        let outcome = match outcome {
+                            RequestOutcome::Success => Outcome::Success,
+                            RequestOutcome::Failure => Outcome::Failure,
+                            RequestOutcome::Refused => Outcome::Refused,
+                        };
+                        let output = output.with(NodeMetricAttributes { signal, outcome });
+                        output.produced_requests.inc();
+                        if produced_items > 0 {
+                            output.produced_items.add(produced_items as u64);
                         }
-                    }
-                    if !interests.contains(Interests::CONSUMER_METRICS)
-                        && route.entry_time_ns > 0
-                        && now_ns > 0
-                    {
-                        let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
-                        output.produced_duration_ns.record(duration_ns as f64);
+                        if !interests.contains(Interests::CONSUMER_METRICS)
+                            && route.entry_time_ns > 0
+                            && now_ns > 0
+                        {
+                            let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
+                            output.produced_duration_ns.record(duration_ns as f64);
+                        }
                     }
                 }
             }
@@ -3138,14 +3125,14 @@ mod tests {
             "internal",
         );
 
-        let recv_produced: MetricSet<ProducedMetrics> =
-            registry.register_metric_set_for_entity(recv_out_key);
-        let proc_consumed: MetricSet<ConsumedMetrics> =
-            registry.register_metric_set_for_entity(proc_in_key);
-        let proc_produced: MetricSet<ProducedMetrics> =
-            registry.register_metric_set_for_entity(proc_out_key);
-        let exp_consumed: MetricSet<ConsumedMetrics> =
-            registry.register_metric_set_for_entity(exp_in_key);
+        let recv_produced: MeasurementMetricSet<ProducedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_produced: MeasurementMetricSet<ProducedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
         let mut key_labels = HashMap::new();
@@ -3273,20 +3260,12 @@ mod tests {
 
     // ConsumerMetrics field indices (defined by #[metric_set] field order):
     const CONSUMER_DURATION: usize = 0;
-    const CONSUMER_SUCCESS: usize = 1;
-    const CONSUMER_FAILURE: usize = 2;
-    const CONSUMER_REFUSED: usize = 3;
-    const CONSUMER_LOG_RECORDS: usize = 4;
-    const CONSUMER_METRIC_POINTS: usize = 5;
-    const CONSUMER_SPANS: usize = 6;
+    const CONSUMER_REQUESTS: usize = 1;
+    const CONSUMER_ITEMS: usize = 2;
     // ProducedMetrics field indices:
     const PRODUCER_DURATION: usize = 0;
-    const PRODUCER_SUCCESS: usize = 1;
-    const PRODUCER_FAILURE: usize = 2;
-    const PRODUCER_REFUSED: usize = 3;
-    const PRODUCER_LOG_RECORDS: usize = 4;
-    const PRODUCER_METRIC_POINTS: usize = 5;
-    const PRODUCER_SPANS: usize = 6;
+    const PRODUCER_REQUESTS: usize = 1;
+    const PRODUCER_ITEMS: usize = 2;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
@@ -3853,8 +3832,8 @@ mod tests {
             .await
     }
 
-    /// Verify that ack correctly records consumed_success and produced_success
-    /// via the full manager lifecycle and shutdown metrics flush.
+    /// Scenario: a successful acknowledgment unwinds a receiver, processor, and exporter.
+    /// Guarantees: each unwound node records one request in its `outcome=success` bucket.
     #[tokio::test]
     async fn test_ack_lifecycle_consumed_produced_metrics() {
         let harness = setup_test_manager_with_metrics();
@@ -3867,19 +3846,17 @@ mod tests {
         })
         .await;
 
-        // Exporter consumed: success=1, failure=0, refused=0
+        // Exporter consumed one successful request.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
 
-        // Processor consumed: success=1
+        // Processor consumed one successful request.
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
 
-        // Processor produced: success=1
+        // Processor produced one successful request.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
 
         // Receiver produced: unwind_ack delivers to first ACKS subscriber (processor)
         // so receiver frame is never popped → no metrics recorded.
@@ -3891,7 +3868,8 @@ mod tests {
         drop(nodes_clone);
     }
 
-    /// Verify that non-permanent nack records consumed_failure / produced_failure.
+    /// Scenario: a retryable nack unwinds a processor and exporter.
+    /// Guarantees: each unwound node records one request in its `outcome=failure` bucket.
     #[tokio::test]
     async fn test_nack_lifecycle_failure_metrics() {
         let harness = setup_test_manager_with_metrics();
@@ -3904,18 +3882,17 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_REFUSED, 0, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
-    /// Verify that permanent nack records consumed_refused / produced_refused.
+    /// Scenario: a permanent nack unwinds a processor and exporter.
+    /// Guarantees: each unwound node records one request in its `outcome=refused` bucket.
     #[tokio::test]
     async fn test_permanent_nack_lifecycle_refused_metrics() {
         let harness = setup_test_manager_with_metrics();
@@ -3928,15 +3905,13 @@ mod tests {
         .await;
 
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
-        assert_u64(exp, CONSUMER_SUCCESS, 0, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_FAILURE, 0, "Exporter consumed_failure");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
     }
 
     /// Verify that consumed_duration_ns (Mmsc histogram) is recorded
@@ -4025,13 +4000,8 @@ mod tests {
         );
     }
 
-    /// Verify per-signal produced/consumed item counts are recorded on the
-    /// existing node.producer / node.consumer metric sets for every node kind.
-    ///
-    /// Uses the no-subscriber pipeline so all frames (including the receiver's
-    /// producer-only frame) are unwound in a single pass. The builders stamp
-    /// Logs frames: receiver produces 10, processor consumes 10 and produces 7,
-    /// exporter consumes 7.
+    /// Scenario: a logs batch flows through receiver, processor, and exporter nodes.
+    /// Guarantees: each node reports its produced or consumed item count in the `signal=logs` bucket.
     #[tokio::test]
     async fn test_per_signal_item_counts() {
         let harness = setup_test_manager_with_metrics();
@@ -4043,28 +4013,142 @@ mod tests {
         })
         .await;
 
-        // Receiver produced: 10 log records, no other signal.
+        // Receiver produced 10 log records.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        assert_u64(recv_p, PRODUCER_LOG_RECORDS, 10, "Receiver produced logs");
-        assert_u64(
-            recv_p,
-            PRODUCER_METRIC_POINTS,
-            0,
-            "Receiver produced points",
-        );
-        assert_u64(recv_p, PRODUCER_SPANS, 0, "Receiver produced spans");
+        assert_u64(recv_p, PRODUCER_ITEMS, 10, "Receiver produced logs");
 
         // Processor consumed 10, produced 7 (filtering drop of 3).
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_LOG_RECORDS, 10, "Processor consumed logs");
-        assert_u64(proc_c, CONSUMER_SPANS, 0, "Processor consumed spans");
+        assert_u64(proc_c, CONSUMER_ITEMS, 10, "Processor consumed logs");
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_LOG_RECORDS, 7, "Processor produced logs");
+        assert_u64(proc_p, PRODUCER_ITEMS, 7, "Processor produced logs");
 
         // Exporter consumed 7 log records.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_LOG_RECORDS, 7, "Exporter consumed logs");
-        assert_u64(exp, CONSUMER_METRIC_POINTS, 0, "Exporter consumed points");
+        assert_u64(exp, CONSUMER_ITEMS, 7, "Exporter consumed logs");
+    }
+
+    /// Scenario: one processor records successful logs and failed traces.
+    /// Guarantees: produced and consumed request and item snapshots retain distinct `signal` and `outcome` datapoint attributes.
+    #[test]
+    fn node_metrics_export_signal_and_outcome_attributes() {
+        let mut harness = setup_test_manager_with_metrics();
+        let processor_id = harness.nodes[1].index;
+        let interests = Interests::CONSUMER_METRICS | Interests::PRODUCER_METRICS;
+        let route = RouteData::default();
+
+        harness.manager.record_frame_metrics(
+            processor_id,
+            interests,
+            &route,
+            Some(SignalType::Logs),
+            4,
+            5,
+            RequestOutcome::Success,
+            0,
+        );
+        harness.manager.record_frame_metrics(
+            processor_id,
+            interests,
+            &route,
+            Some(SignalType::Traces),
+            6,
+            7,
+            RequestOutcome::Failure,
+            0,
+        );
+        report_node_metrics_with_handles(
+            &harness.node_metric_handles,
+            &mut harness.metrics_reporter,
+        )
+        .expect("node metric reporting should succeed");
+
+        let mut snapshots = Vec::new();
+        while let Ok(snapshot) = harness.snapshot_rx.try_recv() {
+            let Some(&label) = harness.key_labels.get(&snapshot.key()) else {
+                continue;
+            };
+            if matches!(label, MetricLabel::ProcConsumed | MetricLabel::ProcProduced) {
+                snapshots.push((
+                    label,
+                    snapshot.measurement_attribute_value("signal"),
+                    snapshot.measurement_attribute_value("outcome"),
+                    snapshot.get_metrics().to_vec(),
+                ));
+            }
+        }
+
+        assert_eq!(
+            snapshots.len(),
+            4,
+            "two signal/outcome buckets per direction"
+        );
+        let find = |label, signal, outcome| {
+            snapshots
+                .iter()
+                .find(|(actual_label, actual_signal, actual_outcome, _)| {
+                    *actual_label == label
+                        && *actual_signal == Some(signal)
+                        && *actual_outcome == Some(outcome)
+                })
+                .expect("expected datapoint attribute bucket")
+        };
+
+        let (_, _, _, consumed_logs) = find(MetricLabel::ProcConsumed, "logs", "success");
+        assert_u64(
+            consumed_logs,
+            CONSUMER_REQUESTS,
+            1,
+            "logs success consumed requests",
+        );
+        assert_u64(
+            consumed_logs,
+            CONSUMER_ITEMS,
+            5,
+            "logs success consumed items",
+        );
+
+        let (_, _, _, consumed_traces) = find(MetricLabel::ProcConsumed, "traces", "failure");
+        assert_u64(
+            consumed_traces,
+            CONSUMER_REQUESTS,
+            1,
+            "traces failure consumed requests",
+        );
+        assert_u64(
+            consumed_traces,
+            CONSUMER_ITEMS,
+            7,
+            "traces failure consumed items",
+        );
+
+        let (_, _, _, produced_logs) = find(MetricLabel::ProcProduced, "logs", "success");
+        assert_u64(
+            produced_logs,
+            PRODUCER_REQUESTS,
+            1,
+            "logs success produced requests",
+        );
+        assert_u64(
+            produced_logs,
+            PRODUCER_ITEMS,
+            4,
+            "logs success produced items",
+        );
+
+        let (_, _, _, produced_traces) = find(MetricLabel::ProcProduced, "traces", "failure");
+        assert_u64(
+            produced_traces,
+            PRODUCER_REQUESTS,
+            1,
+            "traces failure produced requests",
+        );
+        assert_u64(
+            produced_traces,
+            PRODUCER_ITEMS,
+            6,
+            "traces failure produced items",
+        );
     }
 
     /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.
@@ -4115,7 +4199,8 @@ mod tests {
         );
     }
 
-    /// Verify multiple acks accumulate counters correctly through the lifecycle.
+    /// Scenario: three successful acknowledgments unwind the same nodes.
+    /// Guarantees: the `outcome=success` request bucket accumulates all three completions.
     #[tokio::test]
     async fn test_multiple_acks_lifecycle_accumulate() {
         let harness = setup_test_manager_with_metrics();
@@ -4134,19 +4219,30 @@ mod tests {
         let exp = &snapshots[&MetricLabel::ExpConsumed];
         assert_u64(
             exp,
-            CONSUMER_SUCCESS,
+            CONSUMER_REQUESTS,
             3,
-            "Exporter 3 consumed_success after 3 acks",
+            "Exporter 3 consumed requests after 3 acks",
         );
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 3, "Processor 3 consumed_success");
+        assert_u64(
+            proc_c,
+            CONSUMER_REQUESTS,
+            3,
+            "Processor 3 consumed requests",
+        );
 
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 3, "Processor 3 produced_success");
+        assert_u64(
+            proc_p,
+            PRODUCER_REQUESTS,
+            3,
+            "Processor 3 produced requests",
+        );
     }
 
-    /// Verify mixed ack and nack messages accumulate correctly.
+    /// Scenario: successful, retryable, and permanent completions unwind the same nodes.
+    /// Guarantees: request buckets retain all three outcome dimensions without overwriting one another.
     #[tokio::test]
     async fn test_mixed_ack_nack_lifecycle() {
         let harness = setup_test_manager_with_metrics();
@@ -4165,26 +4261,21 @@ mod tests {
         })
         .await;
 
-        // Exporter consumed: 1 success + 1 failure + 1 refused
+        // Exporter consumed one request for each outcome.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
-        assert_u64(exp, CONSUMER_FAILURE, 1, "Exporter consumed_failure");
-        assert_u64(exp, CONSUMER_REFUSED, 1, "Exporter consumed_refused");
+        assert_u64(exp, CONSUMER_REQUESTS, 3, "Exporter consumed requests");
 
-        // Processor consumed: same pattern
+        // Processor consumed one request for each outcome.
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
-        assert_u64(proc_c, CONSUMER_FAILURE, 1, "Processor consumed_failure");
-        assert_u64(proc_c, CONSUMER_REFUSED, 1, "Processor consumed_refused");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 3, "Processor consumed requests");
 
-        // Processor produced: 1 success + 1 failure + 1 refused
+        // Processor produced one request for each outcome.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
-        assert_u64(proc_p, PRODUCER_FAILURE, 1, "Processor produced_failure");
-        assert_u64(proc_p, PRODUCER_REFUSED, 1, "Processor produced_refused");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 3, "Processor produced requests");
     }
 
-    /// Simulate the real two-pass unwind for a receiver→processor→exporter pipeline.
+    /// Scenario: a receiver→processor→exporter acknowledgment requires two unwind passes.
+    /// Guarantees: request and duration metrics remain attributed after the receiver-only second pass.
     ///
     /// Pass 1: full stack [recv, proc, exp] — unwinds exp and proc frames,
     ///         delivers ack to processor (first ACKS subscriber).
@@ -4203,6 +4294,7 @@ mod tests {
 
             // --- Pass 2: only the receiver frame remains (processor re-notified) ---
             let mut pdata_recv_only = TestPData::new();
+            pdata_recv_only.signal = Some(SignalType::Logs);
             pdata_recv_only.push_frame(Frame {
                 node_id: nodes[0].index,
                 interests: Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP,
@@ -4226,23 +4318,23 @@ mod tests {
 
         // From pass 1: exporter and processor consumer metrics are recorded.
         let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_SUCCESS, 1, "Exporter consumed_success");
+        assert_u64(exp, CONSUMER_REQUESTS, 1, "Exporter consumed requests");
         let snap = assert_mmsc(exp, CONSUMER_DURATION, "Exporter consumed duration");
         assert_eq!(snap.count, 1, "Exporter should have 1 consumed duration");
         assert!(snap.min > 0.0, "Exporter consumed duration > 0");
 
         let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_SUCCESS, 1, "Processor consumed_success");
+        assert_u64(proc_c, CONSUMER_REQUESTS, 1, "Processor consumed requests");
         let snap = assert_mmsc(proc_c, CONSUMER_DURATION, "Processor consumed duration");
         assert_eq!(snap.count, 1, "Processor should have 1 consumed duration");
 
         // From pass 1: processor produced counter recorded.
         let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_SUCCESS, 1, "Processor produced_success");
+        assert_u64(proc_p, PRODUCER_REQUESTS, 1, "Processor produced requests");
 
         // From pass 2: receiver produced counter AND duration recorded.
         let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        assert_u64(recv_p, PRODUCER_SUCCESS, 1, "Receiver produced_success");
+        assert_u64(recv_p, PRODUCER_REQUESTS, 1, "Receiver produced requests");
         let snap = assert_mmsc(recv_p, PRODUCER_DURATION, "Receiver produced duration");
         assert_eq!(
             snap.count, 1,

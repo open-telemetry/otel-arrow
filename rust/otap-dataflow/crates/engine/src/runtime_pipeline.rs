@@ -34,7 +34,7 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -58,7 +58,7 @@ const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_se
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MetricSet<ProducedMetrics>> {
+) -> Vec<MeasurementMetricSet<ProducedMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -66,7 +66,9 @@ fn make_produced_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key)
+                    ProducedMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
                 })
                 .collect()
         })
@@ -88,7 +90,7 @@ fn make_node_metric_handles(
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
-            .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key))
+            .map(|key| ConsumedMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key)))
     } else {
         None
     };

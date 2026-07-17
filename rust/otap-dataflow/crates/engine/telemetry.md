@@ -18,19 +18,11 @@ emitted via `otel_*` log macros.
 | `channel.receiver.recv.error_closed` | Number of receive attempts after the channel was closed. | `crates/engine/src/channel_metrics.rs` |
 | `channel.receiver.capacity` | Configured channel buffer capacity. | `crates/engine/src/channel_metrics.rs` |
 | `node.consumer.consumed.duration` | Duration from entry until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.success` | Consumed requests successfully processed. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.failure` | Consumed requests that failed (retryable errors). | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.refused` | Consumed requests permanently refused (permanent failures). | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.log_records` | Log records consumed (received) by the node, per signal. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.metric_points` | Metric data points consumed (received) by the node, per signal. | `crates/engine/src/channel_metrics.rs` |
-| `node.consumer.consumed.spans` | Spans consumed (received) by the node, per signal. | `crates/engine/src/channel_metrics.rs` |
+| `node.consumer.consumed.requests` | Requests consumed by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.consumer.consumed.items` | Signal items consumed (received) by the node, grouped by the `signal` datapoint attribute. | `crates/engine/src/channel_metrics.rs` |
 | `node.producer.produced.duration` | Duration from production until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.success` | Produced requests acknowledged by downstream. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.failure` | Produced requests that failed (retryable errors). | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.refused` | Produced requests permanently refused (permanent failures). | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.log_records` | Log records produced (emitted) by the node, per signal. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.metric_points` | Metric data points produced (emitted) by the node, per signal. | `crates/engine/src/channel_metrics.rs` |
-| `node.producer.produced.spans` | Spans produced (emitted) by the node, per signal. | `crates/engine/src/channel_metrics.rs` |
+| `node.producer.produced.requests` | Requests produced by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `node.producer.produced.items` | Signal items produced (emitted) by the node, grouped by the `signal` datapoint attribute. | `crates/engine/src/channel_metrics.rs` |
 | `pipeline.uptime` | Time since pipeline instance start. | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.memory_usage` | Current heap memory in use by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.memory_allocated` | Cumulative bytes allocated by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |

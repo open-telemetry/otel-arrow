@@ -46,8 +46,9 @@ emit:
 
 - Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
   exporter
-- Every node reports `node.producer.produced.{log_records,metric_points,spans}`
-  and `node.consumer.consumed.{log_records,metric_points,spans}` when opted in
+- Every node reports `node.producer.produced.items` and
+  `node.consumer.consumed.items`, each split by the `signal` datapoint attribute,
+  when opted in
   (per-node `telemetry.produced_consumed_item_counts: true`, or globally via
   `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
   higher.

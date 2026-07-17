@@ -7,11 +7,13 @@
 //! using channel endpoint attributes and can be correlated using `channel.id`
 //! and `channel.kind`.
 
+use otap_df_config::SignalType;
+use otap_df_telemetry::common_attributes::Outcome;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{attribute_set, metric_set};
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -77,7 +79,19 @@ pub struct ChannelReceiverMetrics {
 /// Ack/nack metrics for consumed requests, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "node.consumer")]
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct NodeMetricAttributes {
+    /// Signal carried by the request.
+    pub signal: SignalType,
+    /// Result of processing the request.
+    pub outcome: Outcome,
+}
+
+#[metric_set(
+    name = "node.consumer",
+    measurement_attributes = NodeMetricAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
     /// Duration from entry until the corresponding ack or nack is
@@ -86,57 +100,36 @@ pub struct ConsumedMetrics {
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
-    /// Consumed requests successfully processed.
-    #[metric(name = "consumed.success", unit = "{requests}")]
-    pub consumed_success: Counter<u64>,
-    /// Consumed requests that failed, this are retryable errors.
-    #[metric(name = "consumed.failure", unit = "{requests}")]
-    pub consumed_failure: Counter<u64>,
-    /// Consumed requests refused, also known as permanent failures.
-    #[metric(name = "consumed.refused", unit = "{requests}")]
-    pub consumed_refused: Counter<u64>,
-    /// Consumed log records (per-signal item count, all outcomes).
-    #[metric(name = "consumed.log_records", unit = "{log_record}")]
-    pub consumed_log_records: Counter<u64>,
-    /// Consumed metric points (per-signal item count, all outcomes).
-    #[metric(name = "consumed.metric_points", unit = "{data_point}")]
-    pub consumed_metric_points: Counter<u64>,
-    /// Consumed spans (per-signal item count, all outcomes).
-    #[metric(name = "consumed.spans", unit = "{span}")]
-    pub consumed_spans: Counter<u64>,
+    /// Consumed requests, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(name = "consumed.requests", unit = "{requests}")]
+    pub consumed_requests: Counter<u64>,
+    /// Consumed signal items, grouped by the `signal` datapoint attribute.
+    #[metric(name = "consumed.items", unit = "{item}")]
+    pub consumed_items: Counter<u64>,
 }
 
 /// Ack/nack metrics for produced requests, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "node.producer")]
+#[metric_set(
+    name = "node.producer",
+    measurement_attributes = NodeMetricAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
     /// Duration from production until the corresponding ack or nack is
     /// routed, in nanoseconds. This is reported at the detailed level,
-    /// only in receivers. Processors report consumed_refused.
+    /// only in receivers. Processors report `consumed.requests`.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "produced.duration", unit = "ns")]
     pub produced_duration_ns: Mmsc,
-    /// Produced requests acknowledged by downstream.
-    #[metric(name = "produced.success", unit = "{requests}")]
-    pub produced_success: Counter<u64>,
-    /// Produced requests that failed, this are retryable errors.
-    #[metric(name = "produced.failure", unit = "{requests}")]
-    pub produced_failure: Counter<u64>,
-    /// Produced requests refused, also known as permanent failures.
-    #[metric(name = "produced.refused", unit = "{requests}")]
-    pub produced_refused: Counter<u64>,
-    /// Produced log records (per-signal item count, all outcomes).
-    #[metric(name = "produced.log_records", unit = "{log_record}")]
-    pub produced_log_records: Counter<u64>,
-    /// Produced metric points (per-signal item count, all outcomes).
-    #[metric(name = "produced.metric_points", unit = "{data_point}")]
-    pub produced_metric_points: Counter<u64>,
-    /// Produced spans (per-signal item count, all outcomes).
-    #[metric(name = "produced.spans", unit = "{span}")]
-    pub produced_spans: Counter<u64>,
+    /// Produced requests, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(name = "produced.requests", unit = "{requests}")]
+    pub produced_requests: Counter<u64>,
+    /// Produced signal items, grouped by the `signal` datapoint attribute.
+    #[metric(name = "produced.items", unit = "{item}")]
+    pub produced_items: Counter<u64>,
 }
 
 pub(crate) const CHANNEL_KIND_CONTROL: &str = "control";
