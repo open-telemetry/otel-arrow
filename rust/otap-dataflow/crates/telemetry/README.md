@@ -140,13 +140,13 @@ configuration in
 
 ### Filtering internal logs by EventName
 
-The `service::telemetry::logs::level` field gates internal logs by level and
+The `engine.telemetry.logs.level` field gates internal logs by level and
 target (crate), using a [`RUST_LOG`-style
 directive](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives).
 It cannot select an individual event, because a `RUST_LOG` directive has no
 syntax for an event's name.
 
-The `service::telemetry::logs::events` field adds a finer filter *on top of*
+The `engine.telemetry.logs.events` field adds a finer filter *on top of*
 `level`, matching each internal log by its OpenTelemetry EventName (the first
 argument to `otel_info!` and friends, e.g. `receiver.start`). An event is
 emitted only if it passes both `level` and `events`.
@@ -171,6 +171,11 @@ engine:
           - "receiver.start"   # exact
           - "channel.*"        # every channel.* event
 ```
+
+Full-engine reconciliation, including configuration received through the OpAMP
+controller extension, applies `events` to the running engine. The next event
+observes the new filter without rebuilding tracing subscribers or restarting
+the process.
 
 ## Roadmap
 

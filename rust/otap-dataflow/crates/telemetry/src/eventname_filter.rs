@@ -46,6 +46,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
+use otap_df_config::settings::telemetry::logs::EventsConfig;
 use tracing::subscriber::Interest;
 use tracing::{Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Filter};
@@ -189,6 +190,23 @@ impl EventNameFilter {
 }
 
 impl EventNameFilterHandle {
+    /// Applies a validated EventName filter configuration atomically.
+    pub fn apply_config(&self, config: &EventsConfig) {
+        if !config.deny.is_empty() {
+            self.deny(&config.deny);
+        } else if !config.allow.is_empty() {
+            self.allow(&config.allow);
+        } else {
+            self.allow_all();
+        }
+    }
+
+    /// Returns whether the active filter allows `event_name`.
+    #[must_use]
+    pub fn allows(&self, event_name: &str) -> bool {
+        self.mode.load().allows(event_name)
+    }
+
     /// Let every EventName pass (the default).
     pub fn allow_all(&self) {
         self.mode.store(Arc::new(Mode::AllowAll));

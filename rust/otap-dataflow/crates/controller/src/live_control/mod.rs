@@ -78,6 +78,8 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     available_core_ids: Vec<CoreId>,
     /// Tracing setup cloned into launched runtime threads.
     engine_tracing_setup: TracingSetup,
+    /// Applies reconciled EventName policy to every tracing setup.
+    event_filter_handle: EventNameFilterHandle,
     /// Runtime telemetry reporting cadence.
     telemetry_reporting_interval: Duration,
     /// Memory-pressure signal fanout shared with pipeline runtimes.
@@ -123,6 +125,7 @@ impl<
         declared_topics: DeclaredTopics<PData>,
         available_core_ids: Vec<CoreId>,
         engine_tracing_setup: TracingSetup,
+        event_filter_handle: EventNameFilterHandle,
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: tokio::sync::watch::Sender<MemoryPressureChanged>,
         live_config: OtelDataflowSpec,
@@ -137,6 +140,7 @@ impl<
             declared_topics,
             available_core_ids,
             engine_tracing_setup,
+            event_filter_handle,
             telemetry_reporting_interval,
             memory_pressure_tx,
             state: Mutex::new(ControllerRuntimeState {
