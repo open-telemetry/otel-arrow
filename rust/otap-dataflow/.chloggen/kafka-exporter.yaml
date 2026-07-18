@@ -1,0 +1,10 @@
+change_type: new_component
+component: pipeline
+note: Add a Kafka exporter (`urn:otel:exporter:kafka`) for exporting traces, metrics, and logs to Apache Kafka.
+issues: [3249]
+subtext: |
+  Supports per-signal topic and encoding (`otlp_proto` / `otap_proto`), dynamic
+  topic routing and partition-key derivation from transport headers, SASL
+  authentication (including AWS MSK IAM OAUTHBEARER), and producer tuning
+  (`required_acks`, `max_message_bytes`, `linger_ms`) with a `producer_config`
+  escape hatch for arbitrary librdkafka settings.

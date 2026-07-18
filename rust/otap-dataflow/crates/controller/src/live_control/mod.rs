@@ -158,6 +158,8 @@ impl<
                 next_shutdown_id: 0,
                 next_thread_id: 1,
                 first_error: None,
+                global_shutdown_requested: false,
+                global_shutdown_coordinators: 0,
             }),
             state_changed: Condvar::new(),
         }

@@ -74,6 +74,7 @@ Exporters send data out of a pipeline.
 | ------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------- | ------------------------------------------------ |
 | [`urn:microsoft:exporter:azure_monitor`](src/exporters/azure_monitor_exporter/README.md)          | `azure-monitor-exporter` | Alpha; supports logs    | Sends OpenTelemetry logs to Azure Monitor.       |
 | [`urn:microsoft:exporter:geneva`](src/exporters/geneva_exporter/README.md)                        | `geneva-exporter`        | Alpha; logs and traces  | Sends telemetry to Microsoft's Geneva backend.   |
+| [`exporter:kafka`](src/exporters/kafka_exporter/README.md)                                        | `kafka-exporter`         | Experimental            | Produces traces, metrics, and logs to Kafka.     |
 
 ## Feature Aggregates
 

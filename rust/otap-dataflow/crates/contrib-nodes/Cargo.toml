@@ -41,10 +41,13 @@ itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
 futures-channel = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
+hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
 aws-msk-iam-sasl-signer = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
@@ -90,6 +93,12 @@ kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",
+kafka-exporter = [
+    "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+    "dep:xxhash-rust",
+    "dep:hex",
 ]
 aws = [
     "dep:aws-config",
@@ -113,6 +122,7 @@ user_events-eventheader = [
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
+    "kafka-exporter",
     "clickhouse-exporter",
 ]
 clickhouse-exporter = [
