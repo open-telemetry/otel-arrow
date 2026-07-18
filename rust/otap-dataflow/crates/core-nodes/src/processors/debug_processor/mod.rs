@@ -902,14 +902,16 @@ mod tests {
 
         let mut expected_logs_consumed = 0;
         telemetry_registry_handle.visit_current_metrics(|desc, attrs, iter| {
-            if desc.name == "processor.debug.pdata.items_consumed" {
+            if desc.name == "processor.debug.pdata" {
                 let has_logs_signal = attrs
                     .iter_attributes()
                     .any(|(k, v)| k == "signal" && v.to_string_value().eq_ignore_ascii_case("logs"));
                 if has_logs_signal {
-                    for (_field, value) in iter {
-                        if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
-                            expected_logs_consumed = c;
+                    for (field, value) in iter {
+                        if field.name == "items_consumed" {
+                            if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
+                                expected_logs_consumed = c;
+                            }
                         }
                     }
                 }
