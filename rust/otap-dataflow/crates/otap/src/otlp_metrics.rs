@@ -38,6 +38,14 @@ pub struct OtlpReceiverMetrics {
     #[metric(unit = "{requests}")]
     pub refused_memory_pressure: Counter<u64>,
 
+    /// Number of OTLP RPCs rejected by pressure-aware rate throttling.
+    #[metric(unit = "{requests}")]
+    pub refused_rate_limit: Counter<u64>,
+
+    /// Number of OTLP RPCs that would have been rejected by observe-only rate throttling.
+    #[metric(unit = "{requests}")]
+    pub would_refuse_rate_limit: Counter<u64>,
+
     /// Number of transport-level errors surfaced by tonic/server.
     #[metric(unit = "{errors}")]
     pub transport_errors: Counter<u64>,

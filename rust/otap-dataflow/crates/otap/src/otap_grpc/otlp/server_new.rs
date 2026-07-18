@@ -18,6 +18,7 @@ use std::task::Poll;
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::otlp_metrics::OtlpReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
+use crate::rate_limiter::{RateAdmissionDecision, RateLimiter};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
@@ -39,10 +40,10 @@ use prost::Message;
 use prost::bytes::Buf;
 use std::sync::OnceLock;
 use tokio::sync::oneshot;
-use tonic::Status;
 use tonic::body::Body;
 use tonic::codec::{Codec, DecodeBuf, Decoder, EnabledCompressionEncodings, EncodeBuf, Encoder};
 use tonic::server::{Grpc, NamedService, UnaryService};
+use tonic::{Code, Status};
 
 use crate::otap_grpc::common::peer_addr_from_extensions;
 
@@ -207,6 +208,19 @@ fn response_channel_closed_status() -> Status {
     Status::internal("Response channel closed unexpectedly")
 }
 
+fn rate_limit_status(retry_after_secs: u32) -> Status {
+    let mut metadata = tonic::metadata::MetadataMap::new();
+    let retry_pushback_ms = u64::from(retry_after_secs.max(1)) * 1_000;
+    let _ = metadata.insert(
+        "grpc-retry-pushback-ms",
+        retry_pushback_ms
+            .to_string()
+            .parse()
+            .expect("retry pushback metadata should be valid ASCII"),
+    );
+    Status::with_metadata(Code::ResourceExhausted, "rate limit", metadata)
+}
+
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
 /// Custom tonic codec that keeps OTLP request bodies as raw bytes and writes minimal responses.
 struct OtlpBytesCodec {
@@ -216,18 +230,21 @@ struct OtlpBytesCodec {
     preallocate_frame: bool,
     /// Metrics sink for request tracking.
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl OtlpBytesCodec {
-    const fn new(
+    fn new(
         signal: SignalType,
         preallocate_frame: bool,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        rate_limiter: Option<RateLimiter>,
     ) -> Self {
         Self {
             signal,
             preallocate_frame,
             metrics,
+            rate_limiter,
         }
     }
 }
@@ -244,7 +261,12 @@ impl Codec for OtlpBytesCodec {
     }
 
     fn decoder(&mut self) -> Self::Decoder {
-        OtlpBytesDecoder::new(self.signal, self.preallocate_frame, self.metrics.clone())
+        OtlpBytesDecoder::new(
+            self.signal,
+            self.preallocate_frame,
+            self.metrics.clone(),
+            self.rate_limiter.clone(),
+        )
     }
 }
 
@@ -277,18 +299,21 @@ struct OtlpBytesDecoder {
     signal: SignalType,
     preallocate_frame: bool,
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl OtlpBytesDecoder {
-    const fn new(
+    fn new(
         signal: SignalType,
         preallocate_frame: bool,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        rate_limiter: Option<RateLimiter>,
     ) -> Self {
         Self {
             signal,
             preallocate_frame,
             metrics,
+            rate_limiter,
         }
     }
 }
@@ -302,8 +327,21 @@ impl Decoder for OtlpBytesDecoder {
         // Use copy_to_bytes so we copy once while advancing the buffer.
         let len = src.remaining();
         let bytes = src.copy_to_bytes(len);
-        let mut guard = self.metrics.lock();
-        guard.request_bytes.add(len as u64);
+        if let Some(rate_limiter) = &self.rate_limiter {
+            match rate_limiter.check_request_bytes(len as u64) {
+                RateAdmissionDecision::Admit => {}
+                RateAdmissionDecision::WouldThrottle => {
+                    self.metrics.lock().would_refuse_rate_limit.inc();
+                }
+                RateAdmissionDecision::Reject => {
+                    let mut metrics = self.metrics.lock();
+                    metrics.rejected_requests.inc();
+                    metrics.refused_rate_limit.inc();
+                    return Err(rate_limit_status(rate_limiter.retry_after_secs()));
+                }
+            }
+        }
+        self.metrics.lock().request_bytes.add(len as u64);
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
@@ -327,8 +365,9 @@ fn new_grpc(
     signal: SignalType,
     settings: OtlpServerSettings,
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    rate_limiter: Option<RateLimiter>,
 ) -> Grpc<OtlpBytesCodec> {
-    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, metrics);
+    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, metrics, rate_limiter);
     let mut grpc = Grpc::new(codec);
     if let Some(limit) = settings.max_decoding_message_size {
         grpc = grpc.max_decoding_message_size(limit);
@@ -483,10 +522,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 fn unimplemented_resp() -> Response<Body> {
     let mut response = Response::new(Body::default());
     let headers = response.headers_mut();
-    _ = headers.insert(
-        Status::GRPC_STATUS,
-        (tonic::Code::Unimplemented as i32).into(),
-    );
+    _ = headers.insert(Status::GRPC_STATUS, (Code::Unimplemented as i32).into());
     _ = headers.insert(
         http::header::CONTENT_TYPE,
         tonic::metadata::GRPC_CONTENT_TYPE,
@@ -501,6 +537,7 @@ pub struct ServerCommon {
     state: Option<AckSlot>,
     settings: OtlpServerSettings,
     metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl ServerCommon {
@@ -514,6 +551,7 @@ impl ServerCommon {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        rate_limiter: Option<RateLimiter>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -521,6 +559,7 @@ impl ServerCommon {
             state,
             settings: settings.clone(),
             metrics,
+            rate_limiter,
         }
     }
 }
@@ -539,10 +578,11 @@ impl LogsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        rate_limiter: Option<RateLimiter>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics, state),
+            common: ServerCommon::new(effect_handler, settings, metrics, rate_limiter, state),
         }
     }
 }
@@ -564,6 +604,7 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
                     SignalType::Logs,
                     common.settings.clone(),
                     common.metrics.clone(),
+                    common.rate_limiter.clone(),
                 );
                 let service = OtapBatchService::new(
                     common.effect_handler,
@@ -595,10 +636,11 @@ impl MetricsServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        rate_limiter: Option<RateLimiter>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics, state),
+            common: ServerCommon::new(effect_handler, settings, metrics, rate_limiter, state),
         }
     }
 }
@@ -620,6 +662,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
                     SignalType::Metrics,
                     common.settings.clone(),
                     common.metrics.clone(),
+                    common.rate_limiter.clone(),
                 );
                 let service = OtapBatchService::new(
                     common.effect_handler,
@@ -651,10 +694,11 @@ impl TraceServiceServer {
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
         metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        rate_limiter: Option<RateLimiter>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
-            common: ServerCommon::new(effect_handler, settings, metrics, state),
+            common: ServerCommon::new(effect_handler, settings, metrics, rate_limiter, state),
         }
     }
 }
@@ -676,6 +720,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
                     SignalType::Traces,
                     common.settings.clone(),
                     common.metrics.clone(),
+                    common.rate_limiter.clone(),
                 );
                 let service = OtapBatchService::new(
                     common.effect_handler,

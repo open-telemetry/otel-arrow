@@ -312,6 +312,7 @@ groups: {{}}
             channel_capacity.clone(),
             telemetry_policy,
             None,
+            None,
             Some(internal_settings),
         )
         .expect("real internal telemetry receiver should build with injected settings");

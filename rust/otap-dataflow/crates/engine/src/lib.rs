@@ -35,7 +35,7 @@ use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{ChannelCapacityPolicy, TelemetryPolicy},
+    policy::{ChannelCapacityPolicy, RateLimitPolicy, TelemetryPolicy},
     transport_headers_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
@@ -700,6 +700,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limit_policy: Option<RateLimitPolicy>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -926,6 +927,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
                                 &transport_headers_policy,
+                                rate_limit_policy.clone(),
                                 node_capabilities,
                             )
                         },
@@ -1763,6 +1765,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
         transport_headers_policy: &Option<TransportHeadersPolicy>,
+        rate_limit_policy: Option<RateLimitPolicy>,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -1795,7 +1798,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             name.clone(),
             control_channel_capacity,
             pdata_channel_capacity,
-        );
+        )
+        .with_rate_limit(rate_limit_policy);
         let create = factory.create;
 
         let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);

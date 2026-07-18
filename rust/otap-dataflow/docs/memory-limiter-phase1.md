@@ -38,7 +38,8 @@ Implementation note:
 
 - Sample process memory on a configurable interval
 - Classify pressure as `Normal`, `Soft`, or `Hard`
-- Keep `Soft` informational - requests continue flowing
+- Keep `Soft` informational for the memory limiter itself; optional receiver
+  admission policies may use it as an input signal
 - Shed ingress at the receiver boundary only under `Hard` (in `enforce` mode)
 - Optionally fail the readiness probe under `Hard` (in `enforce` mode)
 - Optionally run in `observe_only` mode for metrics and logs without
@@ -251,7 +252,7 @@ The limiter maintains a three-level pressure state:
 | Level | Meaning | Receiver behavior |
 | --- | --- | --- |
 | `Normal` | Below `soft_limit` | No action |
-| `Soft` | Above `soft_limit` | Informational only; requests continue flowing |
+| `Soft` | Above `soft_limit` | Observed; receiver policies may react |
 | `Hard` | Above `hard_limit` | Ingress shedding enabled (`enforce` mode only) |
 
 When `mode: observe_only` is configured, the same state transitions still
@@ -307,13 +308,13 @@ receivers continue accepting requests regardless of pressure level.
 | Syslog / CEF UDP | Drop incoming datagrams |
 <!-- markdownlint-enable MD013 -->
 
-**Soft pressure:** all receivers continue operating normally - no requests are
-rejected and no receiver-level rejection counters increment. The engine-level
-`memory_pressure_state` metric reflects `1` (Soft) and
-`process_memory_usage_bytes` reflects the elevated usage. A
-`process_memory_limiter.transition` log event is emitted at `info` level on
-entry to `Soft`. The behaviors in the table above apply only at `Hard` in
-`enforce` mode.
+**Soft pressure:** the memory limiter does not reject requests solely because
+the process is above the soft limit. The engine-level `memory_pressure_state`
+metric reflects `1` (Soft) and `process_memory_usage_bytes` reflects the
+elevated usage. A `process_memory_limiter.transition` log event is emitted at
+`info` level on entry to `Soft`. Optional receiver admission policies, such as
+pressure-aware rate throttling, may use `Soft` as their activation signal. The
+behaviors in the table above apply only at `Hard` in `enforce` mode.
 
 **Syslog / CEF client behavior under Hard pressure:**
 

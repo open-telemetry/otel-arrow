@@ -14,6 +14,7 @@
 use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::otlp::server_new::AckSlot;
 use crate::pdata::{Context, OtapPdata};
+use crate::rate_limiter::{RateAdmissionDecision, RateLimiter};
 use crate::socket_options;
 
 use bytes::Bytes;
@@ -327,6 +328,16 @@ fn memory_pressure_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
     response
 }
 
+fn rate_limit_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
+    let mut response = rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, "rate limit");
+    if let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
+        _ = response
+            .headers_mut()
+            .insert(http::header::RETRY_AFTER, retry_after);
+    }
+    response
+}
+
 fn internal_error() -> Response<Full<Bytes>> {
     rpc_status_response(StatusCode::INTERNAL_SERVER_ERROR, 13, "internal error")
 }
@@ -510,6 +521,7 @@ struct HttpHandler {
     metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
     settings: HttpServerSettings,
     admission_state: SharedReceiverAdmissionState,
+    rate_limiter: Option<RateLimiter>,
     /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
     /// receiver-wide backpressure tied to downstream capacity.
     global_semaphore: Option<Arc<Semaphore>>,
@@ -689,6 +701,22 @@ impl HttpHandler {
                 body,
                 max_len,
             )?;
+            if let Some(rate_limiter) = &self.rate_limiter {
+                match rate_limiter.check_request_bytes(body.len() as u64) {
+                    RateAdmissionDecision::Admit => {}
+                    RateAdmissionDecision::WouldThrottle => {
+                        self.metrics.lock().would_refuse_rate_limit.inc();
+                    }
+                    RateAdmissionDecision::Reject => {
+                        let mut metrics = self.metrics.lock();
+                        metrics.rejected_requests.inc();
+                        metrics.refused_rate_limit.inc();
+                        return Err(rate_limit_unavailable(
+                            self.admission_state.retry_after_secs(),
+                        ));
+                    }
+                }
+            }
             self.metrics.lock().request_bytes.add(body.len() as u64);
 
             let context = if self.settings.wait_for_result {
@@ -836,6 +864,7 @@ pub async fn serve(
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
     admission_state: SharedReceiverAdmissionState,
+    rate_limiter: Option<RateLimiter>,
     global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
@@ -888,10 +917,11 @@ pub async fn serve(
                 let handler = HttpHandler {
                     effect_handler: effect_handler.clone(),
                     ack_registry: ack_registry.clone(),
-                    metrics: metrics.clone(),
-                    settings: settings.clone(),
-                    admission_state: admission_state.clone(),
-                    global_semaphore: global_semaphore.clone(),
+                        metrics: metrics.clone(),
+                        settings: settings.clone(),
+                        admission_state: admission_state.clone(),
+                        rate_limiter: rate_limiter.clone(),
+                        global_semaphore: global_semaphore.clone(),
                     local_semaphore: local_semaphore.clone(),
                     peer_addr,
                 };
@@ -1044,6 +1074,7 @@ mod tests {
             metrics,
             SharedReceiverAdmissionState::default(),
             None,
+            None,
             shutdown.clone(),
         ));
 
@@ -1184,6 +1215,7 @@ mod tests {
             AckRegistry::new(None, None, None),
             metrics.clone(),
             admission_state.clone(),
+            None,
             Some(gate.clone()),
             shutdown.clone(),
         ));
@@ -1321,6 +1353,7 @@ mod tests {
             AckRegistry::new(None, None, None),
             metrics.clone(),
             admission_state.clone(),
+            None,
             Some(local_semaphore),
             shutdown.clone(),
         ));
