@@ -92,20 +92,34 @@ queries:
   - name: Calculate persisted log loss
     sql: |
       CREATE TABLE log_loss AS
+      WITH final_produced AS (
+        SELECT SUM(final_value) AS logs_produced
+        FROM (
+          SELECT
+            COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
+            MAX(value) AS final_value
+          FROM metrics
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'logs_produced'
+            AND "metric_attributes.component_name" = 'load-generator'
+            AND timestamp >= CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
+          GROUP BY core_id
+        )
+      )
       SELECT
-        logs_produced_stop - logs_produced_start AS logs_produced,
-        logs_persisted_stop - logs_persisted_start AS logs_persisted,
-        logs_persisted_final,
-        (logs_produced_stop - logs_produced_start) -
-          (logs_persisted_stop - logs_persisted_start) AS logs_lost,
+        final_produced.logs_produced,
+        clickhouse_validation.logs_persisted_final,
+        final_produced.logs_produced -
+          clickhouse_validation.logs_persisted_final AS logs_lost,
         CASE
-          WHEN logs_produced_stop > logs_produced_start THEN
-            ((logs_produced_stop - logs_produced_start) -
-              (logs_persisted_stop - logs_persisted_start)) * 1.0 /
-              (logs_produced_stop - logs_produced_start)
+          WHEN final_produced.logs_produced > 0 THEN
+            (final_produced.logs_produced -
+              clickhouse_validation.logs_persisted_final) * 1.0 /
+              final_produced.logs_produced
           ELSE NULL
         END AS logs_lost_pct
-      FROM clickhouse_validation;
+      FROM final_produced
+      CROSS JOIN clickhouse_validation;
 
   - name: Create GitHub Actions benchmark data
     sql: |
@@ -177,6 +191,6 @@ result_tables:
   - name: component_core_counts
     description: Allocated CPU cores used to normalize component CPU utilization.
   - name: log_loss
-    description: Final generated and ClickHouse-persisted rows with calculated loss.
+    description: Terminal generated and final post-drain ClickHouse-persisted rows.
   - name: gh_actions_benchmark
     description: Metrics formatted for github-action-benchmark.
