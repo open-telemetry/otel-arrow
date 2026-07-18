@@ -36,7 +36,7 @@ use otap_df_pdata::proto::opentelemetry::{
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
@@ -441,10 +441,7 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Metrics,
         };
-        self.metrics
-            .with(attrs)
-            .items_consumed
-            .add(metrics as u64);
+        self.metrics.with(attrs).items_consumed.add(metrics as u64);
         self.metrics
             .with(attrs)
             .metric_datapoints_consumed
@@ -499,12 +496,15 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Traces,
         };
+        self.metrics.with(attrs).items_consumed.add(spans as u64);
         self.metrics
             .with(attrs)
-            .items_consumed
-            .add(spans as u64);
-        self.metrics.with(attrs).span_events_consumed.add(events as u64);
-        self.metrics.with(attrs).span_links_consumed.add(links as u64);
+            .span_events_consumed
+            .add(events as u64);
+        self.metrics
+            .with(attrs)
+            .span_links_consumed
+            .add(links as u64);
 
         let report_basic = format!(
             "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
@@ -903,9 +903,9 @@ mod tests {
         let mut expected_logs_consumed = 0;
         telemetry_registry_handle.visit_current_metrics(|desc, attrs, iter| {
             if desc.name == "processor.debug.pdata" {
-                let has_logs_signal = attrs
-                    .iter_attributes()
-                    .any(|(k, v)| k == "signal" && v.to_string_value().eq_ignore_ascii_case("logs"));
+                let has_logs_signal = attrs.iter_attributes().any(|(k, v)| {
+                    k == "signal" && v.to_string_value().eq_ignore_ascii_case("logs")
+                });
                 if has_logs_signal {
                     for (field, value) in iter {
                         if field.name == "items_consumed" {
