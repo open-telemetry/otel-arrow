@@ -4145,11 +4145,11 @@ mod tests {
     /// Guarantees: produced and consumed request and item snapshots retain distinct `signal` and `outcome` datapoint attributes.
     #[test]
     fn node_metrics_export_signal_and_outcome_attributes() {
-        let harness = setup_test_manager_with_metrics();
+        let mut harness = setup_test_manager_with_metrics();
         let processor_id = harness.nodes[1].index;
         let interests = Interests::CONSUMER_METRICS | Interests::PRODUCER_METRICS;
         let route = RouteData::default();
-        let (_completion_tx, completion_rx) = pipeline_completion_msg_channel(1);
+        let (_completion_tx, completion_rx) = pipeline_completion_msg_channel::<TestPData>(1);
         let mut dispatcher = PipelineCompletionMsgDispatcher::new(
             harness.pipeline_context.clone(),
             completion_rx,
