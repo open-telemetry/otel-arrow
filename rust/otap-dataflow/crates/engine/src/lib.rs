@@ -35,7 +35,7 @@ use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{ChannelCapacityPolicy, RateLimitPolicy, TelemetryPolicy},
+    policy::{ChannelCapacityPolicy, RateLimitPolicy, RateLimitUnit, TelemetryPolicy},
     transport_headers_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
@@ -123,6 +123,8 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Rate-limit units this receiver can measure at its admission point.
+    pub supported_rate_units: &'static [RateLimitUnit],
     /// Validates the node-specific config statically, without creating the component.
     ///
     /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
@@ -138,6 +140,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            supported_rate_units: self.supported_rate_units,
             validate_config: self.validate_config,
         }
     }

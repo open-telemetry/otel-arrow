@@ -85,6 +85,13 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
 defaults to `100`, and `batch.max_size` defaults to `100`.
 
+The receiver supports pressure-aware `messages/second` rate limiting when the
+engine-level memory limiter is configured. UDP counts one datagram as one
+message. TCP counts one newline-framed line as one message. Over-limit UDP
+datagrams are dropped; over-limit TCP messages are dropped while the connection
+remains open. TCP rate-limit drops are silent because plain syslog TCP has no
+per-message acknowledgement or retry hint.
+
 ## Transport Protocols
 
 ### UDP
@@ -431,6 +438,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.syslog_cef.tcp_connections_active` | `{conn}` | Number of active TCP connections. |
 | `receiver.syslog_cef.tls_handshake_failures` | `{error}` | Number of TLS handshake failures. |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | `{item}` | Number of log records dropped due to process-wide memory pressure. |
+| `receiver.syslog_cef.received_logs_refused_rate_limit` | `{item}` | Number of log records refused by message-rate throttling. |
+| `receiver.syslog_cef.received_logs_would_refuse_rate_limit` | `{item}` | Number of log records that would be refused by observe-only message-rate throttling. |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | `{conn}` | Number of TCP connections rejected or closed due to process-wide memory pressure. |
 
 ### Events

@@ -316,9 +316,15 @@ elevated usage. A `process_memory_limiter.transition` log event is emitted at
 pressure-aware rate throttling, may use `Soft` as their activation signal. The
 behaviors in the table above apply only at `Hard` in `enforce` mode.
 
-For the v1 OTLP pressure-aware rate policy, `request_bytes/second` is measured
-as decompressed OTLP payload bytes at the receiver admission point. The current
-policy does not measure wire bytes and does not apply to Syslog / CEF receivers.
+For the v1 pressure-aware rate policy, OTLP `request_bytes/second` is measured
+as decompressed OTLP payload bytes at the receiver admission point. Syslog / CEF
+supports `messages/second`, measured as one UDP datagram or one newline-framed
+TCP message before parsing. The current policy does not measure wire bytes.
+Because one effective rate policy applies to every receiver in a resolved
+pipeline, mixed receiver deployments should scope the policy to the pipeline
+that uses the matching unit. For example, an engine-wide
+`request_bytes/second` default will fail startup for a pipeline whose receiver
+only supports `messages/second`.
 
 **Syslog / CEF client behavior under Hard pressure:**
 
@@ -334,6 +340,16 @@ policy does not measure wire bytes and does not apply to Syslog / CEF receivers.
   indication to the sending client. Operators relying on UDP syslog should treat
   Hard pressure as a potential data-loss event and monitor
   `received_logs_rejected_memory_pressure` to detect it.
+
+**Syslog / CEF behavior under pressure-aware rate throttling:**
+
+- **TCP:** Over-limit framed messages are dropped while the connection remains
+  open. This is a silent message drop: plain syslog TCP has no per-message
+  acknowledgement or retry hint, so the client does not know which line was
+  dropped. Hard memory pressure still closes active connections.
+- **UDP:** Over-limit datagrams are silently dropped. UDP senders receive no
+  feedback, so operators should monitor `received_logs_refused_rate_limit` and
+  `received_logs_would_refuse_rate_limit`.
 
 **Design rationale:** explicit rejection is preferred over transport-level
 stalling. For TCP, holding large numbers of stalled open connections under
@@ -380,6 +396,8 @@ All engine metrics are registered under the `engine` metric-set.
 | `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | Syslog / CEF | Log records dropped under pressure |
+| `receiver.syslog_cef.received_logs_refused_rate_limit` | Syslog / CEF | Log records refused by rate throttling |
+| `receiver.syslog_cef.received_logs_would_refuse_rate_limit` | Syslog / CEF | Log records that would be refused by observe-only rate throttling |
 <!-- markdownlint-enable MD013 -->
 
 ### Structured log events

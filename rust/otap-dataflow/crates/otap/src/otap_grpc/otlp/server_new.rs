@@ -328,7 +328,7 @@ impl Decoder for OtlpBytesDecoder {
         let len = src.remaining();
         let bytes = src.copy_to_bytes(len);
         if let Some(rate_limiter) = &self.rate_limiter {
-            match rate_limiter.check_request_bytes(len as u64) {
+            match rate_limiter.check_units(len as u64) {
                 RateAdmissionDecision::Admit => {}
                 RateAdmissionDecision::WouldThrottle => {
                     self.metrics.lock().would_refuse_rate_limit.inc();

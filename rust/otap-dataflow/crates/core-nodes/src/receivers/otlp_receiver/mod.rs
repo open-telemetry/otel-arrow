@@ -214,6 +214,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    supported_rate_units: &[otap_df_config::policy::RateLimitUnit::RequestBytesPerSecond],
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 

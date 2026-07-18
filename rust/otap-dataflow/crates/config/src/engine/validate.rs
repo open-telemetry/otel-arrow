@@ -8,10 +8,8 @@ use crate::engine::{
     SYSTEM_PIPELINE_GROUP_ID,
 };
 use crate::error::Error;
-use crate::node::NodeKind;
 
 const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
-const OTLP_RECEIVER_URN: &str = "urn:otel:receiver:otlp";
 
 /// Detects receiver-level settings that actually enable or transform metrics.
 /// Empty `metrics: {}` and `views: []` blocks remain compatible with logs-only
@@ -203,30 +201,6 @@ impl OtelDataflowSpec {
                 });
             }
             for (pipeline_id, pipeline) in &pipeline_group.pipelines {
-                let rate_limit_configured = self.policies.rate_limit.is_some()
-                    || pipeline_group
-                        .policies
-                        .as_ref()
-                        .is_some_and(|policies| policies.rate_limit.is_some())
-                    || pipeline
-                        .policies()
-                        .is_some_and(|policies| policies.rate_limit.is_some());
-                if rate_limit_configured {
-                    for (node_id, node) in pipeline
-                        .nodes()
-                        .iter()
-                        .filter(|(_, node)| node.kind() == NodeKind::Receiver)
-                    {
-                        if node.r#type.as_ref() != OTLP_RECEIVER_URN {
-                            errors.push(Error::InvalidUserConfig {
-                                error: format!(
-                                    "groups.{pipeline_group_id}.pipelines.{pipeline_id}.nodes.{node_id} uses policies.rate_limit but receiver '{}' does not support v1 rate unit request_bytes/second",
-                                    node.r#type
-                                ),
-                            });
-                        }
-                    }
-                }
                 if pipeline
                     .policies()
                     .and_then(|policies| policies.resources.as_ref())

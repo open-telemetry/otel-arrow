@@ -4,7 +4,9 @@
 //! Receiver-local pressure-aware rate admission.
 
 use otap_df_config::policy::{RateLimitMode, RateLimitPolicy};
-use otap_df_engine::memory_limiter::{MemoryPressureLevel, SharedReceiverAdmissionState};
+use otap_df_engine::memory_limiter::{
+    LocalReceiverAdmissionState, MemoryPressureLevel, SharedReceiverAdmissionState,
+};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -76,18 +78,53 @@ impl TokenBucket {
     }
 }
 
-/// Shared receiver-instance rate gate.
+/// Pressure state read by a receiver-local rate gate.
+pub trait AdmissionPressure: Clone + std::fmt::Debug {
+    /// Returns the current receiver ingress pressure level.
+    fn level(&self) -> MemoryPressureLevel;
+
+    /// Returns the receiver-facing retry hint.
+    fn retry_after_secs(&self) -> u32;
+}
+
+impl AdmissionPressure for SharedReceiverAdmissionState {
+    fn level(&self) -> MemoryPressureLevel {
+        self.level()
+    }
+
+    fn retry_after_secs(&self) -> u32 {
+        self.retry_after_secs()
+    }
+}
+
+impl AdmissionPressure for LocalReceiverAdmissionState {
+    fn level(&self) -> MemoryPressureLevel {
+        self.level()
+    }
+
+    fn retry_after_secs(&self) -> u32 {
+        self.retry_after_secs()
+    }
+}
+
+/// Receiver-instance rate gate.
 #[derive(Clone, Debug)]
-pub struct RateLimiter {
+pub struct GenericRateLimiter<P> {
     policy: Arc<RateLimitPolicy>,
-    admission_state: SharedReceiverAdmissionState,
+    admission_state: P,
     bucket: Arc<Mutex<TokenBucket>>,
 }
 
-impl RateLimiter {
+/// Rate gate for receivers whose tasks may move between runtime workers.
+pub type RateLimiter = GenericRateLimiter<SharedReceiverAdmissionState>;
+
+/// Rate gate for receivers pinned to a local task set.
+pub type LocalRateLimiter = GenericRateLimiter<LocalReceiverAdmissionState>;
+
+impl<P: AdmissionPressure> GenericRateLimiter<P> {
     /// Creates a receiver-local limiter from the effective policy.
     #[must_use]
-    pub fn new(policy: RateLimitPolicy, admission_state: SharedReceiverAdmissionState) -> Self {
+    pub fn new(policy: RateLimitPolicy, admission_state: P) -> Self {
         Self {
             bucket: Arc::new(Mutex::new(TokenBucket::new(&policy))),
             policy: Arc::new(policy),
@@ -95,16 +132,16 @@ impl RateLimiter {
         }
     }
 
-    /// Applies a request-byte admission check against the current pressure level.
+    /// Applies a weighted admission check against the current pressure level.
     #[must_use]
-    pub fn check_request_bytes(&self, request_bytes: u64) -> RateAdmissionDecision {
+    pub fn check_units(&self, units: u64) -> RateAdmissionDecision {
         let pressure_active = matches!(
             self.admission_state.level(),
             MemoryPressureLevel::Soft | MemoryPressureLevel::Hard
         );
         self.bucket
             .lock()
-            .charge(request_bytes, pressure_active, self.policy.mode)
+            .charge(units, pressure_active, self.policy.mode)
     }
 
     /// Returns the receiver-facing retry hint from the shared pressure state.
@@ -143,8 +180,8 @@ mod tests {
             SharedReceiverAdmissionState::from_process_state(&state),
         );
 
-        assert_eq!(limiter.check_request_bytes(8), RateAdmissionDecision::Admit);
-        assert_eq!(limiter.check_request_bytes(8), RateAdmissionDecision::Admit);
+        assert_eq!(limiter.check_units(8), RateAdmissionDecision::Admit);
+        assert_eq!(limiter.check_units(8), RateAdmissionDecision::Admit);
     }
 
     /// Scenario: a scope is already over its local byte bucket when soft pressure starts.
@@ -155,17 +192,11 @@ mod tests {
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let limiter = RateLimiter::new(policy(RateLimitMode::Enforce), admission.clone());
 
-        assert_eq!(
-            limiter.check_request_bytes(20),
-            RateAdmissionDecision::Admit
-        );
+        assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);
         state.set_level_for_tests(MemoryPressureLevel::Soft);
         admission.apply(state.current_update(1));
 
-        assert_eq!(
-            limiter.check_request_bytes(1),
-            RateAdmissionDecision::Reject
-        );
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Reject);
     }
 
     /// Scenario: a scope is over its local byte bucket with observe-only rate policy enabled.
@@ -176,17 +207,11 @@ mod tests {
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let limiter = RateLimiter::new(policy(RateLimitMode::ObserveOnly), admission.clone());
 
-        assert_eq!(
-            limiter.check_request_bytes(20),
-            RateAdmissionDecision::Admit
-        );
+        assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);
         state.set_level_for_tests(MemoryPressureLevel::Soft);
         admission.apply(state.current_update(1));
 
-        assert_eq!(
-            limiter.check_request_bytes(1),
-            RateAdmissionDecision::WouldThrottle
-        );
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::WouldThrottle);
     }
 
     /// Scenario: a scope is over its local byte bucket when pressure returns to normal.
@@ -197,20 +222,14 @@ mod tests {
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let limiter = RateLimiter::new(policy(RateLimitMode::Enforce), admission.clone());
 
-        assert_eq!(
-            limiter.check_request_bytes(20),
-            RateAdmissionDecision::Admit
-        );
+        assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);
         state.set_level_for_tests(MemoryPressureLevel::Soft);
         admission.apply(state.current_update(1));
-        assert_eq!(
-            limiter.check_request_bytes(1),
-            RateAdmissionDecision::Reject
-        );
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Reject);
 
         state.set_level_for_tests(MemoryPressureLevel::Normal);
         admission.apply(state.current_update(2));
 
-        assert_eq!(limiter.check_request_bytes(1), RateAdmissionDecision::Admit);
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Admit);
     }
 }

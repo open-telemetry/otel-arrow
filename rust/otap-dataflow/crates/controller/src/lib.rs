@@ -463,6 +463,7 @@ impl<
         pipeline_group_id: &PipelineGroupId,
         pipeline_id: &PipelineId,
         pipeline_cfg: &PipelineConfig,
+        rate_limit_policy: Option<&RateLimitPolicy>,
     ) -> Result<(), String> {
         for (node_id, node_cfg) in pipeline_cfg.node_iter() {
             let urn_str = node_cfg.r#type.as_str();
@@ -496,6 +497,26 @@ impl<
                     node_id.as_ref()
                 ));
             };
+
+            if let (NodeKind::Receiver, Some(rate_limit)) = (node_cfg.kind(), rate_limit_policy) {
+                let receiver_factory = pipeline_factory
+                    .get_receiver_factory_map()
+                    .get(urn_str)
+                    .expect("receiver factory existence checked above");
+                if !receiver_factory
+                    .supported_rate_units
+                    .contains(&rate_limit.unit)
+                {
+                    return Err(format!(
+                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {:?}",
+                        urn_str,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        node_id.as_ref(),
+                        rate_limit.unit
+                    ));
+                }
+            }
 
             validate_fn(&node_cfg.config).map_err(|err| {
                 format!(
@@ -544,26 +565,13 @@ impl<
         pipeline_factory: &'static PipelineFactory<PData>,
         engine_cfg: &OtelDataflowSpec,
     ) -> Result<(), String> {
-        for (pipeline_group_id, pipeline_group) in &engine_cfg.groups {
-            for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
-                Self::validate_pipeline_components_with_factory(
-                    pipeline_factory,
-                    pipeline_group_id,
-                    pipeline_id,
-                    pipeline_cfg,
-                )?;
-            }
-        }
-
-        if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
-            let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-            let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-            let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
+        for resolved in engine_cfg.resolve().pipelines {
             Self::validate_pipeline_components_with_factory(
                 pipeline_factory,
-                &obs_group_id,
-                &obs_pipeline_id,
-                &obs_pipeline_config,
+                &resolved.pipeline_group_id,
+                &resolved.pipeline_id,
+                &resolved.pipeline,
+                resolved.policies.rate_limit.as_ref(),
             )?;
         }
 

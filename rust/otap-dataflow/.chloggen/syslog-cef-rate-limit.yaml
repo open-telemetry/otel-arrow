@@ -1,0 +1,8 @@
+change_type: enhancement
+component: pipeline
+note: Add pressure-aware messages-per-second rate limiting for the Syslog / CEF receiver.
+issues: [3484]
+subtext: >-
+  UDP datagrams and TCP newline-framed messages are counted before parsing.
+  Over-limit UDP datagrams are dropped; over-limit TCP messages are dropped
+  while keeping the connection open.

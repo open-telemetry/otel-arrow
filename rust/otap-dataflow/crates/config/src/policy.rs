@@ -339,6 +339,9 @@ pub enum RateLimitUnit {
     /// Request body bytes per interval.
     #[serde(rename = "request_bytes/second")]
     RequestBytesPerSecond,
+    /// Framed messages per interval.
+    #[serde(rename = "messages/second")]
+    MessagesPerSecond,
 }
 
 /// Process pressure threshold that activates the scoped gate.

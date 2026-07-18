@@ -63,12 +63,14 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         name: "urn:test:receiver:example",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
+        supported_rate_units: &[],
         validate_config: test_validate_config,
     },
     ReceiverFactory {
         name: "urn:otel:receiver:topic",
         create: test_receiver_create,
         wiring_contract: WiringContract::UNRESTRICTED,
+        supported_rate_units: &[],
         validate_config: test_validate_config,
     },
 ];

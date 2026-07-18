@@ -702,7 +702,7 @@ impl HttpHandler {
                 max_len,
             )?;
             if let Some(rate_limiter) = &self.rate_limiter {
-                match rate_limiter.check_request_bytes(body.len() as u64) {
+                match rate_limiter.check_units(body.len() as u64) {
                     RateAdmissionDecision::Admit => {}
                     RateAdmissionDecision::WouldThrottle => {
                         self.metrics.lock().would_refuse_rate_limit.inc();
