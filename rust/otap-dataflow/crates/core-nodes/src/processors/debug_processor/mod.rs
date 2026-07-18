@@ -9,7 +9,7 @@
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
 use self::config::{Config, DisplayMode, SignalActive, Verbosity};
-use self::metrics::{DebugPdataMetrics, DebugSignalMetrics};
+use self::metrics::DebugPdataMetrics;
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use self::sampling::Sampler;
 use async_trait::async_trait;
@@ -58,8 +58,7 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 /// processor that outputs all data received to stdout
 pub struct DebugProcessor {
     config: Config,
-    metrics: MetricSet<DebugPdataMetrics>,
-    signal_metrics: MeasurementMetricSet<DebugSignalMetrics>,
+    metrics: MeasurementMetricSet<DebugPdataMetrics>,
     compute_duration: ComputeDuration,
     sampler: Sampler,
 }
@@ -105,13 +104,11 @@ impl DebugProcessor {
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
         let metrics = DebugPdataMetrics::register(&pipeline_ctx);
-        let signal_metrics = DebugSignalMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let sampler = Sampler::new(config.sampling());
         DebugProcessor {
             config,
             metrics,
-            signal_metrics,
             compute_duration,
             sampler,
         }
@@ -120,7 +117,6 @@ impl DebugProcessor {
     /// Creates a new DebugProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
         let metrics = DebugPdataMetrics::register(&pipeline_ctx);
-        let signal_metrics = DebugSignalMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -130,7 +126,6 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             metrics,
-            signal_metrics,
             compute_duration,
             sampler,
         })
@@ -313,8 +308,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                     NodeControlMsg::CollectTelemetry {
                         mut metrics_reporter,
                     } => {
-                        _ = metrics_reporter.report(&mut self.metrics);
-                        _ = metrics_reporter.report_measurement(&mut self.signal_metrics);
+                        _ = metrics_reporter.report_measurement(&mut self.metrics);
                         self.compute_duration.report(&mut metrics_reporter);
                     }
                     _ => {}
@@ -362,7 +356,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         let attrs = metrics::SignalAttributes {
                             signal: otap_df_config::SignalType::Logs,
                         };
-                        self.signal_metrics.with(attrs).batches_consumed.add(1);
+                        self.metrics.with(attrs).batches_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
@@ -378,7 +372,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         let attrs = metrics::SignalAttributes {
                             signal: otap_df_config::SignalType::Metrics,
                         };
-                        self.signal_metrics.with(attrs).batches_consumed.add(1);
+                        self.metrics.with(attrs).batches_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
@@ -394,7 +388,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         let attrs = metrics::SignalAttributes {
                             signal: otap_df_config::SignalType::Traces,
                         };
-                        self.signal_metrics.with(attrs).batches_consumed.add(1);
+                        self.metrics.with(attrs).batches_consumed.add(1);
                     }
                 }
                 Ok(())
@@ -904,6 +898,25 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario())
             .validate(validation_procedure(output_file.clone()));
+
+        let mut expected_logs_consumed = 0;
+        telemetry_registry_handle.visit_current_metrics(|metric| {
+            if metric.descriptor.name == "processor.debug.pdata.items_consumed" {
+                if let otap_df_telemetry::registry::Snapshot::Counter(c) = &metric.snapshot {
+                    if metric
+                        .attributes
+                        .iter()
+                        .any(|kv| kv.key == "signal" && kv.value.as_str() == "logs")
+                    {
+                        expected_logs_consumed = *c.value();
+                    }
+                }
+            }
+        });
+        assert!(
+            expected_logs_consumed > 0,
+            "items_consumed for logs should have been recorded by the processor"
+        );
 
         remove_file(output_file).expect("Failed to remove file");
     }

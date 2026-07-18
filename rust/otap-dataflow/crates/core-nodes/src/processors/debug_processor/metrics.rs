@@ -13,22 +13,16 @@ pub struct SignalAttributes {
     pub signal: SignalType,
 }
 
-/// Signal-oriented metrics for the OTAP DebugProcessor
+/// Pdata-oriented metrics for the OTAP DebugProcessor
 #[metric_set(name = "processor.debug.pdata", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct DebugSignalMetrics {
+pub struct DebugPdataMetrics {
     /// Number of items consumed
     #[metric(unit = "{item}")]
     pub items_consumed: Counter<u64>,
     /// Number of batches (messages) consumed
     #[metric(unit = "{msg}")]
     pub batches_consumed: Counter<u64>,
-}
-
-/// Pdata-oriented metrics for the OTAP DebugProcessor
-#[metric_set(name = "processor.debug.pdata")]
-#[derive(Debug, Default, Clone)]
-pub struct DebugPdataMetrics {
     /// Number of events (structured logs) consumed
     #[metric(unit = "{event}")]
     pub events_consumed: Counter<u64>,
