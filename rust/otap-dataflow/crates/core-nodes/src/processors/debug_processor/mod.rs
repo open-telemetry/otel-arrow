@@ -862,9 +862,11 @@ mod tests {
                 .expect("Processor failed on Shutdown");
                 assert!(ctx.drain_pdata().await.is_empty());
 
-                ctx.process(Message::Control(otap_df_engine::control::NodeControlMsg::CollectTelemetry {
-                    metrics_reporter,
-                })).await.expect("Processor failed on CollectTelemetry");
+                ctx.process(Message::Control(
+                    otap_df_engine::control::NodeControlMsg::CollectTelemetry { metrics_reporter },
+                ))
+                .await
+                .expect("Processor failed on CollectTelemetry");
             })
         }
     }
@@ -908,22 +910,25 @@ mod tests {
             .validate(validation_procedure(output_file.clone()));
 
         let mut expected_logs_consumed = 0;
-        telemetry_registry_handle.visit_current_metrics_with_item_attrs(|desc, _attrs, dp_attrs, iter| {
-            if desc.name == "processor.debug.pdata" {
-                let has_logs_signal = dp_attrs.iter().any(|(k, v)| {
-                    *k == "signal" && v.eq_ignore_ascii_case("logs")
-                });
-                if has_logs_signal {
-                    for (field, value) in iter {
-                        if field.name == "items.consumed" {
-                            if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
-                                expected_logs_consumed = c;
+        telemetry_registry_handle.visit_current_metrics_with_item_attrs(
+            |desc, _attrs, dp_attrs, iter| {
+                if desc.name == "processor.debug.pdata" {
+                    let has_logs_signal = dp_attrs
+                        .iter()
+                        .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("logs"));
+                    if has_logs_signal {
+                        for (field, value) in iter {
+                            if field.name == "items.consumed" {
+                                if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
+                                    expected_logs_consumed = c;
+                                }
                             }
                         }
                     }
                 }
-            }
-        }, false);
+            },
+            false,
+        );
         assert!(
             expected_logs_consumed > 0,
             "items_consumed for logs should have been recorded by the processor"
