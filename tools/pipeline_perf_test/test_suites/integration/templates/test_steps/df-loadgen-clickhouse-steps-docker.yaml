@@ -83,7 +83,36 @@ steps:
         pre:
           - record_event:
               name: observation_start
+          - run_command:
+              command: >-
+                mkdir -p results/clickhouse/validation &&
+                produced=$(curl --fail --silent --show-error
+                'http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false'
+                | awk '/^logs_produced_total\{/ { total += $2 }
+                END { printf "%.0f", total }') &&
+                persisted=$(curl --fail --silent --show-error --user default:test
+                --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
+                http://localhost:8123) &&
+                test "${produced}" -gt 0 &&
+                printf '%s\n' "${produced}" >
+                results/clickhouse/validation/{{validation_file}}.produced_start &&
+                printf '%s\n' "${persisted}" >
+                results/clickhouse/validation/{{validation_file}}.persisted_start
         post:
+          - run_command:
+              command: >-
+                produced=$(curl --fail --silent --show-error
+                'http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false'
+                | awk '/^logs_produced_total\{/ { total += $2 }
+                END { printf "%.0f", total }') &&
+                persisted=$(curl --fail --silent --show-error --user default:test
+                --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
+                http://localhost:8123) &&
+                test "${produced}" -gt 0 &&
+                printf '%s\n' "${produced}" >
+                results/clickhouse/validation/{{validation_file}}.produced_stop &&
+                printf '%s\n' "${persisted}" >
+                results/clickhouse/validation/{{validation_file}}.persisted_stop
           - record_event:
               name: observation_stop
 
@@ -144,6 +173,14 @@ steps:
                 rows=$(curl --fail --silent --show-error --user default:test
                 --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
                 http://localhost:8123) && test "${rows}" -gt 0 &&
+                produced_start=$(cat results/clickhouse/validation/{{validation_file}}.produced_start) &&
+                produced_stop=$(cat results/clickhouse/validation/{{validation_file}}.produced_stop) &&
+                persisted_start=$(cat results/clickhouse/validation/{{validation_file}}.persisted_start) &&
+                persisted_stop=$(cat results/clickhouse/validation/{{validation_file}}.persisted_stop) &&
+                printf 'logs_produced_start,logs_produced_stop,logs_persisted_start,logs_persisted_stop,logs_persisted_final\n%s,%s,%s,%s,%s\n'
+                "${produced_start}" "${produced_stop}" "${persisted_start}"
+                "${persisted_stop}" "${rows}" >
+                results/clickhouse/validation/{{validation_file}} &&
                 echo "ClickHouse {{clickhouse_database}} persisted ${rows} log rows"
 
   - name: Destroy All
