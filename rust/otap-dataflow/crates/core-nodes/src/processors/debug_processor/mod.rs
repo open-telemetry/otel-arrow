@@ -884,7 +884,7 @@ mod tests {
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
 
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
 
@@ -901,15 +901,16 @@ mod tests {
             .validate(validation_procedure(output_file.clone()));
 
         let mut expected_logs_consumed = 0;
-        telemetry_registry_handle.visit_current_metrics(|metric| {
-            if metric.descriptor.name == "processor.debug.pdata.items_consumed" {
-                if let otap_df_telemetry::registry::Snapshot::Counter(c) = &metric.snapshot {
-                    if metric
-                        .attributes
-                        .iter()
-                        .any(|kv| kv.key == "signal" && kv.value.as_str() == "logs")
-                    {
-                        expected_logs_consumed = *c.value();
+        telemetry_registry_handle.visit_current_metrics(|desc, attrs, iter| {
+            if desc.name == "processor.debug.pdata.items_consumed" {
+                let has_logs_signal = attrs
+                    .iter_attributes()
+                    .any(|(k, v)| k == "signal" && v.to_string_value().eq_ignore_ascii_case("logs"));
+                if has_logs_signal {
+                    for (_field, value) in iter {
+                        if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
+                            expected_logs_consumed = c;
+                        }
                     }
                 }
             }
