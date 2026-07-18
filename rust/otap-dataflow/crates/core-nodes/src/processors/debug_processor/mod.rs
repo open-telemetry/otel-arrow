@@ -617,7 +617,6 @@ mod tests {
             span::SpanKind, status::StatusCode,
         },
     };
-    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::Value;
     use std::collections::HashSet;
@@ -636,6 +635,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -658,7 +658,9 @@ mod tests {
     }
 
     /// Test closure that simulates a typical processor scenario.
-    fn scenario() -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+    fn scenario(
+        metrics_reporter: otap_df_telemetry::reporter::MetricsReporter,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         move |mut ctx| {
             Box::pin(async move {
                 ctx.process(Message::timer_tick_ctrl_msg())
@@ -859,6 +861,10 @@ mod tests {
                 .await
                 .expect("Processor failed on Shutdown");
                 assert!(ctx.drain_pdata().await.is_empty());
+
+                ctx.process(Message::Control(otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                })).await.expect("Processor failed on CollectTelemetry");
             })
         }
     }
@@ -883,7 +889,7 @@ mod tests {
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
 
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -895,20 +901,21 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure(output_file.clone()));
 
         let mut expected_logs_consumed = 0;
-        telemetry_registry_handle.visit_current_metrics(|desc, attrs, iter| {
+        telemetry_registry_handle.visit_current_metrics_with_item_attrs(|desc, _attrs, dp_attrs, iter| {
             if desc.name == "processor.debug.pdata" {
-                let has_logs_signal = attrs.iter_attributes().any(|(k, v)| {
-                    k == "signal" && v.to_string_value().eq_ignore_ascii_case("logs")
+                let has_logs_signal = dp_attrs.iter().any(|(k, v)| {
+                    *k == "signal" && v.eq_ignore_ascii_case("logs")
                 });
                 if has_logs_signal {
                     for (field, value) in iter {
-                        if field.name == "items_consumed" {
+                        if field.name == "items.consumed" {
                             if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
                                 expected_logs_consumed = c;
                             }
@@ -916,7 +923,7 @@ mod tests {
                     }
                 }
             }
-        });
+        }, false);
         assert!(
             expected_logs_consumed > 0,
             "items_consumed for logs should have been recorded by the processor"
@@ -944,7 +951,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -955,9 +962,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -982,7 +990,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -993,9 +1001,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1006,6 +1015,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -1041,7 +1051,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1052,9 +1062,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure_logs_only(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1065,6 +1076,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -1100,7 +1112,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1111,9 +1123,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure_metrics_only(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1124,6 +1137,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -1149,6 +1163,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -1178,6 +1193,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -1218,7 +1234,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1229,9 +1245,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure_spans_only(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1256,7 +1273,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1267,9 +1284,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1304,7 +1322,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1315,9 +1333,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure_include_attribute(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1352,7 +1371,7 @@ mod tests {
             sampling,
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1363,9 +1382,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure_exclude_attribute(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1376,6 +1396,7 @@ mod tests {
     ) -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |_| {
             Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let file = File::open(output_file).expect("failed to open file");
                 let reader = read_to_string(BufReader::new(file)).expect("failed to get string");
 
@@ -1412,7 +1433,7 @@ mod tests {
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
 
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
@@ -1424,9 +1445,10 @@ mod tests {
             test_runtime.config(),
         );
 
+        let metrics_reporter = test_runtime.metrics_reporter();
         test_runtime
             .set_processor(processor)
-            .run_test(scenario())
+            .run_test(scenario(metrics_reporter))
             .validate(validation_procedure_zap_sampling(output_file.clone()));
 
         remove_file(output_file).expect("Failed to remove file");
@@ -1458,7 +1480,7 @@ mod tests {
         );
         let user_config = Arc::new(NodeUserConfig::new_processor_config(DEBUG_PROCESSOR_URN));
 
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let telemetry_registry_handle = test_runtime.metrics_registry();
         let controller_ctx = ControllerContext::new(telemetry_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
