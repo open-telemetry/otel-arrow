@@ -535,6 +535,17 @@ mod tests {
     }
 
     #[test]
+    fn test_uses_its_provider() {
+        use ProviderMode::*;
+        assert!(!providers(Noop, Noop, Noop, Noop).uses_its_provider());
+        assert!(!providers(ConsoleAsync, ConsoleAsync, Noop, ConsoleDirect).uses_its_provider());
+        assert!(providers(ITS, Noop, Noop, Noop).uses_its_provider());
+        assert!(providers(Noop, ITS, Noop, Noop).uses_its_provider());
+        assert!(providers(Noop, Noop, Noop, ITS).uses_its_provider());
+        assert!(!providers(Noop, Noop, ITS, Noop).uses_its_provider());
+    }
+
+    #[test]
     fn test_events_default_is_empty() {
         let config = LogsConfig::default();
         assert!(config.events.is_empty());
