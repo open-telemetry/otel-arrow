@@ -9,7 +9,7 @@
 //! ToDo: Use OTLP Views instead of the OTLP Request structs
 
 use self::config::{Config, DisplayMode, SignalActive, Verbosity};
-use self::metrics::DebugPdataMetrics;
+use self::metrics::{DebugPdataMetrics, DebugSignalMetrics};
 use self::output::{DebugOutput, DebugOutputPorts, DebugOutputWriter, OutputMode};
 use self::sampling::Sampler;
 use async_trait::async_trait;
@@ -36,7 +36,7 @@ use otap_df_pdata::proto::opentelemetry::{
     metrics::v1::{MetricsData, metric::Data},
     trace::v1::TracesData,
 };
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use prost::Message as _;
 use serde_json::Value;
 use std::sync::Arc;
@@ -59,6 +59,7 @@ pub const DEBUG_PROCESSOR_URN: &str = "urn:otel:processor:debug";
 pub struct DebugProcessor {
     config: Config,
     metrics: MetricSet<DebugPdataMetrics>,
+    signal_metrics: MeasurementMetricSet<DebugSignalMetrics>,
     compute_duration: ComputeDuration,
     sampler: Sampler,
 }
@@ -103,12 +104,14 @@ impl DebugProcessor {
     #[must_use]
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let metrics = DebugPdataMetrics::register(&pipeline_ctx);
+        let signal_metrics = DebugSignalMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let sampler = Sampler::new(config.sampling());
         DebugProcessor {
             config,
             metrics,
+            signal_metrics,
             compute_duration,
             sampler,
         }
@@ -116,7 +119,8 @@ impl DebugProcessor {
 
     /// Creates a new DebugProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<DebugPdataMetrics>();
+        let metrics = DebugPdataMetrics::register(&pipeline_ctx);
+        let signal_metrics = DebugSignalMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -126,6 +130,7 @@ impl DebugProcessor {
         Ok(DebugProcessor {
             config,
             metrics,
+            signal_metrics,
             compute_duration,
             sampler,
         })
@@ -309,6 +314,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         mut metrics_reporter,
                     } => {
                         _ = metrics_reporter.report(&mut self.metrics);
+                        _ = metrics_reporter.report_measurement(&mut self.signal_metrics);
                         self.compute_duration.report(&mut metrics_reporter);
                     }
                     _ => {}
@@ -353,7 +359,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             })?;
                             self.process_log(req, debug_output.as_mut()).await?;
                         }
-                        self.metrics.logs_consumed.add(1);
+                        let attrs = metrics::SignalAttributes {
+                            signal: otap_df_config::SignalType::Logs,
+                        };
+                        self.signal_metrics.with(attrs).batches_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
@@ -366,7 +375,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             })?;
                             self.process_metric(req, debug_output.as_mut()).await?;
                         }
-                        self.metrics.metrics_consumed.add(1);
+                        let attrs = metrics::SignalAttributes {
+                            signal: otap_df_config::SignalType::Metrics,
+                        };
+                        self.signal_metrics.with(attrs).batches_consumed.add(1);
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
@@ -379,7 +391,10 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                             })?;
                             self.process_trace(req, debug_output.as_mut()).await?;
                         }
-                        self.metrics.traces_consumed.add(1);
+                        let attrs = metrics::SignalAttributes {
+                            signal: otap_df_config::SignalType::Traces,
+                        };
+                        self.signal_metrics.with(attrs).batches_consumed.add(1);
                     }
                 }
                 Ok(())
@@ -429,7 +444,13 @@ impl DebugProcessor {
             }
         }
 
-        self.metrics.metric_signals_consumed.add(metrics as u64);
+        let attrs = metrics::SignalAttributes {
+            signal: otap_df_config::SignalType::Metrics,
+        };
+        self.signal_metrics
+            .with(attrs)
+            .items_consumed
+            .add(metrics as u64);
         self.metrics
             .metric_datapoints_consumed
             .add(data_points as u64);
@@ -480,7 +501,13 @@ impl DebugProcessor {
                 }
             }
         }
-        self.metrics.span_signals_consumed.add(spans as u64);
+        let attrs = metrics::SignalAttributes {
+            signal: otap_df_config::SignalType::Traces,
+        };
+        self.signal_metrics
+            .with(attrs)
+            .items_consumed
+            .add(spans as u64);
         self.metrics.span_events_consumed.add(events as u64);
         self.metrics.span_links_consumed.add(links as u64);
 
@@ -526,7 +553,13 @@ impl DebugProcessor {
                 }
             }
         }
-        self.metrics.log_signals_consumed.add(log_records as u64);
+        let attrs = metrics::SignalAttributes {
+            signal: otap_df_config::SignalType::Logs,
+        };
+        self.signal_metrics
+            .with(attrs)
+            .items_consumed
+            .add(log_records as u64);
         self.metrics.events_consumed.add(events);
 
         let report_basic = format!(
