@@ -84,13 +84,13 @@ impl LogLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct LoggingProviders {
     /// Provider mode for non-engine threads. This defines the global Tokio
-    /// `tracing` subscriber. Default is ConsoleAsync.
+    /// `tracing` subscriber. Defaults to ConsoleAsync.
     #[serde(default = "default_global_provider")]
     pub global: ProviderMode,
 
-    /// Provider mod for engine/pipeline threads. This defines how the
+    /// Provider mode for engine/pipeline threads. This defines how the
     /// engine thread / core sets the Tokio `tracing`
-    /// subscriber. Default is ConsoleAsync. Internal logs will be flushed
+    /// subscriber. Defaults to ConsoleAsync. Internal logs will be flushed
     /// by either the Internal Telemetry Receiver or the main pipeline
     /// controller.
     #[serde(default = "default_engine_provider")]

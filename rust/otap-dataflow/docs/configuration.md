@@ -377,34 +377,43 @@ engine:
 ```
 
 An observability pipeline reads internal telemetry and exports it like any other
-pipeline. Select the `its` metrics provider to route registry-backed internal
-metrics through this pipeline instead of an OpenTelemetry SDK reader:
+pipeline. The engine installs one by default: metrics use the noop exporter,
+and logs explicitly configured to use `its` use the console exporter. Global
+and engine logs retain their `console_async` defaults and therefore bypass this
+pipeline unless configured otherwise. Override it to send either signal
+elsewhere:
 
 ```yaml
 engine:
-    telemetry:
-        metrics:
-            provider: its
     observability:
         pipeline:
             nodes:
                 internal:
                     type: receiver:internal_telemetry
                     config: {}
-                console:
-                    type: exporter:console
+                otlp:
+                    type: exporter:otlp_grpc
                     config: {}
             connections:
                 - from: internal
-                  to: console
+                  to: otlp
 ```
 
 Observability pipelines use the same node and connection model as regular
 pipelines. They support `channel_capacity`, `health`, and `telemetry` policies,
-but resource policies are intentionally not supported there. ITS metrics
-require exactly one `receiver:internal_telemetry` in this pipeline. The
-`readers` and `views` metrics settings are valid only with the default
-`opentelemetry` provider.
+but resource policies are intentionally not supported there. The pipeline is
+mandatory and must contain exactly one connected internal telemetry receiver.
+The receiver defaults to `signals: [logs, metrics]`, while either signal can be
+selected independently. Logs must remain enabled
+when a log provider uses `its`. Optional `metrics.interval` and `metrics.views`
+fields customize periodic export when metrics are selected. A logs-only
+receiver drains the private ITS metric accumulator without converting or
+emitting OTLP metrics, preserving registry cleanup and admin endpoint data.
+
+The previous `engine.telemetry.metrics` SDK configuration is no longer
+supported. For Prometheus scraping, bind `engine.http_admin` and use the fixed
+`/api/v1/metrics` path. This endpoint does not apply receiver views and does not
+reset the independent ITS export accumulator.
 
 For exact engine-level fields, see
 [Engine Section](configuration-model.md#engine-section).

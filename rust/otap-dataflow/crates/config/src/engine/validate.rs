@@ -4,33 +4,10 @@
 //! Validation phase for [`OtelDataflowSpec`].
 
 use crate::engine::{
-    ENGINE_CONFIG_VERSION_V1, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID,
-    SYSTEM_PIPELINE_GROUP_ID,
+    ENGINE_CONFIG_VERSION_V1, INTERNAL_TELEMETRY_RECEIVER_URN, OtelDataflowSpec,
+    SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use crate::error::Error;
-
-const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
-
-/// Detects receiver-level settings that actually enable or transform metrics.
-/// Empty `metrics: {}` and `views: []` blocks remain compatible with logs-only
-/// ITS configurations, matching the receiver's typed `MetricsConfig::is_empty`
-/// semantics without introducing a dependency on the core-nodes crate.
-fn has_internal_receiver_metrics_config(config: &serde_json::Value) -> bool {
-    let Some(metrics) = config
-        .as_object()
-        .and_then(|config| config.get("metrics"))
-        .and_then(serde_json::Value::as_object)
-    else {
-        return false;
-    };
-
-    metrics
-        .get("interval")
-        .is_some_and(|interval| !interval.is_null())
-        || metrics
-            .get("views")
-            .is_some_and(|views| views.as_array().is_none_or(|views| !views.is_empty()))
-}
 
 impl OtelDataflowSpec {
     /// Validates the engine configuration and returns a [`Error::InvalidConfiguration`] error
@@ -68,84 +45,62 @@ impl OtelDataflowSpec {
             errors.push(e);
         }
 
-        if self.engine.telemetry.metrics.uses_its_provider() {
-            match self.engine.observability.pipeline.as_ref() {
-                Some(pipeline) => {
-                    let receivers = pipeline
-                        .nodes
-                        .iter()
-                        .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
-                        .map(|(node_id, _)| node_id)
-                        .collect::<Vec<_>>();
-                    let receiver_count = receivers.len();
-                    if receiver_count != 1 {
-                        errors.push(Error::InvalidUserConfig {
-                            error: format!(
-                                "engine.telemetry.metrics.provider 'its' requires exactly one internal telemetry receiver in engine.observability.pipeline; found {receiver_count}"
-                            ),
-                        });
-                    } else {
-                        let mut pruned_pipeline = pipeline.clone().into_pipeline_config();
-                        let removed_nodes = pruned_pipeline.remove_unconnected_nodes();
-                        if removed_nodes
-                            .iter()
-                            .any(|(node_id, _)| node_id == receivers[0])
-                        {
-                            errors.push(Error::InvalidUserConfig {
-                                error: format!(
-                                    "engine.telemetry.metrics.provider 'its' requires internal telemetry receiver '{}' to remain connected to a valid downstream path in engine.observability.pipeline",
-                                    receivers[0]
-                                ),
-                            });
-                        }
-                    }
-                }
-                None => errors.push(Error::InvalidUserConfig {
-                    error: "engine.telemetry.metrics.provider 'its' requires engine.observability.pipeline"
-                        .to_owned(),
-                }),
-            }
-        }
-
-        if let Some(pipeline) = self.engine.observability.pipeline.as_ref() {
-            for (node_id, node) in pipeline
-                .nodes
+        let observability_pipeline = &self.engine.observability.pipeline;
+        let internal_receivers = observability_pipeline
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
+            .collect::<Vec<_>>();
+        if internal_receivers.len() != 1 {
+            errors.push(Error::InvalidUserConfig {
+                error: format!(
+                    "engine.observability.pipeline requires exactly one internal telemetry receiver; found {}",
+                    internal_receivers.len()
+                ),
+            });
+        } else if let Some((receiver_id, receiver)) = internal_receivers.first() {
+            let mut pruned_pipeline = observability_pipeline.clone().into_pipeline_config();
+            let removed_nodes = pruned_pipeline.remove_unconnected_nodes();
+            if removed_nodes
                 .iter()
-                .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
+                .any(|(node_id, _)| node_id == *receiver_id)
             {
-                if !self.engine.telemetry.metrics.uses_its_provider()
-                    && has_internal_receiver_metrics_config(&node.config)
-                {
-                    errors.push(Error::InvalidUserConfig {
-                        error: format!(
-                            "internal telemetry receiver '{node_id}' metrics configuration requires engine internal metrics to use the ITS provider"
-                        ),
-                    });
-                }
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "internal telemetry receiver '{receiver_id}' must remain connected to a valid downstream path in engine.observability.pipeline"
+                    ),
+                });
+            }
+            if self.engine.telemetry.uses_its_provider()
+                && !internal_receiver_logs_enabled(&receiver.config)
+            {
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "internal telemetry receiver '{receiver_id}' must enable logs while the global, engine, or admin telemetry log provider uses ITS"
+                    ),
+                });
             }
         }
 
-        if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
-            if let Some(policies) = &observability_pipeline.policies {
-                errors.extend(
-                    policies
-                        .validation_errors("engine.observability.pipeline.policies")
-                        .into_iter()
-                        .map(|error| Error::InvalidUserConfig { error }),
-                );
-            }
-            if observability_pipeline.nodes.is_empty() {
-                errors.push(Error::InvalidUserConfig {
-                    error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
-                });
-            } else {
-                let pipeline_cfg = observability_pipeline.into_pipeline_config();
-                if let Err(e) = pipeline_cfg.validate(
-                    &SYSTEM_PIPELINE_GROUP_ID.into(),
-                    &SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
-                ) {
-                    errors.push(e);
-                }
+        if let Some(policies) = &observability_pipeline.policies {
+            errors.extend(
+                policies
+                    .validation_errors("engine.observability.pipeline.policies")
+                    .into_iter()
+                    .map(|error| Error::InvalidUserConfig { error }),
+            );
+        }
+        if observability_pipeline.nodes.is_empty() {
+            errors.push(Error::InvalidUserConfig {
+                error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
+            });
+        } else {
+            let pipeline_cfg = observability_pipeline.clone().into_pipeline_config();
+            if let Err(e) = pipeline_cfg.validate(
+                &SYSTEM_PIPELINE_GROUP_ID.into(),
+                &SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+            ) {
+                errors.push(e);
             }
         }
 
@@ -196,5 +151,15 @@ impl OtelDataflowSpec {
         } else {
             Ok(())
         }
+    }
+}
+
+fn internal_receiver_logs_enabled(config: &serde_json::Value) -> bool {
+    match config.as_object().and_then(|config| config.get("signals")) {
+        None => true,
+        Some(serde_json::Value::Array(signals)) => {
+            signals.iter().any(|signal| signal.as_str() == Some("logs"))
+        }
+        Some(_) => false,
     }
 }
