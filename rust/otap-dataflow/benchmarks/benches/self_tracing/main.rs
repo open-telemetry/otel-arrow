@@ -304,7 +304,21 @@ fn emit_disabled_prefix_miss() {
     );
 }
 
-/// Measures one producer-side emission while an unbounded noop consumer drains
+fn emit_enabled_deny_miss() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_deny_miss",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_disabled_deny_match() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_deny_match",
+        value = std::hint::black_box(42)
+    );
+}
+
+/// Measures one producer-side emission while a bounded noop consumer drains
 /// accepted events. The consumer prevents backpressure but is not timed.
 fn run_its_emission_bench(
     b: &mut criterion::Bencher<'_>,
@@ -313,7 +327,7 @@ fn run_its_emission_bench(
     emit: fn(),
     expected_enabled: bool,
 ) {
-    let (sender, receiver) = flume::unbounded();
+    let (sender, receiver) = flume::bounded(4096);
     let reporter = ObservedEventReporter::new(
         SendPolicy {
             blocking_timeout: None,
@@ -336,8 +350,7 @@ fn run_its_emission_bench(
         ),
         None => tracing::Dispatch::new(
             tracing_subscriber::registry()
-                .with(EnvFilter::new(level))
-                .with(ItsNoopLayer { reporter }),
+                .with(ItsNoopLayer { reporter }.with_filter(EnvFilter::new(level))),
         ),
     };
 
@@ -422,26 +435,90 @@ fn bench_its_emission(c: &mut Criterion) {
             false,
         );
     });
+    _ = group.bench_function("enabled/event_filter_deny_miss", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::denying(["benchmark.disabled_deny_match"])),
+            emit_enabled_deny_miss,
+            true,
+        );
+    });
+    _ = group.bench_function("disabled/event_filter_deny_match", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::denying(["benchmark.disabled_deny_match"])),
+            emit_disabled_deny_match,
+            false,
+        );
+    });
 
     group.finish();
 }
 
+struct PolicyUpdateNoopLayer;
+
+impl<S> Layer<S> for PolicyUpdateNoopLayer where S: Subscriber {}
+
+fn register_policy_update_callsites() {
+    tracing::info!(name: "benchmark.event_0", value = 0);
+    tracing::info!(name: "benchmark.event_1", value = 1);
+    tracing::info!(name: "benchmark.event_2", value = 2);
+    tracing::info!(name: "benchmark.event_3", value = 3);
+    tracing::info!(name: "benchmark.event_4", value = 4);
+    tracing::info!(name: "benchmark.event_5", value = 5);
+    tracing::info!(name: "benchmark.event_6", value = 6);
+    tracing::info!(name: "benchmark.event_7", value = 7);
+}
+
+/// Measures total policy replacement cost for the callsites registered in this
+/// benchmark binary. Production update cost also scales with the collector
+/// binary's total registered callsite count.
 fn bench_event_filter_policy_update(c: &mut Criterion) {
     let mut group = c.benchmark_group("event_filter_policy_update");
 
     for pattern_count in [1, 10, 100] {
-        let patterns = (0..pattern_count)
-            .map(|index| format!("benchmark.event_{index}"))
-            .collect::<Vec<_>>();
-        let (_filter, handle) = EventNameFilter::new();
+        for (pattern_kind, patterns) in [
+            (
+                "exact",
+                (0..pattern_count)
+                    .map(|index| format!("benchmark.event_{index}"))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "prefix",
+                (0..pattern_count)
+                    .map(|index| format!("benchmark.event_{index}*"))
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            for mode in ["allow", "deny"] {
+                let (filter, handle) = EventNameFilter::new();
+                let subscriber = tracing_subscriber::registry()
+                    .with(PolicyUpdateNoopLayer.with_filter(EnvFilter::new("info").and(filter)));
+                let dispatch = tracing::Dispatch::new(subscriber);
 
-        _ = group.bench_with_input(
-            BenchmarkId::new("exact_patterns", pattern_count),
-            &patterns,
-            |b, patterns| {
-                b.iter(|| handle.allow(std::hint::black_box(patterns)));
-            },
-        );
+                _ = group.bench_with_input(
+                    BenchmarkId::new(format!("{mode}_{pattern_kind}"), pattern_count),
+                    &patterns,
+                    |b, patterns| {
+                        tracing::dispatcher::with_default(&dispatch, || {
+                            register_policy_update_callsites();
+                            match mode {
+                                "allow" => {
+                                    b.iter(|| handle.allow(std::hint::black_box(patterns)));
+                                }
+                                "deny" => {
+                                    b.iter(|| handle.deny(std::hint::black_box(patterns)));
+                                }
+                                _ => unreachable!("benchmark mode is fixed"),
+                            }
+                        });
+                    },
+                );
+            }
+        }
     }
 
     group.finish();
