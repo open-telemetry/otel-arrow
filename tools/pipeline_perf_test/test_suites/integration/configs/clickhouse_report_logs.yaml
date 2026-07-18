@@ -1,3 +1,8 @@
+load_tables:
+  clickhouse_validation:
+    path_template: 'results/clickhouse/validation/{{ metadata["test.name"] }}.csv'
+    format: csv
+
 queries:
   - name: Calculate observation window
     sql: |
@@ -84,9 +89,38 @@ queries:
       WHERE metric_name = 'container.cpu.allocated'
       GROUP BY "metric_attributes.component_name";
 
+  - name: Calculate persisted log loss
+    sql: |
+      CREATE TABLE log_loss AS
+      SELECT
+        logs_produced_stop - logs_produced_start AS logs_produced,
+        logs_persisted_stop - logs_persisted_start AS logs_persisted,
+        logs_persisted_final,
+        (logs_produced_stop - logs_produced_start) -
+          (logs_persisted_stop - logs_persisted_start) AS logs_lost,
+        CASE
+          WHEN logs_produced_stop > logs_produced_start THEN
+            ((logs_produced_stop - logs_produced_start) -
+              (logs_persisted_stop - logs_persisted_start)) * 1.0 /
+              (logs_produced_stop - logs_produced_start)
+          ELSE NULL
+        END AS logs_lost_pct
+      FROM clickhouse_validation;
+
   - name: Create GitHub Actions benchmark data
     sql: |
       CREATE TABLE gh_actions_benchmark AS
+      SELECT
+        'dropped_logs_percentage' AS name,
+        '%' AS unit,
+        CAST(logs_lost_pct AS FLOAT) * 100 AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - Dropped Logs %' AS extra
+      FROM log_loss
+      CROSS JOIN metadata_row
+
+      UNION ALL
+
       SELECT
         metric_name || '_rate' AS name,
         'rows/sec' AS unit,
@@ -142,5 +176,7 @@ result_tables:
     description: Dataflow engine and ClickHouse resource usage.
   - name: component_core_counts
     description: Allocated CPU cores used to normalize component CPU utilization.
+  - name: log_loss
+    description: Final generated and ClickHouse-persisted rows with calculated loss.
   - name: gh_actions_benchmark
     description: Metrics formatted for github-action-benchmark.

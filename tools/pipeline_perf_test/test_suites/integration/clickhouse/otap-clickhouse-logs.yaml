@@ -70,6 +70,7 @@ tests:
         max_batch_size: 512
         signals_per_second: 50000
         observation_interval: 60
+        validation_file: OTAP-CLICKHOUSE-LOGS-SYNC.csv
         result_dir: clickhouse
   - name: OTAP-CLICKHOUSE-LOGS-ASYNC
     from_template:
@@ -82,4 +83,5 @@ tests:
         max_batch_size: 512
         signals_per_second: 100000
         observation_interval: 60
+        validation_file: OTAP-CLICKHOUSE-LOGS-ASYNC.csv
         result_dir: clickhouse
