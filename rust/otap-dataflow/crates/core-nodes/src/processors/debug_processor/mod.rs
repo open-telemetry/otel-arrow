@@ -441,11 +441,12 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Metrics,
         };
-        self.signal_metrics
+        self.metrics
             .with(attrs)
             .items_consumed
             .add(metrics as u64);
         self.metrics
+            .with(attrs)
             .metric_datapoints_consumed
             .add(data_points as u64);
 
@@ -498,12 +499,12 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Traces,
         };
-        self.signal_metrics
+        self.metrics
             .with(attrs)
             .items_consumed
             .add(spans as u64);
-        self.metrics.span_events_consumed.add(events as u64);
-        self.metrics.span_links_consumed.add(links as u64);
+        self.metrics.with(attrs).span_events_consumed.add(events as u64);
+        self.metrics.with(attrs).span_links_consumed.add(links as u64);
 
         let report_basic = format!(
             "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
@@ -550,11 +551,11 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Logs,
         };
-        self.signal_metrics
+        self.metrics
             .with(attrs)
             .items_consumed
             .add(log_records as u64);
-        self.metrics.events_consumed.add(events);
+        self.metrics.with(attrs).events_consumed.add(events);
 
         let report_basic = format!(
             "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
