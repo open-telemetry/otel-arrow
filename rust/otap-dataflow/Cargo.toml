@@ -319,6 +319,7 @@ contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
+kafka-receiver = ["otap-df-contrib-nodes/kafka-receiver"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
 clickhouse-exporter = ["otap-df-contrib-nodes/clickhouse-exporter"]

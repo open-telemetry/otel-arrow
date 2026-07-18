@@ -53,6 +53,7 @@ Receivers ingest data into a pipeline.
 
 | Type                                                                                | Feature                | Stability    | Description                                      |
 | ----------------------------------------------------------------------------------- | ---------------------- | ------------ | ------------------------------------------------ |
+| [`receiver:kafka`](src/receivers/kafka_receiver/README.md)                          | `kafka-receiver`       | Experimental | Consumes traces, metrics, and logs from Kafka.   |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md)              | `user_events-receiver` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
 
 ## Processors

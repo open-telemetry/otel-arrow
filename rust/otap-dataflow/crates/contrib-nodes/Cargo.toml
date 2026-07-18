@@ -89,6 +89,11 @@ tracepoint_decode = { workspace = true, optional = true }
 
 [features]
 etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
+kafka-receiver = [
+    "dep:rdkafka",
+    "dep:smallvec",
+    "dep:regex",
+]
 kafka-exporter = [
     "dep:rdkafka",
     "dep:futures-channel",
@@ -102,6 +107,7 @@ aws = [
 ]
 contrib-receivers = [
     "etw-receiver",
+    "kafka-receiver",
     "user_events-receiver",
 ]
 user_events-receiver = [
