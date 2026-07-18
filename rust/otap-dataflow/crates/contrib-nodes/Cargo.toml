@@ -93,6 +93,7 @@ kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",
+]
 kafka-exporter = [
     "dep:rdkafka",
     "dep:futures-channel",
