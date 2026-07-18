@@ -2063,6 +2063,28 @@ engine:
     assert!(!event_filter_handle.allows("receiver.start"));
 }
 
+/// Scenario: a full-config reconciliation sets both EventName policy modes.
+/// Guarantees: validation rejects the request without changing the live filter.
+#[test]
+fn reconcile_engine_config_rejects_invalid_event_filter_config() {
+    let config = empty_engine_config();
+    let (runtime, event_filter_handle) = test_runtime_with_event_filter(&config);
+    let mut desired = config.clone();
+    desired.engine.telemetry.logs.events.allow = vec!["channel.*".into()];
+    desired.engine.telemetry.logs.events.deny = vec!["channel.drop".into()];
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("conflicting EventName policies should be rejected");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("logs.events cannot set both 'allow' and 'deny'")
+    ));
+    assert!(event_filter_handle.allows("channel.drop"));
+}
+
 /// Scenario: a full-config reconciliation request omits live stopped
 /// resources with `delete_missing` enabled.
 /// Guarantees: reconciliation deletes the omitted pipeline and then the
