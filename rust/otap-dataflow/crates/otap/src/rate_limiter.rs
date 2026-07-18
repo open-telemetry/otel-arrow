@@ -188,4 +188,29 @@ mod tests {
             RateAdmissionDecision::WouldThrottle
         );
     }
+
+    /// Scenario: a scope is over its local byte bucket when pressure returns to normal.
+    /// Guarantees: pressure recovery stops enforced rate rejections even before the bucket refills.
+    #[test]
+    fn normal_pressure_recovers_from_enforced_rejection() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let limiter = RateLimiter::new(policy(RateLimitMode::Enforce), admission.clone());
+
+        assert_eq!(
+            limiter.check_request_bytes(20),
+            RateAdmissionDecision::Admit
+        );
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+        assert_eq!(
+            limiter.check_request_bytes(1),
+            RateAdmissionDecision::Reject
+        );
+
+        state.set_level_for_tests(MemoryPressureLevel::Normal);
+        admission.apply(state.current_update(2));
+
+        assert_eq!(limiter.check_request_bytes(1), RateAdmissionDecision::Admit);
+    }
 }

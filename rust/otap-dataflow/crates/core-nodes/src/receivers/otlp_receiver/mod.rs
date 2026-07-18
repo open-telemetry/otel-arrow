@@ -835,6 +835,10 @@ mod tests {
 
     use otap_df_channel::error::RecvError;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::policy::{
+        MemoryLimiterMode, RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure,
+        RateLimitUnit,
+    };
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     };
@@ -858,6 +862,7 @@ mod tests {
     use otap_df_otap::compression::CompressionMethod;
     use otap_df_otap::otap_grpc::otlp::server_new::AckSlot;
     use otap_df_otap::otlp_http::RpcStatus;
+    use otap_df_otap::rate_limiter::RateLimiter;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
@@ -3038,6 +3043,92 @@ mod tests {
             .set_receiver(receiver)
             .run_test(nack_scenario)
             .run_validation_concurrent(nack_validation);
+    }
+
+    /// Scenario: an OTLP gRPC request exceeds the receiver-local rate bucket during soft pressure.
+    /// Guarantees: tonic clients observe ResourceExhausted with retry pushback metadata.
+    #[test]
+    fn test_otlp_grpc_rate_limit_rejection() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let memory_pressure_state = pipeline_ctx.memory_pressure_state();
+        memory_pressure_state
+            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+        memory_pressure_state.configure(
+            otap_df_engine::memory_limiter::MemoryPressureBehaviorConfig {
+                retry_after_secs: 7,
+                fail_readiness_on_hard: true,
+                mode: MemoryLimiterMode::Enforce,
+            },
+        );
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        let rate_limiter = RateLimiter::new(
+            RateLimitPolicy {
+                mode: RateLimitMode::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytesPerSecond,
+                allow: 1,
+                interval: Duration::from_secs(1),
+                burst: Some(1),
+                pressure: RateLimitPressure::Soft,
+            },
+            admission_state.clone(),
+        );
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: test_config(addr),
+                metrics: Arc::new(Mutex::new(
+                    pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+                )),
+                rate_limiter: Some(rate_limiter),
+                global_max_concurrent_requests: None,
+                admission_state,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server");
+
+                let status = logs_client
+                    .export(create_logs_service_request())
+                    .await
+                    .expect_err("rate limit should reject request");
+
+                assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+                assert_eq!(status.message(), "rate limit");
+                assert_eq!(
+                    status
+                        .metadata()
+                        .get("grpc-retry-pushback-ms")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("7000")
+                );
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
     }
 
     #[test]

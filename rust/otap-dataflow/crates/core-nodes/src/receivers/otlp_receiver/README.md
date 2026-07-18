@@ -99,6 +99,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.otlp.requests_completed` | `{requests}` | Number of OTLP RPCs completed (success + nack). |
 | `receiver.otlp.rejected_requests` | `{requests}` | Number of OTLP RPCs rejected before entering the pipeline (e.g. slot exhaustion). |
 | `receiver.otlp.refused_memory_pressure` | `{requests}` | Number of OTLP RPCs rejected specifically because process-wide memory pressure was active. |
+| `receiver.otlp.refused_rate_limit` | `{requests}` | Number of OTLP RPCs rejected specifically because pressure-aware rate limiting refused the request. |
+| `receiver.otlp.would_refuse_rate_limit` | `{requests}` | Number of OTLP RPCs that would have been rejected by pressure-aware rate limiting in enforce mode, but were admitted in observe-only mode. |
 | `receiver.otlp.transport_errors` | `{errors}` | Number of transport-level errors surfaced by tonic/server. |
 | `receiver.otlp.request_bytes` | `By` | Total decompressed payload bytes for successfully received OTLP requests. |
 

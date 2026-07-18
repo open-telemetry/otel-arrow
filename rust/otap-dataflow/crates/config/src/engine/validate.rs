@@ -203,26 +203,15 @@ impl OtelDataflowSpec {
                 });
             }
             for (pipeline_id, pipeline) in &pipeline_group.pipelines {
-                let rate_limit_levels = usize::from(self.policies.rate_limit.is_some())
-                    + usize::from(
-                        pipeline_group
-                            .policies
-                            .as_ref()
-                            .is_some_and(|policies| policies.rate_limit.is_some()),
-                    )
-                    + usize::from(
-                        pipeline
-                            .policies()
-                            .is_some_and(|policies| policies.rate_limit.is_some()),
-                    );
-                if rate_limit_levels > 1 {
-                    errors.push(Error::InvalidUserConfig {
-                        error: format!(
-                            "groups.{pipeline_group_id}.pipelines.{pipeline_id} has rate_limit configured at multiple policy levels; v1 supports only one effective pressure-aware rate limit per receiver"
-                        ),
-                    });
-                }
-                if rate_limit_levels > 0 {
+                let rate_limit_configured = self.policies.rate_limit.is_some()
+                    || pipeline_group
+                        .policies
+                        .as_ref()
+                        .is_some_and(|policies| policies.rate_limit.is_some())
+                    || pipeline
+                        .policies()
+                        .is_some_and(|policies| policies.rate_limit.is_some());
+                if rate_limit_configured {
                     for (node_id, node) in pipeline
                         .nodes()
                         .iter()
