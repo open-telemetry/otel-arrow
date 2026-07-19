@@ -2202,6 +2202,81 @@ groups:
     assert_eq!(runtime.engine_config_snapshot(), config);
 }
 
+/// Scenario: full-config reconciliation changes the process-wide memory limiter policy.
+/// Guarantees: live reconciliation rejects startup-owned sampler changes before mutating committed config.
+#[test]
+fn reconcile_engine_config_rejects_runtime_memory_limiter_mutation() {
+    let config = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: rss
+      check_interval: 1s
+      soft_limit: "64 MiB"
+      hard_limit: "96 MiB"
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("config should parse");
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: rss
+      check_interval: 1s
+      soft_limit: "128 MiB"
+      hard_limit: "192 MiB"
+groups:
+  g1:
+    pipelines:
+      p1:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    )
+    .expect("desired config should parse");
+    let runtime = test_runtime(&config);
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("memory limiter runtime changes should be rejected");
+
+    match err {
+        ControlPlaneError::InvalidRequest { message } => {
+            assert!(message.contains("runtime memory_limiter mutation"));
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+    assert_eq!(runtime.engine_config_snapshot(), config);
+}
+
 /// Scenario: a detached shutdown worker panics before it reaches the normal
 /// terminal-state bookkeeping path.
 /// Guarantees: the shutdown is forced into a failed terminal state and the

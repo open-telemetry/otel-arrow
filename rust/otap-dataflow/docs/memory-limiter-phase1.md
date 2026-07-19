@@ -326,6 +326,15 @@ that uses the matching unit. For example, an engine-wide
 `request_bytes/second` default will fail startup for a pipeline whose receiver
 only supports `messages/second`.
 
+The rate state is receiver-local and lock-free. It uses a token-bucket-equivalent
+GCRA state machine with bounded debt, so each receiver instance can continue
+tracking over-limit traffic while memory is normal and apply that state when
+soft pressure begins. OTLP keeps decompressed-byte accounting as the
+authoritative charge, but it also performs a non-charging exhausted-bucket check
+before body collection or gRPC message assembly. That early check avoids repeated
+decode and allocation work once the bucket is already exhausted under active
+rate-limit enforcement.
+
 **Syslog / CEF client behavior under Hard pressure:**
 
 - **TCP:** The receiver accepts new connections and then immediately drops the
@@ -413,6 +422,7 @@ All engine metrics are registered under the `engine` metric-set.
 | `process_memory_limiter.purge_unavailable` | warn | Emitted at startup when `purge_on_hard` is enabled but no allocator purge backend is available in this build. |
 | `process_memory_limiter.sample_failed` | warn | Emitted when a periodic memory sample fails. |
 | `process_memory_limiter.observe_only_ignored_setting` | warn | Emitted at startup when `purge_on_hard: true` is set with `mode: observe_only` (purge is suppressed in that mode). |
+| `syslog_cef_receiver.rate_limit.drop` | warn | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 <!-- markdownlint-enable MD013 -->
 
 ## Tradeoffs
