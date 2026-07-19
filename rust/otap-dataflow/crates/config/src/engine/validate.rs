@@ -170,7 +170,7 @@ impl OtelDataflowSpec {
                 .is_none()
         {
             errors.push(Error::InvalidUserConfig {
-                error: "policies.rate_limit requires policies.resources.memory_limiter so receivers have a process pressure source".to_owned(),
+                error: "rate_limit policy requires policies.resources.memory_limiter so receivers have a process pressure source".to_owned(),
             });
         }
 

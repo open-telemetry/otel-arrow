@@ -324,9 +324,7 @@ impl Decoder for OtlpBytesDecoder {
     type Error = Status;
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
-        // Use copy_to_bytes so we copy once while advancing the buffer.
         let len = src.remaining();
-        let bytes = src.copy_to_bytes(len);
         if let Some(rate_limiter) = &self.rate_limiter {
             match rate_limiter.check_units(len as u64) {
                 RateAdmissionDecision::Admit => {}
@@ -337,11 +335,14 @@ impl Decoder for OtlpBytesDecoder {
                     let mut metrics = self.metrics.lock();
                     metrics.rejected_requests.inc();
                     metrics.refused_rate_limit.inc();
+                    src.advance(len);
                     return Err(rate_limit_status(rate_limiter.retry_after_secs()));
                 }
             }
         }
         self.metrics.lock().request_bytes.add(len as u64);
+        // Use copy_to_bytes so accepted requests copy once while advancing the buffer.
+        let bytes = src.copy_to_bytes(len);
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),

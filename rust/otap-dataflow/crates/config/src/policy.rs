@@ -269,7 +269,7 @@ pub struct RateLimitPolicy {
     pub unit: RateLimitUnit,
     /// Number of configured units allowed per interval.
     #[serde(deserialize_with = "deserialize_required_u64")]
-    #[schemars(with = "String")]
+    #[schemars(with = "U64OrString")]
     pub allow: u64,
     /// Token refill interval for `allow`.
     #[serde(with = "humantime_serde")]
@@ -277,7 +277,7 @@ pub struct RateLimitPolicy {
     pub interval: Duration,
     /// Burst capacity in configured units. Defaults to `allow`.
     #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
-    #[schemars(with = "Option<String>")]
+    #[schemars(with = "Option<U64OrString>")]
     pub burst: Option<u64>,
     /// Process pressure gate. V1 supports only `soft`.
     pub pressure: RateLimitPressure,
@@ -291,6 +291,14 @@ where
         .ok_or_else(|| serde::de::Error::custom("value must not be null"))
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum U64OrString {
+    Number(u64),
+    String(String),
+}
+
 impl RateLimitPolicy {
     /// Returns validation errors for explicitly configured rate-limit fields.
     #[must_use]
@@ -301,6 +309,10 @@ impl RateLimitPolicy {
         }
         if self.interval.is_zero() {
             errors.push(format!("{path_prefix}.interval must be greater than 0"));
+        } else if self.interval != Duration::from_secs(1) {
+            errors.push(format!(
+                "{path_prefix}.interval must be 1s for per-second rate units"
+            ));
         }
         if matches!(self.burst, Some(0)) {
             errors.push(format!("{path_prefix}.burst must be greater than 0"));
@@ -903,6 +915,71 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("control.pipeline")));
         assert!(errors.iter().any(|e| e.contains("control.completion")));
         assert!(errors.iter().any(|e| e.contains(".pdata")));
+    }
+
+    /// Scenario: rate-limit allow and burst are provided as numeric YAML scalars.
+    /// Guarantees: the config parser accepts the same number-or-string shape exposed by the schema.
+    #[test]
+    fn rate_limit_accepts_numeric_allow_and_burst() {
+        let yaml = r#"
+mode: enforce
+aggregation: receiver_instance
+unit: messages/second
+allow: 1000
+interval: 1s
+burst: 2000
+pressure: soft
+"#;
+        let policy: super::RateLimitPolicy =
+            serde_yaml::from_str(yaml).expect("numeric rate-limit values should parse");
+
+        assert_eq!(policy.allow, 1000);
+        assert_eq!(policy.burst, Some(2000));
+    }
+
+    /// Scenario: the rate-limit schema is generated for fields parsed by byte-unit helpers.
+    /// Guarantees: CRD validation permits both numeric and string values for allow and burst.
+    #[test]
+    fn rate_limit_schema_exposes_allow_and_burst_as_number_or_string() {
+        let schema = schemars::schema_for!(super::RateLimitPolicy);
+        let json = serde_json::to_value(schema).expect("schema should serialize");
+
+        let allow_schema = json["$defs"]["U64OrString"].to_string();
+        assert!(
+            allow_schema.contains("integer") && allow_schema.contains("string"),
+            "allow should allow integer or string values: {allow_schema}"
+        );
+
+        let burst_schema = json["properties"]["burst"].to_string();
+        assert!(
+            burst_schema.contains("U64OrString"),
+            "burst should reference the number-or-string schema: {burst_schema}"
+        );
+    }
+
+    /// Scenario: a per-second rate-limit unit is configured with a longer refill interval.
+    /// Guarantees: validation rejects intervals that would make `/second` unit names misleading.
+    #[test]
+    fn validates_rate_limit_requires_one_second_interval() {
+        let policies = Policies {
+            rate_limit: Some(super::RateLimitPolicy {
+                mode: super::RateLimitMode::Enforce,
+                aggregation: super::RateLimitAggregation::ReceiverInstance,
+                unit: super::RateLimitUnit::MessagesPerSecond,
+                allow: 100,
+                interval: Duration::from_secs(10),
+                burst: Some(100),
+                pressure: super::RateLimitPressure::Soft,
+            }),
+            ..Policies::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("interval must be 1s"),
+            "unexpected validation error: {errors:?}"
+        );
     }
 
     #[test]

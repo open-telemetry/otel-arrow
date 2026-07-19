@@ -391,6 +391,8 @@ All engine metrics are registered under the `engine` metric-set.
 | Metric | Receiver | Description |
 | --- | --- | --- |
 | `receiver.otlp.refused_memory_pressure` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure |
+| `receiver.otlp.refused_rate_limit` | OTLP (gRPC + HTTP) | Requests refused by rate throttling |
+| `receiver.otlp.would_refuse_rate_limit` | OTLP (gRPC + HTTP) | Requests that would be refused by observe-only rate throttling |
 | `receiver.otlp.rejected_requests` | OTLP (gRPC + HTTP) | Total rejected requests (includes memory pressure) |
 | `receiver.otap.refused_memory_pressure` | OTAP gRPC | Requests rejected due to memory pressure |
 | `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
