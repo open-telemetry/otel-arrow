@@ -28,10 +28,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// The default per-set cardinality budget used by the compile-time check emitted
 /// by the `#[metric_set]` macro.
 ///
-/// This project-level safety limit bounds the worst-case number of series a
-/// measurement metric set can create. Because that cardinality (the product of
-/// its enum attributes' variant counts) is known at compile time, the macro
-/// rejects any set whose product would exceed this budget.
+/// This mirrors the Rust OpenTelemetry SDK's default per-instrument cardinality
+/// limit: once a single instrument exceeds it, overflow series collapse into a
+/// single `otel.metric.overflow` series, silently losing fidelity. Because a
+/// measurement metric set's worst-case cardinality (the product of its enum
+/// attributes' variant counts) is known at compile time, the macro rejects at
+/// build time any set whose product would exceed this budget.
 pub const CARDINALITY_BUDGET: usize = 2000;
 
 /// Compile-time cardinality guard used by generated `#[metric_set]` code.
