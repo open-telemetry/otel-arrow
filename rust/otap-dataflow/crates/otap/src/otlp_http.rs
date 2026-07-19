@@ -652,6 +652,17 @@ impl HttpHandler {
                 ));
             }
 
+            if let Some(rate_limiter) = &self.rate_limiter
+                && rate_limiter.is_exhausted()
+            {
+                let mut metrics = self.metrics.lock();
+                metrics.rejected_requests.inc();
+                metrics.refused_rate_limit.inc();
+                return Err(rate_limit_unavailable(
+                    self.admission_state.retry_after_secs(),
+                ));
+            }
+
             self.metrics.lock().requests_started.inc();
 
             let max_len = self.settings.max_request_body_size as usize;

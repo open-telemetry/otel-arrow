@@ -559,6 +559,18 @@ impl ServerCommon {
             rate_limiter,
         }
     }
+
+    fn exhausted_rate_limit_response(&self) -> Option<Response<Body>> {
+        let rate_limiter = self.rate_limiter.as_ref()?;
+        if !rate_limiter.is_exhausted() {
+            return None;
+        }
+
+        let mut metrics = self.metrics.lock();
+        metrics.rejected_requests.inc();
+        metrics.refused_rate_limit.inc();
+        Some(rate_limit_status(rate_limiter.retry_after_secs()).into_http())
+    }
 }
 
 /// implementation of OTLP bytes -> OTAP GRPC server for logs
@@ -597,6 +609,9 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                if let Some(response) = common.exhausted_rate_limit_response() {
+                    return Box::pin(async move { Ok(response) });
+                }
                 let mut grpc = new_grpc(
                     SignalType::Logs,
                     common.settings.clone(),
@@ -655,6 +670,9 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
         match req.uri().path() {
             super::METRICS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                if let Some(response) = common.exhausted_rate_limit_response() {
+                    return Box::pin(async move { Ok(response) });
+                }
                 let mut grpc = new_grpc(
                     SignalType::Metrics,
                     common.settings.clone(),
@@ -713,6 +731,9 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
         match req.uri().path() {
             super::TRACE_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                if let Some(response) = common.exhausted_rate_limit_response() {
+                    return Box::pin(async move { Ok(response) });
+                }
                 let mut grpc = new_grpc(
                     SignalType::Traces,
                     common.settings.clone(),

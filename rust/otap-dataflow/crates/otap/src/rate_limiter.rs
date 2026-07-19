@@ -144,6 +144,22 @@ impl<P: AdmissionPressure> GenericRateLimiter<P> {
             .charge(units, pressure_active, self.policy.mode)
     }
 
+    /// Returns true when any positive-weight request would be rejected without charging the bucket.
+    #[must_use]
+    pub fn is_exhausted(&self) -> bool {
+        let pressure_active = matches!(
+            self.admission_state.level(),
+            MemoryPressureLevel::Soft | MemoryPressureLevel::Hard
+        );
+        if !pressure_active || self.policy.mode != RateLimitMode::Enforce {
+            return false;
+        }
+
+        let mut bucket = self.bucket.lock();
+        bucket.refill();
+        bucket.tokens < 1.0
+    }
+
     /// Returns the receiver-facing retry hint from the shared pressure state.
     #[must_use]
     pub fn retry_after_secs(&self) -> u32 {
@@ -231,6 +247,36 @@ mod tests {
         admission.apply(state.current_update(2));
 
         assert_eq!(limiter.check_units(1), RateAdmissionDecision::Admit);
+    }
+
+    /// Scenario: a rate bucket is exhausted while enforce mode and soft pressure are active.
+    /// Guarantees: the pre-decode peek reports exhaustion without charging the bucket.
+    #[test]
+    fn exhausted_peek_reports_without_charging() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let limiter = RateLimiter::new(policy(RateLimitMode::Enforce), admission.clone());
+
+        assert_eq!(limiter.check_units(10), RateAdmissionDecision::Admit);
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+
+        assert!(limiter.is_exhausted());
+        assert!(limiter.is_exhausted());
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Reject);
+    }
+
+    /// Scenario: a rate bucket is exhausted while memory pressure remains normal.
+    /// Guarantees: the pre-decode peek stays disabled unless pressure would enforce throttling.
+    #[test]
+    fn exhausted_peek_ignores_normal_pressure() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let limiter = RateLimiter::new(policy(RateLimitMode::Enforce), admission);
+
+        assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);
+
+        assert!(!limiter.is_exhausted());
     }
 
     /// Scenario: a programmatic caller constructs a limiter with a zero refill interval.
