@@ -285,6 +285,17 @@ fn admit_syslog_message(
     }
 }
 
+fn warn_tcp_rate_limit_drop_once(peer_addr: SocketAddr, warned: &mut bool) {
+    if !*warned {
+        *warned = true;
+        otel_warn!(
+            "syslog_cef_receiver.rate_limit.drop",
+            peer = %peer_addr,
+            message = "Dropping TCP syslog messages due to rate limiting under memory pressure"
+        );
+    }
+}
+
 /// Add the syslog receiver to the receiver factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
@@ -495,6 +506,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         let mut line_bytes =
                                             Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
                                         let mut discarding_oversized_message = false;
+                                        let mut warned_rate_limit_drop = false;
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
@@ -579,6 +591,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     break;
                                                                 } else {
                                                                     if !admit_syslog_message(&rate_limiter, &metrics) {
+                                                                        warn_tcp_rate_limit_drop_once(
+                                                                            peer_addr,
+                                                                            &mut warned_rate_limit_drop,
+                                                                        );
                                                                         line_bytes.clear();
                                                                         continue;
                                                                     }
@@ -664,6 +680,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
 
                                                             if !admit_syslog_message(&rate_limiter, &metrics) {
+                                                                warn_tcp_rate_limit_drop_once(
+                                                                    peer_addr,
+                                                                    &mut warned_rate_limit_drop,
+                                                                );
                                                                 if matches!(bounded_result, BoundedReadResult::Truncated) {
                                                                     discarding_oversized_message = true;
                                                                 }
