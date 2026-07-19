@@ -3,7 +3,7 @@
 
 //! Receiver-local pressure-aware rate admission.
 
-use otap_df_config::policy::{RateLimitMode, RateLimitPolicy};
+use otap_df_config::policy::{RateLimitMode, RateLimitPolicy, RateLimitPressure};
 use otap_df_engine::memory_limiter::{
     LocalReceiverAdmissionState, MemoryPressureLevel, SharedReceiverAdmissionState,
 };
@@ -178,24 +178,26 @@ impl<P: AdmissionPressure> GenericRateLimiter<P> {
         }
     }
 
+    fn pressure_active(&self) -> bool {
+        let level = self.admission_state.level();
+        match self.policy.pressure {
+            RateLimitPressure::Soft => {
+                matches!(level, MemoryPressureLevel::Soft | MemoryPressureLevel::Hard)
+            }
+        }
+    }
+
     /// Applies a weighted admission check against the current pressure level.
     #[must_use]
     pub fn check_units(&self, units: u64) -> RateAdmissionDecision {
-        let pressure_active = matches!(
-            self.admission_state.level(),
-            MemoryPressureLevel::Soft | MemoryPressureLevel::Hard
-        );
+        let pressure_active = self.pressure_active();
         self.bucket.charge(units, pressure_active, self.policy.mode)
     }
 
     /// Returns true when any positive-weight request would be rejected without charging the bucket.
     #[must_use]
     pub fn is_exhausted(&self) -> bool {
-        let pressure_active = matches!(
-            self.admission_state.level(),
-            MemoryPressureLevel::Soft | MemoryPressureLevel::Hard
-        );
-        if !pressure_active || self.policy.mode != RateLimitMode::Enforce {
+        if !self.pressure_active() || self.policy.mode != RateLimitMode::Enforce {
             return false;
         }
 

@@ -1803,12 +1803,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::ConfigError(Box::new(
                 otap_df_config::error::Error::InvalidUserConfig {
                     error: format!(
-                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {:?}",
+                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {}",
                         normalized,
                         pipeline_group_id.as_ref(),
                         pipeline_id.as_ref(),
                         name.as_ref(),
-                        rate_limit.unit
+                        rate_limit.unit.as_str()
                     ),
                 },
             )));

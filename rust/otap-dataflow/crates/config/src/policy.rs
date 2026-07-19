@@ -413,12 +413,33 @@ pub enum RateLimitUnit {
     MessagesPerSecond,
 }
 
+impl RateLimitUnit {
+    /// Returns the configuration spelling for this rate-limit unit.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestBytesPerSecond => "request_bytes/second",
+            Self::MessagesPerSecond => "messages/second",
+        }
+    }
+}
+
 /// Process pressure threshold that activates the scoped gate.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitPressure {
     /// Activate at soft pressure and remain active at harder levels.
     Soft,
+}
+
+impl RateLimitPressure {
+    /// Returns the configuration spelling for this pressure threshold.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Soft => "soft",
+        }
+    }
 }
 /// instrumentation overhead.
 #[derive(

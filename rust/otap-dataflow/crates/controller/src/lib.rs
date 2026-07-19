@@ -508,12 +508,12 @@ impl<
                     .contains(&rate_limit.unit)
                 {
                     return Err(format!(
-                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {:?}",
+                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {}",
                         urn_str,
                         pipeline_group_id.as_ref(),
                         pipeline_id.as_ref(),
                         node_id.as_ref(),
-                        rate_limit.unit
+                        rate_limit.unit.as_str()
                     ));
                 }
             }
