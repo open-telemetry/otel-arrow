@@ -211,13 +211,9 @@ fn response_channel_closed_status() -> Status {
 fn rate_limit_status(retry_after_secs: u32) -> Status {
     let mut metadata = tonic::metadata::MetadataMap::new();
     let retry_pushback_ms = u64::from(retry_after_secs.max(1)) * 1_000;
-    let _ = metadata.insert(
-        "grpc-retry-pushback-ms",
-        retry_pushback_ms
-            .to_string()
-            .parse()
-            .expect("retry pushback metadata should be valid ASCII"),
-    );
+    if let Ok(value) = retry_pushback_ms.to_string().parse() {
+        let _ = metadata.insert("grpc-retry-pushback-ms", value);
+    }
     Status::with_metadata(Code::ResourceExhausted, "rate limit", metadata)
 }
 

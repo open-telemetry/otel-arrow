@@ -48,7 +48,7 @@ impl TokenBucket {
         let now = Instant::now();
         let elapsed = now.duration_since(self.last_refill).as_secs_f64();
         self.last_refill = now;
-        if elapsed <= 0.0 {
+        if elapsed <= 0.0 || self.interval_secs <= 0.0 {
             return;
         }
         let refill = elapsed * (self.allow / self.interval_secs);
@@ -231,5 +231,22 @@ mod tests {
         admission.apply(state.current_update(2));
 
         assert_eq!(limiter.check_units(1), RateAdmissionDecision::Admit);
+    }
+
+    /// Scenario: a programmatic caller constructs a limiter with a zero refill interval.
+    /// Guarantees: the defensive refill guard avoids invalid division and keeps admission checks stable.
+    #[test]
+    fn zero_interval_policy_does_not_break_refill() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let mut policy = policy(RateLimitMode::Enforce);
+        policy.interval = Duration::ZERO;
+        let limiter = RateLimiter::new(policy, admission.clone());
+
+        assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Reject);
     }
 }
