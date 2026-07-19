@@ -45,6 +45,11 @@ impl OtelDataflowSpec {
             errors.push(e);
         }
 
+        // The observability pipeline is always present (deserialization installs
+        // the built-in default when it is omitted). Exactly one internal receiver
+        // must own the process-wide log stream and destructive metric-registry
+        // drain; zero receivers leave telemetry unconsumed, while multiple
+        // receivers would compete for the same data.
         let observability_pipeline = &self.engine.observability.pipeline;
         let internal_receivers = observability_pipeline
             .nodes
@@ -59,6 +64,9 @@ impl OtelDataflowSpec {
                 ),
             });
         } else if let Some((receiver_id, receiver)) = internal_receivers.first() {
+            // A direct outgoing edge is not enough: the receiver could feed a
+            // processor chain that never reaches an exporter. Reuse the pipeline's
+            // iterative pruning to require a complete surviving downstream path.
             let mut pruned_pipeline = observability_pipeline.clone().into_pipeline_config();
             let removed_nodes = pruned_pipeline.remove_unconnected_nodes();
             if removed_nodes
@@ -71,6 +79,9 @@ impl OtelDataflowSpec {
                     ),
                 });
             }
+            // Default log providers bypass ITS, so a metrics-only receiver is
+            // normally valid. Once any producer routes logs through ITS, however,
+            // the sole internal receiver must consume and forward that signal.
             if self.engine.telemetry.uses_its_provider()
                 && !internal_receiver_logs_enabled(&receiver.config)
             {
@@ -154,6 +165,13 @@ impl OtelDataflowSpec {
     }
 }
 
+/// Returns whether an opaque internal telemetry receiver config selects logs.
+///
+/// The config crate intentionally does not depend on the core-nodes crate's
+/// typed receiver configuration. This mirrors its public contract locally:
+/// omitting `signals` selects the default `[logs, metrics]`, while an explicit
+/// list must contain `logs`. Other shapes are treated as disabled here; normal
+/// component validation remains responsible for reporting their schema error.
 fn internal_receiver_logs_enabled(config: &serde_json::Value) -> bool {
     match config.as_object().and_then(|config| config.get("signals")) {
         None => true,

@@ -20,4 +20,4 @@ subtext: |
   The `engine.telemetry.metrics` reader and view configuration is no longer
   supported. Configure periodic export and views on
   `receiver:internal_telemetry`; the registry-backed admin metrics endpoint
-  remains available.
+  remains available. See the [configuration migration guide](docs/configuration.md#migrating-internal-metrics-from-the-rust-opentelemetry-sdk).

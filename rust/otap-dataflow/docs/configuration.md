@@ -415,6 +415,101 @@ supported. For Prometheus scraping, bind `engine.http_admin` and use the fixed
 `/api/v1/metrics` path. This endpoint does not apply receiver views and does not
 reset the independent ITS export accumulator.
 
+### Migrating Internal Metrics from the Rust OpenTelemetry SDK
+
+Move periodic export and views from `engine.telemetry.metrics` into the engine
+observability pipeline. For example, this former SDK configuration exported
+viewed metrics over OTLP/gRPC and exposed the unviewed metrics to Prometheus:
+
+```yaml
+engine:
+    telemetry:
+        metrics:
+            readers:
+                - periodic:
+                    interval: 60s
+                    exporter:
+                        type: otlp
+                        config:
+                            protocol: grpc/protobuf
+                            endpoint: http://localhost:50066
+                            temporality: delta
+                - pull:
+                    exporter:
+                        type: prometheus
+                        config:
+                            host: 0.0.0.0
+                            port: 9091
+                            path: /metrics
+            views:
+                - selector:
+                    scope_name: engine
+                    instrument_name: memory.rss
+                  stream:
+                    name: process_memory_usage
+                    description: Process resident memory usage.
+```
+
+The equivalent native ITS configuration is:
+
+```yaml
+engine:
+    http_admin:
+        bind_address: "0.0.0.0:9091"
+    observability:
+        pipeline:
+            nodes:
+                internal:
+                    type: receiver:internal_telemetry
+                    config:
+                        signals: [metrics]
+                        metrics:
+                            interval: 60s
+                            views:
+                                - selector:
+                                    scope_name: engine
+                                    instrument_name: memory.rss
+                                  stream:
+                                    name: process_memory_usage
+                                    description: Process resident memory usage.
+                otlp:
+                    type: exporter:otlp_grpc
+                    config:
+                        grpc_endpoint: http://localhost:50066
+            connections:
+                - from: internal
+                  to: otlp
+```
+
+Apply these mappings when migrating:
+
+- Remove `metrics.provider`; ITS is now the only internal metrics path.
+- Move `periodic.interval` to the receiver's `metrics.interval`. The receiver
+  has one emission interval, so multiple periodic readers must share a cadence.
+  Set it explicitly to `6s` if the former periodic-reader default was required.
+- Move `metrics.views` unchanged to the receiver's `metrics.views` list.
+- Replace a `grpc/protobuf` SDK exporter with `exporter:otlp_grpc`, changing
+  `endpoint` to `grpc_endpoint`.
+- Replace an `http/protobuf` SDK exporter with `exporter:otlp_http`. The native
+  exporter accepts a base `endpoint` and optional full signal-specific endpoint
+  overrides. The native exporter does not support the former `http/json` mode.
+- Remove exporter `temporality`. Native export uses the temporality declared by
+  each internal instrument instead of a reader-wide preference.
+- Replace a console reader with an `exporter:console` node. Fan out the internal
+  receiver to multiple exporters when they share the same emission interval.
+- Replace a Prometheus pull reader with `engine.http_admin.bind_address` and
+  scrape `/api/v1/metrics`. The path is fixed, receiver views are not applied,
+  and the bind address exposes the complete admin API rather than a dedicated
+  metrics-only server.
+- Use `signals: [metrics]` while log providers retain their defaults. Omit
+  `signals`, or include `logs`, when a global, engine, or admin log provider
+  uses `its`. To suppress metric conversion and export, select only `logs` and
+  route that signal to a sink.
+
+If `engine.telemetry.metrics` was omitted and no internal metrics were exported,
+no migration is required: the built-in observability pipeline consumes metrics
+with a noop exporter.
+
 For exact engine-level fields, see
 [Engine Section](configuration-model.md#engine-section).
 
