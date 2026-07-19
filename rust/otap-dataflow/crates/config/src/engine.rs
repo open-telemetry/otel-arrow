@@ -37,7 +37,7 @@ pub const ENGINE_CONFIG_VERSION_V1: &str = "otel_dataflow/v1";
 
 /// Root configuration for the pipeline engine.
 /// Contains engine-level settings and all pipeline groups.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct OtelDataflowSpec {
     /// Version of the engine configuration schema.

@@ -241,6 +241,8 @@ mod tests {
         ]
     }
 
+    /// Scenario: each supported simple log level is used to construct an environment filter.
+    /// Guarantees: filter construction accepts every configured level without panicking.
     #[test]
     fn create_env_filter_parses_for_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -250,6 +252,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an info event is emitted through the no-op provider.
+    /// Guarantees: the no-op subscriber accepts the event without failing.
     #[test]
     fn noop_provider_runs() {
         crate::with_cleared_rust_log(|| {
@@ -260,6 +264,8 @@ mod tests {
         });
     }
 
+    /// Scenario: every log severity is emitted under each supported no-op provider level.
+    /// Guarantees: the no-op provider remains usable for every level and event severity.
     #[test]
     fn noop_provider_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -275,6 +281,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an info event is emitted through the direct console provider.
+    /// Guarantees: direct console subscriber setup and event handling complete successfully.
     #[test]
     fn console_direct_provider_runs() {
         crate::with_cleared_rust_log(|| {
@@ -285,6 +293,8 @@ mod tests {
         });
     }
 
+    /// Scenario: every log severity is emitted under each direct console provider level.
+    /// Guarantees: direct console logging remains usable across all supported levels.
     #[test]
     fn console_direct_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -300,6 +310,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an info event is emitted through the asynchronous internal provider.
+    /// Guarantees: the provider forwards the event to its observed-event channel as a log.
     #[test]
     fn console_async_provider_sends_logs() {
         crate::with_cleared_rust_log(|| {
@@ -319,6 +331,8 @@ mod tests {
         });
     }
 
+    /// Scenario: four event severities are emitted at each asynchronous provider level.
+    /// Guarantees: the channel receives exactly the number of events allowed by each level.
     #[test]
     fn console_async_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -347,6 +361,8 @@ mod tests {
         });
     }
 
+    /// Scenario: a debug event is emitted while the asynchronous provider is set to info.
+    /// Guarantees: debug events are excluded from the provider's output channel.
     #[test]
     fn log_level_filters_debug() {
         crate::with_cleared_rust_log(|| {
@@ -364,6 +380,8 @@ mod tests {
         });
     }
 
+    /// Scenario: debug, info, and warn events are emitted at the warn level.
+    /// Guarantees: only the warn event reaches the asynchronous provider's channel.
     #[test]
     fn log_level_warn_filters_lower() {
         crate::with_cleared_rust_log(|| {
@@ -383,6 +401,8 @@ mod tests {
         });
     }
 
+    /// Scenario: debug through error events are emitted at the error level.
+    /// Guarantees: only the error event reaches the asynchronous provider's channel.
     #[test]
     fn log_level_error_filters_lower() {
         crate::with_cleared_rust_log(|| {
@@ -402,6 +422,8 @@ mod tests {
         });
     }
 
+    /// Scenario: events of every severity are emitted while logging is off.
+    /// Guarantees: the asynchronous provider emits no events at the off level.
     #[test]
     fn log_level_off_filters_all() {
         crate::with_cleared_rust_log(|| {
@@ -419,6 +441,8 @@ mod tests {
         });
     }
 
+    /// Scenario: events of every severity are emitted at the debug level.
+    /// Guarantees: all four events reach the asynchronous provider's channel.
     #[test]
     fn log_level_debug_allows_all() {
         crate::with_cleared_rust_log(|| {
@@ -439,6 +463,8 @@ mod tests {
         });
     }
 
+    /// Scenario: oversized structured attributes overflow the inline log encoding buffer.
+    /// Guarantees: the dropped-attribute count survives ITS encoding and OTLP parsing.
     #[test]
     fn dropped_attributes_count_propagates() {
         // Regression test: when too many attributes are passed to overflow
@@ -518,6 +544,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an asynchronous log event contains string and numeric fields.
+    /// Guarantees: the channel event preserves the event name and both structured fields.
     #[test]
     fn console_async_layer_with_fields() {
         crate::with_cleared_rust_log(|| {
@@ -537,6 +565,8 @@ mod tests {
         });
     }
 
+    /// Scenario: each provider variant installs a scoped subscriber and emits an event.
+    /// Guarantees: no-op, direct console, and asynchronous providers all support scoped use.
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
         crate::with_cleared_rust_log(|| {
@@ -560,6 +590,8 @@ mod tests {
         });
     }
 
+    /// Scenario: debug through error events are emitted through ITS at the warn level.
+    /// Guarantees: ITS forwards exactly the warn and error events.
     #[test]
     fn its_provider_filters_correctly() {
         crate::with_cleared_rust_log(|| {
@@ -578,6 +610,8 @@ mod tests {
         });
     }
 
+    /// Scenario: one asynchronous subscriber is temporarily nested inside another.
+    /// Guarantees: inner events remain isolated while outer events return to the outer channel.
     #[test]
     fn nested_with_subscriber() {
         crate::with_cleared_rust_log(|| {
