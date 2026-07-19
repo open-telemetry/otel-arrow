@@ -8,18 +8,16 @@ change_type: breaking
 component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Replace the Rust OpenTelemetry metrics client SDK with always-on native ITS metric export."
+note: Remove the direct OpenTelemetry client SDK metrics path and route internal metrics through the Internal Telemetry System observability pipeline.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3457]
+issues: [2409]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Existing ConsoleAsync log defaults are unchanged. The default observability
-  pipeline consumes metrics with the noop exporter and provides a console route
-  for explicitly enabled ITS logs. Override the pipeline and independently
-  select logs or metrics, or use the admin server's fixed `/api/v1/metrics`
-  endpoint for Prometheus scraping. The removed `engine.telemetry.metrics`
-  configuration is rejected.
+  The `engine.telemetry.metrics` reader and view configuration is no longer
+  supported. Configure periodic export and views on
+  `receiver:internal_telemetry`; the registry-backed admin metrics endpoint
+  remains available.
