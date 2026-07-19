@@ -389,6 +389,7 @@ Behavior:
 - Engine-level and group-level metadata is committed only after the
   reconciliation succeeds.
 - Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
+- Runtime memory limiter mutation is rejected with `422 Unprocessable Entity`.
 
 Response body is an `EngineConfigReconcileStatus` with:
 
