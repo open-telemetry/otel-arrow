@@ -318,8 +318,11 @@ fn service_unavailable() -> Response<Full<Bytes>> {
     rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 14, "service unavailable")
 }
 
-fn memory_pressure_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
-    let mut response = rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, "memory pressure");
+fn resource_exhausted_with_retry_after(
+    message: &'static str,
+    retry_after_secs: u32,
+) -> Response<Full<Bytes>> {
+    let mut response = rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, message);
     if let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
         _ = response
             .headers_mut()
@@ -328,14 +331,12 @@ fn memory_pressure_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
     response
 }
 
+fn memory_pressure_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
+    resource_exhausted_with_retry_after("memory pressure", retry_after_secs)
+}
+
 fn rate_limit_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
-    let mut response = rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, "rate limit");
-    if let Ok(retry_after) = HeaderValue::from_str(&retry_after_secs.max(1).to_string()) {
-        _ = response
-            .headers_mut()
-            .insert(http::header::RETRY_AFTER, retry_after);
-    }
-    response
+    resource_exhausted_with_retry_after("rate limit", retry_after_secs)
 }
 
 fn internal_error() -> Response<Full<Bytes>> {
