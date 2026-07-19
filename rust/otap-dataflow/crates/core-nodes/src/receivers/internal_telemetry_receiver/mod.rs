@@ -61,7 +61,7 @@ use std::time::Duration;
 use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 /// The URN for the internal telemetry receiver.
-pub use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
+pub use otap_df_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
 
 /// Signal type emitted by the internal telemetry receiver.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]

@@ -337,7 +337,13 @@ pub struct EngineObservabilityConfig {
     pub pipeline: EngineObservabilityPipelineConfig,
 }
 
-pub(crate) const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
+/// Canonical URN for the internal telemetry receiver required by the engine
+/// observability pipeline.
+///
+/// This constant lives in the config crate so configuration validation and
+/// downstream runtime crates can share it without depending on the receiver
+/// implementation crate.
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
 
 /// Configuration for the dedicated engine observability pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -363,7 +369,7 @@ impl Default for EngineObservabilityPipelineConfig {
         serde_json::from_value(serde_json::json!({
             "nodes": {
                 "internal_telemetry": {
-                    "type": "urn:otel:receiver:internal_telemetry",
+                    "type": INTERNAL_TELEMETRY_RECEIVER_URN,
                     "config": {}
                 },
                 "signal_router": {
