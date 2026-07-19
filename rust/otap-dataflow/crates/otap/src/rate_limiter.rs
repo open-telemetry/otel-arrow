@@ -81,7 +81,7 @@ impl TokenBucket {
         loop {
             let current = self.theoretical_arrival_nanos.load(Ordering::Acquire);
             let candidate = current.max(now).saturating_add(cost);
-            let over_limit = candidate > limit;
+            let over_limit = weight > self.burst || candidate > limit;
 
             if pressure_active && over_limit && mode == RateLimitMode::Enforce {
                 return RateAdmissionDecision::Reject;
@@ -356,6 +356,23 @@ mod tests {
         admission.apply(state.current_update(1));
 
         assert_eq!(limiter.check_units(10), RateAdmissionDecision::Admit);
+    }
+
+    /// Scenario: a very high configured rate maps different request sizes to the same GCRA tick.
+    /// Guarantees: active pressure still rejects requests whose weight exceeds configured burst.
+    #[test]
+    fn high_rate_quantization_does_not_bypass_burst() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let mut policy = policy(RateLimitMode::Enforce);
+        policy.allow = u64::MAX;
+        policy.burst = Some(1);
+        let limiter = RateLimiter::new(policy, admission.clone());
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Admit);
+        assert_eq!(limiter.check_units(1024), RateAdmissionDecision::Reject);
     }
 
     /// Scenario: a programmatic caller constructs a limiter with a zero refill interval.

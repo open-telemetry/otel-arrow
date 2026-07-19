@@ -1326,6 +1326,12 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
+        engine_config
+            .validate()
+            .map_err(|error| Error::InvalidConfiguration {
+                errors: vec![error],
+            })?;
+
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -2845,6 +2851,38 @@ groups: {{}}
                 .lock()
                 .expect("observed order mutex should not be poisoned"),
             vec!["alpha".to_owned(), "beta".to_owned()]
+        );
+    }
+
+    /// Scenario: an embedder deserializes a config directly and starts the controller.
+    /// Guarantees: controller execution still rejects rate limiting without a memory pressure source.
+    #[test]
+    fn controller_run_validates_rate_limit_requires_memory_source() {
+        let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": otap_df_config::engine::ENGINE_CONFIG_VERSION_V1,
+            "policies": {
+                "rate_limit": {
+                    "mode": "enforce",
+                    "aggregation": "receiver_instance",
+                    "unit": "request_bytes/second",
+                    "allow": 1000,
+                    "interval": "1s",
+                    "burst": 1000,
+                    "pressure": "soft"
+                }
+            },
+            "groups": {}
+        }))
+        .expect("directly deserialized config should parse");
+
+        let err = Controller::new(empty_pipeline_factory())
+            .run_till_shutdown(config)
+            .expect_err("controller run should reject invalid semantic config");
+
+        assert!(
+            err.to_string()
+                .contains("rate_limit policy requires policies.resources.memory_limiter"),
+            "unexpected error: {err}"
         );
     }
 

@@ -570,6 +570,17 @@ impl HttpHandler {
                 ));
             }
 
+            if let Some(rate_limiter) = &self.rate_limiter
+                && rate_limiter.is_exhausted()
+            {
+                let mut metrics = self.metrics.lock();
+                metrics.rejected_requests.inc();
+                metrics.refused_rate_limit.inc();
+                return Err(rate_limit_unavailable(
+                    self.admission_state.retry_after_secs(),
+                ));
+            }
+
             // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
             // HTTP are enabled: global (if any) first, then protocol-local.
             let _global_permit = if let Some(global) = &self.global_semaphore {
@@ -1561,6 +1572,156 @@ mod tests {
             assert_eq!(metrics.refused_rate_limit.get(), 1);
             assert_eq!(metrics.refused_memory_pressure.get(), 0);
             assert_eq!(metrics.request_bytes.get(), 0);
+        }
+
+        shutdown.cancel();
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request arrives while the rate bucket is exhausted and permits are busy.
+    /// Guarantees: rate fast-fail returns Retry-After before waiting behind concurrency semaphores.
+    #[tokio::test]
+    async fn exhausted_rate_limit_rejects_before_concurrency_wait() {
+        use crate::rate_limiter::RateLimiter;
+        use http_body_util::Full;
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
+        use hyper_util::rt::TokioIo;
+        use otap_df_config::policy::{
+            RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure, RateLimitUnit,
+        };
+        use otap_df_engine::control::runtime_ctrl_msg_channel;
+        use otap_df_engine::memory_limiter::MemoryPressureChanged;
+        use otap_df_engine::shared::message::SharedSender;
+        use otap_df_engine::testing::test_node;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, _msg_rx) = tokio_mpsc::channel(4);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(4);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_rate_limit_pre_wait"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: false,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(
+            pipeline_ctx.register_metrics::<crate::otlp_metrics::OtlpReceiverMetrics>(),
+        ));
+        let memory_pressure_state = MemoryPressureState::default();
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        admission_state.apply(MemoryPressureChanged {
+            generation: 1,
+            level: MemoryPressureLevel::Soft,
+            retry_after_secs: 7,
+            usage_bytes: 0,
+        });
+        let rate_limiter = RateLimiter::new(
+            RateLimitPolicy {
+                mode: RateLimitMode::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytesPerSecond,
+                allow: 1,
+                interval: Duration::from_secs(1),
+                burst: Some(1),
+                pressure: RateLimitPressure::Soft,
+            },
+            admission_state.clone(),
+        );
+        assert_eq!(
+            rate_limiter.check_units(1),
+            RateAdmissionDecision::Admit,
+            "test setup should exhaust the one-unit bucket"
+        );
+
+        let global_semaphore = Arc::new(Semaphore::new(1));
+        let _held_permit = global_semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("global permit should be held by the test");
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(None, None, None),
+            metrics.clone(),
+            admission_state,
+            Some(rate_limiter),
+            Some(global_semaphore),
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from_static(&[0])))
+            .unwrap();
+
+        let resp = tokio::time::timeout(Duration::from_millis(500), sender.send_request(req))
+            .await
+            .expect("rate rejection should not wait for the held permit")
+            .expect("response");
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            resp.headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok()),
+            Some("7")
+        );
+
+        {
+            let metrics = metrics.lock();
+            assert_eq!(metrics.rejected_requests.get(), 1);
+            assert_eq!(metrics.refused_rate_limit.get(), 1);
+            assert_eq!(metrics.requests_started.get(), 0);
         }
 
         shutdown.cancel();
