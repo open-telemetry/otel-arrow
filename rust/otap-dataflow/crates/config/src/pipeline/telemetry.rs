@@ -28,10 +28,10 @@ pub struct TelemetryConfig {
 }
 
 impl TelemetryConfig {
-    /// Returns `true` when internal logs are routed through ITS.
+    /// Returns `true` when an upstream log producer routes logs through ITS.
     #[must_use]
-    pub const fn uses_its_provider(&self) -> bool {
-        self.logs.providers.uses_its_provider()
+    pub const fn routes_logs_through_its(&self) -> bool {
+        self.logs.providers.routes_logs_through_its()
     }
 
     /// Validates the telemetry configuration for every internal signal.
@@ -42,13 +42,6 @@ impl TelemetryConfig {
             });
         }
         self.logs.validate()
-    }
-
-    /// Returns a clone of this telemetry config for safe exposure through the
-    /// admin/config snapshot APIs.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> TelemetryConfig {
-        self.clone()
     }
 }
 
@@ -467,7 +460,7 @@ mod tests {
         assert_eq!(config.reporting_channel_size, 100);
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
         assert!(config.resource.is_empty());
-        assert!(!config.uses_its_provider());
+        assert!(!config.routes_logs_through_its());
     }
 
     #[test]

@@ -138,8 +138,11 @@ impl EngineConfig {
     ///   `custom.headers` — is masked. Matching is on the conventional
     ///   lowercase `headers` key only.
     ///
-    /// The remaining strongly-typed engine settings (`observed_state`,
-    /// `topics`) have no opaque `headers`-bearing config, so none are touched.
+    /// The remaining strongly-typed engine settings (`telemetry`,
+    /// `observed_state`, `topics`) have no opaque `headers`-bearing config, so
+    /// none are touched. Metric exporter credentials that previously lived
+    /// under `telemetry` now belong to `observability.pipeline.nodes` and are
+    /// covered by that subtree's redaction above.
     /// This masks credential *header* values only; other secret classes that can
     /// appear in raw config (inline TLS keys, proxy URLs with embedded
     /// passwords, component-specific secrets, and credentials hidden under
@@ -148,7 +151,6 @@ impl EngineConfig {
     #[must_use]
     pub fn redacted_for_snapshot(&self) -> EngineConfig {
         let mut redacted = self.clone();
-        redacted.telemetry = redacted.telemetry.redacted_for_snapshot();
         redacted.controller.extensions = redacted.controller.extensions.redacted_for_snapshot();
         redacted.observability.pipeline.nodes = redacted
             .observability
@@ -1086,7 +1088,7 @@ groups: {}
 
         let config = OtelDataflowSpec::from_yaml(yaml)
             .expect("default receiver signals should include logs");
-        assert!(config.engine.telemetry.uses_its_provider());
+        assert!(config.engine.telemetry.routes_logs_through_its());
     }
 
     /// Scenario: a receiver selects only metrics while log providers are omitted.
@@ -1114,7 +1116,7 @@ groups: {}
 
         let config = OtelDataflowSpec::from_yaml(yaml)
             .expect("metrics-only receiver should preserve default console logging");
-        assert!(!config.engine.telemetry.uses_its_provider());
+        assert!(!config.engine.telemetry.routes_logs_through_its());
     }
 
     /// Scenario: a receiver selects only metrics while an ITS log producer is configured.

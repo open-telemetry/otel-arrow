@@ -82,7 +82,7 @@ impl OtelDataflowSpec {
             // Default log providers bypass ITS, so a metrics-only receiver is
             // normally valid. Once any producer routes logs through ITS, however,
             // the sole internal receiver must consume and forward that signal.
-            if self.engine.telemetry.uses_its_provider()
+            if self.engine.telemetry.routes_logs_through_its()
                 && !internal_receiver_logs_enabled(&receiver.config)
             {
                 errors.push(Error::InvalidUserConfig {
