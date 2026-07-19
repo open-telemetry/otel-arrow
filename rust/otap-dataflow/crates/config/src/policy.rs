@@ -8,6 +8,7 @@ use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
 use serde::Deserializer;
+use serde::de;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -258,7 +259,7 @@ impl ResolvedPolicies {
 }
 
 /// Pressure-aware receiver admission rate limit policy.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RateLimitPolicy {
     /// Runtime behavior applied when the scoped rate gate would throttle.
@@ -268,7 +269,6 @@ pub struct RateLimitPolicy {
     /// Rate unit measured by the receiver. V1 supports OTLP request bytes.
     pub unit: RateLimitUnit,
     /// Number of configured units allowed per interval.
-    #[serde(deserialize_with = "deserialize_required_u64")]
     #[schemars(with = "U64OrString")]
     pub allow: u64,
     /// Token refill interval for `allow`.
@@ -276,19 +276,10 @@ pub struct RateLimitPolicy {
     #[schemars(with = "String")]
     pub interval: Duration,
     /// Burst capacity in configured units. Defaults to `allow`.
-    #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
     #[schemars(with = "Option<U64OrString>")]
     pub burst: Option<u64>,
     /// Process pressure gate. V1 supports only `soft`.
     pub pressure: RateLimitPressure,
-}
-
-fn deserialize_required_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    byte_units::deserialize_u64(deserializer)?
-        .ok_or_else(|| serde::de::Error::custom("value must not be null"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -297,6 +288,72 @@ where
 enum U64OrString {
     Number(u64),
     String(String),
+}
+
+impl U64OrString {
+    fn parse_for_unit<E>(self, field: &str, unit: RateLimitUnit) -> Result<u64, E>
+    where
+        E: de::Error,
+    {
+        match self {
+            Self::Number(value) => Ok(value),
+            Self::String(text) => match unit {
+                RateLimitUnit::RequestBytesPerSecond => parse_byte_count_string(&text),
+                RateLimitUnit::MessagesPerSecond => text.trim().parse::<u64>().map_err(|_| {
+                    E::custom(format!(
+                        "{field} for messages/second must be a number without byte units"
+                    ))
+                }),
+            },
+        }
+    }
+}
+
+fn parse_byte_count_string<E>(text: &str) -> Result<u64, E>
+where
+    E: de::Error,
+{
+    if let Ok(value) = text.trim().parse::<u64>() {
+        return Ok(value);
+    }
+    text.parse::<byte_unit::Byte>()
+        .map(|byte| byte.as_u64())
+        .map_err(|err| E::custom(err.to_string()))
+}
+
+impl<'de> Deserialize<'de> for RateLimitPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawRateLimitPolicy {
+            mode: RateLimitMode,
+            aggregation: RateLimitAggregation,
+            unit: RateLimitUnit,
+            allow: U64OrString,
+            #[serde(with = "humantime_serde")]
+            interval: Duration,
+            #[serde(default)]
+            burst: Option<U64OrString>,
+            pressure: RateLimitPressure,
+        }
+
+        let raw = RawRateLimitPolicy::deserialize(deserializer)?;
+        Ok(Self {
+            mode: raw.mode,
+            aggregation: raw.aggregation,
+            unit: raw.unit,
+            allow: raw.allow.parse_for_unit("allow", raw.unit)?,
+            interval: raw.interval,
+            burst: raw
+                .burst
+                .map(|burst| burst.parse_for_unit("burst", raw.unit))
+                .transpose()?,
+            pressure: raw.pressure,
+        })
+    }
 }
 
 impl RateLimitPolicy {
@@ -935,6 +992,48 @@ pressure: soft
 
         assert_eq!(policy.allow, 1000);
         assert_eq!(policy.burst, Some(2000));
+    }
+
+    /// Scenario: a message-rate policy uses byte-unit suffixes for count fields.
+    /// Guarantees: dimensional byte units are rejected for `messages/second` limits.
+    #[test]
+    fn rate_limit_rejects_byte_units_for_message_counts() {
+        let yaml = r#"
+mode: enforce
+aggregation: receiver_instance
+unit: messages/second
+allow: "1 KiB"
+interval: 1s
+burst: "2 KiB"
+pressure: soft
+"#;
+        let err = serde_yaml::from_str::<super::RateLimitPolicy>(yaml)
+            .expect_err("byte units should not parse for message counts");
+
+        assert!(
+            err.to_string().contains("without byte units"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Scenario: a byte-rate policy uses byte-unit suffixes for count fields.
+    /// Guarantees: byte units remain accepted for `request_bytes/second` limits.
+    #[test]
+    fn rate_limit_accepts_byte_units_for_request_bytes() {
+        let yaml = r#"
+mode: enforce
+aggregation: receiver_instance
+unit: request_bytes/second
+allow: "1 KiB"
+interval: 1s
+burst: "2 KiB"
+pressure: soft
+"#;
+        let policy: super::RateLimitPolicy =
+            serde_yaml::from_str(yaml).expect("byte units should parse for byte limits");
+
+        assert_eq!(policy.allow, 1024);
+        assert_eq!(policy.burst, Some(2048));
     }
 
     /// Scenario: the rate-limit schema is generated for fields parsed by byte-unit helpers.

@@ -1794,9 +1794,25 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_receiver_factory_map()
             .get(normalized.as_str())
-            .ok_or(Error::UnknownReceiver {
-                plugin_urn: normalized,
+            .ok_or_else(|| Error::UnknownReceiver {
+                plugin_urn: normalized.clone(),
             })?;
+        if let Some(rate_limit) = &rate_limit_policy
+            && !factory.supported_rate_units.contains(&rate_limit.unit)
+        {
+            return Err(Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {:?}",
+                        normalized,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        name.as_ref(),
+                        rate_limit.unit
+                    ),
+                },
+            )));
+        }
         let runtime_config = ReceiverConfig::with_channel_capacities(
             name.clone(),
             control_channel_capacity,
@@ -2509,6 +2525,7 @@ mod test {
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
+    use std::time::Duration;
 
     #[test]
     fn test_interests() {
@@ -2592,6 +2609,74 @@ mod test {
 
         let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
         assert!(policy.is_none());
+    }
+
+    fn no_op_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+        Ok(())
+    }
+
+    fn unreachable_receiver_create(
+        _: PipelineContext,
+        _: NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &ReceiverConfig,
+        _: &capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<testing::TestMsg>, otap_df_config::error::Error> {
+        panic!("receiver factory should not be called for unsupported rate-limit units");
+    }
+
+    static RATE_LIMIT_TEST_RECEIVERS: &[ReceiverFactory<testing::TestMsg>] = &[ReceiverFactory {
+        name: "urn:otel:receiver:rate_limit_test",
+        create: unreachable_receiver_create,
+        wiring_contract: wiring_contract::WiringContract::UNRESTRICTED,
+        supported_rate_units: &[RateLimitUnit::MessagesPerSecond],
+        validate_config: no_op_validate,
+    }];
+
+    static RATE_LIMIT_TEST_FACTORY: PipelineFactory<testing::TestMsg> =
+        PipelineFactory::new(RATE_LIMIT_TEST_RECEIVERS, &[], &[], &[]);
+
+    /// Scenario: an embedder builds a receiver directly through the engine with an unsupported rate unit.
+    /// Guarantees: engine construction rejects the policy before invoking the receiver factory.
+    #[test]
+    fn create_receiver_rejects_unsupported_rate_unit() {
+        use otap_df_config::policy::{
+            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+        };
+
+        let (pipeline_ctx, _) = testing::test_pipeline_ctx();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:rate_limit_test",
+        ));
+        let node_id = testing::test_node("rate_limit_test");
+        let rate_limit = RateLimitPolicy {
+            mode: RateLimitMode::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit: RateLimitUnit::RequestBytesPerSecond,
+            allow: 1024,
+            interval: Duration::from_secs(1),
+            burst: Some(1024),
+            pressure: RateLimitPressure::Soft,
+        };
+
+        let result = RATE_LIMIT_TEST_FACTORY.create_receiver(
+            &pipeline_ctx,
+            node_id,
+            node_config,
+            8,
+            8,
+            &None,
+            Some(rate_limit),
+            &capability::registry::Capabilities::empty(),
+        );
+        let Err(err) = result else {
+            panic!("unsupported rate unit should fail at engine build");
+        };
+
+        assert!(
+            err.to_string().contains("does not support rate_limit unit"),
+            "unexpected error: {err}"
+        );
     }
 
     // -- resolve_propagation_policy tests -------------------------------------

@@ -492,7 +492,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             Box::new(BufReader::new(socket))
                                         };
 
-                                        let mut line_bytes = Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
+                                        let mut line_bytes =
+                                            Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
+                                        let mut discarding_oversized_message = false;
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
 
@@ -548,7 +550,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         Ok(BoundedReadResult::Eof) => {
                                                             // EOF reached - connection closed
                                                             // Check if there's an incomplete line to process
-                                                            if !line_bytes.is_empty() {
+                                                            if discarding_oversized_message {
+                                                                line_bytes.clear();
+                                                            } else if !line_bytes.is_empty() {
                                                                 // Remove trailing newline if present
                                                                 let message_bytes = if line_bytes.last() == Some(&b'\n') {
                                                                     &line_bytes[..line_bytes.len()-1]
@@ -619,17 +623,17 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             break;
                                                         }
                                                         Ok(bounded_result) => {
+                                                            if discarding_oversized_message {
+                                                                if matches!(bounded_result, BoundedReadResult::Complete) {
+                                                                    discarding_oversized_message = false;
+                                                                }
+                                                                line_bytes.clear();
+                                                                continue;
+                                                            }
+
                                                             if matches!(bounded_result, BoundedReadResult::Truncated) {
                                                                 metrics.borrow_mut().received_logs_truncated.inc();
                                                             }
-
-                                                            // TODO: When a message exceeds MAX_MESSAGE_SIZE, the truncated
-                                                            // head is emitted as one record and the remaining tail bytes become
-                                                            // a separate record with no syslog header context (severity, timestamp,
-                                                            // etc.). Consider adding fragment-correlation metadata (e.g. a shared
-                                                            // attribute linking head and tail) or synthesizing a syslog header on
-                                                            // the continuation fragment so downstream consumers can associate the
-                                                            // pieces. See https://github.com/open-telemetry/otel-arrow/pull/2452#discussion_r3004024837
 
                                                             // Strip trailing newline if present
                                                             // (Complete has it, Truncated does not)
@@ -660,6 +664,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             }
 
                                                             if !admit_syslog_message(&rate_limiter, &metrics) {
+                                                                if matches!(bounded_result, BoundedReadResult::Truncated) {
+                                                                    discarding_oversized_message = true;
+                                                                }
                                                                 line_bytes.clear();
                                                                 continue;
                                                             }
@@ -676,6 +683,10 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     continue;
                                                                 }
                                                             };
+
+                                                            if matches!(bounded_result, BoundedReadResult::Truncated) {
+                                                                discarding_oversized_message = true;
+                                                            }
 
                                                             // Clear the bytes for the next iteration
                                                             line_bytes.clear();
@@ -1610,14 +1621,13 @@ mod tests {
 
     /// Validation for the TCP truncation test.
     ///
-    /// The oversized message is split into two reads by `read_line_bounded`:
-    /// 1. The truncated head (first `MAX_MESSAGE_SIZE` bytes) — contains the
-    ///    valid syslog header and parses successfully.
-    /// 2. The tail (remaining 500 bytes of padding + `\n`) — parsed as an
-    ///    RFC 3164 content-only message (the parser accepts any non-empty input).
-    /// 3. The normal-sized message sent afterward.
+    /// The oversized message is split into two reads by `read_line_bounded`.
+    /// The truncated head contains the valid syslog header and parses successfully,
+    /// while the remaining tail bytes are discarded through the newline. The
+    /// normal-sized message sent afterward is then parsed as the second record.
     ///
-    /// All three parse successfully, so we expect exactly 3 log records.
+    /// This preserves the receiver's one newline-framed line equals one message
+    /// accounting even when the line is larger than `MAX_MESSAGE_SIZE`.
     fn tcp_truncation_validation_procedure()
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
@@ -1644,16 +1654,18 @@ mod tests {
                     }
                 }
 
-                // Oversized message produces 2 records (truncated head + tail),
-                // plus 1 normal message = 3 total.
+                // Oversized message produces 1 record (truncated head), plus
+                // 1 normal message = 2 total.
                 assert_eq!(
-                    total_records, 3,
-                    "Expected 3 log records after truncation (head + tail + normal), got {total_records}"
+                    total_records, 2,
+                    "Expected 2 log records after truncation (head + normal), got {total_records}"
                 );
             })
         }
     }
 
+    /// Scenario: a TCP syslog message exceeds `MAX_MESSAGE_SIZE`.
+    /// Guarantees: the receiver emits only the truncated head and discards the tail before parsing the next line.
     #[test]
     fn test_syslog_cef_receiver_tcp_truncation() {
         let test_runtime = TestRuntime::new();
