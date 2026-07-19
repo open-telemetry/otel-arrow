@@ -4241,6 +4241,8 @@ mod test {
         assert_eq!(parent_ids, &expected)
     }
 
+    /// Scenario: Parent IDs are materialized for an empty attribute record batch.
+    /// Guarantees: The result stays empty and marks the parent ID encoding as plain.
     #[test]
     fn test_materialize_parent_id_for_attributes_empty() {
         // test this special case of empty batch
@@ -4533,6 +4535,8 @@ mod test {
         assert_eq!(&expected, result_ids)
     }
 
+    /// Scenario: An empty quasi-delta parent ID column is materialized by its key column.
+    /// Guarantees: The result remains empty and marks the parent ID encoding as plain.
     #[test]
     fn test_materialize_parent_id_by_column_empty_marks_plain() {
         let record_batch = RecordBatch::try_new(

@@ -1121,6 +1121,8 @@ mod tests {
         // );
     }
 
+    /// Scenario: Log rows for one resource are separated by a row for another resource.
+    /// Guarantees: The view uses scattered indices for the split group and visits every log.
     #[test]
     fn test_non_contiguous_resource_grouping() {
         // Test that scattered (non-contiguous) data is correctly detected and stored as Scattered
@@ -1211,6 +1213,8 @@ mod tests {
         assert_eq!(resource_count, 2, "Should iterate over 2 resources");
         assert_eq!(total_logs, 3, "Should iterate over all 3 log records");
     }
+    /// Scenario: One hundred adjacent log rows share the same resource ID.
+    /// Guarantees: The view represents the resource group as the contiguous range `0..100`.
     #[test]
     fn test_contiguous_optimization() {
         // Test that contiguous data is correctly detected as Contiguous
@@ -1253,6 +1257,9 @@ mod tests {
     /// - Attributes linked to log records with id=0 are accessible (0 is a valid ID)
     /// - Dictionary-encoded attribute keys (names) are properly decoded
     /// - Dictionary-encoded attribute values (strings and integers) are properly decoded
+    ///
+    /// Scenario: A log with ID zero has dictionary-encoded attribute keys and values.
+    /// Guarantees: The view exposes every linked attribute with its decoded key and value.
     #[test]
     fn test_log_attributes_with_dictionary_encoding() {
         use arrow::array::{DictionaryArray, TimestampNanosecondArray};
@@ -1472,6 +1479,8 @@ mod tests {
         assert_eq!(log_count, 3, "Should still iterate through all 3 logs");
     }
 
+    /// Scenario: Resource and scope IDs use Arrow dictionary arrays with plain ID metadata.
+    /// Guarantees: The view groups and iterates the decoded resource and scope IDs correctly.
     #[test]
     fn test_dictionary_encoded_resource_and_scope_ids() {
         use arrow::array::DictionaryArray;

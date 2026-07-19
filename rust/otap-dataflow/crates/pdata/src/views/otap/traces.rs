@@ -1365,6 +1365,8 @@ mod tests {
         assert_eq!(span_count, 2);
     }
 
+    /// Scenario: A span record contains an error status code and message.
+    /// Guarantees: The traces view exposes the status code and message unchanged.
     #[test]
     fn test_span_status() {
         // Create a batch with status struct
@@ -1450,6 +1452,8 @@ mod tests {
         }
     }
 
+    /// Scenario: A span batch omits every optional span column and child payload.
+    /// Guarantees: The view supplies documented defaults and empty child iterators.
     #[test]
     fn test_missing_optional_columns() {
         // Create a minimal batch with only required columns (id, resource, scope, start_time)
@@ -1522,6 +1526,8 @@ mod tests {
         }
     }
 
+    /// Scenario: Three event rows are linked to two spans by plain parent IDs.
+    /// Guarantees: Span iteration visits all events and exposes their names and timestamps.
     #[test]
     fn test_events_iteration() {
         let spans_batch = create_test_spans_batch();
@@ -1578,6 +1584,8 @@ mod tests {
         assert_eq!(total_events, 3, "Should iterate all 3 events");
     }
 
+    /// Scenario: A traces view combines root spans with linked event and link payloads.
+    /// Guarantees: End-to-end iteration preserves the expected span, event, and link hierarchy.
     #[test]
     fn test_otap_traces_view_integration() {
         let spans_batch = create_test_spans_batch();

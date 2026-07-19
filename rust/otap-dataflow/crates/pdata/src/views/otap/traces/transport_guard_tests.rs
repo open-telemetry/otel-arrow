@@ -35,6 +35,8 @@ fn traces_records() -> OtapArrowRecords {
     store.into()
 }
 
+/// Scenario: A traces view is constructed with an encoded root ID column.
+/// Guarantees: Construction reports the offending root column in a typed transport error.
 #[test]
 fn rejects_encoded_trace_root_id_columns() {
     for column in [consts::ID, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
@@ -54,6 +56,8 @@ fn rejects_encoded_trace_root_id_columns() {
     }
 }
 
+/// Scenario: A traces view is constructed with an encoded attribute parent ID column.
+/// Guarantees: Construction reports the offending attribute payload in a typed transport error.
 #[test]
 fn rejects_encoded_trace_attr_parent_id_columns() {
     for payload_type in [
@@ -79,6 +83,8 @@ fn rejects_encoded_trace_attr_parent_id_columns() {
     }
 }
 
+/// Scenario: A traces view is constructed with an encoded event or link ID column.
+/// Guarantees: Construction reports the offending event or link column in a typed error.
 #[test]
 fn rejects_encoded_trace_event_and_link_id_columns() {
     for (payload_type, column) in [
@@ -94,6 +100,8 @@ fn rejects_encoded_trace_event_and_link_id_columns() {
     }
 }
 
+/// Scenario: Transport-optimized trace records are decoded before view construction.
+/// Guarantees: Construction fails before decoding and succeeds after all transport IDs are plain.
 #[test]
 fn allows_traces_view_after_decode() {
     let mut records = traces_records();

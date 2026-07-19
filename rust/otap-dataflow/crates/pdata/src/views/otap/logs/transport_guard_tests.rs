@@ -196,6 +196,8 @@ fn assert_transport_error<T>(
     }
 }
 
+/// Scenario: A logs view is constructed with an encoded root ID column.
+/// Guarantees: Construction reports the offending root column in a typed transport error.
 #[test]
 fn rejects_encoded_log_id_columns() {
     for (log_id_encoding, resource_id_encoding, scope_id_encoding, expected_column) in [
@@ -229,6 +231,8 @@ fn rejects_encoded_log_id_columns() {
     }
 }
 
+/// Scenario: A logs view is constructed with an encoded attribute parent ID column.
+/// Guarantees: Construction reports the offending attribute payload in a typed transport error.
 #[test]
 fn rejects_encoded_attr_parent_id_columns() {
     let logs_batch = logs_batch_with_plain_ids();
@@ -254,6 +258,8 @@ fn rejects_encoded_attr_parent_id_columns() {
     );
 }
 
+/// Scenario: Transport-optimized log records are decoded before view construction.
+/// Guarantees: Construction fails before decoding and succeeds after all transport IDs are plain.
 #[test]
 fn allows_view_after_decode() {
     let mut otap_records = OtapArrowRecords::Logs(Default::default());
@@ -290,6 +296,8 @@ fn allows_view_after_decode() {
         .expect("decoded transport IDs should allow logs view creation");
 }
 
+/// Scenario: An empty encoded log-attribute batch is decoded before view construction.
+/// Guarantees: Decoding marks the empty parent ID column plain and permits view construction.
 #[test]
 fn allows_view_after_decode_with_empty_attr_batch() {
     let mut otap_records = OtapArrowRecords::Logs(Default::default());
@@ -308,6 +316,8 @@ fn allows_view_after_decode_with_empty_attr_batch() {
         .expect("decoded empty transport child batches should allow logs view creation");
 }
 
+/// Scenario: A resource-only view is built from records with other encoded child payloads.
+/// Guarantees: Only resource data is decoded and the expected resource attribute remains readable.
 #[test]
 fn resource_only_view_decodes_only_resource_batches() {
     let mut otap_records = OtapArrowRecords::Logs(Default::default());
@@ -358,6 +368,8 @@ fn resource_only_view_decodes_only_resource_batches() {
     assert!(resources.next().is_none());
 }
 
+/// Scenario: Resource attributes are decoded while filtering for one requested key.
+/// Guarantees: Each resource exposes only the requested attribute and its decoded value.
 #[test]
 fn resource_only_view_keyed_decode_keeps_only_requested_resource_attr() {
     let mut otap_records = OtapArrowRecords::Logs(Default::default());
@@ -406,6 +418,8 @@ fn resource_only_view_keyed_decode_keeps_only_requested_resource_attr() {
     assert!(resources.next().is_none());
 }
 
+/// Scenario: A keyed resource decode requests an attribute absent from every resource.
+/// Guarantees: The resource view remains valid and exposes empty attribute iterators.
 #[test]
 fn resource_only_view_keyed_decode_allows_missing_requested_resource_attr() {
     let mut otap_records = OtapArrowRecords::Logs(Default::default());
@@ -446,6 +460,8 @@ fn resource_only_view_keyed_decode_allows_missing_requested_resource_attr() {
     assert!(resources.next().is_none());
 }
 
+/// Scenario: A keyed resource-only view is built without a root Logs payload.
+/// Guarantees: The missing root is treated as an empty resource set instead of an error.
 #[test]
 fn resource_only_view_missing_logs_batch_yields_empty_view() {
     let otap_records = OtapArrowRecords::Logs(Default::default());

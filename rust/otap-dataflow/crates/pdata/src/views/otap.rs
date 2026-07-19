@@ -203,6 +203,8 @@ mod tests {
         .into()
     }
 
+    /// Scenario: Clone-and-decode receives OTAP records whose transport IDs are already plain.
+    /// Guarantees: The wrapper borrows the records and can construct a metrics view from them.
     #[test]
     fn clone_and_decode_borrows_plain_records() {
         let records = metrics_records();
@@ -213,6 +215,8 @@ mod tests {
         let _view = decoded.metrics_view().unwrap();
     }
 
+    /// Scenario: Clone-and-decode receives transport-optimized OTAP records.
+    /// Guarantees: The wrapper owns a decoded copy that can construct a metrics view.
     #[test]
     fn clone_and_decode_owns_transport_optimized_records() {
         let mut records = metrics_records();

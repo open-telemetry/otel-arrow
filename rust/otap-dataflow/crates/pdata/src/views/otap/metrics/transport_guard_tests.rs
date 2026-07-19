@@ -97,6 +97,8 @@ fn metrics_records_with_root_types(
     .into()
 }
 
+/// Scenario: Preflight checks inspect a Gauge while child transport IDs remain encoded.
+/// Guarantees: The preflight reports an aggregatable metric without decoding child IDs.
 #[test]
 fn aggregatable_preflight_detects_gauge_without_transport_decode() {
     let mut records = metrics_records_with_root_types(
@@ -114,6 +116,8 @@ fn aggregatable_preflight_detects_gauge_without_transport_decode() {
     assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
 }
 
+/// Scenario: Preflight checks inspect a delta Sum while child transport IDs remain encoded.
+/// Guarantees: The preflight skips the non-aggregatable delta Sum without decoding child IDs.
 #[test]
 fn aggregatable_preflight_skips_delta_sum_without_transport_decode() {
     let mut records = metrics_records_with_root_types(
@@ -131,6 +135,8 @@ fn aggregatable_preflight_skips_delta_sum_without_transport_decode() {
     assert!(!otap_metrics_have_aggregatable_metrics(&records).unwrap());
 }
 
+/// Scenario: Preflight checks inspect a cumulative monotonic Sum.
+/// Guarantees: The preflight reports the Sum as aggregatable.
 #[test]
 fn aggregatable_preflight_detects_cumulative_monotonic_sum() {
     let records = metrics_records_with_root_types(
@@ -142,6 +148,8 @@ fn aggregatable_preflight_detects_cumulative_monotonic_sum() {
     assert!(otap_metrics_have_aggregatable_metrics(&records).unwrap());
 }
 
+/// Scenario: A metrics view is constructed with an encoded root ID column.
+/// Guarantees: Construction reports the offending root column in a typed transport error.
 #[test]
 fn rejects_encoded_metrics_root_id_columns() {
     for column in [consts::ID, RESOURCE_ID_COL_PATH, SCOPE_ID_COL_PATH] {
@@ -161,6 +169,8 @@ fn rejects_encoded_metrics_root_id_columns() {
     }
 }
 
+/// Scenario: A metrics view is constructed with an encoded attribute parent ID column.
+/// Guarantees: Construction reports the offending attribute payload in a typed transport error.
 #[test]
 fn rejects_encoded_metrics_attr_parent_id_columns() {
     for payload_type in [
@@ -191,6 +201,8 @@ fn rejects_encoded_metrics_attr_parent_id_columns() {
     }
 }
 
+/// Scenario: A metrics view is constructed with an encoded child ID or parent ID column.
+/// Guarantees: Construction reports the offending child payload and column in a typed error.
 #[test]
 fn rejects_encoded_metrics_child_id_columns() {
     for (payload_type, column) in [
@@ -216,6 +228,8 @@ fn rejects_encoded_metrics_child_id_columns() {
     }
 }
 
+/// Scenario: Transport-optimized metrics records are decoded before view construction.
+/// Guarantees: Construction fails before decoding and succeeds after all transport IDs are plain.
 #[test]
 fn allows_metrics_view_after_decode() {
     let mut records = metrics_records();
