@@ -8,9 +8,8 @@ use otap_df_engine::memory_limiter::{
     LocalReceiverAdmissionState, MemoryPressureLevel, SharedReceiverAdmissionState,
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-use parking_lot::Mutex;
 
 /// Result of a scoped rate admission check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,58 +22,105 @@ pub enum RateAdmissionDecision {
     Reject,
 }
 
-#[derive(Debug)]
 struct TokenBucket {
-    allow: f64,
-    interval_secs: f64,
-    burst: f64,
-    tokens: f64,
-    last_refill: Instant,
+    allow: u64,
+    interval_nanos: u64,
+    burst: u64,
+    epoch: Instant,
+    theoretical_arrival_nanos: AtomicU64,
 }
 
 impl TokenBucket {
     fn new(policy: &RateLimitPolicy) -> Self {
-        let burst = policy.burst_or_allow() as f64;
         Self {
-            allow: policy.allow as f64,
-            interval_secs: policy.interval.as_secs_f64(),
-            burst,
-            tokens: burst,
-            last_refill: Instant::now(),
+            allow: policy.allow,
+            interval_nanos: u64::try_from(policy.interval.as_nanos()).unwrap_or(u64::MAX),
+            burst: policy.burst_or_allow(),
+            epoch: Instant::now(),
+            theoretical_arrival_nanos: AtomicU64::new(0),
         }
     }
 
-    fn refill(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
-        self.last_refill = now;
-        if elapsed <= 0.0 || self.interval_secs <= 0.0 {
-            return;
+    fn now_nanos(&self) -> u64 {
+        u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
+    }
+
+    fn nanos_for_units(&self, units: u64) -> u64 {
+        if units == 0 {
+            return 0;
         }
-        let refill = elapsed * (self.allow / self.interval_secs);
-        self.tokens = (self.tokens + refill).min(self.burst);
+        if self.allow == 0 || self.interval_nanos == 0 {
+            return u64::MAX;
+        }
+
+        let nanos =
+            (u128::from(units) * u128::from(self.interval_nanos)).div_ceil(u128::from(self.allow));
+        u64::try_from(nanos).unwrap_or(u64::MAX)
+    }
+
+    fn burst_window_nanos(&self) -> u64 {
+        if self.burst == 0 || self.allow == 0 || self.interval_nanos == 0 {
+            return 0;
+        }
+
+        self.nanos_for_units(self.burst)
     }
 
     fn charge(
-        &mut self,
+        &self,
         weight: u64,
         pressure_active: bool,
         mode: RateLimitMode,
     ) -> RateAdmissionDecision {
-        self.refill();
-        let weight = weight as f64;
-        let over_limit = self.tokens < weight;
+        let cost = self.nanos_for_units(weight);
+        let now = self.now_nanos();
+        let burst_window = self.burst_window_nanos();
+        let limit = now.saturating_add(burst_window);
+        let debt_limit = limit.saturating_add(burst_window);
 
-        if pressure_active && over_limit {
-            if mode == RateLimitMode::Enforce {
+        loop {
+            let current = self.theoretical_arrival_nanos.load(Ordering::Acquire);
+            let candidate = current.max(now).saturating_add(cost);
+            let over_limit = candidate > limit;
+
+            if pressure_active && over_limit && mode == RateLimitMode::Enforce {
                 return RateAdmissionDecision::Reject;
             }
-            self.tokens = (self.tokens - weight).max(-self.burst);
-            return RateAdmissionDecision::WouldThrottle;
-        }
 
-        self.tokens = (self.tokens - weight).max(-self.burst);
-        RateAdmissionDecision::Admit
+            let next = candidate.min(debt_limit);
+            if self
+                .theoretical_arrival_nanos
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if pressure_active && over_limit {
+                    return RateAdmissionDecision::WouldThrottle;
+                }
+                return RateAdmissionDecision::Admit;
+            }
+        }
+    }
+
+    fn is_exhausted(&self) -> bool {
+        let now = self.now_nanos();
+        let limit = now.saturating_add(self.burst_window_nanos());
+        let current = self.theoretical_arrival_nanos.load(Ordering::Acquire);
+        let candidate = current.max(now).saturating_add(self.nanos_for_units(1));
+        candidate > limit
+    }
+}
+
+impl std::fmt::Debug for TokenBucket {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TokenBucket")
+            .field("allow", &self.allow)
+            .field("interval_nanos", &self.interval_nanos)
+            .field("burst", &self.burst)
+            .field(
+                "theoretical_arrival_nanos",
+                &self.theoretical_arrival_nanos.load(Ordering::Relaxed),
+            )
+            .finish_non_exhaustive()
     }
 }
 
@@ -112,7 +158,7 @@ impl AdmissionPressure for LocalReceiverAdmissionState {
 pub struct GenericRateLimiter<P> {
     policy: Arc<RateLimitPolicy>,
     admission_state: P,
-    bucket: Arc<Mutex<TokenBucket>>,
+    bucket: Arc<TokenBucket>,
 }
 
 /// Rate gate for receivers whose tasks may move between runtime workers.
@@ -126,7 +172,7 @@ impl<P: AdmissionPressure> GenericRateLimiter<P> {
     #[must_use]
     pub fn new(policy: RateLimitPolicy, admission_state: P) -> Self {
         Self {
-            bucket: Arc::new(Mutex::new(TokenBucket::new(&policy))),
+            bucket: Arc::new(TokenBucket::new(&policy)),
             policy: Arc::new(policy),
             admission_state,
         }
@@ -139,9 +185,7 @@ impl<P: AdmissionPressure> GenericRateLimiter<P> {
             self.admission_state.level(),
             MemoryPressureLevel::Soft | MemoryPressureLevel::Hard
         );
-        self.bucket
-            .lock()
-            .charge(units, pressure_active, self.policy.mode)
+        self.bucket.charge(units, pressure_active, self.policy.mode)
     }
 
     /// Returns true when any positive-weight request would be rejected without charging the bucket.
@@ -155,9 +199,7 @@ impl<P: AdmissionPressure> GenericRateLimiter<P> {
             return false;
         }
 
-        let mut bucket = self.bucket.lock();
-        bucket.refill();
-        bucket.tokens < 1.0
+        self.bucket.is_exhausted()
     }
 
     /// Returns the receiver-facing retry hint from the shared pressure state.
@@ -277,6 +319,41 @@ mod tests {
         assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);
 
         assert!(!limiter.is_exhausted());
+    }
+
+    /// Scenario: traffic exceeds the burst budget while memory pressure is still normal.
+    /// Guarantees: the bucket carries bounded debt into soft pressure instead of recovering from zero debt.
+    #[test]
+    fn normal_pressure_overage_accrues_debt_for_soft_pressure() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let mut policy = policy(RateLimitMode::Enforce);
+        policy.allow = 1_000;
+        policy.burst = Some(1_000);
+        let limiter = RateLimiter::new(policy, admission.clone());
+
+        assert_eq!(limiter.check_units(2_000), RateAdmissionDecision::Admit);
+        std::thread::sleep(Duration::from_millis(20));
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+
+        assert_eq!(limiter.check_units(1), RateAdmissionDecision::Reject);
+    }
+
+    /// Scenario: the burst window is not evenly divisible by the configured rate.
+    /// Guarantees: a request exactly equal to burst capacity is admitted from a full bucket.
+    #[test]
+    fn full_burst_request_uses_consistent_rounding() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let mut policy = policy(RateLimitMode::Enforce);
+        policy.allow = 3;
+        policy.burst = Some(10);
+        let limiter = RateLimiter::new(policy, admission.clone());
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+
+        assert_eq!(limiter.check_units(10), RateAdmissionDecision::Admit);
     }
 
     /// Scenario: a programmatic caller constructs a limiter with a zero refill interval.
