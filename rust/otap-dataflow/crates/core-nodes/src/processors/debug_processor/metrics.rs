@@ -17,22 +17,19 @@ pub struct SignalAttributes {
 #[metric_set(name = "processor.debug.pdata", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct DebugPdataMetrics {
-    /// Number of items consumed
-    #[metric(unit = "{item}")]
-    pub items_consumed: Counter<u64>,
-    /// Number of batches (messages) consumed
-    #[metric(unit = "{msg}")]
-    pub batches_consumed: Counter<u64>,
-    /// Number of events (structured logs) consumed
-    #[metric(unit = "{event}")]
-    pub events_consumed: Counter<u64>,
-    /// number of span links consumed
-    #[metric(unit = "{link}")]
-    pub span_links_consumed: Counter<u64>,
-    /// number of span events (structured logs) consumed
-    #[metric(unit = "{event}")]
-    pub span_events_consumed: Counter<u64>,
-    /// number of metric datapoints consumed
-    #[metric(unit = "{datapoint}")]
-    pub metric_datapoints_consumed: Counter<u64>,
+    /// Incoming OTLP requests handled by the debug processor
+    #[metric(name = "consumed.requests", unit = "{request}")]
+    pub consumed_requests: Counter<u64>,
+    /// Primary signal items: log records, metric datapoints, or spans
+    #[metric(name = "consumed.items", unit = "{item}")]
+    pub consumed_items: Counter<u64>,
+    /// Named log events for logs, or span events for traces
+    #[metric(name = "consumed.events", unit = "{event}")]
+    pub consumed_events: Counter<u64>,
+    /// Span links
+    #[metric(name = "consumed.links", unit = "{link}")]
+    pub consumed_links: Counter<u64>,
+    /// Logical OTLP Metric records
+    #[metric(name = "consumed.metric_records", unit = "{metric}")]
+    pub consumed_metric_records: Counter<u64>,
 }

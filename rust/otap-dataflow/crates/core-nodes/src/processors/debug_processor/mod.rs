@@ -356,7 +356,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         let attrs = metrics::SignalAttributes {
                             signal: otap_df_config::SignalType::Logs,
                         };
-                        self.metrics.with(attrs).batches_consumed.add(1);
+                        self.metrics.with(attrs).consumed_requests.add(1);
                     }
                     OtlpProtoBytes::ExportMetricsRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Metrics) {
@@ -372,7 +372,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         let attrs = metrics::SignalAttributes {
                             signal: otap_df_config::SignalType::Metrics,
                         };
-                        self.metrics.with(attrs).batches_consumed.add(1);
+                        self.metrics.with(attrs).consumed_requests.add(1);
                     }
                     OtlpProtoBytes::ExportTracesRequest(bytes) => {
                         if active_signals.contains(&SignalActive::Spans) {
@@ -388,7 +388,7 @@ impl local::Processor<OtapPdata> for DebugProcessor {
                         let attrs = metrics::SignalAttributes {
                             signal: otap_df_config::SignalType::Traces,
                         };
-                        self.metrics.with(attrs).batches_consumed.add(1);
+                        self.metrics.with(attrs).consumed_requests.add(1);
                     }
                 }
                 Ok(())
@@ -441,10 +441,13 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Metrics,
         };
-        self.metrics.with(attrs).items_consumed.add(metrics as u64);
         self.metrics
             .with(attrs)
-            .metric_datapoints_consumed
+            .consumed_metric_records
+            .add(metrics as u64);
+        self.metrics
+            .with(attrs)
+            .consumed_items
             .add(data_points as u64);
 
         let report_basic = format!(
@@ -496,15 +499,9 @@ impl DebugProcessor {
         let attrs = metrics::SignalAttributes {
             signal: otap_df_config::SignalType::Traces,
         };
-        self.metrics.with(attrs).items_consumed.add(spans as u64);
-        self.metrics
-            .with(attrs)
-            .span_events_consumed
-            .add(events as u64);
-        self.metrics
-            .with(attrs)
-            .span_links_consumed
-            .add(links as u64);
+        self.metrics.with(attrs).consumed_items.add(spans as u64);
+        self.metrics.with(attrs).consumed_events.add(events as u64);
+        self.metrics.with(attrs).consumed_links.add(links as u64);
 
         let report_basic = format!(
             "Received {resource_spans} resource spans\nReceived {spans} spans\nReceived {events} events\nReceived {links} links\n"
@@ -553,9 +550,9 @@ impl DebugProcessor {
         };
         self.metrics
             .with(attrs)
-            .items_consumed
+            .consumed_items
             .add(log_records as u64);
-        self.metrics.with(attrs).events_consumed.add(events);
+        self.metrics.with(attrs).consumed_events.add(events);
 
         let report_basic = format!(
             "Received {resource_logs} resource logs\nReceived {log_records} log records\nReceived {events} events\n"
@@ -918,7 +915,7 @@ mod tests {
                         .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case("logs"));
                     if has_logs_signal {
                         for (field, value) in iter {
-                            if field.name == "items.consumed" {
+                            if field.name == "consumed.items" {
                                 if let otap_df_telemetry::metrics::MetricValue::U64(c) = value {
                                     expected_logs_consumed = c;
                                 }

@@ -84,12 +84,11 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.debug.pdata.items_consumed` | `{item}` | Number of items consumed, by `signal` (`traces`/`metrics`/`logs`). |
-| `processor.debug.pdata.batches_consumed` | `{msg}` | Number of batches (messages) consumed, by `signal` (`traces`/`metrics`/`logs`). |
-| `processor.debug.pdata.events_consumed` | `{event}` | Number of events (structured logs) consumed. |
-| `processor.debug.pdata.span_links_consumed` | `{link}` | Number of span links consumed. |
-| `processor.debug.pdata.span_events_consumed` | `{event}` | Number of span events (structured logs) consumed. |
-| `processor.debug.pdata.metric_datapoints_consumed` | `{datapoint}` | Number of metric datapoints consumed. |
+| `processor.debug.pdata.consumed.requests` | `{request}` | Incoming OTLP Export*ServiceRequest payloads handled by the debug processor, by `signal`. |
+| `processor.debug.pdata.consumed.items` | `{item}` | Primary signal items (log records, metric datapoints, or spans) consumed, by `signal`. |
+| `processor.debug.pdata.consumed.events` | `{event}` | Named log events for logs, or span events for traces. |
+| `processor.debug.pdata.consumed.links` | `{link}` | Span links. |
+| `processor.debug.pdata.consumed.metric_records` | `{metric}` | Logical OTLP Metric records. |
 
 ### Events
 
