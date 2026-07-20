@@ -1423,17 +1423,31 @@ mod tests {
         );
     }
 
-    /// Scenario: an item attribute set attempts to declare a schema name.
-    /// Guarantees: registration and measurement item attribute sets remain unnamed.
+    /// Scenario: registration and measurement attribute sets use a schema name.
+    /// Guarantees: names are reserved for explicitly declared scope attribute sets.
     #[test]
     fn item_attribute_sets_cannot_be_named() {
-        for args in [
-            quote::quote!(item, measurement, name = "test.measurement"),
-            quote::quote!(item, registration, name = "test.registration"),
+        for (args, expected_error) in [
+            (
+                quote::quote!(item, measurement, name = "test.measurement"),
+                "`name` cannot be combined with `item`",
+            ),
+            (
+                quote::quote!(item, registration, name = "test.registration"),
+                "`name` cannot be combined with `item`",
+            ),
+            (
+                quote::quote!(name = "test.measurement", measurement),
+                "`measurement` requires `item`",
+            ),
+            (
+                quote::quote!(name = "test.registration", registration),
+                "`registration` requires `item`",
+            ),
         ] {
             let error = parse_attribute_set_args(args)
                 .expect_err("item attribute sets must not declare names");
-            assert_eq!(error.to_string(), "`name` cannot be combined with `item`");
+            assert_eq!(error.to_string(), expected_error);
         }
     }
 }
