@@ -660,6 +660,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 metrics.borrow_mut().received_logs_truncated.inc();
                                                             }
 
+                                                            // TODO: When a message exceeds MAX_MESSAGE_SIZE, the truncated
+                                                            // head is emitted as one record and the remaining tail bytes become
+                                                            // a separate record with no syslog header context (severity, timestamp,
+                                                            // etc.). Consider adding fragment-correlation metadata (e.g. a shared
+                                                            // attribute linking head and tail) or synthesizing a syslog header on
+                                                            // the continuation fragment so downstream consumers can associate the
+                                                            // pieces. See https://github.com/open-telemetry/otel-arrow/pull/2452#discussion_r3004024837
+
                                                             // Strip trailing newline if present
                                                             // (Complete has it, Truncated does not)
                                                             let message_to_parse = if line_bytes.last() == Some(&b'\n') {
@@ -1659,13 +1667,14 @@ mod tests {
 
     /// Validation for the TCP truncation test.
     ///
-    /// The oversized message is split into two reads by `read_line_bounded`.
-    /// The truncated head contains the valid syslog header and parses successfully,
-    /// while the remaining tail bytes are parsed as an RFC 3164 content-only
-    /// message. The normal-sized message sent afterward is parsed afterward.
+    /// The oversized message is split into two reads by `read_line_bounded`:
+    /// 1. The truncated head (first `MAX_MESSAGE_SIZE` bytes) — contains the
+    ///    valid syslog header and parses successfully.
+    /// 2. The tail (remaining 500 bytes of padding + `\n`) — parsed as an
+    ///    RFC 3164 content-only message (the parser accepts any non-empty input).
+    /// 3. The normal-sized message sent afterward.
     ///
-    /// All three fragments parse successfully, preserving the pre-existing TCP
-    /// truncation behavior.
+    /// All three parse successfully, so we expect exactly 3 log records.
     fn tcp_truncation_validation_procedure()
     -> impl FnOnce(NotSendValidateContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut ctx| {
@@ -1692,6 +1701,8 @@ mod tests {
                     }
                 }
 
+                // Oversized message produces 2 records (truncated head + tail),
+                // plus 1 normal message = 3 total.
                 assert_eq!(
                     total_records, 3,
                     "Expected 3 log records after truncation (head + tail + normal), got {total_records}"
@@ -1700,8 +1711,6 @@ mod tests {
         }
     }
 
-    /// Scenario: a TCP syslog message exceeds `MAX_MESSAGE_SIZE`.
-    /// Guarantees: the receiver preserves bounded-read behavior for the truncated head, tail fragment, and next complete line.
     #[test]
     fn test_syslog_cef_receiver_tcp_truncation() {
         let test_runtime = TestRuntime::new();
