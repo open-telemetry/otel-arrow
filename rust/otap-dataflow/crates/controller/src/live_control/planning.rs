@@ -234,6 +234,10 @@ impl<
         Ok(profiles)
     }
 
+    // The process-wide memory limiter owns a runtime pressure-monitoring task
+    // that is created during controller startup. Live reconciliation can replace
+    // pipelines, but it does not currently restart or reconfigure that task, so
+    // keep the pressure source immutable for live updates.
     fn validate_live_memory_limiter_unchanged(
         current_config: &OtelDataflowSpec,
         desired_config: &OtelDataflowSpec,

@@ -396,6 +396,10 @@ pub enum RateLimitMode {
 }
 
 /// Runtime aggregation scope for rate-limit state.
+///
+/// Future versions may add broader shared scopes or keyed partitions, such as
+/// tenant-aware limits, after their config and hot-path implementation are
+/// designed.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitAggregation {
@@ -426,6 +430,10 @@ impl RateLimitUnit {
 }
 
 /// Process pressure threshold that activates the scoped gate.
+///
+/// V1 supports `soft`, which activates at soft pressure and remains active at
+/// harder levels. Future versions may add additional thresholds after their
+/// interaction with memory-pressure recovery is designed.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RateLimitPressure {
