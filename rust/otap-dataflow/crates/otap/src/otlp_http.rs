@@ -940,11 +940,11 @@ pub async fn serve(
                 let handler = HttpHandler {
                     effect_handler: effect_handler.clone(),
                     ack_registry: ack_registry.clone(),
-                        metrics: metrics.clone(),
-                        settings: settings.clone(),
-                        admission_state: admission_state.clone(),
-                        rate_limiter: rate_limiter.clone(),
-                        global_semaphore: global_semaphore.clone(),
+                    metrics: metrics.clone(),
+                    settings: settings.clone(),
+                    admission_state: admission_state.clone(),
+                    rate_limiter: rate_limiter.clone(),
+                    global_semaphore: global_semaphore.clone(),
                     local_semaphore: local_semaphore.clone(),
                     peer_addr,
                 };
