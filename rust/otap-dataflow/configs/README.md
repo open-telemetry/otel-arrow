@@ -13,6 +13,35 @@ future.
 
 ## Available Configurations
 
+### `internal-telemetry.yaml`
+
+Routes the engine's own logs and metrics through the Internal Telemetry System:
+
+- Uses the dedicated engine observability pipeline
+- Receives internal OTLP logs and metrics with `receiver:internal_telemetry`
+- Collects metric snapshots every second and emits them every two seconds
+- Applies metric views for engine, pipeline, and flow metrics
+- Routes logs to the console exporter and decoded metrics to the debug processor
+
+Validate the configuration, then run the demo on one core and let it produce
+at least three metric batches:
+
+```bash
+cargo run -- --config configs/internal-telemetry.yaml --validate-and-exit
+cargo run -- --config configs/internal-telemetry.yaml --num-cores 1 \
+  2>&1 | tee /tmp/its-metrics.log
+```
+
+The detailed metric output should contain the viewed stream names
+`process_memory_usage`, `process_cpu_utilization`, `process_uptime`,
+`processor_incoming_items`, `processor_outgoing_items`, and
+`processing_duration`. Stop the process with `Ctrl-C` after inspection, then
+list the viewed streams with:
+
+```bash
+rg 'Name: (process_|processor_|processing_)' /tmp/its-metrics.log
+```
+
 ### `trafficgen-batch-debug-noop.yaml`
 
 Demonstrates the batch processor:

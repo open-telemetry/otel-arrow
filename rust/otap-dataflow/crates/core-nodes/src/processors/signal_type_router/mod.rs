@@ -1253,9 +1253,9 @@ mod tests {
             let telemetry = InternalTelemetrySystem::default();
             let telemetry_registry = telemetry.registry();
             let reporter = telemetry.reporter();
+            let collection = telemetry.collector().run_collection_loop();
             let collector_task = tokio::task::spawn_local(async move {
-                let collector = telemetry.collector();
-                let _ = collector.run_collection_loop().await;
+                let _ = collection.await;
             });
             (telemetry_registry, reporter, collector_task)
         }
