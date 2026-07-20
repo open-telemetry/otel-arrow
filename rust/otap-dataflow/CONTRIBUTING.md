@@ -28,6 +28,18 @@ the full check path, likely because many of the longest tests are concentrated
 in a few large integration-style binaries, so the extra runner orchestration did
 not offset the limited parallelism gains.
 
+## Test documentation
+
+Document every test immediately above its declaration with Rust doc comments:
+
+```rust
+/// Scenario: <the behavior or condition under test>
+/// Guarantees: <the observable invariant protected by the test>
+```
+
+Make both statements specific enough for a reviewer to understand the test's
+intent and the behavior that must not regress without reading its implementation.
+
 ## Test and example server bind addresses
 
 When a test or example starts a listening server, bind it to the loopback

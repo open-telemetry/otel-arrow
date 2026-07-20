@@ -8,10 +8,11 @@
 //!   - `#[attributes(name = "my.attributes.name")]`
 //!     Field attributes:
 //!   - `#[metric(name = "field.name", unit = "{unit}")]`
-//!   - `#[attribute(key = "field.key")]`
+//!   - `#[attribute_key = "field.key"]`
 
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
+use std::collections::HashSet;
 use syn::parse_quote;
 use syn::{
     Attribute, Data, DeriveInput, Fields, ItemStruct, LitStr, parse_macro_input, spanned::Spanned,
@@ -324,9 +325,9 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
 /// Container attribute:
 ///   - `#[attributes(name = "my.attributes.name")]`
 ///     Field attributes:
-///   - `#[attribute(key = "field.key")]` (optional, defaults to field name with dots)
+///   - `#[attribute_key = "field.key"]` (optional, defaults to field name with dots)
 ///   - `#[compose]` for fields that implement AttributeSetHandler
-#[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute, compose))]
+#[proc_macro_derive(AttributeSetHandler, attributes(attributes, attribute_key, compose))]
 pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
 
@@ -375,37 +376,21 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         }
     };
 
-    // Determine if we're in the telemetry crate itself by looking at the crate name context
-    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
-    let is_telemetry_crate = crate_name == "otap-df-telemetry";
+    // Determine the telemetry crate root once and derive all paths from it.
+    let root = telemetry_crate_root();
 
     // Choose path prefixes based on context
-    let (
-        attr_handler_path,
-        descriptor_path,
-        field_path,
-        value_type_path,
-        attr_value_path,
-        attr_iterator_path,
-    ) = if is_telemetry_crate {
-        (
-            quote!(crate::attributes::AttributeSetHandler),
-            quote!(crate::descriptor::AttributesDescriptor),
-            quote!(crate::descriptor::AttributeField),
-            quote!(crate::descriptor::AttributeValueType),
-            quote!(crate::attributes::AttributeValue),
-            quote!(crate::attributes::AttributeIterator),
-        )
-    } else {
-        (
-            quote!(::otap_df_telemetry::attributes::AttributeSetHandler),
-            quote!(::otap_df_telemetry::descriptor::AttributesDescriptor),
-            quote!(::otap_df_telemetry::descriptor::AttributeField),
-            quote!(::otap_df_telemetry::descriptor::AttributeValueType),
-            quote!(::otap_df_telemetry::attributes::AttributeValue),
-            quote!(::otap_df_telemetry::attributes::AttributeIterator),
-        )
-    };
+    let attr_handler_path = quote!(#root::attributes::AttributeSetHandler);
+    let descriptor_path = quote!(#root::descriptor::AttributesDescriptor);
+    let field_path = quote!(#root::descriptor::AttributeField);
+    let value_type_path = quote!(#root::descriptor::AttributeValueType);
+    let attr_value_path = quote!(#root::attributes::AttributeValue);
+    let attr_iterator_path = quote!(#root::attributes::AttributeIterator);
+
+    // Path to the AttributeEnum trait, used for enum-typed attribute fields.
+    let attr_enum_path = quote!(#root::attributes::AttributeEnum);
+    let key_schema_path = quote!(#root::attributes::AttributeKeySchema);
+    let key_schema_trait_path = quote!(#root::attributes::AttributeSetKeySchema);
 
     // Collect attribute fields and composed attribute sets
     let mut attr_field_idents = Vec::new();
@@ -415,6 +400,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     let mut attr_iter_values: Vec<proc_macro2::TokenStream> = Vec::new();
 
     let mut composed_field_idents = Vec::new();
+    let mut composed_field_types = Vec::new();
 
     for field in fields {
         let ident = field
@@ -431,17 +417,7 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
         if is_composed {
             // This field should implement AttributeSetHandler
             composed_field_idents.push(ident);
-            continue;
-        }
-
-        // Check if this field has #[attribute] annotation
-        let has_attribute_attr = field
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("attribute"));
-
-        if !has_attribute_attr {
-            // Skip fields without #[attribute] or #[compose] annotations
+            composed_field_types.push(field.ty.clone());
             continue;
         }
 
@@ -469,10 +445,14 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
             desc_lines.join(" ")
         };
 
-        // Find #[attribute(key = "...")]
+        // Find #[attribute_key = "..."]
         let mut key_attr: Option<String> = None;
         for attr in &field.attrs {
-            if let Some(key) = parse_attribute_field_attr(attr) {
+            let key = match parse_attribute_field_attr(attr) {
+                Ok(key) => key,
+                Err(error) => return error.to_compile_error().into(),
+            };
+            if let Some(key) = key {
                 key_attr = Some(key);
             }
         }
@@ -516,20 +496,25 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                                         quote!(#attr_value_path::String(self.#ident.to_string())),
                                     )
                                 } else {
-                                    return syn::Error::new(
-                                        seg.ident.span(),
-                                        format!("Unsupported attribute field type: {ident_ty}"),
+                                    // Any other path type is treated as an `AttributeEnum`
+                                    // (a closed-set enum attribute). Its string form is
+                                    // produced via `AttributeEnum::as_str`; a non-enum type
+                                    // yields a trait-bound error at the use site.
+                                    (
+                                        quote!(#value_type_path::String),
+                                        quote!(#attr_value_path::String(
+                                            #attr_enum_path::as_str(self.#ident).to_string()
+                                        )),
                                     )
-                                    .to_compile_error()
-                                    .into();
                                 }
                             } else {
-                                return syn::Error::new(
-                                    seg.ident.span(),
-                                    format!("Unsupported attribute field type: {ident_ty}"),
+                                // Bare path type (e.g. an enum `Signal`): treat as AttributeEnum.
+                                (
+                                    quote!(#value_type_path::String),
+                                    quote!(#attr_value_path::String(
+                                        #attr_enum_path::as_str(self.#ident).to_string()
+                                    )),
                                 )
-                                .to_compile_error()
-                                .into();
                             }
                         }
                     }
@@ -554,6 +539,16 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
     }
 
     let desc_ident = format_ident!("ATTRIBUTES_DESCRIPTOR");
+    let key_schema_entries = quote! {
+        #(
+            #key_schema_path::Key(#attr_field_keys),
+        )*
+        #(
+            #key_schema_path::Composed(
+                <#composed_field_types as #key_schema_trait_path>::KEY_SCHEMA,
+            ),
+        )*
+    };
 
     // Generate the descriptor and iterator implementation
     if composed_field_idents.is_empty() {
@@ -595,6 +590,12 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                         unsafe { ::std::mem::transmute(values.as_slice()) }
                     })
                 }
+            }
+
+            impl #generics #key_schema_trait_path for #struct_ident #generics {
+                const KEY_SCHEMA: &'static [#key_schema_path] = &[
+                    #key_schema_entries
+                ];
             }
         };
         generated.into()
@@ -675,9 +676,140 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
                     })
                 }
             }
+
+            impl #generics #key_schema_trait_path for #struct_ident #generics {
+                const KEY_SCHEMA: &'static [#key_schema_path] = &[
+                    #key_schema_entries
+                ];
+            }
         };
         generated.into()
     }
+}
+
+/// Returns the path prefix used to reference the telemetry crate from generated
+/// code: `crate` when expanding inside `otap-df-telemetry` itself, and
+/// `::otap_df_telemetry` for every downstream crate.
+fn telemetry_crate_root() -> proc_macro2::TokenStream {
+    let crate_name = std::env::var("CARGO_PKG_NAME").unwrap_or_default();
+    if crate_name == "otap-df-telemetry" {
+        quote!(crate)
+    } else {
+        quote!(::otap_df_telemetry)
+    }
+}
+
+/// Converts a `CamelCase`/`PascalCase` identifier to `snake_case`.
+fn to_snake_case(ident: &str) -> String {
+    let mut out = String::with_capacity(ident.len() + 4);
+    let mut prev_lower_or_digit = false;
+    for ch in ident.chars() {
+        if ch.is_uppercase() {
+            if prev_lower_or_digit {
+                out.push('_');
+            }
+            for lc in ch.to_lowercase() {
+                out.push(lc);
+            }
+            prev_lower_or_digit = false;
+        } else {
+            out.push(ch);
+            prev_lower_or_digit = ch.is_lowercase() || ch.is_ascii_digit();
+        }
+    }
+    out
+}
+
+/// Derive implementation of `otap_df_telemetry::attributes::AttributeEnum` for a
+/// unit-only enum.
+///
+/// Each variant's string form defaults to the `snake_case` of its identifier and
+/// can be overridden per variant with `#[attribute_value = "..."]`.
+///
+/// ```ignore
+/// #[derive(Debug, Clone, Copy, AttributeEnum)]
+/// pub enum Signal { Logs, Metrics, Traces }
+/// // Signal::Logs.as_str() == "logs"; Signal::CARDINALITY == 3
+/// ```
+#[proc_macro_derive(AttributeEnum, attributes(attribute_value))]
+pub fn derive_attribute_enum(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let enum_ident = input.ident.clone();
+    let generics = input.generics.clone();
+
+    if !generics.params.is_empty() {
+        return syn::Error::new(
+            generics.span(),
+            "AttributeEnum cannot be derived for generic enums; it is intended for simple \
+             closed-set (unit-only) enums",
+        )
+        .to_compile_error()
+        .into();
+    }
+
+    let data = match &input.data {
+        Data::Enum(e) => e,
+        _ => {
+            return syn::Error::new(input.span(), "AttributeEnum can only be derived for enums")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let mut variant_idents = Vec::new();
+    let mut variant_strings = Vec::new();
+    for variant in &data.variants {
+        if !matches!(variant.fields, Fields::Unit) {
+            return syn::Error::new(
+                variant.span(),
+                "AttributeEnum can only be derived for enums with unit variants",
+            )
+            .to_compile_error()
+            .into();
+        }
+
+        // Optional `#[attribute_value = "..."]` override for the variant string.
+        let mut override_val: Option<String> = None;
+        for attr in &variant.attrs {
+            if attr.path().is_ident("attribute_value") {
+                if let syn::Meta::NameValue(nv) = &attr.meta {
+                    if let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(s),
+                        ..
+                    }) = &nv.value
+                    {
+                        override_val = Some(s.value());
+                    }
+                }
+            }
+        }
+
+        let value = override_val.unwrap_or_else(|| to_snake_case(&variant.ident.to_string()));
+        variant_idents.push(variant.ident.clone());
+        variant_strings.push(value);
+    }
+
+    let cardinality = variant_idents.len();
+    let indices: Vec<usize> = (0..cardinality).collect();
+
+    let attr_enum_path = {
+        let root = telemetry_crate_root();
+        quote!(#root::attributes::AttributeEnum)
+    };
+
+    let generated = quote! {
+        impl #attr_enum_path for #enum_ident {
+            const CARDINALITY: usize = #cardinality;
+            const VARIANTS: &'static [&'static str] = &[ #( #variant_strings ),* ];
+            fn variant_index(self) -> usize {
+                match self {
+                    #( #enum_ident::#variant_idents => #indices, )*
+                }
+            }
+        }
+    };
+
+    generated.into()
 }
 
 /// Attribute macro that injects `#[repr(C, align(64))]` and wires up the MetricSetHandler derive
@@ -687,17 +819,29 @@ pub fn derive_attribute_set_handler(input: TokenStream) -> TokenStream {
 ///   pub struct MyMetrics { #[metric(name = "x", unit = "{unit}")] x: Counter<u64>, ... }
 #[proc_macro_attribute]
 pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse name argument
+    // Parse arguments: `name = "..."` plus optional
+    // `registration_attributes = Path` / `measurement_attributes = Path`.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
+    let mut registration_attrs: Option<syn::Type> = None;
+    let mut measurement_attrs: Option<syn::Type> = None;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
                 let _: syn::Token![=] = input.parse()?;
-                let lit: LitStr = input.parse()?;
                 if ident == "name" {
+                    let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
+                } else if ident == "registration_attributes" {
+                    registration_attrs = Some(input.parse()?);
+                } else if ident == "measurement_attributes" {
+                    measurement_attrs = Some(input.parse()?);
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown metric_set argument `{ident}`"),
+                    ));
                 }
                 if input.peek(syn::Token![,]) {
                     let _: syn::Token![,] = input.parse()?;
@@ -742,27 +886,158 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let metrics_attr: Attribute = parse_quote!(#[metrics(name = #metrics_name)]);
     s.attrs.push(metrics_attr);
 
-    quote!( #s ).into()
+    let struct_ident = s.ident.clone();
+
+    let crate_root = telemetry_crate_root();
+
+    let marker_impl = if let (Some(registration_ty), Some(measurement_ty)) =
+        (&registration_attrs, &measurement_attrs)
+    {
+        quote! {
+            impl #crate_root::metrics::RegistrationMetricSetHandler for #struct_ident {
+                type RegistrationAttributes = #registration_ty;
+            }
+
+            impl #crate_root::metrics::MeasurementMetricSetHandler for #struct_ident {
+                type MeasurementAttributes = #measurement_ty;
+            }
+
+            const _: () = {
+                #crate_root::metrics::check_cardinality(
+                    <#measurement_ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
+                );
+                if #crate_root::attributes::has_item_attribute_key_collision(
+                    <#registration_ty as #crate_root::attributes::AttributeSetKeySchema>::KEY_SCHEMA,
+                    <#measurement_ty as #crate_root::attributes::MeasurementAttributeSet>::DESCRIPTORS,
+                ) {
+                    panic!("registration and measurement item attribute keys must not overlap");
+                }
+            };
+
+            impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar and fixed attributes.
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                    registration_attrs: &#registration_ty,
+                ) -> #crate_root::metrics::MeasurementMetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_registration_and_measurement_metric_set::<Self>(
+                        registrar,
+                        registration_attrs,
+                    )
+                }
+            }
+        }
+    } else if let Some(ty) = &registration_attrs {
+        quote! {
+            impl #crate_root::metrics::RegistrationMetricSetHandler for #struct_ident {
+                type RegistrationAttributes = #ty;
+            }
+
+            impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar and fixed attributes.
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                    registration_attrs: &#ty,
+                ) -> #crate_root::metrics::MetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_registration_metric_set::<Self>(
+                        registrar,
+                        registration_attrs,
+                    )
+                }
+            }
+        }
+    } else if let Some(ty) = &measurement_attrs {
+        quote! {
+            impl #crate_root::metrics::MeasurementMetricSetHandler for #struct_ident {
+                type MeasurementAttributes = #ty;
+            }
+
+            // Compile-time cardinality budget check: hard build error when the
+            // measurement attribute set's cardinality exceeds the budget.
+            const _: () = #crate_root::metrics::check_cardinality(
+                <#ty as #crate_root::attributes::MeasurementAttributeSet>::CARDINALITY,
+            );
+
+            impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar.
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                ) -> #crate_root::metrics::MeasurementMetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_measurement_metric_set::<Self>(
+                        registrar,
+                    )
+                }
+            }
+        }
+    } else {
+        quote! {
+            impl #struct_ident {
+                /// Registers this metric set with the supplied scope registrar.
+                #[must_use]
+                pub fn register<R>(
+                    registrar: &R,
+                ) -> #crate_root::metrics::MetricSet<Self>
+                where
+                    R: #crate_root::metrics::MetricSetRegistrar,
+                {
+                    #crate_root::metrics::MetricSetRegistrar::register_metric_set::<Self>(
+                        registrar,
+                    )
+                }
+            }
+        }
+    };
+
+    quote!( #s #marker_impl ).into()
 }
 
-/// Attribute macro that injects `#[derive(AttributeSetHandler)]` and wires up the AttributeSetHandler derive
-/// and descriptor name via a container attribute.
-/// Usage:
-///   #[otap_df_telemetry_macros::attribute_set(name = "my.attributes")]
-///   pub struct MyAttributes { #[attribute(key = "custom.key")] field: String, ... }
+/// Declares either a named scope/entity attribute set or an emitted-item
+/// attribute set.
+///
+/// ```ignore
+/// #[attribute_set(name = "node.scope")] // scope or entity attributes
+/// #[attribute_set(item, registration)] // fixed item attributes
+/// #[attribute_set(item, measurement)] // per-recording metric item attributes
+/// ```
 #[proc_macro_attribute]
 pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse name argument
+    // Parse `name = "..."` or the bare item modes.
     let args = proc_macro2::TokenStream::from(attr);
     let mut name_val: Option<String> = None;
+    let mut is_item = false;
+    let mut is_registration = false;
+    let mut is_measurement = false;
     if let Err(err) = syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
-                let _: syn::Token![=] = input.parse()?;
-                let lit: LitStr = input.parse()?;
                 if ident == "name" {
+                    let _: syn::Token![=] = input.parse()?;
+                    let lit: LitStr = input.parse()?;
                     name_val = Some(lit.value());
+                } else if ident == "item" {
+                    is_item = true;
+                } else if ident == "registration" {
+                    is_registration = true;
+                } else if ident == "measurement" {
+                    is_measurement = true;
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown attribute_set argument `{ident}`"),
+                    ));
                 }
                 if input.peek(syn::Token![,]) {
                     let _: syn::Token![,] = input.parse()?;
@@ -775,22 +1050,69 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
         return err.to_compile_error().into();
     }
 
-    let attributes_name = match name_val {
-        Some(n) => n,
-        None => {
-            return syn::Error::new(
-                proc_macro2::Span::call_site(),
-                "missing `name = \"...\"` in attribute_set attribute",
-            )
-            .to_compile_error()
-            .into();
-        }
-    };
-
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
+    if is_registration && !is_item {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`registration` requires `item`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if is_measurement && !is_item && name_val.is_none() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`measurement` requires `item`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if name_val.is_some() && (is_item || is_registration) {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`name` and item modes cannot be combined",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if is_item && is_registration == is_measurement {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`item` requires exactly one of `registration` or `measurement`",
+        )
+        .to_compile_error()
+        .into();
+    }
+    if !is_item && name_val.is_none() {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "missing `name = \"...\"` or `item, registration|measurement` in attribute_set attribute",
+        )
+        .to_compile_error()
+        .into();
+    }
 
-    // Ensure the AttributeSetHandler derive is attached
+    let measurement_impl = if is_measurement {
+        match build_measurement_attribute_set_impl_for_fields(&s.ident, &s.fields, s.span()) {
+            Ok(measurement_impl) => measurement_impl,
+            Err(error) => return error.to_compile_error().into(),
+        }
+    } else {
+        proc_macro2::TokenStream::new()
+    };
+    let attributes_name = match name_val {
+        Some(name) if name.is_empty() => {
+            return syn::Error::new(s.span(), "attribute set name must not be empty")
+                .to_compile_error()
+                .into();
+        }
+        Some(name) => name,
+        None => format!("{}.item", to_snake_case(&s.ident.to_string())),
+    };
+
+    // All item attribute sets implement AttributeSetHandler so future signal
+    // emitters can serialize their values without depending on metric buckets.
     let derive_attr: Attribute =
         parse_quote!(#[derive(otap_df_telemetry_macros::AttributeSetHandler)]);
     s.attrs.push(derive_attr);
@@ -799,7 +1121,92 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     let attributes_attr: Attribute = parse_quote!(#[attributes(name = #attributes_name)]);
     s.attrs.push(attributes_attr);
 
-    quote!( #s ).into()
+    quote!( #s #measurement_impl ).into()
+}
+
+/// Builds the `MeasurementAttributeSet` trait implementation. The bucket index is a dense mixed-radix encoding where the
+/// first declared field is the low-order digit.
+fn build_measurement_attribute_set_impl_for_fields(
+    struct_ident: &syn::Ident,
+    fields: &Fields,
+    span: proc_macro2::Span,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let fields = match fields {
+        Fields::Named(named) => &named.named,
+        _ => {
+            return Err(syn::Error::new(
+                span,
+                "measurement attributes require named fields",
+            ));
+        }
+    };
+
+    let mut field_idents = Vec::new();
+    let mut field_keys = Vec::new();
+    let mut field_types = Vec::new();
+    let mut seen_keys = HashSet::new();
+    for field in fields {
+        if field.attrs.iter().any(|a| a.path().is_ident("compose")) {
+            return Err(syn::Error::new(
+                field.span(),
+                "measurement attributes do not support #[compose] fields",
+            ));
+        }
+        let ident = field.ident.clone().expect("named field must have an ident");
+        let mut key_attr: Option<String> = None;
+        for attr in &field.attrs {
+            if let Some(key) = parse_attribute_field_attr(attr)? {
+                key_attr = Some(key);
+            }
+        }
+        let key = key_attr.unwrap_or_else(|| ident.to_string().replace('_', "."));
+        if !seen_keys.insert(key.clone()) {
+            return Err(syn::Error::new(
+                field.span(),
+                format!("duplicate measurement attribute key `{key}`"),
+            ));
+        }
+        field_keys.push(key);
+        field_types.push(field.ty.clone());
+        field_idents.push(ident);
+    }
+
+    if field_idents.is_empty() {
+        return Err(syn::Error::new(
+            span,
+            "measurement attributes require at least one enum field",
+        ));
+    }
+
+    let crate_root = telemetry_crate_root();
+
+    Ok(quote! {
+        impl #crate_root::attributes::MeasurementAttributeSet for #struct_ident {
+            const CARDINALITY: usize = 1usize
+                #( * <#field_types as #crate_root::attributes::AttributeEnum>::CARDINALITY )*;
+
+            const DESCRIPTORS: &'static [#crate_root::descriptor::MeasurementAttributeDescriptor] = &[
+                #(
+                    #crate_root::descriptor::MeasurementAttributeDescriptor {
+                        key: #field_keys,
+                        variants: <#field_types as #crate_root::attributes::AttributeEnum>::VARIANTS,
+                    },
+                )*
+            ];
+
+            fn bucket_index(&self) -> usize {
+                let mut idx = 0usize;
+                let mut stride = 1usize;
+                #(
+                    idx += #crate_root::attributes::AttributeEnum::variant_index(self.#field_idents)
+                        * stride;
+                    stride *= <#field_types as #crate_root::attributes::AttributeEnum>::CARDINALITY;
+                )*
+                let _ = stride;
+                idx
+            }
+        }
+    })
 }
 
 fn parse_metrics_name_attr(attr: &Attribute) -> Option<String> {
@@ -851,17 +1258,136 @@ fn parse_attributes_name_attr(attr: &Attribute) -> Option<String> {
     out
 }
 
-fn parse_attribute_field_attr(attr: &Attribute) -> Option<String> {
-    if !attr.path().is_ident("attribute") {
-        return None;
+fn parse_attribute_field_attr(attr: &Attribute) -> syn::Result<Option<String>> {
+    if !attr.path().is_ident("attribute_key") {
+        return Ok(None);
     }
-    let mut out: Option<String> = None;
-    let _ = attr.parse_nested_meta(|meta| {
-        if meta.path.is_ident("key") {
-            let s: LitStr = meta.value()?.parse()?;
-            out = Some(s.value());
-        }
-        Ok(())
-    });
-    out
+    let syn::Meta::NameValue(name_value) = &attr.meta else {
+        return Err(syn::Error::new(
+            attr.span(),
+            "attribute_key must use the form #[attribute_key = \"...\"]",
+        ));
+    };
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Str(value),
+        ..
+    }) = &name_value.value
+    else {
+        return Err(syn::Error::new(
+            name_value.value.span(),
+            "attribute_key value must be a string literal",
+        ));
+    };
+    Ok(Some(value.value()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Scenario: measurement fields resolve to the same explicit attribute key.
+    /// Guarantees: macro expansion rejects duplicate item keys.
+    #[test]
+    fn measurement_attribute_set_rejects_duplicate_keys() {
+        let attributes: ItemStruct = syn::parse_str(
+            r#"
+            struct Attributes {
+                #[attribute_key = "outcome"]
+                dropped: Outcome,
+                #[attribute_key = "outcome"]
+                expired: Outcome,
+            }
+            "#,
+        )
+        .expect("test attribute set should parse");
+
+        let error = build_measurement_attribute_set_impl_for_fields(
+            &attributes.ident,
+            &attributes.fields,
+            attributes.span(),
+        )
+        .expect_err("duplicate measurement keys should fail");
+        assert_eq!(
+            error.to_string(),
+            "duplicate measurement attribute key `outcome`"
+        );
+    }
+
+    /// Scenario: a measurement attribute set contains a composed field.
+    /// Guarantees: composition is rejected before bucket code generation.
+    #[test]
+    fn measurement_attribute_set_rejects_composed_fields() {
+        let attributes: ItemStruct = syn::parse_str(
+            r#"
+            struct Attributes {
+                #[compose]
+                shared: Shared,
+            }
+            "#,
+        )
+        .expect("test attribute set should parse");
+
+        let error = build_measurement_attribute_set_impl_for_fields(
+            &attributes.ident,
+            &attributes.fields,
+            attributes.span(),
+        )
+        .expect_err("composed measurement fields should fail");
+        assert_eq!(
+            error.to_string(),
+            "measurement attributes do not support #[compose] fields"
+        );
+    }
+
+    /// Scenario: a measurement attribute set omits field annotations.
+    /// Guarantees: every field is accepted as an attribute without a marker.
+    #[test]
+    fn measurement_attribute_set_accepts_unannotated_fields() {
+        let attributes: ItemStruct = syn::parse_str(
+            r#"
+            struct Attributes {
+                signal: Signal,
+                #[attribute_key = "error.type"]
+                outcome: Outcome,
+            }
+            "#,
+        )
+        .expect("test attribute set should parse");
+
+        let generated = build_measurement_attribute_set_impl_for_fields(
+            &attributes.ident,
+            &attributes.fields,
+            attributes.span(),
+        )
+        .expect("every measurement field should be included as an attribute");
+        assert!(generated.to_string().contains("error.type"));
+
+        let fields = match attributes.fields {
+            Fields::Named(fields) => fields.named,
+            _ => unreachable!("test input has named fields"),
+        };
+        assert!(fields[0].attrs.is_empty());
+        assert_eq!(
+            fields[1]
+                .attrs
+                .iter()
+                .filter(|attribute| attribute.path().is_ident("attribute_key"))
+                .count(),
+            1
+        );
+    }
+
+    /// Scenario: an attribute-key override omits its string value.
+    /// Guarantees: malformed overrides produce a targeted macro error.
+    #[test]
+    fn attribute_key_requires_a_string_value() {
+        let attr: Attribute = parse_quote!(#[attribute_key]);
+
+        let error = parse_attribute_field_attr(&attr)
+            .expect_err("an attribute key without a value should fail");
+        assert_eq!(
+            error.to_string(),
+            "attribute_key must use the form #[attribute_key = \"...\"]"
+        );
+    }
 }

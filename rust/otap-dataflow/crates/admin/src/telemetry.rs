@@ -507,7 +507,7 @@ fn aggregate_metric_groups(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
@@ -1079,7 +1079,7 @@ fn collect_metrics_snapshot_and_reset(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_metrics_and_reset_with_zeroes(
+    telemetry_registry.visit_admin_metrics_and_reset_with_zeroes(
         |descriptor, attributes, metrics_iter| {
             let mut metrics = Vec::new();
 
@@ -1144,7 +1144,7 @@ fn collect_compact_snapshot_and_reset(
 ) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_metrics_and_reset(|descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_admin_metrics_and_reset(|descriptor, attributes, metrics_iter| {
         let mut metrics = HashMap::new();
         for (field, value) in metrics_iter {
             let _ = metrics.insert(field.name.to_string(), value);
@@ -1253,7 +1253,7 @@ fn format_line_protocol(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_admin_metrics_and_reset(|d, a, m| visit(d, a, m));
     } else {
         telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
     }
@@ -1277,32 +1277,12 @@ fn format_prometheus_text(
 
     let mut visit = |descriptor: &'static MetricsDescriptor,
                      attributes: &dyn AttributeSetHandler,
+                     item_attributes: &[(&str, &str)],
                      metrics_iter: MetricsIterator<'_>| {
-        // Base labels: `otel_scope_name` plus the merged sanitized attributes.
-        // `otel_scope_version` is emitted only when a non-empty version is
-        // available; the current `MetricsDescriptor` does not carry one, so
-        // the label is omitted entirely (per OTel→Prometheus spec: only
-        // labels with values are emitted).
+        // Scope and item attributes may sanitize to the same Prometheus
+        // label. Merge them before rendering to preserve both values.
         let mut base_labels = String::new();
-        if !descriptor.name.is_empty() {
-            let _ = write!(
-                &mut base_labels,
-                "otel_scope_name=\"{}\"",
-                escape_prom_label_value(descriptor.name)
-            );
-        }
-        // Scope attributes become `otel_scope_<key>` labels. Merge values
-        // for keys that collide after sanitization (per OTel→Prometheus
-        // spec). Emission order is unspecified. Drop attribute keys whose
-        // prefixed labels collide with reserved `otel_scope_*` names already
-        // emitted above.
-        let merged = sanitize_and_merge_label_pairs(
-            attributes
-                .iter_attributes()
-                .map(|(k, v)| (k, v.to_string_value())),
-            "otel_scope_",
-            RESERVED_SCOPE_LABEL_KEYS,
-        );
+        let merged = merge_prometheus_metric_labels(descriptor, attributes, item_attributes);
         for (key, value) in &merged {
             if !base_labels.is_empty() {
                 base_labels.push(',');
@@ -1328,15 +1308,71 @@ fn format_prometheus_text(
     };
 
     if reset {
-        telemetry_registry.visit_metrics_and_reset(|d, a, m| visit(d, a, m));
+        telemetry_registry.visit_admin_metrics_and_reset_with_item_attrs(
+            |d, a, item, m| visit(d, a, item, m),
+            false,
+        );
     } else {
-        telemetry_registry.visit_current_metrics(|d, a, m| visit(d, a, m));
+        telemetry_registry
+            .visit_current_metrics_with_item_attrs(|d, a, item, m| visit(d, a, item, m), false);
     }
 
     // Emit all metric families as contiguous groups (Prometheus spec requirement).
     groups.emit(&mut out);
 
     out
+}
+
+/// Merges scope and item attributes into valid Prometheus labels.
+///
+/// The OpenTelemetry Prometheus compatibility specification requires values from
+/// different OpenTelemetry keys that map to the same Prometheus label to be
+/// concatenated with `;`, ordered by their original keys.
+/// See <https://opentelemetry.io/docs/specs/otel/compatibility/prometheus_and_openmetrics/#metric-attributes>.
+fn merge_prometheus_metric_labels(
+    descriptor: &MetricsDescriptor,
+    scope_attributes: &dyn AttributeSetHandler,
+    item_attributes: &[(&str, &str)],
+) -> HashMap<String, String> {
+    let mut entries = Vec::new();
+
+    if !descriptor.name.is_empty() {
+        entries.push((
+            "otel_scope_name".to_string(),
+            "otel_scope_name".to_string(),
+            descriptor.name.to_string(),
+        ));
+    }
+
+    for (key, value) in scope_attributes.iter_attributes() {
+        let label_key = format!("otel_scope_{}", sanitize_prom_label_key(key));
+        if RESERVED_SCOPE_LABEL_KEYS.contains(&label_key.as_str()) {
+            continue;
+        }
+        entries.push((key.to_string(), label_key, value.to_string_value()));
+    }
+
+    for (key, value) in item_attributes {
+        entries.push((
+            (*key).to_string(),
+            sanitize_prom_label_key(key),
+            (*value).to_string(),
+        ));
+    }
+
+    entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let mut labels: HashMap<String, String> = HashMap::with_capacity(entries.len());
+    for (_, label_key, value) in entries {
+        let _ = labels
+            .entry(label_key)
+            .and_modify(|existing| {
+                existing.push(';');
+                existing.push_str(&value);
+            })
+            .or_insert(value);
+    }
+    labels
 }
 
 fn escape_lp_measurement(s: &str) -> String {
@@ -2292,10 +2328,17 @@ mod tests {
         ShutdownStatus,
     };
     use axum::body::{Body, to_bytes};
+    use otap_df_config::SignalType;
     use otap_df_config::observed_state::ObservedStateSettings;
     use otap_df_engine::memory_limiter::MemoryPressureState;
     use otap_df_state::store::ObservedStateStore;
-    use otap_df_telemetry::descriptor::{Instrument, MetricsField, Temporality};
+    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
+    use otap_df_telemetry::descriptor::{
+        AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
+        Temporality,
+    };
+    use otap_df_telemetry::instrument::MmscSnapshot;
+    use otap_df_telemetry::metrics::MetricSetHandler;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -2535,12 +2578,6 @@ mod tests {
     /// selected group keys (`env`, `region`) and preserves grouped attributes.
     #[test]
     fn test_aggregate_metric_groups_group_by_attribute() {
-        use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-        use otap_df_telemetry::descriptor::{
-            AttributeField, AttributeValueType, AttributesDescriptor,
-        };
-        use otap_df_telemetry::metrics::MetricSetHandler;
-
         // Mock Attributes: [env, region]
         static MOCK_ATTR_DESC: AttributesDescriptor = AttributesDescriptor {
             name: "test_attrs",
@@ -2816,8 +2853,6 @@ mod tests {
     /// sub-metrics with expected HELP/TYPE lines.
     #[test]
     fn test_agg_prometheus_mmsc_metrics() {
-        use otap_df_telemetry::instrument::MmscSnapshot;
-
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
             brief: &MMSC_METRICS_DESCRIPTOR,
@@ -2875,8 +2910,6 @@ mod tests {
     /// Ensures line-protocol rendering outputs all MMSC sub-fields for a metric.
     #[test]
     fn test_agg_line_protocol_mmsc_metrics() {
-        use otap_df_telemetry::instrument::MmscSnapshot;
-
         let groups = vec![AggregateGroup {
             name: "latency_metrics".to_string(),
             brief: &MMSC_METRICS_DESCRIPTOR,
@@ -3443,11 +3476,11 @@ mod tests {
     // End-to-end integration test: format_prometheus_text with real metrics
     // -------------------------------------------------------------------
 
-    use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
-    use otap_df_telemetry::descriptor::{
-        AttributeField, AttributeValueType, AttributesDescriptor, MetricValueType,
-    };
-    use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
+    use otap_df_telemetry::descriptor::MetricValueType;
+    use otap_df_telemetry::instrument::Counter;
+    use otap_df_telemetry::metrics::MetricValue;
+    use otap_df_telemetry::reporter::MetricsReporter;
+    use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
     #[derive(Debug)]
     struct E2eMetricSet {
@@ -3538,6 +3571,110 @@ mod tests {
         }
     }
 
+    #[attribute_set(name = "test.prometheus.scope")]
+    #[derive(Debug, Clone)]
+    struct PrometheusScopeAttributes {
+        #[attribute_key = "foo"]
+        foo: String,
+    }
+
+    #[derive(Debug, Clone, Copy, AttributeEnum)]
+    enum DatapointCollision {
+        Value,
+    }
+
+    #[attribute_set(item, measurement)]
+    #[derive(Debug, Clone, Copy)]
+    struct DatapointSignalAttributes {
+        #[attribute_key = "signal"]
+        signal: SignalType,
+        #[attribute_key = "otel.scope.foo"]
+        scope_foo: DatapointCollision,
+    }
+
+    #[metric_set(
+        name = "test.prometheus.measurement",
+        measurement_attributes = DatapointSignalAttributes
+    )]
+    #[derive(Debug, Default, Clone)]
+    struct DatapointSignalMetrics {
+        #[metric(unit = "1")]
+        events: Counter<u64>,
+    }
+
+    /// Scenario: two measurement attribute buckets share one scope and metric set.
+    /// Guarantees: Prometheus emits one distinct series with the recorded value
+    /// per bucket.
+    #[test]
+    fn test_format_prometheus_text_preserves_measurement_item_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(2);
+        let mut metrics = registry
+            .register_metric_set_with_measurement_attributes::<DatapointSignalMetrics>(
+                PrometheusScopeAttributes {
+                    foo: "scope".to_string(),
+                },
+            );
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: SignalType::Logs,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(7);
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: SignalType::Metrics,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(11);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("measurement metrics should report");
+
+        while let Ok(snapshot) = receiver.try_recv() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let output = format_prometheus_text(&registry, false, None, "");
+        let samples: Vec<&str> = output
+            .lines()
+            .filter(|line| line.starts_with("events_total{"))
+            .collect();
+
+        assert_eq!(samples.len(), 2, "expected two item series:\n{output}");
+        assert!(
+            samples
+                .iter()
+                .any(|line| line.contains(r#"signal="logs""#) && line.ends_with(" 7")),
+            "missing logs series:\n{output}"
+        );
+        assert!(
+            samples
+                .iter()
+                .any(|line| line.contains(r#"signal="metrics""#) && line.ends_with(" 11")),
+            "missing metrics series:\n{output}"
+        );
+        let label_sets: Vec<&str> = samples
+            .iter()
+            .map(|line| line.split_once('}').expect("sample should have labels").0)
+            .collect();
+        assert_ne!(
+            label_sets[0], label_sets[1],
+            "measurement buckets must not emit duplicate label sets:\n{output}"
+        );
+        assert_eq!(
+            output.matches(r#"otel_scope_foo="scope;value""#).count(),
+            2,
+            "scope and item collisions should merge values:\n{output}"
+        );
+    }
+
     #[test]
     fn test_render_target_info_typed_resource_attributes() {
         // Verifies the typed `AttributeValue` path: numerics, booleans,
@@ -3589,8 +3726,8 @@ mod tests {
         );
     }
 
-    /// Full integration test: registers metrics, accumulates values, then validates
-    /// the Prometheus text output follows OTel OTLP-to-Prometheus translation rules.
+    /// Scenario: a metric set with scope and resource attributes is rendered as Prometheus text.
+    /// Guarantees: translated metric names, metadata, values, and labels follow OTel rules.
     #[test]
     fn test_format_prometheus_text_e2e_otel_compliance() {
         let registry = TelemetryRegistryHandle::new();
@@ -3603,6 +3740,7 @@ mod tests {
         // Accumulate some metric values
         registry.accumulate_metric_set_snapshot(
             metric_set.metric_set_key(),
+            0,
             &[
                 MetricValue::U64(42),   // http_requests counter
                 MetricValue::F64(1.25), // http_request_duration counter (seconds)
@@ -3657,8 +3795,14 @@ mod tests {
             "counter TYPE should be counter"
         );
         assert!(
-            output.contains(
-                "http_requests_total{otel_scope_name=\"http_server\",otel_scope_http_method=\"GET\"} 42 1000\n"
+            line_has_labels(
+                &output,
+                "http_requests_total{",
+                "} 42 1000",
+                &[
+                    r#"otel_scope_name="http_server""#,
+                    r#"otel_scope_http_method="GET""#,
+                ],
             ),
             "counter should have otel_scope_name and (omitted-when-empty) otel_scope_version labels. Output:\n{output}"
         );
@@ -3682,7 +3826,15 @@ mod tests {
             "TYPE should be counter"
         );
         assert!(
-            output.contains("http_request_duration_seconds_total{otel_scope_name=\"http_server\",otel_scope_http_method=\"GET\"} 1.25 1000\n"),
+            line_has_labels(
+                &output,
+                "http_request_duration_seconds_total{",
+                "} 1.25 1000",
+                &[
+                    r#"otel_scope_name="http_server""#,
+                    r#"otel_scope_http_method="GET""#,
+                ],
+            ),
             "should have correct value with labels. Output:\n{output}"
         );
 
@@ -3700,7 +3852,15 @@ mod tests {
             "TYPE should be gauge"
         );
         assert!(
-            output.contains("memory_usage_bytes{otel_scope_name=\"http_server\",otel_scope_http_method=\"GET\"} 1024 1000\n"),
+            line_has_labels(
+                &output,
+                "memory_usage_bytes{",
+                "} 1024 1000",
+                &[
+                    r#"otel_scope_name="http_server""#,
+                    r#"otel_scope_http_method="GET""#,
+                ],
+            ),
             "gauge should have correct value. Output:\n{output}"
         );
 
@@ -3740,6 +3900,7 @@ mod tests {
 
         registry.accumulate_metric_set_snapshot(
             ms1.metric_set_key(),
+            0,
             &[
                 MetricValue::U64(100),
                 MetricValue::F64(1.0),
@@ -3748,6 +3909,7 @@ mod tests {
         );
         registry.accumulate_metric_set_snapshot(
             ms2.metric_set_key(),
+            0,
             &[
                 MetricValue::U64(200),
                 MetricValue::F64(2.0),

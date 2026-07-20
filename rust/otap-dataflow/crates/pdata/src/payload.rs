@@ -166,6 +166,20 @@ impl OtapPayload {
         }
     }
 
+    /// Returns the best available retained-memory byte estimate.
+    ///
+    /// For OTLP bytes this is the encoded byte length because the payload uses
+    /// `bytes::Bytes`, which does not expose backing allocation capacity. A
+    /// `Bytes` slice may pin a larger shared allocation, but that larger
+    /// capacity is not measurable here.
+    #[must_use]
+    pub fn retained_memory_bytes(&self) -> usize {
+        match self {
+            Self::OtlpBytes(value) => value.retained_memory_bytes(),
+            Self::OtapArrowRecords(value) => value.retained_memory_bytes(),
+        }
+    }
+
     /// Return an empty payload of a certain type.
     #[must_use]
     pub const fn empty(signal: SignalType) -> Self {
@@ -186,6 +200,9 @@ pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Number of bytes, if known.
     fn num_bytes(&self) -> Option<usize>;
 
+    /// Best available retained-memory byte estimate.
+    fn retained_memory_bytes(&self) -> usize;
+
     /// Return true if there is no data.
     fn is_empty(&self) -> bool;
 
@@ -204,6 +221,10 @@ impl OtapPayloadHelpers for OtapArrowRecords {
 
     fn num_bytes(&self) -> Option<usize> {
         None
+    }
+
+    fn retained_memory_bytes(&self) -> usize {
+        self.retained_memory_bytes()
     }
 
     fn take_payload(&mut self) -> Self {
@@ -248,6 +269,10 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
 
     fn num_bytes(&self) -> Option<usize> {
         Some(self.num_bytes())
+    }
+
+    fn retained_memory_bytes(&self) -> usize {
+        self.as_bytes().len()
     }
 
     fn is_empty(&self) -> bool {
