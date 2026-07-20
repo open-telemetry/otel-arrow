@@ -91,11 +91,7 @@ where
     }
 
     fn call(&mut self, request: Request<ReqBody>) -> Self::Future {
-        let exhausted = self.reject_next_call
-            || self
-                .rate_limiter
-                .as_ref()
-                .is_some_and(RateLimiter::is_exhausted);
+        let exhausted = self.reject_next_call;
         self.reject_next_call = false;
 
         if exhausted {
@@ -228,5 +224,52 @@ mod tests {
         let metrics = metrics.lock();
         assert_eq!(metrics.rejected_requests.get(), 1);
         assert_eq!(metrics.refused_rate_limit.get(), 1);
+    }
+
+    /// Scenario: rate exhaustion appears after the layer has polled the inner service ready.
+    /// Guarantees: the layer still calls the inner service so reserved readiness is consumed.
+    #[test]
+    fn exhaustion_after_inner_readiness_does_not_skip_inner_call() {
+        let state = MemoryPressureState::default();
+        let admission = SharedReceiverAdmissionState::from_process_state(&state);
+        let limiter = RateLimiter::new(policy(), admission.clone());
+        assert_eq!(limiter.check_units(10), RateAdmissionDecision::Admit);
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(
+            pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
+        ));
+        let inner = CountingService::new();
+        let poll_ready_calls = inner.poll_ready_calls.clone();
+        let call_count = inner.call_count.clone();
+
+        let mut service = RateLimitLayer::new(Some(limiter), metrics.clone()).layer(inner);
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        assert!(matches!(service.poll_ready(&mut cx), Poll::Ready(Ok(()))));
+        state.set_level_for_tests(MemoryPressureLevel::Soft);
+        admission.apply(state.current_update(1));
+
+        let response = futures::executor::block_on(service.call(Request::new(Body::empty())))
+            .expect("ready inner service should still receive the call");
+
+        assert_eq!(poll_ready_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(call_count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            response
+                .headers()
+                .get("grpc-status")
+                .and_then(|v| v.to_str().ok()),
+            None
+        );
+
+        let metrics = metrics.lock();
+        assert_eq!(metrics.rejected_requests.get(), 0);
+        assert_eq!(metrics.refused_rate_limit.get(), 0);
     }
 }
