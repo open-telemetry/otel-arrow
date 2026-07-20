@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.49.0"
+version = "0.50.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -17,7 +17,7 @@ rust-version = "1.87.0"
 
 [package]
 name = "otap-df"
-version = "0.49.0"
+version = "0.50.0"
 description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
