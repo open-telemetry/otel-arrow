@@ -313,7 +313,6 @@ impl MetricSetSnapshot {
     ///
     /// Attributes are yielded in declaration order. Callers that need an
     /// order-independent identity can sort the returned key-value pairs.
-    #[must_use]
     pub fn measurement_attributes(
         &self,
     ) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
