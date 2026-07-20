@@ -443,10 +443,6 @@ impl DebugProcessor {
         };
         self.metrics
             .with(attrs)
-            .consumed_metric_records
-            .add(metrics as u64);
-        self.metrics
-            .with(attrs)
             .consumed_items
             .add(data_points as u64);
 

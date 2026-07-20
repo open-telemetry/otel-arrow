@@ -88,7 +88,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `processor.debug.pdata.consumed.items` | `{item}` | Primary signal items (log records, metric datapoints, or spans) consumed, by `signal`. |
 | `processor.debug.pdata.consumed.events` | `{event}` | Named log events for logs, or span events for traces. |
 | `processor.debug.pdata.consumed.links` | `{link}` | Span links. |
-| `processor.debug.pdata.consumed.metric_records` | `{metric}` | Logical OTLP Metric records. |
 
 ### Events
 

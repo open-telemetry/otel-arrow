@@ -29,7 +29,4 @@ pub struct DebugPdataMetrics {
     /// Span links
     #[metric(name = "consumed.links", unit = "{link}")]
     pub consumed_links: Counter<u64>,
-    /// Logical OTLP Metric records
-    #[metric(name = "consumed.metric_records", unit = "{metric}")]
-    pub consumed_metric_records: Counter<u64>,
 }
