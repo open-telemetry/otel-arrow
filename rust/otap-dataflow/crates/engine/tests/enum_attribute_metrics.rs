@@ -48,13 +48,6 @@ pub struct ExplicitMeasurementAttributes {
     pub outcome: LossOutcome,
 }
 
-/// Named measurement sets remain supported for existing metric declarations.
-#[attribute_set(item, measurement, name = "test.legacy.measurement")]
-#[derive(Debug, Clone, Copy)]
-pub struct LegacyMeasurementAttributes {
-    pub outcome: LossOutcome,
-}
-
 /// Registration fields also use their field names as keys without annotations.
 #[attribute_set(item, registration)]
 #[derive(Debug, Clone, Copy)]
@@ -252,14 +245,6 @@ fn signal_type_uses_canonical_values() {
 #[test]
 fn measurement_attribute_set_descriptors_and_bucketing() {
     assert_eq!(ImplicitMeasurementAttributes::CARDINALITY, 6);
-    assert_eq!(LegacyMeasurementAttributes::CARDINALITY, 2);
-    assert_eq!(
-        LegacyMeasurementAttributes {
-            outcome: LossOutcome::Dropped,
-        }
-        .schema_name(),
-        "test.legacy.measurement"
-    );
     let descriptors = ImplicitMeasurementAttributes::DESCRIPTORS;
     assert_eq!(descriptors.len(), 2);
     assert_eq!(descriptors[0].key, "signal");

@@ -1069,10 +1069,10 @@ fn parse_attribute_set_args(args: proc_macro2::TokenStream) -> syn::Result<Attri
             "`measurement` requires `item`",
         ));
     }
-    if parsed.name.is_some() && parsed.registration {
+    if parsed.name.is_some() && parsed.item {
         return Err(syn::Error::new(
             proc_macro2::Span::call_site(),
-            "`name` cannot be combined with `item, registration`",
+            "`name` cannot be combined with `item`",
         ));
     }
     if parsed.item && parsed.registration == parsed.measurement {
@@ -1421,5 +1421,19 @@ mod tests {
             error.to_string(),
             "missing `scope, name = \"...\"` or `item, registration|measurement` in attribute_set attribute"
         );
+    }
+
+    /// Scenario: an item attribute set attempts to declare a schema name.
+    /// Guarantees: registration and measurement item attribute sets remain unnamed.
+    #[test]
+    fn item_attribute_sets_cannot_be_named() {
+        for args in [
+            quote::quote!(item, measurement, name = "test.measurement"),
+            quote::quote!(item, registration, name = "test.registration"),
+        ] {
+            let error = parse_attribute_set_args(args)
+                .expect_err("item attribute sets must not declare names");
+            assert_eq!(error.to_string(), "`name` cannot be combined with `item`");
+        }
     }
 }
