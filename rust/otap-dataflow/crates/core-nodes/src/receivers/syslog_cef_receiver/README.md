@@ -87,10 +87,14 @@ defaults to `100`, and `batch.max_size` defaults to `100`.
 
 The receiver supports pressure-aware `messages/second` rate limiting when the
 engine-level memory limiter is configured. UDP counts one datagram as one
-message. TCP counts one newline-framed line as one message. Over-limit UDP
-datagrams are dropped; over-limit TCP messages are dropped while the connection
-remains open. TCP rate-limit drops are silent because plain syslog TCP has no
-per-message acknowledgement or retry hint.
+message. TCP normally counts one newline-framed line as one message; if a line
+exceeds `MAX_MESSAGE_SIZE` and is emitted as multiple bounded-read fragments,
+each emitted fragment is counted separately. Over-limit UDP datagrams are
+dropped; over-limit TCP messages are dropped while the connection remains open.
+If an oversized TCP fragment is over limit, remaining fragments from that same
+oversized line are discarded through the newline.
+TCP rate-limit drops are silent because plain syslog TCP has no per-message
+acknowledgement or retry hint.
 
 ## Transport Protocols
 

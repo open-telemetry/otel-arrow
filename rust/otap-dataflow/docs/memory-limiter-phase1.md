@@ -318,11 +318,13 @@ behaviors in the table above apply only at `Hard` in `enforce` mode.
 
 For the v1 pressure-aware rate policy, OTLP `request_bytes/second` is measured
 as decompressed OTLP payload bytes at the receiver admission point. Syslog / CEF
-supports `messages/second`, measured as one UDP datagram or one newline-framed
-TCP message before parsing. The current policy does not measure wire bytes.
-Because one effective rate policy applies to every receiver in a resolved
-pipeline, mixed receiver deployments should scope the policy to the pipeline
-that uses the matching unit. For example, an engine-wide
+supports `messages/second`, measured as one UDP datagram or one emitted TCP
+record before parsing. A normal TCP line is one record; a line that exceeds
+`MAX_MESSAGE_SIZE` may be emitted as multiple bounded-read fragments, and each
+emitted fragment is counted separately. The current policy does not measure wire
+bytes. Because one effective rate policy applies to every receiver in a resolved
+pipeline, mixed receiver deployments should scope the policy to the pipeline that
+uses the matching unit. For example, an engine-wide
 `request_bytes/second` default will fail startup for a pipeline whose receiver
 only supports `messages/second`.
 
@@ -355,7 +357,9 @@ rate-limit enforcement.
 - **TCP:** Over-limit framed messages are dropped while the connection remains
   open. This is a silent message drop: plain syslog TCP has no per-message
   acknowledgement or retry hint, so the client does not know which line was
-  dropped. Hard memory pressure still closes active connections.
+  dropped. If an oversized TCP fragment is over limit, remaining fragments from
+  that oversized line are discarded through the newline. Hard memory pressure
+  still closes active connections.
 - **UDP:** Over-limit datagrams are silently dropped. UDP senders receive no
   feedback, so operators should monitor `received_logs_refused_rate_limit` and
   `received_logs_would_refuse_rate_limit`.

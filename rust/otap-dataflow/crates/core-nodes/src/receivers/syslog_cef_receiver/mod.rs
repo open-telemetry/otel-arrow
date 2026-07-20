@@ -505,6 +505,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
 
                                         let mut line_bytes =
                                             Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
+                                        let mut discard_until_newline = false;
                                         let mut warned_rate_limit_drop = false;
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -561,7 +562,14 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         Ok(BoundedReadResult::Eof) => {
                                                             // EOF reached - connection closed
                                                             // Check if there's an incomplete line to process
-                                                            if !line_bytes.is_empty() {
+                                                            if discard_until_newline {
+                                                                if !line_bytes.is_empty() {
+                                                                    let mut m = metrics.borrow_mut();
+                                                                    m.received_logs_total.inc();
+                                                                    m.received_logs_refused_rate_limit.inc();
+                                                                }
+                                                                line_bytes.clear();
+                                                            } else if !line_bytes.is_empty() {
                                                                 // Remove trailing newline if present
                                                                 let message_bytes = if line_bytes.last() == Some(&b'\n') {
                                                                     &line_bytes[..line_bytes.len()-1]
@@ -635,6 +643,17 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             break;
                                                         }
                                                         Ok(bounded_result) => {
+                                                            if discard_until_newline {
+                                                                let mut m = metrics.borrow_mut();
+                                                                m.received_logs_total.inc();
+                                                                m.received_logs_refused_rate_limit.inc();
+                                                                if matches!(bounded_result, BoundedReadResult::Complete) {
+                                                                    discard_until_newline = false;
+                                                                }
+                                                                line_bytes.clear();
+                                                                continue;
+                                                            }
+
                                                             if matches!(bounded_result, BoundedReadResult::Truncated) {
                                                                 metrics.borrow_mut().received_logs_truncated.inc();
                                                             }
@@ -680,6 +699,9 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     peer_addr,
                                                                     &mut warned_rate_limit_drop,
                                                                 );
+                                                                if matches!(bounded_result, BoundedReadResult::Truncated) {
+                                                                    discard_until_newline = true;
+                                                                }
                                                                 line_bytes.clear();
                                                                 continue;
                                                             }
@@ -2782,10 +2804,10 @@ mod telemetry_tests {
         }));
     }
 
-    /// Scenario: an oversized TCP syslog line starts after the message-rate bucket is already exhausted.
-    /// Guarantees: the receiver rate checks and refuses both the truncated head and tail fragment.
+    /// Scenario: an oversized TCP syslog line is rejected, then its tail arrives after token refill.
+    /// Guarantees: the receiver discards the rejected line through newline and admits the next complete line.
     #[test]
-    fn tcp_rate_rejected_oversized_line_refuses_continuation_fragments() {
+    fn tcp_rate_rejected_oversized_line_discards_tail_after_refill() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
@@ -2852,10 +2874,25 @@ mod telemetry_tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
 
             let mut stream = TcpStream::connect(addr).await.unwrap();
-            let normal = b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg\n";
-            stream.write_all(normal).await.unwrap();
+            let normal_first = b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg\n";
+            stream.write_all(normal_first).await.unwrap();
             stream.flush().await.unwrap();
-            stream.write_all(&oversized_syslog_message()).await.unwrap();
+
+            let oversized = oversized_syslog_message();
+            stream
+                .write_all(&oversized[..MAX_MESSAGE_SIZE])
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+
+            tokio::time::sleep(Duration::from_millis(1_200)).await;
+
+            stream
+                .write_all(&oversized[MAX_MESSAGE_SIZE..])
+                .await
+                .unwrap();
+            let normal_second = b"<34>1 2024-01-15T10:30:46.123Z host app - ID2 msg\n";
+            stream.write_all(normal_second).await.unwrap();
             stream.flush().await.unwrap();
             drop(stream);
 
@@ -2870,8 +2907,8 @@ mod telemetry_tests {
             let _ = handle.await;
 
             let snap = metrics_rx.recv_async().await.unwrap();
-            assert_eq!(metric_value(&snap, "received_logs_total"), 3);
-            assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_total"), 4);
+            assert_eq!(metric_value(&snap, "received_logs_forwarded"), 2);
             assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 2);
             assert_eq!(metric_value(&snap, "received_logs_truncated"), 1);
         }));
