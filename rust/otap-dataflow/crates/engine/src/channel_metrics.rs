@@ -103,6 +103,15 @@ pub struct ConsumedMetrics {
     /// Consumed requests, grouped by `signal` and `outcome` datapoint attributes.
     #[metric(name = "consumed.requests", unit = "{requests}")]
     pub consumed_requests: Counter<u64>,
+}
+
+/// Optional per-signal item metrics for a node input channel.
+#[metric_set(
+    name = "node.consumer",
+    measurement_attributes = NodeMetricAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ConsumedItemMetrics {
     /// Consumed signal items, grouped by the `signal` datapoint attribute.
     #[metric(name = "consumed.items", unit = "{item}")]
     pub consumed_items: Counter<u64>,
@@ -127,6 +136,15 @@ pub struct ProducedMetrics {
     /// Produced requests, grouped by `signal` and `outcome` datapoint attributes.
     #[metric(name = "produced.requests", unit = "{requests}")]
     pub produced_requests: Counter<u64>,
+}
+
+/// Optional per-signal item metrics for a node output channel.
+#[metric_set(
+    name = "node.producer",
+    measurement_attributes = NodeMetricAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ProducedItemMetrics {
     /// Produced signal items, grouped by the `signal` datapoint attribute.
     #[metric(name = "produced.items", unit = "{item}")]
     pub produced_items: Counter<u64>,

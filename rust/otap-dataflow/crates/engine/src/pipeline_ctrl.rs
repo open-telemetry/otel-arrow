@@ -11,7 +11,10 @@
 //! Note 2: Other runtime-control messages can be added in the future, but currently only timers
 //! are supported.
 
-use crate::channel_metrics::{ConsumedMetrics, NodeMetricAttributes, ProducedMetrics};
+use crate::channel_metrics::{
+    ConsumedItemMetrics, ConsumedMetrics, NodeMetricAttributes, ProducedItemMetrics,
+    ProducedMetrics,
+};
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
 use crate::context::PipelineContext;
@@ -198,8 +201,12 @@ pub(crate) struct NodeMetricHandles {
     pub(crate) registry: TelemetryRegistryHandle,
     /// Consumed-request metrics for the node's input channel.
     pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
+    /// Optional consumed-item metrics for the node's input channel.
+    pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
     /// Produced-request metrics indexed by output port.
     pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
+    /// Optional produced-item metrics indexed by output port.
+    pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
     /// Completion-emission metrics for completions routed by the node.
     pub(crate) completion_emission: Option<CompletionEmissionMetricsHandle>,
 }
@@ -213,8 +220,14 @@ pub(crate) fn report_node_metrics_with_handles(
         if let Some(input) = &mut handles.input {
             metrics_reporter.report_measurement(input)?;
         }
+        if let Some(input_items) = &mut handles.input_items {
+            metrics_reporter.report_measurement(input_items)?;
+        }
         for output in &mut handles.outputs {
             metrics_reporter.report_measurement(output)?;
+        }
+        for output_items in &mut handles.output_items {
+            metrics_reporter.report_measurement(output_items)?;
         }
         if let Some(completion_emission) = &handles.completion_emission {
             let mut completion_emission = completion_emission
@@ -236,8 +249,14 @@ pub(crate) fn snapshot_node_metrics_with_handles(
         if let Some(input) = &mut handles.input {
             snapshots.extend(input.terminal_snapshots());
         }
+        if let Some(input_items) = &mut handles.input_items {
+            snapshots.extend(input_items.terminal_snapshots());
+        }
         for output in &mut handles.outputs {
             snapshots.extend(output.terminal_snapshots());
+        }
+        for output_items in &mut handles.output_items {
+            snapshots.extend(output_items.terminal_snapshots());
         }
         if let Some(completion_emission) = &handles.completion_emission
             && let Some(snapshot) = completion_emission
@@ -256,8 +275,18 @@ impl Drop for NodeMetricHandles {
         if let Some(input) = self.input.take() {
             let _ = self.registry.unregister_metric_set(input.metric_set_key());
         }
+        if let Some(input_items) = self.input_items.take() {
+            let _ = self
+                .registry
+                .unregister_metric_set(input_items.metric_set_key());
+        }
         for output in self.outputs.drain(..) {
             let _ = self.registry.unregister_metric_set(output.metric_set_key());
+        }
+        for output_items in self.output_items.drain(..) {
+            let _ = self
+                .registry
+                .unregister_metric_set(output_items.metric_set_key());
         }
     }
 }
@@ -1112,8 +1141,13 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         };
                         let input = input.with(NodeMetricAttributes { signal, outcome });
                         input.consumed_requests.inc();
-                        if consumed_items > 0 {
-                            input.consumed_items.add(consumed_items as u64);
+                        if consumed_items > 0
+                            && let Some(input_items) = &mut handles.input_items
+                        {
+                            input_items
+                                .with(NodeMetricAttributes { signal, outcome })
+                                .consumed_items
+                                .add(consumed_items as u64);
                         }
                         if route.entry_time_ns > 0 && now_ns > 0 {
                             let duration_ns = now_ns.saturating_sub(route.entry_time_ns);
@@ -1133,8 +1167,13 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                         };
                         let output = output.with(NodeMetricAttributes { signal, outcome });
                         output.produced_requests.inc();
-                        if produced_items > 0 {
-                            output.produced_items.add(produced_items as u64);
+                        if produced_items > 0
+                            && let Some(output_items) = handles.output_items.get_mut(port)
+                        {
+                            output_items
+                                .with(NodeMetricAttributes { signal, outcome })
+                                .produced_items
+                                .add(produced_items as u64);
                         }
                         if !interests.contains(Interests::CONSUMER_METRICS)
                             && route.entry_time_ns > 0
@@ -1361,7 +1400,9 @@ impl<PData> RuntimeCtrlMsgManager<PData> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel_metrics::{ConsumedMetrics, ProducedMetrics};
+    use crate::channel_metrics::{
+        ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
+    };
     use crate::context::{ControllerContext, PipelineContextParams};
     use crate::control::{AckMsg, Frame, NackMsg, RouteData, nanos_since_birth};
     use crate::control::{
@@ -3139,9 +3180,13 @@ mod tests {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     enum MetricLabel {
         RecvProduced,
+        RecvProducedItems,
         ProcConsumed,
+        ProcConsumedItems,
         ProcProduced,
+        ProcProducedItems,
         ExpConsumed,
+        ExpConsumedItems,
     }
 
     /// Return value from setup_test_manager_with_metrics.
@@ -3235,19 +3280,43 @@ mod tests {
 
         let recv_produced: MeasurementMetricSet<ProducedMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
+        let recv_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(recv_out_key);
         let proc_consumed: MeasurementMetricSet<ConsumedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
+        let proc_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_in_key);
         let proc_produced: MeasurementMetricSet<ProducedMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
+        let proc_produced_items: MeasurementMetricSet<ProducedItemMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(proc_out_key);
         let exp_consumed: MeasurementMetricSet<ConsumedMetrics> =
+            registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
+        let exp_consumed_items: MeasurementMetricSet<ConsumedItemMetrics> =
             registry.register_metric_set_with_measurement_attributes_for_entity(exp_in_key);
 
         // Save metric set keys for snapshot identification.
         let mut key_labels = HashMap::new();
         let _ = key_labels.insert(recv_produced.metric_set_key(), MetricLabel::RecvProduced);
+        let _ = key_labels.insert(
+            recv_produced_items.metric_set_key(),
+            MetricLabel::RecvProducedItems,
+        );
         let _ = key_labels.insert(proc_consumed.metric_set_key(), MetricLabel::ProcConsumed);
+        let _ = key_labels.insert(
+            proc_consumed_items.metric_set_key(),
+            MetricLabel::ProcConsumedItems,
+        );
         let _ = key_labels.insert(proc_produced.metric_set_key(), MetricLabel::ProcProduced);
+        let _ = key_labels.insert(
+            proc_produced_items.metric_set_key(),
+            MetricLabel::ProcProducedItems,
+        );
         let _ = key_labels.insert(exp_consumed.metric_set_key(), MetricLabel::ExpConsumed);
+        let _ = key_labels.insert(
+            exp_consumed_items.metric_set_key(),
+            MetricLabel::ExpConsumedItems,
+        );
 
         let mut node_metric_handles: Vec<Option<NodeMetricHandles>> = Vec::new();
         let max_idx = nodes.iter().map(|n| n.index).max().unwrap_or(0);
@@ -3257,19 +3326,25 @@ mod tests {
         node_metric_handles[nodes[0].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: None,
+            input_items: None,
             outputs: vec![recv_produced],
+            output_items: vec![recv_produced_items],
             completion_emission: None,
         });
         node_metric_handles[nodes[1].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(proc_consumed),
+            input_items: Some(proc_consumed_items),
             outputs: vec![proc_produced],
+            output_items: vec![proc_produced_items],
             completion_emission: None,
         });
         node_metric_handles[nodes[2].index] = Some(NodeMetricHandles {
             registry: registry.clone(),
             input: Some(exp_consumed),
+            input_items: Some(exp_consumed_items),
             outputs: Vec::new(),
+            output_items: Vec::new(),
             completion_emission: None,
         });
 
@@ -3367,14 +3442,14 @@ mod tests {
         }
     }
 
-    // ConsumerMetrics field indices (defined by #[metric_set] field order):
+    // ConsumedMetrics field indices (defined by #[metric_set] field order):
     const CONSUMER_DURATION: usize = 0;
     const CONSUMER_REQUESTS: usize = 1;
-    const CONSUMER_ITEMS: usize = 2;
     // ProducedMetrics field indices:
     const PRODUCER_DURATION: usize = 0;
     const PRODUCER_REQUESTS: usize = 1;
-    const PRODUCER_ITEMS: usize = 2;
+    // Item metric set field index:
+    const ITEMS: usize = 0;
 
     const RUNTIME_DRAIN_ACTIVE: usize = 0;
     const RUNTIME_DRAIN_PENDING_RECEIVERS: usize = 1;
@@ -4127,18 +4202,54 @@ mod tests {
         .await;
 
         // Receiver produced 10 log records.
-        let recv_p = &snapshots[&MetricLabel::RecvProduced];
-        assert_u64(recv_p, PRODUCER_ITEMS, 10, "Receiver produced logs");
+        let recv_p = &snapshots[&MetricLabel::RecvProducedItems];
+        assert_u64(recv_p, ITEMS, 10, "Receiver produced logs");
 
         // Processor consumed 10, produced 7 (filtering drop of 3).
-        let proc_c = &snapshots[&MetricLabel::ProcConsumed];
-        assert_u64(proc_c, CONSUMER_ITEMS, 10, "Processor consumed logs");
-        let proc_p = &snapshots[&MetricLabel::ProcProduced];
-        assert_u64(proc_p, PRODUCER_ITEMS, 7, "Processor produced logs");
+        let proc_c = &snapshots[&MetricLabel::ProcConsumedItems];
+        assert_u64(proc_c, ITEMS, 10, "Processor consumed logs");
+        let proc_p = &snapshots[&MetricLabel::ProcProducedItems];
+        assert_u64(proc_p, ITEMS, 7, "Processor produced logs");
 
         // Exporter consumed 7 log records.
-        let exp = &snapshots[&MetricLabel::ExpConsumed];
-        assert_u64(exp, CONSUMER_ITEMS, 7, "Exporter consumed logs");
+        let exp = &snapshots[&MetricLabel::ExpConsumedItems];
+        assert_u64(exp, ITEMS, 7, "Exporter consumed logs");
+    }
+
+    /// Scenario: request metrics are enabled while per-signal item counting is not.
+    /// Guarantees: request series are emitted but no zero-valued item series are reported.
+    #[tokio::test]
+    async fn node_metrics_omit_items_without_optin() {
+        let harness = setup_test_manager_with_metrics();
+        for handles in harness
+            .node_metric_handles
+            .borrow_mut()
+            .iter_mut()
+            .flatten()
+        {
+            let _ = handles.input_items.take();
+            handles.output_items.clear();
+        }
+
+        let snapshots = run_and_collect(harness, |nodes| {
+            let pdata = build_3node_pdata_no_subscribers(nodes, false);
+            vec![PipelineCompletionMsg::DeliverAck {
+                ack: AckMsg::new(pdata),
+            }]
+        })
+        .await;
+
+        assert!(
+            snapshots.contains_key(&MetricLabel::RecvProduced),
+            "Request metrics should remain enabled"
+        );
+        assert!(
+            !snapshots.contains_key(&MetricLabel::RecvProducedItems)
+                && !snapshots.contains_key(&MetricLabel::ProcConsumedItems)
+                && !snapshots.contains_key(&MetricLabel::ProcProducedItems)
+                && !snapshots.contains_key(&MetricLabel::ExpConsumedItems),
+            "Item metrics should be absent when item counting is disabled"
+        );
     }
 
     /// Scenario: one processor records successful logs and failed traces.
@@ -4187,92 +4298,134 @@ mod tests {
         )
         .expect("node metric reporting should succeed");
 
-        let mut snapshots = Vec::new();
+        let mut request_snapshots = Vec::new();
+        let mut item_snapshots = Vec::new();
         while let Ok(snapshot) = harness.snapshot_rx.try_recv() {
             let Some(&label) = harness.key_labels.get(&snapshot.key()) else {
                 continue;
             };
-            if matches!(label, MetricLabel::ProcConsumed | MetricLabel::ProcProduced) {
-                snapshots.push((
-                    label,
-                    snapshot.measurement_attribute_value("signal"),
-                    snapshot.measurement_attribute_value("outcome"),
-                    snapshot.get_metrics().to_vec(),
-                ));
+            let snapshot = (
+                label,
+                snapshot.measurement_attribute_value("signal"),
+                snapshot.measurement_attribute_value("outcome"),
+                snapshot.get_metrics().to_vec(),
+            );
+            match label {
+                MetricLabel::ProcConsumed | MetricLabel::ProcProduced => {
+                    request_snapshots.push(snapshot);
+                }
+                MetricLabel::ProcConsumedItems | MetricLabel::ProcProducedItems => {
+                    item_snapshots.push(snapshot);
+                }
+                _ => {}
             }
         }
 
         assert_eq!(
-            snapshots.len(),
+            request_snapshots.len(),
             4,
-            "two signal/outcome buckets per direction"
+            "two signal/outcome request buckets per direction"
         );
-        let find = |label, signal, outcome| {
-            snapshots
-                .iter()
-                .find(|(actual_label, actual_signal, actual_outcome, _)| {
-                    *actual_label == label
-                        && *actual_signal == Some(signal)
-                        && *actual_outcome == Some(outcome)
-                })
-                .expect("expected datapoint attribute bucket")
-        };
+        assert_eq!(
+            item_snapshots.len(),
+            4,
+            "two signal/outcome item buckets per direction"
+        );
+        let find =
+            |snapshots: &Vec<(MetricLabel, Option<&str>, Option<&str>, Vec<MetricValue>)>,
+             label,
+             signal,
+             outcome| {
+                snapshots
+                    .iter()
+                    .find(|(actual_label, actual_signal, actual_outcome, _)| {
+                        *actual_label == label
+                            && *actual_signal == Some(signal)
+                            && *actual_outcome == Some(outcome)
+                    })
+                    .map(|(_, _, _, values)| values.clone())
+                    .expect("expected datapoint attribute bucket")
+            };
 
-        let (_, _, _, consumed_logs) = find(MetricLabel::ProcConsumed, "logs", "success");
+        let consumed_logs = find(
+            &request_snapshots,
+            MetricLabel::ProcConsumed,
+            "logs",
+            "success",
+        );
         assert_u64(
-            consumed_logs,
+            &consumed_logs,
             CONSUMER_REQUESTS,
             1,
             "logs success consumed requests",
         );
-        assert_u64(
-            consumed_logs,
-            CONSUMER_ITEMS,
-            5,
-            "logs success consumed items",
-        );
 
-        let (_, _, _, consumed_traces) = find(MetricLabel::ProcConsumed, "traces", "failure");
+        let consumed_traces = find(
+            &request_snapshots,
+            MetricLabel::ProcConsumed,
+            "traces",
+            "failure",
+        );
         assert_u64(
-            consumed_traces,
+            &consumed_traces,
             CONSUMER_REQUESTS,
             1,
             "traces failure consumed requests",
         );
-        assert_u64(
-            consumed_traces,
-            CONSUMER_ITEMS,
-            7,
-            "traces failure consumed items",
-        );
 
-        let (_, _, _, produced_logs) = find(MetricLabel::ProcProduced, "logs", "success");
+        let produced_logs = find(
+            &request_snapshots,
+            MetricLabel::ProcProduced,
+            "logs",
+            "success",
+        );
         assert_u64(
-            produced_logs,
+            &produced_logs,
             PRODUCER_REQUESTS,
             1,
             "logs success produced requests",
         );
-        assert_u64(
-            produced_logs,
-            PRODUCER_ITEMS,
-            4,
-            "logs success produced items",
-        );
 
-        let (_, _, _, produced_traces) = find(MetricLabel::ProcProduced, "traces", "failure");
+        let produced_traces = find(
+            &request_snapshots,
+            MetricLabel::ProcProduced,
+            "traces",
+            "failure",
+        );
         assert_u64(
-            produced_traces,
+            &produced_traces,
             PRODUCER_REQUESTS,
             1,
             "traces failure produced requests",
         );
-        assert_u64(
-            produced_traces,
-            PRODUCER_ITEMS,
-            6,
-            "traces failure produced items",
+        let consumed_logs = find(
+            &item_snapshots,
+            MetricLabel::ProcConsumedItems,
+            "logs",
+            "success",
         );
+        assert_u64(&consumed_logs, ITEMS, 5, "logs success consumed items");
+        let consumed_traces = find(
+            &item_snapshots,
+            MetricLabel::ProcConsumedItems,
+            "traces",
+            "failure",
+        );
+        assert_u64(&consumed_traces, ITEMS, 7, "traces failure consumed items");
+        let produced_logs = find(
+            &item_snapshots,
+            MetricLabel::ProcProducedItems,
+            "logs",
+            "success",
+        );
+        assert_u64(&produced_logs, ITEMS, 4, "logs success produced items");
+        let produced_traces = find(
+            &item_snapshots,
+            MetricLabel::ProcProducedItems,
+            "traces",
+            "failure",
+        );
+        assert_u64(&produced_traces, ITEMS, 6, "traces failure produced items");
     }
 
     /// Verify that produced_duration_ns is NOT recorded when entry_time_ns is 0.

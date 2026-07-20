@@ -6,7 +6,10 @@
 use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
-use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
+use crate::channel_metrics::{
+    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics,
+    ProducedMetrics,
+};
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
 };
@@ -77,15 +80,38 @@ fn make_produced_metrics(
         .unwrap_or_default()
 }
 
+/// Build optional produced-item metric sets indexed by sorted output port name.
+fn make_produced_item_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MeasurementMetricSet<ProducedItemMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    ProducedItemMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Build per-node metric handles for the runtime control manager.
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+/// - `item_counts_enabled`: whether to register the optional item metric sets.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
+    item_counts_enabled: bool,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
@@ -98,15 +124,34 @@ fn make_node_metric_handles(
     } else {
         None
     };
+    let consumed_items = if item_counts_enabled && has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| {
+                ConsumedItemMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(key),
+                )
+            })
+    } else {
+        None
+    };
     let produced = if has_outputs {
         make_produced_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
+    let produced_items = if item_counts_enabled && has_outputs {
+        make_produced_item_metrics(telemetry_handle, pipeline_context)
     } else {
         Vec::new()
     };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
         input: consumed,
+        input_items: consumed_items,
         outputs: produced,
+        output_items: produced_items,
         completion_emission,
     }
 }
@@ -487,6 +532,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     false,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -566,6 +612,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -671,7 +718,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true, None),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    false,
+                    true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    None,
+                ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
