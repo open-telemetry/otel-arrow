@@ -40,9 +40,17 @@ humantime-serde = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 geneva-uploader = { workspace = true, optional = true }
 opentelemetry-proto = { workspace = true, optional = true }
+futures-channel = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
+rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
+hex = { workspace = true, optional = true }
+aws-config = { workspace = true, optional = true }
+aws-msk-iam-sasl-signer = { workspace = true, optional = true }
+smallvec = { workspace = true, optional = true }
 regex = { workspace = true, optional = true }
 ahash = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
@@ -64,6 +72,15 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 sysinfo = { workspace = true, optional = true }
 urlencoding = { workspace = true, optional = true }
 
+[target.'cfg(target_env = "musl")'.dependencies]
+rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optional = true }
+
+# On Windows, librdkafka must be built with CMake. Without `cmake-build`,
+# rdkafka-sys falls back to librdkafka's Unix autotools `./configure` script,
+# which is not a valid Win32 executable (os error 193).
+[target.'cfg(target_os = "windows")'.dependencies]
+rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
+
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
 
@@ -72,8 +89,25 @@ tracepoint_decode = { workspace = true, optional = true }
 
 [features]
 etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
+kafka-receiver = [
+    "dep:rdkafka",
+    "dep:smallvec",
+    "dep:regex",
+]
+kafka-exporter = [
+    "dep:rdkafka",
+    "dep:futures-channel",
+    "dep:futures-util",
+    "dep:xxhash-rust",
+    "dep:hex",
+]
+aws = [
+    "dep:aws-config",
+    "dep:aws-msk-iam-sasl-signer",
+]
 contrib-receivers = [
     "etw-receiver",
+    "kafka-receiver",
     "user_events-receiver",
 ]
 user_events-receiver = [
@@ -89,6 +123,7 @@ user_events-eventheader = [
 contrib-exporters = [
     "geneva-exporter",
     "azure-monitor-exporter",
+    "kafka-exporter",
     "clickhouse-exporter",
 ]
 clickhouse-exporter = [
