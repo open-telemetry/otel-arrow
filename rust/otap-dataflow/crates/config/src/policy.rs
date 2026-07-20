@@ -266,7 +266,8 @@ pub struct RateLimitPolicy {
     pub mode: RateLimitMode,
     /// Runtime aggregation scope. V1 supports only `receiver_instance`.
     pub aggregation: RateLimitAggregation,
-    /// Rate unit measured by the receiver. V1 supports OTLP request bytes.
+    /// Rate unit measured by the receiver admission point, such as OTLP request
+    /// bytes or Syslog/CEF messages.
     pub unit: RateLimitUnit,
     /// Number of configured units allowed per interval.
     #[schemars(with = "U64OrString")]

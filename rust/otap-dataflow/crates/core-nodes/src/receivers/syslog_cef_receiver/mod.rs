@@ -2186,6 +2186,17 @@ mod telemetry_tests {
     use tokio::net::UdpSocket;
     use tokio::time::Duration;
 
+    fn metric_value(snap: &otap_df_telemetry::metrics::MetricSetSnapshot, name: &str) -> u64 {
+        let descriptor_name = name.replace('_', ".");
+        let index = snap
+            .descriptor()
+            .metrics
+            .iter()
+            .position(|field| field.name == descriptor_name)
+            .unwrap_or_else(|| panic!("metric {name} should exist"));
+        snap.get_metrics()[index].to_u64_lossy()
+    }
+
     fn messages_per_second_policy() -> RateLimitPolicy {
         RateLimitPolicy {
             mode: RateLimitMode::Enforce,
@@ -2570,11 +2581,13 @@ mod telemetry_tests {
             let _ = handle.await;
 
             let snap = metrics_rx.recv_async().await.unwrap();
-            let m = snap.get_metrics();
-            assert_eq!(m[4].to_u64_lossy(), 2, "total == 2");
-            assert_eq!(m[0].to_u64_lossy(), 1, "forwarded == 1");
-            assert_eq!(m[8].to_u64_lossy(), 1, "rate-limit refused == 1");
-            assert_eq!(m[9].to_u64_lossy(), 0, "observe-only refusals == 0");
+            assert_eq!(metric_value(&snap, "received_logs_total"), 2);
+            assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 1);
+            assert_eq!(
+                metric_value(&snap, "received_logs_would_refuse_rate_limit"),
+                0
+            );
         }));
     }
 
@@ -2666,11 +2679,13 @@ mod telemetry_tests {
             let _ = handle.await;
 
             let snap = metrics_rx.recv_async().await.unwrap();
-            let m = snap.get_metrics();
-            assert_eq!(m[4].to_u64_lossy(), 2, "total == 2");
-            assert_eq!(m[0].to_u64_lossy(), 1, "forwarded == 1");
-            assert_eq!(m[8].to_u64_lossy(), 1, "rate-limit refused == 1");
-            assert_eq!(m[10].to_u64_lossy(), 0, "tcp memory-pressure closes == 0");
+            assert_eq!(metric_value(&snap, "received_logs_total"), 2);
+            assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 1);
+            assert_eq!(
+                metric_value(&snap, "tcp_connections_rejected_memory_pressure"),
+                0
+            );
         }));
     }
 }
