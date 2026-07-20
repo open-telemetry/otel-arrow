@@ -318,12 +318,30 @@ fn run_pipeline_with_condition<F>(
     );
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct MetricIdentity {
     scope: &'static str,
     instrument: &'static str,
-    signal: Option<&'static str>,
-    outcome: Option<&'static str>,
+    attributes: Vec<(String, String)>,
+}
+
+impl MetricIdentity {
+    fn new<'a>(
+        scope: &'static str,
+        instrument: &'static str,
+        attributes: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Self {
+        let mut attributes = attributes
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect::<Vec<_>>();
+        attributes.sort_unstable();
+        Self {
+            scope,
+            instrument,
+            attributes,
+        }
+    }
 }
 
 fn is_durable_buffer_metric_scope(scope: &str) -> bool {
@@ -338,25 +356,7 @@ fn is_durable_buffer_metric_scope(scope: &str) -> bool {
     )
 }
 
-fn signal_dimension(value: &str) -> Option<&'static str> {
-    match value {
-        "traces" => Some("traces"),
-        "metrics" => Some("metrics"),
-        "logs" => Some("logs"),
-        _ => None,
-    }
-}
-
-fn outcome_dimension(value: &str) -> Option<&'static str> {
-    match value {
-        "acked" => Some("acked"),
-        "deferred" => Some("deferred"),
-        "permanently_rejected" => Some("permanently_rejected"),
-        _ => None,
-    }
-}
-
-/// Collected metrics from a pipeline run, keyed by their new scope, instrument, and dimensions.
+/// Collected metrics from a pipeline run, keyed by scope, instrument, and dimensions.
 #[derive(Debug, Default)]
 struct CollectedMetrics {
     counters: HashMap<MetricIdentity, u64>,
@@ -371,23 +371,17 @@ impl CollectedMetrics {
             if !is_durable_buffer_metric_scope(descriptor.name) {
                 continue;
             }
-            let identity = |instrument| MetricIdentity {
-                scope: descriptor.name,
-                instrument,
-                signal: snapshot
-                    .measurement_attribute_value("signal")
-                    .and_then(signal_dimension),
-                outcome: snapshot
-                    .measurement_attribute_value("outcome")
-                    .and_then(outcome_dimension),
-            };
 
             for (field, value) in descriptor.metrics.iter().zip(snapshot.get_metrics()) {
                 let values = match field.instrument {
                     Instrument::Gauge => &mut collected.gauges,
                     _ => &mut collected.counters,
                 };
-                let metric = identity(field.name);
+                let metric = MetricIdentity::new(
+                    descriptor.name,
+                    field.name,
+                    snapshot.measurement_attributes(),
+                );
                 let value = value.to_u64_lossy();
                 if field.instrument == Instrument::Gauge {
                     let _ = values.insert(metric, value);
@@ -400,15 +394,14 @@ impl CollectedMetrics {
     }
 
     fn operational(&self, instrument: &'static str) -> u64 {
-        self.value("processor.durable_buffer", instrument, None, None)
+        self.value("processor.durable_buffer", instrument, [])
     }
 
     fn bundle_outcome(&self, outcome: &'static str) -> u64 {
         self.value(
             "processor.durable_buffer.bundles",
             "resolved",
-            None,
-            Some(outcome),
+            [("outcome", outcome)],
         )
     }
 
@@ -416,8 +409,7 @@ impl CollectedMetrics {
         self.value(
             "processor.durable_buffer.items",
             operation,
-            Some(signal),
-            None,
+            [("signal", signal)],
         )
     }
 
@@ -425,15 +417,9 @@ impl CollectedMetrics {
         &self,
         scope: &'static str,
         instrument: &'static str,
-        signal: Option<&'static str>,
-        outcome: Option<&'static str>,
+        attributes: impl IntoIterator<Item = (&'static str, &'static str)>,
     ) -> u64 {
-        let metric = MetricIdentity {
-            scope,
-            instrument,
-            signal,
-            outcome,
-        };
+        let metric = MetricIdentity::new(scope, instrument, attributes);
         self.counters
             .get(&metric)
             .or_else(|| self.gauges.get(&metric))
@@ -711,21 +697,12 @@ fn capture_durable_buffer_metrics(registry: &TelemetryRegistryHandle) -> Collect
             if !is_durable_buffer_metric_scope(descriptor.name) {
                 return;
             }
-            let signal = item_attributes
-                .iter()
-                .find_map(|(key, value)| (*key == "signal").then_some(*value))
-                .and_then(signal_dimension);
-            let outcome = item_attributes
-                .iter()
-                .find_map(|(key, value)| (*key == "outcome").then_some(*value))
-                .and_then(outcome_dimension);
             for (field, value) in iter {
-                let identity = MetricIdentity {
-                    scope: descriptor.name,
-                    instrument: field.name,
-                    signal,
-                    outcome,
-                };
+                let identity = MetricIdentity::new(
+                    descriptor.name,
+                    field.name,
+                    item_attributes.iter().copied(),
+                );
                 let values = match field.instrument {
                     Instrument::Gauge => &mut metrics.gauges,
                     _ => &mut metrics.counters,
