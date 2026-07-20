@@ -18,6 +18,7 @@ use std::task::Poll;
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::otlp_metrics::OtlpReceiverMetrics;
 use crate::pdata::{Context, OtapPdata};
+use crate::rate_limit_layer::grpc_rate_limit_status;
 use crate::rate_limiter::{RateAdmissionDecision, RateLimiter};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -208,15 +209,6 @@ fn response_channel_closed_status() -> Status {
     Status::internal("Response channel closed unexpectedly")
 }
 
-fn rate_limit_status(retry_after_secs: u32) -> Status {
-    let mut metadata = tonic::metadata::MetadataMap::new();
-    let retry_pushback_ms = u64::from(retry_after_secs.max(1)) * 1_000;
-    if let Ok(value) = retry_pushback_ms.to_string().parse() {
-        let _ = metadata.insert("grpc-retry-pushback-ms", value);
-    }
-    Status::with_metadata(Code::ResourceExhausted, "rate limit", metadata)
-}
-
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
 /// Custom tonic codec that keeps OTLP request bodies as raw bytes and writes minimal responses.
 struct OtlpBytesCodec {
@@ -332,7 +324,7 @@ impl Decoder for OtlpBytesDecoder {
                     metrics.rejected_requests.inc();
                     metrics.refused_rate_limit.inc();
                     src.advance(len);
-                    return Err(rate_limit_status(rate_limiter.retry_after_secs()));
+                    return Err(grpc_rate_limit_status(rate_limiter.retry_after_secs()));
                 }
             }
         }
@@ -569,7 +561,7 @@ impl ServerCommon {
         let mut metrics = self.metrics.lock();
         metrics.rejected_requests.inc();
         metrics.refused_rate_limit.inc();
-        Some(rate_limit_status(rate_limiter.retry_after_secs()).into_http())
+        Some(grpc_rate_limit_status(rate_limiter.retry_after_secs()).into_http())
     }
 }
 

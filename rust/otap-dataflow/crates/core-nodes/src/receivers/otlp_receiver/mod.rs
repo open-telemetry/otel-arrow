@@ -46,6 +46,7 @@ use otap_df_otap::otap_grpc::common::AckRegistry;
 use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
 use otap_df_otap::otlp_http::HttpServerSettings;
 use otap_df_otap::otlp_metrics::OtlpReceiverMetrics;
+use otap_df_otap::rate_limit_layer::RateLimitLayer;
 use otap_df_otap::rate_limiter::RateLimiter;
 use otap_df_otap::shared_concurrency::SharedConcurrencyLayer;
 use otap_df_telemetry::metrics::MetricSet;
@@ -553,6 +554,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             self.admission_state.clone(),
                             self.metrics.clone(),
                         ))
+                        .layer(RateLimitLayer::new(
+                            self.rate_limiter.clone(),
+                            self.metrics.clone(),
+                        ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
                         .layer(SharedConcurrencyLayer::new(global)),
                 )
@@ -561,6 +566,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     ServiceBuilder::new()
                         .layer(MemoryPressureLayer::with_otlp_metrics(
                             self.admission_state.clone(),
+                            self.metrics.clone(),
+                        ))
+                        .layer(RateLimitLayer::new(
+                            self.rate_limiter.clone(),
                             self.metrics.clone(),
                         ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max)),

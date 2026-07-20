@@ -45,6 +45,9 @@ pub mod memory_pressure_layer;
 /// Receiver-local pressure-aware rate admission.
 pub mod rate_limiter;
 
+/// Shared ingress shedding based on receiver-local rate limits.
+pub mod rate_limit_layer;
+
 /// gRPC service implementation
 pub mod otlp_grpc;
 
