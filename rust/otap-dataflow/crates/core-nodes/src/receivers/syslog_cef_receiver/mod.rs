@@ -2505,12 +2505,19 @@ mod telemetry_tests {
             let _ = handle.await;
 
             let snap = metrics_rx.recv_async().await.unwrap();
-            let m = snap.get_metrics();
-            assert_eq!(m[4].to_u64_lossy(), 1, "total == 1");
-            assert_eq!(m[0].to_u64_lossy(), 0, "forwarded == 0");
-            assert_eq!(m[7].to_u64_lossy(), 1, "memory-pressure dropped == 1");
+            assert_eq!(metric_value(&snap, "received_logs_total"), 1, "total == 1");
             assert_eq!(
-                m[10].to_u64_lossy(),
+                metric_value(&snap, "received_logs_forwarded"),
+                0,
+                "forwarded == 0"
+            );
+            assert_eq!(
+                metric_value(&snap, "received_logs_rejected_memory_pressure"),
+                1,
+                "memory-pressure dropped == 1"
+            );
+            assert_eq!(
+                metric_value(&snap, "tcp_connections_rejected_memory_pressure"),
                 0,
                 "tcp connection rejects == 0 for UDP"
             );

@@ -1326,11 +1326,14 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
-        engine_config
-            .validate()
-            .map_err(|error| Error::InvalidConfiguration {
-                errors: vec![error],
-            })?;
+        engine_config.validate().map_err(|error| match error {
+            otap_df_config::error::Error::InvalidConfiguration { errors } => {
+                Error::InvalidConfiguration { errors }
+            }
+            other => Error::InvalidConfiguration {
+                errors: vec![other],
+            },
+        })?;
 
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
