@@ -31,6 +31,10 @@ make chlog-validate
 make chlog-preview             # renders entries without modifying CHANGELOGs
 ```
 
+Changelog entries must use ASCII characters only. Replace typographic punctuation
+and other non-ASCII characters with ASCII equivalents so generated changelogs
+pass repository validation.
+
 ## When no entry is needed
 
 Skip the entry when the change is not user-facing. The PR-validation
