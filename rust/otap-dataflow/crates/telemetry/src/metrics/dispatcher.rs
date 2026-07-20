@@ -67,8 +67,8 @@ impl MetricsDispatcher {
     /// observe the emitted instrumentation scopes and data points.
     fn dispatch_metrics_to(&self, meter_provider: &dyn MeterProvider) -> Result<(), Error> {
         self.metrics_handler
-            .visit_metrics_and_reset_with_datapoint_attrs(
-                |descriptor, attributes, datapoint_attrs, metrics_iter| {
+            .visit_metrics_and_reset_with_item_attrs(
+                |descriptor, attributes, item_attrs, metrics_iter| {
                     let scope_attributes = Self::to_opentelemetry_attributes(attributes);
                     let meter = if scope_attributes.is_empty() {
                         meter_provider.meter(descriptor.name)
@@ -81,14 +81,14 @@ impl MetricsDispatcher {
                     };
 
                     // Entity attributes live on the instrumentation scope so OTel Views can
-                    // target them via scope_attributes selectors. Per-datapoint enum/registration
+                    // target them via scope_attributes selectors. Per-item enum/registration
                     // attributes (e.g. `signal`) are attached to the data points themselves.
-                    let dp_kvs: Vec<opentelemetry::KeyValue> = datapoint_attrs
+                    let item_kvs: Vec<opentelemetry::KeyValue> = item_attrs
                         .iter()
                         .map(|(k, v)| opentelemetry::KeyValue::new(k.to_string(), v.to_string()))
                         .collect();
                     for (field, value) in metrics_iter {
-                        self.add_opentelemetry_metric(field, value, &dp_kvs, &meter);
+                        self.add_opentelemetry_metric(field, value, &item_kvs, &meter);
                     }
                 },
                 false,

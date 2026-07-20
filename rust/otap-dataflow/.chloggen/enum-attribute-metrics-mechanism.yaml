@@ -8,21 +8,16 @@ change_type: enhancement
 component: observability
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add datapoint-level enum-attribute mechanism for metric sets (codegen, export path, and compile-time cardinality check).
+note: Add item-level enum-attribute mechanism for metric sets (codegen, export path, and compile-time cardinality check).
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3430]
+issues: [3430, 3454, 3499]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Introduces the `AttributeEnum` derive, `#[attribute_set(measurement)]`, and
-  `#[metric_set(registration_attributes = ..)]`, `#[metric_set(measurement_attributes = ..)]`,
-  and metric sets that combine both.
-  Measurement sets allocate one datapoint bucket per enum-attribute combination
-  (dense mixed-radix indexing) and carry per-datapoint attributes through the
-  export path. A compile-time budget check rejects with a hard build error when
-  a measurement set's cardinality exceeds the configured limit, and overlapping
-  registration and measurement attribute keys are rejected at compile time. No nodes are
-  migrated in this change.
+  Adds bounded enum dimensions to metric items, including export support and compile-time
+  cardinality and key-conflict checks. Components use
+  `#[attribute_set(item, registration|measurement)]` and generated `register(...)`;
+  named measurement attribute sets remain supported for compatibility.
