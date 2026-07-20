@@ -2052,6 +2052,158 @@ mod tests {
     }
 
     #[test]
+    fn test_time_generated_injected_on_mapped_only_record() {
+        // The common non-passthrough path: explicit field mappings, no mapping
+        // targeting TimeGenerated, so it is injected from the event time
+        // alongside the mapped columns.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("body".into(), json!("Body"))]),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hi".into())),
+                        }),
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "hi");
+        assert_eq!(json["TimeGenerated"], "2023-11-14T22:13:20+00:00");
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_scope_mapping_to_time_generated_disables_injection() {
+        // A scope attribute mapped to TimeGenerated also disables injection.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::from([("scope.time".into(), "TimeGenerated".into())]),
+            log_record_mapping: HashMap::new(),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "s".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.time".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue(
+                                    "2007-07-07T07:07:07Z".into(),
+                                )),
+                            }),
+                            ..Default::default()
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        // Event time present, but ignored: TimeGenerated is
+                        // explicitly mapped from the scope attribute.
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TimeGenerated"], "2007-07-07T07:07:07Z");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_explicit_attribute_mapping_to_time_generated_disables_injection() {
+        // An explicit `attributes: { key: TimeGenerated }` mapping also disables
+        // injection: the mapped attribute supplies the value, once.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([(
+                "attributes".into(),
+                json!({ "event.time": "TimeGenerated" }),
+            )]),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        attributes: vec![KeyValue {
+                            key: "event.time".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue(
+                                    "2009-09-09T09:09:09Z".into(),
+                                )),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TimeGenerated"], "2009-09-09T09:09:09Z");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_time_generated_falls_back_to_now_when_both_timestamps_zero() {
+        // Neither time_unix_nano nor observed_time_unix_nano set: injection
+        // falls back to the current time, so TimeGenerated is still present and
+        // is a valid, recent RFC3339 timestamp.
+        let before = chrono::Utc::now();
+        let json = passthrough_row(0, 0, vec![]);
+        let after = chrono::Utc::now();
+
+        let ts = json["TimeGenerated"]
+            .as_str()
+            .expect("TimeGenerated present");
+        let parsed = chrono::DateTime::parse_from_rfc3339(ts)
+            .expect("TimeGenerated is valid RFC3339")
+            .with_timezone(&chrono::Utc);
+        assert!(
+            parsed >= before - chrono::Duration::seconds(1)
+                && parsed <= after + chrono::Duration::seconds(1),
+            "injected TimeGenerated {parsed} not within [{before}, {after}]"
+        );
+    }
+
+    #[test]
     fn test_attribute_with_no_value() {
         let config = create_test_config();
         let transformer = Transformer::new(&config);
