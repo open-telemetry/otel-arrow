@@ -32,14 +32,14 @@ pub enum AuthzDecision {
 impl AuthzDecision {
     /// Constructs an [`Allow`](AuthzDecision::Allow) decision carrying `identity`.
     #[must_use]
-    pub fn allow(identity: AuthorizedIdentity) -> Self {
+    pub const fn allow(identity: AuthorizedIdentity) -> Self {
         Self::Allow { identity }
     }
 
     /// Constructs an [`Allow`](AuthzDecision::Allow) decision with an empty
     /// identity, for authorizers that allow without a meaningful principal.
     #[must_use]
-    pub fn allow_anonymous() -> Self {
+    pub const fn allow_anonymous() -> Self {
         Self::Allow {
             identity: AuthorizedIdentity::new(),
         }
@@ -48,7 +48,7 @@ impl AuthzDecision {
     /// Constructs a [`Deny`](AuthzDecision::Deny) with a coarse `reason` and no
     /// detail.
     #[must_use]
-    pub fn deny(reason: DenyReason) -> Self {
+    pub const fn deny(reason: DenyReason) -> Self {
         Self::Deny {
             reason,
             detail: None,
@@ -67,13 +67,13 @@ impl AuthzDecision {
 
     /// Returns `true` for any [`Allow`](AuthzDecision::Allow).
     #[must_use]
-    pub fn is_allowed(&self) -> bool {
+    pub const fn is_allowed(&self) -> bool {
         matches!(self, Self::Allow { .. })
     }
 
     /// The authenticated identity when allowed, or `None` when denied.
     #[must_use]
-    pub fn identity(&self) -> Option<&AuthorizedIdentity> {
+    pub const fn identity(&self) -> Option<&AuthorizedIdentity> {
         match self {
             Self::Allow { identity } => Some(identity),
             Self::Deny { .. } => None,
@@ -85,6 +85,11 @@ impl AuthzDecision {
 mod tests {
     use super::*;
 
+    /// Scenario: build Allow (with identity and anonymous) and Deny (with and
+    /// without detail) decisions and inspect them via the accessors.
+    /// Guarantees: `is_allowed`/`identity` reflect the variant, the identity is
+    /// carried through Allow, and Deny stores the exact reason and optional
+    /// detail while reporting no identity.
     #[test]
     fn decision_constructors_and_predicate() {
         let identity = AuthorizedIdentity::new()

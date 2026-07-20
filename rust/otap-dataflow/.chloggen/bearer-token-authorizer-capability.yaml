@@ -1,14 +1,14 @@
 # Use this changelog template to create an entry for release notes.
 
 # One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
-change_type: enhancement
+change_type: breaking
 
 # The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
 # Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add the `BearerTokenAuthorizer` capability, a request-facing access-control trait for data-path nodes (typically receivers) that authenticate callers with a bearer token. `authorize` performs authentication and authorization behind one call and returns an `AuthzDecision` (`Allow` carrying an `AuthorizedIdentity`, or `Deny`); an `Err` means the authorizer could not reach a decision and callers must fail closed.
+note: Add the `BearerTokenAuthorizer` capability and group the bearer-token capabilities and their shared types under a new `capability::auth` module. `authorize` performs authentication and admission behind one call and returns an `AuthzDecision` (`Allow` carrying an `AuthorizedIdentity`, or `Deny` with a coarse `DenyReason` and optional detail); an `Err` means the authorizer could not reach a decision and callers must fail closed. This is a breaking change for downstream crates -- the existing bearer-token provider and its types move from `capability::bearer_token_provider` to `capability::auth::bearer_token_provider`, and the shared `BearerToken` is re-exported at `capability::auth::BearerToken`.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3494]
@@ -21,6 +21,8 @@ subtext: |
   secret-protecting `BearerToken` built from a bare token or a whole
   `Authorization` header value (a `Bearer ` scheme prefix is stripped). The
   returned `AuthorizedIdentity` is scheme-agnostic (`subject` + `audience`) so a
-  consumer can propagate the authenticated principal downstream. "No auth" is
-  modeled by simply not binding the capability to a node, rather than a bypass
-  flag.
+  consumer can propagate the authenticated principal downstream. The token secret
+  is opaque: expiry is supplied explicitly from the issuer's response metadata via
+  `with_expiry`/`from_absolute_expiry`, and `without_expiry` constructs a token
+  with no known expiry. "No auth" is modeled by simply not binding the capability
+  to a node, rather than a bypass flag.

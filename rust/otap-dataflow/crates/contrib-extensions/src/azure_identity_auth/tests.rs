@@ -443,6 +443,9 @@ async fn token_stream_skips_initial_none() {
 
 // ── schedule_next timing tests ────────────────────────────────
 
+/// Scenario: schedule the next refresh for a token expiring in ~1 hour.
+/// Guarantees: the refresh is scheduled TOKEN_EXPIRY_BUFFER_SECS before expiry
+/// (~3301s out), so refresh happens ahead of expiry with buffer to spare.
 #[tokio::test]
 async fn schedule_next_refreshes_before_expiry() {
     use otap_df_engine::capability::auth::BearerToken;
@@ -460,6 +463,10 @@ async fn schedule_next_refreshes_before_expiry() {
     assert!((secs - 3301.0).abs() < 5.0, "expected ~3301s, got {secs}");
 }
 
+/// Scenario: schedule the next refresh for a token expiring in only 5s, where
+/// subtracting the expiry buffer would underflow past now.
+/// Guarantees: the schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s)
+/// instead of scheduling in the past.
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
     use otap_df_engine::capability::auth::BearerToken;
@@ -478,11 +485,14 @@ async fn schedule_next_floors_near_expiry() {
     assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
 }
 
+/// Scenario: schedule the next refresh for a non-expiring token.
+/// Guarantees: the refresh is pushed far into the future (~1 year), so a
+/// non-expiring token is not needlessly refreshed.
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
     use otap_df_engine::capability::auth::BearerToken;
 
-    let token = BearerToken::new("t".to_owned());
+    let token = BearerToken::without_expiry("t".to_owned());
     let refresh_at = extension::schedule_next(&token);
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())

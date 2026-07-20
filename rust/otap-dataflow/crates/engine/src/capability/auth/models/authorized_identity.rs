@@ -27,8 +27,11 @@ pub struct AuthorizedIdentity {
 impl AuthorizedIdentity {
     /// Creates an empty identity (no subject, no audience).
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            subject: None,
+            audience: None,
+        }
     }
 
     /// Sets the subject (the principal the credential represents).
@@ -62,6 +65,10 @@ impl AuthorizedIdentity {
 mod tests {
     use super::*;
 
+    /// Scenario: build an identity via the `with_subject`/`with_audience`
+    /// builders, and separately construct an empty one with `new`.
+    /// Guarantees: the builder stores and returns exactly the set subject and
+    /// audience, while a `new` identity reports `None` for both.
     #[test]
     fn builder_sets_and_reads_fields() {
         let identity = AuthorizedIdentity::new()

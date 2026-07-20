@@ -679,11 +679,12 @@ mod tests {
     #[async_trait(?Send)]
     impl BearerTokenProvider for MockTokenProvider {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            Ok(BearerToken::new("test-token".to_owned()))
+            Ok(BearerToken::without_expiry("test-token".to_owned()))
         }
 
         fn token_stream(&self) -> TokenStream {
-            futures::stream::once(async { BearerToken::new("test-token".to_owned()) }).boxed()
+            futures::stream::once(async { BearerToken::without_expiry("test-token".to_owned()) })
+                .boxed()
         }
     }
 
@@ -925,6 +926,10 @@ mod tests {
         assert!(!TokenExpiry::None.is_usable(now, margin));
     }
 
+    /// Scenario: derive a `TokenExpiry` from a token that carries an explicit
+    /// expiry instant.
+    /// Guarantees: the expiry is mapped to `TokenExpiry::At` at the token's
+    /// exact instant.
     #[test]
     fn expiry_uses_token_expiry_when_present() {
         let expires_on = Instant::now() + Duration::from_secs(3600);
@@ -935,11 +940,14 @@ mod tests {
         );
     }
 
+    /// Scenario: derive a `TokenExpiry` from a token with no expiry set.
+    /// Guarantees: it maps to `TokenExpiry::NeverExpires` and always reads as
+    /// usable, so a non-expiring token is never treated as stale.
     #[test]
     fn non_expiring_token_never_expires_and_stays_usable() {
         let now = tokio::time::Instant::now();
         let margin = Duration::from_secs(TOKEN_USABLE_MARGIN_SECS);
-        let token = BearerToken::new("secret".to_owned());
+        let token = BearerToken::without_expiry("secret".to_owned());
         let expiry = TokenExpiry::from_token(&token);
         assert_eq!(expiry, TokenExpiry::NeverExpires);
         assert!(expiry.is_usable(now, margin));
