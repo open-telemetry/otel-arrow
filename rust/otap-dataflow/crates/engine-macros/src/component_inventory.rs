@@ -364,6 +364,13 @@ fn cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
         .collect()
 }
 
+// Compile-fail behavior (unknown/missing category, missing id, URN/category
+// mismatch) is covered here by asserting on the generated error text rather
+// than with `trybuild` UI tests: this repo runs tests via `cargo nextest` from
+// a prebuilt archive in `--offline` mode, and trybuild spawns a nested `cargo`
+// build for its fixture crate that cannot resolve dependencies offline. The
+// expansion/argument-parsing helpers below exercise the same error paths in a
+// self-contained, environment-independent way.
 #[cfg(test)]
 mod tests {
     use super::*;

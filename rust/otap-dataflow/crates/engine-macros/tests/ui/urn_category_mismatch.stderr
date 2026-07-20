@@ -1,5 +1,0 @@
-error: category `Receiver` (URN segment `receiver`) does not match the component URN `urn:otel:exporter:otlp` (segment `exporter`)
- --> tests/ui/urn_category_mismatch.rs:4:65
-  |
-4 | #[component_inventory(id = "urn:otel:exporter:otlp", category = Receiver)]
-  |                                                                 ^^^^^^^^
