@@ -457,6 +457,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed and the connection was closed. |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Arrow records could not be built from a parsed batch; the batch was dropped. |
 | `syslog_cef_receiver.memory_pressure.disconnect` | `warn` | A TCP connection was closed because process-wide memory pressure was active. |
+| `syslog_cef_receiver.rate_limit.drop` | `warn` | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 
 <!-- markdownlint-enable MD013 -->
 
