@@ -45,6 +45,11 @@ fn find(id: &str) -> &'static ComponentMeta {
         .unwrap_or_else(|| panic!("component `{id}` not found in COMPONENT_INVENTORY"))
 }
 
+/// Scenario: a factory-style `static` (with a `name` URN field) is annotated
+/// with `#[component_inventory]` and no explicit `id`.
+/// Guarantees: a `COMPONENT_INVENTORY` entry is registered at link time whose
+/// `id` is the factory's URN, with the declared category, description,
+/// attributes, and auto-populated `file`/`line`.
 #[test]
 fn factory_static_entry_is_registered_with_derived_urn_id() {
     // Touch the static so the linker keeps it (and its slice entry).
@@ -61,6 +66,10 @@ fn factory_static_entry_is_registered_with_derived_urn_id() {
     assert!(meta.line > 0);
 }
 
+/// Scenario: a non-factory `struct` (no `name` field) is annotated with an
+/// explicit URN-shaped `id` and no attributes.
+/// Guarantees: the entry is registered under the explicit `id`, with the
+/// declared category, a `None` description, and an empty attributes slice.
 #[test]
 fn non_factory_entry_uses_explicit_id() {
     let meta = find("urn:otel:extension:component_inventory_test");
@@ -69,6 +78,9 @@ fn non_factory_entry_uses_explicit_id() {
     assert!(meta.attributes.is_empty());
 }
 
+/// Scenario: `Category::urn_segment()` is called for each factory variant.
+/// Guarantees: each variant maps to its lowercase URN segment, keeping the
+/// enum and the URN cross-check in the macro consistent.
 #[test]
 fn category_urn_segment_mapping() {
     assert_eq!(Category::Receiver.urn_segment(), "receiver");

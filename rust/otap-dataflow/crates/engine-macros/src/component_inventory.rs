@@ -390,6 +390,11 @@ mod tests {
             .map(|e| e.to_string())
     }
 
+    /// Scenario: a factory `static` with a `name` field is expanded without an
+    /// explicit `id`.
+    /// Guarantees: the item is re-emitted and a `COMPONENT_INVENTORY` entry is
+    /// generated whose `id` is the `name` field expression, with the category,
+    /// description, and attributes taken from the annotation.
     #[test]
     fn factory_static_derives_id_from_name_field() {
         let out = expand(
@@ -409,6 +414,8 @@ mod tests {
         assert!(out.contains(r#"("port" , "4317")"#));
     }
 
+    /// Scenario: a `struct` (no `name` field) is expanded with an explicit `id`.
+    /// Guarantees: the entry uses the explicit `id` and a `None` description.
     #[test]
     fn non_factory_struct_requires_and_uses_explicit_id() {
         let out = expand(
@@ -420,6 +427,9 @@ mod tests {
         assert!(out.contains(":: core :: option :: Option :: None"));
     }
 
+    /// Scenario: a `struct` (no `name` field) is expanded without an `id`.
+    /// Guarantees: the item is still emitted but a `compile_error!` is produced
+    /// telling the author to supply an explicit `id`.
     #[test]
     fn non_factory_without_id_is_compile_error() {
         // A struct has no `name` field, so omitting `id` must produce an error.
@@ -429,6 +439,9 @@ mod tests {
         assert!(out.contains("requires an explicit"));
     }
 
+    /// Scenario: a misspelled `category` identifier (e.g. `Reciever`) is parsed.
+    /// Guarantees: argument parsing fails with an "unknown component category"
+    /// error instead of silently emitting a bad entry.
     #[test]
     fn unknown_category_is_rejected() {
         let err = parse_args_err(r#"category = Reciever"#).expect("should error");
@@ -436,18 +449,28 @@ mod tests {
         assert!(err.contains("Reciever"));
     }
 
+    /// Scenario: the annotation omits the required `category`.
+    /// Guarantees: argument parsing fails with a "missing required `category`"
+    /// error.
     #[test]
     fn missing_category_is_rejected() {
         let err = parse_args_err(r#"description = "x""#).expect("should error");
         assert!(err.contains("missing required `category"));
     }
 
+    /// Scenario: the annotation contains an unrecognized key (e.g. `bogus`).
+    /// Guarantees: argument parsing fails with an "unknown `#[component_inventory]`
+    /// attribute" error.
     #[test]
     fn unknown_key_is_rejected() {
         let err = parse_args_err(r#"category = Receiver, bogus = "x""#).expect("should error");
         assert!(err.contains("unknown `#[component_inventory]` attribute"));
     }
 
+    /// Scenario: an explicit literal URN `id` whose category segment disagrees
+    /// with the declared `category` (e.g. `exporter` URN + `category = Receiver`).
+    /// Guarantees: expansion produces a `compile_error!` reporting the URN/category
+    /// mismatch.
     #[test]
     fn literal_urn_category_mismatch_is_error() {
         // Explicit literal id whose URN segment (`exporter`) disagrees with the
@@ -460,6 +483,9 @@ mod tests {
         assert!(out.contains("does not match the component URN"));
     }
 
+    /// Scenario: an explicit literal URN `id` whose category segment matches the
+    /// declared `category`.
+    /// Guarantees: expansion succeeds (no `compile_error!`) and uses the id.
     #[test]
     fn literal_urn_category_match_ok() {
         let out = expand(
@@ -470,6 +496,10 @@ mod tests {
         assert!(out.contains(r#"id : "urn:otel:receiver:otlp""#));
     }
 
+    /// Scenario: a factory `static` whose `name` field is a `const` path (not a
+    /// string literal), with a category that would mismatch if the value were known.
+    /// Guarantees: the URN cross-check is skipped (the value is invisible at macro
+    /// time), so expansion succeeds and the id is the const path.
     #[test]
     fn const_path_urn_skips_cross_check() {
         // When the `name` field is a const path (not a literal), the value is
@@ -483,6 +513,9 @@ mod tests {
         assert!(out.contains("id : SOME_URN_CONST"));
     }
 
+    /// Scenario: the annotated item carries a `#[cfg(feature = "...")]`.
+    /// Guarantees: the emitted `COMPONENT_INVENTORY` entry inherits the same
+    /// `#[cfg(...)]`, so the inventory reflects exactly what was compiled.
     #[test]
     fn cfg_attr_is_propagated_to_entry() {
         let out = expand(
@@ -494,6 +527,9 @@ mod tests {
         assert!(occurrences >= 2, "cfg not propagated to entry: {out}");
     }
 
+    /// Scenario: several `attributes(...)` pairs are supplied.
+    /// Guarantees: all pairs are emitted into the entry's `attributes` slice in
+    /// the order written.
     #[test]
     fn multiple_attributes_preserved_in_order() {
         let out = expand(
