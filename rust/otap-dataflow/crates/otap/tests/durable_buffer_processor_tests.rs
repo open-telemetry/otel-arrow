@@ -33,6 +33,7 @@ use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
+use otap_df_telemetry::descriptor::Instrument;
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -311,165 +312,119 @@ fn run_pipeline_with_condition<F>(
         true, // wait for telemetry cycle so metrics assertions are meaningful
     );
     assert!(
-        metrics.flush_failures() == 0,
+        metrics.operational("flush.failures") == 0,
         "segment finalization should not fail (flush_failures metric should be 0, got {})",
-        metrics.flush_failures()
+        metrics.operational("flush.failures")
     );
 }
 
-/// Field indices into `DurableBufferMetrics` snapshot (declaration order).
-/// New metrics MUST be appended to `DurableBufferMetrics` so existing indices
-/// never shift. Add new constants at the end of this block.
-const IDX_BUNDLES_ACKED: usize = 0;
-const IDX_BUNDLES_NACKED_DEFERRED: usize = 1;
-const IDX_BUNDLES_NACKED_PERMANENT: usize = 2;
-const IDX_REJECTED_LOG_RECORDS: usize = 3;
-const IDX_REJECTED_METRIC_POINTS: usize = 4;
-const IDX_REJECTED_SPANS: usize = 5;
-#[allow(dead_code)]
-const IDX_CONSUMED_LOG_RECORDS: usize = 6;
-#[allow(dead_code)]
-const IDX_CONSUMED_METRIC_POINTS: usize = 7;
-#[allow(dead_code)]
-const IDX_CONSUMED_SPANS: usize = 8;
-const IDX_PRODUCED_LOG_RECORDS: usize = 9;
-const IDX_PRODUCED_METRIC_POINTS: usize = 10;
-const IDX_PRODUCED_SPANS: usize = 11;
-#[allow(dead_code)]
-const IDX_INGEST_ERRORS: usize = 12;
-#[allow(dead_code)]
-const IDX_INGEST_BACKPRESSURE: usize = 13;
-#[allow(dead_code)]
-const IDX_READ_ERRORS: usize = 14;
-#[allow(dead_code)]
-const IDX_STORAGE_BYTES_USED: usize = 15;
-#[allow(dead_code)]
-const IDX_STORAGE_BYTES_CAP: usize = 16;
-#[allow(dead_code)]
-const IDX_DROPPED_SEGMENTS: usize = 17;
-#[allow(dead_code)]
-const IDX_DROPPED_BUNDLES: usize = 18;
-#[allow(dead_code)]
-const IDX_DROPPED_ITEMS: usize = 19;
-#[allow(dead_code)]
-const IDX_EXPIRED_BUNDLES: usize = 20;
-#[allow(dead_code)]
-const IDX_EXPIRED_ITEMS: usize = 21;
-const IDX_RETRIES_SCHEDULED: usize = 22;
-#[allow(dead_code)]
-const IDX_IN_FLIGHT: usize = 23;
-const IDX_REQUEUED_LOG_RECORDS: usize = 24;
-const IDX_REQUEUED_METRIC_POINTS: usize = 25;
-const IDX_REQUEUED_SPANS: usize = 26;
-const IDX_QUEUED_LOG_RECORDS: usize = 27;
-const IDX_QUEUED_METRIC_POINTS: usize = 28;
-const IDX_QUEUED_SPANS: usize = 29;
-const IDX_FLUSH_FAILURES: usize = 30;
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct MetricIdentity {
+    scope: &'static str,
+    instrument: &'static str,
+    attributes: Vec<(String, String)>,
+}
 
-const DURABLE_BUFFER_METRIC_COUNT: usize = 38;
+impl MetricIdentity {
+    fn new<'a>(
+        scope: &'static str,
+        instrument: &'static str,
+        attributes: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Self {
+        let mut attributes = attributes
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            .collect::<Vec<_>>();
+        attributes.sort_unstable();
+        Self {
+            scope,
+            instrument,
+            attributes,
+        }
+    }
+}
 
-/// Collected metrics from a pipeline run, aggregated across all telemetry snapshots.
+fn is_durable_buffer_metric_scope(scope: &str) -> bool {
+    matches!(
+        scope,
+        "processor.durable_buffer"
+            | "processor.durable_buffer.bundles"
+            | "processor.durable_buffer.ingest"
+            | "processor.durable_buffer.items"
+            | "processor.durable_buffer.loss"
+            | "processor.durable_buffer.item_loss"
+    )
+}
+
+/// Collected metrics from a pipeline run, keyed by scope, instrument, and dimensions.
 #[derive(Debug, Default)]
 struct CollectedMetrics {
-    /// Accumulated metric values by field index (summed deltas - correct for Counters).
-    values: Vec<u64>,
-    /// Last-seen metric values by field index (correct for Gauges).
-    last_values: Vec<u64>,
+    counters: HashMap<MetricIdentity, u64>,
+    gauges: HashMap<MetricIdentity, u64>,
 }
 
 impl CollectedMetrics {
-    /// Aggregate durable_buffer metric snapshots by summing delta values.
-    ///
-    /// Filters snapshots to those with exactly `DURABLE_BUFFER_METRIC_COUNT` fields
-    /// (the durable buffer's metric set), then sums values across all collection cycles.
     fn from_snapshots(snapshots: &[MetricSetSnapshot]) -> Self {
-        let db_snapshots: Vec<_> = snapshots
-            .iter()
-            .filter(|s| s.get_metrics().len() == DURABLE_BUFFER_METRIC_COUNT)
-            .collect();
+        let mut collected = Self::default();
+        for snapshot in snapshots {
+            let descriptor = snapshot.descriptor();
+            if !is_durable_buffer_metric_scope(descriptor.name) {
+                continue;
+            }
 
-        let mut values = vec![0u64; DURABLE_BUFFER_METRIC_COUNT];
-        let mut last_values = vec![0u64; DURABLE_BUFFER_METRIC_COUNT];
-        for snapshot in &db_snapshots {
-            for (i, metric) in snapshot.get_metrics().iter().enumerate() {
-                values[i] += metric.to_u64_lossy();
-                last_values[i] = metric.to_u64_lossy();
+            for (field, value) in descriptor.metrics.iter().zip(snapshot.get_metrics()) {
+                let values = match field.instrument {
+                    Instrument::Gauge => &mut collected.gauges,
+                    _ => &mut collected.counters,
+                };
+                let metric = MetricIdentity::new(
+                    descriptor.name,
+                    field.name,
+                    snapshot.measurement_attributes(),
+                );
+                let value = value.to_u64_lossy();
+                if field.instrument == Instrument::Gauge {
+                    let _ = values.insert(metric, value);
+                } else {
+                    *values.entry(metric).or_default() += value;
+                }
             }
         }
-        Self {
-            values,
-            last_values,
-        }
+        collected
     }
 
-    fn bundles_acked(&self) -> u64 {
-        self.values[IDX_BUNDLES_ACKED]
+    fn operational(&self, instrument: &'static str) -> u64 {
+        self.value("processor.durable_buffer", instrument, [])
     }
 
-    fn bundles_nacked_deferred(&self) -> u64 {
-        self.values[IDX_BUNDLES_NACKED_DEFERRED]
+    fn bundle_outcome(&self, outcome: &'static str) -> u64 {
+        self.value(
+            "processor.durable_buffer.bundles",
+            "resolved",
+            [("outcome", outcome)],
+        )
     }
 
-    fn bundles_nacked_permanent(&self) -> u64 {
-        self.values[IDX_BUNDLES_NACKED_PERMANENT]
+    fn item_operation(&self, signal: &'static str, operation: &'static str) -> u64 {
+        self.value(
+            "processor.durable_buffer.items",
+            operation,
+            [("signal", signal)],
+        )
     }
 
-    fn rejected_log_records(&self) -> u64 {
-        self.values[IDX_REJECTED_LOG_RECORDS]
-    }
-
-    fn rejected_metric_points(&self) -> u64 {
-        self.values[IDX_REJECTED_METRIC_POINTS]
-    }
-
-    fn rejected_spans(&self) -> u64 {
-        self.values[IDX_REJECTED_SPANS]
-    }
-
-    fn produced_log_records(&self) -> u64 {
-        self.values[IDX_PRODUCED_LOG_RECORDS]
-    }
-
-    #[allow(dead_code)]
-    fn produced_metric_points(&self) -> u64 {
-        self.values[IDX_PRODUCED_METRIC_POINTS]
-    }
-
-    #[allow(dead_code)]
-    fn produced_spans(&self) -> u64 {
-        self.values[IDX_PRODUCED_SPANS]
-    }
-
-    fn retries_scheduled(&self) -> u64 {
-        self.values[IDX_RETRIES_SCHEDULED]
-    }
-
-    fn requeued_log_records(&self) -> u64 {
-        self.values[IDX_REQUEUED_LOG_RECORDS]
-    }
-
-    fn requeued_metric_points(&self) -> u64 {
-        self.values[IDX_REQUEUED_METRIC_POINTS]
-    }
-
-    fn requeued_spans(&self) -> u64 {
-        self.values[IDX_REQUEUED_SPANS]
-    }
-
-    fn queued_log_records(&self) -> u64 {
-        self.last_values[IDX_QUEUED_LOG_RECORDS]
-    }
-
-    fn queued_metric_points(&self) -> u64 {
-        self.last_values[IDX_QUEUED_METRIC_POINTS]
-    }
-
-    fn queued_spans(&self) -> u64 {
-        self.last_values[IDX_QUEUED_SPANS]
-    }
-
-    fn flush_failures(&self) -> u64 {
-        self.values[IDX_FLUSH_FAILURES]
+    fn value(
+        &self,
+        scope: &'static str,
+        instrument: &'static str,
+        attributes: impl IntoIterator<Item = (&'static str, &'static str)>,
+    ) -> u64 {
+        let metric = MetricIdentity::new(scope, instrument, attributes);
+        self.counters
+            .get(&metric)
+            .or_else(|| self.gauges.get(&metric))
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -731,62 +686,39 @@ fn count_manifest_items_in_segments(segments_dir: &std::path::Path) -> u64 {
 // Metrics Capture
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Snapshot of durable_buffer metrics captured from the telemetry registry.
-///
-/// Field names mirror `DurableBufferMetrics` in mod.rs. Values are
-/// captured via `visit_current_metrics` on the registry after the collector
-/// drains the reporting channel — so they reflect the most-recent
-/// `CollectTelemetry` snapshot produced by the processor.
-#[derive(Debug, Default)]
-struct DurableBufferMetricsSnapshot {
-    fields: HashMap<String, u64>,
-}
-
-impl DurableBufferMetricsSnapshot {
-    /// Get a metric value by its dot-separated field name (e.g. "consumed.logs").
-    fn get(&self, field: &str) -> u64 {
-        self.fields.get(field).copied().unwrap_or(u64::MAX) // Use u64::MAX to make missing fields fail assertions clearly
-    }
-
-    /// Assert that a metric equals an exact expected value.
-    fn assert_eq(&self, field: &str, expected: u64) {
-        let actual = self.get(field);
-        assert_eq!(
-            actual, expected,
-            "{field}: expected {expected}, got {actual}"
-        );
-    }
-
-    /// Assert that a metric is greater than or equal to a minimum.
-    fn assert_ge(&self, field: &str, minimum: u64) {
-        let actual = self.get(field);
-        assert!(
-            actual >= minimum,
-            "{field}: expected >= {minimum}, got {actual}"
-        );
-    }
-}
-
-/// Capture a snapshot of `otap.processor.durable_buffer` metrics from the
-/// telemetry registry.
+/// Capture durable-buffer metrics from the telemetry registry.
 ///
 /// The caller must ensure that:
 /// 1. At least one `CollectTelemetry` cycle has flushed the processor's metrics.
 /// 2. `collector.collect_pending()` has been called to drain the channel.
-fn capture_durable_buffer_metrics(
-    registry: &TelemetryRegistryHandle,
-) -> DurableBufferMetricsSnapshot {
-    let mut snapshot = DurableBufferMetricsSnapshot::default();
-    registry.visit_current_metrics(|desc, _attrs, iter| {
-        if desc.name == "otap.processor.durable_buffer" {
-            for (field, value) in iter {
-                let _ = snapshot
-                    .fields
-                    .insert(field.name.to_owned(), value.to_u64_lossy());
+fn capture_durable_buffer_metrics(registry: &TelemetryRegistryHandle) -> CollectedMetrics {
+    let mut metrics = CollectedMetrics::default();
+    registry.visit_current_metrics_with_item_attrs(
+        |descriptor, _attrs, item_attributes, iter| {
+            if !is_durable_buffer_metric_scope(descriptor.name) {
+                return;
             }
-        }
-    });
-    snapshot
+            for (field, value) in iter {
+                let identity = MetricIdentity::new(
+                    descriptor.name,
+                    field.name,
+                    item_attributes.iter().copied(),
+                );
+                let values = match field.instrument {
+                    Instrument::Gauge => &mut metrics.gauges,
+                    _ => &mut metrics.counters,
+                };
+                let value = value.to_u64_lossy();
+                if field.instrument == Instrument::Gauge {
+                    let _ = values.insert(identity, value);
+                } else {
+                    *values.entry(identity).or_default() += value;
+                }
+            }
+        },
+        true,
+    );
+    metrics
 }
 
 /// Run a pipeline with a shutdown condition and capture durable_buffer metrics
@@ -807,7 +739,7 @@ fn run_pipeline_and_capture_metrics<F>(
     max_duration: Duration,
     shutdown_deadline: Duration,
     shutdown_condition: F,
-) -> DurableBufferMetricsSnapshot
+) -> CollectedMetrics
 where
     F: Fn() -> bool + Send + 'static,
 {
@@ -1011,71 +943,71 @@ fn test_durable_buffer_retries_on_nack() {
     // Validate: The retry mechanism worked - data was NACKed but eventually delivered
     // This proves the durable buffer's retry logic is functioning.
 
-    // Validate metrics: transient NACKs should increment bundles_nacked_deferred
+    // Validate metrics: transient NACKs should resolve bundles as deferred.
     assert!(
-        metrics.bundles_nacked_deferred() > 0,
-        "Expected bundles_nacked_deferred metric > 0, got {}",
-        metrics.bundles_nacked_deferred()
+        metrics.bundle_outcome("deferred") > 0,
+        "Expected resolved{{outcome=deferred}} metric > 0, got {}",
+        metrics.bundle_outcome("deferred")
     );
 
     // Validate metrics: no permanent NACKs in this test
     assert_eq!(
-        metrics.bundles_nacked_permanent(),
+        metrics.bundle_outcome("permanently_rejected"),
         0,
-        "Expected bundles_nacked_permanent metric = 0 (only transient NACKs), got {}",
-        metrics.bundles_nacked_permanent()
+        "Expected resolved{{outcome=permanently_rejected}} metric = 0 (only transient NACKs), got {}",
+        metrics.bundle_outcome("permanently_rejected")
     );
 
     // Validate metrics: retries should have been scheduled
     assert!(
-        metrics.retries_scheduled() > 0,
+        metrics.operational("retries.scheduled") > 0,
         "Expected retries_scheduled metric > 0, got {}",
-        metrics.retries_scheduled()
+        metrics.operational("retries.scheduled")
     );
 
     // Validate metrics: some bundles were eventually ACKd
     assert!(
-        metrics.bundles_acked() > 0,
-        "Expected bundles_acked metric > 0, got {}",
-        metrics.bundles_acked()
+        metrics.bundle_outcome("acked") > 0,
+        "Expected resolved{{outcome=acked}} metric > 0, got {}",
+        metrics.bundle_outcome("acked")
     );
 
     // Validate per-item metrics: transient NACKs should requeue items, not reject them.
     // This test uses 100% logs, so only log counters should be non-zero.
     assert!(
-        metrics.requeued_log_records() > 0,
-        "Expected requeued_log_records metric > 0 (items requeued for retry), got {}",
-        metrics.requeued_log_records()
+        metrics.item_operation("logs", "requeued") > 0,
+        "Expected requeued{{signal=logs}} metric > 0 (items requeued for retry), got {}",
+        metrics.item_operation("logs", "requeued")
     );
     assert_eq!(
-        metrics.rejected_log_records(),
+        metrics.item_operation("logs", "rejected"),
         0,
-        "Expected rejected_log_records metric = 0 (no permanent NACKs), got {}",
-        metrics.rejected_log_records()
+        "Expected rejected{{signal=logs}} metric = 0 (no permanent NACKs), got {}",
+        metrics.item_operation("logs", "rejected")
     );
     assert_eq!(
-        metrics.rejected_metric_points(),
+        metrics.item_operation("metrics", "rejected"),
         0,
-        "Expected rejected_metric_points metric = 0 (no metrics generated), got {}",
-        metrics.rejected_metric_points()
+        "Expected rejected{{signal=metrics}} metric = 0 (no metrics generated), got {}",
+        metrics.item_operation("metrics", "rejected")
     );
     assert_eq!(
-        metrics.rejected_spans(),
+        metrics.item_operation("traces", "rejected"),
         0,
-        "Expected rejected_spans metric = 0 (no traces generated), got {}",
-        metrics.rejected_spans()
+        "Expected rejected{{signal=traces}} metric = 0 (no traces generated), got {}",
+        metrics.item_operation("traces", "rejected")
     );
 
     // Validate: items were produced (sent downstream)
     assert!(
-        metrics.produced_log_records() > 0,
-        "Expected produced_log_records metric > 0 (items sent downstream), got {}",
-        metrics.produced_log_records()
+        metrics.item_operation("logs", "produced") > 0,
+        "Expected produced{{signal=logs}} metric > 0 (items sent downstream), got {}",
+        metrics.item_operation("logs", "produced")
     );
 
     // Verify no segment finalization failures occurred.
     assert_eq!(
-        metrics.flush_failures(),
+        metrics.operational("flush.failures"),
         0,
         "segment finalization should not fail (flush_failures metric)"
     );
@@ -1352,7 +1284,7 @@ fn test_durable_buffer_convert_to_arrow_mode_with_trace_context() {
 
     // Verify no segment finalization failures occurred.
     assert_eq!(
-        metrics.flush_failures(),
+        metrics.operational("flush.failures"),
         0,
         "segment finalization should not fail (flush_failures metric)"
     );
@@ -1410,7 +1342,7 @@ fn test_durable_buffer_convert_to_arrow_mode_traces() {
     );
 
     assert_eq!(
-        metrics.flush_failures(),
+        metrics.operational("flush.failures"),
         0,
         "segment finalization should not fail for traces (flush_failures metric)"
     );
@@ -1469,7 +1401,7 @@ fn test_durable_buffer_convert_to_arrow_mode_metrics() {
     );
 
     assert_eq!(
-        metrics.flush_failures(),
+        metrics.operational("flush.failures"),
         0,
         "segment finalization should not fail for metrics (flush_failures metric)"
     );
@@ -1530,7 +1462,7 @@ fn test_durable_buffer_convert_to_arrow_mode_mixed_signals() {
     );
 
     assert_eq!(
-        metrics.flush_failures(),
+        metrics.operational("flush.failures"),
         0,
         "segment finalization should not fail for mixed signals (flush_failures metric)"
     );
@@ -1846,52 +1778,67 @@ fn test_durable_buffer_otlp_item_count_metrics() {
     );
 
     // ── Validate durable buffer telemetry metrics ───────────────────────
-    // The metrics snapshot was captured after at least one CollectTelemetry cycle
+    // The metrics were captured after at least one CollectTelemetry cycle
     // completed, so counters and gauges should reflect the pipeline's activity.
     eprintln!("Durable buffer metrics snapshot: {metrics_snapshot:?}");
 
     // Consumed counters count items ingested in THIS pipeline run only (Phase 2).
     // Phase 2 generates phase2_signals with equal weights → phase2_signals/3 each.
     let phase2_per_signal = phase2_signals / 3;
-    metrics_snapshot.assert_eq("consumed.log.records", phase2_per_signal);
-    metrics_snapshot.assert_eq("consumed.spans", phase2_per_signal);
-    metrics_snapshot.assert_eq("consumed.metric.points", phase2_per_signal);
+    assert_eq!(
+        metrics_snapshot.item_operation("logs", "consumed"),
+        phase2_per_signal
+    );
+    assert_eq!(
+        metrics_snapshot.item_operation("traces", "consumed"),
+        phase2_per_signal
+    );
+    assert_eq!(
+        metrics_snapshot.item_operation("metrics", "consumed"),
+        phase2_per_signal
+    );
 
     // Produced counters count items sent downstream (Phase 1 recovered + Phase 2 new).
     let phase1_per_signal = phase1_signals / 3;
     let produced_per_signal = phase1_per_signal + phase2_per_signal;
-    metrics_snapshot.assert_eq("produced.log.records", produced_per_signal);
-    metrics_snapshot.assert_eq("produced.spans", produced_per_signal);
-    metrics_snapshot.assert_eq("produced.metric.points", produced_per_signal);
+    assert_eq!(
+        metrics_snapshot.item_operation("logs", "produced"),
+        produced_per_signal
+    );
+    assert_eq!(
+        metrics_snapshot.item_operation("traces", "produced"),
+        produced_per_signal
+    );
+    assert_eq!(
+        metrics_snapshot.item_operation("metrics", "produced"),
+        produced_per_signal
+    );
 
     // All bundles ACKed, none NACKed (counting exporter always succeeds).
     // The exact bundle count depends on internal batching decisions (how many
     // items get grouped per bundle), but there must be at least 3 — one per
     // signal type (logs, traces, metrics).
-    metrics_snapshot.assert_ge("bundles.acked", 3);
-    metrics_snapshot.assert_eq("bundles.nacked.deferred", 0);
-    metrics_snapshot.assert_eq("bundles.nacked.permanent", 0);
+    assert!(metrics_snapshot.bundle_outcome("acked") >= 3);
+    assert_eq!(metrics_snapshot.bundle_outcome("deferred"), 0);
+    assert_eq!(metrics_snapshot.bundle_outcome("permanently_rejected"), 0);
 
     // No errors, drops, or expirations in a clean run.
-    metrics_snapshot.assert_eq("dropped.items", 0);
-    metrics_snapshot.assert_eq("dropped.bundles", 0);
-    metrics_snapshot.assert_eq("dropped.segments", 0);
-    metrics_snapshot.assert_eq("expired.items", 0);
-    metrics_snapshot.assert_eq("expired.bundles", 0);
-    metrics_snapshot.assert_eq("ingest.errors", 0);
-    metrics_snapshot.assert_eq("read.errors", 0);
+    assert_eq!(metrics_snapshot.operational("read.errors"), 0);
 
     // No NACKs → no requeues, and all data drained → queued gauges at zero.
-    metrics_snapshot.assert_eq("requeued.log.records", 0);
-    metrics_snapshot.assert_eq("requeued.metric.points", 0);
-    metrics_snapshot.assert_eq("requeued.spans", 0);
-    metrics_snapshot.assert_eq("queued.log.records", 0);
-    metrics_snapshot.assert_eq("queued.metric.points", 0);
-    metrics_snapshot.assert_eq("queued.spans", 0);
-    metrics_snapshot.assert_eq("in.flight", 0);
+    assert_eq!(metrics_snapshot.item_operation("logs", "requeued"), 0);
+    assert_eq!(metrics_snapshot.item_operation("metrics", "requeued"), 0);
+    assert_eq!(metrics_snapshot.item_operation("traces", "requeued"), 0);
+    assert_eq!(metrics_snapshot.item_operation("logs", "queued"), 0);
+    assert_eq!(metrics_snapshot.item_operation("metrics", "queued"), 0);
+    assert_eq!(metrics_snapshot.item_operation("traces", "queued"), 0);
+    assert_eq!(metrics_snapshot.operational("in.flight"), 0);
 
     // Storage cap should match the configured 256MiB retention_size_cap (per-core budget).
-    metrics_snapshot.assert_eq("storage.bytes.cap", 256 * 1024 * 1024);
+    assert_eq!(
+        metrics_snapshot.operational("storage.bytes.cap"),
+        256 * 1024 * 1024
+    );
 }
 
 /// Test drop_oldest size cap policy configuration is accepted.
@@ -1960,7 +1907,7 @@ fn test_durable_buffer_drop_oldest_policy() {
 /// - When an exporter sends a permanent NACK, the durable buffer calls
 ///   `handle.reject()` on the bundle (marks it as `AckOutcome::Dropped` in Quiver)
 /// - The bundle is NOT retried (no retry scheduling)
-/// - The `bundles_nacked_permanent` metric is incremented
+/// - The `resolved{outcome=permanently_rejected}` metric is incremented
 /// - Queued gauges are decremented (no gauge drift)
 /// - Data sent after permanent NACKs still flows correctly
 ///
@@ -2041,34 +1988,34 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         "Expected items to be delivered after switching to ACK mode, got 0"
     );
 
-    // Validate metrics: bundles_nacked_permanent should be non-zero
+    // Validate metrics: permanently rejected bundle resolutions should be non-zero.
     assert!(
-        metrics.bundles_nacked_permanent() > 0,
-        "Expected bundles_nacked_permanent metric > 0, got {}",
-        metrics.bundles_nacked_permanent()
+        metrics.bundle_outcome("permanently_rejected") > 0,
+        "Expected resolved{{outcome=permanently_rejected}} metric > 0, got {}",
+        metrics.bundle_outcome("permanently_rejected")
     );
 
-    // Validate metrics: bundles_nacked_deferred should be zero (no transient NACKs)
+    // Validate metrics: deferred bundle resolutions should be zero (no transient NACKs).
     assert_eq!(
-        metrics.bundles_nacked_deferred(),
+        metrics.bundle_outcome("deferred"),
         0,
-        "Expected bundles_nacked_deferred metric = 0, got {}",
-        metrics.bundles_nacked_deferred()
+        "Expected resolved{{outcome=deferred}} metric = 0, got {}",
+        metrics.bundle_outcome("deferred")
     );
 
     // Validate metrics: retries_scheduled should be zero (permanent NACKs don't retry)
     assert_eq!(
-        metrics.retries_scheduled(),
+        metrics.operational("retries.scheduled"),
         0,
         "Expected retries_scheduled metric = 0, got {}",
-        metrics.retries_scheduled()
+        metrics.operational("retries.scheduled")
     );
 
     // Validate metrics: bundles_acked should be non-zero (data delivered in ACK phase)
     assert!(
-        metrics.bundles_acked() > 0,
-        "Expected bundles_acked metric > 0, got {}",
-        metrics.bundles_acked()
+        metrics.bundle_outcome("acked") > 0,
+        "Expected resolved{{outcome=acked}} metric > 0, got {}",
+        metrics.bundle_outcome("acked")
     );
 
     // Validate per-item metrics: permanent NACKs should reject items, not requeue them.
@@ -2076,65 +2023,67 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
     // NACKs it is possible (~25%) that all NACKed bundles are the same type.
     // Assert on the aggregate rather than expecting both counters to be non-zero.
     assert!(
-        metrics.rejected_log_records() + metrics.rejected_spans() > 0,
-        "Expected some items permanently rejected, got rejected_log_records={}, rejected_spans={}",
-        metrics.rejected_log_records(),
-        metrics.rejected_spans()
+        metrics.item_operation("logs", "rejected") + metrics.item_operation("traces", "rejected")
+            > 0,
+        "Expected some items permanently rejected, got rejected{{signal=logs}}={}, rejected{{signal=traces}}={}",
+        metrics.item_operation("logs", "rejected"),
+        metrics.item_operation("traces", "rejected")
     );
     assert_eq!(
-        metrics.requeued_log_records(),
+        metrics.item_operation("logs", "requeued"),
         0,
-        "Expected requeued_log_records metric = 0 (permanent NACKs don't requeue), got {}",
-        metrics.requeued_log_records()
+        "Expected requeued{{signal=logs}} metric = 0 (permanent NACKs don't requeue), got {}",
+        metrics.item_operation("logs", "requeued")
     );
     assert_eq!(
-        metrics.requeued_metric_points(),
+        metrics.item_operation("metrics", "requeued"),
         0,
-        "Expected requeued_metric_points metric = 0 (no metrics generated), got {}",
-        metrics.requeued_metric_points()
+        "Expected requeued{{signal=metrics}} metric = 0 (no metrics generated), got {}",
+        metrics.item_operation("metrics", "requeued")
     );
     assert_eq!(
-        metrics.requeued_spans(),
+        metrics.item_operation("traces", "requeued"),
         0,
-        "Expected requeued_spans metric = 0 (permanent NACKs don't requeue), got {}",
-        metrics.requeued_spans()
+        "Expected requeued{{signal=traces}} metric = 0 (permanent NACKs don't requeue), got {}",
+        metrics.item_operation("traces", "requeued")
     );
 
     // Validate: items were produced (sent downstream).
     // Signal type is random per-bundle, so check aggregate.
     assert!(
-        metrics.produced_log_records() + metrics.produced_spans() > 0,
-        "Expected some items produced, got produced_log_records={}, produced_spans={}",
-        metrics.produced_log_records(),
-        metrics.produced_spans()
+        metrics.item_operation("logs", "produced") + metrics.item_operation("traces", "produced")
+            > 0,
+        "Expected some items produced, got produced{{signal=logs}}={}, produced{{signal=traces}}={}",
+        metrics.item_operation("logs", "produced"),
+        metrics.item_operation("traces", "produced")
     );
 
     // Validate: queued gauges should reflect that permanent NACKs decremented them.
     // It may not be exactly zero because new data can be ingested between the last
     // send and shutdown. But the gauge must not exceed total consumed items
     // (a leak would show queued growing unboundedly).
-    let consumed_logs = metrics.values.get(6).copied().unwrap_or(0);
+    let consumed_logs = metrics.item_operation("logs", "consumed");
     assert!(
-        metrics.queued_log_records() <= consumed_logs,
-        "queued_log_records gauge ({}) should not exceed consumed_log_records ({}); \
+        metrics.item_operation("logs", "queued") <= consumed_logs,
+        "queued{{signal=logs}} gauge ({}) should not exceed consumed{{signal=logs}} ({}); \
          permanent NACKs may be leaking the queued gauge",
-        metrics.queued_log_records(),
+        metrics.item_operation("logs", "queued"),
         consumed_logs
     );
-    let consumed_spans = metrics.values.get(8).copied().unwrap_or(0);
+    let consumed_spans = metrics.item_operation("traces", "consumed");
     assert!(
-        metrics.queued_spans() <= consumed_spans,
-        "queued_spans gauge ({}) should not exceed consumed_spans ({}); \
+        metrics.item_operation("traces", "queued") <= consumed_spans,
+        "queued{{signal=traces}} gauge ({}) should not exceed consumed{{signal=traces}} ({}); \
          permanent NACKs may be leaking the queued gauge",
-        metrics.queued_spans(),
+        metrics.item_operation("traces", "queued"),
         consumed_spans
     );
-    // No metrics generated (pdata limitation), so queued_metric_points should be 0.
+    // No metrics generated (pdata limitation), so queued{signal=metrics} should be 0.
     assert_eq!(
-        metrics.queued_metric_points(),
+        metrics.item_operation("metrics", "queued"),
         0,
-        "queued_metric_points gauge should be 0 (no metrics generated), got {}",
-        metrics.queued_metric_points()
+        "queued{{signal=metrics}} gauge should be 0 (no metrics generated), got {}",
+        metrics.item_operation("metrics", "queued")
     );
 
     println!(
@@ -2145,17 +2094,17 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         total_permanent_nacks,
         total_transient_nacks,
         delivered,
-        metrics.bundles_acked(),
-        metrics.bundles_nacked_deferred(),
-        metrics.bundles_nacked_permanent(),
-        metrics.retries_scheduled(),
-        metrics.rejected_log_records(),
-        metrics.rejected_spans(),
-        metrics.requeued_log_records(),
-        metrics.produced_log_records(),
-        metrics.queued_log_records(),
-        metrics.queued_spans(),
-        metrics.queued_metric_points()
+        metrics.bundle_outcome("acked"),
+        metrics.bundle_outcome("deferred"),
+        metrics.bundle_outcome("permanently_rejected"),
+        metrics.operational("retries.scheduled"),
+        metrics.item_operation("logs", "rejected"),
+        metrics.item_operation("traces", "rejected"),
+        metrics.item_operation("logs", "requeued"),
+        metrics.item_operation("logs", "produced"),
+        metrics.item_operation("logs", "queued"),
+        metrics.item_operation("traces", "queued"),
+        metrics.item_operation("metrics", "queued")
     );
 }
 
@@ -2167,8 +2116,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
 /// 2. Switch to permanent NACKs (bundles rejected immediately)
 /// 3. Switch to ACK mode (verify pipeline still delivers data)
 ///
-/// Validates both `bundles_nacked_deferred` and `bundles_nacked_permanent`
-/// metrics are correctly incremented.
+/// Validates both deferred and permanently rejected bundle-resolution outcomes.
 #[test]
 fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
     let temp_dir = tempdir().expect("failed to create temp dir");
@@ -2279,60 +2227,60 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
 
     // Validate metrics: both NACK counters should be non-zero
     assert!(
-        metrics.bundles_nacked_deferred() > 0,
-        "Expected bundles_nacked_deferred metric > 0, got {}",
-        metrics.bundles_nacked_deferred()
+        metrics.bundle_outcome("deferred") > 0,
+        "Expected resolved{{outcome=deferred}} metric > 0, got {}",
+        metrics.bundle_outcome("deferred")
     );
     assert!(
-        metrics.bundles_nacked_permanent() > 0,
-        "Expected bundles_nacked_permanent metric > 0, got {}",
-        metrics.bundles_nacked_permanent()
+        metrics.bundle_outcome("permanently_rejected") > 0,
+        "Expected resolved{{outcome=permanently_rejected}} metric > 0, got {}",
+        metrics.bundle_outcome("permanently_rejected")
     );
 
     // Validate metrics: retries should have been scheduled (from transient phase)
     assert!(
-        metrics.retries_scheduled() > 0,
+        metrics.operational("retries.scheduled") > 0,
         "Expected retries_scheduled metric > 0 from transient NACK phase, got {}",
-        metrics.retries_scheduled()
+        metrics.operational("retries.scheduled")
     );
 
     // Validate metrics: bundles_acked should be non-zero (data delivered in ACK phase)
     assert!(
-        metrics.bundles_acked() > 0,
-        "Expected bundles_acked metric > 0, got {}",
-        metrics.bundles_acked()
+        metrics.bundle_outcome("acked") > 0,
+        "Expected resolved{{outcome=acked}} metric > 0, got {}",
+        metrics.bundle_outcome("acked")
     );
 
     // Validate per-item metrics: mixed NACKs should both reject and requeue items.
     // This test uses 100% logs, so only log counters should be non-zero.
     assert!(
-        metrics.rejected_log_records() > 0,
-        "Expected rejected_log_records metric > 0 (items permanently rejected in phase 2), got {}",
-        metrics.rejected_log_records()
+        metrics.item_operation("logs", "rejected") > 0,
+        "Expected rejected{{signal=logs}} metric > 0 (items permanently rejected in phase 2), got {}",
+        metrics.item_operation("logs", "rejected")
     );
     assert!(
-        metrics.requeued_log_records() > 0,
-        "Expected requeued_log_records metric > 0 (items requeued in transient phase 1), got {}",
-        metrics.requeued_log_records()
+        metrics.item_operation("logs", "requeued") > 0,
+        "Expected requeued{{signal=logs}} metric > 0 (items requeued in transient phase 1), got {}",
+        metrics.item_operation("logs", "requeued")
     );
     assert_eq!(
-        metrics.rejected_metric_points(),
+        metrics.item_operation("metrics", "rejected"),
         0,
-        "Expected rejected_metric_points metric = 0 (no metrics generated), got {}",
-        metrics.rejected_metric_points()
+        "Expected rejected{{signal=metrics}} metric = 0 (no metrics generated), got {}",
+        metrics.item_operation("metrics", "rejected")
     );
     assert_eq!(
-        metrics.rejected_spans(),
+        metrics.item_operation("traces", "rejected"),
         0,
-        "Expected rejected_spans metric = 0 (no traces generated), got {}",
-        metrics.rejected_spans()
+        "Expected rejected{{signal=traces}} metric = 0 (no traces generated), got {}",
+        metrics.item_operation("traces", "rejected")
     );
 
     // Validate: items were produced (sent downstream)
     assert!(
-        metrics.produced_log_records() > 0,
-        "Expected produced_log_records metric > 0 (items sent downstream), got {}",
-        metrics.produced_log_records()
+        metrics.item_operation("logs", "produced") > 0,
+        "Expected produced{{signal=logs}} metric > 0 (items sent downstream), got {}",
+        metrics.item_operation("logs", "produced")
     );
 
     println!(
@@ -2344,12 +2292,12 @@ fn test_durable_buffer_mixed_transient_and_permanent_nacks() {
         permanent_nacks,
         total_permanent,
         delivered,
-        metrics.bundles_acked(),
-        metrics.bundles_nacked_deferred(),
-        metrics.bundles_nacked_permanent(),
-        metrics.retries_scheduled(),
-        metrics.rejected_log_records(),
-        metrics.requeued_log_records(),
-        metrics.produced_log_records()
+        metrics.bundle_outcome("acked"),
+        metrics.bundle_outcome("deferred"),
+        metrics.bundle_outcome("permanently_rejected"),
+        metrics.operational("retries.scheduled"),
+        metrics.item_operation("logs", "rejected"),
+        metrics.item_operation("logs", "requeued"),
+        metrics.item_operation("logs", "produced")
     );
 }

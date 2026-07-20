@@ -44,12 +44,18 @@ pub enum HttpResponse {
     /// A successful 2xx response.
     #[attribute_value = "http_2xx"]
     Http2xx,
+    /// A bad-request response.
+    #[attribute_value = "http_400"]
+    Http400,
     /// An unauthorized response.
     #[attribute_value = "http_401"]
     Http401,
     /// A forbidden response.
     #[attribute_value = "http_403"]
     Http403,
+    /// A not-found response.
+    #[attribute_value = "http_404"]
+    Http404,
     /// A payload-too-large response.
     #[attribute_value = "http_413"]
     Http413,
