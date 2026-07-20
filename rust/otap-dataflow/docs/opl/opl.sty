@@ -331,6 +331,9 @@ the ASCII CR character followed by the ASCII LF character
 \def\DURATION{\keyword{duration}}
 \def\INTERVAL{\keyword{interval}}
 
+\def\TRIPLEDOTS{\keyword{...}}
+
+\bnf{VarArgs}{\TRIPLEDOTS{} \IDENT \synt{TypeSigSuffix}?}
 
 % Grammar Rules
 
@@ -338,7 +341,7 @@ the ASCII CR character followed by the ASCII LF character
 \def\ListOp#1#2{(\List{#1}{#2})?}
 \def\CommaList#1{\List{\COMMA{}}{#1}}
 \def\CommaListOp#1{\ListOp{\COMMA{}}{#1}}
-\def\ParamList#1{\LPAREN{} \CommaList{#1}{} \RPAREN}
+\def\ParamList#1{\LPAREN{} \CommaList{#1}{} \synt{VarArgs} \RPAREN}
 \def\ParamListOp#1{\LPAREN{} \CommaListOp{#1}{} \RPAREN}
 
 %% Declarations
@@ -477,6 +480,12 @@ the ASCII CR character followed by the ASCII LF character
 
 \bnf {ParameterList} {\ParamList{\synt{Parameter}}}
 \bnf {Parameter} {\IDENT{} \synt{TypeSigSuffix}?}
+
+\bnf {OptionalParameterList} {\ParamList{\synt{OptionalParameter}}}
+
+% This works but won't work for combining mandatory and optional, cause we'll get extra delimiting parentheses
+
+\bnf{OptionalParameter}{\IDENT{} \synt{TypeSigSuffix}? \EQ{} \synt{Expression}}
 
 \bnf{PropertyList}{(Property (\COMMA{} Property)*)?}
 \bnf {PropertyName} {\IDENT{} \alt \synt{StringLiteral}}

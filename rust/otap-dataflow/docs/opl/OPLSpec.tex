@@ -8,7 +8,7 @@
 \input{opl.sty}
 \begin{document}
 \title{OPL Language Specification\\
-{\large Version 0.03}
+{\large Version 0.04}
 }
 \maketitle
 
@@ -123,11 +123,13 @@ A {\em function signature} consists of an identifier $F$  that specifies the nam
 
 \FunctionSignature{}
 
-The parameter declarations each include the name of a parameter, $p_i$ and may optionally declare a type $T_i$ for the parameter, $i \in 1 \ldots k$.
+The parameter declarations each include the name of a parameter, $p_i$ and may optionally declare a type $T_i$ for the parameter, $i \in 1 \ldots k$. At the end of the parameter list, a {\em var args} declaration may appear. It allows the function to take an unbounded number of additional arguments.
 
 \ParameterList{}
 
 \Parameter{}
+
+\VarArgs{}
 
 If $p_i$ does not declare a type, then $T_i =  *$ [ \ref{theErrorType}]. If $T_r$ is not explicitly declared, $T_r = T_e$, where $T_e$ is  the type of the function's body defined below.
 
@@ -312,17 +314,6 @@ As such, operators are distinct from OPL's user-defined functions [\ref{function
 
 The set of operators in OPL  is fixed. Operators  are often parameterized by expressions. Operators are applied to streams of signal type  via operator calls [\ref{operatorCalls}]. OPL defines the following operators:
 
-\subsection{Extend}
-\label{extend}
-
-The \EXTEND{} operator allows the assignment of an element of a map.
-
-{\em The purpose of \EXTEND{} is to add or mutate dynamic attributes of a stream element.}
-
-{\em Or, equivalently, to an element of a list of key-value pairs.}
-
-Let $x$ be the current element of the input stream $s$. The operator call $\EXTEND{}$  $id[k] = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except for the value of the field $id$, whose value in $x'$ is the same as $x$, except that $x'.id[k] = v$ where $v$ is the result of evaluating $e$.
-
 \subsection{Identity}
 \label{identity}
 
@@ -352,21 +343,16 @@ The \REMOVE{} operator allows for removing a set of dynamic attributes of a stre
 
 The \RENAME{} operator allows for renaming a set of dynamic attributes of a stream eleement.
 
-\RENAME{} can also be referenced using the predefined alias \PROJECTRENAME.
-
 \subsection{Set}
 \label{set}
 
 The \SET{} operator allows the assignment of a field of a signal.
 
-Let $x$ be the current element of the input stream $s$. The operator call $\SET$ $ id = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except for the value of the field $id$, whose value in $x'$ is $v$, where $v$ is the result of evaluating $e$.
+Let $x$ be the current element of the input stream $s$. The operator call $\SET$ $ id = e$ produces an element $x'$ such that $x'$ is equivalent to $x$ except except that $x'.id = v$ , where $v$ is the result of evaluating $e$.
 
-Let $Stream \lt T \gt$ be the type of $s$.  It is a runtime error if $id$ is not a member of  $T$.
+Let $Stream \lt T \gt$ be the type of $s$.  
 
-\comment{Even though we give a type warning at compile time, in an optional type system we do not preclude the code from being run (say, for test purposes). If it runs, it must fail at this point.
-}
-
-It is a type warning if $id$ is not a member of  $T$. It is a type warning if the type of $e$ is not compatible with $T$.
+If $T$ has member $id$ of type $K$, It is a type warning if the type of $e$ is not compatible with $K$.
 
 \subsection{Casts: Accept and Reject}
 \label{casts}
@@ -424,7 +410,7 @@ The only constraint on the order of the elements in the result stream is that th
 \subsubsection{Fork}
 \label{fork}
 
-The \FORK{} combinator feeds the elements of its input stream into two or more \comment{The original syntax said it limited to two, but other parts of the doc contradict that, and it doesn't seem to be necessary, or a good fit with the rest of the system. Is there a real reason to limit?} child pipelines.
+The \FORK{} combinator feeds the elements of its input stream into two or more child pipelines.
 
 \ForkExpression{}
 
@@ -1254,6 +1240,7 @@ Function types  are derived from function signatures.
 \item 0.01. Initial public version.
 \item 0.02 Add missing section on arrays. Make indexing expressions cover arrays as well. Fix various typos.
 \item 0.03. Revise let bindings to cover binding to pipelines and policies, but not ports. Add section on ports. Add external functions.
+\item 0.04. Remove \PROJECTRENAME and \EXTEND{} while liberalizing \SET{} to subsume \EXTEND. Allow arbitrary number of \FORK{}s.
 
 \end{itemize}
 \end{document}
