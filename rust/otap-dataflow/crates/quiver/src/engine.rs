@@ -5232,6 +5232,9 @@ mod tests {
             .data_dir(dir.path())
             .segment(SegmentConfig {
                 target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100MB
+                // Long open duration so slow/loaded CI runs never trigger
+                // time-based finalization (the default is only 5 seconds).
+                max_open_duration: Duration::from_secs(3600),
                 ..Default::default()
             })
             .build()
@@ -5313,6 +5316,9 @@ mod tests {
             .segment(SegmentConfig {
                 // Large segment size so nothing gets finalized to segments
                 target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                // Long open duration so slow/loaded CI runs never trigger
+                // time-based finalization (the default is only 5 seconds).
+                max_open_duration: Duration::from_secs(3600),
                 ..Default::default()
             })
             .build()
