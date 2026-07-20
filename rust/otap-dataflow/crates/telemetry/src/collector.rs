@@ -3,15 +3,19 @@
 
 //! Task periodically collecting the internal signals emitted by the engine and the pipelines.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
+use tokio::sync::{RwLock, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::error::Error;
-use crate::metrics::MetricSetSnapshot;
 use crate::registry::TelemetryRegistryHandle;
-use crate::reporter::MetricsReporter;
+use crate::reporter::{
+    MetricsCollectionMessage, MetricsCollectorStatus, MetricsFlushHandle, MetricsReporter,
+};
 
 /// Internal collector responsible for gathering internal telemetry signals (fow now only metric
 /// sets or multivariate metrics).
@@ -19,10 +23,69 @@ pub struct InternalCollector {
     /// The registry where entities and metrics are declared and aggregated.
     registry: TelemetryRegistryHandle,
 
-    /// Receiver for incoming metrics.
-    /// The message is a combination of a MetricSetKey and collection of MetricValues.
-    /// The metrics key is the aggregation key for the metrics,
-    metrics_receiver: flume::Receiver<MetricSetSnapshot>,
+    /// Ordered snapshots and finite flush barriers from metrics reporters.
+    metrics_receiver: flume::Receiver<MetricsCollectionMessage>,
+
+    /// Publishes whether a collector loop is available to service barriers.
+    collector_status: watch::Sender<MetricsCollectorStatus>,
+
+    /// Enforces the single-consumer invariant required by FIFO barriers.
+    collector_running: Arc<AtomicBool>,
+
+    /// Serializes reliable sends against the final cancellation drain.
+    shutdown_gate: Arc<RwLock<()>>,
+}
+
+struct CollectorRunGuard {
+    collector_status: watch::Sender<MetricsCollectorStatus>,
+    collector_running: Arc<AtomicBool>,
+}
+
+struct CollectorDrainGuard {
+    collector_running: Arc<AtomicBool>,
+}
+
+impl CollectorDrainGuard {
+    fn start(collector_running: &Arc<AtomicBool>) -> Option<Self> {
+        collector_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self {
+                collector_running: collector_running.clone(),
+            })
+    }
+}
+
+impl Drop for CollectorDrainGuard {
+    fn drop(&mut self) {
+        self.collector_running.store(false, Ordering::Release);
+    }
+}
+
+impl CollectorRunGuard {
+    fn start(
+        collector_status: &watch::Sender<MetricsCollectorStatus>,
+        collector_running: &Arc<AtomicBool>,
+    ) -> Result<Self, Error> {
+        let _ = collector_running
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| Error::MetricsCollectorAlreadyRunning)?;
+        let collector_status = collector_status.clone();
+        let _ = collector_status.send_replace(MetricsCollectorStatus::Running);
+        Ok(Self {
+            collector_status,
+            collector_running: collector_running.clone(),
+        })
+    }
+}
+
+impl Drop for CollectorRunGuard {
+    fn drop(&mut self) {
+        let _ = self
+            .collector_status
+            .send_replace(MetricsCollectorStatus::Stopped);
+        self.collector_running.store(false, Ordering::Release);
+    }
 }
 
 impl InternalCollector {
@@ -32,41 +95,74 @@ impl InternalCollector {
         registry: TelemetryRegistryHandle,
     ) -> (Self, MetricsReporter) {
         let (metrics_sender, metrics_receiver) =
-            flume::bounded::<MetricSetSnapshot>(config.reporting_channel_size);
+            flume::bounded::<MetricsCollectionMessage>(config.reporting_channel_size);
+        let (collector_status, collector_status_rx) =
+            watch::channel(MetricsCollectorStatus::NotStarted);
+        let shutdown_gate = Arc::new(RwLock::new(()));
+        let metrics_flusher = MetricsFlushHandle::new(
+            metrics_sender.clone(),
+            collector_status_rx,
+            shutdown_gate.clone(),
+        );
+        let uses_its = config.metrics.uses_its_provider();
+        registry.configure_metrics_collector(uses_its.then(|| metrics_flusher.clone()), uses_its);
 
+        let reporter = MetricsReporter::new_collector(metrics_flusher);
         (
             Self {
                 registry,
                 metrics_receiver,
+                collector_status,
+                collector_running: Arc::new(AtomicBool::new(false)),
+                shutdown_gate,
             },
-            MetricsReporter::new(metrics_sender),
+            reporter,
         )
     }
 
-    /// Drains all pending metrics from the reporting channel and aggregates
-    /// them into the `registry`.
-    pub fn collect_pending(&self) {
-        while let Ok(metrics) = self.metrics_receiver.try_recv() {
-            self.registry
-                .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
+    fn collect_message(&self, message: MetricsCollectionMessage) {
+        match message {
+            MetricsCollectionMessage::Snapshot(metrics) => self
+                .registry
+                .accumulate_metric_set_snapshot(metrics.key, metrics.bucket, &metrics.metrics),
+            MetricsCollectionMessage::Flush(ack_sender) => {
+                let _ = ack_sender.send(());
+            }
         }
+    }
+
+    fn drain_pending(&self) {
+        while let Ok(message) = self.metrics_receiver.try_recv() {
+            self.collect_message(message);
+        }
+    }
+
+    /// Drains all currently pending metrics without starting a long-lived task.
+    ///
+    /// If another collector consumer is active, this call is a no-op so FIFO
+    /// barrier ordering cannot be split across consumers.
+    pub fn collect_pending(&self) {
+        let Some(_running) = CollectorDrainGuard::start(&self.collector_running) else {
+            return;
+        };
+        self.drain_pending();
+    }
+
+    async fn collection_loop(&self) -> Result<(), Error> {
+        while let Ok(message) = self.metrics_receiver.recv_async().await {
+            self.collect_message(message);
+        }
+        Ok(())
     }
 
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
     /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
-    pub async fn run_collection_loop(self: Arc<Self>) -> Result<(), Error> {
-        loop {
-            match self.metrics_receiver.recv_async().await {
-                Ok(metrics) => {
-                    self.registry
-                        .accumulate_metric_set_snapshot(metrics.key, &metrics.metrics);
-                }
-                Err(_) => {
-                    // Channel closed, exit the loop
-                    return Ok(());
-                }
-            }
+    pub fn run_collection_loop(self: Arc<Self>) -> impl Future<Output = Result<(), Error>> {
+        let running = CollectorRunGuard::start(&self.collector_status, &self.collector_running);
+        async move {
+            let _running = running?;
+            self.collection_loop().await
         }
     }
 
@@ -74,16 +170,48 @@ impl InternalCollector {
     ///
     /// This method starts the internal signal collection loop and listens for a shutdown signal.
     /// It returns when either the collection loop ends (Ok/Err) or the shutdown signal fires.
-    pub async fn run(self: Arc<Self>, cancel: CancellationToken) -> Result<(), Error> {
-        tokio::select! {
-            biased;
+    pub fn run(
+        self: Arc<Self>,
+        cancel: CancellationToken,
+    ) -> impl Future<Output = Result<(), Error>> {
+        let running = CollectorRunGuard::start(&self.collector_status, &self.collector_running);
+        async move {
+            let _running = running?;
+            tokio::select! {
+                biased;
 
-            _ = cancel.cancelled() => {
-                // Shutdown requested; cancel the collection loop by dropping its future.
-                Ok(())
-            }
-            res = self.run_collection_loop() => {
-                res
+                _ = cancel.cancelled() => {
+                    // Queue the exclusive shutdown gate while continuing to
+                    // consume. A reliable sender may already hold a read guard
+                    // while blocked on a full channel; consuming lets that send
+                    // complete and release its guard instead of deadlocking the
+                    // final drain.
+                    let shutdown_guard = self.shutdown_gate.clone().write_owned();
+                    tokio::pin!(shutdown_guard);
+                    let _shutdown_guard = loop {
+                        tokio::select! {
+                            biased;
+
+                            guard = &mut shutdown_guard => break guard,
+                            message = self.metrics_receiver.recv_async() => {
+                                match message {
+                                    Ok(message) => self.collect_message(message),
+                                    Err(_) => break shutdown_guard.await,
+                                }
+                            }
+                        }
+                    };
+                    let _ = self
+                        .collector_status
+                        .send_replace(MetricsCollectorStatus::Stopped);
+                    // Preserve snapshots already queued before shutdown so a final
+                    // registry drain can export them.
+                    self.drain_pending();
+                    Ok(())
+                }
+                res = self.collection_loop() => {
+                    res
+                }
             }
         }
     }
@@ -101,6 +229,7 @@ mod tests {
         MetricsDescriptor, MetricsField, Temporality,
     };
     use crate::metrics::MetricSetHandler;
+    use crate::metrics::MetricSetSnapshot;
     use crate::metrics::MetricValue;
     use crate::registry::MetricSetKey;
     use std::collections::HashMap;
@@ -219,6 +348,9 @@ mod tests {
     fn create_test_snapshot(key: MetricSetKey, values: Vec<MetricValue>) -> MetricSetSnapshot {
         MetricSetSnapshot {
             key,
+            descriptor: &MOCK_METRICS_DESCRIPTOR,
+            measurement_attributes: &[],
+            bucket: 0,
             metrics: values,
         }
     }
@@ -233,10 +365,10 @@ mod tests {
     async fn test_collector_without_pipeline_returns_none_on_channel_close() {
         let config = create_test_config(100);
         let telemetry_registry = create_test_registry();
-        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry);
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry);
 
         // Close immediately
-        drop(_reporter);
+        drop(reporter);
         Arc::new(collector).run_collection_loop().await.unwrap();
     }
 
@@ -252,7 +384,7 @@ mod tests {
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
 
-        let handle = tokio::spawn(async move { Arc::new(collector).run_collection_loop().await });
+        let handle = tokio::spawn(Arc::new(collector).run_collection_loop());
 
         // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
         reporter
@@ -270,8 +402,10 @@ mod tests {
             .await
             .unwrap();
 
-        // Give the collector a brief moment to process
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        reporter
+            .flush()
+            .await
+            .expect("collector should aggregate both snapshots before inspection");
 
         // Inspect current metrics without resetting
         let mut collected = Vec::new();
@@ -302,7 +436,7 @@ mod tests {
         let key = metric_set.key;
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
-        let handle = tokio::spawn(async move { Arc::new(collector).run_collection_loop().await });
+        let handle = tokio::spawn(Arc::new(collector).run_collection_loop());
 
         reporter
             .report_snapshot(create_test_snapshot(
@@ -311,7 +445,10 @@ mod tests {
             ))
             .await
             .unwrap();
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        reporter
+            .flush()
+            .await
+            .expect("collector should aggregate the snapshot before inspection");
 
         // First visit should see the non-zero and then reset
         let mut first = Vec::new();
@@ -337,5 +474,341 @@ mod tests {
 
         drop(reporter);
         handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_flush_barrier_aggregates_queued_snapshots() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let handle = tokio::spawn(Arc::new(collector).run_collection_loop());
+
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(7u64), MetricValue::from(9u64)],
+            ))
+            .expect("snapshot fits in the reporting channel");
+        reporter
+            .flush()
+            .await
+            .expect("flush barrier should be acknowledged");
+
+        let batch = telemetry_registry.drain_metric_export_batch();
+        assert_eq!(batch.metric_sets.len(), 1);
+        assert_eq!(
+            batch.metric_sets[0].values,
+            vec![MetricValue::from(7u64), MetricValue::from(9u64)]
+        );
+
+        drop(reporter);
+        handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_flush_barrier_fails_when_retained_collector_is_stopped() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry);
+        let collector = Arc::new(collector);
+        let retained_collector = collector.clone();
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(collector.run(cancel.clone()));
+
+        reporter
+            .flush()
+            .await
+            .expect("running collector should acknowledge a barrier");
+        cancel.cancel();
+        handle
+            .await
+            .expect("collector task should join")
+            .expect("collector should stop cleanly");
+
+        let error = reporter
+            .flush()
+            .await
+            .expect_err("a retained but stopped collector must not leave flush hanging");
+        assert!(matches!(error, Error::MetricsCollectorNotRunning));
+
+        drop(retained_collector);
+    }
+
+    #[tokio::test]
+    async fn test_flush_barrier_fails_before_collector_starts() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let (_collector, reporter) = InternalCollector::new(&config, telemetry_registry);
+
+        let error = reporter
+            .flush()
+            .await
+            .expect_err("an unstarted collector must fail instead of hanging");
+        assert!(matches!(error, Error::MetricsCollectorNotRunning));
+    }
+
+    #[tokio::test]
+    async fn test_collect_pending_supports_nonblocking_manual_drain_mode() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+
+        let outcome = reporter
+            .report_snapshot_reliably(create_test_snapshot(
+                key,
+                vec![MetricValue::from(7u64), MetricValue::from(9u64)],
+            ))
+            .await
+            .expect("manual mode accepts snapshots before a long-lived collector starts");
+        assert_eq!(outcome, crate::reporter::ReportOutcome::Sent);
+
+        collector.collect_pending();
+        let batch = telemetry_registry.drain_metric_export_batch();
+        assert_eq!(batch.metric_sets.len(), 1);
+        assert_eq!(
+            batch.metric_sets[0].values,
+            vec![MetricValue::from(7u64), MetricValue::from(9u64)]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_second_collector_consumer_is_rejected() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry);
+        let collector = Arc::new(collector);
+
+        let first_consumer = collector.clone().run_collection_loop();
+        let error = collector
+            .run_collection_loop()
+            .await
+            .expect_err("only one collector consumer may run at a time");
+        assert!(matches!(error, Error::MetricsCollectorAlreadyRunning));
+        drop(first_consumer);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_reliable_snapshot_waits_for_full_collector_channel() {
+        let mut config = create_test_config(10);
+        config.reporting_channel_size = 1;
+        let telemetry_registry = create_test_registry();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let collector = Arc::new(collector);
+
+        // Block aggregation after the collector dequeues the first snapshot so
+        // the second snapshot deterministically fills the one-slot channel.
+        let locked_registry = telemetry_registry.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let lock_thread = std::thread::spawn(move || {
+            let _registry_guard = locked_registry.registry.lock();
+            locked_tx.send(()).expect("lock notification receiver");
+            release_rx.recv().expect("lock release sender");
+        });
+        locked_rx.recv().expect("registry lock thread should start");
+
+        let collector_task = tokio::spawn(collector.clone().run_collection_loop());
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(1u64), MetricValue::from(1u64)],
+            ))
+            .expect("first snapshot should fit");
+        while !collector.metrics_receiver.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(2u64), MetricValue::from(2u64)],
+            ))
+            .expect("second snapshot should fill the channel");
+
+        let error = reporter
+            .report_snapshot_reliably_until(
+                create_test_snapshot(key, vec![MetricValue::from(3u64), MetricValue::from(3u64)]),
+                std::time::Instant::now() + Duration::from_millis(20),
+            )
+            .await
+            .expect_err("reliable reporting must honor its terminal deadline");
+        assert!(matches!(error, Error::ShutdownError(_)));
+
+        {
+            let reliable_reporter = reporter.clone();
+            let reliable_report = async move {
+                reliable_reporter
+                    .report_snapshot_reliably(create_test_snapshot(
+                        key,
+                        vec![MetricValue::from(3u64), MetricValue::from(3u64)],
+                    ))
+                    .await
+            };
+            tokio::pin!(reliable_report);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(20), &mut reliable_report)
+                    .await
+                    .is_err(),
+                "reliable terminal reporting should wait instead of dropping a full-channel snapshot"
+            );
+
+            release_tx
+                .send(())
+                .expect("registry lock thread should wait");
+            let outcome = reliable_report
+                .await
+                .expect("reliable snapshot should be accepted after capacity returns");
+            assert_eq!(outcome, crate::reporter::ReportOutcome::Sent);
+        }
+        reporter
+            .flush()
+            .await
+            .expect("collector should reach barrier");
+
+        let batch = telemetry_registry.drain_metric_export_batch();
+        assert_eq!(
+            batch.metric_sets[0].values,
+            vec![MetricValue::from(6u64), MetricValue::from(6u64)]
+        );
+
+        lock_thread
+            .join()
+            .expect("registry lock thread should join");
+        drop(reporter);
+        collector_task
+            .await
+            .expect("collector task should join")
+            .expect("collector should stop cleanly");
+    }
+
+    #[tokio::test]
+    async fn test_cancellation_aggregates_snapshots_already_in_the_channel() {
+        let config = create_test_config(10);
+        let telemetry_registry = create_test_registry();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(Arc::new(collector).run(cancel.clone()));
+
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(7u64), MetricValue::from(9u64)],
+            ))
+            .expect("snapshot fits in the reporting channel");
+        cancel.cancel();
+
+        collector_task
+            .await
+            .expect("collector task should join")
+            .expect("collector shuts down cleanly");
+
+        let batch = telemetry_registry.drain_metric_export_batch();
+        assert_eq!(batch.metric_sets.len(), 1);
+        assert_eq!(
+            batch.metric_sets[0].values,
+            vec![MetricValue::from(7u64), MetricValue::from(9u64)]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_cancellation_unblocks_reliable_sender_waiting_on_full_channel() {
+        let mut config = create_test_config(10);
+        config.reporting_channel_size = 1;
+        let telemetry_registry = create_test_registry();
+        let metric_set: crate::metrics::MetricSet<MockMetricSet> =
+            telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
+        let key = metric_set.key;
+        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
+        let collector = Arc::new(collector);
+
+        // Hold the registry lock after the collector dequeues the first
+        // snapshot. The second snapshot then fills the channel and the third,
+        // reliable send holds the shutdown read gate while waiting for room.
+        let locked_registry = telemetry_registry.clone();
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let lock_thread = std::thread::spawn(move || {
+            let _registry_guard = locked_registry.registry.lock();
+            locked_tx.send(()).expect("lock notification receiver");
+            release_rx.recv().expect("lock release sender");
+        });
+        locked_rx.recv().expect("registry lock thread should start");
+
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(1u64), MetricValue::from(1u64)],
+            ))
+            .expect("first snapshot should fit");
+        while !collector.metrics_receiver.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(2u64), MetricValue::from(2u64)],
+            ))
+            .expect("second snapshot should fill the channel");
+
+        let reliable_reporter = reporter.clone();
+        let reliable_task = tokio::spawn(async move {
+            reliable_reporter
+                .report_snapshot_reliably(create_test_snapshot(
+                    key,
+                    vec![MetricValue::from(3u64), MetricValue::from(3u64)],
+                ))
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !reliable_task.is_finished(),
+            "reliable send should be waiting on the full channel"
+        );
+
+        cancel.cancel();
+        release_tx
+            .send(())
+            .expect("registry lock thread should wait");
+        let outcome = tokio::time::timeout(Duration::from_secs(1), reliable_task)
+            .await
+            .expect("reliable send must not deadlock collector cancellation")
+            .expect("reliable task should join")
+            .expect("in-flight reliable snapshot should be accepted");
+        assert_eq!(outcome, crate::reporter::ReportOutcome::Sent);
+        tokio::time::timeout(Duration::from_secs(1), collector_task)
+            .await
+            .expect("collector cancellation must not deadlock")
+            .expect("collector task should join")
+            .expect("collector should stop cleanly");
+
+        let batch = telemetry_registry.drain_metric_export_batch();
+        assert_eq!(
+            batch.metric_sets[0].values,
+            vec![MetricValue::from(6u64), MetricValue::from(6u64)]
+        );
+        let error = reporter
+            .try_report_snapshot(create_test_snapshot(
+                key,
+                vec![MetricValue::from(4u64), MetricValue::from(4u64)],
+            ))
+            .expect_err("non-blocking sends must be rejected after the final drain");
+        assert!(matches!(error, Error::MetricsCollectorNotRunning));
+
+        lock_thread
+            .join()
+            .expect("registry lock thread should join");
     }
 }

@@ -10,17 +10,18 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use otap_df_engine::capability::{
-    BearerToken, BearerTokenProvider as BearerTokenProviderCap, CapabilityError,
-    CapabilityErrorSource, TokenStream,
+use otap_df_engine::capability::bearer_token_provider::{
+    BearerToken, BearerTokenProvider as BearerTokenProviderCap, TokenStream,
 };
+use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_engine::control::ExtensionControlMsg;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::extension::EffectHandler;
-use otap_df_engine::shared::capability::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::otel_warn;
+use rand::RngExt;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
@@ -39,8 +40,16 @@ const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
 const MIN_TOKEN_REFRESH_INTERVAL_SECS: u64 = 10;
-/// Reschedule delay after a failed acquisition.
+/// Base reschedule delay after a failed acquisition. Consecutive failures grow
+/// this exponentially (with jitter) up to `MAX_TOKEN_REFRESH_RETRY_SECS`.
 const TOKEN_REFRESH_RETRY_SECS: u64 = 10;
+/// Upper bound on the retry backoff after repeated failures.
+const MAX_TOKEN_REFRESH_RETRY_SECS: u64 = 300;
+/// Maximum random jitter subtracted from a scheduled (successful) refresh
+/// instant. Spreads the otherwise-aligned refresh ticks of many per-core
+/// extensions so they do not hit the token endpoint on the same second. Only
+/// ever moves the refresh earlier, never past the expiry safety buffer.
+const REFRESH_JITTER_SECS: u64 = 60;
 /// Next-refresh delay used for non-expiring tokens (~1 year). The loop is still
 /// woken by control messages in the meantime.
 const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
@@ -192,6 +201,58 @@ pub(crate) fn schedule_next(token: &BearerToken) -> tokio::time::Instant {
     }
 }
 
+/// Base (un-jittered) backoff before retrying after a failed acquisition.
+///
+/// Grows exponentially with the number of consecutive prior failures, from
+/// `TOKEN_REFRESH_RETRY_SECS` up to `MAX_TOKEN_REFRESH_RETRY_SECS`, so a
+/// sustained token-endpoint outage settles into infrequent retries instead of a
+/// tight loop.
+pub(crate) fn retry_backoff_secs(consecutive_failures: u32) -> u64 {
+    // Cap the shift so `1 << shift` cannot overflow; the value is clamped to the
+    // max below long before the shift approaches that bound.
+    let shift = consecutive_failures.min(16);
+    TOKEN_REFRESH_RETRY_SECS
+        .saturating_mul(1u64 << shift)
+        .min(MAX_TOKEN_REFRESH_RETRY_SECS)
+}
+
+/// Applies "equal jitter" to a backoff: half the delay is a fixed floor and the
+/// other half is randomized, yielding a delay in `[base/2, base]`. This keeps
+/// per-core extensions from retrying in lockstep during an outage.
+fn jittered_backoff(base_secs: u64) -> Duration {
+    let half = base_secs / 2;
+    let jitter = if half == 0 {
+        0
+    } else {
+        rand::rng().random_range(0..=half)
+    };
+    Duration::from_secs(half + jitter)
+}
+
+/// Subtracts random jitter (up to `REFRESH_JITTER_SECS`) from a scheduled
+/// refresh instant so many per-core extensions do not refresh on the same tick.
+///
+/// Jitter only ever moves the refresh earlier (never later, which would risk
+/// serving a token past its safety buffer) and never earlier than the
+/// `MIN_TOKEN_REFRESH_INTERVAL_SECS` floor that `schedule_next` enforces -
+/// otherwise a near-floor target could be pulled all the way to `now` and
+/// busy-loop the refresh task while the token is still fresh.
+pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    // Only jitter the slack *above* the minimum refresh interval, so the
+    // earliest possible result is `now + MIN_TOKEN_REFRESH_INTERVAL_SECS`.
+    let slack = target
+        .saturating_duration_since(now)
+        .as_secs()
+        .saturating_sub(MIN_TOKEN_REFRESH_INTERVAL_SECS);
+    let max_jitter = REFRESH_JITTER_SECS.min(slack);
+    if max_jitter == 0 {
+        return target;
+    }
+    let jitter = rand::rng().random_range(0..=max_jitter);
+    target - Duration::from_secs(jitter)
+}
+
 #[async_trait]
 impl SharedBearerTokenProvider for AzureIdentityAuthExtension {
     async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
@@ -247,6 +308,9 @@ impl SharedExtension for AzureIdentityAuthExtension {
         // (see `with_readiness_probe`). Fire once, after the first token is
         // published, so consumers never observe an empty cache.
         let mut ready_signaled = false;
+        // Consecutive failed acquisitions; drives exponential retry backoff and
+        // is reset on any successful (or already-fresh) refresh.
+        let mut consecutive_failures: u32 = 0;
 
         loop {
             tokio::select! {
@@ -274,14 +338,71 @@ impl SharedExtension for AzureIdentityAuthExtension {
                     }
                 }
                 _ = tokio::time::sleep_until(next_refresh) => {
-                    // Take the same `fetch_lock` the slow-path `get_token` uses,
-                    // so a scheduled refresh and a concurrent cache-miss fetch
-                    // coalesce onto one in-flight credential call instead of
-                    // both hitting the token endpoint.
-                    let _guard = inner.fetch_lock.lock().await;
-                    match inner.refresh_once().await {
+                    // The acquisition itself: take the same `fetch_lock` the
+                    // slow-path `get_token` uses so a scheduled refresh and a
+                    // concurrent cache-miss fetch coalesce onto one in-flight
+                    // credential call instead of both hitting the token endpoint.
+                    let refresh = async {
+                        // Note the current cache version before contending for
+                        // the lock so we can tell whether another caller
+                        // publishes a new token while we wait.
+                        let mut rx = inner.tx.subscribe();
+                        let _ = rx.borrow_and_update();
+                        let _guard = inner.fetch_lock.lock().await;
+                        // Only coalesce when a concurrent slow-path `get_token`
+                        // actually published a fresh token while we waited for
+                        // the lock. We must NOT skip merely because the cached
+                        // token is still "usable": the loop refreshes ~5 min
+                        // before expiry, but a token stays usable until ~30 s
+                        // before expiry, so reusing it here would defer the
+                        // planned early refresh far too long.
+                        if rx.has_changed().unwrap_or(false) {
+                            if let Some(token) = inner.current_fresh_token() {
+                                return Ok(token);
+                            }
+                        }
+                        inner.refresh_once().await
+                    };
+                    tokio::pin!(refresh);
+
+                    // Keep the refresh cancellable: race it against the control
+                    // channel so a slow token call cannot delay shutdown past its
+                    // deadline. Config/telemetry messages are still serviced while
+                    // the refresh is in flight; only shutdown or channel closure
+                    // ends the loop (dropping the in-flight refresh future).
+                    let outcome = loop {
+                        tokio::select! {
+                            outcome = &mut refresh => break outcome,
+                            ctrl_msg = ctrl.recv() => {
+                                match ctrl_msg {
+                                    Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
+                                        let snapshot =
+                                            inner.metrics.lock().ok().map(|m| m.snapshot());
+                                        return Ok(match snapshot {
+                                            Some(snapshot) => {
+                                                TerminalState::new(deadline, [snapshot])
+                                            }
+                                            None => TerminalState::default(),
+                                        });
+                                    }
+                                    Err(_) => return Ok(TerminalState::default()),
+                                    Ok(ExtensionControlMsg::Config { .. }) => {}
+                                    Ok(ExtensionControlMsg::CollectTelemetry {
+                                        mut metrics_reporter,
+                                    }) => {
+                                        if let Ok(mut metrics) = inner.metrics.lock() {
+                                            let _ = metrics.report(&mut metrics_reporter);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+
+                    match outcome {
                         Ok(token) => {
-                            next_refresh = schedule_next(&token);
+                            consecutive_failures = 0;
+                            next_refresh = jitter_refresh(schedule_next(&token));
                             if !ready_signaled {
                                 effect_handler.signal_ready();
                                 ready_signaled = true;
@@ -292,8 +413,13 @@ impl SharedExtension for AzureIdentityAuthExtension {
                                 "azure_identity_auth.token_refresh_failed",
                                 error = %error
                             );
-                            next_refresh = tokio::time::Instant::now()
-                                + Duration::from_secs(TOKEN_REFRESH_RETRY_SECS);
+                            // Bounded exponential backoff with jitter so many
+                            // per-core extensions do not stampede the token
+                            // endpoint on the same cadence during an outage.
+                            let backoff =
+                                jittered_backoff(retry_backoff_secs(consecutive_failures));
+                            consecutive_failures = consecutive_failures.saturating_add(1);
+                            next_refresh = tokio::time::Instant::now() + backoff;
                         }
                     }
                 }

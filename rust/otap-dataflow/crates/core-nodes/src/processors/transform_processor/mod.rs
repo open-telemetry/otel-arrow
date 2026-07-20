@@ -10,7 +10,6 @@
 //! The configuration may change in the future and support for various transformation query is
 //! still being developed.
 //!
-//! ToDo: Handle Ack and Nack
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
 use std::sync::Arc;
@@ -30,11 +29,11 @@ use otap_df_engine::{
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
-    processor::ProcessorWrapper,
+    processor::{ProcessorRuntimeRequirements, ProcessorWrapper},
 };
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
-    accessory::slots::Key,
+    accessory::{context::split_contexts::Contexts, slots::Key},
     pdata::{Context, OtapPdata},
 };
 use otap_df_pdata::TryIntoWithOptions;
@@ -43,7 +42,11 @@ use otap_df_pdata::{
 };
 use otap_df_query_engine::{
     parser::default_parser_options,
-    pipeline::{Pipeline, PipelineOptions, routing::RouterExtType, state::ExecutionState},
+    pipeline::{
+        Pipeline, PipelineOptions,
+        routing::RouterExtType,
+        state::{ExecutionCounters, ExecutionState},
+    },
 };
 use otap_df_query_engine_languages::{opl::parser::OplParser, ottl::parser::OttlParser};
 use otap_df_telemetry::metrics::MetricSet;
@@ -53,18 +56,16 @@ use slotmap::Key as _;
 use crate::processors::transform_processor::routing::RouterImpl;
 
 use self::config::{Config, Query};
-use self::context::Contexts;
 use self::metrics::Metrics;
 
 mod config;
-mod context;
 mod metrics;
 mod routing;
 
 /// URN for the TransformProcessor
 pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
-/// Opentelemetry Processing Language Processor
+/// Transform Processor
 pub struct TransformProcessor {
     execution_state: ExecutionState,
     transforms: Vec<Transform>,
@@ -201,6 +202,7 @@ impl TransformProcessor {
         &mut self,
         inbound_context: Context,
         pipeline_result: Result<OtapArrowRecords, EngineError>,
+        counters: ExecutionCounters,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), EngineError> {
         let router_impl = self
@@ -225,6 +227,9 @@ impl TransformProcessor {
                 return Err(e);
             }
         };
+
+        // Record flow metrics from the engine's per-batch execution counters
+        effect_handler.record_flow_signals_dropped(counters.filtered as u64);
 
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
@@ -401,6 +406,13 @@ pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for TransformProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The transform processor can drop signal items via filtering (e.g. a
+        // KQL `where`), so it records `signals.dropped` when it lies within a
+        // flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         message: Message<OtapPdata>,
@@ -446,6 +458,11 @@ impl Processor<OtapPdata> for TransformProcessor {
                 let mut payload = Some(payload);
                 let mut transformed = false;
                 let mut transform_error = None;
+
+                // Reset the engine's record-removal counters so that, after the
+                // transform loop, they reflect only the drops caused by this
+                // batch.
+                self.execution_state.reset_counters();
 
                 // Execute all transforms. We skip transforms where the batch's signal type is not
                 // selected by the signal scope, and lazily convert the pdata payload to OTAP
@@ -524,7 +541,10 @@ impl Processor<OtapPdata> for TransformProcessor {
                             }
                         }
                     };
-                    self.handle_exec_result(context, result, effect_handler)
+                    // Hand the engine's per-batch counters to the result handler,
+                    // which records the corresponding flow metrics.
+                    let counters = self.execution_state.counters();
+                    self.handle_exec_result(context, result, counters, effect_handler)
                         .await?;
                 } else {
                     // safety: payload is initialized to Some, and only modified if any transforms
@@ -678,6 +698,33 @@ mod test {
         runtime: &TestRuntime<OtapPdata>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
         try_create_with_config(json!({ "kql_query": query }), runtime)
+    }
+
+    #[test]
+    fn test_declares_drop_decisions() {
+        // The transform processor filters records (e.g. via a KQL `where`), so
+        // it must declare the drop-decision capability; otherwise the engine
+        // never wires its `signals.dropped` flow metric.
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry_handle = runtime.metrics_registry();
+        let controller_context = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_context = controller_context.pipeline_context_with(
+            "group_id".into(),
+            "pipeline_id".into(),
+            0,
+            1,
+            0,
+        );
+        let processor = TransformProcessor::from_config(
+            &pipeline_context,
+            &json!({ "kql_query": "logs | where severity_text == \"ERROR\"" }),
+        )
+        .expect("created processor");
+
+        assert!(
+            processor.runtime_requirements().makes_drop_decisions,
+            "transform processor must declare drop decisions so signals.dropped is wired"
+        );
     }
 
     fn try_create_with_opl_query(
