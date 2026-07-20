@@ -88,19 +88,36 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `receiver.otlp`
+#### `receiver.otlp.requests`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `receiver.otlp.acks_received` | `{acks}` | Number of acks received from downstream (routed back to the caller). |
-| `receiver.otlp.nacks_received` | `{nacks}` | Number of nacks received from downstream (routed back to the caller). |
-| `receiver.otlp.acks_nacks_invalid_or_expired` | `{ack_or_nack}` | Number of invalid/expired acks/nacks. |
-| `receiver.otlp.requests_started` | `{requests}` | Number of OTLP RPCs started. |
-| `receiver.otlp.requests_completed` | `{requests}` | Number of OTLP RPCs completed (success + nack). |
-| `receiver.otlp.rejected_requests` | `{requests}` | Number of OTLP RPCs rejected before entering the pipeline (e.g. slot exhaustion). |
-| `receiver.otlp.refused_memory_pressure` | `{requests}` | Number of OTLP RPCs rejected specifically because process-wide memory pressure was active. |
-| `receiver.otlp.transport_errors` | `{errors}` | Number of transport-level errors surfaced by tonic/server. |
-| `receiver.otlp.request_bytes` | `By` | Total decompressed payload bytes for successfully received OTLP requests. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.requests.started` | `{request}` | `signal`, `protocol` | Number of requests admitted to the pipeline send path. |
+| `receiver.otlp.requests.completed` | `{request}` | `signal`, `protocol` | Number of admitted requests whose receiver work terminated. |
+| `receiver.otlp.requests.payload_size` | `By` | `signal`, `protocol` | Decompressed payload bytes for successfully decoded requests. |
+
+#### `receiver.otlp.rejections`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
+
+#### `receiver.otlp.acknowledgements`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.acknowledgements.responses` | `{response}` | `signal`, `outcome` | Number of routed or invalid acknowledgement responses. |
+
+#### `receiver.otlp.transport`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.transport.errors` | `{error}` | `protocol` | Number of transport-level server errors. |
+
+Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
+`protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
+`refused`; and `error.type` is `memory_pressure`, `concurrency_limit`,
+`payload_too_large`, `invalid_request`, or `internal`.
 
 ### Events
 

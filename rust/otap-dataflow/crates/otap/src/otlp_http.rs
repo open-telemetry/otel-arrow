@@ -13,6 +13,7 @@
 
 use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::otlp::server_new::AckSlot;
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics, OtlpRejectionErrorType};
 use crate::pdata::{Context, OtapPdata};
 use crate::socket_options;
 
@@ -35,7 +36,6 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otap_df_telemetry::metrics::MetricSet;
 use parking_lot::Mutex;
 use prost::Message;
 use prost_types::Any;
@@ -355,7 +355,7 @@ fn decode_content_encoding(
     headers: &http::HeaderMap,
     body: Bytes,
     max_len: usize,
-) -> Result<Bytes, Response<Full<Bytes>>> {
+) -> Result<Bytes, DecodeContentError> {
     let encoding = headers
         .get(http::header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
@@ -367,7 +367,7 @@ fn decode_content_encoding(
     }
 
     if !accept_compressed_requests {
-        return Err(unsupported_media_type());
+        return Err(DecodeContentError::invalid_request(unsupported_media_type()));
     }
 
     // Decompress into a bounded buffer.
@@ -384,7 +384,7 @@ fn decode_content_encoding(
                     max_len = max_len,
                     error = err_msg.as_str()
                 );
-                limited_body_too_large()
+                DecodeContentError::payload_too_large(limited_body_too_large())
             } else {
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
@@ -393,11 +393,11 @@ fn decode_content_encoding(
                     encoding = "gzip",
                     error = err_msg.as_str()
                 );
-                rpc_status_response(
+                DecodeContentError::invalid_request(rpc_status_response(
                     StatusCode::BAD_REQUEST,
                     3,
                     format!("gzip decode failed: {err_msg}"),
-                )
+                ))
             }
         })?;
         Ok(Bytes::from(decoded))
@@ -414,7 +414,7 @@ fn decode_content_encoding(
                     max_len = max_len,
                     error = err_msg.as_str()
                 );
-                limited_body_too_large()
+                DecodeContentError::payload_too_large(limited_body_too_large())
             } else {
                 // Format/corruption error
                 otap_df_telemetry::otel_debug!(
@@ -423,11 +423,11 @@ fn decode_content_encoding(
                     encoding = "deflate",
                     error = err_msg.as_str()
                 );
-                rpc_status_response(
+                DecodeContentError::invalid_request(rpc_status_response(
                     StatusCode::BAD_REQUEST,
                     3,
                     format!("deflate decode failed: {err_msg}"),
-                )
+                ))
             }
         })?;
         Ok(Bytes::from(decoded))
@@ -440,11 +440,11 @@ fn decode_content_encoding(
                 encoding = "zstd",
                 error = err_msg.as_str()
             );
-            rpc_status_response(
+            DecodeContentError::invalid_request(rpc_status_response(
                 StatusCode::BAD_REQUEST,
                 3,
                 format!("zstd decode failed: {err_msg}"),
-            )
+            ))
         })?;
 
         let decoded = read_to_end_limited(&mut decoder, max_len).map_err(|e| {
@@ -457,7 +457,7 @@ fn decode_content_encoding(
                     max_len = max_len,
                     error = err_msg.as_str()
                 );
-                limited_body_too_large()
+                DecodeContentError::payload_too_large(limited_body_too_large())
             } else {
                 otap_df_telemetry::otel_debug!(
                     "otlp_http_receiver.request_rejected",
@@ -465,17 +465,38 @@ fn decode_content_encoding(
                     encoding = "zstd",
                     error = err_msg.as_str()
                 );
-                rpc_status_response(
+                DecodeContentError::invalid_request(rpc_status_response(
                     StatusCode::BAD_REQUEST,
                     3,
                     format!("zstd decode failed: {err_msg}"),
-                )
+                ))
             }
         })?;
 
         Ok(Bytes::from(decoded))
     } else {
-        Err(unsupported_media_type())
+        Err(DecodeContentError::invalid_request(unsupported_media_type()))
+    }
+}
+
+struct DecodeContentError {
+    error_type: OtlpRejectionErrorType,
+    response: Response<Full<Bytes>>,
+}
+
+impl DecodeContentError {
+    fn invalid_request(response: Response<Full<Bytes>>) -> Self {
+        Self {
+            error_type: OtlpRejectionErrorType::InvalidRequest,
+            response,
+        }
+    }
+
+    fn payload_too_large(response: Response<Full<Bytes>>) -> Self {
+        Self {
+            error_type: OtlpRejectionErrorType::PayloadTooLarge,
+            response,
+        }
     }
 }
 
@@ -507,7 +528,7 @@ fn read_to_end_limited<R: std::io::Read>(
 struct HttpHandler {
     effect_handler: EffectHandler<OtapPdata>,
     ack_registry: AckRegistry,
-    metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     settings: HttpServerSettings,
     admission_state: SharedReceiverAdmissionState,
     /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
@@ -522,16 +543,25 @@ struct HttpHandler {
 }
 
 impl HttpHandler {
+    fn record_rejection(&self, error_type: OtlpRejectionErrorType) {
+        self.metrics
+            .lock()
+            .record_rejection(OtlpProtocol::Http, error_type);
+    }
+
     async fn handle(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
         let Some(signal) = map_path_to_signal(req.uri().path()) else {
+            self.record_rejection(OtlpRejectionErrorType::InvalidRequest);
             return Ok(not_found());
         };
 
         if req.method() != Method::POST {
+            self.record_rejection(OtlpRejectionErrorType::InvalidRequest);
             return Ok(method_not_allowed());
         }
 
         if !content_type_is_protobuf(req.headers()) {
+            self.record_rejection(OtlpRejectionErrorType::InvalidRequest);
             return Ok(unsupported_media_type());
         }
 
@@ -549,9 +579,7 @@ impl HttpHandler {
 
         let fut = async move {
             if self.admission_state.should_shed_ingress() {
-                let mut metrics = self.metrics.lock();
-                metrics.rejected_requests.inc();
-                metrics.refused_memory_pressure.inc();
+                self.record_rejection(OtlpRejectionErrorType::MemoryPressure);
                 return Err(memory_pressure_unavailable(
                     self.admission_state.retry_after_secs(),
                 ));
@@ -571,7 +599,7 @@ impl HttpHandler {
                             kind = "global",
                             path = path_for_fut.as_str()
                         );
-                        self.metrics.lock().rejected_requests.inc();
+                        self.record_rejection(OtlpRejectionErrorType::Internal);
                         return Err(internal_error());
                     }
                     Err(_) => {
@@ -581,7 +609,7 @@ impl HttpHandler {
                             path = path_for_fut.as_str(),
                             timeout_ms = permit_timeout.as_millis() as u64
                         );
-                        self.metrics.lock().rejected_requests.inc();
+                        self.record_rejection(OtlpRejectionErrorType::ConcurrencyLimit);
                         return Err(service_unavailable());
                     }
                 }
@@ -592,9 +620,7 @@ impl HttpHandler {
             // Re-check after potentially waiting for the global permit: pressure may have
             // escalated while this request was queued.
             if self.admission_state.should_shed_ingress() {
-                let mut metrics = self.metrics.lock();
-                metrics.rejected_requests.inc();
-                metrics.refused_memory_pressure.inc();
+                self.record_rejection(OtlpRejectionErrorType::MemoryPressure);
                 return Err(memory_pressure_unavailable(
                     self.admission_state.retry_after_secs(),
                 ));
@@ -613,7 +639,7 @@ impl HttpHandler {
                         kind = "local",
                         path = path_for_fut.as_str()
                     );
-                    self.metrics.lock().rejected_requests.inc();
+                    self.record_rejection(OtlpRejectionErrorType::Internal);
                     return Err(internal_error());
                 }
                 Err(_) => {
@@ -625,22 +651,18 @@ impl HttpHandler {
                         max_concurrent = self.settings.max_concurrent_requests,
                         timeout_ms = permit_timeout.as_millis() as u64
                     );
-                    self.metrics.lock().rejected_requests.inc();
+                    self.record_rejection(OtlpRejectionErrorType::ConcurrencyLimit);
                     return Err(service_unavailable());
                 }
             };
 
             // Re-check after waiting for the local permit.
             if self.admission_state.should_shed_ingress() {
-                let mut metrics = self.metrics.lock();
-                metrics.rejected_requests.inc();
-                metrics.refused_memory_pressure.inc();
+                self.record_rejection(OtlpRejectionErrorType::MemoryPressure);
                 return Err(memory_pressure_unavailable(
                     self.admission_state.retry_after_secs(),
                 ));
             }
-
-            self.metrics.lock().requests_started.inc();
 
             let max_len = self.settings.max_request_body_size as usize;
 
@@ -658,7 +680,7 @@ impl HttpHandler {
                         size_hint = upper,
                         path = parts.uri.path().to_string()
                     );
-                    self.metrics.lock().rejected_requests.inc();
+                    self.record_rejection(OtlpRejectionErrorType::PayloadTooLarge);
                     return Err(limited_body_too_large());
                 }
             }
@@ -671,7 +693,7 @@ impl HttpHandler {
                         max_len = max_len,
                         path = parts.uri.path().to_string()
                     );
-                    self.metrics.lock().rejected_requests.inc();
+                    self.record_rejection(OtlpRejectionErrorType::PayloadTooLarge);
                     return limited_body_too_large();
                 }
 
@@ -679,6 +701,7 @@ impl HttpHandler {
                     "otlp_http_receiver.body_collection_failed",
                     error = e.to_string()
                 );
+                self.record_rejection(OtlpRejectionErrorType::Internal);
                 internal_error()
             })?;
             let body = collected.to_bytes();
@@ -688,8 +711,16 @@ impl HttpHandler {
                 &headers,
                 body,
                 max_len,
-            )?;
-            self.metrics.lock().request_bytes.add(body.len() as u64);
+            )
+            .map_err(|error| {
+                self.record_rejection(error.error_type);
+                error.response
+            })?;
+            self.metrics.lock().record_request_payload_size(
+                signal,
+                OtlpProtocol::Http,
+                body.len() as u64,
+            );
 
             let context = if self.settings.wait_for_result {
                 Context::with_capacity(1)
@@ -726,12 +757,13 @@ impl HttpHandler {
                 };
 
                 let Some(state) = state else {
+                    self.record_rejection(OtlpRejectionErrorType::Internal);
                     return Err(internal_error());
                 };
 
                 let (key, rx) = match state.allocate_slot() {
                     None => {
-                        self.metrics.lock().rejected_requests.inc();
+                        self.record_rejection(OtlpRejectionErrorType::ConcurrencyLimit);
                         return Err(service_unavailable());
                     }
                     Some(pair) => pair,
@@ -747,6 +779,14 @@ impl HttpHandler {
                 Some((SlotGuard { key, state }, rx))
             } else {
                 None
+            };
+
+            self.metrics
+                .lock()
+                .record_request_started(signal, OtlpProtocol::Http);
+            let _completion_guard = RequestCompletionGuard {
+                metrics: self.metrics.clone(),
+                signal,
             };
 
             if self
@@ -785,7 +825,6 @@ impl HttpHandler {
                 }
             }
 
-            self.metrics.lock().requests_completed.inc();
             Ok(ok_response(signal))
         };
 
@@ -815,6 +854,19 @@ struct SlotGuard {
     state: AckSlot,
 }
 
+struct RequestCompletionGuard {
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    signal: SignalType,
+}
+
+impl Drop for RequestCompletionGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .lock()
+            .record_request_completed(self.signal, OtlpProtocol::Http);
+    }
+}
+
 impl Drop for SlotGuard {
     fn drop(&mut self) {
         self.state.cancel_slot(self.key);
@@ -834,7 +886,7 @@ pub async fn serve(
     effect_handler: EffectHandler<OtapPdata>,
     settings: HttpServerSettings,
     ack_registry: AckRegistry,
-    metrics: Arc<Mutex<MetricSet<crate::otlp_metrics::OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     admission_state: SharedReceiverAdmissionState,
     global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
@@ -1031,9 +1083,7 @@ mod tests {
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = Arc::new(Mutex::new(
-            pipeline_ctx.register_metrics::<crate::otlp_metrics::OtlpReceiverMetrics>(),
-        ));
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
 
         let ack_registry = AckRegistry::new(Some(AckSlot::new(4)), None, None);
 
@@ -1117,6 +1167,8 @@ mod tests {
         assert!(server_result.unwrap().is_ok());
     }
 
+    /// Scenario: Memory pressure turns hard while an HTTP request waits for a shared permit.
+    /// Guarantees: The request is rejected as memory pressure without starting or reading a body.
     #[tokio::test]
     async fn queued_request_rechecks_process_memory_pressure_before_body_read() {
         use hyper::Method;
@@ -1171,9 +1223,7 @@ mod tests {
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = Arc::new(Mutex::new(
-            pipeline_ctx.register_metrics::<crate::otlp_metrics::OtlpReceiverMetrics>(),
-        ));
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
         let memory_pressure_state = MemoryPressureState::default();
         let admission_state =
             SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
@@ -1247,10 +1297,16 @@ mod tests {
 
         {
             let metrics = metrics.lock();
-            assert_eq!(metrics.requests_started.get(), 0);
-            assert_eq!(metrics.request_bytes.get(), 0);
-            assert_eq!(metrics.rejected_requests.get(), 1);
-            assert_eq!(metrics.refused_memory_pressure.get(), 1);
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.started.get(), 0);
+            assert_eq!(requests.payload_size.get(), 0);
+            assert_eq!(
+                metrics
+                    .rejections_for(OtlpProtocol::Http, OtlpRejectionErrorType::MemoryPressure)
+                    .requests
+                    .get(),
+                1
+            );
         }
 
         shutdown.cancel();
@@ -1260,6 +1316,8 @@ mod tests {
         assert!(server_result.unwrap().is_ok());
     }
 
+    /// Scenario: Memory pressure turns soft while an HTTP request waits for a shared permit.
+    /// Guarantees: Soft pressure admits the request and records its lifecycle without rejection.
     #[tokio::test]
     async fn soft_pressure_does_not_reject_after_waiting_for_permit() {
         use http_body_util::Full;
@@ -1301,9 +1359,7 @@ mod tests {
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = Arc::new(Mutex::new(
-            pipeline_ctx.register_metrics::<crate::otlp_metrics::OtlpReceiverMetrics>(),
-        ));
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
 
         let local_semaphore = Arc::new(Semaphore::new(1));
         let held_permit = local_semaphore
@@ -1375,9 +1431,16 @@ mod tests {
 
         {
             let metrics = metrics.lock();
-            assert_eq!(metrics.rejected_requests.get(), 0);
-            assert_eq!(metrics.refused_memory_pressure.get(), 0);
-            assert_eq!(metrics.requests_started.get(), 1);
+            assert_eq!(
+                metrics
+                    .rejections_for(OtlpProtocol::Http, OtlpRejectionErrorType::MemoryPressure)
+                    .requests
+                    .get(),
+                0
+            );
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.started.get(), 1);
+            assert_eq!(requests.completed.get(), 1);
         }
 
         let _ = msg_rx.recv().await.expect("request forwarded downstream");

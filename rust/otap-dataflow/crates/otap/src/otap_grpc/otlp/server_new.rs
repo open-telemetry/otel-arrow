@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
-use crate::otlp_metrics::OtlpReceiverMetrics;
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics, OtlpRejectionErrorType};
 use crate::pdata::{Context, OtapPdata};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -33,7 +33,6 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
-use otap_df_telemetry::metrics::MetricSet;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
@@ -215,14 +214,14 @@ struct OtlpBytesCodec {
     /// Whether to pre-reserve a context frame (when wait_for_result is on).
     preallocate_frame: bool,
     /// Metrics sink for request tracking.
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 }
 
 impl OtlpBytesCodec {
     const fn new(
         signal: SignalType,
         preallocate_frame: bool,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     ) -> Self {
         Self {
             signal,
@@ -276,14 +275,14 @@ impl Encoder for OtlpResponseEncoder {
 struct OtlpBytesDecoder {
     signal: SignalType,
     preallocate_frame: bool,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 }
 
 impl OtlpBytesDecoder {
     const fn new(
         signal: SignalType,
         preallocate_frame: bool,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     ) -> Self {
         Self {
             signal,
@@ -302,8 +301,11 @@ impl Decoder for OtlpBytesDecoder {
         // Use copy_to_bytes so we copy once while advancing the buffer.
         let len = src.remaining();
         let bytes = src.copy_to_bytes(len);
-        let mut guard = self.metrics.lock();
-        guard.request_bytes.add(len as u64);
+        self.metrics.lock().record_request_payload_size(
+            self.signal,
+            OtlpProtocol::Grpc,
+            len as u64,
+        );
         let result = match self.signal {
             SignalType::Logs => OtlpProtoBytes::ExportLogsRequest(bytes),
             SignalType::Metrics => OtlpProtoBytes::ExportMetricsRequest(bytes),
@@ -326,7 +328,7 @@ impl Decoder for OtlpBytesDecoder {
 fn new_grpc(
     signal: SignalType,
     settings: OtlpServerSettings,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 ) -> Grpc<OtlpBytesCodec> {
     let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, metrics);
     let mut grpc = Grpc::new(codec);
@@ -345,20 +347,37 @@ fn new_grpc(
 struct OtapBatchService {
     effect_handler: Option<EffectHandler<OtapPdata>>,
     state: Option<AckSlot>,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    signal: SignalType,
 }
 
 impl OtapBatchService {
     const fn new(
         effect_handler: EffectHandler<OtapPdata>,
         state: Option<AckSlot>,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+        signal: SignalType,
     ) -> Self {
         Self {
             effect_handler: Some(effect_handler),
             state,
             metrics,
+            signal,
         }
+    }
+}
+
+/// Records request completion when the gRPC future returns or is cancelled.
+struct RequestCompletionGuard {
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    signal: SignalType,
+}
+
+impl Drop for RequestCompletionGuard {
+    fn drop(&mut self) {
+        self.metrics
+            .lock()
+            .record_request_completed(self.signal, OtlpProtocol::Grpc);
     }
 }
 
@@ -425,12 +444,15 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 
         let state = self.state.clone();
         let metrics = self.metrics.clone();
+        let signal = self.signal;
         Box::pin(async move {
-            metrics.lock().requests_started.inc();
             let cancel_rx = if let Some(state) = state {
                 let (key, rx) = match state.allocate_slot() {
                     None => {
-                        metrics.lock().rejected_requests.inc();
+                        metrics.lock().record_rejection(
+                            OtlpProtocol::Grpc,
+                            OtlpRejectionErrorType::ConcurrencyLimit,
+                        );
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }
                     Some(pair) => pair,
@@ -445,6 +467,14 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 Some((SlotGuard { key, state }, rx))
             } else {
                 None
+            };
+
+            metrics
+                .lock()
+                .record_request_started(signal, OtlpProtocol::Grpc);
+            let _completion_guard = RequestCompletionGuard {
+                metrics: metrics.clone(),
+                signal,
             };
 
             // Send and wait for Ack/Nack
@@ -472,8 +502,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 }
             }
 
-            metrics.lock().requests_completed.inc();
-
             Ok(tonic::Response::new(()))
         })
     }
@@ -500,7 +528,7 @@ pub struct ServerCommon {
     effect_handler: EffectHandler<OtapPdata>,
     state: Option<AckSlot>,
     settings: OtlpServerSettings,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 }
 
 impl ServerCommon {
@@ -513,7 +541,7 @@ impl ServerCommon {
     fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -538,7 +566,7 @@ impl LogsServiceServer {
     pub fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -569,6 +597,7 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
+                    SignalType::Logs,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -594,7 +623,7 @@ impl MetricsServiceServer {
     pub fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -625,6 +654,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
+                    SignalType::Metrics,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }
@@ -650,7 +680,7 @@ impl TraceServiceServer {
     pub fn new(
         effect_handler: EffectHandler<OtapPdata>,
         settings: &OtlpServerSettings,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
         state: Option<AckSlot>,
     ) -> Self {
         Self {
@@ -681,6 +711,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
                     common.effect_handler,
                     common.state,
                     common.metrics.clone(),
+                    SignalType::Traces,
                 );
                 Box::pin(async move { Ok(grpc.unary(service, req).await) })
             }

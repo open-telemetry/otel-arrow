@@ -6,14 +6,13 @@
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
-use otap_df_telemetry::metrics::MetricSet;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use tonic::{Code, Status, body::Body, metadata::MetadataMap};
 use tower::{Layer, Service};
 
-use crate::otlp_metrics::OtlpReceiverMetrics;
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics, OtlpRejectionErrorType};
 
 /// Records request rejections before they enter the pipeline.
 pub trait ReceiverRejectionMetrics: Send + Sync {
@@ -41,15 +40,15 @@ pub fn grpc_memory_pressure_status(state: &SharedReceiverAdmissionState) -> Stat
     Status::with_metadata(Code::ResourceExhausted, "memory pressure", metadata)
 }
 
-impl ReceiverRejectionMetrics for Mutex<MetricSet<OtlpReceiverMetrics>> {
+impl ReceiverRejectionMetrics for Mutex<OtlpReceiverMetrics> {
     fn record_rejection(&self) {
-        self.lock().rejected_requests.inc();
+        self.lock()
+            .record_rejection(OtlpProtocol::Grpc, OtlpRejectionErrorType::ConcurrencyLimit);
     }
 
     fn record_memory_pressure_rejection(&self) {
-        let mut metrics = self.lock();
-        metrics.rejected_requests.inc();
-        metrics.refused_memory_pressure.inc();
+        self.lock()
+            .record_rejection(OtlpProtocol::Grpc, OtlpRejectionErrorType::MemoryPressure);
     }
 }
 
@@ -89,7 +88,7 @@ impl MemoryPressureLayer {
     #[must_use]
     pub fn with_otlp_metrics(
         state: SharedReceiverAdmissionState,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     ) -> Self {
         Self::with_metrics(state, metrics)
     }
