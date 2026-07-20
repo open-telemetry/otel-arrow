@@ -110,7 +110,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   Not yet usable: this is internal-only foundation work with no behavior change. It adds the
   `TopicBroadcastAckMode` enum, a consensus-capable publish tracker, and a reserve/commit ring split,
   all gated behind callers that still pass `First`. The `all` mode is not wired into the broadcast
-  engine and is not configurable yet — those land in follow-up PRs under #2252.
+  engine and is not configurable yet - those land in follow-up PRs under #2252.
 
 - `engine`: Add `signals.dropped` flow metric recorded per drop decision node ([#2859](https://github.com/open-telemetry/otel-arrow/issues/2859))
   Flow metrics declared in the telemetry policy can now enable `signals_dropped`.
@@ -220,7 +220,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   spec). When two scopes emit the same metric name with different descriptions
   (e.g. `cpu_utilization`, `pending_sends.buffered`), the exporter keeps the
   first `# HELP` and logs an "Instrument description conflict" warning on every
-  scrape. No data is lost — each scope remains a distinct time series — so the
+  scrape. No data is lost - each scope remains a distinct time series - so the
   warning was pure noise. The internal-telemetry log filter now adds a
   field-scoped directive
   (`opentelemetry-prometheus[{metric_description}]=error`) that silences only
@@ -246,7 +246,7 @@ changes. See [`RELEASING.md`](../../RELEASING.md) for the versioning policy.
   cumulative regardless of the configured temporality. Their source
   (`engine.drain_*_pending()`) is delta-native, so they are now plain `Counter`s: a Delta
   exporter reports per-interval loss and a cumulative exporter still reports a monotonic Sum.
-- `pipeline`: The journald receiver now follows newly appended entries when `start_at: end` and no checkpoint exists — including on an empty journal, or one whose filters match none of the existing entries. Previously it sought the journal tail but never anchored the read head, so the follow loop never advanced onto new entries: a fresh `start_at: end` receiver emitted no records and never committed a checkpoint. ([#3395](https://github.com/open-telemetry/otel-arrow/issues/3395))
+- `pipeline`: The journald receiver now follows newly appended entries when `start_at: end` and no checkpoint exists - including on an empty journal, or one whose filters match none of the existing entries. Previously it sought the journal tail but never anchored the read head, so the follow loop never advanced onto new entries: a fresh `start_at: end` receiver emitted no records and never committed a checkpoint. ([#3395](https://github.com/open-telemetry/otel-arrow/issues/3395))
   `sd_journal_seek_tail()` parks the read head after the most recent entry without making any entry current; from there a bare `sd_journal_next()` advances toward a following entry, finds none, and returns `0` (the EOF marker) without anchoring; it does not move backward. (It is `sd_journal_step_one()`, not `sd_journal_next()`, that libsystemd documents as behaving like `sd_journal_previous()` at the tail.) The fresh `StartAt::End` start now issues `sd_journal_seek_tail()` then a single `sd_journal_previous()` to anchor on the last existing entry, so the worker's first `next()` steps forward onto genuinely new entries. When `previous()` finds no entry (empty or fully-filtered journal) the head is repositioned with `sd_journal_seek_head()` to avoid a permanent stall at the tail. This is the accepted best-effort idiom (see systemd/systemd#17662); across rotated or multi-file journals the tail position is approximate, and `start_at: end` has no durable resume anchor until the first checkpoint commit.
 - `pipeline`: Fix shutdown deadlock in OTAPExporter when stream queues are full and the downstream receiver is unreachable. ([#3411](https://github.com/open-telemetry/otel-arrow/issues/3411))
   The exporter's enqueue loop now checks for shutdown signals while waiting for
