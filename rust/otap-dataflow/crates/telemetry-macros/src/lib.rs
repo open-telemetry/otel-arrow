@@ -1003,36 +1003,33 @@ pub fn metric_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     quote!( #s #marker_impl ).into()
 }
 
-/// Declares either a named scope/entity attribute set or an emitted-item
-/// attribute set.
-///
-/// ```ignore
-/// #[attribute_set(name = "node.scope")] // scope or entity attributes
-/// #[attribute_set(item, registration)] // fixed item attributes
-/// #[attribute_set(item, measurement)] // per-recording metric item attributes
-/// ```
-#[proc_macro_attribute]
-pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse `name = "..."` or the bare item modes.
-    let args = proc_macro2::TokenStream::from(attr);
-    let mut name_val: Option<String> = None;
-    let mut is_item = false;
-    let mut is_registration = false;
-    let mut is_measurement = false;
-    if let Err(err) = syn::parse::Parser::parse2(
+#[derive(Debug, Default)]
+struct AttributeSetArgs {
+    name: Option<String>,
+    scope: bool,
+    item: bool,
+    registration: bool,
+    measurement: bool,
+}
+
+fn parse_attribute_set_args(args: proc_macro2::TokenStream) -> syn::Result<AttributeSetArgs> {
+    let mut parsed = AttributeSetArgs::default();
+    syn::parse::Parser::parse2(
         |input: syn::parse::ParseStream<'_>| -> syn::Result<()> {
             while !input.is_empty() {
                 let ident: syn::Ident = input.parse()?;
                 if ident == "name" {
                     let _: syn::Token![=] = input.parse()?;
                     let lit: LitStr = input.parse()?;
-                    name_val = Some(lit.value());
+                    parsed.name = Some(lit.value());
+                } else if ident == "scope" {
+                    parsed.scope = true;
                 } else if ident == "item" {
-                    is_item = true;
+                    parsed.item = true;
                 } else if ident == "registration" {
-                    is_registration = true;
+                    parsed.registration = true;
                 } else if ident == "measurement" {
-                    is_measurement = true;
+                    parsed.measurement = true;
                 } else {
                     return Err(syn::Error::new(
                         ident.span(),
@@ -1046,54 +1043,72 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
             Ok(())
         },
         args,
-    ) {
-        return err.to_compile_error().into();
+    )?;
+
+    if parsed.scope && (parsed.item || parsed.registration || parsed.measurement) {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`scope` cannot be combined with item modes",
+        ));
     }
+    if parsed.scope && parsed.name.is_none() {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`scope` requires `name = \"...\"`",
+        ));
+    }
+    if parsed.registration && !parsed.item {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`registration` requires `item`",
+        ));
+    }
+    if parsed.measurement && !parsed.item {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`measurement` requires `item`",
+        ));
+    }
+    if parsed.name.is_some() && parsed.registration {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`name` cannot be combined with `item, registration`",
+        ));
+    }
+    if parsed.item && parsed.registration == parsed.measurement {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "`item` requires exactly one of `registration` or `measurement`",
+        ));
+    }
+    if !parsed.scope && !parsed.item {
+        return Err(syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "missing `scope, name = \"...\"` or `item, registration|measurement` in attribute_set attribute",
+        ));
+    }
+
+    Ok(parsed)
+}
+
+/// Declares either a named scope attribute set or an emitted-item attribute set.
+///
+/// ```ignore
+/// #[attribute_set(scope, name = "node.scope")] // scope attributes
+/// #[attribute_set(item, registration)] // fixed item attributes
+/// #[attribute_set(item, measurement)] // per-recording metric item attributes
+/// ```
+#[proc_macro_attribute]
+pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let args = match parse_attribute_set_args(proc_macro2::TokenStream::from(attr)) {
+        Ok(args) => args,
+        Err(error) => return error.to_compile_error().into(),
+    };
 
     // Parse the struct item
     let mut s = parse_macro_input!(item as ItemStruct);
-    if is_registration && !is_item {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`registration` requires `item`",
-        )
-        .to_compile_error()
-        .into();
-    }
-    if is_measurement && !is_item && name_val.is_none() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`measurement` requires `item`",
-        )
-        .to_compile_error()
-        .into();
-    }
-    if name_val.is_some() && (is_item || is_registration) {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`name` and item modes cannot be combined",
-        )
-        .to_compile_error()
-        .into();
-    }
-    if is_item && is_registration == is_measurement {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "`item` requires exactly one of `registration` or `measurement`",
-        )
-        .to_compile_error()
-        .into();
-    }
-    if !is_item && name_val.is_none() {
-        return syn::Error::new(
-            proc_macro2::Span::call_site(),
-            "missing `name = \"...\"` or `item, registration|measurement` in attribute_set attribute",
-        )
-        .to_compile_error()
-        .into();
-    }
 
-    let measurement_impl = if is_measurement {
+    let measurement_impl = if args.measurement {
         match build_measurement_attribute_set_impl_for_fields(&s.ident, &s.fields, s.span()) {
             Ok(measurement_impl) => measurement_impl,
             Err(error) => return error.to_compile_error().into(),
@@ -1101,7 +1116,7 @@ pub fn attribute_set(attr: TokenStream, item: TokenStream) -> TokenStream {
     } else {
         proc_macro2::TokenStream::new()
     };
-    let attributes_name = match name_val {
+    let attributes_name = match args.name {
         Some(name) if name.is_empty() => {
             return syn::Error::new(s.span(), "attribute set name must not be empty")
                 .to_compile_error()
@@ -1388,6 +1403,23 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "attribute_key must use the form #[attribute_key = \"...\"]"
+        );
+    }
+
+    /// Scenario: a named attribute set is declared for telemetry scope attributes.
+    /// Guarantees: scope declarations require the explicit `scope` keyword.
+    #[test]
+    fn scope_attribute_sets_require_the_scope_keyword() {
+        let scope = parse_attribute_set_args(quote::quote!(scope, name = "test.scope"))
+            .expect("explicit scope attribute sets should parse");
+        assert_eq!(scope.name.as_deref(), Some("test.scope"));
+        assert!(scope.scope);
+
+        let error = parse_attribute_set_args(quote::quote!(name = "test.scope"))
+            .expect_err("named attribute sets without a scope must fail");
+        assert_eq!(
+            error.to_string(),
+            "missing `scope, name = \"...\"` or `item, registration|measurement` in attribute_set attribute"
         );
     }
 }

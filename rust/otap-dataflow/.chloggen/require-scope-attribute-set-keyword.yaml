@@ -1,0 +1,4 @@
+change_type: breaking
+component: observability
+note: "Require the `scope` keyword on scope `attribute_set` declarations."
+issues: [3513]

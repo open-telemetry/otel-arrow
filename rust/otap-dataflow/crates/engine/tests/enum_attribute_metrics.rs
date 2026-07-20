@@ -49,7 +49,7 @@ pub struct ExplicitMeasurementAttributes {
 }
 
 /// Named measurement sets remain supported for existing metric declarations.
-#[attribute_set(name = "test.legacy.measurement", measurement)]
+#[attribute_set(item, measurement, name = "test.legacy.measurement")]
 #[derive(Debug, Clone, Copy)]
 pub struct LegacyMeasurementAttributes {
     pub outcome: LossOutcome,
@@ -69,7 +69,7 @@ pub struct TextRegistrationAttributes {
     pub label: String,
 }
 
-#[attribute_set(name = "test.scope")]
+#[attribute_set(scope, name = "test.scope")]
 #[derive(Debug, Clone)]
 pub struct TestScopeAttributes {
     pub scope: String,
