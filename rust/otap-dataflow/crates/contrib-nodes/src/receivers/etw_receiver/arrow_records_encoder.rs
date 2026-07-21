@@ -561,4 +561,37 @@ mod tests {
         // 8 header attributes; the empty-named field is skipped
         assert_eq!(attrs_rb.num_rows(), 8);
     }
+
+    // Scenario: format_guid renders raw in-memory (little-endian) GUID bytes
+    //           whose Data1/Data2/Data3 differ from Data4 in byte order.
+    // Guarantees: the first three fields are byte-swapped and dashes land at
+    //             positions 8/13/18/23, producing the canonical GUID string;
+    //             locks in BYTE_ORDER and dash placement against regressions.
+    #[test]
+    fn format_guid_byte_swaps_data1_2_3_and_places_dashes() {
+        // Raw in-memory layout of provider GUID 1c95126e-7eea-49a9-a3fe-a378b03ddb4d:
+        // Data1 (u32 LE), Data2 (u16 LE), Data3 (u16 LE), Data4 (as-is).
+        let raw: [u8; 16] = [
+            0x6e, 0x12, 0x95, 0x1c, // Data1: 1c95126e reversed
+            0xea, 0x7e, // Data2: 7eea reversed
+            0xa9, 0x49, // Data3: 49a9 reversed
+            0xa3, 0xfe, // Data4 high bytes (kept as-is)
+            0xa3, 0x78, 0xb0, 0x3d, 0xdb, 0x4d, // Data4 node (kept as-is)
+        ];
+
+        let formatted = format_guid(&raw);
+        let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
+
+        assert_eq!(s, "1c95126e-7eea-49a9-a3fe-a378b03ddb4d");
+    }
+
+    // Scenario: format_guid is fed the all-zero GUID.
+    // Guarantees: every hex digit is '0' and the four dashes remain at their
+    //             canonical positions, covering the zero/edge case.
+    #[test]
+    fn format_guid_all_zero() {
+        let formatted = format_guid(&[0u8; 16]);
+        let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
+        assert_eq!(s, "00000000-0000-0000-0000-000000000000");
+    }
 }
