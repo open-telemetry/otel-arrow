@@ -97,7 +97,7 @@ pub(super) fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
 pub(super) fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let mut spans = brand_spans(app);
     spans.extend([
-        Span::styled(" - Rust Dataflow Engine", title_style(app.color_enabled)),
+        Span::styled(" - Arrow Dataflow Engine", title_style(app.color_enabled)),
         Span::styled("  |  ", separator_style(app.color_enabled)),
         Span::styled("target ", muted_style(app.color_enabled)),
         Span::styled(app.target_url(), target_style(app.color_enabled)),
