@@ -41,9 +41,15 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_server::ArrowMetricsServiceServer,
     arrow_traces_service_server::ArrowTracesServiceServer,
 };
+use otap_df_telemetry::common_attributes::{
+    Outcome, ReceiverRejectionAttributes, ReceiverRejectionErrorType, SignalOutcomeAttributes,
+};
+use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
+use parking_lot::Mutex;
 use serde::de::Error as SerdeError;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -51,7 +57,6 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::ops::Add;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::Poll;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
@@ -143,8 +148,7 @@ const fn default_wait_for_result() -> bool {
 /// A Receiver that listens for OTAP messages
 pub struct OTAPReceiver {
     config: Config,
-    metrics: MetricSet<OtapReceiverMetrics>,
-    memory_pressure_metrics: Arc<SharedOtapMemoryPressureMetrics>,
+    metrics: Arc<SharedOtapReceiverMetrics>,
     admission_state: SharedReceiverAdmissionState,
 }
 
@@ -185,37 +189,46 @@ impl OTAPReceiver {
         })?;
 
         // Register OTAP receiver metrics for this node.
-        let metrics = pipeline_ctx.register_metrics::<OtapReceiverMetrics>();
+        let metrics = Arc::new(SharedOtapReceiverMetrics::new(
+            OtapReceiverMetrics::register(&pipeline_ctx),
+        ));
 
         Ok(OTAPReceiver {
             config,
             metrics,
-            memory_pressure_metrics: Arc::new(SharedOtapMemoryPressureMetrics::default()),
             admission_state: SharedReceiverAdmissionState::from_process_state(
                 &pipeline_ctx.memory_pressure_state(),
             ),
         })
     }
 
-    fn route_ack_response(&self, states: &SharedStates, ack: AckMsg<OtapPdata>) -> RouteResponse {
+    fn route_ack_response(
+        &self,
+        states: &SharedStates,
+        ack: AckMsg<OtapPdata>,
+    ) -> (SignalType, RouteResponse) {
         let calldata = ack.unwind.route.calldata;
         let resp = Ok(());
-        let state = match ack.accepted.signal_type() {
+        let signal = ack.accepted.signal_type();
+        let state = match signal {
             SignalType::Logs => states.logs.as_ref(),
             SignalType::Metrics => states.metrics.as_ref(),
             SignalType::Traces => states.traces.as_ref(),
         };
 
-        state
-            .map(|s| s.route_response(calldata, resp))
-            .unwrap_or(RouteResponse::None)
+        (
+            signal,
+            state
+                .map(|s| s.route_response(calldata, resp))
+                .unwrap_or(RouteResponse::None),
+        )
     }
 
     fn route_nack_response(
         &self,
         states: &SharedStates,
         mut nack: NackMsg<OtapPdata>,
-    ) -> RouteResponse {
+    ) -> (SignalType, RouteResponse) {
         let calldata = std::mem::take(&mut nack.unwind.route.calldata);
         let signal_type = nack.refused.signal_type();
         let resp = Err(nack);
@@ -225,87 +238,185 @@ impl OTAPReceiver {
             SignalType::Traces => states.traces.as_ref(),
         };
 
-        state
-            .map(|s| s.route_response(calldata, resp))
-            .unwrap_or(RouteResponse::None)
+        (
+            signal_type,
+            state
+                .map(|s| s.route_response(calldata, resp))
+                .unwrap_or(RouteResponse::None),
+        )
     }
 
-    fn handle_ack_response(&mut self, resp: RouteResponse) {
+    fn handle_ack_response(&mut self, signal: SignalType, resp: RouteResponse) {
+        let mut metrics = self.metrics.lock();
         match resp {
-            RouteResponse::Sent => self.metrics.acks_sent.inc(),
-            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Sent => metrics.record_acknowledgement(signal, Outcome::Success),
+            RouteResponse::Expired | RouteResponse::Invalid => {
+                metrics.record_acknowledgement(signal, Outcome::Failure);
+            }
             RouteResponse::None => {}
         }
     }
 
-    fn handle_nack_response(&mut self, resp: RouteResponse) {
+    fn handle_nack_response(&mut self, signal: SignalType, resp: RouteResponse) {
+        let mut metrics = self.metrics.lock();
         match resp {
-            RouteResponse::Sent => self.metrics.nacks_sent.inc(),
-            RouteResponse::Expired => self.metrics.acks_nacks_invalid_or_expired.inc(),
-            RouteResponse::Invalid => self.metrics.acks_nacks_invalid_or_expired.inc(),
+            RouteResponse::Sent => metrics.record_acknowledgement(signal, Outcome::Refused),
+            RouteResponse::Expired | RouteResponse::Invalid => {
+                metrics.record_acknowledgement(signal, Outcome::Failure);
+            }
             RouteResponse::None => {}
         }
     }
 
-    fn flush_memory_pressure_metrics(&mut self) {
-        self.memory_pressure_metrics.flush_into(&mut self.metrics);
+    fn terminal_state(&mut self, deadline: Instant) -> TerminalState {
+        TerminalState::new(deadline, self.metrics.lock().terminal_snapshots())
     }
 }
 
-/// OTAP receiver metrics.
-#[metric_set(name = "receiver.otap")]
+/// OTAP acknowledgement routing results.
+#[metric_set(
+    name = "receiver.otap.acknowledgements",
+    measurement_attributes = SignalOutcomeAttributes
+)]
 #[derive(Debug, Default, Clone)]
+pub struct OtapAcknowledgementMetrics {
+    /// Number of routed or invalid acknowledgement responses.
+    #[metric(unit = "{response}")]
+    pub responses: Counter<u64>,
+}
+
+/// OTAP streams and batches rejected before pipeline admission.
+#[metric_set(
+    name = "receiver.otap.rejections",
+    measurement_attributes = ReceiverRejectionAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct OtapRejectionMetrics {
+    /// Number of rejected OTAP streaming RPCs.
+    #[metric(unit = "{stream}")]
+    pub streams: Counter<u64>,
+    /// Number of rejected OTAP batches within admitted streams.
+    #[metric(unit = "{batch}")]
+    pub batches: Counter<u64>,
+}
+
+/// Transport-level OTAP receiver errors.
+#[metric_set(name = "receiver.otap.transport")]
+#[derive(Debug, Default, Clone)]
+pub struct OtapTransportMetrics {
+    /// Number of transport-level gRPC server errors.
+    #[metric(unit = "{error}")]
+    pub errors: Counter<u64>,
+}
+
+/// Bounded-cardinality OTAP receiver metrics tracker.
 pub struct OtapReceiverMetrics {
-    /// Number of acks sent.
-    #[metric(unit = "{acks}")]
-    pub acks_sent: Counter<u64>,
-
-    /// Number of nacks sent.
-    #[metric(unit = "{nacks}")]
-    pub nacks_sent: Counter<u64>,
-
-    /// Number of invalid/expired acks/nacks.
-    #[metric(unit = "{ack_or_nack}")]
-    pub acks_nacks_invalid_or_expired: Counter<u64>,
-
-    /// Number of OTAP RPCs rejected before entering the pipeline.
-    #[metric(unit = "{requests}")]
-    pub rejected_requests: Counter<u64>,
-
-    /// Number of OTAP RPCs rejected specifically because memory pressure was active.
-    #[metric(unit = "{requests}")]
-    pub refused_memory_pressure: Counter<u64>,
+    acknowledgements: MeasurementMetricSet<OtapAcknowledgementMetrics>,
+    rejections: MeasurementMetricSet<OtapRejectionMetrics>,
+    transport: MetricSet<OtapTransportMetrics>,
 }
 
-#[derive(Default)]
-struct SharedOtapMemoryPressureMetrics {
-    rejected_requests: AtomicU64,
-    refused_memory_pressure: AtomicU64,
-}
-
-impl SharedOtapMemoryPressureMetrics {
-    fn flush_into(&self, metrics: &mut MetricSet<OtapReceiverMetrics>) {
-        let rejected_requests = self.rejected_requests.swap(0, Ordering::Relaxed);
-        if rejected_requests > 0 {
-            metrics.rejected_requests.add(rejected_requests);
-        }
-
-        let refused_memory_pressure = self.refused_memory_pressure.swap(0, Ordering::Relaxed);
-        if refused_memory_pressure > 0 {
-            metrics.refused_memory_pressure.add(refused_memory_pressure);
-        }
+impl std::fmt::Debug for OtapReceiverMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OtapReceiverMetrics").finish()
     }
 }
 
-impl ReceiverRejectionMetrics for SharedOtapMemoryPressureMetrics {
-    fn record_rejection(&self) {
-        let _ = self.rejected_requests.fetch_add(1, Ordering::Relaxed);
+impl OtapReceiverMetrics {
+    /// Registers all OTAP receiver metric sets for a pipeline node.
+    #[must_use]
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            acknowledgements: OtapAcknowledgementMetrics::register(pipeline_ctx),
+            rejections: OtapRejectionMetrics::register(pipeline_ctx),
+            transport: pipeline_ctx.register_metrics::<OtapTransportMetrics>(),
+        }
     }
 
-    fn record_memory_pressure_rejection(&self) {
-        self.record_rejection();
-        let _ = self.refused_memory_pressure.fetch_add(1, Ordering::Relaxed);
+    /// Records the outcome of routing an acknowledgement response.
+    pub fn record_acknowledgement(&mut self, signal: SignalType, outcome: Outcome) {
+        self.acknowledgements
+            .with(SignalOutcomeAttributes { signal, outcome })
+            .responses
+            .inc();
+    }
+
+    /// Records an OTAP streaming RPC rejected before admission.
+    pub fn record_stream_rejection(&mut self, error_type: ReceiverRejectionErrorType) {
+        self.rejections
+            .with(ReceiverRejectionAttributes { error_type })
+            .streams
+            .inc();
+    }
+
+    /// Records an OTAP batch rejected before admission.
+    pub fn record_batch_rejection(&mut self, error_type: ReceiverRejectionErrorType) {
+        self.rejections
+            .with(ReceiverRejectionAttributes { error_type })
+            .batches
+            .inc();
+    }
+
+    /// Records a transport-level server error.
+    pub fn record_transport_error(&mut self) {
+        self.transport.errors.inc();
+    }
+
+    /// Returns an acknowledgement bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn acknowledgements_for(
+        &self,
+        signal: SignalType,
+        outcome: Outcome,
+    ) -> &OtapAcknowledgementMetrics {
+        self.acknowledgements
+            .get(SignalOutcomeAttributes { signal, outcome })
+    }
+
+    /// Returns a rejection bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn rejections_for(&self, error_type: ReceiverRejectionErrorType) -> &OtapRejectionMetrics {
+        self.rejections
+            .get(ReceiverRejectionAttributes { error_type })
+    }
+
+    /// Reports every touched OTAP receiver metric bucket.
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
+        reporter.report_measurement(&mut self.acknowledgements)?;
+        reporter.report_measurement(&mut self.rejections)?;
+        reporter.report(&mut self.transport)
+    }
+
+    /// Takes every touched OTAP receiver metric bucket for terminal handoff.
+    pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
+        let mut snapshots = self.acknowledgements.terminal_snapshots();
+        snapshots.extend(self.rejections.terminal_snapshots());
+        if !self.transport.is_empty() {
+            snapshots.extend(self.transport.terminal_snapshots());
+        }
+        snapshots
+    }
+}
+
+struct SharedOtapReceiverMetrics(Mutex<OtapReceiverMetrics>);
+
+impl SharedOtapReceiverMetrics {
+    fn new(metrics: OtapReceiverMetrics) -> Self {
+        Self(Mutex::new(metrics))
+    }
+
+    fn lock(&self) -> parking_lot::MutexGuard<'_, OtapReceiverMetrics> {
+        self.0.lock()
+    }
+}
+
+impl ReceiverRejectionMetrics for SharedOtapReceiverMetrics {
+    fn record_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.lock().record_stream_rejection(error_type);
+    }
+
+    fn record_item_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.lock().record_batch_rejection(error_type);
     }
 }
 
@@ -364,7 +475,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 .get(),
             wait_for_result: self.config.wait_for_result,
             admission_state: self.admission_state.clone(),
-            receiver_rejection_metrics: Some(self.memory_pressure_metrics.clone()),
+            receiver_rejection_metrics: Some(self.metrics.clone()),
         };
 
         //create services for the grpc server and clone the effect handler to pass message
@@ -419,7 +530,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         let server = server_builder
             .layer(MemoryPressureLayer::with_metrics(
                 self.admission_state.clone(),
-                self.memory_pressure_metrics.clone(),
+                self.metrics.clone(),
             ))
             .layer(MiddlewareLayer::new(ZstdRequestHeaderAdapter::default()))
             .add_service(logs_server)
@@ -477,8 +588,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
                 if server_task_done && states.is_empty() {
                     effect_handler.notify_receiver_drained().await?;
-                    self.flush_memory_pressure_metrics();
-                    terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                    terminal_state = self.terminal_state(deadline);
                     break;
                 }
             } else {
@@ -513,22 +623,22 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                             otap_df_telemetry::otel_info!("otap_receiver.shutdown");
                             grpc_shutdown.cancel();
                             states.force_shutdown(&reason);
-                            self.flush_memory_pressure_metrics();
-                            terminal_state = TerminalState::new(deadline, [self.metrics.snapshot()]);
+                            terminal_state = self.terminal_state(deadline);
                             break;
                         }
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
-                            self.flush_memory_pressure_metrics();
-                            _ = metrics_reporter.report(&mut self.metrics);
+                            _ = self.metrics.lock().report(&mut metrics_reporter);
                         }
                         Ok(NodeControlMsg::MemoryPressureChanged { update }) => {
                             self.admission_state.apply(update);
                         }
                         Ok(NodeControlMsg::Ack(ack)) => {
-                            self.handle_ack_response(self.route_ack_response(&states, ack));
+                            let (signal, response) = self.route_ack_response(&states, ack);
+                            self.handle_ack_response(signal, response);
                         }
                         Ok(NodeControlMsg::Nack(nack)) => {
-                            self.handle_nack_response(self.route_nack_response(&states, nack));
+                            let (signal, response) = self.route_nack_response(&states, nack);
+                            self.handle_nack_response(signal, response);
                         }
                         Err(e) => {
                             return Err(Error::ChannelRecvError(e));
@@ -540,6 +650,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                 result = &mut server_task, if !server_task_done => {
                     server_task_done = true;
                     if let Err(error) = result {
+                        self.metrics.lock().record_transport_error();
                         let source_detail = format_error_sources(&error);
                         return Err(Error::ReceiverError {
                             receiver: effect_handler.receiver_id(),
@@ -550,11 +661,8 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
                     }
 
                     if draining_deadline.is_none() {
-                        self.flush_memory_pressure_metrics();
-                        terminal_state = TerminalState::new(
-                            clock::now().add(Duration::from_secs(1)),
-                            [self.metrics.snapshot()],
-                        );
+                        terminal_state =
+                            self.terminal_state(clock::now().add(Duration::from_secs(1)));
                         break;
                     }
                 }
@@ -574,6 +682,7 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
         grpc_shutdown.cancel();
         if !server_task_done {
             if let Err(error) = server_task.await {
+                self.metrics.lock().record_transport_error();
                 let source_detail = format_error_sources(&error);
                 return Err(Error::ReceiverError {
                     receiver: effect_handler.receiver_id(),
@@ -590,8 +699,9 @@ impl shared::Receiver<OtapPdata> for OTAPReceiver {
 
 #[cfg(test)]
 mod tests {
-    use crate::receivers::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver};
+    use crate::receivers::otap_receiver::{OTAP_RECEIVER_URN, OTAPReceiver, OtapReceiverMetrics};
     use async_stream::stream;
+    use otap_df_config::SignalType;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
     use otap_df_engine::receiver::ReceiverWrapper;
@@ -611,12 +721,12 @@ mod tests {
         arrow_metrics_service_client::ArrowMetricsServiceClient,
         arrow_traces_service_client::ArrowTracesServiceClient,
     };
+    use otap_df_telemetry::common_attributes::{Outcome, ReceiverRejectionErrorType};
     use std::collections::HashSet;
     use std::future::Future;
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::sync::Arc;
-    use std::sync::atomic::Ordering;
     use std::time::Instant;
     use tokio::time::{Duration, timeout};
 
@@ -1190,8 +1300,10 @@ mod tests {
         );
     }
 
+    /// Scenario: OTAP acknowledgements and stream/batch rejections span bounded dimensions.
+    /// Guarantees: Counts remain isolated by signal, outcome, rejection scope, and error type.
     #[test]
-    fn shared_rejection_metrics_flush_into_reported_metric_set() {
+    fn receiver_metrics_are_partitioned_by_context() {
         use serde_json::json;
 
         let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
@@ -1204,31 +1316,83 @@ mod tests {
             "listening_addr": "127.0.0.1:4317",
             "response_stream_channel_size": 100
         });
-        let mut receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
+        let receiver = OTAPReceiver::from_config(pipeline_ctx, &config).unwrap();
 
-        receiver.memory_pressure_metrics.record_rejection();
         receiver
-            .memory_pressure_metrics
-            .record_memory_pressure_rejection();
+            .metrics
+            .record_rejection(ReceiverRejectionErrorType::MemoryPressure);
+        receiver
+            .metrics
+            .record_item_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
+        receiver
+            .metrics
+            .lock()
+            .record_acknowledgement(SignalType::Logs, Outcome::Success);
 
-        receiver.flush_memory_pressure_metrics();
-
-        assert_eq!(receiver.metrics.rejected_requests.get(), 2);
-        assert_eq!(receiver.metrics.refused_memory_pressure.get(), 1);
+        let metrics = receiver.metrics.lock();
         assert_eq!(
-            receiver
-                .memory_pressure_metrics
-                .rejected_requests
-                .load(Ordering::Relaxed),
+            metrics
+                .rejections_for(ReceiverRejectionErrorType::MemoryPressure)
+                .streams
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .rejections_for(ReceiverRejectionErrorType::MemoryPressure)
+                .batches
+                .get(),
             0
         );
         assert_eq!(
-            receiver
-                .memory_pressure_metrics
-                .refused_memory_pressure
-                .load(Ordering::Relaxed),
+            metrics
+                .rejections_for(ReceiverRejectionErrorType::ConcurrencyLimit)
+                .batches
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .acknowledgements_for(SignalType::Logs, Outcome::Success)
+                .responses
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .acknowledgements_for(SignalType::Metrics, Outcome::Success)
+                .responses
+                .get(),
             0
         );
+    }
+
+    /// Scenario: OTAP receiver metrics are transferred into terminal snapshots twice.
+    /// Guarantees: Touched buckets carry stable enum values once and are then cleared.
+    #[test]
+    fn terminal_snapshots_preserve_enum_attribute_values_once() {
+        let telemetry_registry_handle = otap_df_telemetry::registry::TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = OtapReceiverMetrics::register(&pipeline_ctx);
+
+        metrics.record_acknowledgement(SignalType::Traces, Outcome::Refused);
+        metrics.record_batch_rejection(ReceiverRejectionErrorType::InvalidRequest);
+
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otap.acknowledgements"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot.measurement_attribute_value("outcome") == Some("refused")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otap.rejections"
+                && snapshot.measurement_attribute_value("error.type") == Some("invalid_request")
+        }));
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 
     #[test]
