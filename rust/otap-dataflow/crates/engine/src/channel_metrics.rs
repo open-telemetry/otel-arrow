@@ -7,13 +7,12 @@
 //! using channel endpoint attributes and can be correlated using `channel.id`
 //! and `channel.kind`.
 
-use otap_df_config::SignalType;
-use otap_df_telemetry::common_attributes::Outcome;
+use otap_df_telemetry::common_attributes::SignalOutcomeAttributes;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
 use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{attribute_set, metric_set};
+use otap_df_telemetry_macros::metric_set;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -76,21 +75,12 @@ pub struct ChannelReceiverMetrics {
     pub capacity: Gauge<u64>,
 }
 
-/// Ack/nack metrics for consumed requests, owned exclusively by the runtime control manager.
+/// Ack/nack metrics for consumed messages, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-pub struct NodeMetricAttributes {
-    /// Signal carried by the request.
-    pub signal: SignalType,
-    /// Result of processing the request.
-    pub outcome: Outcome,
-}
-
 #[metric_set(
     name = "node.consumer",
-    measurement_attributes = NodeMetricAttributes
+    measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
@@ -100,15 +90,15 @@ pub struct ConsumedMetrics {
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
-    /// Consumed requests, grouped by `signal` and `outcome` datapoint attributes.
-    #[metric(name = "consumed.requests", unit = "{requests}")]
-    pub consumed_requests: Counter<u64>,
+    /// Consumed messages, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(name = "consumed.messages", unit = "{message}")]
+    pub consumed_messages: Counter<u64>,
 }
 
 /// Optional per-signal item metrics for a node input channel.
 #[metric_set(
     name = "node.consumer",
-    measurement_attributes = NodeMetricAttributes
+    measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedItemMetrics {
@@ -117,31 +107,31 @@ pub struct ConsumedItemMetrics {
     pub consumed_items: Counter<u64>,
 }
 
-/// Ack/nack metrics for produced requests, owned exclusively by the runtime control manager.
+/// Ack/nack metrics for produced messages, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
 #[metric_set(
     name = "node.producer",
-    measurement_attributes = NodeMetricAttributes
+    measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
     /// Duration from production until the corresponding ack or nack is
     /// routed, in nanoseconds. This is reported at the detailed level,
-    /// only in receivers. Processors report `consumed.requests`.
+    /// only in receivers. Processors report `consumed.messages`.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "produced.duration", unit = "ns")]
     pub produced_duration_ns: Mmsc,
-    /// Produced requests, grouped by `signal` and `outcome` datapoint attributes.
-    #[metric(name = "produced.requests", unit = "{requests}")]
-    pub produced_requests: Counter<u64>,
+    /// Produced messages, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(name = "produced.messages", unit = "{message}")]
+    pub produced_messages: Counter<u64>,
 }
 
 /// Optional per-signal item metrics for a node output channel.
 #[metric_set(
     name = "node.producer",
-    measurement_attributes = NodeMetricAttributes
+    measurement_attributes = SignalOutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedItemMetrics {

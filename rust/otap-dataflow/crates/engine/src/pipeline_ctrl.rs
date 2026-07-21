@@ -12,8 +12,7 @@
 //! are supported.
 
 use crate::channel_metrics::{
-    ConsumedItemMetrics, ConsumedMetrics, NodeMetricAttributes, ProducedItemMetrics,
-    ProducedMetrics,
+    ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics, ProducedMetrics,
 };
 use crate::clock;
 use crate::completion_emission_metrics::CompletionEmissionMetricsHandle;
@@ -34,7 +33,7 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::MetricLevel;
 use otap_df_config::SignalType;
 use otap_df_config::policy::TelemetryPolicy;
-use otap_df_telemetry::common_attributes::Outcome;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::event::{EngineEvent, ObservedEventReporter};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
@@ -199,11 +198,11 @@ fn opt_min<T: Ord>(a: Option<T>, b: Option<T>) -> Option<T> {
 pub(crate) struct NodeMetricHandles {
     /// Registry handle for automatic unregistration on drop.
     pub(crate) registry: TelemetryRegistryHandle,
-    /// Consumed-request metrics for the node's input channel.
+    /// Consumed-message metrics for the node's input channel.
     pub(crate) input: Option<MeasurementMetricSet<ConsumedMetrics>>,
     /// Optional consumed-item metrics for the node's input channel.
     pub(crate) input_items: Option<MeasurementMetricSet<ConsumedItemMetrics>>,
-    /// Produced-request metrics indexed by output port.
+    /// Produced-message metrics indexed by output port.
     pub(crate) outputs: Vec<MeasurementMetricSet<ProducedMetrics>>,
     /// Optional produced-item metrics indexed by output port.
     pub(crate) output_items: Vec<MeasurementMetricSet<ProducedItemMetrics>>,
@@ -1139,13 +1138,13 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             RequestOutcome::Failure => Outcome::Failure,
                             RequestOutcome::Refused => Outcome::Refused,
                         };
-                        let input = input.with(NodeMetricAttributes { signal, outcome });
-                        input.consumed_requests.inc();
+                        let input = input.with(SignalOutcomeAttributes { signal, outcome });
+                        input.consumed_messages.inc();
                         if consumed_items > 0
                             && let Some(input_items) = &mut handles.input_items
                         {
                             input_items
-                                .with(NodeMetricAttributes { signal, outcome })
+                                .with(SignalOutcomeAttributes { signal, outcome })
                                 .consumed_items
                                 .add(consumed_items as u64);
                         }
@@ -1165,13 +1164,13 @@ impl<PData> PipelineCompletionMsgDispatcher<PData> {
                             RequestOutcome::Failure => Outcome::Failure,
                             RequestOutcome::Refused => Outcome::Refused,
                         };
-                        let output = output.with(NodeMetricAttributes { signal, outcome });
-                        output.produced_requests.inc();
+                        let output = output.with(SignalOutcomeAttributes { signal, outcome });
+                        output.produced_messages.inc();
                         if produced_items > 0
                             && let Some(output_items) = handles.output_items.get_mut(port)
                         {
                             output_items
-                                .with(NodeMetricAttributes { signal, outcome })
+                                .with(SignalOutcomeAttributes { signal, outcome })
                                 .produced_items
                                 .add(produced_items as u64);
                         }
