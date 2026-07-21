@@ -116,7 +116,7 @@ struct TestMetrics {
     emitted: Counter<u64>,
 }
 
-#[attribute_set(name = "test.its.pipeline.attrs")]
+#[attribute_set(scope, name = "test.its.pipeline.attrs")]
 #[derive(Debug, Clone)]
 struct TestAttributes {
     /// Test route used to select one metric-set entity.
