@@ -45,7 +45,7 @@ const METRICS_PER_SET: u64 = 8;
 const SCOPE_NAME: &str = "benchmark.internal_metrics_bridge";
 const WORKLOAD_KIND: &str = "representative";
 
-#[attribute_set(name = "benchmark.internal_metrics_bridge.attrs")]
+#[attribute_set(scope, name = "benchmark.internal_metrics_bridge.attrs")]
 #[derive(Debug, Clone, Hash)]
 struct BenchmarkAttributes {
     /// Unique entity identifier.
