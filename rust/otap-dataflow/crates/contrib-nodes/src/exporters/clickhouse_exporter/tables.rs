@@ -232,7 +232,7 @@ fn validate_engine_params(params: &str) -> Result<(), ClickhouseExporterError> {
 struct FinalTableConfig {
     /// Logical name (users query this)
     pub name: String,
-    /// TTL, e.g., "72h"
+    /// TTL, e.g., "72 HOUR"
     pub ttl: Option<String>,
     /// Optional table engine override
     pub engine: TableEngine,

@@ -20,6 +20,7 @@ use crate::extension::ExtensionWrapper;
 use crate::extension_monitor::{
     ExtensionKey, ExtensionLifecycleEvent, ExtensionMetricsMonitor, ExtensionOutcome,
 };
+use crate::terminal_state::TerminalMetricsDeadline;
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use otap_df_telemetry::otel_warn;
@@ -72,6 +73,7 @@ impl ExtensionLifecycle {
         extensions: Vec<(ExtensionWrapper, EntityKey)>,
         local_tasks: &LocalSet,
         metrics_reporter: MetricsReporter,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
         ext_ctx: &ExtensionContext,
         mut monitor: ExtensionMetricsMonitor,
     ) -> Self {
@@ -104,6 +106,7 @@ impl ExtensionLifecycle {
                 extension_readiness_probes.push((key.clone(), probe));
             }
             let ext_metrics_reporter = metrics_reporter.clone();
+            let ext_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let task_key = key.clone();
             let started_tx = started_tx.clone();
             let fut = async move {
@@ -113,10 +116,22 @@ impl ExtensionLifecycle {
                         crate::runtime_pipeline::report_terminal_metrics(
                             &ext_metrics_reporter,
                             terminal_state,
-                        );
+                            &ext_terminal_metrics_deadline,
+                        )
+                        .await;
                         Ok(())
                     }
                     Err(e) => {
+                        if let Err(flush_error) = ext_metrics_reporter
+                            .flush_until(ext_terminal_metrics_deadline.get())
+                            .await
+                        {
+                            otel_warn!(
+                                "extension.metrics.flush.fail",
+                                extension = task_key.id.as_ref(),
+                                error = flush_error.to_string(),
+                            );
+                        }
                         otel_warn!(
                             "extension.task.error",
                             extension = task_key.id.as_ref(),
@@ -416,6 +431,16 @@ impl ExtensionLifecycle {
 
     pub fn monitor_tick(&mut self, now: Instant, reporter: &mut MetricsReporter) {
         self.monitor.tick(now, reporter);
+    }
+
+    pub(crate) async fn finish_metrics_reporting_until(
+        &mut self,
+        reporter: &MetricsReporter,
+        deadline: Instant,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        self.monitor
+            .finish_reporting_until(reporter, deadline)
+            .await
     }
 
     #[allow(dead_code)]
@@ -810,6 +835,7 @@ mod tests {
                 vec![(passive_w, passive_entity), (active_w, active_entity)],
                 &local_tasks,
                 reporter,
+                TerminalMetricsDeadline::default(),
                 &ext_ctx,
                 monitor,
             );
@@ -1294,6 +1320,7 @@ mod tests {
                 vec![(wrapper, entity_key)],
                 &local_tasks,
                 reporter,
+                TerminalMetricsDeadline::default(),
                 &ext_ctx,
                 monitor,
             );
@@ -1373,6 +1400,7 @@ mod tests {
                 vec![(wrapper, entity_key)],
                 &local_tasks,
                 reporter,
+                TerminalMetricsDeadline::default(),
                 &ext_ctx,
                 monitor,
             );
