@@ -18,7 +18,6 @@ use otap_df_otap::pdata::OtapPdata;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
-use otap_df_config::SignalType;
 use otap_df_config::{error::Error as ConfigError, node::NodeUserConfig};
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::context::PipelineContext;
@@ -32,8 +31,9 @@ use otap_df_engine::{
     node::NodeId,
     processor::ProcessorWrapper,
 };
+use otap_df_telemetry::common_attributes::SignalAttributes;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -197,124 +197,16 @@ impl RetryConfig {
     }
 }
 
-/// Telemetry metrics for the RetryProcessor (RFC-aligned items + component counters).
-#[metric_set(name = "processor.retry")]
+/// Retry attempts scheduled after a downstream refusal.
+#[metric_set(
+    name = "processor.retry.attempts",
+    measurement_attributes = SignalAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct RetryProcessorMetrics {
-    // RFC-aligned: consumed items by signal and outcome
-    /// Number of items consumed (logs) with outcome=success
-    #[metric(unit = "{item}")]
-    pub consumed_items_logs_success: Counter<u64>,
-    /// Number of items consumed (metrics) with outcome=success
-    #[metric(unit = "{item}")]
-    pub consumed_items_metrics_success: Counter<u64>,
-    /// Number of items consumed (traces) with outcome=success
-    #[metric(unit = "{item}")]
-    pub consumed_items_traces_success: Counter<u64>,
-
-    /// Number of items consumed (logs) with outcome=failure
-    #[metric(unit = "{item}")]
-    pub consumed_items_logs_failure: Counter<u64>,
-    /// Number of items consumed (metrics) with outcome=failure
-    #[metric(unit = "{item}")]
-    pub consumed_items_metrics_failure: Counter<u64>,
-    /// Number of items consumed (traces) with outcome=failure
-    #[metric(unit = "{item}")]
-    pub consumed_items_traces_failure: Counter<u64>,
-
-    /// Number of items consumed (logs) with outcome=refused
-    #[metric(unit = "{item}")]
-    pub consumed_items_logs_refused: Counter<u64>,
-    /// Number of items consumed (metrics) with outcome=refused
-    #[metric(unit = "{item}")]
-    pub consumed_items_metrics_refused: Counter<u64>,
-    /// Number of items consumed (traces) with outcome=refused
-    #[metric(unit = "{item}")]
-    pub consumed_items_traces_refused: Counter<u64>,
-
-    // RFC-aligned: produced items by signal and outcome
-    /// Number of items produced (logs) with outcome=success
-    #[metric(unit = "{item}")]
-    pub produced_items_logs_success: Counter<u64>,
-    /// Number of items produced (metrics) with outcome=success
-    #[metric(unit = "{item}")]
-    pub produced_items_metrics_success: Counter<u64>,
-    /// Number of items produced (traces) with outcome=success
-    #[metric(unit = "{item}")]
-    pub produced_items_traces_success: Counter<u64>,
-
-    /// Number of items produced (logs) with outcome=refused (downstream error)
-    #[metric(unit = "{item}")]
-    pub produced_items_logs_refused: Counter<u64>,
-    /// Number of items produced (metrics) with outcome=refused (downstream error)
-    #[metric(unit = "{item}")]
-    pub produced_items_metrics_refused: Counter<u64>,
-    /// Number of items produced (traces) with outcome=refused (downstream error)
-    #[metric(unit = "{item}")]
-    pub produced_items_traces_refused: Counter<u64>,
-
-    /// Number of retry attempts scheduled as a result of NACKs, logs.
-    #[metric(unit = "{event}")]
-    pub retry_attempts_logs: Counter<u64>,
-    /// Number of retry attempts scheduled as a result of NACKs, traces.
-    #[metric(unit = "{event}")]
-    pub retry_attempts_traces: Counter<u64>,
-    /// Number of retry attempts scheduled as a result of NACKs, metrics.
-    #[metric(unit = "{event}")]
-    pub retry_attempts_metrics: Counter<u64>,
-}
-
-impl RetryProcessorMetrics {
-    /// Increment consumed.items with outcome=success for the given signal by n
-    pub const fn add_consumed_success(&mut self, st: SignalType, n: u64) {
-        match st {
-            SignalType::Logs => self.consumed_items_logs_success.add(n),
-            SignalType::Metrics => self.consumed_items_metrics_success.add(n),
-            SignalType::Traces => self.consumed_items_traces_success.add(n),
-        }
-    }
-    /// Increment consumed.items with outcome=failure for the given signal by n
-    pub const fn add_consumed_failure(&mut self, st: SignalType, n: u64) {
-        match st {
-            SignalType::Logs => self.consumed_items_logs_failure.add(n),
-            SignalType::Metrics => self.consumed_items_metrics_failure.add(n),
-            SignalType::Traces => self.consumed_items_traces_failure.add(n),
-        }
-    }
-    /// Increment consumed.items with outcome=refused for the given signal by n
-    pub const fn add_consumed_refused(&mut self, st: SignalType, n: u64) {
-        match st {
-            SignalType::Logs => self.consumed_items_logs_refused.add(n),
-            SignalType::Metrics => self.consumed_items_metrics_refused.add(n),
-            SignalType::Traces => self.consumed_items_traces_refused.add(n),
-        }
-    }
-
-    /// Increment produced.items with outcome=success for the given signal by n
-    pub const fn add_produced_success(&mut self, st: SignalType, n: u64) {
-        match st {
-            SignalType::Logs => self.produced_items_logs_success.add(n),
-            SignalType::Metrics => self.produced_items_metrics_success.add(n),
-            SignalType::Traces => self.produced_items_traces_success.add(n),
-        }
-    }
-    /// Increment produced.items with outcome=refused for the given signal by n
-    pub const fn add_produced_refused(&mut self, st: SignalType, n: u64) {
-        match st {
-            SignalType::Logs => self.produced_items_logs_refused.add(n),
-            SignalType::Metrics => self.produced_items_metrics_refused.add(n),
-            SignalType::Traces => self.produced_items_traces_refused.add(n),
-        }
-    }
-
-    /// Increment retry_attempts for the given signal by 1.
-    pub const fn increment_retry_attempts(&mut self, st: SignalType) {
-        match st {
-            SignalType::Logs => self.retry_attempts_logs.add(1),
-            SignalType::Metrics => self.retry_attempts_metrics.add(1),
-            SignalType::Traces => self.retry_attempts_traces.add(1),
-        }
-    }
+pub struct RetryAttemptMetrics {
+    /// Number of retry attempts scheduled.
+    #[metric(unit = "{retry}")]
+    pub scheduled: Counter<u64>,
 }
 
 /// OTAP RetryProcessor
@@ -341,7 +233,7 @@ pub struct RetryProcessor {
     delays: Vec<Duration>,
 
     config: RetryConfig,
-    metrics: MetricSet<RetryProcessorMetrics>,
+    metrics: MeasurementMetricSet<RetryAttemptMetrics>,
 }
 
 /// Factory function to create a SignalTypeRouter processor
@@ -389,28 +281,20 @@ struct RetryState {
     /// SystemTime::as_millis() and other APIs for integer fractional
     /// seconds return u128.
     deadline: f64,
-
-    /// Item count
-    num_items: u64,
 }
 
 impl RetryState {
-    const fn new(num_items: u64, deadline: f64) -> Self {
+    const fn new(deadline: f64) -> Self {
         Self {
             retries: 0,
             deadline,
-            num_items,
         }
     }
 }
 
 impl From<RetryState> for CallData {
     fn from(value: RetryState) -> Self {
-        smallvec::smallvec![
-            value.retries.into(),
-            value.deadline.into(),
-            value.num_items.into()
-        ]
+        smallvec::smallvec![value.retries.into(), value.deadline.into()]
     }
 }
 
@@ -418,7 +302,7 @@ impl TryFrom<CallData> for RetryState {
     type Error = Error;
 
     fn try_from(value: CallData) -> Result<Self, Self::Error> {
-        if value.len() != 3 {
+        if value.len() != 2 {
             return Err(Error::InternalError {
                 message: "invalid calldata".into(),
             });
@@ -427,7 +311,6 @@ impl TryFrom<CallData> for RetryState {
         Ok(Self {
             retries: value[0].into(),
             deadline: value[1].into(),
-            num_items: value[2].into(),
         })
     }
 }
@@ -438,7 +321,7 @@ impl RetryProcessor {
         pipeline_ctx: PipelineContext,
         config: RetryConfig,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<RetryProcessorMetrics>();
+        let metrics = RetryAttemptMetrics::register(&pipeline_ctx);
 
         let (retry_limit, delays) = config.validate_retries()?;
 
@@ -455,22 +338,7 @@ impl RetryProcessor {
         ack: AckMsg<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
-        let signal = ack.accepted.signal_type();
-        let calldata = ack.unwind.route.calldata.clone();
-
-        let num_items = match calldata.try_into() {
-            Err(_err) => {
-                // We don't know how many items,
-                // ToDo: this shouldn't happen; how to count?
-                0
-            }
-            Ok(RetryState { num_items, .. }) => num_items,
-        };
-
-        // The producer and consumer both succeed.
-        self.metrics.add_produced_success(signal, num_items);
         effect_handler.notify_ack(ack).await?;
-        self.metrics.add_consumed_success(signal, num_items);
         Ok(())
     }
 
@@ -490,14 +358,9 @@ impl RetryProcessor {
             Ok(retry) => retry,
         };
 
-        // Regardless of the next step, this NACK counts as a producer
-        // refusal.
-        self.metrics.add_produced_refused(signal, rstate.num_items);
-
         // Permanent errors should not be retried, notify the next recipient.
         if nack.permanent {
             effect_handler.notify_nack(nack).await?;
-            self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
 
@@ -507,7 +370,6 @@ impl RetryProcessor {
             // back data to retry.
             nack.reason = format!("retry lost payload: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
-            self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
 
@@ -525,7 +387,6 @@ impl RetryProcessor {
             // The caller has refused, as often as we'll let them.
             nack.reason = format!("final retry: {}", nack.reason);
             effect_handler.notify_nack(nack).await?;
-            self.metrics.add_consumed_refused(signal, rstate.num_items);
             return Ok(());
         }
 
@@ -533,9 +394,6 @@ impl RetryProcessor {
         let next_retry_time_i = now_i + *delay;
 
         rstate.retries += 1;
-
-        // Save for use below.
-        let num_items = rstate.num_items;
 
         // Updated RetryState back onto context for retry attempt
         let mut rereq = nack.refused;
@@ -545,17 +403,19 @@ impl RetryProcessor {
             &mut rereq,
         );
 
-        self.metrics.increment_retry_attempts(signal);
-
         // Requeue the data onto this node, we'll continue in the DelayedData branch next.
         match effect_handler.requeue_later(next_retry_time_i, rereq) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                self.metrics
+                    .with(SignalAttributes { signal })
+                    .scheduled
+                    .inc();
+                Ok(())
+            }
             Err(refused) => {
                 effect_handler
                     .notify_nack(NackMsg::new("cannot requeue", refused))
                     .await?;
-                // This component failed.
-                self.metrics.add_consumed_failure(signal, num_items);
                 Ok(())
             }
         }
@@ -566,18 +426,15 @@ impl RetryProcessor {
         _when: Instant,
         data: Box<OtapPdata>,
         effect_handler: &mut EffectHandler<OtapPdata>,
-        num_items: u64,
     ) -> Result<(), Error> {
-        self.send_or_nack(*data, effect_handler, num_items).await
+        self.send_or_nack(*data, effect_handler).await
     }
 
     async fn send_or_nack(
         &mut self,
         data: OtapPdata,
         effect_handler: &mut EffectHandler<OtapPdata>,
-        num_items: u64,
     ) -> Result<(), Error> {
-        let signal = data.signal_type();
         match effect_handler.send_message_with_source_node(data).await {
             Ok(()) => {
                 // Request control flows downstream.
@@ -589,8 +446,6 @@ impl RetryProcessor {
                 effect_handler
                     .notify_nack(NackMsg::new(reason, data))
                     .await?;
-                // This component failed.
-                self.metrics.add_consumed_failure(signal, num_items);
                 Ok(())
             }
             Err(e) => Err(e.into()),
@@ -607,8 +462,7 @@ impl Processor<OtapPdata> for RetryProcessor {
     ) -> Result<(), Error> {
         match msg {
             Message::PData(mut data) => {
-                let num_items = data.num_items() as u64;
-                if num_items == 0 {
+                if data.num_items() == 0 {
                     // Immediately Ack an empty request. Otherwise
                     // looks like a failure to return data in the Nack
                     // code path.
@@ -619,27 +473,25 @@ impl Processor<OtapPdata> for RetryProcessor {
                 let deadline = now_f64() + self.config.max_elapsed_time.as_secs_f64();
                 effect_handler.subscribe_to(
                     Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
-                    RetryState::new(num_items, deadline).into(),
+                    RetryState::new(deadline).into(),
                     &mut data,
                 );
-                self.send_or_nack(data, effect_handler, num_items).await
+                self.send_or_nack(data, effect_handler).await
             }
             Message::Control(control_msg) => match control_msg {
                 NodeControlMsg::Ack(ack) => self.handle_ack(ack, effect_handler).await,
                 NodeControlMsg::Nack(nack) => self.handle_nack(nack, effect_handler).await,
                 NodeControlMsg::DelayedData { when, data } => {
                     if let Some(calldata) = data.source_route() {
-                        let rstate: RetryState = calldata.calldata.try_into()?;
-                        let _ = self
-                            .handle_delayed(when, data, effect_handler, rstate.num_items)
-                            .await?;
+                        let _rstate: RetryState = calldata.calldata.try_into()?;
+                        self.handle_delayed(when, data, effect_handler).await?;
                     }
                     Ok(())
                 }
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => metrics_reporter
-                    .report(&mut self.metrics)
+                    .report_measurement(&mut self.metrics)
                     .map_err(|e| Error::InternalError {
                         message: e.to_string(),
                     }),
@@ -667,8 +519,9 @@ impl RetryProcessor {
     #[cfg(test)]
     pub fn with_config(config: RetryConfig) -> Self {
         let telemetry_registry = otap_df_telemetry::registry::TelemetryRegistryHandle::default();
-        let metrics: MetricSet<RetryProcessorMetrics> =
-            telemetry_registry.register_metric_set(otap_df_telemetry::testing::EmptyAttributes());
+        let controller = otap_df_engine::context::ControllerContext::new(telemetry_registry);
+        let pipeline_ctx = controller.pipeline_context_with("test".into(), "retry".into(), 0, 1, 0);
+        let metrics = RetryAttemptMetrics::register(&pipeline_ctx);
 
         let (retry_limit, delays) = config.validate_retries().expect("valid");
         Self {
@@ -682,8 +535,8 @@ impl RetryProcessor {
 
 #[cfg(test)]
 mod test {
-    use super::{RETRY_PROCESSOR_URN, RetryConfig};
-    use otap_df_config::node::NodeUserConfig;
+    use super::{RETRY_PROCESSOR_URN, RetryAttemptMetrics, RetryConfig, SignalAttributes};
+    use otap_df_config::{SignalType, node::NodeUserConfig};
     use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_engine::control::{
         AckMsg, NackMsg, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
@@ -695,16 +548,90 @@ mod test {
     use otap_df_otap::pdata::OtapPdata;
     use otap_df_otap::testing::{TestCallData, create_test_pdata, next_ack, next_nack};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::reporter::MetricsReporter;
     use serde_json::json;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    /// Scenario: Scheduled retry attempts are recorded for several signal types.
+    /// Guarantees: Counts are isolated by the shared signal enum attribute.
+    #[test]
+    fn retry_metrics_are_partitioned_by_signal() {
+        let mut metrics = RetryAttemptMetrics::register(&create_test_pipeline_context());
+        metrics
+            .with(SignalAttributes {
+                signal: SignalType::Traces,
+            })
+            .scheduled
+            .add(2);
+        metrics
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .scheduled
+            .inc();
+
+        assert_eq!(
+            metrics
+                .get(SignalAttributes {
+                    signal: SignalType::Traces,
+                })
+                .scheduled
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .get(SignalAttributes {
+                    signal: SignalType::Logs,
+                })
+                .scheduled
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .get(SignalAttributes {
+                    signal: SignalType::Metrics,
+                })
+                .scheduled
+                .get(),
+            0
+        );
+    }
+
+    /// Scenario: A retry-attempt metric bucket is converted to a terminal snapshot.
+    /// Guarantees: The snapshot carries the shared signal enum wire value.
+    #[test]
+    fn retry_metric_snapshots_preserve_enum_attribute_values() {
+        let mut metrics = RetryAttemptMetrics::register(&create_test_pipeline_context());
+        metrics
+            .with(SignalAttributes {
+                signal: SignalType::Traces,
+            })
+            .scheduled
+            .inc();
+
+        let snapshots = metrics.terminal_snapshots();
+
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].descriptor().name, "processor.retry.attempts");
+        assert_eq!(
+            snapshots[0].measurement_attribute_value("signal"),
+            Some("traces")
+        );
+    }
+
+    /// Scenario: An empty retry configuration is deserialized.
+    /// Guarantees: Every retry setting uses its documented default value.
     #[test]
     fn test_default_config() {
         let cfg: RetryConfig = serde_json::from_value(json!({})).unwrap();
         assert_eq!(cfg, RetryConfig::default());
     }
 
+    /// Scenario: Retry intervals contain valid fractional-second values.
+    /// Guarantees: Deserialization preserves subsecond precision and the configured multiplier.
     #[test]
     fn test_tiny_config() {
         let cfg: RetryConfig = serde_json::from_value(json!({
@@ -725,6 +652,8 @@ mod test {
         );
     }
 
+    /// Scenario: Retry configurations contain zero intervals, a small multiplier, or excessive growth.
+    /// Guarantees: Validation rejects each invalid configuration with a relevant error.
     #[test]
     fn test_invalid_config() {
         for (value, expect) in [
@@ -794,6 +723,8 @@ mod test {
         })
     }
 
+    /// Scenario: Zero to two transient NACKs precede a downstream ACK with working or stalled time.
+    /// Guarantees: Every request eventually succeeds when it remains within the retry limit.
     #[test]
     fn test_retry_processor_nacks_then_success_time() {
         // For the success case, we expect success with or without a
@@ -806,6 +737,8 @@ mod test {
         }
     }
 
+    /// Scenario: Transient downstream NACKs exhaust the configured elapsed-time window.
+    /// Guarantees: The processor returns a terminal NACK instead of scheduling another retry.
     #[test]
     fn test_retry_processor_nacks_then_timeout() {
         test_retry_processor(
@@ -817,6 +750,8 @@ mod test {
         )
     }
 
+    /// Scenario: Downstream returns a permanent NACK on the first delivery attempt.
+    /// Guarantees: The processor forwards the NACK without scheduling a retry.
     #[test]
     fn test_retry_processor_permanent_error_not_retried() {
         test_retry_processor(
@@ -828,6 +763,8 @@ mod test {
         )
     }
 
+    /// Scenario: A stalled wall clock allows NACKs to reach the computed retry-count limit.
+    /// Guarantees: The hard retry limit still produces a terminal NACK.
     #[test]
     fn test_retry_processor_nacks_then_limit() {
         test_retry_processor(
@@ -841,9 +778,8 @@ mod test {
         )
     }
 
-    // Downstream Nacks are only retryable when RETURN_DATA preserves the original
-    // payload. This test locks in that losing the payload produces a terminal Nack
-    // immediately instead of wedging the request in a retry loop.
+    /// Scenario: A transient downstream NACK does not return the original payload.
+    /// Guarantees: The processor emits a terminal NACK immediately without retrying empty data.
     #[test]
     fn test_retry_processor_missing_return_data_nacks_without_retry() {
         let pipeline_ctx = create_test_pipeline_context();
@@ -918,8 +854,7 @@ mod test {
 
     /// Scenario: retry receives a transient downstream NACK while the
     /// processor-local delayed-resume queue is already full.
-    /// Guarantees: the processor converts the rejected `requeue_later` request
-    /// into a terminal NACK instead of leaving retry state stranded.
+    /// Guarantees: The processor emits a terminal NACK and counts only the retry that was scheduled.
     #[test]
     fn test_retry_processor_cannot_requeue_becomes_terminal_nack() {
         let pipeline_ctx = create_test_pipeline_context();
@@ -1007,6 +942,23 @@ mod test {
                     }
                     other => panic!("expected terminal nack, got {other:?}"),
                 }
+
+                let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect retry metrics");
+
+                let mut scheduled = 0;
+                for snapshot in metrics_rx.try_iter() {
+                    if snapshot.descriptor().name == "processor.retry.attempts"
+                        && snapshot.measurement_attribute_value("signal") == Some("logs")
+                    {
+                        scheduled += snapshot.get_metrics()[0].to_u64_lossy();
+                    }
+                }
+                assert_eq!(scheduled, 1);
             })
             .validate(|ctx| async move {
                 ctx.counters().assert(0, 0, 0, 0);
