@@ -1,0 +1,29 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: pipeline
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Add consumer-group observability metrics and structured logs to the Kafka receiver.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: []
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  New `receiver.kafka` metrics: `rebalances_total`, `partition_assignments`,
+  and `consumer_lag` (average per-partition lag, opt-in via the new
+  `lag_refresh_interval_ms` config; off by default). New structured log events:
+  `kafka.rebalance.partitions_assigned`, `kafka.rebalance.partitions_revoked`,
+  `kafka.consumer_group.joined`, and `kafka.consumer_group.left`.
+
+  Breaking metric-contract changes: `partitions_assigned` changed from a
+  cumulative counter to a point-in-time gauge of current partition ownership;
+  its former cumulative-acquisition semantic is now `partition_assignments`.
+  The `partitions_revoked` counter was renamed to `partition_revocations`.

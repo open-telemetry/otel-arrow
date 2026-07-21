@@ -3,7 +3,7 @@
 
 //! Metrics for the Kafka Receiver node.
 
-use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::instrument::{Counter, Gauge};
 use otap_df_telemetry_macros::metric_set;
 
 /// Metrics for the Kafka Receiver.
@@ -80,13 +80,37 @@ pub struct KafkaReceiverMetrics {
     pub topic_id_exhausted: Counter<u64>,
 
     // ── Consumer-group Rebalances ───────────────────────────
-    /// Partitions newly acquired by this consumer across rebalances
-    /// (retained partitions are not re-counted)
+    /// Total number of consumer-group rebalance (assign) events observed by
+    /// this consumer.
+    #[metric(unit = "{rebalance}")]
+    pub rebalances_total: Counter<u64>,
+    /// Current number of partitions owned by this consumer.
+    ///
+    /// A point-in-time gauge reflecting the size of the current assignment,
+    /// refreshed after each rebalance. Contrast with [`partition_assignments`]
+    /// (cumulative acquisitions) and [`partition_revocations`] (cumulative
+    /// revocations).
     #[metric(unit = "{partition}")]
-    pub partitions_assigned: Counter<u64>,
-    /// Genuinely-owned partitions revoked from this consumer across rebalances
+    pub partitions_assigned: Gauge<u64>,
+    /// Cumulative count of partitions newly acquired by this consumer across
+    /// rebalances (retained partitions are not re-counted).
     #[metric(unit = "{partition}")]
-    pub partitions_revoked: Counter<u64>,
+    pub partition_assignments: Counter<u64>,
+    /// Cumulative count of genuinely-owned partitions revoked from this consumer
+    /// across rebalances (a revoke reported for a partition this consumer did
+    /// not own is not counted).
+    #[metric(unit = "{partition}")]
+    pub partition_revocations: Counter<u64>,
+    /// Average consumer lag across owned partitions, computed as
+    /// `mean(high_watermark - committed_offset)` over the partitions this
+    /// consumer owns.
+    ///
+    /// Reports `0` when no partitions are owned or when lag refresh is disabled
+    /// (see the `lag_refresh_interval_ms` receiver config, which is off by
+    /// default). Refreshed off the receive loop via a periodic broker watermark
+    /// query so the hot path never blocks.
+    #[metric(unit = "{message}")]
+    pub consumer_lag: Gauge<f64>,
     /// Offset commit failures during pre-rebalance revoke
     #[metric(unit = "{error}")]
     pub rebalance_commit_errors: Counter<u64>,

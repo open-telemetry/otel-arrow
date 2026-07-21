@@ -275,6 +275,18 @@ pub struct KafkaReceiverConfigBuilder {
     #[serde(default)]
     commit: CommitConfig,
 
+    /// Interval in milliseconds between consumer-lag refreshes.
+    ///
+    /// When set (and manual commit is active), the receiver periodically queries
+    /// the broker high watermark for each owned partition and reports the average
+    /// per-partition lag via the `consumer_lag` gauge. The watermark query is a
+    /// blocking broker call executed off the receive loop, so it never stalls
+    /// data processing.
+    ///
+    /// Defaults to `None` (consumer-lag refresh disabled).
+    #[serde(default)]
+    lag_refresh_interval_ms: Option<u64>,
+
     /// Session timeout in milliseconds.
     #[serde(default = "default_session_timeout_ms")]
     session_timeout_ms: u64,
@@ -517,6 +529,10 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             return Err("commit.interval_ms, when set, must be > 0".to_string());
         }
 
+        if builder.lag_refresh_interval_ms == Some(0) {
+            return Err("lag_refresh_interval_ms, when set, must be > 0".to_string());
+        }
+
         Ok(Self(builder))
     }
 }
@@ -544,6 +560,7 @@ impl KafkaReceiverConfigBuilder {
             logs: SignalConfig::default(),
             auto_offset_reset: default_auto_offset_reset(),
             commit: CommitConfig::default(),
+            lag_refresh_interval_ms: None,
             session_timeout_ms: default_session_timeout_ms(),
             heartbeat_interval_ms: default_heartbeat_interval_ms(),
             min_fetch_bytes: default_min_fetch_bytes(),
@@ -680,6 +697,15 @@ impl KafkaReceiverConfigBuilder {
     #[must_use]
     pub fn with_commit(mut self, commit: CommitConfig) -> Self {
         self.commit = commit;
+        self
+    }
+
+    /// Set the consumer-lag refresh interval in milliseconds.
+    ///
+    /// `None` (the default) disables consumer-lag refresh.
+    #[must_use]
+    pub fn with_lag_refresh_interval_ms(mut self, interval_ms: Option<u64>) -> Self {
+        self.lag_refresh_interval_ms = interval_ms;
         self
     }
 
@@ -984,6 +1010,14 @@ impl KafkaReceiverConfig {
     #[must_use]
     pub fn commit_interval_ms(&self) -> Option<u64> {
         self.0.commit.interval_ms
+    }
+
+    /// Get the configured consumer-lag refresh interval in milliseconds.
+    ///
+    /// Returns `None` when consumer-lag refresh is disabled (the default).
+    #[must_use]
+    pub fn lag_refresh_interval_ms(&self) -> Option<u64> {
+        self.0.lag_refresh_interval_ms
     }
 
     /// Returns `true` if idempotent message processing is enabled.
@@ -1713,6 +1747,51 @@ mod tests {
                 ..Default::default()
             });
         assert!(KafkaReceiverConfig::try_from(cfg).is_ok());
+    }
+
+    // ---- validate (lag refresh interval) ----
+
+    /// Scenario: lag_refresh_interval_ms is left unset (the default).
+    /// Guarantees: consumer-lag refresh is optional; a `None` interval is valid
+    /// and the getter reports `None` so the receiver keeps the feature disabled.
+    #[test]
+    fn validate_lag_refresh_interval_none_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c").with_traces(SignalConfig {
+            topics: vec!["t".to_string()],
+            ..Default::default()
+        });
+        let cfg = KafkaReceiverConfig::try_from(cfg).expect("None interval must be valid");
+        assert_eq!(cfg.lag_refresh_interval_ms(), None);
+    }
+
+    /// Scenario: lag_refresh_interval_ms is explicitly set to zero.
+    /// Guarantees: a zero interval is rejected at config validation so the
+    /// receiver never schedules a degenerate zero-delay lag-refresh timer.
+    #[test]
+    fn validate_lag_refresh_interval_zero_is_invalid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_lag_refresh_interval_ms(Some(0));
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        assert!(err.contains("must be > 0"), "unexpected error: {err}");
+    }
+
+    /// Scenario: lag_refresh_interval_ms is set to a positive value via builder.
+    /// Guarantees: a valid interval passes validation and is surfaced verbatim
+    /// by the getter so the receiver can schedule the lag-refresh timer.
+    #[test]
+    fn validate_lag_refresh_interval_some_value_is_valid() {
+        let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c")
+            .with_traces(SignalConfig {
+                topics: vec!["t".to_string()],
+                ..Default::default()
+            })
+            .with_lag_refresh_interval_ms(Some(5000));
+        let cfg = KafkaReceiverConfig::try_from(cfg).expect("positive interval must be valid");
+        assert_eq!(cfg.lag_refresh_interval_ms(), Some(5000));
     }
 
     // ---- all_topics ----
