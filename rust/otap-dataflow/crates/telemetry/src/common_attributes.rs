@@ -38,6 +38,21 @@ pub enum Outcome {
     Refused,
 }
 
+/// Bounded classification for requests rejected before receiver pipeline admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum ReceiverRejectionErrorType {
+    /// The process is refusing ingress because memory pressure is active.
+    MemoryPressure,
+    /// No configured admission or concurrency capacity is available.
+    ConcurrencyLimit,
+    /// The encoded or decoded payload exceeds the configured size limit.
+    PayloadTooLarge,
+    /// The request is malformed or otherwise invalid.
+    InvalidRequest,
+    /// Receiver state or an internal channel failed unexpectedly.
+    Internal,
+}
+
 /// Outcome dimension shared by pipeline component metrics.
 #[attribute_set(item, measurement)]
 #[derive(Debug, Clone, Copy)]

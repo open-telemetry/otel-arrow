@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::task::Poll;
 
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics, OtlpRejectionErrorType};
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -33,6 +33,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
 use prost::bytes::Buf;
@@ -451,7 +452,7 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                     None => {
                         metrics.lock().record_rejection(
                             OtlpProtocol::Grpc,
-                            OtlpRejectionErrorType::ConcurrencyLimit,
+                            ReceiverRejectionErrorType::ConcurrencyLimit,
                         );
                         return Err(Status::resource_exhausted("Too many concurrent requests"));
                     }

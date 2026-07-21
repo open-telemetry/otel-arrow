@@ -12,7 +12,8 @@ use std::task::{Context, Poll};
 use tonic::{Code, Status, body::Body, metadata::MetadataMap};
 use tower::{Layer, Service};
 
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics, OtlpRejectionErrorType};
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 
 /// Records request rejections before they enter the pipeline.
 pub trait ReceiverRejectionMetrics: Send + Sync {
@@ -42,13 +43,17 @@ pub fn grpc_memory_pressure_status(state: &SharedReceiverAdmissionState) -> Stat
 
 impl ReceiverRejectionMetrics for Mutex<OtlpReceiverMetrics> {
     fn record_rejection(&self) {
-        self.lock()
-            .record_rejection(OtlpProtocol::Grpc, OtlpRejectionErrorType::ConcurrencyLimit);
+        self.lock().record_rejection(
+            OtlpProtocol::Grpc,
+            ReceiverRejectionErrorType::ConcurrencyLimit,
+        );
     }
 
     fn record_memory_pressure_rejection(&self) {
-        self.lock()
-            .record_rejection(OtlpProtocol::Grpc, OtlpRejectionErrorType::MemoryPressure);
+        self.lock().record_rejection(
+            OtlpProtocol::Grpc,
+            ReceiverRejectionErrorType::MemoryPressure,
+        );
     }
 }
 

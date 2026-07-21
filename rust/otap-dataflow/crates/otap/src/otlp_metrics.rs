@@ -5,7 +5,9 @@
 
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otap_df_telemetry::common_attributes::{
+    Outcome, ReceiverRejectionErrorType, SignalOutcomeAttributes,
+};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
@@ -19,21 +21,6 @@ pub enum OtlpProtocol {
     Grpc,
     /// OTLP over HTTP.
     Http,
-}
-
-/// Bounded classification for requests rejected before pipeline admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
-pub enum OtlpRejectionErrorType {
-    /// The process is refusing ingress because memory pressure is active.
-    MemoryPressure,
-    /// No configured concurrency or acknowledgement slot is available.
-    ConcurrencyLimit,
-    /// The encoded or decoded payload exceeds the configured size limit.
-    PayloadTooLarge,
-    /// The request path, method, content type, encoding, or payload is invalid.
-    InvalidRequest,
-    /// Receiver state or an internal channel failed unexpectedly.
-    Internal,
 }
 
 /// Signal and protocol dimensions for an accepted OTLP request.
@@ -54,7 +41,7 @@ pub struct OtlpRejectionAttributes {
     pub protocol: OtlpProtocol,
     /// Reason the request was rejected.
     #[attribute_key = "error.type"]
-    pub error_type: OtlpRejectionErrorType,
+    pub error_type: ReceiverRejectionErrorType,
 }
 
 /// Protocol dimension for a transport-level receiver error.
@@ -173,7 +160,11 @@ impl OtlpReceiverMetrics {
     }
 
     /// Records a request rejected before pipeline admission.
-    pub fn record_rejection(&mut self, protocol: OtlpProtocol, error_type: OtlpRejectionErrorType) {
+    pub fn record_rejection(
+        &mut self,
+        protocol: OtlpProtocol,
+        error_type: ReceiverRejectionErrorType,
+    ) {
         self.rejections
             .with(OtlpRejectionAttributes {
                 protocol,
@@ -211,7 +202,7 @@ impl OtlpReceiverMetrics {
     pub fn rejections_for(
         &self,
         protocol: OtlpProtocol,
-        error_type: OtlpRejectionErrorType,
+        error_type: ReceiverRejectionErrorType,
     ) -> &OtlpRejectionMetrics {
         self.rejections.get(OtlpRejectionAttributes {
             protocol,
@@ -276,7 +267,10 @@ mod tests {
         metrics.record_request_started(SignalType::Logs, OtlpProtocol::Grpc);
         metrics.record_request_payload_size(SignalType::Logs, OtlpProtocol::Grpc, 42);
         metrics.record_request_completed(SignalType::Logs, OtlpProtocol::Grpc);
-        metrics.record_rejection(OtlpProtocol::Http, OtlpRejectionErrorType::InvalidRequest);
+        metrics.record_rejection(
+            OtlpProtocol::Http,
+            ReceiverRejectionErrorType::InvalidRequest,
+        );
         metrics.record_acknowledgement(SignalType::Logs, Outcome::Refused);
         metrics.record_transport_error(OtlpProtocol::Grpc);
 
@@ -293,7 +287,10 @@ mod tests {
         );
         assert_eq!(
             metrics
-                .rejections_for(OtlpProtocol::Http, OtlpRejectionErrorType::InvalidRequest)
+                .rejections_for(
+                    OtlpProtocol::Http,
+                    ReceiverRejectionErrorType::InvalidRequest,
+                )
                 .requests
                 .get(),
             1
@@ -314,7 +311,10 @@ mod tests {
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_test_metrics();
         metrics.record_request_started(SignalType::Metrics, OtlpProtocol::Http);
-        metrics.record_rejection(OtlpProtocol::Grpc, OtlpRejectionErrorType::MemoryPressure);
+        metrics.record_rejection(
+            OtlpProtocol::Grpc,
+            ReceiverRejectionErrorType::MemoryPressure,
+        );
 
         let snapshots = metrics.terminal_snapshots();
         assert_eq!(snapshots.len(), 2);

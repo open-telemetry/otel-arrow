@@ -13,7 +13,7 @@
 
 use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::otlp::server_new::AckSlot;
-use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics, OtlpRejectionErrorType};
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use crate::socket_options;
 
@@ -36,6 +36,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceResponse;
 use otap_df_pdata::proto::opentelemetry::collector::trace::v1::ExportTraceServiceResponse;
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use prost::Message;
 use prost_types::Any;
@@ -480,21 +481,21 @@ fn decode_content_encoding(
 }
 
 struct DecodeContentError {
-    error_type: OtlpRejectionErrorType,
+    error_type: ReceiverRejectionErrorType,
     response: Response<Full<Bytes>>,
 }
 
 impl DecodeContentError {
     fn invalid_request(response: Response<Full<Bytes>>) -> Self {
         Self {
-            error_type: OtlpRejectionErrorType::InvalidRequest,
+            error_type: ReceiverRejectionErrorType::InvalidRequest,
             response,
         }
     }
 
     fn payload_too_large(response: Response<Full<Bytes>>) -> Self {
         Self {
-            error_type: OtlpRejectionErrorType::PayloadTooLarge,
+            error_type: ReceiverRejectionErrorType::PayloadTooLarge,
             response,
         }
     }
@@ -543,7 +544,7 @@ struct HttpHandler {
 }
 
 impl HttpHandler {
-    fn record_rejection(&self, error_type: OtlpRejectionErrorType) {
+    fn record_rejection(&self, error_type: ReceiverRejectionErrorType) {
         self.metrics
             .lock()
             .record_rejection(OtlpProtocol::Http, error_type);
@@ -551,17 +552,17 @@ impl HttpHandler {
 
     async fn handle(self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
         let Some(signal) = map_path_to_signal(req.uri().path()) else {
-            self.record_rejection(OtlpRejectionErrorType::InvalidRequest);
+            self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
             return Ok(not_found());
         };
 
         if req.method() != Method::POST {
-            self.record_rejection(OtlpRejectionErrorType::InvalidRequest);
+            self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
             return Ok(method_not_allowed());
         }
 
         if !content_type_is_protobuf(req.headers()) {
-            self.record_rejection(OtlpRejectionErrorType::InvalidRequest);
+            self.record_rejection(ReceiverRejectionErrorType::InvalidRequest);
             return Ok(unsupported_media_type());
         }
 
@@ -579,7 +580,7 @@ impl HttpHandler {
 
         let fut = async move {
             if self.admission_state.should_shed_ingress() {
-                self.record_rejection(OtlpRejectionErrorType::MemoryPressure);
+                self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
                 return Err(memory_pressure_unavailable(
                     self.admission_state.retry_after_secs(),
                 ));
@@ -599,7 +600,7 @@ impl HttpHandler {
                             kind = "global",
                             path = path_for_fut.as_str()
                         );
-                        self.record_rejection(OtlpRejectionErrorType::Internal);
+                        self.record_rejection(ReceiverRejectionErrorType::Internal);
                         return Err(internal_error());
                     }
                     Err(_) => {
@@ -609,7 +610,7 @@ impl HttpHandler {
                             path = path_for_fut.as_str(),
                             timeout_ms = permit_timeout.as_millis() as u64
                         );
-                        self.record_rejection(OtlpRejectionErrorType::ConcurrencyLimit);
+                        self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
                         return Err(service_unavailable());
                     }
                 }
@@ -620,7 +621,7 @@ impl HttpHandler {
             // Re-check after potentially waiting for the global permit: pressure may have
             // escalated while this request was queued.
             if self.admission_state.should_shed_ingress() {
-                self.record_rejection(OtlpRejectionErrorType::MemoryPressure);
+                self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
                 return Err(memory_pressure_unavailable(
                     self.admission_state.retry_after_secs(),
                 ));
@@ -639,7 +640,7 @@ impl HttpHandler {
                         kind = "local",
                         path = path_for_fut.as_str()
                     );
-                    self.record_rejection(OtlpRejectionErrorType::Internal);
+                    self.record_rejection(ReceiverRejectionErrorType::Internal);
                     return Err(internal_error());
                 }
                 Err(_) => {
@@ -651,14 +652,14 @@ impl HttpHandler {
                         max_concurrent = self.settings.max_concurrent_requests,
                         timeout_ms = permit_timeout.as_millis() as u64
                     );
-                    self.record_rejection(OtlpRejectionErrorType::ConcurrencyLimit);
+                    self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
                     return Err(service_unavailable());
                 }
             };
 
             // Re-check after waiting for the local permit.
             if self.admission_state.should_shed_ingress() {
-                self.record_rejection(OtlpRejectionErrorType::MemoryPressure);
+                self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
                 return Err(memory_pressure_unavailable(
                     self.admission_state.retry_after_secs(),
                 ));
@@ -680,7 +681,7 @@ impl HttpHandler {
                         size_hint = upper,
                         path = parts.uri.path().to_string()
                     );
-                    self.record_rejection(OtlpRejectionErrorType::PayloadTooLarge);
+                    self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
                     return Err(limited_body_too_large());
                 }
             }
@@ -693,7 +694,7 @@ impl HttpHandler {
                         max_len = max_len,
                         path = parts.uri.path().to_string()
                     );
-                    self.record_rejection(OtlpRejectionErrorType::PayloadTooLarge);
+                    self.record_rejection(ReceiverRejectionErrorType::PayloadTooLarge);
                     return limited_body_too_large();
                 }
 
@@ -701,7 +702,7 @@ impl HttpHandler {
                     "otlp_http_receiver.body_collection_failed",
                     error = e.to_string()
                 );
-                self.record_rejection(OtlpRejectionErrorType::Internal);
+                self.record_rejection(ReceiverRejectionErrorType::Internal);
                 internal_error()
             })?;
             let body = collected.to_bytes();
@@ -757,13 +758,13 @@ impl HttpHandler {
                 };
 
                 let Some(state) = state else {
-                    self.record_rejection(OtlpRejectionErrorType::Internal);
+                    self.record_rejection(ReceiverRejectionErrorType::Internal);
                     return Err(internal_error());
                 };
 
                 let (key, rx) = match state.allocate_slot() {
                     None => {
-                        self.record_rejection(OtlpRejectionErrorType::ConcurrencyLimit);
+                        self.record_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
                         return Err(service_unavailable());
                     }
                     Some(pair) => pair,
@@ -1302,7 +1303,10 @@ mod tests {
             assert_eq!(requests.payload_size.get(), 0);
             assert_eq!(
                 metrics
-                    .rejections_for(OtlpProtocol::Http, OtlpRejectionErrorType::MemoryPressure)
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
                     .requests
                     .get(),
                 1
@@ -1433,7 +1437,10 @@ mod tests {
             let metrics = metrics.lock();
             assert_eq!(
                 metrics
-                    .rejections_for(OtlpProtocol::Http, OtlpRejectionErrorType::MemoryPressure)
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::MemoryPressure,
+                    )
                     .requests
                     .get(),
                 0
