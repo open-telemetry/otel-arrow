@@ -564,10 +564,10 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
         attr_keys(&attrs)
     );
     // provider_id is a 16-byte GUID rendered as a 36-char dashed hex
-    // string (lowercase) by the encoder's `format_guid`.  The byte
-    // order is the raw on-the-wire layout, not the canonical
-    // string-form byte order, so we check shape rather than exact
-    // equality against the producer-side GUID string.
+    // string (lowercase) by the encoder's `format_guid`, which byte-swaps
+    // the little-endian Data1/2/3 fields back into canonical GUID form.
+    // We check shape here rather than exact equality against a specific
+    // provider GUID.
     let provider_id = attr_str(&attrs, "etw.provider.id");
     assert_eq!(
         provider_id.len(),

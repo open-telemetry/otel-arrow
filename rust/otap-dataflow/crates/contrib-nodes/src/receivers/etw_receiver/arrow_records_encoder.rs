@@ -85,17 +85,28 @@ enum AttrValue<'a> {
 /// Lowercase hex digits used when formatting GUID byte arrays.
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-/// Format a 16-byte GUID/UUID into a fixed 36-byte stack buffer as
+/// Format a 16-byte Windows GUID into a fixed 36-byte stack buffer as
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, avoiding a heap allocation.
+///
+/// The input is the raw in-memory GUID layout, where the first three fields
+/// (`Data1: u32`, `Data2: u16`, `Data3: u16`) are stored little-endian and the
+/// trailing eight bytes (`Data4`) are already in display order. Those first
+/// three fields are byte-swapped back so the rendered string matches the
+/// canonical, registered GUID (the same form shown by `wevtutil`, PerfView,
+/// and the provider manifest, and accepted by the receiver's `parse_guid`)
+/// rather than a byte-swapped variant.
 ///
 /// Returns the buffer; callers turn it into a `&str` (the output is always
 /// valid ASCII/UTF-8) for attribute encoding.
 fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
+    // Maps each output byte (left to right) to its source index in the raw
+    // little-endian GUID: Data1/Data2/Data3 are reversed, Data4 is kept as-is.
+    const BYTE_ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
     // Positions of the four '-' separators in the canonical GUID layout.
     const DASH_AT: [usize; 4] = [8, 13, 18, 23];
 
     let mut out = [b'-'; 36];
-    let mut byte_idx = 0;
+    let mut src_idx = 0;
     let mut out_idx = 0;
     while out_idx < out.len() {
         if DASH_AT.contains(&out_idx) {
@@ -103,10 +114,10 @@ fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
             out_idx += 1;
             continue;
         }
-        let byte = guid[byte_idx];
+        let byte = guid[BYTE_ORDER[src_idx]];
         out[out_idx] = HEX_DIGITS[(byte >> 4) as usize];
         out[out_idx + 1] = HEX_DIGITS[(byte & 0x0f) as usize];
-        byte_idx += 1;
+        src_idx += 1;
         out_idx += 2;
     }
     out
