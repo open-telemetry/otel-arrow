@@ -6,7 +6,6 @@
 #![allow(missing_docs)]
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
-use fluke_hpack::Encoder;
 use otap_df_channel::mpsc;
 use otap_df_core_nodes::exporters::otap_exporter::{OTAP_EXPORTER_URN, OTAPExporter};
 use otap_df_core_nodes::exporters::perf_exporter::{
@@ -20,16 +19,13 @@ use otap_df_engine::{
     node::NodeWithPDataReceiver,
     testing::test_node,
 };
+use otap_df_otap::otap_mock::create_otap_batch;
 use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_pdata::{
-    Consumer,
-    otap::{OtapArrowRecords, from_record_messages},
-    proto::opentelemetry::arrow::v1::{
-        ArrowPayload, ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
-        arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
-        arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
-        arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
-    },
+use otap_df_pdata::proto::opentelemetry::arrow::v1::{
+    ArrowPayloadType, BatchArrowRecords, BatchStatus, StatusCode,
+    arrow_logs_service_server::{ArrowLogsService, ArrowLogsServiceServer},
+    arrow_metrics_service_server::{ArrowMetricsService, ArrowMetricsServiceServer},
+    arrow_traces_service_server::{ArrowTracesService, ArrowTracesServiceServer},
 };
 
 use otap_df_pdata::proto::opentelemetry::collector::{
@@ -48,7 +44,6 @@ use otap_df_pdata::proto::opentelemetry::collector::{
 };
 
 use std::net::SocketAddr;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::task::LocalSet;
@@ -241,49 +236,6 @@ impl TraceService for TraceServiceMock {
     }
 }
 
-#[must_use]
-pub fn create_batch_arrow_record_helper(
-    batch_id: i64,
-    payload_type: ArrowPayloadType,
-    message_len: usize,
-    row_size: usize,
-) -> BatchArrowRecords {
-    // init arrow payload vec
-    let mut arrow_payloads = Vec::new();
-    // create ArrowPayload objects and add to the vector
-    for _ in 0..message_len {
-        let arrow_payload_object = ArrowPayload {
-            schema_id: "0".to_string(),
-            r#type: payload_type as i32,
-            record: vec![1; row_size],
-        };
-        arrow_payloads.push(arrow_payload_object);
-    }
-
-    // create timestamp
-    // unix timestamp -> number -> byte array &[u8]
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("failed to get duration");
-
-    let secs = timestamp.as_secs().to_string();
-    let nanos = timestamp.subsec_nanos().to_string();
-
-    // string formatted with timestamp secs : timestamp subsec_nanos
-    let timestamp_string = format!("{secs}:{nanos}");
-    let timestamp_bytes = timestamp_string.as_bytes();
-
-    // convert time to
-    let headers = vec![(b"timestamp" as &[u8], timestamp_bytes)];
-    let mut encoder = Encoder::new();
-    let encoded_headers = encoder.encode(headers);
-    BatchArrowRecords {
-        batch_id,
-        arrow_payloads,
-        headers: encoded_headers,
-    }
-}
-
 fn bench_exporter(c: &mut Criterion) {
     // Use a single-threaded Tokio runtime
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -354,57 +306,17 @@ fn bench_exporter(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("exporter");
 
-    let message_len = 50;
-    let row_size = 50;
     for size in [2, 4, 8, 16, 32] {
         // create data that will be used to benchmark the exporters
         let mut otap_signals = Vec::new();
         let mut otlp_signals = Vec::new();
         for _ in 0..size {
-            let mut arrow_traces_batch_data = create_batch_arrow_record_helper(
-                TRACES_BATCH_ID,
-                ArrowPayloadType::Spans,
-                message_len,
-                row_size,
-            );
-            let mut arrow_logs_batch_data = create_batch_arrow_record_helper(
-                LOGS_BATCH_ID,
-                ArrowPayloadType::Logs,
-                message_len,
-                row_size,
-            );
-            let mut arrow_metrics_batch_data = create_batch_arrow_record_helper(
-                METRICS_BATCH_ID,
-                ArrowPayloadType::UnivariateMetrics,
-                message_len,
-                row_size,
-            );
-
-            let mut consumer = Consumer::default();
-            let trace_records = OtapArrowRecords::Traces(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_traces_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Traces from records"),
-            );
-            let log_records = OtapArrowRecords::Logs(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_logs_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Logs from records"),
-            );
-            let metrics_records = OtapArrowRecords::Metrics(
-                from_record_messages(
-                    consumer
-                        .consume_bar(&mut arrow_metrics_batch_data)
-                        .expect("can consume BAR"),
-                )
-                .expect("can create Metrics from records"),
-            );
+            let trace_records =
+                create_otap_batch(TRACES_BATCH_ID, ArrowPayloadType::Spans);
+            let log_records =
+                create_otap_batch(LOGS_BATCH_ID, ArrowPayloadType::Logs);
+            let metrics_records =
+                create_otap_batch(METRICS_BATCH_ID, ArrowPayloadType::UnivariateMetrics);
 
             otap_signals.push(OtapPdata::new(Context::default(), trace_records.into()));
             otap_signals.push(OtapPdata::new(Context::default(), log_records.into()));
