@@ -94,7 +94,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.otlp.requests.started` | `{request}` | `signal`, `protocol` | Number of requests admitted to the pipeline send path. |
 | `receiver.otlp.requests.completed` | `{request}` | `signal`, `protocol` | Number of admitted requests whose receiver work terminated. |
-| `receiver.otlp.requests.payload_size` | `By` | `signal`, `protocol` | Decompressed payload bytes for successfully decoded requests. |
+| `receiver.otlp.requests.payload_size` | `By` | `signal`, `protocol` | Decompressed payload bytes for requests admitted to the pipeline send path. |
 
 #### `receiver.otlp.rejections`
 

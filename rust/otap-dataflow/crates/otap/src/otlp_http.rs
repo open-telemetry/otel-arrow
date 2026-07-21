@@ -717,11 +717,7 @@ impl HttpHandler {
                 self.record_rejection(error.error_type);
                 error.response
             })?;
-            self.metrics.lock().record_request_payload_size(
-                signal,
-                OtlpProtocol::Http,
-                body.len() as u64,
-            );
+            let payload_bytes = body.len() as u64;
 
             let context = if self.settings.wait_for_result {
                 Context::with_capacity(1)
@@ -784,7 +780,7 @@ impl HttpHandler {
 
             self.metrics
                 .lock()
-                .record_request_started(signal, OtlpProtocol::Http);
+                .record_request_admitted(signal, OtlpProtocol::Http, payload_bytes);
             let _completion_guard = RequestCompletionGuard {
                 metrics: self.metrics.clone(),
                 signal,
@@ -1162,6 +1158,126 @@ mod tests {
         let (status, _) = response.await.unwrap();
         assert_eq!(status, StatusCode::OK);
 
+        let server_result = tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("server finished");
+        assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: A non-empty HTTP request cannot allocate its acknowledgement slot.
+    /// Guarantees: The request is rejected without recording admission, completion, or payload bytes.
+    #[tokio::test]
+    async fn rejected_http_request_does_not_record_payload_bytes() {
+        use hyper::Method;
+        use hyper::client::conn::http1;
+        use hyper::header::{CONTENT_TYPE, HOST};
+        use hyper_util::rt::TokioIo;
+        use otap_df_engine::control::runtime_ctrl_msg_channel;
+        use otap_df_engine::shared::message::SharedSender;
+        use otap_df_engine::testing::test_node;
+        use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
+        use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
+        use otap_df_telemetry::registry::TelemetryRegistryHandle;
+        use otap_df_telemetry::reporter::MetricsReporter;
+        use tokio::net::TcpStream;
+        use tokio::sync::mpsc as tokio_mpsc;
+        use tokio_util::sync::CancellationToken;
+
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+
+        let (msg_tx, mut msg_rx) = tokio_mpsc::channel(1);
+        let mut senders = HashMap::new();
+        let _ = senders.insert("default".into(), SharedSender::mpsc(msg_tx));
+        let (ctrl_tx, _ctrl_rx) = runtime_ctrl_msg_channel(1);
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(
+            test_node("http_admission_metrics"),
+            senders,
+            None,
+            ctrl_tx,
+            metrics_reporter,
+        );
+
+        let settings = HttpServerSettings {
+            listening_addr: addr,
+            max_concurrent_requests: 1,
+            wait_for_result: true,
+            ..Default::default()
+        };
+        let shutdown = CancellationToken::new();
+
+        let metrics_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx =
+            otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
+
+        let server = tokio::spawn(serve(
+            effect_handler,
+            settings,
+            AckRegistry::new(Some(AckSlot::new(0)), None, None),
+            metrics.clone(),
+            SharedReceiverAdmissionState::default(),
+            None,
+            shutdown.clone(),
+        ));
+
+        let mut stream = None;
+        for _ in 0..10 {
+            match TcpStream::connect(addr).await {
+                Ok(connected) => {
+                    stream = Some(connected);
+                    break;
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        let stream = stream.expect("Failed to connect to server");
+        let (mut sender, conn) = http1::handshake(TokioIo::new(stream)).await.unwrap();
+        drop(tokio::spawn(async move {
+            let _ = conn.await;
+        }));
+
+        let mut request_bytes = Vec::new();
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs::default()],
+        }
+        .encode(&mut request_bytes)
+        .unwrap();
+        assert!(!request_bytes.is_empty());
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/logs")
+            .header(HOST, "localhost")
+            .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
+            .body(Full::new(Bytes::from(request_bytes)))
+            .unwrap();
+
+        let status = sender.send_request(request).await.unwrap().status();
+
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(msg_rx.try_recv().is_err());
+        {
+            let metrics = metrics.lock();
+            let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+            assert_eq!(requests.started.get(), 0);
+            assert_eq!(requests.completed.get(), 0);
+            assert_eq!(requests.payload_size.get(), 0);
+            assert_eq!(
+                metrics
+                    .rejections_for(
+                        OtlpProtocol::Http,
+                        ReceiverRejectionErrorType::ConcurrencyLimit,
+                    )
+                    .requests
+                    .get(),
+                1
+            );
+        }
+
+        shutdown.cancel();
         let server_result = tokio::time::timeout(Duration::from_secs(2), server)
             .await
             .expect("server finished");

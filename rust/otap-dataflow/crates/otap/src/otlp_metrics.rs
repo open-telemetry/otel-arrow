@@ -52,7 +52,7 @@ pub struct OtlpTransportAttributes {
     pub protocol: OtlpProtocol,
 }
 
-/// Lifecycle and payload metrics for accepted OTLP requests.
+/// Lifecycle and payload metrics for admitted OTLP requests.
 #[metric_set(
     name = "receiver.otlp.requests",
     measurement_attributes = OtlpRequestAttributes
@@ -65,7 +65,7 @@ pub struct OtlpRequestMetrics {
     /// Number of admitted requests whose receiver work terminated.
     #[metric(unit = "{request}")]
     pub completed: Counter<u64>,
-    /// Decompressed payload bytes for successfully decoded requests.
+    /// Decompressed payload bytes for requests admitted to the pipeline send path.
     #[metric(unit = "By")]
     pub payload_size: Counter<u64>,
 }
@@ -127,12 +127,20 @@ impl OtlpReceiverMetrics {
         }
     }
 
-    /// Records a request entering the pipeline send path.
-    pub fn record_request_started(&mut self, signal: SignalType, protocol: OtlpProtocol) {
-        self.requests
-            .with(OtlpRequestAttributes { signal, protocol })
-            .started
-            .inc();
+    /// Records a request and its decompressed payload bytes after pipeline admission succeeds.
+    pub fn record_request_admitted(
+        &mut self,
+        signal: SignalType,
+        protocol: OtlpProtocol,
+        payload_bytes: u64,
+    ) {
+        let requests = self
+            .requests
+            .with(OtlpRequestAttributes { signal, protocol });
+        requests.started.inc();
+        if payload_bytes > 0 {
+            requests.payload_size.add(payload_bytes);
+        }
     }
 
     /// Records termination of receiver work for an admitted request.
@@ -141,22 +149,6 @@ impl OtlpReceiverMetrics {
             .with(OtlpRequestAttributes { signal, protocol })
             .completed
             .inc();
-    }
-
-    /// Records decompressed payload bytes for a successfully decoded request.
-    pub fn record_request_payload_size(
-        &mut self,
-        signal: SignalType,
-        protocol: OtlpProtocol,
-        bytes: u64,
-    ) {
-        if bytes == 0 {
-            return;
-        }
-        self.requests
-            .with(OtlpRequestAttributes { signal, protocol })
-            .payload_size
-            .add(bytes);
     }
 
     /// Records a request rejected before pipeline admission.
@@ -264,8 +256,7 @@ mod tests {
     #[test]
     fn receiver_metrics_are_partitioned_by_context() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_started(SignalType::Logs, OtlpProtocol::Grpc);
-        metrics.record_request_payload_size(SignalType::Logs, OtlpProtocol::Grpc, 42);
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Grpc, 42);
         metrics.record_request_completed(SignalType::Logs, OtlpProtocol::Grpc);
         metrics.record_rejection(
             OtlpProtocol::Http,
@@ -305,12 +296,24 @@ mod tests {
         assert_eq!(metrics.transport_for(OtlpProtocol::Grpc).errors.get(), 1);
     }
 
+    /// Scenario: An admitted OTLP request has an empty decompressed payload.
+    /// Guarantees: Admission is counted even though the payload-size counter remains unchanged.
+    #[test]
+    fn admitted_empty_request_still_records_started() {
+        let mut metrics = new_test_metrics();
+        metrics.record_request_admitted(SignalType::Logs, OtlpProtocol::Http, 0);
+
+        let requests = metrics.requests_for(SignalType::Logs, OtlpProtocol::Http);
+        assert_eq!(requests.started.get(), 1);
+        assert_eq!(requests.payload_size.get(), 0);
+    }
+
     /// Scenario: OTLP receiver metrics are transferred into terminal snapshots twice.
     /// Guarantees: Touched buckets carry enum wire values once and are then cleared.
     #[test]
     fn terminal_snapshots_preserve_enum_attribute_values_once() {
         let mut metrics = new_test_metrics();
-        metrics.record_request_started(SignalType::Metrics, OtlpProtocol::Http);
+        metrics.record_request_admitted(SignalType::Metrics, OtlpProtocol::Http, 0);
         metrics.record_rejection(
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::MemoryPressure,
