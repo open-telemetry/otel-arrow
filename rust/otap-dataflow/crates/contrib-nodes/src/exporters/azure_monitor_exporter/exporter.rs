@@ -25,13 +25,14 @@ use super::gzip_batcher::FinalizeResult;
 use super::gzip_batcher::{self, GzipBatcher};
 use super::heartbeat::Heartbeat;
 use super::in_flight_exports::{CompletedExport, InFlightExports};
-use super::metrics::{AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc};
+use super::metrics::AzureMonitorExporterMetricsRc;
 use super::state::AzureMonitorExporterState;
 use super::transformer::Transformer;
 use futures::StreamExt;
 use otap_df_otap::pdata::{Context, OtapPdata};
 use reqwest::header::HeaderValue;
 
+use otap_df_telemetry::common_attributes::{HttpResponse, Outcome};
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 
 use bytes::Bytes;
@@ -125,9 +126,8 @@ impl AzureMonitorExporter {
             .map_err(|e| Error::Config(e.to_string()))?;
 
         // Register metrics with the telemetry system
-        let metric_set = pipeline_ctx.register_metrics::<AzureMonitorExporterMetrics>();
         let metrics: AzureMonitorExporterMetricsRc = Rc::new(RefCell::new(
-            super::metrics::AzureMonitorExporterMetricsTracker::new(metric_set),
+            super::metrics::AzureMonitorExporterMetricsTracker::register(&pipeline_ctx),
         ));
 
         // Create log transformer
@@ -157,15 +157,24 @@ impl AzureMonitorExporter {
         })
     }
 
-    /// Update all gauges (in-flight exports + state map sizes).
+    /// Update all gauges (in-flight exports and state mappings).
     #[inline]
     fn sync_gauges(&self) {
         let mut m = self.metrics.borrow_mut();
         m.set_in_flight_exports(self.in_flight_exports.len() as u64);
         m.set_in_flight_log_records(self.in_flight_exports.queued_rows());
-        m.set_batch_to_msg_count(self.state.batch_to_msg.len() as u64);
-        m.set_msg_to_batch_count(self.state.msg_to_batch.len() as u64);
-        m.set_msg_to_data_count(self.state.msg_to_data.len() as u64);
+        m.set_state_mapping(
+            super::metrics::StateMapping::BatchToMessage,
+            self.state.batch_to_msg.len() as u64,
+        );
+        m.set_state_mapping(
+            super::metrics::StateMapping::MessageToBatch,
+            self.state.msg_to_batch.len() as u64,
+        );
+        m.set_state_mapping(
+            super::metrics::StateMapping::MessageToData,
+            self.state.msg_to_data.len() as u64,
+        );
     }
 
     async fn finalize_export(
@@ -206,9 +215,7 @@ impl AzureMonitorExporter {
         let completed_messages = self.state.remove_batch_success(batch_id);
         {
             let mut m = self.metrics.borrow_mut();
-            m.add_messages(completed_messages.len() as u64);
-            m.add_rows(row_count);
-            m.add_batch();
+            m.record_export(Outcome::Success, row_count, completed_messages.len() as u64);
         }
 
         otel_debug!(
@@ -237,9 +244,7 @@ impl AzureMonitorExporter {
         let failed_messages = self.state.remove_batch_failure(batch_id);
         {
             let mut m = self.metrics.borrow_mut();
-            m.add_failed_messages(failed_messages.len() as u64);
-            m.add_failed_rows(row_count);
-            m.add_failed_batch();
+            m.record_export(Outcome::Failure, row_count, failed_messages.len() as u64);
         }
 
         otel_warn!("azure_monitor_exporter.export.failed", batch_id = batch_id, error = %error);
@@ -585,11 +590,16 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
 
                 _ = tokio::time::sleep_until(next_heartbeat_send), if has_token && self.heartbeat.is_some() => {
                     next_heartbeat_send = tokio::time::Instant::now() + self.config.heartbeat.frequency;
-                    self.metrics.borrow_mut().add_heartbeat();
                     if let Some(ref mut hb) = self.heartbeat {
                         match hb.send().await {
-                            Ok(_) => otel_debug!("azure_monitor_exporter.heartbeat.sent"),
-                            Err(e) => otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e),
+                            Ok(_) => {
+                                self.metrics.borrow_mut().record_heartbeat(Outcome::Success);
+                                otel_debug!("azure_monitor_exporter.heartbeat.sent");
+                            }
+                            Err(e) => {
+                                self.metrics.borrow_mut().record_heartbeat(Outcome::Failure);
+                                otel_warn!("azure_monitor_exporter.heartbeat.send_failed", error = %e);
+                            }
                         }
                     }
                 }
@@ -617,16 +627,16 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                             self.sync_gauges();
                             if tracing::enabled!(tracing::Level::DEBUG) {
                                 let m = self.metrics.borrow();
-                                let cl = m.client_success_latency();
+                                let cl = m.http_for(HttpResponse::Http2xx).latency.get();
                                 let bs = m.batch_size();
                                 otel_debug!(
                                     "azure_monitor_exporter.metrics.collect",
-                                    successful_rows = m.successful_row_count(),
-                                    successful_batches = m.successful_batch_count(),
-                                    successful_messages = m.successful_msg_count(),
-                                    failed_rows = m.failed_row_count(),
-                                    failed_batches = m.failed_batch_count(),
-                                    failed_messages = m.failed_msg_count(),
+                                    successful_items = m.export_for(Outcome::Success).items.get(),
+                                    successful_batches = m.export_for(Outcome::Success).batches.get(),
+                                    successful_messages = m.export_for(Outcome::Success).messages.get(),
+                                    failed_items = m.export_for(Outcome::Failure).items.get(),
+                                    failed_batches = m.export_for(Outcome::Failure).batches.get(),
+                                    failed_messages = m.export_for(Outcome::Failure).messages.get(),
                                     client_success_latency_avg_ms = if cl.count > 0 { cl.sum / cl.count as f64 } else { 0.0 },
                                     client_success_latency_min_ms = if cl.count > 0 { cl.min } else { 0.0 },
                                     client_success_latency_max_ms = if cl.count > 0 { cl.max } else { 0.0 },
@@ -642,10 +652,10 @@ impl Exporter<OtapPdata> for AzureMonitorExporter {
                         }
                         Ok(Message::Control(NodeControlMsg::Shutdown { deadline, .. })) => {
                             self.handle_shutdown(&effect_handler).await?;
-                            let snapshot = self.metrics.borrow().metrics().snapshot();
+                            let snapshots = self.metrics.borrow_mut().terminal_snapshots();
                             return Ok(TerminalState::new(
                                 deadline,
-                                [snapshot],
+                                snapshots,
                             ));
                         }
                         other => {
@@ -782,9 +792,10 @@ mod tests {
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        assert_eq!(m.successful_batch_count(), 1);
-        assert_eq!(m.successful_msg_count(), 1);
-        assert_eq!(m.successful_row_count(), 10);
+        let success = m.export_for(Outcome::Success);
+        assert_eq!(success.batches.get(), 1);
+        assert_eq!(success.messages.get(), 1);
+        assert_eq!(success.items.get(), 10);
         drop(m);
 
         // Verify state cleared
@@ -829,9 +840,10 @@ mod tests {
 
         // Verify stats
         let m = exporter.metrics.borrow();
-        assert_eq!(m.failed_batch_count(), 1);
-        assert_eq!(m.failed_msg_count(), 1);
-        assert_eq!(m.failed_row_count(), 10);
+        let failure = m.export_for(Outcome::Failure);
+        assert_eq!(failure.batches.get(), 1);
+        assert_eq!(failure.messages.get(), 1);
+        assert_eq!(failure.items.get(), 10);
         drop(m);
 
         // Verify state cleared

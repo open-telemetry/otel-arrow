@@ -8,30 +8,18 @@ by the crate and log events emitted via `otel_*` log macros.
 
 | Metric name | Description | Produced in file |
 | --- | --- | --- |
-| `exporter.azure_monitor.successful_rows` | Number of rows successfully exported. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.successful_batches` | Number of batches successfully exported. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.successful_messages` | Number of messages successfully exported. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.failed_rows` | Number of rows that failed to export. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.failed_batches` | Number of batches that failed to export. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.failed_messages` | Number of messages that failed to export. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.laclient_http_success_latency` | HTTP client success latency in milliseconds (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.laclient_http_2xx` | Number of HTTP 2xx responses. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.laclient_http_401` | Number of HTTP 401 responses. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.laclient_http_403` | Number of HTTP 403 responses. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.laclient_http_413` | Number of HTTP 413 responses. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.laclient_http_429` | Number of HTTP 429 responses. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.laclient_http_5xx` | Number of HTTP 5xx responses. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
-| `exporter.azure_monitor.auth_failures` | Number of failed authentication attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/auth.rs` |
-| `exporter.azure_monitor.auth_success_latency` | Authentication success latency in milliseconds (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/auth.rs` |
+| `exporter.azure_monitor.exports.items` | Number of log items (Azure Monitor rows) resolved by `signal="logs"` and `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.exports.batches` | Number of log batches resolved by `signal="logs"` and `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.exports.messages` | Number of log messages resolved by `signal="logs"` and `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.http.responses` | Number of HTTP export attempts by `response` (`http_2xx`, `http_400`, `http_401`, `http_403`, `http_404`, `http_413`, `http_429`, `http_5xx`, `network_error`, or `other`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
+| `exporter.azure_monitor.http.latency` | HTTP export attempt latency in milliseconds (min/max/sum/count), partitioned by `response`. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.azure_monitor.batch_size` | Compressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.azure_monitor.batch_uncompressed_size` | Uncompressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.in_flight_exports` | Current number of in-flight export requests. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.in_flight_log_records` | Current number of log records in-flight at the exporter (enqueued export requests awaiting completion, including records being retried). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.batch_to_msg_count` | Current number of batch-to-message mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.msg_to_batch_count` | Current number of message-to-batch mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.msg_to_data_count` | Current number of message-to-data mappings. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.state.mappings` | Current number of exporter state-map entries, partitioned by `mapping` (`batch_to_message`, `message_to_batch`, or `message_to_data`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.log_entries_too_large` | Number of log entries rejected for exceeding batch size limit. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.heartbeats` | Number of heartbeat sends attempted/successful. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.heartbeats.sends` | Number of heartbeat sends resolved by `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 
 ## Logs
 

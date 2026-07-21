@@ -104,41 +104,14 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `otap.processor.durable_buffer`
-
-| Metric | Unit | Description |
+| Scope | Instrument(s) | Dimensions |
 | --- | --- | --- |
-| `otap.processor.durable_buffer.bundles_acked` | `{bundle}` | Number of bundles acknowledged by downstream. |
-| `otap.processor.durable_buffer.bundles_nacked_deferred` | `{bundle}` | Number of bundles deferred for retry after transient downstream failures. |
-| `otap.processor.durable_buffer.bundles_nacked_permanent` | `{bundle}` | Number of bundles permanently rejected by downstream (not retried). These indicate data loss due to permanent failures (e.g., malformed data). |
-| `otap.processor.durable_buffer.rejected_log_records` | `{log_record}` | Number of log records rejected. |
-| `otap.processor.durable_buffer.rejected_metric_points` | `{data_point}` | Number of metric data points rejected. |
-| `otap.processor.durable_buffer.rejected_spans` | `{span}` | Number of spans rejected. |
-| `otap.processor.durable_buffer.consumed_log_records` | `{log_record}` | Number of log records consumed (ingested to durable storage). For OTLP bytes, counted by scanning the protobuf wire format without full deserialization. |
-| `otap.processor.durable_buffer.consumed_metric_points` | `{data_point}` | Number of metric data points consumed (ingested to durable storage). For OTLP bytes, counted by scanning the protobuf wire format without full deserialization. |
-| `otap.processor.durable_buffer.consumed_spans` | `{span}` | Number of spans consumed (ingested to durable storage). For OTLP bytes, counted by scanning the protobuf wire format without full deserialization. |
-| `otap.processor.durable_buffer.produced_log_records` | `{log_record}` | Number of log records produced (sent downstream). For OTLP bytes, counted by scanning the protobuf wire format without full deserialization. |
-| `otap.processor.durable_buffer.produced_metric_points` | `{data_point}` | Number of metric data points produced (sent downstream). For OTLP bytes, counted by scanning the protobuf wire format without full deserialization. |
-| `otap.processor.durable_buffer.produced_spans` | `{span}` | Number of spans produced (sent downstream). For OTLP bytes, counted by scanning the protobuf wire format without full deserialization. |
-| `otap.processor.durable_buffer.ingest_errors` | `{error}` | Number of ingest errors (excludes backpressure/capacity rejections). |
-| `otap.processor.durable_buffer.ingest_backpressure` | `{rejection}` | Number of ingest rejections due to storage backpressure (soft cap exceeded). |
-| `otap.processor.durable_buffer.read_errors` | `{error}` | Number of read errors. |
-| `otap.processor.durable_buffer.storage_bytes_used` | `By` | Current bytes used by persistent storage (WAL + segments). |
-| `otap.processor.durable_buffer.storage_bytes_cap` | `By` | Configured storage capacity cap. |
-| `otap.processor.durable_buffer.dropped_segments` | `{segment}` | Total segments force-dropped due to DropOldest retention policy. Non-zero values indicate data loss. |
-| `otap.processor.durable_buffer.dropped_bundles` | `{bundle}` | Total bundles lost due to force-dropped segments (DropOldest policy). Non-zero values indicate data loss. |
-| `otap.processor.durable_buffer.dropped_items` | `{item}` | Total individual items (log records, data points, spans) lost due to force-dropped segments (DropOldest policy). Non-zero values indicate data loss. |
-| `otap.processor.durable_buffer.expired_bundles` | `{bundle}` | Total bundles lost due to expired segments (max_age retention). Non-zero values indicate data aged out before delivery. |
-| `otap.processor.durable_buffer.expired_items` | `{item}` | Total individual items (log records, data points, spans) lost due to expired segments (max_age retention). Non-zero values indicate data aged out before delivery. |
-| `otap.processor.durable_buffer.retries_scheduled` | `{retry}` | Number of retry attempts scheduled. |
-| `otap.processor.durable_buffer.in_flight` | `{bundle}` | Current number of bundles in-flight to downstream. |
-| `otap.processor.durable_buffer.requeued_log_records` | `{log_record}` | Number of individual log records requeued for retry after NACK. |
-| `otap.processor.durable_buffer.requeued_metric_points` | `{data_point}` | Number of individual metric data points requeued for retry after NACK. |
-| `otap.processor.durable_buffer.requeued_spans` | `{span}` | Number of individual spans requeued for retry after NACK. |
-| `otap.processor.durable_buffer.queued_log_records` | `{log_record}` | Current number of log records queued (ingested but not yet ACKed). |
-| `otap.processor.durable_buffer.queued_metric_points` | `{data_point}` | Current number of metric data points queued (ingested but not yet ACKed). |
-| `otap.processor.durable_buffer.queued_spans` | `{span}` | Current number of spans queued (ingested but not yet ACKed). |
-| `otap.processor.durable_buffer.flush_failures` | `{error}` | Number of segment finalization (flush) failures. Non-zero values indicate data at risk - check logs for root cause. Data may still be recoverable via WAL replay on restart. |
+| `processor.durable_buffer` | `read.errors`, `storage.bytes.used`, `storage.bytes.cap`, `retries.scheduled`, `in.flight`, `flush.failures`, `storage.utilization` | None |
+| `processor.durable_buffer.bundles` | `resolved` | `outcome=acked\|deferred\|permanently_rejected` |
+| `processor.durable_buffer.ingest` | `failures` | `failure=error\|backpressure` |
+| `processor.durable_buffer.items` | `rejected`, `consumed`, `produced`, `requeued`, `queued` | `signal=traces\|metrics\|logs` |
+| `processor.durable_buffer.loss` | `segments`, `bundles`, `items` | `reason=drop_oldest\|expired` |
+| `processor.durable_buffer.item_loss` | `items` | `signal=traces\|metrics\|logs`, `reason=drop_oldest\|expired` |
 
 ### Events
 
