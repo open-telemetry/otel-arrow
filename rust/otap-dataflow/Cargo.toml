@@ -86,7 +86,7 @@ arrow-schema = { version = "58.3" }
 arrow-array = { version = "58.3" }
 arrow-cast = { version = "58.3" }
 arrow-select = { version = "58.3" }
-wasmtime = { version = "46.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
+wasmtime = { version = "47.0", default-features = false, features = ["runtime", "component-model", "cranelift", "std"] }
 async-stream = "0.3.6"
 async-trait = "0.1.88"
 async-unsync = "0.3.0"
