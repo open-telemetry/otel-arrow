@@ -52,9 +52,14 @@ use smallvec::smallvec;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::time::MissedTickBehavior;
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
+
+/// Bounded broker timeout for the (infrequent, opt-in) consumer-lag watermark
+/// lookup, so a slow or unreachable broker cannot stall the receive loop.
+const LAG_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -587,10 +592,11 @@ impl KafkaReceiver {
     /// the mean across those partitions, or `0.0` when none are owned.
     ///
     /// The broker high-watermark lookup ([`Consumer::fetch_watermarks`]) is a
-    /// blocking call; it is issued only on the opt-in lag-refresh timer tick
-    /// (never on the per-message hot path) and bounded by `timeout` so a slow or
-    /// unreachable broker cannot stall the receive loop indefinitely. Disabled
-    /// in auto-commit mode (no committed-offset tracking to compare against).
+    /// blocking call; it is issued only from the dedicated consumer-lag timer
+    /// branch of the receive loop (never on the per-message hot path) and bounded
+    /// by `timeout` so a slow or unreachable broker cannot stall the receive loop
+    /// indefinitely. Disabled in auto-commit mode (no committed-offset tracking
+    /// to compare against).
     fn refresh_consumer_lag<C: ConsumerContext>(
         &mut self,
         consumer: &StreamConsumer<C>,
@@ -779,30 +785,22 @@ impl KafkaReceiver {
             }
         }
 
-        // Opt-in consumer-lag refresh timer. Only started in manual-commit mode
-        // (auto-commit tracks no committed offset to compare against) and when
-        // an interval is configured. `TimerTick` control messages carry no
-        // identifier, so the tick handler throttles lag refresh by elapsed time
-        // to honor this interval independently of the commit interval.
-        let lag_refresh_interval = if manual_commit {
-            self.config
-                .lag_refresh_interval_ms()
-                .map(Duration::from_millis)
-        } else {
-            None
-        };
-        if let Some(interval) = lag_refresh_interval {
-            let _lag_timer_handle = effect_handler.start_periodic_timer(interval).await?;
-        }
-        // Bounded broker timeout for the (infrequent, opt-in) watermark lookup so
-        // a slow broker cannot stall the receive loop. Capped at 5s regardless of
-        // how large the refresh interval is.
-        let lag_fetch_timeout = lag_refresh_interval
-            .map(|i| i.min(Duration::from_secs(5)))
-            .unwrap_or_default();
-        // Timestamp of the last lag refresh, used to throttle refreshes to the
-        // configured interval given indistinguishable timer ticks.
-        let mut last_lag_refresh: Option<Instant> = None;
+        // Opt-in consumer-lag refresh timer, derived from the configured
+        // interval. Stays `None` (disabled) in auto-commit mode (no committed
+        // offset to compare against) or when no interval is set, so the dedicated
+        // `select!` branch below is never polled and no timer is armed. `reset()`
+        // defers the first tick by one full interval so the first refresh is
+        // periodic, not immediate.
+        let mut lag_ticker: Option<tokio::time::Interval> = manual_commit
+            .then(|| self.config.lag_refresh_interval_ms())
+            .flatten()
+            .map(Duration::from_millis)
+            .map(|dur| {
+                let mut ticker = tokio::time::interval(dur);
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                ticker.reset();
+                ticker
+            });
 
         // Set once the receiver-first drain protocol begins. After this the
         // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
@@ -910,19 +908,6 @@ impl KafkaReceiver {
                             // Bound staleness of the rebalance commit snapshot
                             // to the commit interval.
                             self.refresh_committable_snapshot();
-
-                            // Consumer-lag refresh (opt-in). Timer ticks are
-                            // indistinguishable, so throttle by elapsed time to
-                            // honor `lag_refresh_interval_ms` regardless of the
-                            // commit interval.
-                            if let Some(interval) = lag_refresh_interval {
-                                let due = last_lag_refresh
-                                    .is_none_or(|last| last.elapsed() >= interval);
-                                if due {
-                                    self.refresh_consumer_lag(&consumer, lag_fetch_timeout);
-                                    last_lag_refresh = Some(Instant::now());
-                                }
-                            }
                         },
                         Err(e) => {
                             return Err(EngineError::ChannelRecvError(e));
@@ -1118,6 +1103,21 @@ impl KafkaReceiver {
                             }
                         }
                     }
+                }
+
+                // 3. Periodic consumer-lag refresh (opt-in, dedicated timer).
+                // `lag_ticker` is None when disabled, so the branch is never
+                // polled; it also stops firing once draining begins so no broker
+                // watermark calls are issued during shutdown.
+                _ = async {
+                    match lag_ticker.as_mut() {
+                        Some(ticker) => ticker.tick().await,
+                        // Unreachable: the branch guard keeps this future from
+                        // being polled when the ticker is disabled.
+                        None => std::future::pending().await,
+                    }
+                }, if lag_ticker.is_some() && draining_deadline.is_none() => {
+                    self.refresh_consumer_lag(&consumer, LAG_FETCH_TIMEOUT);
                 }
             }
         }
