@@ -55,28 +55,31 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `processor.retry`
+Input PData message volume is reported by the engine through
+`channel.receiver.recv.count` on the PData input channel and is not duplicated
+by the processor. The metrics below describe retry-specific item outcomes and
+delivery attempts.
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.retry.consumed_items_logs_success` | `{item}` | Number of items consumed (logs) with outcome=success. |
-| `processor.retry.consumed_items_metrics_success` | `{item}` | Number of items consumed (metrics) with outcome=success. |
-| `processor.retry.consumed_items_traces_success` | `{item}` | Number of items consumed (traces) with outcome=success. |
-| `processor.retry.consumed_items_logs_failure` | `{item}` | Number of items consumed (logs) with outcome=failure. |
-| `processor.retry.consumed_items_metrics_failure` | `{item}` | Number of items consumed (metrics) with outcome=failure. |
-| `processor.retry.consumed_items_traces_failure` | `{item}` | Number of items consumed (traces) with outcome=failure. |
-| `processor.retry.consumed_items_logs_refused` | `{item}` | Number of items consumed (logs) with outcome=refused. |
-| `processor.retry.consumed_items_metrics_refused` | `{item}` | Number of items consumed (metrics) with outcome=refused. |
-| `processor.retry.consumed_items_traces_refused` | `{item}` | Number of items consumed (traces) with outcome=refused. |
-| `processor.retry.produced_items_logs_success` | `{item}` | Number of items produced (logs) with outcome=success. |
-| `processor.retry.produced_items_metrics_success` | `{item}` | Number of items produced (metrics) with outcome=success. |
-| `processor.retry.produced_items_traces_success` | `{item}` | Number of items produced (traces) with outcome=success. |
-| `processor.retry.produced_items_logs_refused` | `{item}` | Number of items produced (logs) with outcome=refused (downstream error) |
-| `processor.retry.produced_items_metrics_refused` | `{item}` | Number of items produced (metrics) with outcome=refused (downstream error) |
-| `processor.retry.produced_items_traces_refused` | `{item}` | Number of items produced (traces) with outcome=refused (downstream error) |
-| `processor.retry.retry_attempts_logs` | `{event}` | Number of retry attempts scheduled as a result of NACKs, logs. |
-| `processor.retry.retry_attempts_traces` | `{event}` | Number of retry attempts scheduled as a result of NACKs, traces. |
-| `processor.retry.retry_attempts_metrics` | `{event}` | Number of retry attempts scheduled as a result of NACKs, metrics. |
+#### `processor.retry.items`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.retry.items.consumed` | `{item}` | `signal`, `outcome` | Number of items whose retry processing reached a terminal outcome. |
+| `processor.retry.items.produced` | `{item}` | `signal`, `outcome` | Number of items returned by downstream delivery attempts. |
+
+The `consumed` metric records one terminal outcome per non-empty input. The
+`produced` metric records each downstream delivery result, so a retried input
+can contribute refused items from intermediate attempts and successful items
+from its final attempt.
+
+#### `processor.retry.attempts`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.retry.attempts.scheduled` | `{retry}` | `signal` | Number of retry attempts scheduled after a downstream refusal. |
+
+Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`, and
+`outcome` is `success`, `failure`, or `refused`.
 
 ### Events
 
