@@ -428,7 +428,9 @@ pub struct MemoryLimiterPolicy {
     #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
     #[schemars(with = "Option<String>")]
     pub hard_limit: Option<u64>,
-    /// Bytes below the soft limit required to leave `Soft` pressure.
+    /// Bytes below the soft limit required to leave `Soft` pressure. When
+    /// omitted, defaults to `min(hard_limit - soft_limit, soft_limit / 10)` --
+    /// a small recovery band below the soft limit.
     #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
     #[schemars(with = "Option<String>")]
     pub hysteresis: Option<u64>,

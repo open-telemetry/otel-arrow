@@ -288,9 +288,21 @@ stateDiagram-v2
 Because sampling is periodic, the limiter can move directly from `Normal` to
 `Hard` under fast bursts without spending a full interval in `Soft`.
 
-Operationally, this means `soft_limit` is the reopening threshold after
-shedding begins. `hard_limit` starts rejection, but recovery does not begin
-until usage has fallen below `soft_limit`.
+Operationally, the reopening threshold depends on where shedding began:
+
+- With the default `soft_action: observe`, only `Hard` sheds. `hard_limit`
+  starts rejection and ingress reopens once usage falls back below `soft_limit`
+  (the `Hard -> Soft` transition), so `soft_limit` is the reopening threshold.
+- With `soft_action: shed`, `Soft` also sheds. `soft_limit` starts rejection
+  and ingress reopens only once usage falls below `soft_limit - hysteresis`
+  (the `Soft -> Normal` transition). When omitted, `hysteresis` defaults to a
+  small band -- `min(hard_limit - soft_limit, soft_limit / 10)` -- so recovery
+  begins modestly below `soft_limit` rather than only after usage collapses
+  toward zero.
+
+Because recovery from `Hard` first steps down to `Soft` (at `usage <
+soft_limit`), a limiter configured with `soft_action: shed` keeps shedding for
+at least one more sample in `Soft` before it reaches `Normal`.
 
 ## Receiver Behavior When Shedding Ingress
 
