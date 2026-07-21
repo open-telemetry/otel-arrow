@@ -22,4 +22,6 @@ subtext: |
   native-tls/OpenSSL backend, enabling the SymCrypt crypto path. Downstream
   users who enable `geneva-exporter` no longer pull in OpenSSL and must ensure
   a rustls `CryptoProvider` is installed in their process before using the
-  exporter.
+  exporter. If no provider is installed (built without any `crypto-*` feature),
+  the exporter now fails fast at construction with a clear error listing the
+  `crypto-*` features instead of failing later during the TLS handshake.

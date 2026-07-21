@@ -64,6 +64,20 @@ pub fn install_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
+/// Returns `true` if a process-wide rustls [`CryptoProvider`] is installed.
+///
+/// Use this to fail fast with a clear, actionable error before constructing a
+/// rustls-backed client (e.g. the Geneva exporter). Without a provider, TLS
+/// handshakes would otherwise fail deep inside a dependency with an opaque
+/// message. A provider is installed by [`install_crypto_provider`] at startup
+/// when exactly one `crypto-*` feature is enabled.
+///
+/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
+#[must_use]
+pub fn is_crypto_provider_installed() -> bool {
+    rustls::crypto::CryptoProvider::get_default().is_some()
+}
+
 /// Installs the crypto provider idempotently (intended for test setup).
 ///
 /// Uses [`std::sync::Once`] so it is safe to call from every test — the actual

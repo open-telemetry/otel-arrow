@@ -313,6 +313,20 @@ impl GenevaExporter {
             obo_event_map: None,
         };
 
+        // The Geneva exporter uses rustls for mTLS. If no process-wide crypto
+        // provider was installed at startup (i.e. the binary was built without
+        // any `crypto-*` feature), fail fast with an actionable error instead
+        // of surfacing an opaque rustls handshake failure at export time.
+        if !otap_df_otap::crypto::is_crypto_provider_installed() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
+                        Build with exactly one of the crypto-* features \
+                        (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
+                        otap_df_otap::crypto::install_crypto_provider() runs at startup."
+                    .to_string(),
+            });
+        }
+
         // Initialize Geneva client
         let geneva_client = GenevaClient::new(client_config).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
