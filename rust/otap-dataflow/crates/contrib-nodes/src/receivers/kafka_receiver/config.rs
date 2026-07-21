@@ -279,9 +279,12 @@ pub struct KafkaReceiverConfigBuilder {
     ///
     /// When set (and manual commit is active), the receiver periodically queries
     /// the broker high watermark for each owned partition and reports the average
-    /// per-partition lag via the `consumer_lag` gauge. The watermark query is a
-    /// blocking broker call executed off the receive loop, so it never stalls
-    /// data processing.
+    /// per-partition lag via the `consumer_lag` gauge. The refresh runs on a
+    /// dedicated periodic-timer branch of the receive loop; each per-partition
+    /// high-watermark lookup is a bounded blocking broker call. Because the
+    /// lookups run inline on the receive loop, a refresh can briefly pause
+    /// message processing under partition fanout or broker slowness, so this is
+    /// intended for infrequent (opt-in) intervals.
     ///
     /// Defaults to `None` (consumer-lag refresh disabled).
     #[serde(default)]

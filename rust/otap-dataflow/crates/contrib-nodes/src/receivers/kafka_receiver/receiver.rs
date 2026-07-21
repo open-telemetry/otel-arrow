@@ -57,9 +57,12 @@ use tokio::time::MissedTickBehavior;
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
 
-/// Bounded broker timeout for the (infrequent, opt-in) consumer-lag watermark
-/// lookup, so a slow or unreachable broker cannot stall the receive loop.
-const LAG_FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+/// Bounded broker timeout for a single per-partition consumer-lag watermark
+/// lookup. This bounds *each* `fetch_watermarks` call, not the whole refresh:
+/// a refresh queries every owned partition sequentially, so the worst-case time
+/// spent in one refresh scales with the number of owned partitions
+/// (`partitions * timeout`).
+const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -585,7 +588,7 @@ impl KafkaReceiver {
                     // one past the last processed record; the broker high
                     // watermark is likewise one past the last produced record, so
                     // their difference is the outstanding record count.
-                    let lag = (high - *committed_offset).max(0);
+                    let lag = high.saturating_sub(*committed_offset).max(0);
                     total_lag = total_lag.saturating_add(lag);
                     counted += 1;
                 }
@@ -1075,7 +1078,7 @@ impl KafkaReceiver {
                         None => std::future::pending().await,
                     }
                 }, if lag_ticker.is_some() && draining_deadline.is_none() => {
-                    self.refresh_consumer_lag(&consumer, LAG_FETCH_TIMEOUT);
+                    self.refresh_consumer_lag(&consumer, LAG_FETCH_PARTITION_TIMEOUT);
                 }
             }
         }
@@ -2188,7 +2191,7 @@ mod tests {
 
         // Empty offset tracker => empty committable snapshot => the gauge is set
         // to 0.0 directly, before any fetch_watermarks broker call.
-        receiver.refresh_consumer_lag(&consumer, LAG_FETCH_TIMEOUT);
+        receiver.refresh_consumer_lag(&consumer, LAG_FETCH_PARTITION_TIMEOUT);
         assert!(receiver.metrics.consumer_lag.get().abs() < f64::EPSILON);
     }
 

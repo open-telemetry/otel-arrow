@@ -433,6 +433,11 @@ impl RebalanceState {
         // the newly-added count in `set_assignment`.
         let mut revoked_tagged = Vec::with_capacity(revoked.len());
         let mut owned_revoked = 0u64;
+        // Log buffer for the genuinely-owned revoked partitions only, built
+        // inline so the logged list matches `owned_revoked` (a revoke reported
+        // for a partition this consumer did not own is neither counted nor
+        // listed).
+        let mut revoked_list = String::new();
         let owned_after;
         {
             let mut assigned = self.lock_assigned();
@@ -442,6 +447,7 @@ impl RebalanceState {
                 let generation = assigned.generation(topic, *partition).unwrap_or(0);
                 if assigned.remove_partition(topic, *partition) {
                     owned_revoked += 1;
+                    append_partition(&mut revoked_list, topic, *partition);
                 }
                 revoked_tagged.push(RevokedPartition {
                     topic: topic.clone(),
@@ -460,15 +466,13 @@ impl RebalanceState {
             .partition_revocations
             .fetch_add(owned_revoked, Ordering::Relaxed);
 
-        // Structured observability: list the revoked partition IDs, and emit a
-        // consumer-group "left" event when this revocation drops the consumer to
-        // zero owned partitions.
+        // Structured observability: list the genuinely-owned revoked partition
+        // IDs, and emit a consumer-group "left" event when this revocation drops
+        // the consumer to zero owned partitions.
         if owned_revoked > 0 {
             otel_info!(
                 "kafka.rebalance.partitions_revoked",
-                partitions = %format_partitions(
-                    revoked.iter().map(|(topic, partition)| (topic.as_str(), *partition))
-                ),
+                partitions = %revoked_list,
                 count = owned_revoked,
             );
             if owned_after == 0 {
@@ -681,20 +685,6 @@ fn append_partition(buf: &mut String, topic: &str, partition: i32) {
     }
     use std::fmt::Write as _;
     let _ = write!(buf, "{topic}-{partition}");
-}
-
-/// Render a sequence of `(topic, partition)` pairs as a compact,
-/// comma-separated `topic-partition` string for structured log events
-/// (e.g. `traces-0,traces-1,metrics-3`).
-///
-/// Accepts borrowed topic names so callers can build the string directly from
-/// the still-live [`TopicPartitionList`] without cloning topic `String`s.
-fn format_partitions<'a>(partitions: impl IntoIterator<Item = (&'a str, i32)>) -> String {
-    let mut out = String::new();
-    for (topic, partition) in partitions {
-        append_partition(&mut out, topic, partition);
-    }
-    out
 }
 
 /// Collect `(topic, partition)` pairs from a [`TopicPartitionList`].
@@ -1264,18 +1254,19 @@ mod tests {
         assert_eq!(state.drain_metrics().partitions_owned, 0);
     }
 
-    /// Scenario: partition lists are rendered for structured log events.
-    /// Guarantees: `format_partitions` produces a stable, compact
-    /// `topic-partition` comma-joined string so assignment/revocation logs are
-    /// human- and machine-readable.
+    /// Scenario: partition tokens are appended to a structured-log buffer.
+    /// Guarantees: `append_partition` produces a stable, compact,
+    /// comma-separated `topic-partition` string (no leading/trailing comma) so
+    /// assignment/revocation logs are human- and machine-readable.
     #[test]
-    fn format_partitions_renders_topic_partition_pairs() {
-        let partitions = [("traces", 0), ("traces", 1), ("metrics", 3)];
-        assert_eq!(
-            format_partitions(partitions.iter().copied()),
-            "traces-0,traces-1,metrics-3"
-        );
-        assert_eq!(format_partitions(std::iter::empty::<(&str, i32)>()), "");
+    fn append_partition_builds_comma_separated_list() {
+        let mut buf = String::new();
+        // An empty buffer starts without a leading separator.
+        assert_eq!(buf, "");
+        append_partition(&mut buf, "traces", 0);
+        append_partition(&mut buf, "traces", 1);
+        append_partition(&mut buf, "metrics", 3);
+        assert_eq!(buf, "traces-0,traces-1,metrics-3");
     }
 
     #[test]
