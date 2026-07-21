@@ -176,37 +176,6 @@ impl TopicRegistry {
     }
 }
 
-/// Holds the most recently computed consumer-lag average until the receive
-/// loop folds it into the `consumer_lag` gauge.
-///
-/// The value is only meaningful when `pending` is set; this lets the receive
-/// loop distinguish "no refresh happened this cycle" from "lag is genuinely 0".
-#[derive(Debug, Default)]
-struct LagState {
-    /// Latest per-partition average lag computed by the lag-refresh path.
-    latest: f64,
-    /// `true` when `latest` holds a fresh value not yet folded into the gauge.
-    pending: bool,
-}
-
-impl LagState {
-    /// Record a freshly computed average lag for the receive loop to pick up.
-    fn record(&mut self, avg: f64) {
-        self.latest = avg;
-        self.pending = true;
-    }
-
-    /// Take the pending average, if any, clearing the pending flag.
-    fn take_latest(&mut self) -> Option<f64> {
-        if self.pending {
-            self.pending = false;
-            Some(self.latest)
-        } else {
-            None
-        }
-    }
-}
-
 /// Kafka receiver for OpenTelemetry data.
 ///
 /// Receives telemetry data (traces, metrics, logs) from Apache Kafka topics using the rdkafka client.
@@ -223,9 +192,6 @@ pub struct KafkaReceiver {
     /// context's rebalance callbacks (on the librdkafka thread) and reconciled
     /// by the receive loop. Only active when auto-commit is disabled.
     rebalance_state: Arc<RebalanceState>,
-    /// Latest consumer-lag average awaiting fold into the `consumer_lag` gauge.
-    /// Populated by the lag-refresh path and drained by the receive loop.
-    lag_state: LagState,
     /// Dynamically assigns `u32` IDs to actual topic names for CallData encoding.
     topic_registry: TopicRegistry,
     /// Pre-compiled regexes parallel to each signal's topic list. Each entry
@@ -317,7 +283,6 @@ impl KafkaReceiver {
             metrics,
             offset_tracker: OffsetTracker::new(),
             rebalance_state,
-            lag_state: LagState::default(),
             topic_registry: TopicRegistry::new(),
             traces_topic_regexes,
             metrics_topic_regexes,
@@ -564,13 +529,6 @@ impl KafkaReceiver {
                 .offset_commit_errors
                 .add(delta.offset_commit_errors);
         }
-
-        // Fold the latest consumer-lag average computed off the receive loop by
-        // the lag-refresh task (if enabled). This is independent of rebalance
-        // activity, so it runs outside the `is_empty` guard above.
-        if let Some(avg) = self.lag_state.take_latest() {
-            self.metrics.consumer_lag.set(avg);
-        }
     }
 
     /// Refresh the shared committable snapshot from the offset tracker so the
@@ -584,8 +542,8 @@ impl KafkaReceiver {
             .set_committable_snapshot(self.offset_tracker.committable_snapshot());
     }
 
-    /// Recompute the per-partition average consumer lag and stash it for the
-    /// receive loop to fold into the `consumer_lag` gauge.
+    /// Recompute the per-partition average consumer lag and set the
+    /// `consumer_lag` gauge directly.
     ///
     /// For each owned partition with a known committed offset, the lag is
     /// `high_watermark - committed_offset` (clamped at 0). The reported value is
@@ -610,7 +568,7 @@ impl KafkaReceiver {
         // tracker snapshot avoids an extra broker `committed()` round-trip.
         let committed = self.offset_tracker.committable_snapshot();
         if committed.is_empty() {
-            self.lag_state.record(0.0);
+            self.metrics.consumer_lag.set(0.0);
             return;
         }
 
@@ -648,7 +606,7 @@ impl KafkaReceiver {
         } else {
             total_lag as f64 / counted as f64
         };
-        self.lag_state.record(avg);
+        self.metrics.consumer_lag.set(avg);
     }
 
     /// Advance the offset tracker for a processed message and, if the
@@ -2209,36 +2167,29 @@ mod tests {
         assert_eq!(receiver.metrics.partition_assignments.get(), 2);
     }
 
-    /// Scenario: a lag average has been recorded and the loop reconciles.
-    /// Guarantees: a pending lag value is folded into the `consumer_lag` gauge
-    /// exactly once, and a subsequent reconcile without a new value leaves the
-    /// gauge untouched (no spurious reset to zero).
-    #[test]
-    fn reconcile_folds_pending_consumer_lag_once() {
+    /// Scenario: consumer-lag refresh runs with no tracked committed offsets.
+    /// Guarantees: `refresh_consumer_lag` sets the `consumer_lag` gauge directly
+    /// to 0.0 when there are no owned committed offsets to compare, without
+    /// issuing a broker watermark call.
+    #[tokio::test]
+    async fn refresh_consumer_lag_sets_zero_when_no_committed_offsets() {
+        let (_mock, brokers) = start_mock_kafka(&["traces"]);
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
         let ctx = make_pipeline_ctx();
         let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
-        receiver.lag_state.record(42.5);
-        receiver.reconcile_rebalance_state();
-        assert!((receiver.metrics.consumer_lag.get() - 42.5).abs() < f64::EPSILON);
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .set("group.id", "lag-test")
+            .set("enable.auto.commit", "false")
+            .create()
+            .expect("failed to create consumer");
 
-        // No new value: the gauge retains its last reading.
-        receiver.reconcile_rebalance_state();
-        assert!((receiver.metrics.consumer_lag.get() - 42.5).abs() < f64::EPSILON);
-    }
-
-    /// Scenario: LagState holds the latest computed average for the loop.
-    /// Guarantees: `take_latest` yields a recorded value exactly once and then
-    /// reports `None`, so the receive loop never re-folds a stale reading.
-    #[test]
-    fn lag_state_take_latest_is_one_shot() {
-        let mut state = LagState::default();
-        assert_eq!(state.take_latest(), None);
-
-        state.record(7.0);
-        assert_eq!(state.take_latest(), Some(7.0));
-        assert_eq!(state.take_latest(), None);
+        // Empty offset tracker => empty committable snapshot => the gauge is set
+        // to 0.0 directly, before any fetch_watermarks broker call.
+        receiver.refresh_consumer_lag(&consumer, LAG_FETCH_TIMEOUT);
+        assert!(receiver.metrics.consumer_lag.get().abs() < f64::EPSILON);
     }
 
     #[test]
