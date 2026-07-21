@@ -4,8 +4,8 @@
 //! Reference `kernel-processor` guest plugin.
 //!
 //! Keeps only log records whose `severity_text` equals `"ERROR"`, by
-//! orchestrating the host `filter-by-attribute-eq` kernel over an opaque batch
-//! handle. No bulk Arrow data crosses the WASM boundary.
+//! orchestrating the host `filter-by-attribute-eq` kernel over a host-managed
+//! pdata resource handle. No bulk Arrow data crosses the WASM boundary.
 //!
 //! Built as a `no_std`, `wasm32-wasip2` component. Not a Cargo workspace
 //! member; compiled on demand by the wasm-host integration test.
@@ -32,14 +32,14 @@ wit_bindgen::generate!({
 // wit-bindgen names the exported-interface trait `Guest`; alias it to `Plugin`
 // to model the author-facing naming a plugin implementer would expect.
 use exports::otel::otap_dataflow_plugin::processor::Guest as Plugin;
-use otel::otap_dataflow_plugin::otel_kernels::{Batch, AttrScope, filter_by_attribute_eq};
+use otel::otap_dataflow_plugin::otel_kernels::{AttrScope, Pdata, filter_by_attribute_eq};
 
 struct SeverityFilter;
 
 impl Plugin for SeverityFilter {
-    fn process(batch: Batch) -> Option<Batch> {
+    fn process(data: Pdata) -> Option<Pdata> {
         Some(filter_by_attribute_eq(
-            batch,
+            data,
             AttrScope::Record,
             "severity_text",
             "ERROR",

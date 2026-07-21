@@ -8,6 +8,13 @@ WASM host-kernel runtime for OTAP dataflow processor plugins.
 > WASM binary plugin system is being built out. It is gated behind an
 > off-by-default cargo feature (see [Feature flag](#feature-flag)). Do not
 > depend on any part of this crate outside the in-tree experimental slice.
+>
+> **Pre-release contract warning:** This crate and `wit/plugin.wit` are an
+> internal experimental interface. **Do not ship production plugins or take
+> external dependencies on this WIT package yet.** We expect breaking changes
+> in upcoming phases (resource model, processor/effects contract, kernel
+> semantics, and error/failure policies), and compatibility across revisions is
+> not guaranteed.
 
 This crate implements the initial slice of the WASM binary plugin system (see
 [open-telemetry/otel-arrow#2973][parent] and [#3227][wit]): a thin,
@@ -35,15 +42,15 @@ wasmtime dependency. Enable `wasm` to build and register the processor.
 - Runs it as a standard processor node registered through the engine's
   `ProcessorFactory` / `distributed_slice` pattern
   (URN `urn:otel:processor:wasm_processor`).
-- Passes an **opaque batch handle** across the host-guest boundary. Bulk
-  Arrow data never crosses the WASM boundary; the host owns the
-  `RecordBatch` and runs kernels natively.
+- Passes an opaque, **host-managed pdata resource** across the host-guest
+  boundary. Bulk Arrow data never crosses the WASM boundary; the host owns
+  the underlying `RecordBatch` data and runs kernels natively.
 - Bridges `OtapPdata` <-> Arrow `RecordBatch` while preserving the pdata
   `Context` (Ack/Nack routing and transport headers).
 
 ## Host-kernel orchestration model
 
-The guest issues OTel-semantic kernel commands over an opaque `batch`
+The guest issues OTel-semantic kernel commands over an opaque `pdata`
 resource handle; the host executes them natively on Arrow arrays and
 validates the reconstructed batch against OTAP schema invariants before
 forwarding downstream.
@@ -51,10 +58,19 @@ forwarding downstream.
 The WIT contract (`wit/plugin.wit`) freezes only the tiny surface this
 slice needs:
 
-- `otel-kernels`: the `batch` resource, `batch-num-rows`,
+- `otel-kernels`: the `pdata` resource, `pdata-num-rows`,
   `filter-by-attribute-eq`, and the `attr-scope` enum.
-- `processor`: `process(batch) -> option<batch>` (return `none` to drop).
+- `processor`: `process(data) -> option<pdata>` (return `none` to drop).
 - the `kernel-processor` world.
+
+Current experimental behavior is intentionally narrow:
+
+- `filter-by-attribute-eq` currently supports only `record` scope.
+- `resource` and `scope` are rejected until they are implemented.
+- Invalid pdata handles and invalid filter operations are rejected rather than
+  silently treated as no-ops.
+- Filtering currently targets the root record batch only; child-batch
+  relationship filtering is deferred.
 
 ## Configuration
 
@@ -69,7 +85,7 @@ nodes:
 ## Reference guest plugin
 
 `plugins/severity-filter/` is a `no_std`, `wasm32-wasip2` reference plugin
-that filters log records where `severity == "ERROR"`. The WASM binary is intentionally
+that filters log records where `severity_text == "ERROR"`. The WASM binary is intentionally
 excluded from the Cargo workspace and built on demand by the
 integration test.
 

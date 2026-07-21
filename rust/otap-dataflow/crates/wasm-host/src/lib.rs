@@ -18,8 +18,8 @@
 //! # Design principles enforced here
 //!
 //! - **Host-kernel orchestration.** The guest only ever holds an opaque
-//!   `batch` handle; bulk Arrow data never crosses the WASM boundary. Kernels
-//!   run natively on the host's Arrow arrays.
+//!   host-managed `pdata` resource handle; bulk Arrow data never crosses the
+//!   WASM boundary. Kernels run natively on the host's Arrow arrays.
 //! - **Valid OTel data.** The kernel surface is OTel-semantic (filter by
 //!   attribute), and the reconstructed batch is validated against OTAP schema
 //!   invariants (via [`otap_df_pdata`]'s `set`) before forwarding downstream.
@@ -53,7 +53,7 @@ mod bindings {
         world: "kernel-processor",
         path: "wit",
         with: {
-            "otel:otap-dataflow-plugin/otel-kernels@0.1.0.batch": crate::host::HostBatchData,
+            "otel:otap-dataflow-plugin/otel-kernels@0.1.0.pdata": crate::host::HostPdataData,
         },
     });
 }

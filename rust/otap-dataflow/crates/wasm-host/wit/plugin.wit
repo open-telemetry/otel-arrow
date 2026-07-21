@@ -17,14 +17,15 @@
 
 package otel:otap-dataflow-plugin@0.1.0;
 
-/// Host-provided, OTel-semantic operations over an opaque batch handle.
+/// Host-provided, OTel-semantic operations over host-managed pdata resources.
 ///
-/// The guest only ever holds an opaque `batch` handle; bulk Arrow data never
-/// crosses the WASM boundary. Kernels run natively on the host's Arrow arrays.
+/// The guest only ever holds an opaque `pdata` resource handle; bulk Arrow
+/// data never crosses the WASM boundary. Kernels run natively on the host's
+/// Arrow arrays.
 interface otel-kernels {
-    /// Opaque handle to a host-owned Arrow batch. The guest cannot inspect the
+    /// Opaque handle to a host-managed pdata resource. The guest cannot inspect
     /// underlying buffers; it can only pass the handle back to host kernels.
-    resource batch;
+    resource pdata;
 
     /// OTel attribute scope selector.
     enum attr-scope {
@@ -33,29 +34,31 @@ interface otel-kernels {
         %record,
     }
 
-    /// Number of rows in the batch's root record batch.
-    batch-num-rows: func(b: borrow<batch>) -> u32;
+    /// Number of rows in the pdata resource's root record batch.
+    pdata-num-rows: func(data: borrow<pdata>) -> u32;
 
-    /// Return a new batch keeping only rows whose attribute `key` in `scope`
-    /// equals `value`. Consumes the input handle and returns a new handle.
+    /// Return a new pdata resource keeping only rows whose attribute `key` in
+    /// `scope` equals `value`. Consumes the input resource and returns a new
+    /// resource.
     ///
-    /// TODO: only the `record` scope over the root record batch is
-    /// implemented today; `resource`/`scope` and dedicated attribute record
-    /// batches are deferred.
+    /// Current experimental behavior:
+    /// - only `record` scope over the root record batch is implemented
+    /// - `resource` and `scope` are rejected (trap) until implemented
+    /// - invalid keys and invalid data-shape operations are rejected (trap)
     filter-by-attribute-eq: func(
-        b: batch,
+        data: pdata,
         scope: attr-scope,
         key: string,
         value: string,
-    ) -> batch;
+    ) -> pdata;
 }
 
 /// Processor plugin export.
 interface processor {
-    use otel-kernels.{batch};
+    use otel-kernels.{pdata};
 
-    /// Process one batch. Return `none` to drop the batch entirely.
-    process: func(b: batch) -> option<batch>;
+    /// Process one pdata resource. Return `none` to drop the pdata entirely.
+    process: func(data: pdata) -> option<pdata>;
 }
 
 /// Capability tier for kernel-only processor plugins.

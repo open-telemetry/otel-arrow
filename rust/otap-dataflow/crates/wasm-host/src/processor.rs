@@ -21,9 +21,11 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
+use otap_df_engine::control::AckMsg;
 use otap_df_engine::error::{Error as EngineError, ProcessorErrorKind};
 use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
@@ -31,13 +33,14 @@ use otap_df_engine::node::NodeId;
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_pdata::OtapPayload;
 use serde::{Deserialize, Serialize};
 use wasmtime::component::{Component, HasSelf, Linker};
 use wasmtime::{Engine, Store};
 
 use crate::bindings::KernelProcessor;
 use crate::bridge;
-use crate::host::{HostBatchData, HostState};
+use crate::host::{HostPdataData, HostState};
 
 /// URN identifying the WASM processor component.
 pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
@@ -104,7 +107,7 @@ impl WasmProcessor {
     /// Push `batch` into the handle table, invoke the guest `process`, and
     /// return the resulting batch (or `None` when the guest dropped it).
     fn run_guest(&mut self, batch: RecordBatch) -> wasmtime::Result<Option<RecordBatch>> {
-        let input = self.store.data_mut().table.push(HostBatchData {
+        let input = self.store.data_mut().table.push(HostPdataData {
             record_batch: batch,
         })?;
         let input_rep = input.rep();
@@ -122,7 +125,7 @@ impl WasmProcessor {
                     .store
                     .data_mut()
                     .table
-                    .delete(wasmtime::component::Resource::<HostBatchData>::new_own(
+                    .delete(wasmtime::component::Resource::<HostPdataData>::new_own(
                         input_rep,
                     ));
                 return Err(err);
@@ -151,23 +154,31 @@ impl local::Processor<OtapPdata> for WasmProcessor {
             Message::Control(_) => Ok(()),
             Message::PData(pdata) => {
                 let processor_id = effect_handler.processor_id();
-                let output = bridge::run_on_root_batch(pdata, |batch| {
-                    self.run_guest(batch)
-                        .map_err(|e| EngineError::ProcessorError {
-                            processor: processor_id.clone(),
-                            kind: ProcessorErrorKind::Other,
-                            error: format!("wasm plugin process failed: {e}"),
-                            source_detail: String::new(),
-                        })
-                })?;
+                let (context, payload) = pdata.into_parts();
+                let signal_type = payload.signal_type();
+                let output =
+                    bridge::run_on_root_batch(OtapPdata::new(context.clone(), payload), |batch| {
+                        self.run_guest(batch)
+                            .map_err(|e| EngineError::ProcessorError {
+                                processor: processor_id.clone(),
+                                kind: ProcessorErrorKind::Other,
+                                error: format!("wasm plugin process failed: {e}"),
+                                source_detail: String::new(),
+                            })
+                    })?;
 
                 match output {
                     Some(pdata) => effect_handler
                         .send_message_with_source_node(pdata)
                         .await
                         .map_err(Into::into),
-                    // Guest returned `none`: drop the batch.
-                    None => Ok(()),
+                    // Guest returned `none`: intentionally drop this pdata and
+                    // ack upstream so context unwinding follows normal
+                    // processor drop semantics.
+                    None => {
+                        let dropped = OtapPdata::new(context, OtapPayload::empty(signal_type));
+                        effect_handler.notify_ack(AckMsg::new(dropped)).await
+                    }
                 }
             }
         }
@@ -200,8 +211,49 @@ fn create_wasm_processor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_engine::testing::node::test_node;
+    use std::sync::Arc;
+    use std::time::Duration;
 
+    use otap_df_config::SignalType;
+    use otap_df_engine::Interests;
+    use otap_df_engine::ProducerEffectHandlerExtension;
+    use otap_df_engine::config::ProcessorConfig;
+    use otap_df_engine::control::{
+        CallData, NodeControlMsg, PipelineCompletionMsg, pipeline_completion_msg_channel,
+    };
+    use otap_df_engine::local::processor::Processor;
+    use otap_df_engine::message::Message;
+    use otap_df_engine::testing::node::test_node;
+    use otap_df_engine::testing::processor::TestRuntime;
+    use otap_df_otap::pdata::Context;
+    use otap_df_pdata::OtapPayload;
+    use tokio::time::timeout;
+
+    struct DropAllProcessor;
+
+    #[async_trait(?Send)]
+    impl Processor<OtapPdata> for DropAllProcessor {
+        async fn process(
+            &mut self,
+            msg: Message<OtapPdata>,
+            effect_handler: &mut local::EffectHandler<OtapPdata>,
+        ) -> Result<(), EngineError> {
+            match msg {
+                Message::Control(NodeControlMsg::CollectTelemetry { .. }) => Ok(()),
+                Message::Control(_) => Ok(()),
+                Message::PData(mut pdata) => {
+                    effect_handler.subscribe_to(Interests::ACKS, CallData::default(), &mut pdata);
+                    let (context, payload) = pdata.into_parts();
+                    let dropped =
+                        OtapPdata::new(context, OtapPayload::empty(payload.signal_type()));
+                    effect_handler.notify_ack(AckMsg::new(dropped)).await
+                }
+            }
+        }
+    }
+
+    /// Scenario: Processor config JSON is not an object.
+    /// Guarantees: Factory rejects malformed config with InvalidUserConfig.
     #[test]
     fn create_wasm_processor_rejects_invalid_config_shape() {
         let node = test_node("wasm-test");
@@ -216,6 +268,8 @@ mod tests {
         );
     }
 
+    /// Scenario: Processor config points to a missing wasm file.
+    /// Guarantees: Factory maps missing component file to InvalidUserConfig.
     #[test]
     fn create_wasm_processor_rejects_missing_wasm_file() {
         let node = test_node("wasm-test");
@@ -230,6 +284,53 @@ mod tests {
             matches!(result, Err(ConfigError::InvalidUserConfig { .. })),
             "missing wasm component file should map to InvalidUserConfig"
         );
+    }
+
+    /// Scenario: A processor intentionally drops a pdata item.
+    /// Guarantees: The drop path emits an Ack completion and does not forward output pdata.
+    #[test]
+    fn dropping_pdata_routes_ack_completion() {
+        let runtime = TestRuntime::new();
+        let node = test_node("drop-all");
+        let node_config = Arc::new(NodeUserConfig::new_processor_config(WASM_PROCESSOR_URN));
+        let wrapper =
+            ProcessorWrapper::local(DropAllProcessor, node, node_config, runtime.config());
+
+        let phase = runtime.set_processor(wrapper);
+        phase
+            .run_test(|mut ctx| async move {
+                let (completion_tx, mut completion_rx) = pipeline_completion_msg_channel(8);
+                ctx.set_pipeline_completion_sender(completion_tx);
+
+                let input =
+                    OtapPdata::new(Context::default(), OtapPayload::empty(SignalType::Logs));
+
+                ctx.process(Message::PData(input))
+                    .await
+                    .expect("drop process should succeed");
+
+                let emitted = ctx.drain_pdata().await;
+                assert!(
+                    emitted.is_empty(),
+                    "drop path must not forward pdata downstream"
+                );
+
+                let completion = timeout(Duration::from_secs(1), completion_rx.recv())
+                    .await
+                    .expect("ack completion should arrive before timeout")
+                    .expect("completion channel should have ack");
+                match completion {
+                    PipelineCompletionMsg::DeliverAck { ack } => {
+                        assert!(
+                            ack.accepted.is_empty(),
+                            "drop ack should carry an empty payload"
+                        );
+                        assert_eq!(ack.accepted.signal_type(), SignalType::Logs);
+                    }
+                    other => panic!("expected DeliverAck, got {other:?}"),
+                }
+            })
+            .validate(|_ctx| async {});
     }
 }
 
