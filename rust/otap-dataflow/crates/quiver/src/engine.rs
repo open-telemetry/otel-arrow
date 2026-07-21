@@ -112,6 +112,8 @@ pub struct QuiverEngine {
     /// Pending dropped bundles grouped by slot shape, for per-signal tracking.
     /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
     dropped_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
+    /// Count of segments lost due to max_age retention.
+    expired_segments: AtomicU64,
     /// Count of bundles lost due to expired segments (max_age retention).
     expired_bundles: AtomicU64,
     /// Count of individual data items lost due to expired segments.
@@ -407,6 +409,7 @@ impl QuiverEngine {
             force_dropped_bundles: AtomicU64::new(0),
             force_dropped_items: AtomicU64::new(0),
             dropped_items_by_shape: RwLock::new(HashMap::new()),
+            expired_segments: AtomicU64::new(0),
             expired_bundles: AtomicU64::new(0),
             expired_items: AtomicU64::new(0),
             expired_items_by_shape: RwLock::new(HashMap::new()),
@@ -511,6 +514,14 @@ impl QuiverEngine {
     pub fn drain_dropped_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
         let map = std::mem::take(&mut *self.dropped_items_by_shape.write());
         map.into_iter().collect()
+    }
+
+    /// Returns the total number of segments lost due to max_age retention.
+    ///
+    /// **By design** this counter resets to zero on restart. It records
+    /// losses that occurred during the current engine lifetime only.
+    pub fn expired_segments(&self) -> u64 {
+        self.expired_segments.load(Ordering::Relaxed)
     }
 
     /// Returns the total number of bundles lost due to expired segments.
@@ -1501,7 +1512,10 @@ impl QuiverEngine {
             self.registry.cleanup_segments_before(max_deleted.next());
         }
 
-        // Track expired bundles and items in the dedicated counters
+        // Track expired segments, bundles, and items in the dedicated counters.
+        let _ = self
+            .expired_segments
+            .fetch_add(expired_segments.len() as u64, Ordering::Relaxed);
         if bundles_expired > 0 {
             let _ = self
                 .expired_bundles
@@ -4727,7 +4741,8 @@ mod tests {
         );
     }
 
-    /// Test that the expired_bundles counter is tracked separately from force_dropped_bundles.
+    /// Scenario: Finalized segments exceed max_age retention while no DropOldest eviction occurs.
+    /// Guarantees: Runtime expiry increments dedicated segment and bundle counters without affecting DropOldest counters.
     #[tokio::test]
     async fn expired_bundles_counter_is_separate() {
         let dir = tempdir().expect("tempdir");
@@ -4751,6 +4766,7 @@ mod tests {
 
         // Initially both counters should be zero
         assert_eq!(engine.force_dropped_bundles(), 0);
+        assert_eq!(engine.expired_segments(), 0);
         assert_eq!(engine.expired_bundles(), 0);
 
         // Ingest data to create segments
@@ -4775,11 +4791,16 @@ mod tests {
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
         assert!(expired_count > 0, "should have expired some segments");
 
-        // expired_bundles should be incremented, force_dropped_bundles should still be zero
+        // Expiry counters should be incremented, force_dropped_bundles should still be zero.
         assert_eq!(
             engine.force_dropped_bundles(),
             0,
             "force_dropped_bundles should not be affected by expired segments"
+        );
+        assert_eq!(
+            engine.expired_segments(),
+            expired_count as u64,
+            "expired_segments should match the segments removed by expiry"
         );
         assert!(
             engine.expired_bundles() > 0,

@@ -3571,7 +3571,7 @@ mod tests {
         }
     }
 
-    #[attribute_set(name = "test.prometheus.scope")]
+    #[attribute_set(scope, name = "test.prometheus.scope")]
     #[derive(Debug, Clone)]
     struct PrometheusScopeAttributes {
         #[attribute_key = "foo"]
