@@ -1,428 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784588532439,
+  "lastUpdate": 1784646393001,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
-      {
-        "commit": {
-          "author": {
-            "email": "lalit_fin@yahoo.com",
-            "name": "Lalit Kumar Bhasin",
-            "username": "lalitb"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "3b357d0cfb9fabfddb2128aea3baa92339e9355b",
-          "message": "[Host Metrics Receiver] Isolate host metrics scraping in bounded worker (#3093)\n\n# Change Summary\n\nMoves host metrics collection to a bounded dedicated scraper worker so\nthe async runtime thread is no longer responsible for blocking\nprocfs/sysfs/statvfs traversal.\n\nThe runtime task keeps ownership of scheduling, control handling,\nprojection/encoding, and downstream flow control. The scraper worker\nbuilds the host scrape result and returns it through a bounded handoff.\n\n## Design\n\nThis follows the model discussed in #3000:\n\n  - runtime schedules scrape ticks\n  - dedicated worker performs blocking host inspection\n  - runtime projects/emits OTAP metrics\n  - at most one scrape is accepted/in flight\n  - bounded request/result handoff\n  - explicit timeout/overrun behavior\n  - worker failures are observable and terminal where appropriate\n\n\n## What issue does this PR close?\n\n* Closes #3000 \n\n## How are these changes tested?\n\n- Focused host metrics tests\n- Core nodes compile check\n- Full workspace check\n- E2E VM validation:\n`host_metrics -> OTLP exporter -> OpenTelemetry Collector -> Prometheus\n-> Grafana`\n\n\n## Are there any user-facing changes?\n\n <!-- If yes, provide further info below -->",
-          "timestamp": "2026-05-28T02:54:56Z",
-          "tree_id": "f03b555d1d9a169220003ff8e0f8e23669347f28",
-          "url": "https://github.com/open-telemetry/otel-arrow/commit/3b357d0cfb9fabfddb2128aea3baa92339e9355b"
-        },
-        "date": 1779939811469,
-        "tool": "customSmallerIsBetter",
-        "benches": [
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 62.96872017131771,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 63.551356535189484,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.727734375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.0859375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99978.7145316762,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94979.7788050924,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.004258,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 840389.5458640162,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2590361.959595791,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 8.848089103140323,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5.263157844543457,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 24.536119628377257,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 25.612409834794075,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 27.7484375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 28.48046875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94966.74739340019,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 89968.49753058967,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.007003,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 600749.5665488018,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 752820.3148270103,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 6.67733243343921,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 0,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.86242086710836,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.09358934654692,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 19.6625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.00390625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94991.16582157859,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94991.16582157859,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.00186,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2604678.6665321155,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 771471.8528436208,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 27.420220017348456,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 65.02060326062863,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.27069162927434,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 20.140234375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 20.5234375,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99990.03099390991,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94990.52944421441,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001994,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2710478.5305368276,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2589340.0159814274,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 28.534197528908656,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 64.75679864266753,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 65.09687403280718,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.458203125,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.7890625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 99990.78085000564,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 94991.24180750536,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.001844,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 2662469.7608500333,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 2600795.4270468988,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 28.028581479599826,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
-          },
-          {
-            "name": "dropped_logs_percentage",
-            "value": 5.315789699554443,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
-          },
-          {
-            "name": "cpu_percentage_normalized_avg",
-            "value": 23.544036924781604,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "cpu_percentage_normalized_max",
-            "value": 23.96394646747588,
-            "unit": "%",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
-          },
-          {
-            "name": "ram_mib_avg",
-            "value": 18.29921875,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "ram_mib_max",
-            "value": 18.6640625,
-            "unit": "MiB",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
-          },
-          {
-            "name": "logs_produced_rate",
-            "value": 94990.88087543596,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "logs_received_rate",
-            "value": 89941.36562889963,
-            "unit": "logs/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
-          },
-          {
-            "name": "test_duration",
-            "value": 20.00192,
-            "unit": "seconds",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
-          },
-          {
-            "name": "network_tx_bytes_rate_avg",
-            "value": 830376.7253650886,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "network_rx_bytes_rate_avg",
-            "value": 763131.001575141,
-            "unit": "bytes/sec",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
-          },
-          {
-            "name": "egress_bytes_per_log",
-            "value": 9.232422918629501,
-            "unit": "bytes/log",
-            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -42000,6 +41580,426 @@ window.BENCHMARK_DATA = {
             "value": 32.539590049247806,
             "unit": "bytes/log",
             "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "161134993+Dipanshusinghh@users.noreply.github.com",
+            "name": "Dipanshu singh",
+            "username": "Dipanshusinghh"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5b4e62a34f3fff546f46ced09e09e486a5cb8a05",
+          "message": "feat(core-nodes): migrate debug_processor to new metric attributes (#3522)\n\nCloses #3432.\n\nThis PR splits out the `debug_processor` changes from #3502 into its own\nPR as requested by the maintainers.\n\n### Changes:\n- Migrates `debug_processor` to use the new `MeasurementMetricSet` and\n`SignalAttributes` (Enum-based metric attributes) introduced in #3499.\n- Consolidates the 7 granular signal-oriented counters into just two\ngeneric counters (`items_consumed` and `batches_consumed`).\n- Updates README to reflect the new metrics schema.",
+          "timestamp": "2026-07-21T14:19:13Z",
+          "tree_id": "c180eb0ae28fcc9edf7295651c78c21248ac40fb",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/5b4e62a34f3fff546f46ced09e09e486a5cb8a05"
+        },
+        "date": 1784646380515,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "dropped_logs_percentage",
+            "value": 4.974400043487549,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.78350689930477,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 64.98385705483672,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.065234375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.85546875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99991.23576818491,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 95017.27173613233,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001753,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3101943.7708268617,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2938057.5448337174,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 32.64610437817151,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 65.13499109351962,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.38066192390968,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.97109375,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.1875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99991.2807603177,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 94991.71672230182,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001744,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1224213.6964917125,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2925167.4078665837,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 12.887583662379438,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-ATTR-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 10,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.61573327244491,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 64.8040122324159,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 19.8,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 20.0078125,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99965.66179517336,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89969.09561565603,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.00687,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 3033030.727417539,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1150544.7752230961,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 33.71191748302674,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 0,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 64.90236263178242,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 65.33972939729398,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 17.885546875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 18.21875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 99986.67677531969,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 99986.67677531969,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.002665,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 2784905.262585965,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 2921631.4541471647,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 27.852763512122046,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTLP-BATCH-OTLP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 4.994104862213135,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 31.013061513863427,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 32.08152110063379,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 28.01875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 29.5625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94983.04309903577,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 90239.49041605377,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.001886,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 747661.0213485496,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1127326.859141855,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 8.285297466789988,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-BATCH-OTAP - Egress Bytes Per Log"
+          },
+          {
+            "name": "dropped_logs_percentage",
+            "value": 5.236210823059082,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Dropped Logs %"
+          },
+          {
+            "name": "cpu_percentage_normalized_avg",
+            "value": 35.971174581703494,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "cpu_percentage_normalized_max",
+            "value": 36.27493234932349,
+            "unit": "%",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - CPU % (Normalized)"
+          },
+          {
+            "name": "ram_mib_avg",
+            "value": 18.5640625,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "ram_mib_max",
+            "value": 19.04296875,
+            "unit": "MiB",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - RAM (MiB)"
+          },
+          {
+            "name": "logs_produced_rate",
+            "value": 94966.64771332308,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "logs_received_rate",
+            "value": 89993.99410926882,
+            "unit": "logs/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Log Throughput"
+          },
+          {
+            "name": "test_duration",
+            "value": 20.007024,
+            "unit": "seconds",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Test Duration"
+          },
+          {
+            "name": "network_tx_bytes_rate_avg",
+            "value": 1213906.719584012,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "network_rx_bytes_rate_avg",
+            "value": 1141271.6099074534,
+            "unit": "bytes/sec",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Network Utilization"
+          },
+          {
+            "name": "egress_bytes_per_log",
+            "value": 13.488752572867384,
+            "unit": "bytes/log",
+            "extra": "CI 100kLRPS/OTAP-ATTR-OTAP - Egress Bytes Per Log"
           }
         ]
       }
