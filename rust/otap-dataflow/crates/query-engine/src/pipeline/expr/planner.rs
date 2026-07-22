@@ -81,7 +81,6 @@ pub(crate) struct PlannedOp {
 
 impl ExprPlanner {
     /// Creates a new `ExprPlanner` with case-sensitive attribute key matching
-    #[cfg(test)]
     pub fn new() -> Self {
         Self {
             attr_key_case_sensitive: true,

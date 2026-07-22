@@ -6,7 +6,10 @@
 use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
-use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
+use crate::channel_metrics::{
+    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics,
+    ProducedMetrics,
+};
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
 };
@@ -15,7 +18,9 @@ use crate::control::{
     ControlSenders, Controllable, NodeControlMsg, PipelineCompletionMsgReceiver,
     PipelineCompletionMsgSender, RuntimeCtrlMsgReceiver, RuntimeCtrlMsgSender,
 };
-use crate::entity_context::{NodeTaskContext, NodeTelemetryHandle, instrument_with_node_context};
+use crate::entity_context::{
+    NodeTaskContext, NodeTelemetryGuard, NodeTelemetryHandle, instrument_with_node_context,
+};
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
     FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
@@ -25,17 +30,17 @@ use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::pipeline_ctrl::{
     NodeMetricHandles, PipelineCompletionMsgDispatcher, RuntimeCtrlMsgManager,
-    report_node_metrics_with_handles,
+    snapshot_node_metrics_with_handles,
 };
 use crate::processor::FlowMetricHook;
-use crate::terminal_state::TerminalState;
+use crate::terminal_state::{TerminalMetricsDeadline, TerminalState};
 use crate::{exporter::ExporterWrapper, processor::ProcessorWrapper, receiver::ReceiverWrapper};
 use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -58,7 +63,7 @@ const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_se
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MetricSet<ProducedMetrics>> {
+) -> Vec<MeasurementMetricSet<ProducedMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -66,7 +71,30 @@ fn make_produced_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key)
+                    ProducedMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Build optional produced-item metric sets indexed by sorted output port name.
+fn make_produced_item_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MeasurementMetricSet<ProducedItemMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    ProducedItemMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
                 })
                 .collect()
         })
@@ -77,18 +105,34 @@ fn make_produced_metrics(
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+/// - `item_counts_enabled`: whether to register the optional item metric sets.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
+    item_counts_enabled: bool,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
-            .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key))
+            .map(|key| {
+                ConsumedMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
+            })
+    } else {
+        None
+    };
+    let consumed_items = if item_counts_enabled && has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| {
+                ConsumedItemMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(key),
+                )
+            })
     } else {
         None
     };
@@ -97,10 +141,17 @@ fn make_node_metric_handles(
     } else {
         Vec::new()
     };
+    let produced_items = if item_counts_enabled && has_outputs {
+        make_produced_item_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
         input: consumed,
+        input_items: consumed_items,
         outputs: produced,
+        output_items: produced_items,
         completion_emission,
     }
 }
@@ -139,12 +190,78 @@ pub struct RuntimePipeline<PData: Debug> {
     telemetry_policy: TelemetryPolicy,
 }
 
-pub(crate) fn report_terminal_metrics(
+async fn flush_metrics_reporter(
+    metrics_reporter: &MetricsReporter,
+    phase: &'static str,
+    terminal_metrics_deadline: &TerminalMetricsDeadline,
+) {
+    if let Err(err) = metrics_reporter
+        .flush_until(terminal_metrics_deadline.get())
+        .await
+    {
+        otap_df_telemetry::otel_warn!(
+            "metrics.collection.flush.fail",
+            phase,
+            error = err.to_string()
+        );
+    }
+}
+
+/// Reports snapshots carried by a terminal state within its shutdown deadline.
+pub(crate) async fn report_terminal_metrics(
     metrics_reporter: &MetricsReporter,
     terminal_state: TerminalState,
+    terminal_metrics_deadline: &TerminalMetricsDeadline,
 ) {
-    for snapshot in terminal_state.into_metrics() {
-        let _ = metrics_reporter.try_report_snapshot(snapshot);
+    let deadline = terminal_state.deadline();
+    terminal_metrics_deadline.record(deadline);
+    report_metric_snapshots(
+        metrics_reporter,
+        terminal_state.into_metrics(),
+        "terminal",
+        terminal_metrics_deadline.get(),
+    )
+    .await;
+}
+
+/// Best-effort reports a sequence of snapshots and flushes the collector.
+///
+/// Reporting continues after individual failures, but every operation shares
+/// one absolute `deadline` so a long sequence cannot extend shutdown.
+async fn report_metric_snapshots(
+    metrics_reporter: &MetricsReporter,
+    snapshots: impl IntoIterator<Item = MetricSetSnapshot>,
+    phase: &'static str,
+    deadline: std::time::Instant,
+) {
+    for snapshot in snapshots {
+        match metrics_reporter
+            .report_snapshot_reliably_until(snapshot, deadline)
+            .await
+        {
+            Ok(ReportOutcome::Sent) => {}
+            Ok(ReportOutcome::Deferred) => {
+                otap_df_telemetry::otel_warn!(
+                    "metrics.terminal.reporting.deferred",
+                    phase,
+                    message = "Terminal metric snapshot was deferred because the standalone reporter channel is full"
+                );
+            }
+            Err(err) => {
+                otap_df_telemetry::otel_warn!(
+                    "metrics.terminal.reporting.fail",
+                    phase,
+                    error = err.to_string()
+                );
+            }
+        }
+    }
+    if let Err(err) = metrics_reporter.flush_until(deadline).await {
+        otap_df_telemetry::otel_warn!(
+            "metrics.collection.flush.fail",
+            phase,
+            error = err.to_string()
+        );
     }
 }
 
@@ -253,7 +370,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let RuntimePipeline {
-            config: _config,
+            config: pipeline_config,
             receivers,
             processors,
             exporters,
@@ -264,7 +381,19 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let node_interests = Interests::from_metric_level(metric_level);
+        let base_node_interests = Interests::from_metric_level(metric_level);
+        // Nodes opting in via `node.policies.telemetry.item_counts`
+        // get the counts without requiring the `detailed` metric level.
+        let item_count_optin: HashSet<&str> = pipeline_config
+            .node_iter()
+            .filter(|(_, cfg)| {
+                cfg.policies
+                    .as_ref()
+                    .and_then(|policies| policies.telemetry.as_ref())
+                    .is_some_and(|telemetry| telemetry.item_counts)
+            })
+            .map(|(node_id, _)| node_id.as_ref())
+            .collect();
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
@@ -309,10 +438,12 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // from `start()` via `EffectHandler::signal_ready()`. The engine
         // awaits the registered probes via `wait_all_ready` before
         // spawning data-path tasks.
+        let terminal_metrics_deadline = TerminalMetricsDeadline::default();
         let mut extension_lifecycle = crate::extension_lifecycle::ExtensionLifecycle::spawn(
             extensions,
             &local_tasks,
             metrics_reporter.clone(),
+            terminal_metrics_deadline.clone(),
             &ext_ctx,
             ext_monitor,
         );
@@ -342,6 +473,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         let mut control_senders = ControlSenders::default();
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
+        let mut node_telemetry_guards: Vec<NodeTelemetryGuard> = Vec::new();
 
         // Build a name→index map from NodeDefs so we can resolve flow_metric
         // config before processors are spawned.
@@ -361,7 +493,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         // Build edge list from pipeline connections for flow metric
         // interleaving detection.
-        let pipeline_connections = connection_edges(_config.connection_iter(), &node_name_to_index);
+        let pipeline_connections =
+            connection_edges(pipeline_config.connection_iter(), &node_name_to_index);
 
         // Build flow_metric state and per-node role assignments up front.
         let flow_metric_state = build_flow_metric_state(
@@ -376,6 +509,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -384,6 +522,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let telemetry_guard = exporter.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            node_telemetry_guards.extend(telemetry_guard);
             let completion_emission_metrics =
                 make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller (exporters have no output channels).
@@ -394,6 +533,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     false,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -401,8 +541,9 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let exporter_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let fut = async move {
-                let result = exporter
+                match exporter
                     .start_with_completion_metrics(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
@@ -411,11 +552,26 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         completion_emission_metrics,
                     )
                     .await
-                    .map(|terminal_state| {
-                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
-                    });
-                drop(telemetry_guard);
-                result
+                {
+                    Ok(terminal_state) => {
+                        report_terminal_metrics(
+                            &final_metrics_reporter,
+                            terminal_state,
+                            &exporter_terminal_metrics_deadline,
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        flush_metrics_reporter(
+                            &final_metrics_reporter,
+                            "terminal_error",
+                            &exporter_terminal_metrics_deadline,
+                        )
+                        .await;
+                        Err(err)
+                    }
+                }
             };
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
@@ -433,6 +589,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -441,6 +602,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let telemetry_guard = processor.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            node_telemetry_guards.extend(telemetry_guard);
             let completion_emission_metrics =
                 make_completion_emission_metrics(&telemetry_handle, metric_level);
             // Collect per-node metrics for the controller.
@@ -451,12 +613,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let metrics_reporter = metrics_reporter.clone();
+            let final_metrics_reporter = metrics_reporter.clone();
+            let processor_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             // Extract flow metric roles for this processor node.
             let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
             let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
@@ -510,9 +675,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         flow_signals_dropped_metric,
                         flow_active,
                         flow_needs_timing,
+                        processor_terminal_metrics_deadline.clone(),
                     )
                     .await;
-                drop(telemetry_guard);
+                flush_metrics_reporter(
+                    &final_metrics_reporter,
+                    "terminal",
+                    &processor_terminal_metrics_deadline,
+                )
+                .await;
                 result
             };
             if let Some(handle) = telemetry_handle {
@@ -531,6 +702,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
@@ -539,17 +715,26 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             let telemetry_guard = receiver.take_telemetry_guard();
             let node_entity_key = telemetry_guard.as_ref().map(|t| t.entity_key());
             let telemetry_handle = telemetry_guard.as_ref().map(|t| t.handle());
+            node_telemetry_guards.extend(telemetry_guard);
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true, None),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    false,
+                    true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    None,
+                ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
             let effect_metrics_reporter = metrics_reporter.clone();
             let final_metrics_reporter = metrics_reporter.clone();
+            let receiver_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let fut = async move {
-                let result = receiver
+                match receiver
                     .start(
                         runtime_ctrl_msg_tx,
                         pipeline_completion_msg_tx,
@@ -557,11 +742,26 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         node_interests,
                     )
                     .await
-                    .map(|terminal_state| {
-                        report_terminal_metrics(&final_metrics_reporter, terminal_state);
-                    });
-                drop(telemetry_guard);
-                result
+                {
+                    Ok(terminal_state) => {
+                        report_terminal_metrics(
+                            &final_metrics_reporter,
+                            terminal_state,
+                            &receiver_terminal_metrics_deadline,
+                        )
+                        .await;
+                        Ok(())
+                    }
+                    Err(err) => {
+                        flush_metrics_reporter(
+                            &final_metrics_reporter,
+                            "terminal_error",
+                            &receiver_terminal_metrics_deadline,
+                        )
+                        .await;
+                        Err(err)
+                    }
+                }
             };
             if let Some(handle) = telemetry_handle {
                 let input_key = handle.input_channel_key();
@@ -600,14 +800,17 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let return_control_senders = control_senders.clone();
         let return_node_metric_handles = node_metric_handles.clone();
         let final_node_metric_handles = node_metric_handles.clone();
+        let final_channel_metrics = channel_metrics.clone();
         let final_metrics_reporter = metrics_reporter.clone();
         let manager_pipeline_context = pipeline_context.clone();
         let manager_metrics_reporter = metrics_reporter.clone();
         let manager_telemetry_policy = telemetry_policy.clone();
         let manager_memory_pressure_rx = memory_pressure_rx;
+        let manager_terminal_metrics_deadline = terminal_metrics_deadline.clone();
         let dispatcher_pipeline_context = pipeline_context.clone();
         let dispatcher_metrics_reporter = metrics_reporter.clone();
         let dispatcher_telemetry_policy = telemetry_policy.clone();
+        let dispatcher_terminal_metrics_deadline = terminal_metrics_deadline.clone();
         futures.push(local_tasks.spawn_local(async move {
             let manager = RuntimeCtrlMsgManager::new(
                 pipeline_key,
@@ -621,6 +824,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 manager_telemetry_policy,
                 channel_metrics,
                 node_metric_handles,
+                manager_terminal_metrics_deadline,
             );
             manager.run().await
         }));
@@ -634,6 +838,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                 dispatcher_metrics_reporter,
                 control_plane_metrics_flush_interval,
                 dispatcher_telemetry_policy,
+                dispatcher_terminal_metrics_deadline,
             );
             dispatcher.run().await
         }));
@@ -644,7 +849,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         // `EXTENSION_SHUTDOWN_GRACE`). The "extensions stop last"
         // guarantee applies to the normal drain path only; see the
         // `extension_lifecycle` module docs.
-        rt.block_on(async {
+        let result = rt.block_on(async {
             local_tasks
                 .run_until(async {
                     let loop_result: Result<Vec<_>, Error> = async {
@@ -708,22 +913,43 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     let mut final_monitor_reporter = metrics_reporter.clone();
                     extension_lifecycle
                         .monitor_tick(std::time::Instant::now(), &mut final_monitor_reporter);
-
-                    let task_results = loop_result?;
-                    let mut final_metrics_reporter = final_metrics_reporter.clone();
-                    if let Err(err) = report_node_metrics_with_handles(
-                        &final_node_metric_handles,
-                        &mut final_metrics_reporter,
-                    ) {
+                    if let Err(err) = extension_lifecycle
+                        .finish_metrics_reporting_until(
+                            &final_monitor_reporter,
+                            terminal_metrics_deadline.get(),
+                        )
+                        .await
+                    {
                         otap_df_telemetry::otel_warn!(
-                            "node.metrics.final.reporting.fail",
+                            "extension.lifecycle.metrics.final_reporting.fail",
                             error = err.to_string()
                         );
                     }
+
+                    let final_snapshots = snapshot_node_metrics_with_handles(
+                        &final_node_metric_handles,
+                    )
+                    .into_iter()
+                    .chain(
+                        final_channel_metrics
+                            .iter()
+                            .filter_map(ChannelMetricsHandle::snapshot),
+                    );
+                    report_metric_snapshots(
+                        &final_metrics_reporter,
+                        final_snapshots,
+                        "pipeline_final",
+                        terminal_metrics_deadline.get(),
+                    )
+                    .await;
+
+                    let task_results = loop_result?;
                     Ok(task_results)
                 })
                 .await
-        })
+        });
+        drop(node_telemetry_guards);
+        result
     }
 }
 
@@ -829,5 +1055,89 @@ impl<PData: 'static + Debug + Clone> RuntimePipeline<PData> {
                 message: format!("node {node_id:?}"),
             })),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::attributes::EngineEntityAttributeSet;
+    use crate::channel_metrics::ChannelSenderMetrics;
+    use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
+    use otap_df_config::observed_state::SendPolicy;
+    use otap_df_config::pipeline::telemetry::TelemetryConfig;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
+
+    /// Scenario: a pipeline has pending terminal metrics when telemetry cleanup starts.
+    /// Guarantees: the final snapshot reaches the registry before entity handles are released.
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminal_snapshot_is_aggregated_before_telemetry_cleanup() {
+        let registry = TelemetryRegistryHandle::new();
+        let config = TelemetryConfig::default();
+        let metrics_system = InternalTelemetrySystem::new(
+            &config,
+            config.reporting_interval,
+            registry.clone(),
+            None,
+            SendPolicy::default(),
+            LogContext::new,
+            None,
+        )
+        .expect("ITS telemetry system should initialize");
+        let reporter = metrics_system.reporter();
+        let collector_task = tokio::spawn(metrics_system.collector().run_collection_loop());
+
+        let entity_key = registry.register_entity(EngineEntityAttributeSet);
+        let telemetry_handle = NodeTelemetryHandle::new(registry.clone(), entity_key);
+        let telemetry_guard = NodeTelemetryGuard::new(telemetry_handle.clone());
+        let mut metric_set = telemetry_handle.register_metric_set::<ChannelSenderMetrics>();
+        metric_set.send_count.inc();
+
+        report_terminal_metrics(
+            &reporter,
+            TerminalState::new(std::time::Instant::now(), [metric_set.snapshot()]),
+            &TerminalMetricsDeadline::default(),
+        )
+        .await;
+
+        let mut send_count = None;
+        registry.visit_current_metrics(|_, _, metrics| {
+            for (field, value) in metrics {
+                if field.name == "send.count" {
+                    send_count = Some(value.to_u64_lossy());
+                }
+            }
+        });
+        assert_eq!(send_count, Some(1));
+
+        drop(telemetry_guard);
+        assert_eq!(registry.metric_set_count(), 1);
+        assert_eq!(registry.entity_count(), 1);
+
+        let export_batch = registry.drain_metric_export_batch();
+        let exported = export_batch
+            .metric_sets
+            .iter()
+            .find(|metric_set| metric_set.descriptor.name == "channel.sender")
+            .expect("terminal metric set should remain exportable after cleanup");
+        let send_count_index = exported
+            .descriptor
+            .metrics
+            .iter()
+            .position(|field| field.name == "send.count")
+            .expect("send.count descriptor should exist");
+        assert_eq!(exported.values[send_count_index].to_u64_lossy(), 1);
+
+        assert_eq!(registry.metric_set_count(), 0);
+        assert_eq!(registry.entity_count(), 0);
+
+        collector_task.abort();
+        assert!(
+            collector_task
+                .await
+                .expect_err("collector task should be cancelled")
+                .is_cancelled()
+        );
     }
 }

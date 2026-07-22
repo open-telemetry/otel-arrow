@@ -37,6 +37,7 @@ pub(crate) mod id_mask;
 mod planner;
 mod project;
 
+pub mod partition;
 pub mod routing;
 pub mod state;
 

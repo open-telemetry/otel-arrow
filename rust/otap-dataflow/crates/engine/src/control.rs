@@ -142,6 +142,14 @@ pub struct Frame {
     pub route: RouteData,
     /// The caller's node_id for routing.
     pub node_id: usize,
+    /// Number of signal items produced (emitted) by the node at send time.
+    /// Stamped only when the node has `PRODUCER_METRICS` interest. Saturates
+    /// at `u32::MAX`.
+    pub produced_items: u32,
+    /// Number of signal items consumed (received) by the node at receive time.
+    /// Stamped only when the node has `CONSUMER_METRICS` interest. Saturates
+    /// at `u32::MAX`.
+    pub consumed_items: u32,
 }
 
 /// The ACK message.
