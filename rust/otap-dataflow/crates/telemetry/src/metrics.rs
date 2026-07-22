@@ -16,7 +16,7 @@ use crate::descriptor::{
     Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField, Temporality,
 };
 use crate::entity::{EntityAttributeSet, EntityRegistry};
-use crate::instrument::{Distribution, MmscSnapshot};
+use crate::instrument::{Distribution, DistributionValue, MmscSnapshot};
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
 use serde::{Deserialize, Serialize};
@@ -61,9 +61,10 @@ pub const fn check_cardinality(cardinality: usize) {
 /// values by reference or clone explicitly. The scalar and `Mmsc` variants are
 /// small and cheap to clone.
 ///
-/// The `Distribution` variant is `#[serde(skip)]`: it is not yet produced by
-/// any instrument and has no stable wire representation, so serializing one is
-/// a programming error until distribution encoding is wired up.
+/// A `Distribution` serializes to (and deserializes from) the OTel
+/// exponential-histogram point form via [`DistributionValue`]. The variant is
+/// declared before `Mmsc` so that, under `#[serde(untagged)]`, an
+/// exponential-histogram point object is not mis-parsed as an `Mmsc` summary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for scalars/boxed distribution; acceptable for internal telemetry.
@@ -72,11 +73,11 @@ pub enum MetricValue {
     U64(u64),
     /// 64-bit floating point value.
     F64(f64),
+    /// A distribution aggregation from a [`Distribution`] instrument, carried
+    /// live or as a materialized exponential-histogram point.
+    Distribution(Box<DistributionValue>),
     /// Pre-aggregated min/max/sum/count summary from an [`crate::instrument::Mmsc`] instrument.
     Mmsc(MmscSnapshot),
-    /// A full distribution aggregation from a [`Distribution`] instrument.
-    #[serde(skip)]
-    Distribution(Box<Distribution>),
 }
 
 impl MetricValue {
@@ -229,7 +230,7 @@ impl std::ops::AddAssign for MetricValue {
 
 impl From<Distribution> for MetricValue {
     fn from(value: Distribution) -> Self {
-        MetricValue::Distribution(Box::new(value))
+        MetricValue::Distribution(Box::new(DistributionValue::Live(value)))
     }
 }
 
@@ -2623,8 +2624,8 @@ mod tests {
         let mut b = Distribution::normal();
         b.record(3.0);
 
-        let mut va = MetricValue::Distribution(Box::new(a));
-        let vb = MetricValue::Distribution(Box::new(b));
+        let mut va = MetricValue::from(a);
+        let vb = MetricValue::from(b);
 
         assert!(!va.is_zero());
 
@@ -2633,7 +2634,10 @@ mod tests {
         assert!(zeroed.is_zero());
         match &zeroed {
             MetricValue::Distribution(d) => {
-                assert!(matches!(d.as_ref(), Distribution::Normal(_)));
+                assert!(matches!(
+                    d.as_ref(),
+                    DistributionValue::Live(Distribution::Normal(_))
+                ));
                 let _ = HISTOGRAM_NORMAL_WORDS; // tier constant is in scope for clarity
             }
             _ => panic!("expected Distribution variant"),
@@ -2652,6 +2656,53 @@ mod tests {
         match &va {
             MetricValue::Distribution(d) => assert_eq!(d.count(), 0),
             _ => panic!("expected Distribution variant"),
+        }
+    }
+
+    // Scenario: `MetricValue` values of every variant are serialized to JSON and
+    //   deserialized back, including a live distribution alongside an Mmsc
+    //   summary whose object shapes could otherwise collide under untagged serde.
+    // Guarantees: Scalars and Mmsc round-trip to equal values; a live
+    //   distribution serializes to the exponential-histogram point form and
+    //   deserializes into a materialized point with the same summary, and is not
+    //   mis-parsed as an Mmsc summary (nor an Mmsc as a distribution).
+    #[test]
+    fn test_metric_value_serde_roundtrip_disambiguates_distribution_and_mmsc() {
+        let mmsc = MetricValue::Mmsc(MmscSnapshot {
+            min: 1.0,
+            max: 9.0,
+            sum: 20.0,
+            count: 4,
+        });
+        let mut dist = Distribution::normal();
+        for v in [1.0, 2.0, 8.0] {
+            dist.record(v);
+        }
+        let dist_value = MetricValue::from(dist);
+
+        // Scalars and Mmsc round-trip to identical values.
+        for value in [MetricValue::U64(7), MetricValue::F64(3.5), mmsc.clone()] {
+            let json = serde_yaml::to_string(&value).expect("serialize");
+            let back: MetricValue = serde_yaml::from_str(&json).expect("deserialize");
+            assert_eq!(value, back);
+        }
+
+        // An Mmsc object is parsed as Mmsc, not as a distribution point.
+        let mmsc_json = serde_yaml::to_string(&mmsc).expect("serialize mmsc");
+        assert!(matches!(
+            serde_yaml::from_str::<MetricValue>(&mmsc_json).expect("mmsc"),
+            MetricValue::Mmsc(_)
+        ));
+
+        // A live distribution serializes to the point form and deserializes
+        // into a materialized point carrying the same summary.
+        let dist_json = serde_yaml::to_string(&dist_value).expect("serialize dist");
+        match serde_yaml::from_str::<MetricValue>(&dist_json).expect("dist") {
+            MetricValue::Distribution(d) => {
+                assert!(matches!(d.as_ref(), DistributionValue::Point(_)));
+                assert_eq!(d.summary().0, 3);
+            }
+            other => panic!("expected Distribution point, got {other:?}"),
         }
     }
 

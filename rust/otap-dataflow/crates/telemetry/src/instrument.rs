@@ -11,7 +11,8 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
-use otap_df_expohisto::{Error as HistogramError, Histogram};
+use otap_df_expohisto::{Error as HistogramError, Histogram, HistogramView};
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -738,6 +739,35 @@ impl Distribution {
         }
     }
 
+    /// Projects this distribution onto its OTel exponential-histogram point
+    /// form ([`ExponentialHistogramPoint`]).
+    ///
+    /// The "basic" tier projects onto a bucketless point (scale 0, no positive
+    /// buckets, no zeros), consistent with how the basic tier is exported to
+    /// OTLP. The "normal"/"detailed" tiers project their positive bucket range
+    /// at the view's current scale, recovering `zero_count` as
+    /// `count - sum(positive bucket counts)`.
+    #[must_use]
+    pub fn to_point(&self) -> ExponentialHistogramPoint {
+        match self {
+            Self::Basic(mmsc) => {
+                let s = mmsc.get();
+                ExponentialHistogramPoint {
+                    scale: 0,
+                    zero_count: 0,
+                    positive_offset: 0,
+                    positive_buckets: Vec::new(),
+                    count: s.count,
+                    sum: (s.count > 0 && s.min >= 0.0).then_some(s.sum),
+                    min: (s.count > 0).then_some(s.min),
+                    max: (s.count > 0).then_some(s.max),
+                }
+            }
+            Self::Normal(hist) => point_from_view(&hist.view()),
+            Self::Detailed(hist) => point_from_view(&hist.view()),
+        }
+    }
+
     /// Merges another distribution of the same tier into this one.
     ///
     /// Merging mismatched tiers is a programming error: in debug builds it
@@ -791,6 +821,184 @@ impl PartialEq for Distribution {
             }
         }
         summary(self) == summary(other)
+    }
+}
+
+/// Projects an exponential-histogram view onto an [`ExponentialHistogramPoint`].
+fn point_from_view<const N: usize>(view: &HistogramView<'_, N>) -> ExponentialHistogramPoint {
+    let stats = view.stats();
+    let positive = view.positive();
+    let positive_buckets: Vec<u64> = positive.iter().collect();
+    let positive_total: u64 = positive_buckets.iter().sum();
+    // Zeros contribute to `count` but are never bucketed.
+    let zero_count = stats.count.saturating_sub(positive_total);
+    ExponentialHistogramPoint {
+        scale: view.scale(),
+        zero_count,
+        positive_offset: positive.offset(),
+        positive_buckets,
+        count: stats.count,
+        sum: (stats.count > 0).then_some(stats.sum),
+        min: (stats.count > 0).then_some(stats.min),
+        max: (stats.count > 0).then_some(stats.max),
+    }
+}
+
+/// A materialized exponential-histogram point in the OTel exponential-histogram
+/// form.
+///
+/// This is the stable *wire* representation of a [`Distribution`]: a live
+/// distribution serializes into this shape (see [`DistributionValue`]) and
+/// deserializing a distribution yields this read-only form. `sum`/`min`/`max`
+/// are absent for an empty point, matching OTLP semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExponentialHistogramPoint {
+    /// OTel scale of the positive bucket range.
+    pub scale: i32,
+    /// Number of exact-zero observations.
+    pub zero_count: u64,
+    /// Bucket index of the first entry in `positive_buckets`.
+    pub positive_offset: i32,
+    /// Positive bucket counts, starting at `positive_offset`.
+    pub positive_buckets: Vec<u64>,
+    /// Total number of observations (including zeros).
+    pub count: u64,
+    /// Sum of observations, present only for a non-empty point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sum: Option<f64>,
+    /// Minimum observation, present only for a non-empty point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Maximum observation, present only for a non-empty point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+impl ExponentialHistogramPoint {
+    /// Returns a `(count, sum, min, max)` summary, using `0.0`/sentinels for an
+    /// empty point.
+    #[must_use]
+    pub fn summary(&self) -> (u64, f64, f64, f64) {
+        (
+            self.count,
+            self.sum.unwrap_or(0.0),
+            self.min.unwrap_or(f64::MAX),
+            self.max.unwrap_or(f64::MIN),
+        )
+    }
+}
+
+/// A distribution value carried by [`crate::metrics::MetricValue`].
+///
+/// A distribution can be present in two forms:
+/// - [`DistributionValue::Live`] is the live aggregation produced by an
+///   instrument. It is what the registry merges and what encoding projects.
+/// - [`DistributionValue::Point`] is the read-only materialized point produced
+///   by *deserializing* the wire form. The vendored histogram cannot be rebuilt
+///   from buckets, so a deserialized distribution is a point, not a live
+///   aggregation.
+///
+/// Both forms serialize identically to the OTel exponential-histogram point
+/// form, so the representation is transparent on the wire.
+#[derive(Debug, Clone)]
+pub enum DistributionValue {
+    /// A live aggregation produced by an instrument.
+    Live(Distribution),
+    /// A read-only materialized point from a deserialized wire value.
+    Point(ExponentialHistogramPoint),
+}
+
+impl DistributionValue {
+    /// Projects this value onto its exponential-histogram point form.
+    #[must_use]
+    pub fn to_point(&self) -> ExponentialHistogramPoint {
+        match self {
+            Self::Live(dist) => dist.to_point(),
+            Self::Point(point) => point.clone(),
+        }
+    }
+
+    /// Returns the number of observations recorded this interval.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Live(dist) => dist.count(),
+            Self::Point(point) => point.count,
+        }
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// Returns a `(count, sum, min, max)` summary of this interval.
+    #[must_use]
+    pub fn summary(&self) -> (u64, f64, f64, f64) {
+        match self {
+            Self::Live(dist) => dist.summary(),
+            Self::Point(point) => point.summary(),
+        }
+    }
+
+    /// Returns the tier name, or `"point"` for a materialized wire value.
+    #[must_use]
+    pub fn tier_name(&self) -> &'static str {
+        match self {
+            Self::Live(dist) => dist.tier_name(),
+            Self::Point(_) => "point",
+        }
+    }
+
+    /// Resets a live aggregation for the next interval. Materialized points are
+    /// read-only, so resetting one is a programming error (a debug assertion).
+    pub fn reset(&mut self) {
+        match self {
+            Self::Live(dist) => dist.reset(),
+            Self::Point(_) => {
+                debug_assert!(false, "DistributionValue::reset on a materialized point")
+            }
+        }
+    }
+
+    /// Merges another live distribution into this one. Only `Live`-into-`Live`
+    /// merges are valid; other combinations are a programming error (a debug
+    /// assertion) because materialized points cannot be aggregated.
+    pub fn merge(&mut self, other: &Self) {
+        match (self, other) {
+            (Self::Live(dst), Self::Live(src)) => dst.merge(src),
+            _ => debug_assert!(
+                false,
+                "DistributionValue::merge requires two live distributions"
+            ),
+        }
+    }
+}
+
+impl PartialEq for DistributionValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_point() == other.to_point()
+    }
+}
+
+impl Serialize for DistributionValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.to_point().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DistributionValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::Point(ExponentialHistogramPoint::deserialize(
+            deserializer,
+        )?))
     }
 }
 
@@ -1078,5 +1286,74 @@ mod tests {
     fn test_distribution_histogram_rejects_negative() {
         let mut dist = Distribution::normal();
         dist.record(-1.0);
+    }
+
+    /// Scenario: A normal-tier distribution records positive values and exact
+    /// zeros, then is projected to an exponential-histogram point.
+    /// Guarantees: The point preserves the total count and per-observation
+    /// stats, recovers `zero_count` so `zero_count + sum(positive_buckets) ==
+    /// count`, and carries the view's scale.
+    #[test]
+    fn test_distribution_to_point_projects_buckets_and_zeros() {
+        let mut dist = Distribution::normal();
+        dist.record(0.0);
+        for v in [1.5_f64, 2.7, 4.0] {
+            dist.record(v);
+        }
+
+        let point = dist.to_point();
+
+        assert_eq!(point.count, 4);
+        assert!((point.sum.expect("sum present") - 8.2).abs() < 1e-9);
+        // Zeros count toward the total but do not lower the recorded min/max.
+        assert_eq!(point.min, Some(1.5));
+        assert_eq!(point.max, Some(4.0));
+        let bucketed: u64 = point.positive_buckets.iter().sum();
+        assert_eq!(point.zero_count + bucketed, point.count);
+        assert_eq!(point.zero_count, 1);
+    }
+
+    /// Scenario: A live distribution is serialized and deserialized through the
+    /// exponential-histogram point wire form.
+    /// Guarantees: Deserialization yields a read-only materialized point whose
+    /// summary matches the live distribution's, and both forms are equal under
+    /// the summary-based `PartialEq`.
+    #[test]
+    fn test_distribution_value_serialize_yields_materialized_point() {
+        let mut dist = Distribution::detailed();
+        for v in [1.0_f64, 2.0, 3.0, 100.0] {
+            dist.record(v);
+        }
+        let live = DistributionValue::Live(dist);
+
+        let yaml = serde_yaml::to_string(&live).expect("serialize distribution value");
+        let back: DistributionValue = serde_yaml::from_str(&yaml).expect("deserialize");
+
+        assert!(matches!(back, DistributionValue::Point(_)));
+        assert_eq!(live.summary(), back.summary());
+        assert_eq!(live, back);
+    }
+
+    /// Scenario: `reset` and `merge` are invoked on a materialized (read-only)
+    /// point.
+    /// Guarantees: In release builds these are no-ops that leave the point
+    /// unchanged, documenting that materialized points cannot be aggregated.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_distribution_point_reset_and_merge_are_noops() {
+        let point = ExponentialHistogramPoint {
+            scale: 0,
+            zero_count: 0,
+            positive_offset: 0,
+            positive_buckets: vec![],
+            count: 2,
+            sum: Some(3.0),
+            min: Some(1.0),
+            max: Some(2.0),
+        };
+        let mut value = DistributionValue::Point(point.clone());
+        value.reset();
+        value.merge(&DistributionValue::Point(point.clone()));
+        assert_eq!(value, DistributionValue::Point(point));
     }
 }
