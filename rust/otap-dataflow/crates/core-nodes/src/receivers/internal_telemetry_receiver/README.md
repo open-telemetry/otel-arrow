@@ -21,25 +21,23 @@ OTAP.
 
 ## Getting Started
 
-Declare it inside `engine.observability.pipeline` and select the `its` metrics
-provider:
-
-The observability pipeline is defined under `engine.observability` rather than
-inside a user pipeline group, so it is owned by the engine and cannot be
-referenced from groups.
+The engine supplies an observability pipeline by default. Its internal
+telemetry receiver emits logs and metrics, a type router sends logs to the
+console exporter, and metrics go to the noop exporter. Override
+`engine.observability.pipeline` to export either signal elsewhere. The pipeline
+is engine-owned and cannot be referenced from user groups.
 
 ```yaml
 engine:
   telemetry:
     reporting_interval: 1s
-    metrics:
-      provider: its
   observability:
     pipeline:
       nodes:
         internal:
           type: receiver:internal_telemetry
           config:
+            signals: [logs, metrics]
             metrics:
               interval: 2s
         debug:
@@ -59,13 +57,25 @@ engine:
 
 ## Configuration
 
-The receiver can override the metric emission interval and apply a supported
-subset of OpenTelemetry metric views. If `metrics.interval` is omitted, it
-inherits `engine.telemetry.reporting_interval`.
+`signals` defaults to `[logs, metrics]`. Either signal can be selected
+independently, but the list cannot be empty. A metrics-only receiver requires
+the global, engine, and admin log providers to use modes other than `its`.
+
+With `signals: [logs]`, the receiver does not convert or emit OTLP metrics. It
+still periodically commits the registry's private ITS export accumulator so
+that retired metric sets can be released. This cleanup does not consume the
+independent metric view used by the admin endpoint.
+
+The `metrics` block can override the cold-path registry drain and emission
+interval and apply a supported subset of OpenTelemetry metric views. When the
+block or its `interval` field is omitted, the receiver uses
+`engine.telemetry.reporting_interval`. That engine setting also controls the
+metric-set snapshot cadence. Setting `metrics` to `null` is invalid.
 
 ```yaml
 type: receiver:internal_telemetry
 config:
+  signals: [logs, metrics]
   metrics:
     interval: 2s
     views:
@@ -111,8 +121,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 - The receiver requires internal telemetry settings in the pipeline context.
 - It is normally used under `engine.observability.pipeline`.
-- The `its` metrics provider requires exactly one internal telemetry receiver
-  in the observability pipeline.
+- The engine observability pipeline must contain exactly one connected internal
+  telemetry receiver.
+- Logs and metrics can be selected independently with a non-empty `signals`
+  list.
 - Internal metric batches use the receiver's `metrics.interval`, or
   `engine.telemetry.reporting_interval` when no receiver interval is set.
 - Receiver-local views support exact scope name, scalar scope attribute, and

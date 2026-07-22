@@ -1,0 +1,4 @@
+change_type: breaking
+component: observability
+note: "Require the `scope` keyword on scope `attribute_set` declarations and remove support for named measurement attribute sets."
+issues: [3513]

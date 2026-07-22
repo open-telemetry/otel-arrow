@@ -785,11 +785,11 @@ fn collect_scalar_metric(
             Instrument::Gauge => "gauge",
             // `Instrument::Histogram` reaches this path with a scalar
             // `U64`/`F64` value because the telemetry registry does not yet
-            // store pre-aggregated bucket data — see the matching TODO in the
-            // dispatcher's `add_opentelemetry_metric`. The stored scalar is
-            // a single observation (whatever the metric set's
-            // `snapshot_values()` returns); buckets/sum/count exist only
-            // downstream inside the OTel SDK, not here.
+            // store pre-aggregated bucket data. The stored scalar is a single
+            // observation (whatever the metric set's `snapshot_values()`
+            // returns). The native OTLP bridge can place that observation in
+            // stable explicit bounds, but this admin snapshot has no
+            // bucket/sum/count state to render.
             //
             // Rendering as the Prometheus histogram family
             // (`_bucket{le=...}`/`_sum`/`_count`) would require fabricating
@@ -3571,7 +3571,7 @@ mod tests {
         }
     }
 
-    #[attribute_set(name = "test.prometheus.scope")]
+    #[attribute_set(scope, name = "test.prometheus.scope")]
     #[derive(Debug, Clone)]
     struct PrometheusScopeAttributes {
         #[attribute_key = "foo"]
