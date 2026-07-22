@@ -5,18 +5,18 @@ use super::*;
 use otap_df_config::engine::ResolvedPipelineRole;
 use otap_df_config::observed_state::ObservedStateSettings;
 use otap_df_config::settings::telemetry::logs::LogLevel;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
+use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use otap_df_engine::control::{
     RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::listener_group::ListenerProtocol;
+use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::topology::NumaTopology;
 use otap_df_engine::wiring_contract::WiringContract;
+use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
@@ -60,6 +60,16 @@ fn test_exporter_create(
     panic!("test exporter factory should not be constructed")
 }
 
+fn test_processor_create(
+    _pipeline_ctx: PipelineContext,
+    _node: otap_df_engine::node::NodeId,
+    _node_config: Arc<NodeUserConfig>,
+    _processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+    panic!("test processor factory should not be constructed")
+}
+
 static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
@@ -79,7 +89,20 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
+
+static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
+    name: "urn:otel:processor:type_router",
+    create: test_processor_create,
+    wiring_contract: WiringContract::UNRESTRICTED,
+    validate_config: test_validate_config,
+}];
 
 static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
@@ -94,10 +117,26 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
 
-static TEST_PIPELINE_FACTORY: PipelineFactory<()> =
-    PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES, &[]);
+static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    TEST_EXPORTER_FACTORIES,
+    &[],
+);
 
 fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
     test_runtime_with_topology(config, NumaTopology::unknown())
@@ -4229,6 +4268,8 @@ fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
     assert!(observability_notifications.try_recv().is_err());
 }
 
+/// Scenario: a producer misses its shutdown deadline while observability is still running.
+/// Guarantees: observability remains available for bounded terminal reporting before it stops.
 #[test]
 fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
     let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));

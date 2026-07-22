@@ -462,123 +462,11 @@ impl<
         Self { pipeline_factory }
     }
 
-    /// Validates component-specific configuration for one pipeline before startup or reconfigure.
-    fn validate_pipeline_components_with_factory(
-        pipeline_factory: &'static PipelineFactory<PData>,
-        pipeline_group_id: &PipelineGroupId,
-        pipeline_id: &PipelineId,
-        pipeline_cfg: &PipelineConfig,
-    ) -> Result<(), String> {
-        for (node_id, node_cfg) in pipeline_cfg.node_iter() {
-            let urn_str = node_cfg.r#type.as_str();
-            let validate_config_fn = match node_cfg.kind() {
-                NodeKind::Receiver => pipeline_factory
-                    .get_receiver_factory_map()
-                    .get(urn_str)
-                    .map(|factory| factory.validate_config),
-                NodeKind::Processor | NodeKind::ProcessorChain => pipeline_factory
-                    .get_processor_factory_map()
-                    .get(urn_str)
-                    .map(|factory| factory.validate_config),
-                NodeKind::Exporter => pipeline_factory
-                    .get_exporter_factory_map()
-                    .get(urn_str)
-                    .map(|factory| factory.validate_config),
-            };
-
-            let Some(validate_fn) = validate_config_fn else {
-                let kind_name = match node_cfg.kind() {
-                    NodeKind::Receiver => "receiver",
-                    NodeKind::Processor | NodeKind::ProcessorChain => "processor",
-                    NodeKind::Exporter => "exporter",
-                };
-                return Err(format!(
-                    "Unknown {} component `{}` in pipeline_group={} pipeline={} node={}",
-                    kind_name,
-                    urn_str,
-                    pipeline_group_id.as_ref(),
-                    pipeline_id.as_ref(),
-                    node_id.as_ref()
-                ));
-            };
-
-            validate_fn(&node_cfg.config).map_err(|err| {
-                format!(
-                    "Invalid config for component `{}` in pipeline_group={} pipeline={} node={}: {}",
-                    urn_str,
-                    pipeline_group_id.as_ref(),
-                    pipeline_id.as_ref(),
-                    node_id.as_ref(),
-                    err
-                )
-            })?;
-        }
-
-        // Mirror the per-node validation pass for extensions so live
-        // reconfiguration enforces the same boundary as startup
-        // (`startup::validate_pipeline_components`).
-        for (ext_id, ext_cfg) in pipeline_cfg.extension_iter() {
-            let urn_str = ext_cfg.r#type.as_str();
-            let Some(ext_factory) = pipeline_factory.get_extension_factory_map().get(urn_str)
-            else {
-                return Err(format!(
-                    "Unknown extension component `{}` in pipeline_group={} pipeline={} extension={}",
-                    urn_str,
-                    pipeline_group_id.as_ref(),
-                    pipeline_id.as_ref(),
-                    ext_id.as_ref()
-                ));
-            };
-
-            (ext_factory.validate_config)(&ext_cfg.config).map_err(|err| {
-                format!(
-                    "Invalid config for extension `{}` in pipeline_group={} pipeline={} extension={}: {}",
-                    urn_str,
-                    pipeline_group_id.as_ref(),
-                    pipeline_id.as_ref(),
-                    ext_id.as_ref(),
-                    err
-                )
-            })?;
-        }
-        Ok(())
-    }
-
-    /// Validates every configured pipeline and observability pipeline against registered components.
-    fn validate_engine_components_with_factory(
-        pipeline_factory: &'static PipelineFactory<PData>,
-        engine_cfg: &OtelDataflowSpec,
-    ) -> Result<(), String> {
-        for (pipeline_group_id, pipeline_group) in &engine_cfg.groups {
-            for (pipeline_id, pipeline_cfg) in &pipeline_group.pipelines {
-                Self::validate_pipeline_components_with_factory(
-                    pipeline_factory,
-                    pipeline_group_id,
-                    pipeline_id,
-                    pipeline_cfg,
-                )?;
-            }
-        }
-
-        if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
-            let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-            let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-            let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
-            Self::validate_pipeline_components_with_factory(
-                pipeline_factory,
-                &obs_group_id,
-                &obs_pipeline_id,
-                &obs_pipeline_config,
-            )?;
-        }
-
-        Ok(())
-    }
-
     /// Validates that every configured node resolves to a registered component and that the
     /// static component-specific configuration validates.
     pub fn validate_engine_components(&self, engine_cfg: &OtelDataflowSpec) -> Result<(), String> {
-        Self::validate_engine_components_with_factory(self.pipeline_factory, engine_cfg)
+        startup::validate_engine_components(engine_cfg, self.pipeline_factory)
+            .map_err(|error| error.to_string())
     }
 
     /// Starts the controller with the given engine configurations.
@@ -806,14 +694,12 @@ impl<
             }
         }
 
-        if let Some(observability_pipeline) = config.engine.observability.pipeline.as_ref() {
-            let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-            for (_node_id, node_cfg) in observability_pipeline.nodes.iter() {
-                if node_cfg.r#type.id() != "topic" {
-                    continue;
-                }
-                visit_topic_node(&system_group_id, node_cfg.as_ref());
+        let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+        for (_node_id, node_cfg) in config.engine.observability.pipeline.nodes.iter() {
+            if node_cfg.r#type.id() != "topic" {
+                continue;
             }
+            visit_topic_node(&system_group_id, node_cfg.as_ref());
         }
 
         let mut declared_topics: Vec<_> = usage_by_declared_topic.into_iter().collect();
@@ -1002,19 +888,22 @@ impl<
             }
         }
 
-        if let Some(observability_pipeline) = config.engine.observability.pipeline.as_ref() {
-            let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-            let observability_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-            let pipeline_cfg = observability_pipeline.clone().into_pipeline_config();
-            Self::collect_topic_wiring_edges_for_pipeline(
-                &mut adjacency,
-                &system_group_id,
-                &observability_pipeline_id,
-                &pipeline_cfg,
-                global_names,
-                group_names,
-            );
-        }
+        let system_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+        let observability_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+        let pipeline_cfg = config
+            .engine
+            .observability
+            .pipeline
+            .clone()
+            .into_pipeline_config();
+        Self::collect_topic_wiring_edges_for_pipeline(
+            &mut adjacency,
+            &system_group_id,
+            &observability_pipeline_id,
+            &pipeline_cfg,
+            global_names,
+            group_names,
+        );
 
         if let Some(cycle) = Self::detect_topic_wiring_cycles(&adjacency)
             .into_iter()
@@ -1326,6 +1215,12 @@ impl<
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
+        let observability_pipeline =
+            observability_pipeline.ok_or_else(|| Error::PipelineRuntimeError {
+                source: Box::new(std::io::Error::other(
+                    "resolved configuration is missing the mandatory observability pipeline",
+                )),
+            })?;
         let num_pipelines = pipelines.len();
         let admin_settings = engine.http_admin.clone().unwrap_or_default();
 
@@ -1337,7 +1232,7 @@ impl<
 
         // Inject auto-detected process/host resource attributes (host.id,
         // container.id, service.instance.id) into the telemetry resource map so
-        // they surface on the OTel Resource / Prometheus target_info. Explicit
+        // they surface on the OTLP Resource / Prometheus target_info. Explicit
         // config-provided keys take precedence over auto-detected values.
         for (key, value) in controller_ctx.resource_attributes() {
             let _ = engine
@@ -1348,7 +1243,7 @@ impl<
         }
 
         // Snapshot the resolved resource map (config + auto-detected) for the admin
-        // endpoint's target_info, mirroring what the SDK Resource receives.
+        // endpoint's target_info, mirroring the native ITS OTLP resource.
         let admin_resource = engine.telemetry.resource.clone();
 
         // Initialize metrics system and observed event store.
@@ -1385,11 +1280,12 @@ impl<
             .uses_console_async_provider()
             .then(|| obs_state_store.reporter(engine.observed_state.logging_events.clone()));
 
-        // Create the telemetry system. The console_async_reporter is passed when any
-        // providers use ConsoleAsync. The its_logs_receiver is passed when any
-        // providers use the ITS mode.
+        // Create the telemetry system. The console_async reporter remains
+        // available for explicit ConsoleAsync providers, while the ITS
+        // transport is always created for internal metrics.
         let telemetry_system = InternalTelemetrySystem::new(
             telemetry_config,
+            telemetry_reporting_interval,
             telemetry_registry.clone(),
             console_async_reporter,
             engine.observed_state.logging_events.clone(),
@@ -1400,7 +1296,6 @@ impl<
         let admin_tracing_setup = telemetry_system.admin_tracing_setup();
         let internal_tracing_setup = telemetry_system.internal_tracing_setup();
 
-        let metrics_dispatcher = telemetry_system.dispatcher();
         let metrics_reporter = telemetry_system.reporter();
         let memory_pressure_state = controller_ctx.memory_pressure_state();
         let (memory_pressure_tx, _memory_pressure_rx) =
@@ -1509,19 +1404,17 @@ impl<
 
         let all_cores =
             core_affinity::get_core_ids().ok_or_else(|| Error::CoreDetectionUnavailable)?;
-        let its_core = *all_cores
+        let observability_core = *all_cores
             .first()
             .ok_or_else(|| Error::CoreDetectionUnavailable)?;
-        let its_key = Self::internal_pipeline_key(its_core);
-        if let Some(pipeline) = observability_pipeline.as_ref() {
-            obs_state_store.register_pipeline_health_policy(
-                PipelineKey::new(
-                    its_key.pipeline_group_id.clone(),
-                    its_key.pipeline_id.clone(),
-                ),
-                pipeline.policies.health.clone(),
-            );
-        }
+        let observability_key = Self::observability_pipeline_key(observability_core);
+        obs_state_store.register_pipeline_health_policy(
+            PipelineKey::new(
+                observability_key.pipeline_group_id.clone(),
+                observability_key.pipeline_id.clone(),
+            ),
+            observability_pipeline.policies.health.clone(),
+        );
         let topology = NumaTopology::detect();
         otel_info!(
             "controller.numa_topology.detected",
@@ -1562,7 +1455,7 @@ impl<
             telemetry_registry.clone(),
         )?;
 
-        // Start aggregation before the internal telemetry pipeline. The receiver's
+        // Start aggregation before the engine observability pipeline. The receiver's
         // first export uses a collector barrier, so the collector must already be
         // available when that pipeline begins processing control messages or ticks.
         let internal_collector = telemetry_system.collector();
@@ -1583,10 +1476,10 @@ impl<
         // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
         // them report their terminal exit without becoming owners that keep the runtime alive
         // during shutdown.
-        let internal_pipeline_handle = Self::spawn_internal_pipeline_if_configured(
+        let observability_pipeline_handle = Self::spawn_observability_pipeline(
             Arc::downgrade(&runtime),
-            its_key.clone(),
-            its_core,
+            observability_key.clone(),
+            observability_core,
             observability_pipeline,
             &engine_config,
             &telemetry_system,
@@ -1599,42 +1492,11 @@ impl<
             internal_tracing_setup,
         )?;
 
-        let has_internal_pipeline = internal_pipeline_handle.is_some();
-        match (has_internal_pipeline, telemetry_config.uses_its_provider()) {
-            (false, true) => {
-                otel_warn!(
-                    "controller.its_provider_without_pipeline",
-                    message =
-                        "ITS provider requested yet engine.observability.pipeline is not defined"
-                )
-            }
-            (true, false) => {
-                otel_warn!(
-                    "controller.pipeline_without_its_provider",
-                    message = "engine.observability.pipeline is defined yet ITS provider is not requested"
-                )
-            }
-            _ => {}
-        };
-
-        // Initialize the global subscriber AFTER the internal pipeline has signaled
+        // Initialize the global subscriber AFTER the observability pipeline has signaled
         // successful startup. This ensures the channel receiver is being consumed
         // before we start sending logs.
         telemetry_system.init_global_subscriber();
         Self::emit_topic_mode_reports(&runtime.declared_topics().inferred_mode_reports);
-
-        // Start the metrics dispatcher only if there are metric readers configured.
-        let metrics_dispatcher_handle = if telemetry_config.metrics.uses_opentelemetry_provider()
-            && telemetry_config.metrics.has_readers()
-        {
-            Some(spawn_thread_local_task(
-                "metrics-dispatcher",
-                admin_tracing_setup.clone(),
-                move |cancellation_token| metrics_dispatcher.run_dispatch_loop(cancellation_token),
-            )?)
-        } else {
-            None
-        };
 
         // Start the observed state store background task
         let obs_state_store_runtime = obs_state_store.clone();
@@ -1698,9 +1560,7 @@ impl<
             },
         )?;
 
-        if let Some(launched) = internal_pipeline_handle {
-            runtime.register_launched_instance(launched);
-        }
+        runtime.register_launched_instance(observability_pipeline_handle);
 
         for (pipeline_entry, pipeline_placement) in
             pipelines.iter().zip(placement_snapshot.pipelines.iter())
@@ -1844,7 +1704,7 @@ impl<
         )?;
 
         if run_mode == RunMode::ShutdownWhenDone {
-            runtime.wait_until_all_instances_exit();
+            runtime.wait_until_all_producer_instances_exit();
         }
 
         // In standard engine mode we keep the main thread parked after startup.
@@ -1869,6 +1729,18 @@ impl<
             }
         }
 
+        if run_mode == RunMode::ShutdownWhenDone {
+            if let Err(error) = control_plane.shutdown_all(10) {
+                return Err(Error::PipelineRuntimeError {
+                    source: Box::new(std::io::Error::other(format!(
+                        "failed to stop system observability after producers exited: {error:?}"
+                    ))),
+                });
+            }
+            let _ = runtime.wait_for_global_shutdown_completion();
+            runtime.wait_until_all_instances_exit();
+        }
+
         if run_mode == RunMode::ParkMainThread {
             let global_shutdown_requested = runtime.wait_for_global_shutdown_completion();
             let all_instances_exited = if global_shutdown_requested {
@@ -1888,11 +1760,8 @@ impl<
         // remaining support tasks and the metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
-        if let Some(handle) = metrics_dispatcher_handle {
-            handle.shutdown_and_join()?;
-        }
         obs_state_join_handle.shutdown_and_join()?;
-        telemetry_system.shutdown_otel()?;
+        drop(telemetry_system);
 
         if let Some(err) = controller_extension_error {
             return Err(err);
@@ -2410,7 +2279,7 @@ impl<
         .collect())
     }
 
-    fn internal_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
+    fn observability_pipeline_key(core_id: CoreId) -> DeployedPipelineKey {
         DeployedPipelineKey {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
@@ -2543,16 +2412,13 @@ impl<
         })
     }
 
-    /// Spawns the internal telemetry pipeline if engine observability config provides one.
-    ///
-    /// Returns the thread handle if an internal pipeline was spawned
-    /// and waits for it to start, or None.
+    /// Spawns the engine's mandatory observability pipeline and waits for startup.
     #[allow(clippy::too_many_arguments)]
-    fn spawn_internal_pipeline_if_configured(
+    fn spawn_observability_pipeline(
         runtime: std::sync::Weak<ControllerRuntime<PData>>,
-        its_key: DeployedPipelineKey,
-        its_core: CoreId,
-        observability_pipeline: Option<ResolvedPipelineConfig>,
+        observability_key: DeployedPipelineKey,
+        observability_core: CoreId,
+        observability_pipeline: ResolvedPipelineConfig,
         config: &OtelDataflowSpec,
         telemetry_system: &InternalTelemetrySystem,
         pipeline_factory: &'static PipelineFactory<PData>,
@@ -2562,48 +2428,27 @@ impl<
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
-    ) -> Result<Option<LaunchedPipelineThread<PData>>, Error> {
-        let (internal_config, channel_capacity_policy, telemetry_policy): (
-            PipelineConfig,
-            ChannelCapacityPolicy,
-            TelemetryPolicy,
-        ) = match observability_pipeline {
-            Some(config) if config.role == ResolvedPipelineRole::ObservabilityInternal => {
-                let channel_capacity_policy = config.policies.channel_capacity;
-                let telemetry_policy = config.policies.telemetry;
-                (config.pipeline, channel_capacity_policy, telemetry_policy)
-            }
-            Some(_) => {
-                // Note: This path is internal-only and should be filtered by caller.
-                return Ok(None);
-            }
-            _ => {
-                // Note: Inconsistent configurations are checked elsewhere.
-                // This method is "_if_configured()" for lifetime reasons,
-                // so a silent return.
-                return Ok(None);
-            }
-        };
+    ) -> Result<LaunchedPipelineThread<PData>, Error> {
+        debug_assert_eq!(
+            observability_pipeline.role,
+            ResolvedPipelineRole::ObservabilityInternal
+        );
+        let channel_capacity_policy = observability_pipeline.policies.channel_capacity;
+        let telemetry_policy = observability_pipeline.policies.telemetry;
+        let pipeline_config = observability_pipeline.pipeline;
 
-        let its_settings = match telemetry_system.internal_telemetry_settings() {
-            None => {
-                // Note: An inconsistency warning will be logged by the
-                // calling function.
-                return Ok(None);
-            }
-            Some(its_settings) => its_settings,
-        };
+        let internal_telemetry_settings = telemetry_system.internal_telemetry_settings();
 
         // Create a channel to signal startup success/failure
         let (startup_tx, startup_rx) = std_mpsc::sync_channel::<Result<(), EngineError>>(1);
         let launched = Self::launch_pipeline_thread(
             pipeline_factory,
-            its_key,
-            its_core,
+            observability_key,
+            observability_core,
             0,
             Arc::new(ListenerGroupSnapshot::empty()),
             1,
-            internal_config,
+            pipeline_config,
             channel_capacity_policy,
             telemetry_policy,
             None,
@@ -2616,19 +2461,19 @@ impl<
             config,
             runtime
                 .upgrade()
-                .expect("controller runtime should exist while spawning internal pipeline")
+                .expect("controller runtime should exist while spawning observability pipeline")
                 .declared_topics(),
             runtime,
             0,
-            Some((its_settings, startup_tx)),
+            Some((internal_telemetry_settings, startup_tx)),
         )?;
 
-        // Wait for the internal pipeline to signal successful startup
+        // Wait for the observability pipeline to signal successful startup.
         match startup_rx.recv() {
             Ok(Ok(())) => {
                 otel_info!(
                     "internal_pipeline.started",
-                    message = "Internal telemetry pipeline started successfully"
+                    message = "Engine observability pipeline started successfully"
                 );
             }
             Ok(Err(e)) => {
@@ -2645,7 +2490,7 @@ impl<
             }
         }
 
-        Ok(Some(launched))
+        Ok(launched)
     }
 
     /// Runs a single pipeline in the current thread.
@@ -2703,7 +2548,10 @@ impl<
             ));
 
             // Build the runtime pipeline from the configuration
-            let its_settings = internal_telemetry.as_ref().map(|(s, _)| s).cloned();
+            let internal_telemetry_settings = internal_telemetry
+                .as_ref()
+                .map(|(settings, _)| settings)
+                .cloned();
             let runtime_pipeline = pipeline_factory
                 .build(
                     pipeline_context.clone(),
@@ -2711,7 +2559,7 @@ impl<
                     channel_capacity_policy,
                     telemetry_policy,
                     transport_headers_policy,
-                    its_settings,
+                    internal_telemetry_settings,
                 )
                 .map_err(|e| {
                     if let Some((_, startup_tx)) = internal_telemetry.as_ref() {
@@ -2773,10 +2621,23 @@ impl<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
+    use otap_df_config::node::NodeUserConfig;
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
+    use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
+    use otap_df_engine::control::NodeControlMsg;
+    use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::local::{exporter, processor, receiver};
+    use otap_df_engine::message::{ExporterInbox, Message};
+    use otap_df_engine::processor::ProcessorWrapper;
+    use otap_df_engine::receiver::ReceiverWrapper;
+    use otap_df_engine::terminal_state::TerminalState;
     use otap_df_engine::topology::{NumaTopology, TopologyCompleteness};
+    use otap_df_engine::wiring_contract::WiringContract;
+    use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
+    use otap_df_telemetry::metrics::MetricSetSnapshot;
     use std::collections::{BTreeMap, BTreeSet};
 
     fn available_core_ids() -> Vec<CoreId> {
@@ -2826,8 +2687,144 @@ connections:
         .expect("minimal test pipeline config should parse")
     }
 
-    fn empty_pipeline_factory() -> &'static PipelineFactory<()> {
-        Box::leak(Box::new(PipelineFactory::new(&[], &[], &[], &[])))
+    struct TestObservabilityReceiver;
+
+    #[async_trait(?Send)]
+    impl receiver::Receiver<()> for TestObservabilityReceiver {
+        async fn start(
+            self: Box<Self>,
+            mut ctrl_chan: receiver::ControlChannel<()>,
+            effect_handler: receiver::EffectHandler<()>,
+        ) -> Result<TerminalState, otap_df_engine::error::Error> {
+            loop {
+                let msg = ctrl_chan.recv().await?;
+                match msg {
+                    NodeControlMsg::DrainIngress { deadline, .. } => {
+                        effect_handler.notify_receiver_drained().await?;
+                        return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                    }
+                    NodeControlMsg::Shutdown { deadline, .. } => {
+                        return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    struct TestObservabilityProcessor;
+
+    #[async_trait(?Send)]
+    impl processor::Processor<()> for TestObservabilityProcessor {
+        async fn process(
+            &mut self,
+            _msg: Message<()>,
+            _effect_handler: &mut processor::EffectHandler<()>,
+        ) -> Result<(), otap_df_engine::error::Error> {
+            Ok(())
+        }
+    }
+
+    struct TestObservabilityExporter;
+
+    #[async_trait(?Send)]
+    impl exporter::Exporter<()> for TestObservabilityExporter {
+        async fn start(
+            self: Box<Self>,
+            mut inbox: ExporterInbox<()>,
+            _effect_handler: exporter::EffectHandler<()>,
+        ) -> Result<TerminalState, otap_df_engine::error::Error> {
+            loop {
+                if let Message::Control(NodeControlMsg::Shutdown { deadline, .. }) =
+                    inbox.recv().await?
+                {
+                    return Ok(TerminalState::new::<[MetricSetSnapshot; 0]>(deadline, []));
+                }
+            }
+        }
+    }
+
+    fn create_test_observability_receiver(
+        _pipeline_ctx: PipelineContext,
+        node: otap_df_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        receiver_config: &ReceiverConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<()>, otap_df_config::error::Error> {
+        Ok(ReceiverWrapper::local(
+            TestObservabilityReceiver,
+            node,
+            node_config,
+            receiver_config,
+        ))
+    }
+
+    fn create_test_observability_processor(
+        _pipeline_ctx: PipelineContext,
+        node: otap_df_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        processor_config: &ProcessorConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+        Ok(ProcessorWrapper::local(
+            TestObservabilityProcessor,
+            node,
+            node_config,
+            processor_config,
+        ))
+    }
+
+    fn create_test_observability_exporter(
+        _pipeline_ctx: PipelineContext,
+        node: otap_df_engine::node::NodeId,
+        node_config: Arc<NodeUserConfig>,
+        exporter_config: &ExporterConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ExporterWrapper<()>, otap_df_config::error::Error> {
+        Ok(ExporterWrapper::local(
+            TestObservabilityExporter,
+            node,
+            node_config,
+            exporter_config,
+        ))
+    }
+
+    static TEST_OBSERVABILITY_RECEIVERS: &[ReceiverFactory<()>] = &[ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: create_test_observability_receiver,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: accept_any_test_config,
+    }];
+
+    static TEST_OBSERVABILITY_PROCESSORS: &[ProcessorFactory<()>] = &[ProcessorFactory {
+        name: "urn:otel:processor:type_router",
+        create: create_test_observability_processor,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: accept_any_test_config,
+    }];
+
+    static TEST_OBSERVABILITY_EXPORTERS: &[ExporterFactory<()>] = &[
+        ExporterFactory {
+            name: "urn:otel:exporter:console",
+            create: create_test_observability_exporter,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+        ExporterFactory {
+            name: "urn:otel:exporter:noop",
+            create: create_test_observability_exporter,
+            wiring_contract: WiringContract::UNRESTRICTED,
+            validate_config: accept_any_test_config,
+        },
+    ];
+
+    fn test_pipeline_factory() -> &'static PipelineFactory<()> {
+        Box::leak(Box::new(PipelineFactory::new(
+            TEST_OBSERVABILITY_RECEIVERS,
+            TEST_OBSERVABILITY_PROCESSORS,
+            TEST_OBSERVABILITY_EXPORTERS,
+            &[],
+        )))
     }
 
     const TEST_LINKED_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:controller_linked";
@@ -2844,7 +2841,7 @@ connections:
         otap_df_config::validation::no_config(config)
     }
 
-    fn accept_any_controller_extension_config(
+    fn accept_any_test_config(
         _config: &serde_json::Value,
     ) -> Result<(), otap_df_config::error::Error> {
         Ok(())
@@ -3191,7 +3188,7 @@ groups: {{}}
         registry.register(
             extension_type.clone(),
             start_test_linked_controller_extension,
-            accept_any_controller_extension_config,
+            accept_any_test_config,
         );
 
         let factory = registry
@@ -3220,7 +3217,7 @@ groups: {{}}
             otap_df_config::validation::no_config,
         );
 
-        let controller = Controller::new(empty_pipeline_factory());
+        let controller = Controller::new(test_pipeline_factory());
         controller
             .run_till_shutdown_with_options(
                 controller_extensions_engine_config(ORDERED_CONTROLLER_EXTENSION_URN),
@@ -3280,7 +3277,7 @@ groups: {{}}
 
     #[test]
     fn built_in_controller_monitor_runs_with_default_registry() {
-        let controller = Controller::new(empty_pipeline_factory());
+        let controller = Controller::new(test_pipeline_factory());
         controller
             .run_till_shutdown_with_options(
                 controller_monitor_engine_config(
@@ -3295,7 +3292,7 @@ groups: {{}}
 
     #[test]
     fn configured_controller_monitor_requires_registered_factory() {
-        let controller = Controller::new(empty_pipeline_factory());
+        let controller = Controller::new(test_pipeline_factory());
         let err = controller
             .run_till_shutdown_with_options(
                 controller_monitor_engine_config(""),
@@ -3319,7 +3316,7 @@ groups: {{}}
 
     #[test]
     fn controller_monitor_rejects_invalid_config_at_startup() {
-        let controller = Controller::new(empty_pipeline_factory());
+        let controller = Controller::new(test_pipeline_factory());
         let err = controller
             .run_till_shutdown_with_options(
                 controller_monitor_engine_config(
@@ -3349,7 +3346,7 @@ groups: {{}}
     fn controller_extension_start_error_prevents_bootstrap_pipeline_registration() {
         const START_FAILING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:start_failing";
 
-        let controller = Controller::new(empty_pipeline_factory());
+        let controller = Controller::new(test_pipeline_factory());
         let observed_pipeline_count = Arc::new(std::sync::Mutex::new(None));
         let observed_pipeline_count_for_factory = Arc::clone(&observed_pipeline_count);
         let mut registry = ControllerExtensionRegistry::empty();
@@ -3441,7 +3438,7 @@ groups: {{}}
 
         let (result_tx, result_rx) = std_mpsc::channel();
         let controller_thread = thread::spawn(move || {
-            let controller = Controller::new(empty_pipeline_factory());
+            let controller = Controller::new(test_pipeline_factory());
             let result = controller
                 .run_forever_with_options(
                     engine_config,

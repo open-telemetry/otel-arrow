@@ -980,22 +980,18 @@ mod tests {
     use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
     use otap_df_config::observed_state::SendPolicy;
     use otap_df_config::pipeline::telemetry::TelemetryConfig;
-    use otap_df_config::pipeline::telemetry::metrics::{MetricsConfig, MetricsProvider};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
 
+    /// Scenario: a pipeline has pending terminal metrics when telemetry cleanup starts.
+    /// Guarantees: the final snapshot reaches the registry before entity handles are released.
     #[tokio::test(flavor = "current_thread")]
     async fn terminal_snapshot_is_aggregated_before_telemetry_cleanup() {
         let registry = TelemetryRegistryHandle::new();
-        let config = TelemetryConfig {
-            metrics: MetricsConfig {
-                provider: MetricsProvider::Its,
-                ..MetricsConfig::default()
-            },
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let metrics_system = InternalTelemetrySystem::new(
             &config,
+            config.reporting_interval,
             registry.clone(),
             None,
             SendPolicy::default(),

@@ -33,6 +33,7 @@ pub use linkme::distributed_slice;
 use otap_df_config::MetricLevel;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
+    engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
     policy::{ChannelCapacityPolicy, TelemetryPolicy},
@@ -40,7 +41,6 @@ use otap_df_config::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
 };
-use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
 use std::borrow::Cow;
