@@ -38,7 +38,7 @@ config:
 ### Agent-fed credentials
 
 When the embedding host supplies the Geneva token and routing metadata, bind
-both capabilities to the same host extension instance and use `agentfed`
+both capabilities to the same configured host extension and use `agentfed`
 authentication:
 
 ```yaml
@@ -63,6 +63,8 @@ config:
 the ingestion endpoint through `vendor_bundle`. The exporter selects a moniker
 from `moniker_map` by the configured `account`, then `default`, then a sole map
 entry. A map with multiple entries and no account/default match is rejected.
+Capability bindings are checked when the exporter is created because the
+factory's earlier config-validation hook receives only the `config` object.
 
 ## Build df_engine with Geneva Exporter
 

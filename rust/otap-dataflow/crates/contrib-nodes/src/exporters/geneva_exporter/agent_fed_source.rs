@@ -49,7 +49,8 @@ pub(crate) struct AgentFedGenevaSource {
     account: String,
     bearer_failures: FailureLogLimiter,
     vendor_failures: FailureLogLimiter,
-    credential_failures: FailureLogLimiter,
+    empty_token_failures: FailureLogLimiter,
+    routing_failures: FailureLogLimiter,
 }
 
 impl std::fmt::Debug for AgentFedGenevaSource {
@@ -71,12 +72,13 @@ impl AgentFedGenevaSource {
             account,
             bearer_failures: FailureLogLimiter::default(),
             vendor_failures: FailureLogLimiter::default(),
-            credential_failures: FailureLogLimiter::default(),
+            empty_token_failures: FailureLogLimiter::default(),
+            routing_failures: FailureLogLimiter::default(),
         }
     }
 
-    fn log_invalid_credential(&self, reason: &'static str) {
-        if let Some(consecutive_failures) = self.credential_failures.record_failure() {
+    fn log_invalid_credential(limiter: &FailureLogLimiter, reason: &'static str) {
+        if let Some(consecutive_failures) = limiter.record_failure() {
             otel_warn!(
                 "geneva_exporter.agent_fed.invalid_credential",
                 reason = reason,
@@ -93,6 +95,9 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
             let token = match self.bearer.lock().await.get_token().await {
                 Ok(token) => {
                     self.bearer_failures.record_success();
+                    // The uploader credential owns a String, so this is the
+                    // required plaintext copy at the adapter boundary. Its
+                    // Debug implementation redacts the token.
                     token.expose_token().to_owned()
                 }
                 Err(error) => {
@@ -107,9 +112,10 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
                 }
             };
             if token.is_empty() {
-                self.log_invalid_credential("bearer token is empty");
+                Self::log_invalid_credential(&self.empty_token_failures, "bearer token is empty");
                 return None;
             }
+            self.empty_token_failures.record_success();
 
             let attributes = match self.vendor.lock().await.attributes() {
                 Ok(attributes) => {
@@ -129,11 +135,11 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
             };
             let (endpoint, moniker) = match resolve_routing(&attributes, &self.account) {
                 Ok(routing) => {
-                    self.credential_failures.record_success();
+                    self.routing_failures.record_success();
                     routing
                 }
                 Err(reason) => {
-                    self.log_invalid_credential(reason);
+                    Self::log_invalid_credential(&self.routing_failures, reason);
                     return None;
                 }
             };
@@ -422,5 +428,14 @@ mod tests {
         assert_eq!(limiter.record_failure(), Some(4));
         limiter.record_success();
         assert_eq!(limiter.record_failure(), Some(1));
+    }
+
+    #[test]
+    fn failure_categories_are_sampled_independently() {
+        let source = source("tok", false, full_attrs());
+
+        assert_eq!(source.empty_token_failures.record_failure(), Some(1));
+        assert_eq!(source.empty_token_failures.record_failure(), Some(2));
+        assert_eq!(source.routing_failures.record_failure(), Some(1));
     }
 }
