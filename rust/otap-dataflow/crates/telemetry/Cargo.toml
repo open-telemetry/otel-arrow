@@ -23,6 +23,7 @@ otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-pdata-views = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
+otap-df-expohisto = { workspace = true }
 
 bytes = { workspace = true }
 chrono = { workspace = true }

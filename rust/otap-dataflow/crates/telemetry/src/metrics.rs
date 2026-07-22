@@ -9,6 +9,8 @@
 
 pub mod otlp;
 
+mod exphist;
+
 use crate::attributes::{AttributeSetHandler, MeasurementAttributeSet};
 use crate::descriptor::{
     Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField, Temporality,

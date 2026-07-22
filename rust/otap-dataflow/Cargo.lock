@@ -7419,6 +7419,7 @@ dependencies = [
  "chrono",
  "flume",
  "otap-df-config",
+ "otap-df-expohisto",
  "otap-df-pdata",
  "otap-df-pdata-views",
  "otap-df-telemetry-macros",
