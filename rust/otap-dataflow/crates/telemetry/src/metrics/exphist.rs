@@ -73,7 +73,6 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
 /// and negative ranges, zero `zero_count`) and preserves the exact `count`,
 /// `min`, and `max`. `sum` is populated only for non-negative populations, for
 /// which the OTLP sum is well defined.
-#[allow(dead_code)]
 pub(crate) fn mmsc_exponential_histogram_data_point(
     snapshot: &MmscSnapshot,
     start_time_unix_nano: u64,

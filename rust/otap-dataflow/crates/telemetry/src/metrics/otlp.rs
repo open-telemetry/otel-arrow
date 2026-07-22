@@ -68,7 +68,7 @@
 //! | `UpDownCounter` | non-monotonic `Sum` | Descriptor temporality; delta-window or registration start |
 //! | `Gauge` | `Gauge` | Start time is zero, as required for an instantaneous value |
 //! | scalar `Histogram` | delta `Histogram` with one observation | Delta-window start; uses the bridge's stable explicit bounds |
-//! | `Mmsc` | delta, bucketless `Histogram` | Delta-window start; preserves exact min, max, sum, and count |
+//! | `Mmsc` | delta, bucketless `ExponentialHistogram` | Delta-window start; preserves exact min, max, sum, and count |
 //!
 //! Every point uses [`MetricExportBatch::time_unix_nano`] as its end time. A
 //! dirty scalar field is emitted even when its value is zero, because zero may
@@ -111,8 +111,8 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::proto::opentelemetry::collector::metrics::v1::ExportMetricsServiceRequest;
 use otap_df_pdata::proto::opentelemetry::common::v1::{AnyValue, InstrumentationScope, KeyValue};
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
-    AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
-    ResourceMetrics, ScopeMetrics, Sum, metric,
+    AggregationTemporality, ExponentialHistogram, Gauge, Histogram, HistogramDataPoint, Metric,
+    NumberDataPoint, ResourceMetrics, ScopeMetrics, Sum, metric,
 };
 use prost::Message;
 use smallvec::SmallVec;
@@ -449,6 +449,10 @@ fn metric_data_compatible(left: &Metric, right: &Metric) -> bool {
         (Some(metric::Data::Histogram(left)), Some(metric::Data::Histogram(right))) => {
             left.aggregation_temporality == right.aggregation_temporality
         }
+        (
+            Some(metric::Data::ExponentialHistogram(left)),
+            Some(metric::Data::ExponentialHistogram(right)),
+        ) => left.aggregation_temporality == right.aggregation_temporality,
         _ => false,
     }
 }
@@ -462,6 +466,12 @@ fn append_metric_points(target: &mut Metric, incoming: Metric) {
             target.data_points.append(&mut incoming.data_points);
         }
         (Some(metric::Data::Histogram(target)), Some(metric::Data::Histogram(mut incoming))) => {
+            target.data_points.append(&mut incoming.data_points);
+        }
+        (
+            Some(metric::Data::ExponentialHistogram(target)),
+            Some(metric::Data::ExponentialHistogram(mut incoming)),
+        ) => {
             target.data_points.append(&mut incoming.data_points);
         }
         _ => unreachable!("metric stream compatibility was checked before merging"),
@@ -828,20 +838,16 @@ fn encode_metric(
             if snapshot.count == 0 {
                 return Ok(None);
             }
-            let mut point = HistogramDataPoint::build()
-                .attributes(datapoint_attributes.to_vec())
-                .start_time_unix_nano(metric_set.delta_start_time_unix_nano)
-                .time_unix_nano(time_unix_nano)
-                .count(snapshot.count)
-                .min(snapshot.min)
-                .max(snapshot.max)
-                .bucket_counts(Vec::<u64>::new())
-                .explicit_bounds(Vec::<f64>::new());
-            if snapshot.min >= 0.0 {
-                point = point.sum(snapshot.sum);
-            }
-            let point = point.finish();
-            metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
+            let point = crate::metrics::exphist::mmsc_exponential_histogram_data_point(
+                &snapshot,
+                metric_set.delta_start_time_unix_nano,
+                time_unix_nano,
+                datapoint_attributes,
+            );
+            metric::Data::ExponentialHistogram(ExponentialHistogram::new(
+                AggregationTemporality::Delta,
+                vec![point],
+            ))
         }
     };
 
@@ -1736,8 +1742,8 @@ mod tests {
         );
 
         let mmsc = metric_named(scope, "histogram.mmsc");
-        let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
-            panic!("expected histogram metric")
+        let Some(metric::Data::ExponentialHistogram(histogram)) = mmsc.data.as_ref() else {
+            panic!("expected exponential histogram metric")
         };
         assert_eq!(histogram.data_points[0].min, Some(0.0));
         assert_eq!(histogram.data_points[0].max, Some(5.0));
@@ -1854,8 +1860,8 @@ mod tests {
         assert_eq!(point.bucket_counts, expected_buckets);
 
         let mmsc = metric_named(scope, "histogram.mmsc");
-        let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
-            panic!("expected MMSC histogram metric")
+        let Some(metric::Data::ExponentialHistogram(histogram)) = mmsc.data.as_ref() else {
+            panic!("expected MMSC exponential histogram metric")
         };
         assert_eq!(
             histogram.aggregation_temporality,
@@ -1870,8 +1876,10 @@ mod tests {
         assert_eq!(point.sum, Some(20.0));
         assert_eq!(point.min, Some(2.0));
         assert_eq!(point.max, Some(9.0));
-        assert!(point.bucket_counts.is_empty());
-        assert!(point.explicit_bounds.is_empty());
+        assert_eq!(point.scale, 0);
+        assert_eq!(point.zero_count, 0);
+        assert!(point.positive.is_none());
+        assert!(point.negative.is_none());
     }
 
     #[test]
@@ -2076,8 +2084,8 @@ mod tests {
                 .expect("MMSC produces a request"),
         );
         let metric = metric_named(only_scope(&request), "histogram.empty");
-        let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
-            panic!("expected histogram metric")
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metric.data.as_ref() else {
+            panic!("expected exponential histogram metric")
         };
         let [point] = histogram.data_points.as_slice() else {
             panic!("expected one histogram data point")
