@@ -211,6 +211,7 @@ participate!
 - [Drew Relmas](https://github.com/drewrelmas), Microsoft
 - [Jake Dern](https://github.com/JakeDern), F5
 - [Joshua MacDonald](https://github.com/jmacd), Microsoft
+- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
 - [Laurent Qu&#xE9;rel](https://github.com/lquerel), F5
 - [Utkarsh Umesan Pillai](https://github.com/utpilla), Microsoft
 
@@ -220,7 +221,6 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 ### Approvers
 
 - [Cijo Thomas](https://github.com/cijothomas), Microsoft
-- [Lalit Kumar Bhasin](https://github.com/lalitb), Microsoft
 
 For more information about the approver role, see the [community
 repository](https://github.com/open-telemetry/community/blob/main/guides/contributor/membership.md#approver).
