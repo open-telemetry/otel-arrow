@@ -73,6 +73,7 @@ use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 mod agent_fed_source;
 
 use agent_fed_source::AgentFedGenevaSource;
+use otap_df_engine::capability::ExtensionCapability;
 use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider as BearerTokenProviderCap;
 use otap_df_engine::capability::vendor_bundle::VendorBundle as VendorBundleCap;
 
@@ -507,7 +508,8 @@ pub struct TracesConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Geneva endpoint URL
+    /// Geneva config-service endpoint URL (required except for agent-fed auth)
+    #[serde(default)]
     pub endpoint: String,
     /// Environment (e.g., "production", "staging")
     pub environment: String,
@@ -515,7 +517,8 @@ pub struct Config {
     pub account: String,
     /// Geneva namespace
     pub namespace: String,
-    /// Azure region
+    /// Azure region (required except for agent-fed auth)
+    #[serde(default)]
     pub region: String,
     /// Config major version (required)
     pub config_major_version: u32,
@@ -551,6 +554,37 @@ const fn default_max_concurrent() -> usize {
 }
 
 impl Config {
+    fn parse(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
+        let parsed: Self = serde_json::from_value(config.clone()).map_err(|error| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            }
+        })?;
+        parsed.validate()?;
+        Ok(parsed)
+    }
+
+    fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+        if self.account.trim().is_empty() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "account must not be empty".to_owned(),
+            });
+        }
+        if !matches!(self.auth, AuthConfig::AgentFed) {
+            if self.endpoint.trim().is_empty() {
+                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: "endpoint is required unless auth.type is agentfed".to_owned(),
+                });
+            }
+            if self.region.trim().is_empty() {
+                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: "region is required unless auth.type is agentfed".to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Build the `geneva-uploader` `GenevaClientConfig` from this exporter
     /// configuration.
     ///
@@ -580,6 +614,9 @@ impl Config {
             AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
                 resource: msi_resource.clone(),
             },
+            // `with_agent_fed_source` ignores this field. The placeholder only
+            // satisfies the shared uploader configuration type.
+            AuthConfig::AgentFed => AuthMethod::SystemManagedIdentity,
         };
 
         // Get MSI resource if needed for managed identity
@@ -588,7 +625,7 @@ impl Config {
             | AuthConfig::UserManagedIdentity { msi_resource, .. }
             | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
             | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
-            AuthConfig::Certificate { .. } => None,
+            AuthConfig::Certificate { .. } | AuthConfig::AgentFed => None,
         };
 
         // Create LogsConfig and TracesConfig from the configuration
@@ -624,6 +661,10 @@ impl Config {
             obo_event_map: None,
         }
     }
+}
+
+fn validate_config(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+    Config::parse(config).map(|_| ())
 }
 
 /// Authentication configuration
@@ -667,7 +708,8 @@ pub enum AuthConfig {
     /// GIG token and routing attributes through the `bearer_token_provider`
     /// and `vendor_bundle` capabilities, so the uploader skips the GCS
     /// config-service handshake. Carries no config fields; the capabilities
-    /// are bound to a host extension via the node's `capabilities` block.
+    /// must bind to the same host extension via the node's `capabilities`
+    /// block.
     AgentFed,
 }
 
@@ -775,21 +817,45 @@ pub struct GenevaExporter {
     geneva_client: GenevaClient,
 }
 
+fn validate_agent_fed_capability_bindings(
+    node_config: &NodeUserConfig,
+) -> Result<(), otap_df_config::error::Error> {
+    let bearer_name = BearerTokenProviderCap::NAME;
+    let vendor_name = VendorBundleCap::NAME;
+    let bearer_extension = node_config.capabilities.get(bearer_name).ok_or_else(|| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: format!("agent-fed Geneva auth requires a '{bearer_name}' capability binding"),
+        }
+    })?;
+    let vendor_extension = node_config.capabilities.get(vendor_name).ok_or_else(|| {
+        otap_df_config::error::Error::InvalidUserConfig {
+            error: format!("agent-fed Geneva auth requires a '{vendor_name}' capability binding"),
+        }
+    })?;
+
+    if bearer_extension != vendor_extension {
+        return Err(otap_df_config::error::Error::InvalidUserConfig {
+            error: format!(
+                "agent-fed Geneva auth requires '{bearer_name}' and '{vendor_name}' \
+                 to bind to the same extension instance"
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 impl GenevaExporter {
     /// Create a new Geneva exporter from configuration
     pub fn from_config(
         pipeline_ctx: PipelineContext,
-        config: &serde_json::Value,
+        node_config: &NodeUserConfig,
         capabilities: &otap_df_engine::capability::registry::Capabilities,
     ) -> Result<Self, otap_df_config::error::Error> {
         let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
         let metrics = pipeline_ctx.register_metrics::<ExporterMetrics>();
 
-        let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: e.to_string(),
-            }
-        })?;
+        let config = Config::parse(&node_config.config)?;
 
         let client_config = config.to_geneva_client_config();
 
@@ -812,6 +878,7 @@ impl GenevaExporter {
         // other auth methods drive the GCS config-service handshake.
         let geneva_client = match &config.auth {
             AuthConfig::AgentFed => {
+                validate_agent_fed_capability_bindings(node_config)?;
                 let bearer = capabilities
                     .require_shared::<BearerTokenProviderCap>()
                     .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
@@ -827,7 +894,7 @@ impl GenevaExporter {
                              (carries the endpoint/moniker routing): {e}"
                         ),
                     })?;
-                let source = AgentFedGenevaSource::new(bearer, vendor);
+                let source = AgentFedGenevaSource::new(bearer, vendor, config.account.clone());
                 GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(
                     |e| otap_df_config::error::Error::InvalidUserConfig {
                         error: format!("Failed to initialize agent-fed Geneva client: {e}"),
@@ -1207,14 +1274,14 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              exporter_config: &ExporterConfig,
              capabilities: &otap_df_engine::capability::registry::Capabilities| {
         Ok(ExporterWrapper::local(
-            GenevaExporter::from_config(pipeline, &node_config.config, capabilities)?,
+            GenevaExporter::from_config(pipeline, &node_config, capabilities)?,
             node,
             node_config,
             exporter_config,
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
+    validate_config,
 };
 
 #[async_trait(?Send)]
@@ -1224,15 +1291,30 @@ impl Exporter<OtapPdata> for GenevaExporter {
         mut msg_chan: ExporterInbox<OtapPdata>,
         effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
-        otel_info!(
-            "geneva_exporter.start",
-            endpoint = self.config.endpoint,
-            namespace = self.config.namespace,
-            account = self.config.account,
-            role_name = self.config.role_name,
-            role_instance = self.config.role_instance,
-            message = "Geneva exporter starting"
-        );
+        match &self.config.auth {
+            AuthConfig::AgentFed => {
+                otel_info!(
+                    "geneva_exporter.start",
+                    endpoint_source = "vendor_bundle",
+                    namespace = self.config.namespace,
+                    account = self.config.account,
+                    role_name = self.config.role_name,
+                    role_instance = self.config.role_instance,
+                    message = "Geneva exporter starting"
+                );
+            }
+            _ => {
+                otel_info!(
+                    "geneva_exporter.start",
+                    endpoint = self.config.endpoint,
+                    namespace = self.config.namespace,
+                    account = self.config.account,
+                    role_name = self.config.role_name,
+                    role_instance = self.config.role_instance,
+                    message = "Geneva exporter starting"
+                );
+            }
+        }
 
         // Message loop
         loop {
@@ -1311,6 +1393,7 @@ impl Exporter<OtapPdata> for GenevaExporter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use serde_json;
 
     use arrow::array::{
@@ -1322,14 +1405,27 @@ mod tests {
 
     use bytes::Bytes;
     use otap_df_engine::Interests;
+    use otap_df_engine::capability::SharedInstanceFactory;
+    use otap_df_engine::capability::bearer_token_provider::{BearerToken, TokenStream};
+    use otap_df_engine::capability::registry::CapabilityRegistry;
+    use otap_df_engine::capability::{CapabilityError, ExtensionCapability};
     use otap_df_engine::control::PipelineCompletionMsg;
-    use otap_df_engine::testing::exporter::{TestRuntime, create_exporter_from_factory};
+    use otap_df_engine::extension_capabilities;
+    use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+    use otap_df_engine::shared::capability::vendor_bundle::VendorBundle as SharedVendorBundle;
+    use otap_df_engine::testing::capability::resolve_bindings_for_test;
+    use otap_df_engine::testing::exporter::{
+        TestRuntime, create_exporter_from_factory, create_test_pipeline_context,
+    };
+    use otap_df_engine::testing::test_node;
     use otap_df_otap::testing::{TestCallData, next_ack, next_nack};
     use otap_df_pdata::otap::OtapArrowRecords;
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
     use otap_df_pdata::schema::{FieldExt, consts};
     use otap_df_pdata::views::otap::OtapLogsView;
     use otap_df_pdata_views::views::logs::{LogsDataView, ResourceLogsView, ScopeLogsView};
+    use std::any::Any;
+    use std::collections::HashSet;
     use std::time::{Duration, Instant};
 
     fn plain_field(name: &str, data_type: DataType, nullable: bool) -> Field {
@@ -1478,6 +1574,95 @@ mod tests {
             "max_buffer_size": 1000,
             "max_concurrent_uploads": 2
         })
+    }
+
+    fn agent_fed_test_config() -> serde_json::Value {
+        serde_json::json!({
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "agentfed"
+            },
+            "max_buffer_size": 1000,
+            "max_concurrent_uploads": 2
+        })
+    }
+
+    fn agent_fed_node_config(
+        bearer_extension: Option<&str>,
+        vendor_extension: Option<&str>,
+    ) -> NodeUserConfig {
+        let mut node_config = NodeUserConfig::new_exporter_config(GENEVA_EXPORTER_URN);
+        node_config.config = agent_fed_test_config();
+        if let Some(extension) = bearer_extension {
+            let _ = node_config.capabilities.insert(
+                BearerTokenProviderCap::NAME.into(),
+                extension.to_owned().into(),
+            );
+        }
+        if let Some(extension) = vendor_extension {
+            let _ = node_config
+                .capabilities
+                .insert(VendorBundleCap::NAME.into(), extension.to_owned().into());
+        }
+        node_config
+    }
+
+    #[derive(Clone)]
+    struct MockAgentExtension {
+        token: String,
+        attributes: Arc<serde_json::Map<String, serde_json::Value>>,
+    }
+
+    #[async_trait]
+    impl SharedBearerTokenProvider for MockAgentExtension {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            Ok(BearerToken::new(self.token.clone(), None))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            futures::stream::empty::<BearerToken>().boxed()
+        }
+    }
+
+    impl SharedVendorBundle for MockAgentExtension {
+        fn attributes(
+            &self,
+        ) -> Result<Arc<serde_json::Map<String, serde_json::Value>>, CapabilityError> {
+            Ok(self.attributes.clone())
+        }
+    }
+
+    fn resolved_agent_fed_capabilities(
+        node_config: &NodeUserConfig,
+    ) -> otap_df_engine::capability::registry::Capabilities {
+        let attributes = serde_json::json!({
+            "endpoint": "https://ep",
+            "moniker_map": { "test-account": "test-moniker" },
+        })
+        .as_object()
+        .cloned()
+        .expect("object");
+        let extension = MockAgentExtension {
+            token: "test-token".to_owned(),
+            attributes: Arc::new(attributes),
+        };
+        let extension_capabilities = extension_capabilities!(
+            shared: MockAgentExtension => [BearerTokenProviderCap, VendorBundleCap]
+        );
+        let instance_factory =
+            SharedInstanceFactory::new(move || Box::new(extension.clone()) as Box<dyn Any + Send>);
+        let mut registry = CapabilityRegistry::new();
+        (extension_capabilities.register_shared)("agent".into(), instance_factory, &mut registry)
+            .expect("register capabilities");
+        let known_extensions = HashSet::<otap_df_config::ExtensionId>::from(["agent".into()]);
+        resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+            .expect("resolve capabilities")
     }
 
     #[test]
@@ -1671,6 +1856,81 @@ mod tests {
     }
 
     #[test]
+    fn agent_fed_config_can_omit_gcs_endpoint_and_region() {
+        let config = Config::parse(&agent_fed_test_config()).expect("valid agent-fed config");
+        assert!(config.endpoint.is_empty());
+        assert!(config.region.is_empty());
+        assert!(matches!(config.auth, AuthConfig::AgentFed));
+    }
+
+    #[test]
+    fn non_agent_fed_config_requires_endpoint_and_region() {
+        let mut missing_endpoint = test_config();
+        let _ = missing_endpoint
+            .as_object_mut()
+            .expect("object")
+            .remove("endpoint");
+        let error = Config::parse(&missing_endpoint).expect_err("endpoint must be required");
+        assert!(error.to_string().contains("endpoint is required"));
+
+        let mut missing_region = test_config();
+        let _ = missing_region
+            .as_object_mut()
+            .expect("object")
+            .remove("region");
+        let error = Config::parse(&missing_region).expect_err("region must be required");
+        assert!(error.to_string().contains("region is required"));
+    }
+
+    #[test]
+    fn agent_fed_config_requires_account_for_moniker_selection() {
+        let mut config = agent_fed_test_config();
+        config["account"] = serde_json::Value::String(String::new());
+        let error = Config::parse(&config).expect_err("account must be required");
+        assert!(error.to_string().contains("account must not be empty"));
+    }
+
+    #[test]
+    fn agent_fed_capabilities_must_bind_to_the_same_extension() {
+        let node_config = agent_fed_node_config(Some("agent-a"), Some("agent-b"));
+        let error = validate_agent_fed_capability_bindings(&node_config)
+            .expect_err("mismatched extensions must fail");
+        assert!(error.to_string().contains("same extension instance"));
+
+        let node_config = agent_fed_node_config(Some("agent"), Some("agent"));
+        validate_agent_fed_capability_bindings(&node_config)
+            .expect("matching extensions must pass");
+    }
+
+    #[test]
+    fn agent_fed_capabilities_require_both_bindings() {
+        let missing_bearer = agent_fed_node_config(None, Some("agent"));
+        let error = validate_agent_fed_capability_bindings(&missing_bearer)
+            .expect_err("bearer binding must be required");
+        assert!(error.to_string().contains("bearer_token_provider"));
+
+        let missing_vendor = agent_fed_node_config(Some("agent"), None);
+        let error = validate_agent_fed_capability_bindings(&missing_vendor)
+            .expect_err("vendor binding must be required");
+        assert!(error.to_string().contains("vendor_bundle"));
+    }
+
+    #[test]
+    fn creates_agent_fed_exporter_with_bound_capabilities() {
+        let node_config = agent_fed_node_config(Some("agent"), Some("agent"));
+        let capabilities = resolved_agent_fed_capabilities(&node_config);
+        let exporter_config = ExporterConfig::new("test-exporter");
+        let result = (GENEVA_EXPORTER.create)(
+            create_test_pipeline_context(),
+            test_node("test-exporter".to_owned()),
+            Arc::new(node_config),
+            &exporter_config,
+            &capabilities,
+        );
+        assert!(result.is_ok(), "agent-fed exporter should initialize");
+    }
+
+    #[test]
     fn test_auth_config_variants() {
         let cert_json = serde_json::json!({
             "type": "certificate",
@@ -1721,6 +1981,12 @@ mod tests {
         });
         let workload: AuthConfig = serde_json::from_value(workload_json).unwrap();
         assert!(matches!(workload, AuthConfig::WorkloadIdentity { .. }));
+
+        let agent_fed_json = serde_json::json!({
+            "type": "agentfed"
+        });
+        let agent_fed: AuthConfig = serde_json::from_value(agent_fed_json).unwrap();
+        assert!(matches!(agent_fed, AuthConfig::AgentFed));
     }
 
     #[test]

@@ -9,6 +9,9 @@ issues: [3275]
 subtext: |
   The Geneva exporter binds a fail-closed `AgentFedGenevaSource` when
   `auth.type=agentfed`, bridging the agent-fed capabilities to
-  geneva-uploader's agent-fed credential source. The Azure Monitor exporter
-  already consumes the `BearerTokenProvider` capability, so an agent-fed
-  host extension bound to that capability serves it with no exporter change.
+  geneva-uploader's agent-fed credential source. Both capabilities must bind
+  to the same extension instance. The exporter selects `moniker_map` by the
+  configured account, then `default`, then a sole entry, and rejects ambiguous
+  maps. The Azure Monitor exporter already consumes the `BearerTokenProvider`
+  capability, so an agent-fed host extension bound to that capability serves
+  it with no exporter change.

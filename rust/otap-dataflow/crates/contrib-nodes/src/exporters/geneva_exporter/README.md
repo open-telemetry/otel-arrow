@@ -35,6 +35,35 @@ config:
   max_concurrent_uploads: 4
 ```
 
+### Agent-fed credentials
+
+When the embedding host supplies the Geneva token and routing metadata, bind
+both capabilities to the same host extension instance and use `agentfed`
+authentication:
+
+```yaml
+type: urn:microsoft:exporter:geneva
+capabilities:
+  bearer_token_provider: agent-auth
+  vendor_bundle: agent-auth
+config:
+  environment: production
+  account: "my-account"
+  namespace: "my-namespace"
+  config_major_version: 1
+  tenant: "my-tenant"
+  role_name: "df-engine"
+  role_instance: "instance-001"
+  auth:
+    type: agentfed
+  max_concurrent_uploads: 4
+```
+
+`endpoint` and `region` are not required in this mode because the host supplies
+the ingestion endpoint through `vendor_bundle`. The exporter selects a moniker
+from `moniker_map` by the configured `account`, then `default`, then a sole map
+entry. A map with multiple entries and no account/default match is rejected.
+
 ## Build df_engine with Geneva Exporter
 
 From the `otap-dataflow` directory:
@@ -70,7 +99,8 @@ You should see `urn:microsoft:exporter:geneva` in the Exporters list.
 ```yaml
 type: urn:microsoft:exporter:geneva
 config:
-  # Geneva endpoint and routing identity (all required).
+  # Geneva config-service endpoint and region are required for every
+  # authentication method except "agentfed".
   endpoint: "https://geneva.example.com"
   environment: production
   account: "my-account"
@@ -82,8 +112,8 @@ config:
   role_instance: "instance-001"
 
   # Authentication method. Other supported values are "certificate",
-  # "usermanagedidentity", "usermanagedidentitybyarmresourceid", and
-  # "workloadidentity".
+  # "usermanagedidentity", "usermanagedidentitybyarmresourceid",
+  # "workloadidentity", and "agentfed".
   auth:
     type: systemmanagedidentity
     msi_resource: "https://monitor.azure.com/"
