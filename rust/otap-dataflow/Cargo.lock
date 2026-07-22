@@ -7376,7 +7376,6 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "cpu-time",
- "data-encoding",
  "flume",
  "futures",
  "futures-core",
@@ -7403,7 +7402,6 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
- "uuid",
 ]
 
 [[package]]
