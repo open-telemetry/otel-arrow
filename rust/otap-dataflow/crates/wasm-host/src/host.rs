@@ -231,9 +231,7 @@ where
             }
         }
         _ => {
-            for _ in 0..dict.len() {
-                matches.push(false);
-            }
+            matches.resize(dict.len(), false);
         }
     }
     BooleanArray::from(matches)
