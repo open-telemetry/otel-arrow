@@ -24,7 +24,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer;
 use otap_df_pdata::TryIntoWithOptions;
@@ -36,8 +36,9 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::{
     arrow_metrics_service_client::ArrowMetricsServiceClient,
     arrow_traces_service_client::ArrowTracesServiceClient,
 };
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::instrument::{Gauge, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::{otel_debug, otel_error, otel_info, otel_warn};
 use otap_df_telemetry_macros::metric_set;
 use serde_json::Value;
@@ -60,7 +61,7 @@ use config::Config;
 /// Exporter that sends OTAP data via gRPC
 pub struct OTAPExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
     async_metrics: MetricSet<OtapGrpcAsyncMetrics>,
     export_latency_window: ExportLatencyWindow,
 }
@@ -207,7 +208,7 @@ impl OTAPExporter {
     /// Creates a new OTAPExporter
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
         let async_metrics = pipeline_ctx.register_metrics::<OtapGrpcAsyncMetrics>();
         OTAPExporter {
             config,
@@ -257,7 +258,13 @@ impl OTAPExporter {
                         .record(duration_ns);
                     self.export_latency_window.record(duration_ns);
                 }
-                self.pdata_metrics.inc_failed(signal_type);
+                self.pdata_metrics
+                    .with(SignalOutcomeAttributes {
+                        signal: signal_type,
+                        outcome: Outcome::Failure,
+                    })
+                    .messages
+                    .inc();
                 effect_handler
                     .notify_nack(NackMsg::new("export failed", pdata))
                     .await?;
@@ -267,7 +274,13 @@ impl OTAPExporter {
                     .export_rpc_duration_ns
                     .record(response_duration_ns);
                 self.export_latency_window.record(response_duration_ns);
-                self.pdata_metrics.inc_exported(signal_type);
+                self.pdata_metrics
+                    .with(SignalOutcomeAttributes {
+                        signal: signal_type,
+                        outcome: Outcome::Success,
+                    })
+                    .messages
+                    .inc();
                 effect_handler.notify_ack(AckMsg::new(pdata)).await?;
             }
             PDataMetricsUpdate::RecordStreamEncodeDuration(duration_ns) => {
@@ -549,7 +562,7 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                     }) => {
                         self.export_latency_window
                             .report_into(&mut self.async_metrics);
-                        _ = metrics_reporter.report(&mut self.pdata_metrics);
+                        _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                         _ = metrics_reporter.report(&mut self.async_metrics);
                     }
                     // shutdown the exporter
@@ -580,20 +593,29 @@ impl local::Exporter<OtapPdata> for OTAPExporter {
                             .report_into(&mut self.async_metrics);
                         return Ok(TerminalState::new(
                             deadline,
-                            [self.pdata_metrics.snapshot(), self.async_metrics.snapshot()],
+                            {
+                                let mut snapshots = self.pdata_metrics.terminal_snapshots();
+                                snapshots.push(self.async_metrics.snapshot());
+                                snapshots
+                            },
                         ))
                     }
                     //send data
                     Message::PData(mut pdata) => {
                         let signal_type = pdata.signal_type();
 
-                        self.pdata_metrics.inc_consumed(signal_type);
                         let payload = pdata.take_payload();
 
                         let message: OtapArrowRecords = match payload.try_into_with_default() {
                             Ok(m) => m,
                             Err(e) => {
-                                self.pdata_metrics.inc_failed(signal_type);
+                                self.pdata_metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .messages
+                                    .inc();
                                 effect_handler.notify_nack(NackMsg::new("payload conversion failed", pdata)).await?;
                                 return Err(e.into());
                             }
@@ -1677,6 +1699,8 @@ mod tests {
         );
     }
 
+    /// Scenario: The OTAP endpoint becomes available after an initial failed logs export.
+    /// Guarantees: Reconnection succeeds and one success plus one failure are reported for logs.
     #[test]
     fn test_receiver_not_ready_on_start() {
         let grpc_addr = "127.0.0.1";
@@ -1812,10 +1836,25 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
+            let mut logs_exported_count = 0;
+            let mut logs_failed_count = 0;
+            for _ in 0..3 {
+                let metrics = metrics_receiver.recv_async().await.unwrap();
+                if metrics.descriptor().name == "exporter.pdata.exports"
+                    && metrics.measurement_attribute_value("signal") == Some("logs")
+                {
+                    match metrics.measurement_attribute_value("outcome") {
+                        Some("success") => {
+                            logs_exported_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        Some("failure") => {
+                            logs_failed_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             assert_eq!(logs_exported_count, 1);
-            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 1);
 
             control_sender
@@ -1864,7 +1903,7 @@ mod tests {
             )
             .await;
         });
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
 
         let _ = tokio_rt.block_on(async move {
             let local_set = tokio::task::LocalSet::new();

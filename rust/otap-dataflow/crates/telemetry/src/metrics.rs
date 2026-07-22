@@ -7,7 +7,6 @@
 //! live in their respective nodes/crates and implement the `MetricSetHandler` trait defined
 //! here.
 
-pub mod dispatcher;
 pub mod otlp;
 
 use crate::attributes::{AttributeSetHandler, MeasurementAttributeSet};
@@ -318,26 +317,37 @@ impl MetricSetSnapshot {
         self.bucket
     }
 
+    /// Iterates over the measurement attributes decoded for this snapshot's bucket.
+    ///
+    /// Attributes are yielded in declaration order. Callers that need an
+    /// order-independent identity can sort the returned key-value pairs.
+    pub fn measurement_attributes(
+        &self,
+    ) -> impl Iterator<Item = (&'static str, &'static str)> + '_ {
+        let mut rem = self.bucket;
+        self.measurement_attributes
+            .iter()
+            .filter_map(move |descriptor| {
+                let radix = descriptor.variants.len();
+                debug_assert!(
+                    radix > 0,
+                    "measurement attribute descriptor must have at least one variant"
+                );
+                if radix == 0 {
+                    return None;
+                }
+
+                let value = descriptor.variants[rem % radix];
+                rem /= radix;
+                Some((descriptor.key, value))
+            })
+    }
+
     /// Returns the value of a measurement attribute for this snapshot's bucket.
     #[must_use]
     pub fn measurement_attribute_value(&self, key: &str) -> Option<&'static str> {
-        let mut rem = self.bucket;
-        for descriptor in self.measurement_attributes {
-            let radix = descriptor.variants.len();
-            debug_assert!(
-                radix > 0,
-                "measurement attribute descriptor must have at least one variant"
-            );
-            if radix == 0 {
-                continue;
-            }
-            let value = descriptor.variants[rem % radix];
-            rem /= radix;
-            if descriptor.key == key {
-                return Some(value);
-            }
-        }
-        None
+        self.measurement_attributes()
+            .find_map(|(attribute_key, value)| (attribute_key == key).then_some(value))
     }
 
     /// get a reference to the metric values
@@ -1570,12 +1580,17 @@ mod tests {
     }
 
     impl MeasurementAttributeSet for MockMeasurementAttributes {
-        const CARDINALITY: usize = 2;
-        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] =
-            &[MeasurementAttributeDescriptor {
+        const CARDINALITY: usize = 4;
+        const DESCRIPTORS: &'static [MeasurementAttributeDescriptor] = &[
+            MeasurementAttributeDescriptor {
                 key: "outcome",
                 variants: &["first", "second"],
-            }];
+            },
+            MeasurementAttributeDescriptor {
+                key: "reason",
+                variants: &["one", "two"],
+            },
+        ];
 
         fn bucket_index(&self) -> usize {
             match self {
@@ -1732,6 +1747,8 @@ mod tests {
         assert_eq!(metrics.values[0], MetricValue::U64(0));
     }
 
+    /// Scenario: A snapshot is emitted for a measurement bucket.
+    /// Guarantees: The decoded measurement attributes are available for generic inspection.
     #[test]
     fn test_measurement_metric_set_get_and_snapshot_decode_attributes() {
         let mut entities = EntityRegistry::default();
@@ -1752,6 +1769,10 @@ mod tests {
         assert_eq!(
             snapshots[0].measurement_attribute_value("outcome"),
             Some("second")
+        );
+        assert_eq!(
+            snapshots[0].measurement_attributes().collect::<Vec<_>>(),
+            vec![("outcome", "second"), ("reason", "one")]
         );
         assert_eq!(
             snapshots[0].get_metrics(),
