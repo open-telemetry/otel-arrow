@@ -1248,6 +1248,8 @@ mod tests {
         }
     }
 
+    /// Scenario: a flow is configured to collect only consumed items at its start node.
+    /// Guarantees: telemetry reports the consumed-items counter and no end-node metrics.
     #[test]
     fn flow_opt_in_consumed_items_reports_only_start_metric() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();
@@ -1291,6 +1293,8 @@ mod tests {
         assert!(metrics_rx.try_recv().is_err());
     }
 
+    /// Scenario: a flow is configured to collect duration and produced items at its end node.
+    /// Guarantees: telemetry reports the duration and produced-items metrics without a start-node metric.
     #[test]
     fn flow_opt_in_duration_and_produced_items_reports_only_end_metrics() {
         let (pipeline_ctx, _) = crate::testing::test_pipeline_ctx();

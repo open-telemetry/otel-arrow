@@ -910,9 +910,9 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
         // reflects the post-process count — what is actually leaving
-        // the flow_metric range. Recorded unconditionally (including 0)
-        // so produced.items.count stays in lockstep with
-        // compute.duration.count and 0-out traversals stay visible.
+        // the flow_metric range. The hook records every traversal,
+        // including zero-item batches, although a zero-delta counter is
+        // omitted from exported snapshots.
         handler.record_flow_produced_items(data.num_items() as u64);
     }
 }
@@ -925,10 +925,9 @@ impl FlowMetricHook for OtapPdata {
     /// At the flow_metric start node, count items *entering* the range —
     /// i.e. before `process()` runs and may filter or drop them. This
     /// gives the true input volume to compare against the end-node
-    /// output volume recorded in [`flow_accumulate`]. Recorded
-    /// unconditionally (including 0) so consumed.items.count stays in
-    /// lockstep with compute.duration.count and 0-in traversals stay
-    /// visible.
+    /// output volume recorded in [`flow_accumulate`]. The hook records
+    /// every traversal, including zero-item batches, although a zero-delta
+    /// counter is omitted from exported snapshots.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         if handler.is_flow_start() {
             handler.record_flow_consumed_items(self.num_items() as u64);
@@ -1180,18 +1179,17 @@ mod test {
         assert!(end_handler.stop_total.get() > 0);
     }
 
-    /// A 0-item batch must still produce one record() call on each MMSC,
-    /// so consumed.items.count, produced.items.count, and
-    /// compute.duration.count stay in lockstep with the number of
-    /// traversals. Hiding 0-item batches would diverge the counts and
-    /// erase a useful starvation/over-filter signal.
+    /// Scenario: a flow start or end boundary receives a zero-item batch.
+    /// Guarantees: the hooks invoke the consumed and produced item recorders
+    /// with zero while compute-duration accumulation continues for the
+    /// traversal. Zero-delta counters are intentionally omitted from exports.
     #[test]
     fn flow_hooks_record_zero_item_batches() {
         let mut pdata = create_empty_test_pdata();
         assert_eq!(pdata.num_items(), 0);
 
-        // Start node: after_processor_receive must record (incoming = 0)
-        // even though the batch is empty.
+        // Start node: after_processor_receive records zero even though the
+        // batch is empty.
         let start_handler = FakeFlowMetricHandler::start(5);
         pdata.after_processor_receive(&start_handler);
         pdata.before_processor_send(&start_handler);
@@ -1200,14 +1198,14 @@ mod test {
         assert_eq!(start_handler.stop_signals_calls.get(), 0);
 
         // Stop node: before_processor_send must record both
-        // compute.duration AND outgoing = 0, in lockstep.
+        // compute.duration and produced = 0.
         let end_handler = FakeFlowMetricHandler::end(7);
         pdata.after_processor_receive(&end_handler);
         pdata.before_processor_send(&end_handler);
         assert_eq!(
             end_handler.stop_total_calls.get(),
             end_handler.stop_signals_calls.get(),
-            "compute.duration and produced.items must record together for parity"
+            "compute.duration and produced.items hooks must run together"
         );
         assert_eq!(end_handler.stop_signals.get(), 0);
         assert!(end_handler.stop_total.get() > 0);
