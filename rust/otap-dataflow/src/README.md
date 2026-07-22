@@ -1,4 +1,4 @@
-# Rust Dataflow Engine
+# OTel-Arrow Dataflow Engine
 
 ## Usage
 

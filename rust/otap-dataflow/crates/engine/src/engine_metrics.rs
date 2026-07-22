@@ -163,6 +163,23 @@ impl EngineMetricsMonitor {
     pub fn report(&mut self) -> Result<(), otap_df_telemetry::error::Error> {
         self.reporter.report(&mut self.metrics)
     }
+
+    /// Samples and reliably hands off final values without exceeding `deadline`.
+    ///
+    /// The collector barrier completes before this monitor unregisters its
+    /// metric-set key, preventing an accepted terminal snapshot from arriving
+    /// after the registry entry has been removed.
+    pub async fn finish_reporting_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        self.update();
+        let _ = self
+            .reporter
+            .report_reliably_until(&mut self.metrics, deadline)
+            .await?;
+        self.reporter.flush_until(deadline).await
+    }
 }
 
 /// Returns the current process-wide RSS (Resident Set Size) in bytes.

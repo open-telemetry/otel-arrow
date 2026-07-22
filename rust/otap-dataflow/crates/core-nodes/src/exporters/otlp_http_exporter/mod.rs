@@ -49,15 +49,17 @@ use otap_df_pdata::proto::opentelemetry::collector::trace::v1::{
     ExportTracePartialSuccess, ExportTraceServiceResponse,
 };
 use otap_df_pdata::{OtapPayload, OtapPayloadHelpers};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use prost::Message as _;
 use reqwest::{Client, Response};
+use secrecy::ExposeSecret;
 
 use self::config::Config;
 use crate::exporters::otlp_grpc_exporter::InFlightExports;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::otlp_http::client_settings::{HttpClientError, HttpClientSettings};
 use otap_df_otap::otlp_http::{LOGS_PATH, METRICS_PATH, PROTOBUF_CONTENT_TYPE, TRACES_PATH};
 use otap_df_otap::pdata::{Context, OtapPdata};
@@ -70,7 +72,7 @@ pub const OTLP_HTTP_EXPORTER_URN: &str = "urn:otel:exporter:otlp_http";
 /// Exporter that sends OTLP data via HTTP
 pub struct OtlpHttpExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
 }
 
 /// Declare the OTLP HTTP Exporter as a local exporter factory
@@ -122,7 +124,7 @@ impl OtlpHttpExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, ConfigError> {
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -333,11 +335,14 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             .await;
                         }
                     }
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.pdata_metrics.terminal_snapshots(),
+                    ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
-                }) => _ = metrics_reporter.report(&mut self.pdata_metrics),
+                }) => _ = metrics_reporter.report_measurement(&mut self.pdata_metrics),
                 Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
@@ -394,7 +399,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.pdata_metrics.add_failed(signal_type, 1);
+                                self.pdata_metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .messages
+                                    .inc();
                                 continue;
                             }
 
@@ -417,7 +428,13 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                                 );
                                 nack.permanent = true;
                                 _ = effect_handler.notify_nack(nack).await;
-                                self.pdata_metrics.add_failed(signal_type, 1);
+                                self.pdata_metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .messages
+                                    .inc();
                                 continue;
                             }
                             Bytes::copy_from_slice(&compressed_buffer)
@@ -656,7 +673,7 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
 ) {
     let CompletedExport {
         result,
@@ -704,7 +721,6 @@ async fn finalize_completed_export(
                 message = err_msg,
                 retryable = retryable
             );
-            pdata_metrics.add_failed(signal_type, 1);
             let mut nack = NackMsg::new(&err_msg, pdata);
             nack.permanent = !retryable;
             _ = effect_handler.notify_nack(nack).await;
@@ -712,11 +728,18 @@ async fn finalize_completed_export(
         }
     };
 
-    if export_and_notify_success {
-        pdata_metrics.add_exported(signal_type, 1)
+    let outcome = if export_and_notify_success {
+        Outcome::Success
     } else {
-        pdata_metrics.add_failed(signal_type, 1)
-    }
+        Outcome::Failure
+    };
+    pdata_metrics
+        .with(SignalOutcomeAttributes {
+            signal: signal_type,
+            outcome,
+        })
+        .messages
+        .inc();
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.
@@ -734,26 +757,48 @@ struct HttpClientPool {
 }
 
 impl HttpClientPool {
-    async fn try_new(
+    /// Builds the user-configured static request headers, marking every value
+    /// sensitive so it is redacted in any `HeaderMap` `Debug` output and
+    /// excluded from HTTP/2 HPACK indexing. This mirrors the OTLP/gRPC
+    /// `GrpcClientSettings::build_static_metadata` path, which marks its
+    /// metadata values sensitive for the same reasons.
+    ///
+    /// `reserve_extra` pre-sizes the returned map for additional headers the
+    /// caller will insert afterwards (e.g. the protocol `Content-Type` /
+    /// `Accept` headers), so construction stays single-allocation.
+    ///
+    /// Header names/values are validated up front by
+    /// [`HttpClientSettings::validate`], so for a validated config the per-entry
+    /// parse below cannot fail; the fallible path defends against a programmatic
+    /// caller that bypassed validation.
+    fn build_static_headers(
         client_settings: &HttpClientSettings,
-        pool_size: NonZeroUsize,
-    ) -> Result<Self, HttpClientError> {
-        // Pre-size for the configured static headers plus the two protocol
-        // headers (Content-Type, Accept) inserted below, so the map is built
-        // with a single allocation and never resizes during construction.
-        let mut default_headers = HeaderMap::with_capacity(client_settings.headers.len() + 2);
-
-        // User-configured static headers are inserted first so the protocol
-        // headers below always win on any (already validated against) collision.
+        reserve_extra: usize,
+    ) -> Result<HeaderMap, HttpClientError> {
+        let mut headers = HeaderMap::with_capacity(client_settings.headers.len() + reserve_extra);
         for (name, value) in &client_settings.headers {
             let header_name = http::HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
                 HttpClientError::InvalidConfig(format!("invalid header name \"{name}\": {e}"))
             })?;
-            let header_value = HeaderValue::from_str(value).map_err(|e| {
+            let mut header_value = HeaderValue::from_str(value.expose_secret()).map_err(|e| {
                 HttpClientError::InvalidConfig(format!("invalid value for header \"{name}\": {e}"))
             })?;
-            _ = default_headers.insert(header_name, header_value);
+            // Mark the value sensitive so it is redacted in any `HeaderMap`
+            // `Debug` output and excluded from HTTP/2 HPACK indexing.
+            header_value.set_sensitive(true);
+            _ = headers.insert(header_name, header_value);
         }
+        Ok(headers)
+    }
+
+    async fn try_new(
+        client_settings: &HttpClientSettings,
+        pool_size: NonZeroUsize,
+    ) -> Result<Self, HttpClientError> {
+        // Build the user-configured static headers first (pre-sized for the two
+        // protocol headers added below) so the protocol headers always win on
+        // any (already validated against) collision.
+        let mut default_headers = Self::build_static_headers(client_settings, 2)?;
 
         // TODO eventually this header value should be dynamic once we support JSON OTLP payloads
         _ = default_headers.insert(
@@ -826,10 +871,10 @@ mod test {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, TracesData};
     use otap_df_pdata::testing::equiv::assert_equivalent;
     use otap_df_pdata::testing::round_trip::otlp_to_otap;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
 
     use parking_lot::lock_api::Mutex;
-    use portpicker::pick_unused_port;
     use prost::Message;
     use tokio::runtime::Runtime;
     use tokio_util::sync::CancellationToken;
@@ -881,7 +926,7 @@ mod test {
         tune_max_concurrent_requests(&mut server_settings, 1);
 
         let ack_registry = AckRegistry::new(None, None, None);
-        let server_metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
+        let server_metrics = OtlpReceiverMetrics::register(pipeline_ctx);
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
 
@@ -1085,7 +1130,7 @@ mod test {
 
         otap_df_otap::crypto::ensure_crypto_provider();
         let tokio_rt = Runtime::new().unwrap();
-        let port = pick_unused_port().expect("no free port available");
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
 
         let captured: Arc<parking_lot::Mutex<Option<HeaderMap>>> =
@@ -1094,11 +1139,8 @@ mod test {
         wait_for_port_ready(&endpoint_addr);
 
         let mut headers = HashMap::new();
-        _ = headers.insert(
-            "authorization".to_string(),
-            "Basic dXNlcjpwYXNz".to_string(),
-        );
-        _ = headers.insert("x-test".to_string(), "abc".to_string());
+        _ = headers.insert("authorization".to_string(), "Basic dXNlcjpwYXNz".into());
+        _ = headers.insert("x-test".to_string(), "abc".into());
         let settings = HttpClientSettings {
             headers,
             ..Default::default()
@@ -1140,6 +1182,44 @@ mod test {
         );
     }
 
+    #[test]
+    fn build_static_headers_marks_values_sensitive() {
+        // Symmetric with the OTLP/gRPC `build_static_metadata_builds_map` test:
+        // every static header value the exporter puts on the wire must be marked
+        // sensitive so it is excluded from HTTP/2 HPACK indexing and redacted in
+        // any `HeaderMap` `Debug` output. (The wire-capture test above cannot
+        // assert this: the sensitive flag is a client-side `HeaderValue`
+        // property that is not transmitted to the server.)
+        let mut headers = HashMap::new();
+        _ = headers.insert("authorization".to_string(), "Basic abc123".into());
+        _ = headers.insert("x-scope-orgid".to_string(), "tenant-1".into());
+        let settings = HttpClientSettings {
+            headers,
+            ..Default::default()
+        };
+
+        let built =
+            HttpClientPool::build_static_headers(&settings, 0).expect("should build headers");
+        assert_eq!(built.len(), 2);
+        assert_eq!(
+            built.get("authorization").unwrap().to_str().unwrap(),
+            "Basic abc123"
+        );
+        assert_eq!(
+            built.get("x-scope-orgid").unwrap().to_str().unwrap(),
+            "tenant-1"
+        );
+        assert!(
+            built.get("authorization").unwrap().is_sensitive(),
+            "static header values must be marked sensitive so they are excluded from HPACK \
+             indexing and redacted in HeaderMap Debug output"
+        );
+        assert!(
+            built.get("x-scope-orgid").unwrap().is_sensitive(),
+            "every static header value must be marked sensitive, not just the first"
+        );
+    }
+
     /// run test HTTP server serving OTLP HTTP API. Internally, this uses the OTLP HTTP server that
     /// is used in OTLP Receiver. This returns a cancellation token (to shutdown the server when
     /// the test is finished), and a receiver that will emit any pdata that the server produces.
@@ -1174,7 +1254,7 @@ mod test {
         tune_max_concurrent_requests(&mut server_settings, 1);
 
         let ack_registry = AckRegistry::new(None, None, None);
-        let server_metrics = pipeline_ctx.register_metrics::<OtlpReceiverMetrics>();
+        let server_metrics = OtlpReceiverMetrics::register(pipeline_ctx);
         let server_cancellation_token = CancellationToken::new();
         let server_cancellation_token2 = server_cancellation_token.clone();
 
@@ -1220,7 +1300,7 @@ mod test {
         let exporter = ExporterWrapper::local(
             OtlpHttpExporter {
                 config,
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             node_id.clone(),
             node_config,
@@ -1373,7 +1453,7 @@ mod test {
 
     #[test]
     fn test_exports_otlp_signals() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1424,7 +1504,6 @@ mod test {
             })
             .run_validation(|mut ctx, result| {
                 Box::pin(async move {
-                    // ensure exit success
                     result.unwrap();
 
                     // ensure we got back all the signals we expected ...
@@ -1498,7 +1577,7 @@ mod test {
     }
 
     fn run_error_status_code_test(status: u16, retryable: bool) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1576,6 +1655,8 @@ mod test {
             })
     }
 
+    /// Scenario: The OTLP HTTP server returns retryable and permanent non-success statuses.
+    /// Guarantees: Each consumed request yields one Nack and exactly one failed export outcome.
     #[test]
     fn test_handles_non_200_response_status() {
         let test_cases = [(500, false), (429, true), (503, true), (504, true)];
@@ -1585,9 +1666,59 @@ mod test {
         }
     }
 
+    /// Scenario: An OTLP HTTP export finishes with a terminal service-request error.
+    /// Guarantees: Finalization records exactly one failure for the exported signal.
+    #[test]
+    fn failed_export_finalization_records_one_terminal_outcome() {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let mut metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
+
+        let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let effect_handler = EffectHandler::new(test_node("test-exporter"), metrics_reporter);
+        let completed = CompletedExport {
+            result: Err(ServiceRequestError::BodyTooLarge {
+                body_size: 2,
+                max_size: 1,
+            }),
+            context: Context::default(),
+            saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
+            signal_type: SignalType::Logs,
+        };
+
+        Runtime::new().unwrap().block_on(finalize_completed_export(
+            completed,
+            &effect_handler,
+            &mut metrics,
+        ));
+
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .get(),
+            0
+        );
+    }
+
     #[test]
     fn test_handles_connection_refused_errors() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1664,7 +1795,7 @@ mod test {
 
     #[test]
     fn test_handles_partial_success() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1760,7 +1891,7 @@ mod test {
 
     #[test]
     fn test_handles_response_body_too_large() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1873,7 +2004,7 @@ mod test {
 
     #[test]
     fn test_nacks_for_otap_payloads_when_context_indicates_no_payload_return() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -1957,7 +2088,7 @@ mod test {
 
     #[test]
     fn test_nacks_for_otlp_payloads_when_context_indicates_no_payload_return() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2043,7 +2174,7 @@ mod test {
 
     #[test]
     fn test_export_otap_signals() {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("http://{endpoint_addr}");
 
@@ -2158,15 +2289,15 @@ mod test {
 
     #[test]
     pub fn test_uses_endpoint_overrides_if_provided() {
-        let logs_port = pick_unused_port().unwrap();
+        let logs_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let logs_endpoint_addr = format!("127.0.0.1:{}", logs_port);
         let logs_endpoint = format!("http://{logs_endpoint_addr}/v1/logs");
 
-        let metrics_port = pick_unused_port().unwrap();
+        let metrics_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let metrics_endpoint_addr = format!("127.0.0.1:{}", metrics_port);
         let metrics_endpoint = format!("http://{metrics_endpoint_addr}/v1/metrics");
 
-        let traces_port = pick_unused_port().unwrap();
+        let traces_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let traces_endpoint_addr = format!("127.0.0.1:{}", traces_port);
         let traces_endpoint = format!("http://{traces_endpoint_addr}/v1/traces");
 
@@ -2259,7 +2390,7 @@ mod test {
         client_tls_config: TlsClientConfig,
         server_tls_config: TlsServerConfig,
     ) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("https://localhost:{port}");
 
@@ -2363,7 +2494,7 @@ mod test {
         expected_err_content: &'static str,
         expect_permanent_nack: bool,
     ) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{}", port);
         let endpoint = format!("https://localhost:{port}");
 
@@ -2947,7 +3078,7 @@ mod test {
         let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
         client.write_to_dir(path, "client");
 
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint = format!("https://localhost:{port}");
 
         let config = Config {
@@ -3002,7 +3133,7 @@ mod test {
         let client = ca.issue_leaf("Test Client", None, Some(ExtendedKeyUsage::ClientAuth));
         client.write_to_dir(path, "client");
 
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint = format!("https://localhost:{port}");
 
         let config = Config {
@@ -3085,7 +3216,7 @@ mod test {
         compression: Option<otap_df_otap::compression::CompressionMethod>,
         expected_encoding: Option<&'static str>,
     ) {
-        let port = pick_unused_port().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let endpoint_addr = format!("127.0.0.1:{port}");
         let endpoint = format!("http://{endpoint_addr}");
 

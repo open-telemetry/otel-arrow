@@ -475,6 +475,10 @@ pub(super) struct ControllerRuntimeState {
     pub(super) generation_counters: HashMap<PipelineKey, u64>,
     /// Count of runtime instances still considered active by the controller.
     pub(super) active_instances: usize,
+    /// Whether at least one engine-wide shutdown request has been accepted.
+    pub(super) global_shutdown_requested: bool,
+    /// Number of phased global-shutdown coordinators still running.
+    pub(super) global_shutdown_coordinators: usize,
     /// Active engine-scoped live operation, if any.
     pub(super) active_engine_operation: Option<String>,
     /// Monotonic full-config reconciliation id suffix.

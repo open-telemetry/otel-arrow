@@ -33,6 +33,7 @@ tokio = { workspace = true }
 linkme = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
+secrecy = { workspace = true }
 flume = { workspace = true }
 bitflags = { workspace = true }
 bytemuck = { workspace = true }

@@ -638,7 +638,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn create_test_config() -> Config {
-        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+        use super::super::config::{ApiConfig, HeartbeatConfig, SchemaConfig};
 
         Config {
             api: ApiConfig {
@@ -661,7 +661,6 @@ mod tests {
                 gzip_compression_level: 6,
                 user_agent: None,
             },
-            auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),
         }
     }
@@ -679,7 +678,7 @@ mod tests {
                         value: Some(AnyValue {
                             value: Some(OtelAnyValueEnum::StringValue("my-service".into())),
                         }),
-                        key_strindex: 0,
+                        ..Default::default()
                     }],
                     dropped_attributes_count: 0,
                     entity_refs: vec![],
@@ -693,7 +692,7 @@ mod tests {
                             value: Some(AnyValue {
                                 value: Some(OtelAnyValueEnum::StringValue("my-scope".into())),
                             }),
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         dropped_attributes_count: 0,
                     }),
@@ -707,7 +706,7 @@ mod tests {
                             value: Some(AnyValue {
                                 value: Some(OtelAnyValueEnum::BoolValue(true)),
                             }),
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         ..Default::default()
                     }],
@@ -839,7 +838,7 @@ mod tests {
                                     value: Some(AnyValue {
                                         value: Some(OtelAnyValueEnum::StringValue("value".into())),
                                     }),
-                                    key_strindex: 0,
+                                    ..Default::default()
                                 }],
                             })),
                         }),
@@ -959,7 +958,7 @@ mod tests {
 
     #[test]
     fn test_empty_schema_mappings() {
-        use super::super::config::{ApiConfig, AuthConfig, HeartbeatConfig, SchemaConfig};
+        use super::super::config::{ApiConfig, HeartbeatConfig, SchemaConfig};
 
         let config = Config {
             api: ApiConfig {
@@ -975,7 +974,6 @@ mod tests {
                 gzip_compression_level: 6,
                 user_agent: None,
             },
-            auth: AuthConfig::default(),
             heartbeat: HeartbeatConfig::default(),
         };
 
@@ -989,7 +987,7 @@ mod tests {
                         value: Some(AnyValue {
                             value: Some(OtelAnyValueEnum::StringValue("value".into())),
                         }),
-                        key_strindex: 0,
+                        ..Default::default()
                     }],
                     dropped_attributes_count: 0,
                     entity_refs: vec![],
@@ -1024,7 +1022,7 @@ mod tests {
                     attributes: vec![KeyValue {
                         key: "service.name".into(),
                         value: None, // No value
-                        key_strindex: 0,
+                        ..Default::default()
                     }],
                     dropped_attributes_count: 0,
                     entity_refs: vec![],
@@ -1036,7 +1034,7 @@ mod tests {
                         attributes: vec![KeyValue {
                             key: "scope.name".into(),
                             value: None, // No value
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         dropped_attributes_count: 0,
                     }),
@@ -1044,7 +1042,7 @@ mod tests {
                         attributes: vec![KeyValue {
                             key: "test.attr".into(),
                             value: None, // No value
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         ..Default::default()
                     }],
@@ -1209,7 +1207,7 @@ mod tests {
                         value: Some(AnyValue {
                             value: Some(OtelAnyValueEnum::DoubleValue(f64::NAN)),
                         }),
-                        key_strindex: 0,
+                        ..Default::default()
                     }],
                     dropped_attributes_count: 0,
                     entity_refs: vec![],
@@ -1296,7 +1294,7 @@ mod tests {
                         value: Some(AnyValue {
                             value: Some(OtelAnyValueEnum::StringValue("my-service".into())),
                         }),
-                        key_strindex: 0,
+                        ..Default::default()
                     }],
                     dropped_attributes_count: 0,
                     entity_refs: vec![],
@@ -1310,7 +1308,7 @@ mod tests {
                             value: Some(AnyValue {
                                 value: Some(OtelAnyValueEnum::StringValue("my-scope".into())),
                             }),
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         dropped_attributes_count: 0,
                     }),
@@ -1324,7 +1322,7 @@ mod tests {
                             value: Some(AnyValue {
                                 value: Some(OtelAnyValueEnum::BoolValue(true)),
                             }),
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         ..Default::default()
                     }],
@@ -1410,7 +1408,7 @@ mod tests {
             let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
                 panic!(
                     "invalid JSON for input {test_str:?}: {e}\nraw bytes: {:?}",
-                    &results[0]
+                    results[0]
                 )
             });
 
@@ -1528,35 +1526,35 @@ mod tests {
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::StringValue("hello".into())),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                             KeyValue {
                                 key: "int_attr".into(),
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::IntValue(42)),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                             KeyValue {
                                 key: "dbl_attr".into(),
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::DoubleValue(2.72)),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                             KeyValue {
                                 key: "bool_attr".into(),
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::BoolValue(true)),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                             KeyValue {
                                 key: "bytes_attr".into(),
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::BytesValue(vec![0xCA, 0xFE])),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                         ],
                         ..Default::default()
@@ -1591,14 +1589,14 @@ mod tests {
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::DoubleValue(f64::NAN)),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                             KeyValue {
                                 key: "int_attr".into(),
                                 value: Some(AnyValue {
                                     value: Some(OtelAnyValueEnum::DoubleValue(f64::INFINITY)),
                                 }),
-                                key_strindex: 0,
+                                ..Default::default()
                             },
                         ],
                         ..Default::default()
@@ -1629,7 +1627,7 @@ mod tests {
                             value: Some(AnyValue {
                                 value: Some(OtelAnyValueEnum::BoolValue(false)),
                             }),
-                            key_strindex: 0,
+                            ..Default::default()
                         }],
                         ..Default::default()
                     }],

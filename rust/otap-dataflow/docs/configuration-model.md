@@ -136,7 +136,8 @@ cross-pipeline loops through topics are rejected early.
 
 The internal observability pipeline is configured under
 `engine.observability.pipeline`. It uses the same node and connection model as a
-regular pipeline, but it has constrained policy support.
+regular pipeline, but it has constrained policy support. The engine installs a
+default pipeline when the field is omitted, and the pipeline cannot be disabled.
 
 This makes internal telemetry routing explicit without treating observability as
 ordinary user dataflow. Resource policies are rejected there because the
@@ -357,26 +358,69 @@ Engine-wide topic runtime defaults are declared at `engine.topics`.
 
 Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 
+### Engine Telemetry
+
+Internal telemetry settings are declared at `engine.telemetry`. The
+`reporting_interval` controls the metric-set snapshot cadence and supplies the
+internal telemetry receiver's default registry drain and export interval.
+
+The internal telemetry receiver's `signals` field defaults to `[logs,
+metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
+must remain enabled whenever the global, engine, or admin log provider uses
+`its`. When metrics are selected, the optional `metrics.interval` overrides the
+receiver's cold-path interval, and `metrics.views` defines supported name and
+description transformations.
+When metrics are not selected, the receiver still drains their private ITS
+export accumulator without converting or emitting OTLP data. This preserves
+registry cleanup and does not consume the admin endpoint's metric view.
+
+The Prometheus replacement is the admin endpoint at `/api/v1/metrics`; its bind
+address comes from `engine.http_admin`. The path is fixed, receiver views are
+not applied, and reading it does not reset or consume snapshots waiting for ITS
+export.
+
+The ITS bridge projects each multivariate metric set into standard univariate
+OTLP metrics, which normal OTLP and OTAP exporters can consume. This projection
+is transitional pending native multivariate metric-set support in OTAP.
+
 ### Observability Pipeline
 
-Internal telemetry pipeline wiring is declared at:
-`engine.observability.pipeline`.
+Engine observability pipeline wiring is declared at
+`engine.observability.pipeline`. The field cannot be null. When it is omitted,
+the engine installs the following topology: metrics are continuously consumed
+by the noop exporter, while logs explicitly configured to use ITS are rendered
+by the console exporter. The default `console_async` log path bypasses this
+pipeline.
 
 ```yaml
 engine:
   observability:
     pipeline:
       nodes:
-        itr:
+        internal:
           type: "urn:otel:receiver:internal_telemetry"
           config: {}
-        sink:
+        router:
+          type: "urn:otel:processor:type_router"
+          outputs: [logs, metrics]
+          config: {}
+        logs_console:
           type: "urn:otel:exporter:console"
           config: {}
+        metrics_noop:
+          type: "urn:otel:exporter:noop"
+          config: {}
       connections:
-        - from: itr
-          to: sink
+        - from: internal
+          to: router
+        - from: router["logs"]
+          to: logs_console
+        - from: router["metrics"]
+          to: metrics_noop
 ```
+
+A custom pipeline replaces this default and must retain exactly one connected
+`receiver:internal_telemetry`.
 
 Optional observability policies are supported at:
 `engine.observability.pipeline.policies` for:

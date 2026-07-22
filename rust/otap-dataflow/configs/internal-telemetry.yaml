@@ -6,18 +6,10 @@ policies:
       pipeline: 256
     pdata: 128
   telemetry:
-    runtime_metrics: detailed
+    runtime_metrics: none
 engine:
   telemetry:
-    metrics:
-      readers:
-        - pull:
-            exporter:
-              type: prometheus
-              config:
-                host: "0.0.0.0"
-                port: 9090
-                path: "/metrics"
+    reporting_interval: 1s
     logs:
       level: "info"
       providers:
@@ -39,19 +31,82 @@ engine:
         telemetry:
           pipeline_metrics: false
           tokio_metrics: false
-          runtime_metrics: detailed
+          runtime_metrics: none
       # Internal telemetry pipeline
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
         telemetry:
           type: "receiver:internal_telemetry"
+          config:
+            metrics:
+              interval: 2s
+              views:
+                - selector:
+                    scope_name: engine
+                    instrument_name: memory.rss
+                  stream:
+                    name: process_memory_usage
+                    description: >-
+                      Total physical memory (resident set size) used by the
+                      pipeline group process.
+                - selector:
+                    scope_name: engine
+                    instrument_name: cpu.utilization
+                  stream:
+                    name: process_cpu_utilization
+                    description: >-
+                      The percentage of CPU utilized by the pipeline group
+                      process, normalized across all cores.
+                - selector:
+                    scope_name: pipeline
+                    instrument_name: uptime
+                  stream:
+                    name: process_uptime
+                    description: >-
+                      Uptime of the pipeline group process since last start.
+                - selector:
+                    scope_name: flow
+                    instrument_name: signals.incoming
+                  stream:
+                    name: processor_incoming_items
+                    description: The count of items passed to the processor.
+                - selector:
+                    scope_name: flow
+                    instrument_name: signals.outgoing
+                  stream:
+                    name: processor_outgoing_items
+                    description: The count of items emitted from the processor.
+                - selector:
+                    scope_name: flow
+                    instrument_name: compute.duration
+                  stream:
+                    name: processing_duration
+                    description: Duration of the processing of the items.
+        router:
+          type: "processor:type_router"
+          outputs: ["logs", "metrics"]
           config: {}
+        metrics_debug:
+          type: "processor:debug"
+          config:
+            verbosity: detailed
+            mode: batch
+            signals: [metrics]
         console:
           type: "exporter:console"
           config: {}
+        noop:
+          type: "exporter:noop"
+          config: {}
       connections:
         - from: telemetry
+          to: router
+        - from: router["logs"]
           to: console
+        - from: router["metrics"]
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
 groups:
   default:
     pipelines:
@@ -62,16 +117,30 @@ groups:
               node: 200
               pipeline: 200
             pdata: 20
+          telemetry:
+            pipeline_metrics: true
+            tokio_metrics: false
+            runtime_metrics: none
+            flow_metrics:
+              - id: main_processing
+                bounds:
+                  start_node: debug
+                  end_node: debug
+                metrics:
+                  - compute_duration
+                  - signals_incoming
+                  - signals_outgoing
+                purpose: manual_test
         nodes:
           generator:
             type: receiver:traffic_generator
             config:
+              data_source: synthetic
               traffic_config:
                 max_signal_count: 100000
                 max_batch_size: 1000
                 signals_per_second: 1000
                 log_weight: 100
-              registry_path: https://github.com/open-telemetry/semantic-conventions.git[model]
             entity:
               extend:
                 identity_attributes:
@@ -83,6 +152,7 @@ groups:
             type: processor:debug
             config:
               verbosity: basic
+              signals: []
             entity:
               extend:
                 identity_attributes:

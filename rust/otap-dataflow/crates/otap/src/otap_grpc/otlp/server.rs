@@ -320,12 +320,14 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 match rx.await {
                     Ok(Ok(())) => {}
                     Ok(Err(nack)) => {
-                        // TODO: Use more specific status codes based on nack reason/type
-                        // when more detailed error information is available from the pipeline
-                        return Err(Status::unavailable(format!(
-                            "Pipeline processing failed: {}",
-                            nack.reason
-                        )));
+                        let message = format!("Pipeline processing failed: {}", nack.reason);
+                        // Permanent NACKs -> INTERNAL (non-retryable),
+                        // transient NACKs -> UNAVAILABLE (retryable).
+                        return Err(if nack.permanent {
+                            Status::internal(message)
+                        } else {
+                            Status::unavailable(message)
+                        });
                     }
                     Err(_) => {
                         return Err(Status::internal("Response channel closed unexpectedly"));

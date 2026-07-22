@@ -134,23 +134,30 @@ impl<R: ControlReceiver + Unpin> ControlChannel<R> {
 
 /// The effect handler for extensions.
 ///
-/// Provides extensions with identity and basic I/O. Extensions manage their
-/// own timers directly via `tokio::time` rather than through the engine's
-/// timer infrastructure, keeping the extension system fully PData-free.
+/// Provides extensions with identity, basic I/O, and engine-supplied
+/// signalling capabilities. Extensions manage their own timers directly
+/// via `tokio::time` rather than through the engine's timer
+/// infrastructure, keeping the extension system fully PData-free.
 #[derive(Clone)]
 pub struct EffectHandler {
     name: ExtensionId,
     #[allow(dead_code)]
     metrics_reporter: MetricsReporter,
+    readiness: Option<super::readiness::ReadinessSignaller>,
 }
 
 impl EffectHandler {
     /// Creates a new `EffectHandler` for the given extension.
     #[must_use]
-    pub const fn new(name: ExtensionId, metrics_reporter: MetricsReporter) -> Self {
+    pub(crate) fn new(
+        name: ExtensionId,
+        metrics_reporter: MetricsReporter,
+        readiness: Option<super::readiness::ReadinessSignaller>,
+    ) -> Self {
         EffectHandler {
             name,
             metrics_reporter,
+            readiness,
         }
     }
 
@@ -158,6 +165,14 @@ impl EffectHandler {
     #[must_use]
     pub fn extension_id(&self) -> ExtensionId {
         self.name.clone()
+    }
+
+    /// Signal that this variant is ready. No-op when not opted in;
+    /// idempotent across clones when opted in.
+    pub fn signal_ready(&self) {
+        if let Some(sig) = &self.readiness {
+            sig.ready();
+        }
     }
 }
 
@@ -212,6 +227,10 @@ pub enum ExtensionLifecycle<E, R> {
         /// `Some` until [`ExtensionWrapper::start`] takes it out and
         /// hands it to the extension's [`ControlChannel`].
         shutdown_receiver: Option<tokio::sync::oneshot::Receiver<ShutdownPayload>>,
+        /// Engine-side readiness probe; `None` when not opted in.
+        readiness_probe: Option<super::readiness::ReadinessProbe>,
+        /// Send-side handle paired with `readiness_probe`.
+        readiness_signaller: Option<super::readiness::ReadinessSignaller>,
     },
     /// Passive extension — capabilities only, no task spawned.
     Passive,
@@ -386,6 +405,8 @@ impl ExtensionWrapper {
                         control_receiver,
                         shutdown_sender,
                         shutdown_receiver,
+                        readiness_probe,
+                        readiness_signaller,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
                         let (local_sender, local_receiver) = match control_sender {
@@ -412,6 +433,8 @@ impl ExtensionWrapper {
                             control_receiver: r,
                             shutdown_sender,
                             shutdown_receiver,
+                            readiness_probe,
+                            readiness_signaller,
                         }
                     }
                 };
@@ -440,6 +463,8 @@ impl ExtensionWrapper {
                         control_receiver,
                         shutdown_sender,
                         shutdown_receiver,
+                        readiness_probe,
+                        readiness_signaller,
                     } => {
                         let capacity = runtime_config.control_channel.capacity as u64;
                         let shared_sender = match control_sender {
@@ -466,6 +491,8 @@ impl ExtensionWrapper {
                             control_receiver: r,
                             shutdown_sender,
                             shutdown_receiver,
+                            readiness_probe,
+                            readiness_signaller,
                         }
                     }
                 };
@@ -535,6 +562,59 @@ impl ExtensionWrapper {
         })
     }
 
+    /// Takes the readiness probe placed on this variant when its
+    /// extension opted in. Single-use; returns `None` for passive
+    /// extensions and for variants that did not opt in.
+    pub(crate) fn take_readiness_probe(&mut self) -> Option<super::readiness::ReadinessProbe> {
+        let probe_slot = match self {
+            ExtensionWrapper::Local {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_probe, ..
+                    },
+                ..
+            }
+            | ExtensionWrapper::Shared {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_probe, ..
+                    },
+                ..
+            } => readiness_probe,
+            _ => return None,
+        };
+        probe_slot.take()
+    }
+
+    /// Returns `true` if a readiness signaller is attached to this
+    /// variant — i.e. the extension opted in via the builder's
+    /// `with_readiness_probe`. The signaller itself is private to the
+    /// engine; it is consumed by [`Self::start`] and threaded into the
+    /// extension's [`EffectHandler`]. Intended for tests that need to
+    /// verify the builder wired both halves of the probe pair.
+    #[cfg(test)]
+    pub(crate) fn has_readiness_signaller(&self) -> bool {
+        match self {
+            ExtensionWrapper::Local {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_signaller,
+                        ..
+                    },
+                ..
+            }
+            | ExtensionWrapper::Shared {
+                lifecycle:
+                    ExtensionLifecycle::Active {
+                        readiness_signaller,
+                        ..
+                    },
+                ..
+            } => readiness_signaller.is_some(),
+            _ => false,
+        }
+    }
+
     /// Starts the extension lifecycle.
     ///
     /// # Errors
@@ -552,12 +632,14 @@ impl ExtensionWrapper {
                         extension,
                         control_receiver,
                         shutdown_receiver,
+                        readiness_signaller,
                         ..
                     },
                 ..
             } => {
                 otel_debug!("extension.start.local", name = name.as_ref());
-                let effect_handler = EffectHandler::new(name, metrics_reporter);
+                let effect_handler =
+                    EffectHandler::new(name, metrics_reporter, readiness_signaller);
                 let shutdown_rx = shutdown_receiver.expect(
                     "shutdown_receiver must be present when an active extension is started",
                 );
@@ -575,12 +657,14 @@ impl ExtensionWrapper {
                         extension,
                         control_receiver,
                         shutdown_receiver,
+                        readiness_signaller,
                         ..
                     },
                 ..
             } => {
                 otel_debug!("extension.start.shared", name = name.as_ref());
-                let effect_handler = EffectHandler::new(name, metrics_reporter);
+                let effect_handler =
+                    EffectHandler::new(name, metrics_reporter, readiness_signaller);
                 let shutdown_rx = shutdown_receiver.expect(
                     "shutdown_receiver must be present when an active extension is started",
                 );

@@ -95,11 +95,11 @@ The self-telemetry pipeline emits each category on its correct OpenTelemetry
 layer for **every exported signal** - both metrics and logs (see issue #3161).
 The mapping is signal-independent:
 
-| Category | OTLP export (metrics + logs) | Admin Prometheus endpoint (metrics only) |
+| Category | OTLP metrics and logs | Admin Prometheus metrics |
 | --- | --- | --- |
-| Resource | `Resource` on `ResourceMetrics` / `ResourceLogs` | `target_info{...}` gauge labels |
-| Entity | `InstrumentationScope.attributes` on scope metrics / scope logs | `otel_scope_<key>` labels on each series |
-| Signal-specific | Data-point attributes (metrics) / log-record attributes (logs) | Inline (unprefixed) data-point labels |
+| Resource | Resource attributes | `target_info` gauge labels |
+| Entity | Instrumentation scope attributes | `otel_scope_*` series labels |
+| Signal-specific | Point or record attributes | Inline point labels |
 
 Notes:
 
@@ -107,10 +107,10 @@ Notes:
   (`host.id`, `container.id`, `service.instance.id`) into the configured
   `engine.telemetry.resource` map. Config-provided keys take precedence over
   auto-detected values, and empty values are omitted.
-- The **same** resolved resource map feeds every consumer: the SDK metrics
-  `Resource`, the pre-encoded OTLP log `Resource` bytes
-  (`ResourceLogs.resource`), and the admin `target_info` gauge - so resource
-  identity is consistent across metrics, logs, and the admin endpoint.
+- The **same** resolved resource map feeds every consumer: the native OTLP
+  metric and log resource encoders and the admin `target_info` gauge - so
+  resource identity is consistent across metrics, logs, and the admin
+  endpoint.
 - Entity identity is resolved from the telemetry registry once per entity and
   attached as `InstrumentationScope.attributes` for both metrics and logs
   (logs carry entity keys via their `LogContext`). On the admin Prometheus
@@ -120,8 +120,9 @@ Notes:
   overridden.
 - Engine-global signals (e.g. the `memory_rss` metric) carry no scope
   attributes; their identity comes entirely from the Resource layer.
-- Today, no self-telemetry attributes are emitted on the signal-specific
-  (data-point / log-record) layer.
+- Metric sets support bounded enum attributes on the signal-specific data-point
+  layer. See
+  [Item Attributes for Metrics](item-attributes.md).
 
 ### Core rule
 

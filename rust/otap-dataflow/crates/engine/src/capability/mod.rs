@@ -7,14 +7,48 @@
 //! Extensions register capabilities via [`ExtensionCapabilities`], and
 //! node factories consume them via [`registry::Capabilities`].
 //!
-//! Capability traits are defined per-capability in submodules (e.g.,
-//! `bearer_token_provider`), with local (!Send) and shared (Send) variants
-//! re-exported from [`local::capability`](crate::local::capability) and
+//! Capability traits are defined per-capability in submodules grouped by domain
+//! (e.g., `auth::bearer_token_provider`), with local (!Send) and shared (Send)
+//! variants re-exported from [`local::capability`](crate::local::capability) and
 //! [`shared::capability`](crate::shared::capability).
 
-pub mod factory;
+// Capability code is organized so every public item has exactly **one** export
+// surface — no item is reachable via two paths:
+//
+// - A capability's **data types and registration handle** are exposed only on
+//   the **scoped** surface under its domain. Types shared across a domain's
+//   capabilities are re-exported at the domain root, `capability::<domain>`
+//   (e.g. `capability::auth::BearerToken`); a capability's own handle and
+//   capability-specific types live in its submodule, `capability::<domain>::<name>`
+//   (e.g. `capability::auth::bearer_token_provider::{BearerTokenProvider,
+//   TokenStream}`). Their defining modules stay private, so each item has a
+//   single public path.
+//
+// - A capability's **trait variants** (the `local` `!Send` / `shared` `Send`
+//   traits the `#[capability]` macro generates) are exposed only on the
+//   **execution-model** surface, `{local,shared}::capability::<domain>::<name>` —
+//   the surface extensions implement against, alongside `{local,shared}::extension`,
+//   etc.
+//
+// The two surfaces don't overlap because the `#[capability]` macro emits its
+// `local`/`shared` trait modules as `pub(crate)` (an implementation detail), so
+// they are never a public path under `capability::<domain>::<name>`; the traits
+// become public only through the hand-written `{local,shared}::capability`
+// re-exports.
+//
+// - Genuinely **shared** framework infrastructure — used across capabilities
+//   rather than owned by one — is re-exported flat at `capability::` (below): the
+//   error types (`error`), the instance-factory types (`factory`), and the
+//   `ExtensionCapability` trait plus `KNOWN_CAPABILITIES` (defined in this
+//   module). These are unique, collision-free vocabulary where a single short
+//   canonical path is worth more than namespacing. `registry` stays `pub`
+//   because `registry::Capabilities` is not re-exported at the root.
+pub mod auth;
+pub(crate) mod error;
+pub(crate) mod factory;
 pub mod registry;
 
+pub use error::{CapabilityError, CapabilityErrorSource};
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
 
 // ── Sealed ExtensionCapability trait ─────────────────────────────────────────
@@ -45,11 +79,11 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     const NAME: &'static str;
 
     /// The local (!Send) trait object type for this capability
-    /// (e.g., `dyn local::capability::BearerTokenProvider`).
+    /// (e.g., `dyn local::capability::auth::bearer_token_provider::BearerTokenProvider`).
     type Local: ?Sized + 'static;
 
     /// The shared (Send) trait object type for this capability
-    /// (e.g., `dyn shared::capability::BearerTokenProvider`).
+    /// (e.g., `dyn shared::capability::auth::bearer_token_provider::BearerTokenProvider`).
     type Shared: ?Sized + Send + 'static;
 
     /// Human-readable name used in error messages and config validation.
@@ -100,10 +134,6 @@ pub trait ExtensionCapability: private::Sealed + 'static {
 /// inside this crate, so external crates still can't reach `Sealed` to
 /// forge an `ExtensionCapability` impl.
 #[doc(hidden)]
-// Suppressed until the first `#[capability]` invocation lands alongside
-// its first consumer (PR4+). Until then no generated code references the
-// re-export and rustc would otherwise warn.
-#[allow(unused_imports)]
 pub(crate) use private::Sealed as CapabilitySealed;
 
 // ── KNOWN_CAPABILITIES (link-time registration) ──────────────────────────────

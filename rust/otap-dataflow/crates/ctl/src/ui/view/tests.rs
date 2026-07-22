@@ -118,7 +118,7 @@ fn title_bar_and_command_overlay_render() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("OpenTelemetry - Rust Dataflow Engine"));
+    assert!(rendered.contains("OpenTelemetry - Arrow Dataflow Engine"));
     assert!(rendered.contains("Equivalent CLI"));
     assert!(rendered.contains("telemetry logs watch"));
     assert!(rendered.contains("https://admin.example.com:8443/engine-a"));

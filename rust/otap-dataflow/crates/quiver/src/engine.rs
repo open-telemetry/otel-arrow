@@ -18,13 +18,14 @@
 //! 4. **WAL Consumer Cursor**: After segment finalization, the WAL cursor is
 //!    advanced to allow cleanup of consumed entries.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::sync::Mutex as TokioMutex;
 
 use crate::config::{DurabilityMode, QuiverConfig, RetentionPolicy};
@@ -108,10 +109,18 @@ pub struct QuiverEngine {
     force_dropped_bundles: AtomicU64,
     /// Count of individual data items lost due to force-dropped segments.
     force_dropped_items: AtomicU64,
+    /// Pending dropped bundles grouped by slot shape, for per-signal tracking.
+    /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
+    dropped_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
+    /// Count of segments lost due to max_age retention.
+    expired_segments: AtomicU64,
     /// Count of bundles lost due to expired segments (max_age retention).
     expired_bundles: AtomicU64,
     /// Count of individual data items lost due to expired segments.
     expired_items: AtomicU64,
+    /// Pending expired bundles grouped by slot shape, for per-signal tracking.
+    /// Keyed by sorted slot_ids to bound memory by unique bundle shapes.
+    expired_items_by_shape: RwLock<HashMap<Vec<crate::record_bundle::SlotId>, u64>>,
     /// Segment store for finalized segment files.
     segment_store: Arc<SegmentStore>,
     /// Subscriber registry for tracking consumption progress.
@@ -399,8 +408,11 @@ impl QuiverEngine {
             force_dropped_segments: AtomicU64::new(0),
             force_dropped_bundles: AtomicU64::new(0),
             force_dropped_items: AtomicU64::new(0),
+            dropped_items_by_shape: RwLock::new(HashMap::new()),
+            expired_segments: AtomicU64::new(0),
             expired_bundles: AtomicU64::new(0),
             expired_items: AtomicU64::new(0),
+            expired_items_by_shape: RwLock::new(HashMap::new()),
             segment_store,
             registry: registry.clone(),
             budget: budget.clone(),
@@ -498,6 +510,20 @@ impl QuiverEngine {
         self.force_dropped_items.load(Ordering::Relaxed)
     }
 
+    /// Drains and returns pending dropped bundles (grouped by slot shape) for per-signal classification.
+    pub fn drain_dropped_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
+        let map = std::mem::take(&mut *self.dropped_items_by_shape.write());
+        map.into_iter().collect()
+    }
+
+    /// Returns the total number of segments lost due to max_age retention.
+    ///
+    /// **By design** this counter resets to zero on restart. It records
+    /// losses that occurred during the current engine lifetime only.
+    pub fn expired_segments(&self) -> u64 {
+        self.expired_segments.load(Ordering::Relaxed)
+    }
+
     /// Returns the total number of bundles lost due to expired segments.
     ///
     /// This counter tracks data loss from segments deleted because they
@@ -516,6 +542,12 @@ impl QuiverEngine {
     /// losses that occurred *during the current engine lifetime* only.
     pub fn expired_items(&self) -> u64 {
         self.expired_items.load(Ordering::Relaxed)
+    }
+
+    /// Drains and returns pending expired bundles (grouped by slot shape) for per-signal classification.
+    pub fn drain_expired_bundles_pending(&self) -> Vec<(Vec<crate::record_bundle::SlotId>, u64)> {
+        let map = std::mem::take(&mut *self.expired_items_by_shape.write());
+        map.into_iter().collect()
     }
 
     /// Returns a snapshot of the open segment's bundle summaries.
@@ -1348,6 +1380,25 @@ impl QuiverEngine {
                 bundles_dropped += bundles as u64;
                 items_dropped += items;
             }
+            match self.segment_store.bundle_metadata(*seq) {
+                Ok(metadata) => {
+                    let mut map = self.dropped_items_by_shape.write();
+                    for bundle in metadata {
+                        let mut key = bundle.slot_ids;
+                        key.sort_unstable();
+                        *map.entry(key).or_insert(0) += bundle.item_count;
+                    }
+                }
+                Err(e) => {
+                    otel_warn!(
+                        "quiver.segment.drop_metadata_failed",
+                        segment = seq.raw(),
+                        error = %e,
+                        error_type = "io",
+                        reason = "force_drop"
+                    );
+                }
+            }
             if let Err(e) = self.segment_store.delete_segment(*seq) {
                 otel_warn!("quiver.segment.drop", segment = seq.raw(), error = %e, error_type = "io", reason = "force_drop");
             } else {
@@ -1411,12 +1462,30 @@ impl QuiverEngine {
         let mut deleted = 0;
         let mut bundles_expired: u64 = 0;
         let mut items_expired: u64 = 0;
-
         for seq in &expired_segments {
             // Count bundles and items before deleting (single lock acquisition)
             if let Ok((bundles, items)) = self.segment_store.segment_drop_counts(*seq) {
                 bundles_expired += bundles as u64;
                 items_expired += items;
+            }
+            match self.segment_store.bundle_metadata(*seq) {
+                Ok(metadata) => {
+                    let mut map = self.expired_items_by_shape.write();
+                    for bundle in metadata {
+                        let mut key = bundle.slot_ids;
+                        key.sort_unstable();
+                        *map.entry(key).or_insert(0) += bundle.item_count;
+                    }
+                }
+                Err(e) => {
+                    otel_warn!(
+                        "quiver.segment.drop_metadata_failed",
+                        segment = seq.raw(),
+                        error = %e,
+                        error_type = "io",
+                        reason = "expired"
+                    );
+                }
             }
 
             if let Err(e) = self.segment_store.delete_segment(*seq) {
@@ -1443,7 +1512,10 @@ impl QuiverEngine {
             self.registry.cleanup_segments_before(max_deleted.next());
         }
 
-        // Track expired bundles and items in the dedicated counters
+        // Track expired segments, bundles, and items in the dedicated counters.
+        let _ = self
+            .expired_segments
+            .fetch_add(expired_segments.len() as u64, Ordering::Relaxed);
         if bundles_expired > 0 {
             let _ = self
                 .expired_bundles
@@ -4669,7 +4741,8 @@ mod tests {
         );
     }
 
-    /// Test that the expired_bundles counter is tracked separately from force_dropped_bundles.
+    /// Scenario: Finalized segments exceed max_age retention while no DropOldest eviction occurs.
+    /// Guarantees: Runtime expiry increments dedicated segment and bundle counters without affecting DropOldest counters.
     #[tokio::test]
     async fn expired_bundles_counter_is_separate() {
         let dir = tempdir().expect("tempdir");
@@ -4693,6 +4766,7 @@ mod tests {
 
         // Initially both counters should be zero
         assert_eq!(engine.force_dropped_bundles(), 0);
+        assert_eq!(engine.expired_segments(), 0);
         assert_eq!(engine.expired_bundles(), 0);
 
         // Ingest data to create segments
@@ -4717,11 +4791,16 @@ mod tests {
         let expired_count = engine.cleanup_expired_segments().expect("cleanup");
         assert!(expired_count > 0, "should have expired some segments");
 
-        // expired_bundles should be incremented, force_dropped_bundles should still be zero
+        // Expiry counters should be incremented, force_dropped_bundles should still be zero.
         assert_eq!(
             engine.force_dropped_bundles(),
             0,
             "force_dropped_bundles should not be affected by expired segments"
+        );
+        assert_eq!(
+            engine.expired_segments(),
+            expired_count as u64,
+            "expired_segments should match the segments removed by expiry"
         );
         assert!(
             engine.expired_bundles() > 0,
@@ -4920,6 +4999,9 @@ mod tests {
             .data_dir(dir.path())
             .segment(SegmentConfig {
                 target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100MB
+                // Long open duration so slow/loaded CI runs never trigger
+                // time-based finalization (the default is only 5 seconds).
+                max_open_duration: Duration::from_secs(3600),
                 ..Default::default()
             })
             .build()
@@ -5153,6 +5235,9 @@ mod tests {
             .data_dir(dir.path())
             .segment(SegmentConfig {
                 target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(), // 100MB
+                // Long open duration so slow/loaded CI runs never trigger
+                // time-based finalization (the default is only 5 seconds).
+                max_open_duration: Duration::from_secs(3600),
                 ..Default::default()
             })
             .build()
@@ -5234,6 +5319,9 @@ mod tests {
             .segment(SegmentConfig {
                 // Large segment size so nothing gets finalized to segments
                 target_size_bytes: NonZeroU64::new(100 * 1024 * 1024).unwrap(),
+                // Long open duration so slow/loaded CI runs never trigger
+                // time-based finalization (the default is only 5 seconds).
+                max_open_duration: Duration::from_secs(3600),
                 ..Default::default()
             })
             .build()

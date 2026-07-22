@@ -60,6 +60,26 @@ pub struct OtelDataflowSpec {
     pub groups: HashMap<PipelineGroupId, PipelineGroupConfig>,
 }
 
+impl OtelDataflowSpec {
+    /// Returns a clone of this engine config with every node's and
+    /// extension's credential header values redacted, for safe exposure
+    /// through the admin config snapshot API (`GET /api/v1/config`). This
+    /// covers both pipeline groups and engine-scoped config. See
+    /// [`PipelineConfig::redacted_for_snapshot`] and
+    /// [`EngineConfig::redacted_for_snapshot`] (the latter enumerates the
+    /// engine subtrees). The stored config is left
+    /// unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> OtelDataflowSpec {
+        let mut redacted = self.clone();
+        redacted.engine = redacted.engine.redacted_for_snapshot();
+        for group in redacted.groups.values_mut() {
+            *group = group.redacted_for_snapshot();
+        }
+        redacted
+    }
+}
+
 /// Top-level engine configuration section.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -95,6 +115,61 @@ pub struct EngineConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     #[schemars(extend("x-kubernetes-preserve-unknown-fields" = true))]
     pub custom: HashMap<String, Value>,
+}
+
+impl EngineConfig {
+    /// Returns a clone of this engine config with credential header values
+    /// redacted from the engine-scoped config that the admin/config snapshot
+    /// API (`GET /api/v1/config`) exposes. Three engine subtrees carry raw,
+    /// header-bearing config and are redacted with the same policy as pipeline
+    /// nodes/extensions:
+    ///
+    /// - `controller.extensions` — controller-owned extensions whose `config`
+    ///   is the same opaque [`Value`] as a node's. See
+    ///   [`ControllerExtensions::redacted_for_snapshot`].
+    /// - `observability.pipeline.nodes` — the engine observability pipeline's
+    ///   node set. See [`PipelineNodes::redacted_for_snapshot`].
+    /// - `custom` — opaque, freeform metadata the engine never interprets, but
+    ///   the most likely place an embedder stashes arbitrary config (including
+    ///   auth `headers`). The whole map is walked with the same
+    ///   [`redact_secret_headers`](crate::node::redact_secret_headers) helper
+    ///   used by the structured arms, so any value under a `headers` key — map
+    ///   or `[{key, value}]` list form, at any depth, including a top-level
+    ///   `custom.headers` — is masked. Matching is on the conventional
+    ///   lowercase `headers` key only.
+    ///
+    /// The remaining strongly-typed engine settings (`telemetry`,
+    /// `observed_state`, `topics`) have no opaque `headers`-bearing config, so
+    /// none are touched. Metric exporter credentials that previously lived
+    /// under `telemetry` now belong to `observability.pipeline.nodes` and are
+    /// covered by that subtree's redaction above.
+    /// This masks credential *header* values only; other secret classes that can
+    /// appear in raw config (inline TLS keys, proxy URLs with embedded
+    /// passwords, component-specific secrets, and credentials hidden under
+    /// non-`headers` or case-variant keys) are out of scope here and tracked in
+    /// #3347. The stored config is left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> EngineConfig {
+        let mut redacted = self.clone();
+        redacted.controller.extensions = redacted.controller.extensions.redacted_for_snapshot();
+        redacted.observability.pipeline.nodes = redacted
+            .observability
+            .pipeline
+            .nodes
+            .redacted_for_snapshot();
+        // Redact `headers` anywhere in the freeform `custom` metadata. Wrap the
+        // whole map into one `Value::Object` so a top-level key literally named
+        // `headers` is matched the same way it is in the structured arms: the
+        // helper only masks a `headers` key found as a *child* of the object it
+        // is handed, so walking each value individually would drop that
+        // top-level key layer and leak `custom.headers.*`.
+        let mut custom = Value::Object(std::mem::take(&mut redacted.custom).into_iter().collect());
+        crate::node::redact_secret_headers(&mut custom);
+        if let Value::Object(map) = custom {
+            redacted.custom = map.into_iter().collect();
+        }
+        redacted
+    }
 }
 
 /// Controller-specific configuration.
@@ -209,6 +284,20 @@ impl ControllerExtensions {
     pub fn keys(&self) -> impl Iterator<Item = &ExtensionId> {
         self.0.keys()
     }
+
+    /// Returns a clone of these controller extensions with every extension's
+    /// credential header values redacted, for safe exposure through the
+    /// admin/config snapshot APIs. See
+    /// [`ExtensionUserConfig::redacted_for_snapshot`]. The stored config is left
+    /// unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> ControllerExtensions {
+        let mut redacted = self.clone();
+        for extension in redacted.0.values_mut() {
+            *extension = Arc::new(extension.redacted_for_snapshot());
+        }
+        redacted
+    }
 }
 
 impl IntoIterator for ControllerExtensions {
@@ -239,13 +328,25 @@ pub struct EngineTopicsConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityConfig {
-    /// Optional dedicated observability pipeline for the engine.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline: Option<EngineObservabilityPipelineConfig>,
+    /// Dedicated observability pipeline for the engine.
+    ///
+    /// When omitted, the engine installs a pipeline that provides a console
+    /// route for explicitly enabled ITS logs and continuously consumes internal
+    /// metrics with a no-op exporter.
+    #[serde(default)]
+    pub pipeline: EngineObservabilityPipelineConfig,
 }
 
+/// Canonical URN for the internal telemetry receiver required by the engine
+/// observability pipeline.
+///
+/// This constant lives in the config crate so configuration validation and
+/// downstream runtime crates can share it without depending on the receiver
+/// implementation crate.
+pub const INTERNAL_TELEMETRY_RECEIVER_URN: &str = "urn:otel:receiver:internal_telemetry";
+
 /// Configuration for the dedicated engine observability pipeline.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct EngineObservabilityPipelineConfig {
     /// Optional policy set for this observability pipeline.
@@ -261,6 +362,38 @@ pub struct EngineObservabilityPipelineConfig {
     /// Explicit graph connections for observability nodes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub connections: Vec<PipelineConnection>,
+}
+
+impl Default for EngineObservabilityPipelineConfig {
+    fn default() -> Self {
+        serde_json::from_value(serde_json::json!({
+            "nodes": {
+                "internal_telemetry": {
+                    "type": INTERNAL_TELEMETRY_RECEIVER_URN,
+                    "config": {}
+                },
+                "signal_router": {
+                    "type": "urn:otel:processor:type_router",
+                    "outputs": ["logs", "metrics"],
+                    "config": {}
+                },
+                "logs_console": {
+                    "type": "urn:otel:exporter:console",
+                    "config": {}
+                },
+                "metrics_noop": {
+                    "type": "urn:otel:exporter:noop",
+                    "config": {}
+                }
+            },
+            "connections": [
+                { "from": "internal_telemetry", "to": "signal_router" },
+                { "from": "signal_router[\"logs\"]", "to": "logs_console" },
+                { "from": "signal_router[\"metrics\"]", "to": "metrics_noop" }
+            ]
+        }))
+        .expect("built-in observability pipeline must be valid")
+    }
 }
 
 impl EngineObservabilityPipelineConfig {
@@ -364,6 +497,170 @@ groups:
             to: exporter
 "#
         )
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_node_headers_across_groups() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config:
+              endpoint: "https://backend.example"
+              headers:
+                authorization: "Bearer super-secret-token"
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let spec = OtelDataflowSpec::from_yaml(yaml).expect("spec should parse and validate");
+        let redacted = spec.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
+        assert!(
+            !redacted_json.contains("Bearer super-secret-token"),
+            "credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction is a copy: the original snapshot keeps the cleartext for the
+        // controller's own use (it is never the thing serialized to clients).
+        let original_json = serde_json::to_string(&spec).expect("spec serializes");
+        assert!(
+            original_json.contains("Bearer super-secret-token"),
+            "original spec must retain the cleartext credential"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_engine_scoped_headers() {
+        // `/api/v1/config` serializes the whole spec, including engine-scoped
+        // config. Controller extensions and the engine observability pipeline's
+        // nodes carry raw header-bearing config, so redaction must reach them
+        // too — not just `groups`. Deserialize directly (no validation) to keep
+        // the test focused on redaction.
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  controller:
+    extensions:
+      ctrl_auth:
+        type: "urn:otap:extension:headers_setter"
+        config:
+          headers:
+            authorization: "Bearer controller-super-secret"
+  observability:
+    pipeline:
+      nodes:
+        obs_exporter:
+          type: "urn:otel:exporter:otlp"
+          config:
+            headers:
+              authorization: "Bearer observability-super-secret"
+"#;
+        let spec: OtelDataflowSpec = serde_yaml::from_str(yaml).expect("spec should deserialize");
+        let redacted = spec.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
+        assert!(
+            !redacted_json.contains("controller-super-secret"),
+            "controller extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            !redacted_json.contains("observability-super-secret"),
+            "observability node credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+
+        // Redaction is a copy: the stored spec keeps the cleartext for the
+        // controller's own use (it is never the thing serialized to clients).
+        let original_json = serde_json::to_string(&spec).expect("spec serializes");
+        assert!(
+            original_json.contains("controller-super-secret")
+                && original_json.contains("observability-super-secret"),
+            "original spec must retain the cleartext credentials: {original_json}"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_headers_under_engine_custom() {
+        // `engine.custom` is freeform metadata the engine never interprets, but
+        // `/api/v1/config` still serializes it — so auth `headers` an embedder
+        // stashes there must be masked too, matching the policy applied to the
+        // structured engine arms. The whole map is treated as one object so a
+        // *top-level* `custom.headers` is caught just like a nested one, and the
+        // list form (`[{key, value}]`) and non-object scalars are handled.
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  custom:
+    headers:
+      authorization: "Bearer toplevel-super-secret"
+    fleet_management:
+      endpoint: "https://fleet.example/api"
+      headers:
+        authorization: "Bearer nested-super-secret"
+    setter:
+      headers:
+        - key: Authorization
+          value: "Bearer list-super-secret"
+    schema_version: 3
+"#;
+        let spec: OtelDataflowSpec = serde_yaml::from_str(yaml).expect("spec should deserialize");
+        let redacted = spec.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted spec serializes");
+        // Top-level (map form), nested, and list-form `headers` under `custom`
+        // must all be masked.
+        for secret in [
+            "toplevel-super-secret",
+            "nested-super-secret",
+            "list-super-secret",
+        ] {
+            assert!(
+                !redacted_json.contains(secret),
+                "custom header credential `{secret}` must not survive redaction: {redacted_json}"
+            );
+        }
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present: {redacted_json}"
+        );
+        // Non-header values under `custom`, including non-object scalars, are
+        // preserved.
+        assert!(
+            redacted_json.contains("https://fleet.example/api")
+                && redacted_json.contains("schema_version"),
+            "non-header custom values must be preserved: {redacted_json}"
+        );
+
+        // Redaction is a copy: the stored spec keeps the cleartext.
+        let original_json = serde_json::to_string(&spec).expect("spec serializes");
+        for secret in [
+            "toplevel-super-secret",
+            "nested-super-secret",
+            "list-super-secret",
+        ] {
+            assert!(
+                original_json.contains(secret),
+                "original spec must retain cleartext `{secret}`: {original_json}"
+            );
+        }
     }
 
     fn write_temp_file(ext: &str, contents: &str) -> PathBuf {
@@ -506,7 +803,401 @@ groups:
 "#;
 
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
-        assert!(config.engine.observability.pipeline.is_some());
+        assert_eq!(
+            config
+                .engine
+                .observability
+                .pipeline
+                .nodes
+                .iter()
+                .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
+                .count(),
+            1
+        );
+    }
+
+    /// Scenario: a configuration omits `engine.observability` entirely.
+    /// Guarantees: the exact built-in nodes, router outputs, and signal routes are installed.
+    #[test]
+    fn from_yaml_installs_default_observability_pipeline() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+groups: {}
+"#,
+        )
+        .expect("default observability pipeline should be valid");
+        assert_eq!(
+            serde_json::to_value(&config.engine.observability.pipeline)
+                .expect("default pipeline should serialize"),
+            serde_json::json!({
+                "nodes": {
+                    "internal_telemetry": {
+                        "type": "urn:otel:receiver:internal_telemetry",
+                        "config": {}
+                    },
+                    "signal_router": {
+                        "type": "urn:otel:processor:type_router",
+                        "outputs": ["logs", "metrics"],
+                        "config": {}
+                    },
+                    "logs_console": {
+                        "type": "urn:otel:exporter:console",
+                        "config": {}
+                    },
+                    "metrics_noop": {
+                        "type": "urn:otel:exporter:noop",
+                        "config": {}
+                    }
+                },
+                "connections": [
+                    { "from": "internal_telemetry", "to": "signal_router" },
+                    { "from": "signal_router[\"logs\"]", "to": "logs_console" },
+                    { "from": "signal_router[\"metrics\"]", "to": "metrics_noop" }
+                ]
+            })
+        );
+    }
+
+    /// Scenario: a configuration explicitly disables the observability pipeline with null.
+    /// Guarantees: deserialization rejects removal of the mandatory pipeline.
+    #[test]
+    fn from_yaml_rejects_null_observability_pipeline() {
+        let error = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline: null
+groups: {}
+"#,
+        )
+        .expect_err("the observability pipeline cannot be disabled");
+
+        assert!(
+            error.to_string().contains("pipeline"),
+            "unexpected validation error: {error}"
+        );
+    }
+
+    /// Scenario: an observability pipeline contains one connected internal receiver.
+    /// Guarantees: the mandatory receiver topology is accepted.
+    #[test]
+    fn from_yaml_accepts_observability_pipeline_with_one_internal_receiver() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let _config = OtelDataflowSpec::from_yaml(yaml).expect("ITS metrics config should parse");
+    }
+
+    /// Scenario: a configuration uses the removed engine telemetry metrics field.
+    /// Guarantees: startup rejects the legacy SDK configuration instead of ignoring it.
+    #[test]
+    fn from_yaml_rejects_legacy_metrics_configuration() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    metrics:
+      provider: its
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("legacy SDK metrics configuration must be rejected");
+        assert!(
+            err.to_string().contains("unknown field `metrics`"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    /// Scenario: an observability pipeline contains no internal telemetry receiver.
+    /// Guarantees: validation rejects the pipeline because metrics are always consumed.
+    #[test]
+    fn from_yaml_rejects_observability_without_internal_receiver() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        source:
+          type: "urn:test:receiver:example"
+          config: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: source
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("observability without an internal receiver must be rejected");
+        assert!(
+            err.to_string()
+                .contains("requires exactly one internal telemetry receiver; found 0"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    /// Scenario: an observability pipeline contains multiple internal receivers.
+    /// Guarantees: validation rejects the ambiguous telemetry source topology.
+    #[test]
+    fn from_yaml_rejects_observability_pipeline_with_multiple_internal_receivers() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr_a:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics: {}
+        itr_b:
+          type: "urn:otel:receiver:internal_telemetry"
+          config:
+            metrics: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr_a
+          to: sink
+        - from: itr_b
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("ITS metrics with multiple receivers must be rejected");
+        assert!(
+            err.to_string().contains("found 2"),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    /// Scenario: the internal telemetry receiver has no downstream connection.
+    /// Guarantees: validation rejects it before graph pruning can hide the error.
+    #[test]
+    fn from_yaml_rejects_unconnected_internal_receiver() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics: {}
+        other_source:
+          type: "urn:test:receiver:example"
+          config: {}
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: other_source
+          to: sink
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("an unconnected ITS receiver must be rejected before build pruning");
+        assert!(
+            err.to_string().contains(
+                "internal telemetry receiver 'itr' must remain connected to a valid downstream path"
+            ),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    /// Scenario: the internal receiver feeds a processor chain with no exporter.
+    /// Guarantees: validation rejects a source that graph pruning would remove.
+    #[test]
+    fn from_yaml_rejects_internal_receiver_connected_only_to_orphan_chain() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics: {}
+        orphan_processor:
+          type: "urn:test:processor:example"
+          config: {}
+      connections:
+        - from: itr
+          to: orphan_processor
+groups: {}
+"#;
+
+        let err = OtelDataflowSpec::from_yaml(yaml)
+            .expect_err("an ITS receiver feeding an orphan chain must be rejected");
+        assert!(
+            err.to_string().contains(
+                "internal telemetry receiver 'itr' must remain connected to a valid downstream path"
+            ),
+            "unexpected validation error: {err}"
+        );
+    }
+
+    /// Scenario: receiver signals are omitted while an engine log provider uses ITS.
+    /// Guarantees: omitted signals are treated as the default logs-and-metrics selection.
+    #[test]
+    fn from_yaml_defaults_internal_receiver_signals_for_its_logs() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      providers:
+        engine: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: "receiver:internal_telemetry"
+          config:
+            metrics:
+              interval: 2s
+        sink:
+          type: "exporter:console"
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml)
+            .expect("default receiver signals should include logs");
+        assert!(config.engine.telemetry.routes_logs_through_its());
+    }
+
+    /// Scenario: a receiver selects only metrics while log providers are omitted.
+    /// Guarantees: the ConsoleAsync log defaults remain independent from ITS metrics.
+    #[test]
+    fn from_yaml_accepts_metrics_only_receiver_with_default_log_providers() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+        sink:
+          type: exporter:console
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let config = OtelDataflowSpec::from_yaml(yaml)
+            .expect("metrics-only receiver should preserve default console logging");
+        assert!(!config.engine.telemetry.routes_logs_through_its());
+    }
+
+    /// Scenario: a receiver selects only metrics while an ITS log producer is configured.
+    /// Guarantees: global, engine, and admin ITS providers each require receiver log output.
+    #[test]
+    fn from_yaml_rejects_metrics_only_receiver_with_its_log_provider() {
+        for provider in ["global", "engine", "admin"] {
+            let yaml = format!(
+                r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      providers:
+        {provider}: its
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+        sink:
+          type: exporter:console
+          config: {{}}
+      connections:
+        - from: itr
+          to: sink
+groups: {{}}
+"#
+            );
+
+            let error = OtelDataflowSpec::from_yaml(&yaml)
+                .expect_err("metrics-only receiver must reject an ITS log producer");
+            assert!(
+                error.to_string().contains(
+                    "internal telemetry receiver 'itr' must enable logs while the global, engine, or admin telemetry log provider uses ITS"
+                ),
+                "unexpected validation error for {provider}: {error}"
+            );
+        }
+    }
+
+    /// Scenario: an internal telemetry receiver explicitly sets `signals: [logs]`.
+    /// Guarantees: logs-only output remains valid when an engine log provider uses ITS.
+    #[test]
+    fn from_yaml_accepts_logs_only_receiver_with_its_logs() {
+        let yaml = r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      providers:
+        global: noop
+        engine: its
+        internal: noop
+        admin: console_direct
+  observability:
+    pipeline:
+      nodes:
+        itr:
+          type: receiver:internal_telemetry
+          config:
+            signals: [logs]
+        sink:
+          type: exporter:console
+          config: {}
+      connections:
+        - from: itr
+          to: sink
+groups: {}
+"#;
+
+        let _config = OtelDataflowSpec::from_yaml(yaml)
+            .expect("logs-only receiver should be valid for ITS log producers");
     }
 
     #[test]
@@ -898,16 +1589,19 @@ groups:
         let config = OtelDataflowSpec::from_yaml(yaml).expect("should parse");
 
         let resolved = config.resolve();
-        assert_eq!(resolved.pipelines.len(), 3);
+        assert_eq!(resolved.pipelines.len(), 4);
         assert!(
             resolved
                 .pipelines
                 .iter()
-                .all(|p| p.role == ResolvedPipelineRole::Regular)
+                .filter(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
+                .count()
+                == 1
         );
         let resolved_ids: Vec<(String, String)> = resolved
             .pipelines
             .iter()
+            .filter(|p| p.role == ResolvedPipelineRole::Regular)
             .map(|p| (p.pipeline_group_id.to_string(), p.pipeline_id.to_string()))
             .collect();
         assert_eq!(

@@ -5,16 +5,16 @@ use super::*;
 use otap_df_config::engine::ResolvedPipelineRole;
 use otap_df_config::observed_state::ObservedStateSettings;
 use otap_df_config::settings::telemetry::logs::LogLevel;
-use otap_df_engine::ExporterFactory;
-use otap_df_engine::ReceiverFactory;
-use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
+use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
 use otap_df_engine::control::{
     RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
 };
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::exporter::ExporterWrapper;
+use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::wiring_contract::WiringContract;
+use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
@@ -58,6 +58,16 @@ fn test_exporter_create(
     panic!("test exporter factory should not be constructed")
 }
 
+fn test_processor_create(
+    _pipeline_ctx: PipelineContext,
+    _node: otap_df_engine::node::NodeId,
+    _node_config: Arc<NodeUserConfig>,
+    _processor_config: &ProcessorConfig,
+    _capabilities: &otap_df_engine::capability::registry::Capabilities,
+) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+    panic!("test processor factory should not be constructed")
+}
+
 static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
     ReceiverFactory {
         name: "urn:test:receiver:example",
@@ -71,7 +81,20 @@ static TEST_RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ReceiverFactory {
+        name: "urn:otel:receiver:internal_telemetry",
+        create: test_receiver_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
+
+static TEST_PROCESSOR_FACTORIES: &[ProcessorFactory<()>] = &[ProcessorFactory {
+    name: "urn:otel:processor:type_router",
+    create: test_processor_create,
+    wiring_contract: WiringContract::UNRESTRICTED,
+    validate_config: test_validate_config,
+}];
 
 static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
     ExporterFactory {
@@ -86,10 +109,26 @@ static TEST_EXPORTER_FACTORIES: &[ExporterFactory<()>] = &[
         wiring_contract: WiringContract::UNRESTRICTED,
         validate_config: test_validate_config,
     },
+    ExporterFactory {
+        name: "urn:otel:exporter:console",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
+    ExporterFactory {
+        name: "urn:otel:exporter:noop",
+        create: test_exporter_create,
+        wiring_contract: WiringContract::UNRESTRICTED,
+        validate_config: test_validate_config,
+    },
 ];
 
-static TEST_PIPELINE_FACTORY: PipelineFactory<()> =
-    PipelineFactory::new(TEST_RECEIVER_FACTORIES, &[], TEST_EXPORTER_FACTORIES, &[]);
+static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+    TEST_RECEIVER_FACTORIES,
+    TEST_PROCESSOR_FACTORIES,
+    TEST_EXPORTER_FACTORIES,
+    &[],
+);
 
 fn test_runtime(config: &OtelDataflowSpec) -> Arc<ControllerRuntime<()>> {
     let registry = TelemetryRegistryHandle::new();
@@ -374,6 +413,56 @@ fn recording_admin_sender(
         failure: failure.map(ToOwned::to_owned),
     });
     (sender, calls)
+}
+
+struct NotifyingPipelineAdminSender {
+    notification: std::sync::mpsc::Sender<String>,
+}
+
+impl PipelineAdminSender for NotifyingPipelineAdminSender {
+    fn try_send_shutdown(&self, _deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.notification
+            .send(reason)
+            .map_err(|error| EngineError::RuntimeMsgError {
+                error: error.to_string(),
+            })
+    }
+}
+
+fn notifying_admin_sender() -> (
+    Arc<dyn PipelineAdminSender>,
+    std::sync::mpsc::Receiver<String>,
+) {
+    let (notification, receiver) = std::sync::mpsc::channel();
+    (
+        Arc::new(NotifyingPipelineAdminSender { notification }),
+        receiver,
+    )
+}
+
+struct DeadlineNotifyingPipelineAdminSender {
+    notification: std::sync::mpsc::Sender<(String, Instant)>,
+}
+
+impl PipelineAdminSender for DeadlineNotifyingPipelineAdminSender {
+    fn try_send_shutdown(&self, deadline: Instant, reason: String) -> Result<(), EngineError> {
+        self.notification
+            .send((reason, deadline))
+            .map_err(|error| EngineError::RuntimeMsgError {
+                error: error.to_string(),
+            })
+    }
+}
+
+fn deadline_notifying_admin_sender() -> (
+    Arc<dyn PipelineAdminSender>,
+    std::sync::mpsc::Receiver<(String, Instant)>,
+) {
+    let (notification, receiver) = std::sync::mpsc::channel();
+    (
+        Arc::new(DeadlineNotifyingPipelineAdminSender { notification }),
+        receiver,
+    )
 }
 
 fn launched_runtime_instance(
@@ -2584,6 +2673,158 @@ fn request_shutdown_all_attempts_all_active_instances_before_returning_error() {
             .unwrap_or_else(|poisoned| poisoned.into_inner()),
         vec!["global shutdown".to_owned()]
     );
+}
+
+/// Scenario: global shutdown includes regular producer instances and the
+/// engine's system observability instance.
+/// Guarantees: all regular instances receive shutdown first, and the system
+/// observability sender is not called until every regular instance reports its
+/// terminal exit, preserving their final internal telemetry.
+#[test]
+fn request_shutdown_all_stops_observability_after_regular_instances_exit() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key0 = deployed_key("g1", "p1", 0, 0);
+    let regular_key1 = deployed_key("g1", "p1", 1, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        2,
+        0,
+    );
+    let (regular_sender0, regular_notifications0) = notifying_admin_sender();
+    let (regular_sender1, regular_notifications1) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = deadline_notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key0.clone(),
+        regular_sender0,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key1.clone(),
+        regular_sender1,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    let shutdown_runtime = Arc::clone(&runtime);
+    let (shutdown_result_tx, shutdown_result_rx) = std::sync::mpsc::channel();
+    let shutdown_thread = thread::spawn(move || {
+        shutdown_result_tx
+            .send(shutdown_runtime.request_shutdown_all(5))
+            .expect("shutdown result receiver should remain open");
+    });
+
+    assert_eq!(
+        regular_notifications0
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    assert_eq!(
+        regular_notifications1
+            .recv_timeout(Duration::from_secs(1))
+            .expect("second regular instance should receive shutdown"),
+        "global shutdown"
+    );
+    shutdown_result_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("shutdown dispatch should return before regular instances exit")
+        .expect("initial shutdown dispatch should succeed");
+    shutdown_thread
+        .join()
+        .expect("global shutdown dispatch thread should join");
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "observability must remain active while regular instances drain"
+    );
+
+    runtime.note_instance_exit(regular_key0, RuntimeInstanceExit::Success);
+    assert!(
+        observability_notifications.try_recv().is_err(),
+        "one remaining regular instance must keep observability active"
+    );
+    runtime.note_instance_exit(regular_key1, RuntimeInstanceExit::Success);
+
+    let (reason, deadline) = observability_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should receive shutdown after producers exit");
+    assert_eq!(reason, "global shutdown");
+    assert!(
+        deadline.saturating_duration_since(Instant::now()) > Duration::from_secs(4),
+        "observability should receive the caller's five-second shutdown budget"
+    );
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(
+        runtime.wait_for_global_shutdown_completion(),
+        "the phased shutdown coordinator should complete after observability exits"
+    );
+    assert!(runtime.all_instances_exited());
+
+    runtime
+        .request_shutdown_all(5)
+        .expect("repeated global shutdown should remain idempotent");
+    assert!(regular_notifications0.try_recv().is_err());
+    assert!(regular_notifications1.try_recv().is_err());
+    assert!(observability_notifications.try_recv().is_err());
+}
+
+/// Scenario: a producer misses its shutdown deadline while observability is still running.
+/// Guarantees: observability remains available for bounded terminal reporting before it stops.
+#[test]
+fn request_shutdown_all_keeps_observability_active_when_producer_times_out() {
+    let runtime = test_runtime(&engine_config_with_pipeline(simple_pipeline_yaml()));
+    let regular_key = deployed_key("g1", "p1", 0, 0);
+    let observability_key = deployed_key(
+        SYSTEM_PIPELINE_GROUP_ID,
+        SYSTEM_OBSERVABILITY_PIPELINE_ID,
+        1,
+        0,
+    );
+    let (regular_sender, regular_notifications) = notifying_admin_sender();
+    let (observability_sender, observability_notifications) = notifying_admin_sender();
+    register_runtime_instance_with_sender(
+        &runtime,
+        regular_key.clone(),
+        regular_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+    register_runtime_instance_with_sender(
+        &runtime,
+        observability_key.clone(),
+        observability_sender,
+        RuntimeInstanceLifecycle::Active,
+    );
+
+    runtime
+        .request_shutdown_all(1)
+        .expect("initial shutdown dispatch should succeed");
+    let _ = regular_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("regular producer should receive shutdown");
+    assert!(
+        observability_notifications
+            .recv_timeout(Duration::from_millis(1_200))
+            .is_err(),
+        "observability must remain active when a producer misses its deadline"
+    );
+
+    runtime.note_instance_exit(regular_key, RuntimeInstanceExit::Success);
+    runtime
+        .request_shutdown_all(1)
+        .expect("a later request should retry the restored observability sender");
+    let _ = observability_notifications
+        .recv_timeout(Duration::from_secs(1))
+        .expect("observability should stop once the producer has exited");
+    runtime.note_instance_exit(observability_key, RuntimeInstanceExit::Success);
+    assert!(runtime.wait_for_global_shutdown_completion());
+    assert!(runtime.all_instances_exited());
 }
 
 /// Scenario: all targeted runtime instances exit cleanly after a pipeline

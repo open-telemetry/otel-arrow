@@ -643,26 +643,56 @@ pub(crate) fn parse_attribute_selection_expression(
         .next()
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
-    let mut selections = vec![ScalarExpression::Static(StaticScalarExpression::String(
-        StringScalarExpression::new(query_location.clone(), source_rule.as_str()),
-    ))];
+    let mut selections = match source_rule.as_rule() {
+        Rule::identifier_expression => {
+            vec![ScalarExpression::Static(StaticScalarExpression::String(
+                StringScalarExpression::new(query_location.clone(), source_rule.as_str()),
+            ))]
+        }
+        invalid_rule => {
+            return Err(invalid_child_rule_error(
+                query_location,
+                Rule::attribute_selection_expression,
+                invalid_rule,
+            ));
+        }
+    };
 
     for rule in inner_rules {
         let query_location = to_query_location(&rule);
         match rule.as_rule() {
-            Rule::member_expression => {
-                match parse_member_expression(rule, pipeline_builder)?.into() {
-                    ScalarExpression::Source(source_expr) => {
-                        let mut inner_sel = source_expr.into_value_accessor().into_selectors();
-                        selections.append(&mut inner_sel);
+            Rule::path_segment => {
+                let member_rule = rule
+                    .into_inner()
+                    .next()
+                    .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
+                match member_rule.as_rule() {
+                    Rule::identifier_expression => {
+                        selections.push(ScalarExpression::Static(StaticScalarExpression::String(
+                            StringScalarExpression::new(query_location, member_rule.as_str()),
+                        )))
                     }
-                    invalid_expr => {
-                        return Err(ParserError::SyntaxNotSupported(
+                    Rule::integer_literal => selections.push(ScalarExpression::Static(
+                        parse_standard_integer_literal(member_rule)?,
+                    )),
+                    Rule::member_expression => {
+                        match parse_member_expression(member_rule, pipeline_builder)? {
+                            LogicalOrScalarExpr::Scalar(scalar_expr) => {
+                                selections.push(scalar_expr)
+                            }
+                            LogicalOrScalarExpr::Logical(_) => {
+                                return Err(ParserError::SyntaxError(
+                                    query_location,
+                                    "bracket selectors must be scalar expressions".into(),
+                                ));
+                            }
+                        }
+                    }
+                    invalid_rule => {
+                        return Err(invalid_child_rule_error(
                             query_location,
-                            format!(
-                                "Invalid expression found parsing member expression: {:?}. Expected Source",
-                                invalid_expr
-                            ),
+                            Rule::path_segment,
+                            invalid_rule,
                         ));
                     }
                 }
@@ -1323,6 +1353,53 @@ mod test {
             ]),
         ));
         assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_bareword_bracket_selector_preserves_dynamic_source() {
+        let input = "attributes[key]";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+        let result: ScalarExpression =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap()
+                .into();
+
+        let expected = ScalarExpression::Source(SourceScalarExpression::new(
+            QueryLocation::new_fake(),
+            ValueAccessor::new_with_selectors(vec![
+                ScalarExpression::Static(StaticScalarExpression::String(
+                    StringScalarExpression::new(QueryLocation::new_fake(), "attributes"),
+                )),
+                ScalarExpression::Source(SourceScalarExpression::new(
+                    QueryLocation::new_fake(),
+                    ValueAccessor::new_with_selectors(vec![ScalarExpression::Static(
+                        StaticScalarExpression::String(StringScalarExpression::new(
+                            QueryLocation::new_fake(),
+                            "key",
+                        )),
+                    )]),
+                )),
+            ]),
+        ));
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_bracket_selector_rejects_logical_expression() {
+        let input = "attributes[contains(severity_text, \"ERR\")]";
+        let mut rules = OplPestParser::parse(Rule::member_expression, input).unwrap();
+        assert_eq!(rules.len(), 1);
+
+        let err =
+            parse_member_expression(rules.next().unwrap(), default_pipeline_builder().as_ref())
+                .unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("bracket selectors must be scalar expressions"),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[test]

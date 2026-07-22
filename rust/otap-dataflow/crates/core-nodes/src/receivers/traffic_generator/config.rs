@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use weaver_common::result::WResult;
 use weaver_common::vdir::VirtualDirectoryPath;
 use weaver_forge::registry::ResolvedRegistry;
-use weaver_resolver::SchemaResolver;
+use weaver_resolver::{DefaultSchemaVisitor, WeaverResolver, WeaverResolverConfig};
 use weaver_semconv::registry_repo::RegistryRepo;
 
 /// Source of telemetry data schema and attributes
@@ -293,18 +293,19 @@ impl Config {
                     RegistryRepo::try_new(None, &self.registry_path, &mut semconv_errors)
                         .map_err(|err| err.to_string())?;
 
-                // Load the semantic convention registry.
-                let registry = match SchemaResolver::load_semconv_repository(registry_repo, false) {
-                    WResult::Ok(registry) => registry,
-                    WResult::OkWithNFEs(registry, _) => registry,
-                    WResult::FatalErr(err) => return Err(err.to_string()),
+                let resolver_config = WeaverResolverConfig {
+                    include_unreferenced: true,
+                    ..WeaverResolverConfig::default()
                 };
-
-                let resolved_schema = match SchemaResolver::resolve(registry, true) {
-                    WResult::Ok(resolved_schema) => resolved_schema,
-                    WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
-                    WResult::FatalErr(err) => return Err(err.to_string()),
-                };
+                let mut resolver = WeaverResolver::new(resolver_config);
+                let resolved_schema =
+                    match resolver.load_and_resolve_schema(registry_repo, DefaultSchemaVisitor) {
+                        WResult::Ok(resolved_schema) => resolved_schema,
+                        WResult::OkWithNFEs(resolved_schema, _) => resolved_schema,
+                        WResult::FatalErr(err) => return Err(err.to_string()),
+                    }
+                    .into_v1()
+                    .map_err(|err| err.to_string())?;
 
                 let resolved_registry = ResolvedRegistry::try_from_resolved_registry(
                     &resolved_schema.registry,

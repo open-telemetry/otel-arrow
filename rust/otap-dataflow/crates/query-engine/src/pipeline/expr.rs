@@ -163,6 +163,9 @@ impl From<&ColumnAccessor> for DataScope {
             ColumnAccessor::Attributes(attrs_id, attrs_key) => {
                 Self::Attribute(*attrs_id, attrs_key.clone())
             }
+            ColumnAccessor::NestedAttribute(attrs_id, attrs_key, _) => {
+                Self::Attribute(*attrs_id, attrs_key.clone())
+            }
         }
     }
 }

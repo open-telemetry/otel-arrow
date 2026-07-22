@@ -298,7 +298,7 @@ fn bench_exporter(c: &mut Criterion) {
 
     // start grpc server to handle otap stream
     let grpc_addr = "127.0.0.1";
-    let otap_grpc_port = portpicker::pick_unused_port().expect("No free ports");
+    let otap_grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
     let otap_listening_addr: SocketAddr = format!("{grpc_addr}:{otap_grpc_port}")
         .parse()
         .expect("failed to parse otap address");
@@ -327,7 +327,7 @@ fn bench_exporter(c: &mut Criterion) {
     });
 
     // start grpc server to handle otlp requests
-    let otlp_grpc_port = portpicker::pick_unused_port().expect("No free ports");
+    let otlp_grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
     let otlp_listening_addr: SocketAddr = format!("{grpc_addr}:{otlp_grpc_port}")
         .parse()
         .expect("failed to parse OTLP address");

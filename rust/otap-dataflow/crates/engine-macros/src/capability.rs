@@ -15,6 +15,14 @@
 //! - `Sealed` + `ExtensionCapability` impls
 //! - `KNOWN_CAPABILITIES` distributed slice entry
 //!
+//! The generated `local` / `shared` trait modules are emitted as `pub(crate)`,
+//! not `pub`: they are an implementation detail, so the capability module can be
+//! a plain public module exposing only its data types and registration handle
+//! directly, while the trait variants are made public solely through the
+//! hand-written `{local,shared}::capability::<name>` re-exports. This keeps each
+//! item on a single public surface (no capability trait is also reachable at
+//! `capability::<name>::{local,shared}`).
+//!
 //! # Supported
 //!
 //! - Methods with `&self` or `&mut self` receivers (sync and async;
@@ -408,7 +416,11 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
 
     quote! {
         /// Local (!Send) version of the capability trait.
-        #vis mod local {
+        ///
+        /// `pub(crate)`: reachable publicly only through the hand-written
+        /// `local::capability::<name>` re-export, never directly under
+        /// `capability::<name>`, so the trait has a single public surface.
+        pub(crate) mod local {
             use super::*;
 
             #(#trait_docs)*
@@ -419,7 +431,11 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
         }
 
         /// Shared (Send) version of the capability trait.
-        #vis mod shared {
+        ///
+        /// `pub(crate)`: reachable publicly only through the hand-written
+        /// `shared::capability::<name>` re-export, never directly under
+        /// `capability::<name>`, so the trait has a single public surface.
+        pub(crate) mod shared {
             use super::*;
 
             #(#trait_docs)*

@@ -406,7 +406,7 @@ fn locate_event<'a>(
 }
 
 /// Locate a Logs row whose `event_name` matches AND whose injected
-/// `etw.process_id` attribute equals `expected_pid`.  Matching on PID in
+/// `etw.process.id` attribute equals `expected_pid`.  Matching on PID in
 /// addition to name prevents a concurrent test run (which would emit an
 /// identically-named `STATIC_EVENT_NAME` from the same fixed static
 /// provider) from being picked up as ours.
@@ -426,7 +426,7 @@ fn find_event_row(records: &OtapArrowRecords, expected: &str, expected_pid: u32)
         };
         let pid_attr = collect_attributes(attrs_rb, log_id)
             .into_iter()
-            .find(|(k, _)| k == "etw.process_id")
+            .find(|(k, _)| k == "etw.process.id")
             .map(|(_, v)| v);
         if let Some(AttrSnapshot::Int(pid)) = pid_attr
             && pid == expected_pid_i64
@@ -549,7 +549,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     let attrs = collect_attributes(attrs_rb, log_id);
 
     // TraceLogging events have no manifest, so id/opcode/version are 0.
-    assert_attr_int(&attrs, "etw.event_id", 0);
+    assert_attr_int(&attrs, "etw.event.id", 0);
     assert_attr_int(&attrs, "etw.opcode", 0);
     assert_attr_int(&attrs, "etw.version", 0);
     // TraceLogging unconditionally OR-s a high-bit metadata marker
@@ -557,10 +557,10 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     // application's bits.  The encoder saturates u64 → i64, so the
     // value clamps to `i64::MAX` whenever bit 63 is set.
     assert_attr_keywords_includes_bit(&attrs, "etw.keywords", 0x1);
-    assert_attr_int(&attrs, "etw.process_id", i64::from(std::process::id()));
+    assert_attr_int(&attrs, "etw.process.id", i64::from(std::process::id()));
     assert!(
-        attrs.iter().any(|(k, _)| k == "etw.thread_id"),
-        "expected attribute key 'etw.thread_id' in LogAttrs; got keys = {:?}",
+        attrs.iter().any(|(k, _)| k == "etw.thread.id"),
+        "expected attribute key 'etw.thread.id' in LogAttrs; got keys = {:?}",
         attr_keys(&attrs)
     );
     // provider_id is a 16-byte GUID rendered as a 36-char dashed hex
@@ -568,17 +568,17 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     // order is the raw on-the-wire layout, not the canonical
     // string-form byte order, so we check shape rather than exact
     // equality against the producer-side GUID string.
-    let provider_id = attr_str(&attrs, "etw.provider_id");
+    let provider_id = attr_str(&attrs, "etw.provider.id");
     assert_eq!(
         provider_id.len(),
         36,
-        "etw.provider_id should be a 36-char GUID, got {provider_id:?}"
+        "etw.provider.id should be a 36-char GUID, got {provider_id:?}"
     );
     assert!(
         provider_id
             .chars()
             .all(|c| c == '-' || c.is_ascii_hexdigit()),
-        "etw.provider_id contains non-hex/non-dash characters: {provider_id:?}"
+        "etw.provider.id contains non-hex/non-dash characters: {provider_id:?}"
     );
 }
 

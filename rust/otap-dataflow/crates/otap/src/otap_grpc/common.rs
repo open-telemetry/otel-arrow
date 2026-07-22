@@ -148,7 +148,7 @@ pub fn tune_max_concurrent_requests(config: &mut GrpcServerSettings, downstream_
 pub fn apply_server_tuning<L>(builder: Server<L>, config: &GrpcServerSettings) -> Server<L> {
     let transport_limit = config
         .transport_concurrency_limit
-        .and_then(|limit| if limit == 0 { None } else { Some(limit) })
+        .filter(|&limit| limit != 0)
         .unwrap_or(config.max_concurrent_requests)
         .max(1);
 

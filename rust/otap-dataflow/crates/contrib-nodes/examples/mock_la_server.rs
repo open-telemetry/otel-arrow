@@ -345,7 +345,7 @@ async fn main() {
     let port = cli.port;
 
     println!("[mock-la] Mock Azure Monitor Logs Ingestion API Server");
-    println!("[mock-la] Listening on 0.0.0.0:{port}");
+    println!("[mock-la] Listening on 127.0.0.1:{port}");
 
     if cli.fail_rate > 0.0 {
         if let Some(retry_secs) = cli.retry_after {
@@ -403,7 +403,7 @@ async fn main() {
         )
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}"))
+    let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
         .await
         .expect("failed to bind to port");
 

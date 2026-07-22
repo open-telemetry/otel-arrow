@@ -6,9 +6,9 @@
 use std::collections::HashSet;
 
 use data_engine_expressions::{
-    BooleanScalarExpression, BooleanValue, DataExpression, Expression, LogicalExpression,
-    MapSelector, MoveTransformExpression, MutableValueExpression, OutputExpression,
-    PipelineExpression, PipelineFunction, PipelineFunctionExpression,
+    BooleanScalarExpression, BooleanValue, DataExpression, Expression, IntegerValue,
+    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
     PipelineFunctionImplementation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
@@ -18,6 +18,7 @@ use datafusion::logical_expr::Expr;
 use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
+use otap_df_pdata::otlp::attributes::cbor::SerializedValuePathElement;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -616,15 +617,32 @@ impl PipelinePlanner {
         //
         // To avoid the ambiguity, we keep track of which keys or columns used in the combined
         // expressions in this set..
+        #[derive(Eq, Hash, PartialEq)]
+        enum ReferencedDestination {
+            Column(String),
+            Attribute(String),
+            NestedAttribute(String, Vec<SerializedValuePathElement>),
+        }
+
         let mut cols_or_keys_referenced = HashSet::new();
 
         // update the referenced column/attr key tracking set
-        fn set_dest_attr_key(dest_accessor: &ColumnAccessor, referenced: &mut HashSet<String>) {
+        fn set_dest_attr_key(
+            dest_accessor: &ColumnAccessor,
+            referenced: &mut HashSet<ReferencedDestination>,
+        ) {
             if let ColumnAccessor::ColumnName(col_name) = dest_accessor {
-                _ = referenced.insert(col_name.into());
+                _ = referenced.insert(ReferencedDestination::Column(col_name.clone()));
             }
             if let ColumnAccessor::Attributes(_, key) = dest_accessor {
-                _ = referenced.insert(key.into());
+                _ = referenced.insert(ReferencedDestination::Attribute(key.clone()));
+            }
+            if let ColumnAccessor::NestedAttribute(_, key, path) = dest_accessor {
+                _ = referenced.insert(ReferencedDestination::Attribute(key.clone()));
+                _ = referenced.insert(ReferencedDestination::NestedAttribute(
+                    key.clone(),
+                    path.clone(),
+                ));
             }
         }
 
@@ -637,16 +655,33 @@ impl PipelinePlanner {
         fn check_combine(
             prev: &Assignment<'_>,
             next: &Assignment<'_>,
-            cols_or_keys_referenced: &HashSet<String>,
+            cols_or_keys_referenced: &HashSet<ReferencedDestination>,
         ) -> bool {
             let can_combine_dests = match (&prev.dest_column, &next.dest_column) {
                 (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(next_key)) => {
-                    !cols_or_keys_referenced.contains(next_key)
+                    !cols_or_keys_referenced
+                        .contains(&ReferencedDestination::Column(next_key.clone()))
                 }
                 (
                     ColumnAccessor::Attributes(prev_attrs_id, _),
                     ColumnAccessor::Attributes(next_attrs_id, next_key),
-                ) => prev_attrs_id == next_attrs_id && !cols_or_keys_referenced.contains(next_key),
+                ) => {
+                    prev_attrs_id == next_attrs_id
+                        && !cols_or_keys_referenced
+                            .contains(&ReferencedDestination::Attribute(next_key.clone()))
+                }
+                (
+                    ColumnAccessor::NestedAttribute(prev_attrs_id, _, _),
+                    ColumnAccessor::NestedAttribute(next_attrs_id, next_key, next_path),
+                ) => {
+                    prev_attrs_id == next_attrs_id
+                        && !cols_or_keys_referenced.contains(
+                            &ReferencedDestination::NestedAttribute(
+                                next_key.clone(),
+                                next_path.clone(),
+                            ),
+                        )
+                }
 
                 // in all other cases, the destinations don't match so we can't combine into
                 // a single assignment
@@ -670,13 +705,15 @@ impl PipelinePlanner {
         // is the set of destinations that may have been reassigned a new value).
         fn source_references_col_or_key(
             source_op: &ScopedExpr,
-            referenced: &HashSet<String>,
+            referenced: &HashSet<ReferencedDestination>,
         ) -> bool {
             use crate::pipeline::expr::LeafEval;
 
             match source_op {
                 ScopedExpr::Eval { scope, eval } => match scope {
-                    DataScope::Attribute(_, key) => referenced.contains(key),
+                    DataScope::Attribute(_, key) => {
+                        referenced.contains(&ReferencedDestination::Attribute(key.clone()))
+                    }
                     DataScope::AttributesAll(_) => {
                         // Fused attribute expressions embed key and value comparisons
                         // directly in the DataFusion expression. Conservatively assume
@@ -692,7 +729,9 @@ impl PipelinePlanner {
                             let mut found = false;
                             _ = logical_expr.apply(|expr| {
                                 if let Expr::Column(column) = expr {
-                                    found = referenced.contains(column.name());
+                                    found = referenced.contains(&ReferencedDestination::Column(
+                                        column.name().to_string(),
+                                    ));
                                 }
                                 Ok(if found {
                                     TreeNodeRecursion::Stop
@@ -715,7 +754,9 @@ impl PipelinePlanner {
                         let mut found = false;
                         _ = logical_expr.apply(|expr| {
                             if let Expr::Column(column) = expr {
-                                found = referenced.contains(column.name());
+                                found = referenced.contains(&ReferencedDestination::Column(
+                                    column.name().to_string(),
+                                ));
                             }
                             Ok(if found {
                                 TreeNodeRecursion::Stop
@@ -909,17 +950,41 @@ pub enum ColumnAccessor {
     /// payload type identifies which attributes are being joined
     /// and the string identifies the attribute key
     Attributes(AttributesIdentifier, String),
+
+    /// Path inside a serialized Map/Slice attribute value.
+    NestedAttribute(
+        AttributesIdentifier,
+        String,
+        Vec<SerializedValuePathElement>,
+    ),
 }
 
 impl ColumnAccessor {
     fn try_from_attrs_key(
         attrs_identifier: AttributesIdentifier,
-        scalar_expr: &ScalarExpression,
+        selectors: &[ScalarExpression],
     ) -> Result<Self> {
-        match scalar_expr {
-            ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => Ok(
-                Self::Attributes(attrs_identifier, attr_key.get_value().to_string()),
-            ),
+        let Some(attr_key_expr) = selectors.first() else {
+            return Err(Error::InvalidPipelineError {
+                cause: "attribute accessor is missing key selector".into(),
+                query_location: None,
+            });
+        };
+
+        match attr_key_expr {
+            ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
+                let attr_key = attr_key.get_value().to_string();
+                let path = selectors[1..]
+                    .iter()
+                    .map(Self::try_from_nested_path_element)
+                    .collect::<Result<Vec<_>>>()?;
+
+                if path.is_empty() {
+                    Ok(Self::Attributes(attrs_identifier, attr_key))
+                } else {
+                    Ok(Self::NestedAttribute(attrs_identifier, attr_key, path))
+                }
+            }
 
             // TODO: handle users accessing attributes in a different way, like for example from a variable,
             // function result, etc.
@@ -932,22 +997,70 @@ impl ColumnAccessor {
         }
     }
 
+    fn try_from_nested_path_element(
+        scalar_expr: &ScalarExpression,
+    ) -> Result<SerializedValuePathElement> {
+        match scalar_expr {
+            ScalarExpression::Static(StaticScalarExpression::String(key)) => {
+                Ok(SerializedValuePathElement::Key(key.get_value().to_string()))
+            }
+            ScalarExpression::Static(StaticScalarExpression::Integer(index)) => {
+                let index = usize::try_from(index.get_value()).map_err(|_| {
+                    Error::InvalidPipelineError {
+                        cause: format!(
+                            "nested serialized attribute path index must be non-negative. found {}",
+                            index.get_value()
+                        ),
+                        query_location: Some(index.get_query_location().clone()),
+                    }
+                })?;
+                Ok(SerializedValuePathElement::Index(index))
+            }
+            expr => Err(Error::NotYetSupportedError {
+                message: format!(
+                    "unsupported nested serialized attribute path selector. currently only static string keys and integer indexes are supported. received {:?}",
+                    expr
+                ),
+            }),
+        }
+    }
+
     fn try_from_struct_field(
         struct_column_name: &'static str,
         attrs_payload_type: ArrowPayloadType,
         selectors: &[ScalarExpression],
     ) -> Result<Self> {
-        match &selectors[1] {
+        let Some(struct_selector) = selectors.get(1) else {
+            return Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "nested struct column definition for struct {struct_column_name} is missing field selector"
+                ),
+                query_location: None,
+            });
+        };
+
+        match struct_selector {
             ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
                 match struct_field.get_value() {
                     ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
                         AttributesIdentifier::NonRoot(attrs_payload_type),
-                        &selectors[2],
+                        &selectors[2..],
                     ),
-                    struct_field => Ok(Self::StructCol(
-                        struct_column_name,
-                        struct_field.to_string(),
-                    )),
+                    struct_field => {
+                        if let Some(extra_selector) = selectors.get(2) {
+                            return Err(Error::InvalidPipelineError {
+                                cause: format!(
+                                    "unsupported nested selector on struct field {struct_column_name}.{struct_field}. received {:?}",
+                                    extra_selector
+                                ),
+                                query_location: Some(extra_selector.get_query_location().clone()),
+                            });
+                        }
+                        Ok(Self::StructCol(
+                            struct_column_name,
+                            struct_field.to_string(),
+                        ))
+                    }
                 }
             }
             expr => Err(Error::InvalidPipelineError {
@@ -955,7 +1068,7 @@ impl ColumnAccessor {
                     "unsupported nested struct column definition for struct {}. received {:?}",
                     struct_column_name, expr
                 ),
-                query_location: Some(selectors[1].get_query_location().clone()),
+                query_location: Some(struct_selector.get_query_location().clone()),
             }),
         }
     }
@@ -972,7 +1085,7 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                 let column_name = column.get_value();
                 match column_name {
                     ATTRIBUTES_FIELD_NAME => {
-                        Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1])
+                        Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1..])
                     }
                     RESOURCES_FIELD_NAME => Self::try_from_struct_field(
                         consts::RESOURCE,
@@ -984,7 +1097,18 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                         ArrowPayloadType::ScopeAttrs,
                         selectors,
                     ),
-                    value => Ok(Self::ColumnName(value.to_string())),
+                    value => {
+                        if let Some(extra_selector) = selectors.get(1) {
+                            return Err(Error::InvalidPipelineError {
+                                cause: format!(
+                                    "unsupported nested selector on column {value}. received {:?}",
+                                    extra_selector
+                                ),
+                                query_location: Some(extra_selector.get_query_location().clone()),
+                            });
+                        }
+                        Ok(Self::ColumnName(value.to_string()))
+                    }
                 }
             }
             expr => Err(Error::InvalidPipelineError {
