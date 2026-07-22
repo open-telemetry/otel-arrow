@@ -15,7 +15,7 @@
 //! coordination mechanism; consumers that tolerate transient mismatches should
 //! document their retry or convergence behavior.
 //!
-//! Like [`bearer_token_provider`](super::bearer_token_provider), the trait is
+//! Like [`bearer_token_provider`](super::auth::bearer_token_provider), the trait is
 //! expanded by the `#[capability]` proc macro into `local` (!Send) and `shared`
 //! (Send) variants, a `SharedAsLocal` adapter, a zero-sized registration
 //! handle, and a `KNOWN_CAPABILITIES` distributed-slice entry.

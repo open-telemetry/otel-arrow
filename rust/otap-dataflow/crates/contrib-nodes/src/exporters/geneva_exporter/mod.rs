@@ -74,7 +74,7 @@ mod agent_fed_source;
 
 use agent_fed_source::AgentFedGenevaSource;
 use otap_df_engine::capability::ExtensionCapability;
-use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider as BearerTokenProviderCap;
+use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider as BearerTokenProviderCap;
 use otap_df_engine::capability::vendor_bundle::VendorBundle as VendorBundleCap;
 
 /// The URN for the Geneva exporter
@@ -1406,12 +1406,13 @@ mod tests {
     use bytes::Bytes;
     use otap_df_engine::Interests;
     use otap_df_engine::capability::SharedInstanceFactory;
-    use otap_df_engine::capability::bearer_token_provider::{BearerToken, TokenStream};
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::TokenStream;
     use otap_df_engine::capability::registry::CapabilityRegistry;
     use otap_df_engine::capability::{CapabilityError, ExtensionCapability};
     use otap_df_engine::control::PipelineCompletionMsg;
     use otap_df_engine::extension_capabilities;
-    use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+    use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
     use otap_df_engine::shared::capability::vendor_bundle::VendorBundle as SharedVendorBundle;
     use otap_df_engine::testing::capability::resolve_bindings_for_test;
     use otap_df_engine::testing::exporter::{
@@ -1622,7 +1623,7 @@ mod tests {
     #[async_trait]
     impl SharedBearerTokenProvider for MockAgentExtension {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            Ok(BearerToken::new(self.token.clone(), None))
+            Ok(BearerToken::without_expiry(self.token.clone()))
         }
 
         fn token_stream(&self) -> TokenStream {

@@ -10,7 +10,7 @@
 use geneva_uploader::client::{
     AgentFedCredential, AgentFedCredentialFuture, AgentFedCredentialSource,
 };
-use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider;
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::shared::capability::vendor_bundle::VendorBundle;
 use otap_df_telemetry::otel_warn;
 use serde_json::{Map, Value};
@@ -186,8 +186,10 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use futures::StreamExt;
-    use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider as BearerTokenProviderCap;
-    use otap_df_engine::capability::bearer_token_provider::{BearerToken, TokenStream};
+    use otap_df_engine::capability::auth::BearerToken;
+    use otap_df_engine::capability::auth::bearer_token_provider::{
+        BearerTokenProvider as BearerTokenProviderCap, TokenStream,
+    };
     use otap_df_engine::capability::vendor_bundle::VendorBundle as VendorBundleCap;
     use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
     use serde_json::{Map, Value, json};
@@ -207,7 +209,7 @@ mod tests {
                 // would drop the result here.
                 tokio::task::yield_now().await;
             }
-            Ok(BearerToken::new(self.token.clone(), None))
+            Ok(BearerToken::without_expiry(self.token.clone()))
         }
         fn token_stream(&self) -> TokenStream {
             futures::stream::empty::<BearerToken>().boxed()
@@ -392,7 +394,7 @@ mod tests {
     impl BearerTokenProvider for RotatingBearer {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
             let sequence = self.0.fetch_add(1, Ordering::Relaxed) + 1;
-            Ok(BearerToken::new(format!("token-{sequence}"), None))
+            Ok(BearerToken::without_expiry(format!("token-{sequence}")))
         }
 
         fn token_stream(&self) -> TokenStream {
