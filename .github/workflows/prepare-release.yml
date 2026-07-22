@@ -36,7 +36,7 @@ jobs:
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          app-id: ${{ vars.OTELBOT_ARROW_APP_ID }}
+          client-id: ${{ vars.OTELBOT_ARROW_CLIENT_ID }}
           private-key: ${{ secrets.OTELBOT_ARROW_PRIVATE_KEY }}
 
       - name: Get GitHub App User ID
@@ -102,23 +102,33 @@ jobs:
           sed -i 's/^version = "[0-9]\+\.[0-9]\+\.[0-9]\+"/version = "${{ inputs.version }}"/g' rust/otap-dataflow/Cargo.toml
           echo "Updated rust/otap-dataflow/Cargo.toml to ${{ inputs.version }}"
 
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - name: Update Rust lockfile
+        run: cargo generate-lockfile --manifest-path rust/otap-dataflow/Cargo.toml
+
       - name: Extract release notes for PR body
         id: changelog
         run: |
           # Pull the freshly-rendered section from each CHANGELOG and
           # combine them under per-language `## What's Changed (...)`
-          # headings for embedding in the PR body. --allow-missing keeps
-          # the workflow working if one side had no chloggen entries
-          # this release.
+          # headings for embedding in the PR body. The changelog retains
+          # entry subtext; the PR body includes only concise entry summaries.
+          # --allow-missing keeps the workflow working if one side had no
+          # chloggen entries this release.
           ./.github/workflows/scripts/extract-changelog.sh \
             --version "${{ inputs.version }}" \
             --file go/CHANGELOG.md \
             --allow-missing \
+            --omit-subtext \
             /tmp/go_release_content.txt
           ./.github/workflows/scripts/extract-changelog.sh \
             --version "${{ inputs.version }}" \
             --file rust/otap-dataflow/CHANGELOG.md \
             --allow-missing \
+            --omit-subtext \
             /tmp/rust_release_content.txt
 
           {

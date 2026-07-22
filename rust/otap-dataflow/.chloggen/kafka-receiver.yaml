@@ -1,0 +1,10 @@
+change_type: enhancement
+component: pipeline
+note: Add a Kafka receiver to the contrib nodes.
+issues: [3248]
+subtext: |
+  Consumes OTLP and OTAP messages from Apache Kafka topics with per-signal
+  topic routing, optional header-to-resource-attribute extraction, manual or
+  auto offset commit, and consumer-group rebalance handling (commit-before-revoke
+  with in-memory offset tracking). Supports SASL (PLAIN, SCRAM, AWS MSK IAM) and
+  TLS.

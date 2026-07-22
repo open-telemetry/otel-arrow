@@ -157,6 +157,7 @@ pub(super) fn build_manager<PData>(
         },
         Vec::new(),
         empty_node_metric_handles(),
+        crate::terminal_state::TerminalMetricsDeadline::default(),
     );
 
     (

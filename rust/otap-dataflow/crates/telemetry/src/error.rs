@@ -20,6 +20,14 @@ pub enum Error {
     #[error("Metrics channel was closed")]
     MetricsChannelClosed,
 
+    /// The metrics collector is not running, so it cannot acknowledge a flush barrier.
+    #[error("Metrics collector is not running")]
+    MetricsCollectorNotRunning,
+
+    /// More than one task attempted to consume the internal metrics channel.
+    #[error("Metrics collector is already running")]
+    MetricsCollectorAlreadyRunning,
+
     /// Error during shutdown of a component.
     #[error("Shutdown error: {0}")]
     ShutdownError(String),

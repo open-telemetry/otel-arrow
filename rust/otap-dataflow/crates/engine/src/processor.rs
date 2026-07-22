@@ -31,6 +31,7 @@ use crate::node::{Node, NodeId, NodeWithPDataReceiver, NodeWithPDataSender};
 use crate::node_local_scheduler::NodeLocalSchedulerHandle;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::shared::processor as shared;
+use crate::terminal_state::TerminalMetricsDeadline;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
@@ -587,6 +588,7 @@ impl<PData> ProcessorWrapper<PData> {
             None,
             false,
             false,
+            TerminalMetricsDeadline::default(),
         )
         .await
     }
@@ -606,6 +608,7 @@ impl<PData> ProcessorWrapper<PData> {
         flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>>,
         flow_metrics_active: bool,
         flow_needs_timing: bool,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
     ) -> Result<(), Error>
     where
         PData: ReceivedAtNode + FlowMetricHook,
@@ -661,18 +664,43 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
+                let terminal_metrics_deadline = terminal_metrics_deadline.get();
                 if effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
                 {
-                    effect_handler.report_flow_metrics();
+                    if let Err(error) = effect_handler
+                        .report_flow_metrics_reliably(terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.flow_metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
-                processor
+                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                let process_result = processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: terminal_metrics_reporter,
+                        }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await;
+                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                    if let Err(error) = metrics_reporter
+                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
+                }
+                process_result?
             }
             ProcessorWrapperRuntime::Shared {
                 mut processor,
@@ -720,18 +748,43 @@ impl<PData> ProcessorWrapper<PData> {
                     processor.process(msg, &mut effect_handler).await?;
                 }
                 // Collect final metrics before exiting
+                let terminal_metrics_deadline = terminal_metrics_deadline.get();
                 if effect_handler.is_flow_start()
                     || effect_handler.is_flow_end()
                     || effect_handler.is_flow_decision()
                 {
-                    effect_handler.report_flow_metrics();
+                    if let Err(error) = effect_handler
+                        .report_flow_metrics_reliably(terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.flow_metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
                 }
-                processor
+                let (terminal_metrics_tx, terminal_metrics_rx) = flume::unbounded();
+                let terminal_metrics_reporter = MetricsReporter::new(terminal_metrics_tx);
+                let process_result = processor
                     .process(
-                        Message::Control(NodeControlMsg::CollectTelemetry { metrics_reporter }),
+                        Message::Control(NodeControlMsg::CollectTelemetry {
+                            metrics_reporter: terminal_metrics_reporter,
+                        }),
                         &mut effect_handler,
                     )
-                    .await?
+                    .await;
+                while let Ok(snapshot) = terminal_metrics_rx.try_recv() {
+                    if let Err(error) = metrics_reporter
+                        .report_snapshot_reliably_until(snapshot, terminal_metrics_deadline)
+                        .await
+                    {
+                        otap_df_telemetry::otel_warn!(
+                            "processor.metrics.final_reporting.fail",
+                            error = error.to_string()
+                        );
+                    }
+                }
+                process_result?
             }
         }
         Ok(())
@@ -1414,6 +1467,7 @@ mod tests {
                             None,
                             true,
                             true,
+                            crate::terminal_state::TerminalMetricsDeadline::default(),
                         )
                         .await
                 });

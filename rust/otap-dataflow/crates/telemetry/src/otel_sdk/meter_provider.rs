@@ -186,6 +186,7 @@ mod tests {
         let metrics_config = MetricsConfig {
             readers: metric_readers,
             views: Vec::new(),
+            ..MetricsConfig::default()
         };
 
         let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
@@ -231,6 +232,7 @@ mod tests {
         let metrics_config = MetricsConfig {
             readers: metric_readers,
             views: Vec::new(),
+            ..MetricsConfig::default()
         };
         let meter_provider = MeterProvider::configure(resource, &metrics_config, None)?;
         let (_sdk_meter_provider, runtime) = meter_provider.into_parts();

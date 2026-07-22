@@ -377,10 +377,14 @@ engine:
 ```
 
 An observability pipeline reads internal telemetry and exports it like any other
-pipeline:
+pipeline. Select the `its` metrics provider to route registry-backed internal
+metrics through this pipeline instead of an OpenTelemetry SDK reader:
 
 ```yaml
 engine:
+    telemetry:
+        metrics:
+            provider: its
     observability:
         pipeline:
             nodes:
@@ -397,7 +401,10 @@ engine:
 
 Observability pipelines use the same node and connection model as regular
 pipelines. They support `channel_capacity`, `health`, and `telemetry` policies,
-but resource policies are intentionally not supported there.
+but resource policies are intentionally not supported there. ITS metrics
+require exactly one `receiver:internal_telemetry` in this pipeline. The
+`readers` and `views` metrics settings are valid only with the default
+`opentelemetry` provider.
 
 For exact engine-level fields, see
 [Engine Section](configuration-model.md#engine-section).

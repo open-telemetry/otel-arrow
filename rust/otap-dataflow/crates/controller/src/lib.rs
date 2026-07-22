@@ -1562,6 +1562,24 @@ impl<
             telemetry_registry.clone(),
         )?;
 
+        // Start aggregation before the internal telemetry pipeline. The receiver's
+        // first export uses a collector barrier, so the collector must already be
+        // available when that pipeline begins processing control messages or ticks.
+        let internal_collector = telemetry_system.collector();
+        let (collector_ready_tx, collector_ready_rx) = std::sync::mpsc::sync_channel(1);
+        let metrics_agg_handle = spawn_thread_local_task(
+            "metrics-aggregator",
+            admin_tracing_setup.clone(),
+            move |cancellation_token| {
+                let task = internal_collector.run(cancellation_token);
+                let _ = collector_ready_tx.send(());
+                task
+            },
+        )?;
+        collector_ready_rx.recv().map_err(|_| {
+            Error::from(otap_df_telemetry::error::Error::MetricsCollectorNotRunning)
+        })?;
+
         // Pipeline threads receive only a Weak handle back to the controller runtime. That lets
         // them report their terminal exit without becoming owners that keep the runtime alive
         // during shutdown.
@@ -1581,13 +1599,8 @@ impl<
             internal_tracing_setup,
         )?;
 
-        // TODO: This should be validated somewhere, that engine observability pipeline is
-        // defined when ITS is requested. Possibly we could fill in a default.
         let has_internal_pipeline = internal_pipeline_handle.is_some();
-        match (
-            has_internal_pipeline,
-            telemetry_config.logs.providers.uses_its_provider(),
-        ) {
+        match (has_internal_pipeline, telemetry_config.uses_its_provider()) {
             (false, true) => {
                 otel_warn!(
                     "controller.its_provider_without_pipeline",
@@ -1610,15 +1623,10 @@ impl<
         telemetry_system.init_global_subscriber();
         Self::emit_topic_mode_reports(&runtime.declared_topics().inferred_mode_reports);
 
-        let internal_collector = telemetry_system.collector();
-        let metrics_agg_handle = spawn_thread_local_task(
-            "metrics-aggregator",
-            admin_tracing_setup.clone(),
-            move |cancellation_token| internal_collector.run(cancellation_token),
-        )?;
-
         // Start the metrics dispatcher only if there are metric readers configured.
-        let metrics_dispatcher_handle = if telemetry_config.metrics.has_readers() {
+        let metrics_dispatcher_handle = if telemetry_config.metrics.uses_opentelemetry_provider()
+            && telemetry_config.metrics.has_readers()
+        {
             Some(spawn_thread_local_task(
                 "metrics-dispatcher",
                 admin_tracing_setup.clone(),
@@ -1648,7 +1656,7 @@ impl<
             admin_tracing_setup.clone(),
             move |cancellation_token| async move {
                 use otap_df_engine::engine_metrics::EngineMetricsMonitor;
-                use std::time::Duration;
+                use std::time::{Duration, Instant};
                 use tokio::time::{MissedTickBehavior, interval};
 
                 // TODO: Make this interval configurable via engine config.
@@ -1667,6 +1675,13 @@ impl<
                 loop {
                     tokio::select! {
                         _ = cancellation_token.cancelled() => {
+                            let deadline = Instant::now() + Duration::from_secs(5);
+                            if let Err(err) = monitor.finish_reporting_until(deadline).await {
+                                otel_warn!(
+                                    "engine.metrics.final_reporting.fail",
+                                    error = err.to_string()
+                                );
+                            }
                             return Ok::<(), otap_df_telemetry::error::Error>(());
                         }
                         _ = ticker.tick() => {
@@ -1778,11 +1793,32 @@ impl<
         ) {
             Ok(handles) => handles,
             Err(err) => {
+                if let Err(stop_err) = engine_metrics_handle.shutdown_and_join() {
+                    otel_warn!(
+                        "controller.extension_startup_engine_metrics_shutdown_failed",
+                        error = stop_err.to_string()
+                    );
+                }
+                if let Some(handle) = memory_limiter_handle
+                    && let Err(stop_err) = handle.shutdown_and_join()
+                {
+                    otel_warn!(
+                        "controller.extension_startup_memory_limiter_shutdown_failed",
+                        error = stop_err.to_string()
+                    );
+                }
                 if let Err(shutdown_err) = control_plane.shutdown_all(10) {
                     otel_warn!(
                         "controller.extension_startup_shutdown_failed",
                         error = format!("{shutdown_err:?}"),
                         message = "Failed to shut down launched pipelines after controller extension startup failed"
+                    );
+                }
+                let _ = runtime.wait_for_global_shutdown_completion();
+                if !runtime.all_instances_exited() {
+                    otel_warn!(
+                        "controller.extension_startup_pipeline_shutdown_timeout",
+                        message = "Timed out waiting for pipelines and system observability to stop after controller extension startup failed"
                     );
                 }
                 return Err(err);
@@ -1816,7 +1852,10 @@ impl<
             thread::park();
         }
 
-        // All pipelines have finished; shut down the admin HTTP server and metric aggregator gracefully.
+        // Stop controller-owned metric producers before waiting for the phased
+        // runtime shutdown to finish. The system observability pipeline remains
+        // active until every regular pipeline exits, and its final collector
+        // barrier must complete before the metric aggregator is stopped.
         engine_metrics_handle.shutdown_and_join()?;
         if let Some(handle) = memory_limiter_handle {
             handle.shutdown_and_join()?;
@@ -1829,6 +1868,24 @@ impl<
                 controller_extension_error = Some(err);
             }
         }
+
+        if run_mode == RunMode::ParkMainThread {
+            let global_shutdown_requested = runtime.wait_for_global_shutdown_completion();
+            let all_instances_exited = if global_shutdown_requested {
+                runtime.all_instances_exited()
+            } else {
+                runtime.wait_until_all_instances_exit_for(Duration::from_secs(12))
+            };
+            if !all_instances_exited {
+                otel_warn!(
+                    "controller.pipeline_shutdown_timeout",
+                    message = "Timed out waiting for pipelines and system observability to stop before telemetry collector shutdown"
+                );
+            }
+        }
+
+        // All telemetry producers and pipelines have finished; shut down the
+        // remaining support tasks and the metric aggregator gracefully.
         admin_server_handle.shutdown_and_join()?;
         metrics_agg_handle.shutdown_and_join()?;
         if let Some(handle) = metrics_dispatcher_handle {
