@@ -63,11 +63,6 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            let monitoring_endpoint = attributes
-                .get("telemetry_endpoint")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
             // Prefer "default"; else the lowest key (deterministic).
             let moniker = attributes
                 .get("moniker_map")
@@ -89,7 +84,6 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
                 token,
                 endpoint,
                 moniker,
-                monitoring_endpoint,
             })
         })
     }
@@ -150,7 +144,6 @@ mod tests {
     fn full_attrs() -> Value {
         json!({
             "endpoint": "https://ep",
-            "telemetry_endpoint": "https://tel",
             "moniker_map": { "default": "mon" },
         })
     }
@@ -161,7 +154,6 @@ mod tests {
         let c = s.current().await.expect("credential");
         assert_eq!(c.token, "tok");
         assert_eq!(c.endpoint, "https://ep");
-        assert_eq!(c.monitoring_endpoint, "https://tel");
         assert_eq!(c.moniker, "mon");
     }
 
