@@ -1,4 +1,0 @@
-change_type: breaking
-component: engine
-note: Rename flow item-count instruments to `consumed.items`, `produced.items`, and `dropped.items`, emitted as monotonic counters.
-issues: [3300, 3499]
