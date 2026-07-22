@@ -7,8 +7,11 @@
 //! resource in wasmtime's [`ResourceTable`]. Guests receive only that resource
 //! handle and orchestrate kernels that execute natively here.
 
-use arrow::array::{RecordBatch, StringArray};
-use arrow::datatypes::DataType;
+use arrow::array::{Array, AsArray, BooleanArray, DictionaryArray, RecordBatch, StringArray};
+use arrow::datatypes::{
+    ArrowDictionaryKeyType, ArrowNativeType, DataType, Int8Type, Int16Type, Int32Type, Int64Type,
+    UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+};
 use wasmtime::component::{Resource, ResourceTable};
 
 use crate::bindings::otel::otap_dataflow_plugin::otel_kernels::{self, AttrScope};
@@ -108,7 +111,8 @@ impl otel_kernels::Host for HostState {
 /// `value` (string comparison).
 ///
 /// Handles plain `Utf8`, `LargeUtf8`, and dictionary-encoded string columns by
-/// casting to `Utf8` before comparison.
+/// using a dictionary-aware comparison fast path and falling back to `Utf8`
+/// casting for other encodings.
 ///
 /// TODO: filtering the root record batch does not yet reindex child
 /// attribute record batches; the reference plugin operates on batches without
@@ -124,26 +128,30 @@ fn filter_record_batch_by_column_eq(
         ));
     };
 
-    let utf8 = if column.data_type() == &DataType::Utf8 {
-        column.clone()
+    let mask = if let Some(mask) = dictionary_string_eq_mask(column.as_ref(), value)? {
+        mask
     } else {
-        match arrow_cast::cast(column, &DataType::Utf8) {
-            Ok(arr) => arr,
+        let utf8 = if column.data_type() == &DataType::Utf8 {
+            column.clone()
+        } else {
+            match arrow_cast::cast(column, &DataType::Utf8) {
+                Ok(arr) => arr,
+                Err(error) => {
+                    return Err(format!(
+                        "failed to cast attribute column {key:?} to Utf8 for comparison: {error}"
+                    ));
+                }
+            }
+        };
+
+        let scalar = StringArray::new_scalar(value);
+        match arrow::compute::kernels::cmp::eq(&utf8, &scalar) {
+            Ok(mask) => mask,
             Err(error) => {
                 return Err(format!(
-                    "failed to cast attribute column {key:?} to Utf8 for comparison: {error}"
+                    "failed to compare attribute column {key:?} against value {value:?}: {error}"
                 ));
             }
-        }
-    };
-
-    let scalar = StringArray::new_scalar(value);
-    let mask = match arrow::compute::kernels::cmp::eq(&utf8, &scalar) {
-        Ok(mask) => mask,
-        Err(error) => {
-            return Err(format!(
-                "failed to compare attribute column {key:?} against value {value:?}: {error}"
-            ));
         }
     };
 
@@ -153,6 +161,82 @@ fn filter_record_batch_by_column_eq(
             "failed to filter record batch for key {key:?} and value {value:?}: {error}"
         )),
     }
+}
+
+fn dictionary_string_eq_mask(
+    column: &dyn Array,
+    value: &str,
+) -> Result<Option<BooleanArray>, String> {
+    let DataType::Dictionary(key_type, value_type) = column.data_type() else {
+        return Ok(None);
+    };
+
+    if !matches!(**value_type, DataType::Utf8 | DataType::LargeUtf8) {
+        return Ok(None);
+    }
+
+    macro_rules! dispatch_key_type {
+        ($key_ty:ty) => {{
+            let dict = column
+                .as_any()
+                .downcast_ref::<DictionaryArray<$key_ty>>()
+                .ok_or_else(|| "failed to downcast dictionary column".to_string())?;
+            Ok(Some(dictionary_eq_mask_impl(dict, value)))
+        }};
+    }
+
+    match key_type.as_ref() {
+        DataType::Int8 => dispatch_key_type!(Int8Type),
+        DataType::Int16 => dispatch_key_type!(Int16Type),
+        DataType::Int32 => dispatch_key_type!(Int32Type),
+        DataType::Int64 => dispatch_key_type!(Int64Type),
+        DataType::UInt8 => dispatch_key_type!(UInt8Type),
+        DataType::UInt16 => dispatch_key_type!(UInt16Type),
+        DataType::UInt32 => dispatch_key_type!(UInt32Type),
+        DataType::UInt64 => dispatch_key_type!(UInt64Type),
+        _ => Ok(None),
+    }
+}
+
+fn dictionary_eq_mask_impl<K: ArrowDictionaryKeyType>(
+    dict: &DictionaryArray<K>,
+    value: &str,
+) -> BooleanArray
+where
+    K::Native: ArrowNativeType,
+{
+    let keys = dict.keys();
+    let mut matches = Vec::with_capacity(dict.len());
+    match dict.values().data_type() {
+        DataType::Utf8 => {
+            let values = dict.values().as_string::<i32>();
+            for i in 0..dict.len() {
+                if keys.is_null(i) {
+                    matches.push(false);
+                    continue;
+                }
+                let key_index = keys.value(i).as_usize();
+                matches.push(!values.is_null(key_index) && values.value(key_index) == value);
+            }
+        }
+        DataType::LargeUtf8 => {
+            let values = dict.values().as_string::<i64>();
+            for i in 0..dict.len() {
+                if keys.is_null(i) {
+                    matches.push(false);
+                    continue;
+                }
+                let key_index = keys.value(i).as_usize();
+                matches.push(!values.is_null(key_index) && values.value(key_index) == value);
+            }
+        }
+        _ => {
+            for _ in 0..dict.len() {
+                matches.push(false);
+            }
+        }
+    }
+    BooleanArray::from(matches)
 }
 
 #[cfg(test)]
@@ -232,6 +316,29 @@ mod tests {
         let out = filter_record_batch_by_column_eq(&batch, "severity_text", "ERROR")
             .expect("filter should succeed");
         assert_eq!(out.num_rows(), 2);
+    }
+
+    /// Scenario: Record-scope filtering receives a dictionary-encoded string
+    /// column with null keys and null dictionary values.
+    /// Guarantees: Null keys and null dictionary values do not match the target
+    /// value and are excluded from filtered results.
+    #[test]
+    fn dictionary_encoded_nulls_do_not_match() {
+        let dict: DictionaryArray<UInt8Type> =
+            vec![Some("ERROR"), None, Some("INFO"), Some("ERROR"), None]
+                .into_iter()
+                .collect();
+        let schema = Schema::new(vec![Field::new(
+            "severity_text",
+            dict.data_type().clone(),
+            true,
+        )]);
+        let batch = RecordBatch::try_new(Arc::new(schema), vec![Arc::new(dict)]).unwrap();
+
+        let out = filter_record_batch_by_column_eq(&batch, "severity_text", "ERROR")
+            .expect("filter should succeed");
+        assert_eq!(out.num_rows(), 2);
+        assert_eq!(severity_values(&out), vec!["ERROR", "ERROR"]);
     }
 
     /// Scenario: Guest requests `resource` or `scope` filtering in the current
