@@ -10,7 +10,6 @@
 //! The configuration may change in the future and support for various transformation query is
 //! still being developed.
 //!
-//! ToDo: Handle Ack and Nack
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
 use std::sync::Arc;
@@ -34,7 +33,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
-    accessory::slots::Key,
+    accessory::{context::split_contexts::Contexts, slots::Key},
     pdata::{Context, OtapPdata},
 };
 use otap_df_pdata::TryIntoWithOptions;
@@ -57,18 +56,16 @@ use slotmap::Key as _;
 use crate::processors::transform_processor::routing::RouterImpl;
 
 use self::config::{Config, Query};
-use self::context::Contexts;
 use self::metrics::Metrics;
 
 mod config;
-mod context;
 mod metrics;
 mod routing;
 
 /// URN for the TransformProcessor
 pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
-/// Opentelemetry Processing Language Processor
+/// Transform Processor
 pub struct TransformProcessor {
     execution_state: ExecutionState,
     transforms: Vec<Transform>,

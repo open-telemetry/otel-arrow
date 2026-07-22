@@ -364,6 +364,31 @@ impl<M: MetricSetHandler + Default + Debug + Send + Sync> Drop for RegisteredMet
     }
 }
 
+/// Completes the reliable handoff shared by actor-owned metric states.
+async fn finish_registered_metric_set_reporting<M>(
+    reporter: &MetricsReporter,
+    registered: Option<&RegisteredMetricSet<M>>,
+    dirty: &mut bool,
+    deadline: Instant,
+) -> Result<(), TelemetryError>
+where
+    M: MetricSetHandler + Default + Debug + Send + Sync,
+{
+    let Some(registered) = registered else {
+        return Ok(());
+    };
+
+    if *dirty
+        && reporter
+            .report_snapshot_reliably_until(registered.metrics.snapshot(), deadline)
+            .await?
+            == ReportOutcome::Sent
+    {
+        *dirty = false;
+    }
+    reporter.flush_until(deadline).await
+}
+
 pub(crate) struct RuntimeControlMetricsState {
     level: MetricLevel,
     reporter: MetricsReporter,
@@ -722,6 +747,21 @@ impl RuntimeControlMetricsState {
         }
         Ok(())
     }
+
+    /// Performs the actor's final reliable handoff before its registered key is dropped.
+    pub(crate) async fn finish_reporting_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
+        self.report_if_needed()?;
+        finish_registered_metric_set_reporting(
+            &self.reporter,
+            self.metrics.as_ref(),
+            &mut self.dirty,
+            deadline,
+        )
+        .await
+    }
 }
 
 pub(crate) struct PipelineCompletionMetricsState {
@@ -927,5 +967,20 @@ impl PipelineCompletionMetricsState {
             }
         }
         Ok(())
+    }
+
+    /// Performs the actor's final reliable handoff before its registered key is dropped.
+    pub(crate) async fn finish_reporting_until(
+        &mut self,
+        deadline: Instant,
+    ) -> Result<(), TelemetryError> {
+        self.report_if_needed()?;
+        finish_registered_metric_set_reporting(
+            &self.reporter,
+            self.metrics.as_ref(),
+            &mut self.dirty,
+            deadline,
+        )
+        .await
     }
 }

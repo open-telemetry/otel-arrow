@@ -33,6 +33,9 @@ Required fields: `change_type` (one of `breaking`, `deprecation`,
 `new_component`, `enhancement`, `bug_fix`), `component` (must be listed in the
 directory's `config.yaml`), `note`, and `issues`.
 
+Changelog entries must use ASCII characters only. Replace typographic punctuation
+and other non-ASCII characters with ASCII equivalents.
+
 Skip the entry only when the change is not user-facing (build chores, internal
 refactors, dev-only dependency bumps). In that case include
 `chore` in the PR title.

@@ -4,8 +4,8 @@
 //! Validation phase for [`OtelDataflowSpec`].
 
 use crate::engine::{
-    ENGINE_CONFIG_VERSION_V1, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID,
-    SYSTEM_PIPELINE_GROUP_ID,
+    ENGINE_CONFIG_VERSION_V1, INTERNAL_TELEMETRY_RECEIVER_URN, OtelDataflowSpec,
+    SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
 use crate::error::Error;
 
@@ -45,27 +45,73 @@ impl OtelDataflowSpec {
             errors.push(e);
         }
 
-        if let Some(observability_pipeline) = self.engine.observability.pipeline.clone() {
-            if let Some(policies) = &observability_pipeline.policies {
-                errors.extend(
-                    policies
-                        .validation_errors("engine.observability.pipeline.policies")
-                        .into_iter()
-                        .map(|error| Error::InvalidUserConfig { error }),
-                );
-            }
-            if observability_pipeline.nodes.is_empty() {
+        // The observability pipeline is always present (deserialization installs
+        // the built-in default when it is omitted). Exactly one internal receiver
+        // must own the process-wide log stream and destructive metric-registry
+        // drain; zero receivers leave telemetry unconsumed, while multiple
+        // receivers would compete for the same data.
+        let observability_pipeline = &self.engine.observability.pipeline;
+        let internal_receivers = observability_pipeline
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.r#type.as_str() == INTERNAL_TELEMETRY_RECEIVER_URN)
+            .collect::<Vec<_>>();
+        if internal_receivers.len() != 1 {
+            errors.push(Error::InvalidUserConfig {
+                error: format!(
+                    "engine.observability.pipeline requires exactly one internal telemetry receiver; found {}",
+                    internal_receivers.len()
+                ),
+            });
+        } else if let Some((receiver_id, receiver)) = internal_receivers.first() {
+            // A direct outgoing edge is not enough: the receiver could feed a
+            // processor chain that never reaches an exporter. Reuse the pipeline's
+            // iterative pruning to require a complete surviving downstream path.
+            let mut pruned_pipeline = observability_pipeline.clone().into_pipeline_config();
+            let removed_nodes = pruned_pipeline.remove_unconnected_nodes();
+            if removed_nodes
+                .iter()
+                .any(|(node_id, _)| node_id == *receiver_id)
+            {
                 errors.push(Error::InvalidUserConfig {
-                    error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
+                    error: format!(
+                        "internal telemetry receiver '{receiver_id}' must remain connected to a valid downstream path in engine.observability.pipeline"
+                    ),
                 });
-            } else {
-                let pipeline_cfg = observability_pipeline.into_pipeline_config();
-                if let Err(e) = pipeline_cfg.validate(
-                    &SYSTEM_PIPELINE_GROUP_ID.into(),
-                    &SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
-                ) {
-                    errors.push(e);
-                }
+            }
+            // Default log providers bypass ITS, so a metrics-only receiver is
+            // normally valid. Once any producer routes logs through ITS, however,
+            // the sole internal receiver must consume and forward that signal.
+            if self.engine.telemetry.routes_logs_through_its()
+                && !internal_receiver_logs_enabled(&receiver.config)
+            {
+                errors.push(Error::InvalidUserConfig {
+                    error: format!(
+                        "internal telemetry receiver '{receiver_id}' must enable logs while the global, engine, or admin telemetry log provider uses ITS"
+                    ),
+                });
+            }
+        }
+
+        if let Some(policies) = &observability_pipeline.policies {
+            errors.extend(
+                policies
+                    .validation_errors("engine.observability.pipeline.policies")
+                    .into_iter()
+                    .map(|error| Error::InvalidUserConfig { error }),
+            );
+        }
+        if observability_pipeline.nodes.is_empty() {
+            errors.push(Error::InvalidUserConfig {
+                error: "engine.observability.pipeline.nodes must not be empty".to_owned(),
+            });
+        } else {
+            let pipeline_cfg = observability_pipeline.clone().into_pipeline_config();
+            if let Err(e) = pipeline_cfg.validate(
+                &SYSTEM_PIPELINE_GROUP_ID.into(),
+                &SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+            ) {
+                errors.push(e);
             }
         }
 
@@ -116,5 +162,22 @@ impl OtelDataflowSpec {
         } else {
             Ok(())
         }
+    }
+}
+
+/// Returns whether an opaque internal telemetry receiver config selects logs.
+///
+/// The config crate intentionally does not depend on the core-nodes crate's
+/// typed receiver configuration. This mirrors its public contract locally:
+/// omitting `signals` selects the default `[logs, metrics]`, while an explicit
+/// list must contain `logs`. Other shapes are treated as disabled here; normal
+/// component validation remains responsible for reporting their schema error.
+fn internal_receiver_logs_enabled(config: &serde_json::Value) -> bool {
+    match config.as_object().and_then(|config| config.get("signals")) {
+        None => true,
+        Some(serde_json::Value::Array(signals)) => {
+            signals.iter().any(|signal| signal.as_str() == Some("logs"))
+        }
+        Some(_) => false,
     }
 }

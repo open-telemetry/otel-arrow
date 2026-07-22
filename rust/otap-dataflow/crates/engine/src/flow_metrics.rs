@@ -66,7 +66,7 @@ pub struct FlowDroppedItemsMetrics {
 }
 
 /// Entity attributes that scope a flow metric set.
-#[attribute_set(name = "flow.attrs")]
+#[attribute_set(scope, name = "flow.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct FlowAttributeSet {
     /// User-given flow identifier.

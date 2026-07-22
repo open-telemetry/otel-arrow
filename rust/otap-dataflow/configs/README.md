@@ -13,6 +13,35 @@ future.
 
 ## Available Configurations
 
+### `internal-telemetry.yaml`
+
+Routes the engine's own logs and metrics through the Internal Telemetry System:
+
+- Uses the dedicated engine observability pipeline
+- Receives internal OTLP logs and metrics with `receiver:internal_telemetry`
+- Collects metric snapshots every second and emits them every two seconds
+- Applies metric views for engine, pipeline, and flow metrics
+- Routes logs to the console exporter and decoded metrics to the debug processor
+
+Validate the configuration, then run the demo on one core and let it produce
+at least three metric batches:
+
+```bash
+cargo run -- --config configs/internal-telemetry.yaml --validate-and-exit
+cargo run -- --config configs/internal-telemetry.yaml --num-cores 1 \
+  2>&1 | tee /tmp/its-metrics.log
+```
+
+The detailed metric output should contain the viewed stream names
+`process_memory_usage`, `process_cpu_utilization`, `process_uptime`,
+`processor_incoming_items`, `processor_outgoing_items`, and
+`processing_duration`. Stop the process with `Ctrl-C` after inspection, then
+list the viewed streams with:
+
+```bash
+rg 'Name: (process_|processor_|processing_)' /tmp/its-metrics.log
+```
+
 ### `trafficgen-batch-debug-noop.yaml`
 
 Demonstrates the batch processor:
@@ -24,7 +53,8 @@ Demonstrates the batch processor:
 A basic pipeline with telemetry export enabled:
 
 - Generates synthetic traffic -> debug processor -> noop exporter
-- Includes `engine.telemetry` configuration with console metrics export
+- Routes internal metrics through the engine observability pipeline to an OTLP
+  gRPC exporter. Logs retain the default asynchronous console behavior.
 
 ### `trafficgen-filter-debug-noop.yaml`
 
@@ -38,6 +68,22 @@ Demonstrates metric-name filtering:
 
 - Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
+
+### `trafficgen-per-signal-metrics-demo.yaml`
+
+Demonstrates the opt-in per-signal produced/consumed item counts a node can
+emit:
+
+- Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
+  exporter
+- Only opted-in nodes report `node.producer.produced.items` and
+  `node.consumer.consumed.items`, each split by the `signal` datapoint attribute;
+  nodes that are not opted in omit these metrics
+  (per-node `policies.telemetry.item_counts: true`, or globally via
+  `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
+  higher.
+- View metrics at:
+  `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json`
 
 ### `trafficgen-transform-debug-noop.yaml`
 

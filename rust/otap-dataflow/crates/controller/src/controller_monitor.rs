@@ -167,7 +167,7 @@ fn start_controller_monitor_extension(
     }))
 }
 
-#[attribute_set(name = "controller.monitor.attrs")]
+#[attribute_set(scope, name = "controller.monitor.attrs")]
 #[derive(Debug, Clone)]
 struct ControllerMonitorAttributes {
     /// Configured controller monitor extension instance identifier.

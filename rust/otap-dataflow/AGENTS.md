@@ -130,6 +130,9 @@ Required fields: `change_type` (one of `breaking`, `deprecation`,
 `new_component`, `enhancement`, `bug_fix`), `component` (must be listed in
 [`.chloggen/config.yaml`](.chloggen/config.yaml)), `note`, and `issues`.
 
+Changelog entries must use ASCII characters only. Replace typographic punctuation
+and other non-ASCII characters with ASCII equivalents.
+
 Skip the entry only when the change is not user-facing. In that case include
 `chore` in the PR title.
 
