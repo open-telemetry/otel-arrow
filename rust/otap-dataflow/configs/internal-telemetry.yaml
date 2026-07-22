@@ -10,8 +10,6 @@ policies:
 engine:
   telemetry:
     reporting_interval: 1s
-    metrics:
-      provider: its
     logs:
       level: "info"
       providers:

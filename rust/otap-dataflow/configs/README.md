@@ -53,7 +53,8 @@ Demonstrates the batch processor:
 A basic pipeline with telemetry export enabled:
 
 - Generates synthetic traffic -> debug processor -> noop exporter
-- Includes `engine.telemetry` configuration with console metrics export
+- Routes internal metrics through the engine observability pipeline to an OTLP
+  gRPC exporter. Logs retain the default asynchronous console behavior.
 
 ### `trafficgen-filter-debug-noop.yaml`
 

@@ -17,8 +17,8 @@ use crate::reporter::{
     MetricsCollectionMessage, MetricsCollectorStatus, MetricsFlushHandle, MetricsReporter,
 };
 
-/// Internal collector responsible for gathering internal telemetry signals (fow now only metric
-/// sets or multivariate metrics).
+/// Internal collector responsible for gathering internal telemetry signals (currently metric
+/// sets, also known as multivariate metrics).
 pub struct InternalCollector {
     /// The registry where entities and metrics are declared and aggregated.
     registry: TelemetryRegistryHandle,
@@ -89,7 +89,7 @@ impl Drop for CollectorRunGuard {
 }
 
 impl InternalCollector {
-    /// Creates a new `InternalCollector` with a pipeline.
+    /// Creates a collector and the reporter that sends metric-set snapshots to it.
     pub(crate) fn new(
         config: &TelemetryConfig,
         registry: TelemetryRegistryHandle,
@@ -104,8 +104,7 @@ impl InternalCollector {
             collector_status_rx,
             shutdown_gate.clone(),
         );
-        let uses_its = config.metrics.uses_its_provider();
-        registry.configure_metrics_collector(uses_its.then(|| metrics_flusher.clone()), uses_its);
+        registry.configure_metrics_collector(metrics_flusher.clone());
 
         let reporter = MetricsReporter::new_collector(metrics_flusher);
         (
@@ -157,7 +156,6 @@ impl InternalCollector {
 
     /// Collects metrics from the reporting channel and aggregates them into the `registry`.
     /// The collection runs indefinitely until the metrics channel is closed.
-    /// Returns the pipeline instance when the loop ends (or None if no pipeline was configured).
     pub fn run_collection_loop(self: Arc<Self>) -> impl Future<Output = Result<(), Error>> {
         let running = CollectorRunGuard::start(&self.collector_status, &self.collector_running);
         async move {
@@ -219,7 +217,6 @@ impl InternalCollector {
 
 #[cfg(test)]
 mod tests {
-    use otap_df_config::pipeline::telemetry::metrics::MetricsConfig;
     use otap_df_config::settings::telemetry::logs::LogsConfig;
 
     use super::*;
@@ -339,7 +336,6 @@ mod tests {
         TelemetryConfig {
             reporting_channel_size: 10,
             reporting_interval: Duration::from_millis(reporting_interval_ms),
-            metrics: MetricsConfig::default(),
             logs: LogsConfig::default(),
             resource: HashMap::new(),
         }
@@ -361,15 +357,21 @@ mod tests {
 
     // --- Tests without any pipeline, asserting on the registry state ---
 
+    /// Scenario: the always-on collector is started without any queued snapshots.
+    /// Guarantees: explicit cancellation stops it cleanly despite the retained flush handle.
     #[tokio::test]
-    async fn test_collector_without_pipeline_returns_none_on_channel_close() {
+    async fn test_collector_without_snapshots_stops_on_cancellation() {
         let config = create_test_config(100);
         let telemetry_registry = create_test_registry();
-        let (collector, reporter) = InternalCollector::new(&config, telemetry_registry);
+        let (collector, _reporter) = InternalCollector::new(&config, telemetry_registry);
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(Arc::new(collector).run(cancel.clone()));
 
-        // Close immediately
-        drop(reporter);
-        Arc::new(collector).run_collection_loop().await.unwrap();
+        cancel.cancel();
+        handle
+            .await
+            .expect("collector task should join")
+            .expect("collector should stop cleanly");
     }
 
     #[tokio::test]
@@ -384,7 +386,8 @@ mod tests {
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
 
-        let handle = tokio::spawn(Arc::new(collector).run_collection_loop());
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(Arc::new(collector).run(cancel.clone()));
 
         // Send two snapshots that should be accumulated: [10,20] + [5,15] => [15,35]
         reporter
@@ -422,8 +425,7 @@ mod tests {
         assert_eq!(collected[1].0, "counter2");
         assert_eq!(collected[1].1, MetricValue::from(35u64));
 
-        // Close the channel and ensure loop ends returning None
-        drop(reporter);
+        cancel.cancel();
         handle.await.unwrap().unwrap();
     }
 
@@ -436,7 +438,8 @@ mod tests {
         let key = metric_set.key;
 
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
-        let handle = tokio::spawn(Arc::new(collector).run_collection_loop());
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(Arc::new(collector).run(cancel.clone()));
 
         reporter
             .report_snapshot(create_test_snapshot(
@@ -472,7 +475,7 @@ mod tests {
         });
         assert_eq!(count, 0);
 
-        drop(reporter);
+        cancel.cancel();
         handle.await.unwrap().unwrap();
     }
 
@@ -484,7 +487,8 @@ mod tests {
             telemetry_registry.register_metric_set(MockAttributeSet::new("attr"));
         let key = metric_set.key;
         let (collector, reporter) = InternalCollector::new(&config, telemetry_registry.clone());
-        let handle = tokio::spawn(Arc::new(collector).run_collection_loop());
+        let cancel = CancellationToken::new();
+        let handle = tokio::spawn(Arc::new(collector).run(cancel.clone()));
 
         reporter
             .try_report_snapshot(create_test_snapshot(
@@ -504,7 +508,7 @@ mod tests {
             vec![MetricValue::from(7u64), MetricValue::from(9u64)]
         );
 
-        drop(reporter);
+        cancel.cancel();
         handle.await.unwrap().unwrap();
     }
 
@@ -616,7 +620,8 @@ mod tests {
         });
         locked_rx.recv().expect("registry lock thread should start");
 
-        let collector_task = tokio::spawn(collector.clone().run_collection_loop());
+        let cancel = CancellationToken::new();
+        let collector_task = tokio::spawn(collector.clone().run(cancel.clone()));
         reporter
             .try_report_snapshot(create_test_snapshot(
                 key,
@@ -682,7 +687,7 @@ mod tests {
         lock_thread
             .join()
             .expect("registry lock thread should join");
-        drop(reporter);
+        cancel.cancel();
         collector_task
             .await
             .expect("collector task should join")
