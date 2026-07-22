@@ -1,0 +1,4 @@
+change_type: breaking
+component: engine
+note: Replace flow `signals.incoming`, `signals.outgoing`, and `signals.dropped` metrics with `consumed.items`, `produced.items`, and `dropped.items` counters.
+issues: [3300]
