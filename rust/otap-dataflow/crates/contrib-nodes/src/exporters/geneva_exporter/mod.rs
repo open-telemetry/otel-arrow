@@ -57,7 +57,9 @@ use std::time::Instant;
 // Geneva uploader dependencies
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
+use geneva_uploader::client::{
+    EncodedBatch, GenevaClient, GenevaClientConfig, LogsConfig, TracesConfig,
+};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
@@ -310,6 +312,12 @@ impl GenevaExporter {
             role_name: config.role_name.clone(),
             role_instance: config.role_instance.clone(),
             msi_resource,
+            logs: LogsConfig {
+                default_event_name: None,
+            },
+            spans: TracesConfig {
+                default_event_name: None,
+            },
             obo_event_map: None,
         };
 
