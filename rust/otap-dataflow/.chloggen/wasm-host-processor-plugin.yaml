@@ -18,9 +18,11 @@ issues: [2973, 3227]
 # Use pipe (|) for multiline entries.
 subtext: |
   Introduces the otap-df-wasm-host crate: a wasmtime-based host that loads a
-  .wasm component plugin, passes an opaque batch handle across the host-guest
-  boundary, and runs OTel-semantic kernels (batch-num-rows,
+  .wasm component plugin, passes a host-managed pdata resource handle across
+  the host-guest boundary, and runs OTel-semantic kernels (pdata-num-rows,
   filter-by-attribute-eq) natively on host-owned Arrow data. Registered as the
   urn:otel:processor:wasm_processor node via the ProcessorFactory /
-  distributed_slice pattern. This is a minimal end-to-end slice; the full WIT
-  package, kernel vocabulary, and resource limits are deferred to later work.
+  distributed_slice pattern. The initial slice supports record-scope filtering;
+  unsupported scopes and invalid pdata handles are rejected explicitly. This is
+  a minimal end-to-end slice; the full WIT package, kernel vocabulary, and
+  resource limits are deferred to later work.
