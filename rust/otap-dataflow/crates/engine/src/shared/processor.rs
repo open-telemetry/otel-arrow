@@ -386,14 +386,14 @@ impl<PData> EffectHandler<PData> {
         deadline: Instant,
     ) -> Result<(), TelemetryError> {
         let reporter = self.core.metrics_reporter.clone();
-        if let Some((metrics, acc_mutex)) = self.flow.incoming.signals_incoming.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.consumed.consumed_items.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow signals_incoming accumulator poisoned");
+                    .expect("flow consumed_items accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            metrics.signals_incoming.merge(drained);
+            metrics.consumed_items.add(drained);
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         if let Some((metrics, acc_mutex)) = self.flow.end.duration.as_mut() {
@@ -406,24 +406,24 @@ impl<PData> EffectHandler<PData> {
             metrics.compute_duration.merge(drained);
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
-        if let Some((metrics, acc_mutex)) = self.flow.end.signals_outgoing.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.end.produced_items.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow signals_outgoing accumulator poisoned");
+                    .expect("flow produced_items accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            metrics.signals_outgoing.merge(drained);
+            metrics.produced_items.add(drained);
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
-        if let Some((metrics, acc_mutex)) = self.flow.decision.signals_dropped.as_mut() {
+        if let Some((metrics, acc_mutex)) = self.flow.decision.dropped_items.as_mut() {
             let drained = {
                 let mut guard = acc_mutex
                     .lock()
-                    .expect("flow signals_dropped accumulator poisoned");
+                    .expect("flow dropped_items accumulator poisoned");
                 std::mem::take(&mut *guard)
             };
-            metrics.signals_dropped.merge(drained);
+            metrics.dropped_items.add(drained);
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         Ok(())

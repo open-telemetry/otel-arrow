@@ -349,9 +349,8 @@ impl<PData> EffectHandler<PData> {
         deadline: Instant,
     ) -> Result<(), TelemetryError> {
         let reporter = self.core.metrics_reporter.clone();
-        if let Some((metrics, acc_cell)) = self.flow.incoming.signals_incoming.as_mut() {
-            let acc = acc_cell.replace(Mmsc::default());
-            metrics.signals_incoming.merge(acc);
+        if let Some((metrics, acc_cell)) = self.flow.consumed.consumed_items.as_mut() {
+            metrics.consumed_items.add(acc_cell.replace(0));
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         if let Some((metrics, acc_cell)) = self.flow.end.duration.as_mut() {
@@ -359,14 +358,12 @@ impl<PData> EffectHandler<PData> {
             metrics.compute_duration.merge(acc);
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
-        if let Some((metrics, acc_cell)) = self.flow.end.signals_outgoing.as_mut() {
-            let acc = acc_cell.replace(Mmsc::default());
-            metrics.signals_outgoing.merge(acc);
+        if let Some((metrics, acc_cell)) = self.flow.end.produced_items.as_mut() {
+            metrics.produced_items.add(acc_cell.replace(0));
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
-        if let Some((metrics, acc_cell)) = self.flow.decision.signals_dropped.as_mut() {
-            let acc = acc_cell.replace(Mmsc::default());
-            metrics.signals_dropped.merge(acc);
+        if let Some((metrics, acc_cell)) = self.flow.decision.dropped_items.as_mut() {
+            metrics.dropped_items.add(acc_cell.replace(0));
             let _ = reporter.report_reliably_until(metrics, deadline).await?;
         }
         Ok(())
