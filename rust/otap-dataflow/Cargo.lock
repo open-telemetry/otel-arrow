@@ -7158,6 +7158,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-expohisto"
+version = "0.50.0"
+
+[[package]]
 name = "otap-df-otap"
 version = "0.50.0"
 dependencies = [
