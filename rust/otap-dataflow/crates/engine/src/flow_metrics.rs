@@ -66,24 +66,24 @@ pub struct FlowSignalsDroppedMetrics {
 }
 
 /// Entity attributes that scope a flow metric set.
-#[attribute_set(name = "flow.attrs")]
+#[attribute_set(scope, name = "flow.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct FlowAttributeSet {
     /// User-given flow identifier.
-    #[attribute(key = "flow.id")]
+    #[attribute_key = "flow.id"]
     pub flow_id: Cow<'static, str>,
     /// Name of the processor node where the measurement begins.
-    #[attribute(key = "flow.node.start")]
+    #[attribute_key = "flow.node.start"]
     pub start_node: Cow<'static, str>,
     /// Name of the processor node where the measurement ends.
-    #[attribute(key = "flow.node.end")]
+    #[attribute_key = "flow.node.end"]
     pub end_node: Cow<'static, str>,
     /// Per-flow purpose differentiator (e.g. `filter`, `transform`). Always
     /// emitted as the `flow.purpose` scope attribute; carries an empty value
     /// when the flow declares no purpose. Lets OTel View selectors target
     /// distinct flavors of processor work while all flows share the single
     /// `flow` scope.
-    #[attribute(key = "flow.purpose")]
+    #[attribute_key = "flow.purpose"]
     pub purpose: Cow<'static, str>,
     /// Name of the decision node that recorded `signals.dropped`. Always
     /// emitted as the `flow.node.decision` scope attribute; carries an empty
@@ -98,7 +98,7 @@ pub struct FlowAttributeSet {
     /// per-node "kept" metric: a survivor count is non-additive across series
     /// nodes (nested subsets double-count) and undefined under fan-out, and the
     /// flow-wide kept count is simply `signals.outgoing`.
-    #[attribute(key = "flow.node.decision")]
+    #[attribute_key = "flow.node.decision"]
     pub decision: Cow<'static, str>,
     /// Pipeline attributes.
     #[compose]

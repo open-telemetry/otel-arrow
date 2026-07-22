@@ -60,6 +60,24 @@ telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
 Histogram support status is tracked in
 [Implementation Gaps](implementation-gaps.md).
 
+### Recording semantics and export temporality
+
+Instrument types describe how component code records measurements, independently
+of how a downstream consumer prefers to receive them. ITS uses the OpenTelemetry
+`lowmemory` temporality mapping as its canonical representation:
+
+- Counter and histogram/MMSC aggregates are delta.
+- UpDownCounter, ObserveCounter, and ObserveUpDownCounter aggregates are
+  cumulative.
+- Gauge values have no aggregation temporality.
+
+Component authors should therefore choose an instrument from the meaning and
+recording form of the measurement, not from an exporter requirement. The native
+pipeline currently emits the canonical representation unchanged; it cannot yet
+produce a different cumulative or delta preference for each consumer. A
+downstream conversion mechanism is tracked in
+[#3543](https://github.com/open-telemetry/otel-arrow/issues/3543).
+
 ObserveUpDownCounter and Gauge both report values that can rise or fall, but
 they aggregate differently.
 
@@ -95,8 +113,27 @@ signal-specific attributes MUST be:
 - preferably namespaced under the metric namespace as recommended by OTel naming
   guidance
 
-Support status for bounded signal-specific attributes is tracked in
-[implementation-gaps.md](implementation-gaps.md).
+Bounded enum attributes are supported as registration-time attributes or
+per-measurement attributes. See
+[Item Attributes for Metrics](item-attributes.md) for the
+declaration and recording APIs.
+
+### Minimal metric declarations
+
+The north-star design is a minimal set of metric declarations that describes an
+entity's behavior without creating a separate counter for each signal, outcome,
+or other bounded dimension. Model those dimensions as attributes on one metric
+set when they are needed to interpret the measurement.
+
+For example, prefer one `lost_items` counter with bounded `signal` and `outcome`
+attributes over distinct `dropped_logs`, `dropped_metrics`, `expired_logs`, and
+similar counters. Do not introduce signal-specific or outcome-specific counters
+when a bounded attribute set expresses the same meaning.
+
+This follows the OpenTelemetry Collector's
+[component universal telemetry RFC](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
+
+For more information, see [issue #3300](https://github.com/open-telemetry/otel-arrow/issues/3300).
 
 Metric naming must follow the
 [semantic conventions guide](semantic-conventions-guide.md). Descriptions and

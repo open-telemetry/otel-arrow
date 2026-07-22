@@ -377,7 +377,11 @@ engine:
 ```
 
 An observability pipeline reads internal telemetry and exports it like any other
-pipeline:
+pipeline. The engine installs one by default: metrics use the noop exporter,
+and logs explicitly configured to use `its` use the console exporter. Global
+and engine logs retain their `console_async` defaults and therefore bypass this
+pipeline unless configured otherwise. Override it to send either signal
+elsewhere:
 
 ```yaml
 engine:
@@ -387,17 +391,132 @@ engine:
                 internal:
                     type: receiver:internal_telemetry
                     config: {}
-                console:
-                    type: exporter:console
+                otlp:
+                    type: exporter:otlp_grpc
                     config: {}
             connections:
                 - from: internal
-                  to: console
+                  to: otlp
 ```
 
 Observability pipelines use the same node and connection model as regular
 pipelines. They support `channel_capacity`, `health`, and `telemetry` policies,
-but resource policies are intentionally not supported there.
+but resource policies are intentionally not supported there. The pipeline is
+mandatory and must contain exactly one connected internal telemetry receiver.
+The receiver defaults to `signals: [logs, metrics]`, while either signal can be
+selected independently. Logs must remain enabled
+when a log provider uses `its`. Optional `metrics.interval` and `metrics.views`
+fields customize periodic export when metrics are selected. A logs-only
+receiver drains the private ITS metric accumulator without converting or
+emitting OTLP metrics, preserving registry cleanup and admin endpoint data.
+
+The previous `engine.telemetry.metrics` SDK configuration is no longer
+supported. For Prometheus scraping, bind `engine.http_admin` and use the fixed
+`/api/v1/metrics` path. This endpoint does not apply receiver views and does not
+reset the independent ITS export accumulator.
+
+### Migrating Internal Metrics from the Rust OpenTelemetry SDK
+
+Move periodic export and views from `engine.telemetry.metrics` into the engine
+observability pipeline. For example, this former SDK configuration exported
+viewed metrics over OTLP/gRPC and exposed the unviewed metrics to Prometheus:
+
+```yaml
+engine:
+    telemetry:
+        metrics:
+            readers:
+                - periodic:
+                    interval: 60s
+                    exporter:
+                        type: otlp
+                        config:
+                            protocol: grpc/protobuf
+                            endpoint: http://localhost:50066
+                            temporality: delta
+                - pull:
+                    exporter:
+                        type: prometheus
+                        config:
+                            host: 0.0.0.0
+                            port: 9091
+                            path: /metrics
+            views:
+                - selector:
+                    scope_name: engine
+                    instrument_name: memory.rss
+                  stream:
+                    name: process_memory_usage
+                    description: Process resident memory usage.
+```
+
+The equivalent native ITS configuration is:
+
+```yaml
+engine:
+    http_admin:
+        bind_address: "0.0.0.0:9091"
+    observability:
+        pipeline:
+            nodes:
+                internal:
+                    type: receiver:internal_telemetry
+                    config:
+                        signals: [metrics]
+                        metrics:
+                            interval: 60s
+                            views:
+                                - selector:
+                                    scope_name: engine
+                                    instrument_name: memory.rss
+                                  stream:
+                                    name: process_memory_usage
+                                    description: Process resident memory usage.
+                otlp:
+                    type: exporter:otlp_grpc
+                    config:
+                        grpc_endpoint: http://localhost:50066
+            connections:
+                - from: internal
+                  to: otlp
+```
+
+Apply these mappings when migrating:
+
+- Remove `metrics.provider`; ITS is now the only internal metrics path.
+- Move `periodic.interval` to the receiver's `metrics.interval`. The receiver
+  has one emission interval, so multiple periodic readers must share a cadence.
+  Set it explicitly to `6s` if the former periodic-reader default was required.
+- Move `metrics.views` unchanged to the receiver's `metrics.views` list.
+- Replace a `grpc/protobuf` SDK exporter with `exporter:otlp_grpc`, changing
+  `endpoint` to `grpc_endpoint`.
+- Replace an `http/protobuf` SDK exporter with `exporter:otlp_http`. The native
+  exporter accepts a base `endpoint` and optional full signal-specific endpoint
+  overrides. The native exporter does not support the former `http/json` mode.
+- Remove exporter `temporality`. Native ITS currently emits its canonical
+  low-memory representation: synchronous counters and histograms are delta,
+  while up-down and observed counters are cumulative. Instrument types describe
+  how component code records measurements; they do not select a
+  consumer-specific export preference. The pipeline cannot yet convert this
+  representation to another temporality, and `processor:temporal_reaggregation`
+  does not perform that conversion. Consequently, a former explicit
+  `cumulative` or `delta` preference has no exact native equivalent yet. This
+  limitation is tracked in
+  [#3543](https://github.com/open-telemetry/otel-arrow/issues/3543).
+- Replace a console reader with an `exporter:console` node. Fan out the internal
+  receiver to multiple exporters when they share the same emission interval.
+- Replace a Prometheus pull reader with `engine.http_admin.bind_address` and
+  scrape `/api/v1/metrics`. The path is fixed, receiver views are not applied,
+  and the bind address exposes the complete admin API rather than a dedicated
+  metrics-only server.
+- Use `signals: [metrics]` while log providers retain their defaults. Omit
+  `signals`, or include `logs`, when a global, engine, or admin log provider
+  uses `its`. To suppress metric conversion and export, select only `logs` and
+  route that signal to a sink.
+
+If `engine.telemetry.metrics` was omitted and no internal metrics were exported,
+no migration is required: the built-in observability pipeline consumes metrics
+with a noop exporter.
 
 For exact engine-level fields, see
 [Engine Section](configuration-model.md#engine-section).

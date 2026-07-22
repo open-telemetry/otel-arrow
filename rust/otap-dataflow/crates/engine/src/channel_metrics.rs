@@ -7,9 +7,10 @@
 //! using channel endpoint attributes and can be correlated using `channel.id`
 //! and `channel.kind`.
 
+use otap_df_telemetry::common_attributes::SignalOutcomeAttributes;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 use std::borrow::Cow;
@@ -74,10 +75,13 @@ pub struct ChannelReceiverMetrics {
     pub capacity: Gauge<u64>,
 }
 
-/// Ack/nack metrics for consumed requests, owned exclusively by the runtime control manager.
+/// Ack/nack metrics for consumed messages, owned exclusively by the runtime control manager.
 /// Registered under the input channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "node.consumer")]
+#[metric_set(
+    name = "node.consumer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct ConsumedMetrics {
     /// Duration from entry until the corresponding ack or nack is
@@ -86,39 +90,54 @@ pub struct ConsumedMetrics {
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "consumed.duration", unit = "ns")]
     pub consumed_duration_ns: Mmsc,
-    /// Consumed requests successfully processed.
-    #[metric(name = "consumed.success", unit = "{requests}")]
-    pub consumed_success: Counter<u64>,
-    /// Consumed requests that failed, this are retryable errors.
-    #[metric(name = "consumed.failure", unit = "{requests}")]
-    pub consumed_failure: Counter<u64>,
-    /// Consumed requests refused, also known as permanent failures.
-    #[metric(name = "consumed.refused", unit = "{requests}")]
-    pub consumed_refused: Counter<u64>,
+    /// Consumed messages, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(name = "consumed.messages", unit = "{message}")]
+    pub consumed_messages: Counter<u64>,
 }
 
-/// Ack/nack metrics for produced requests, owned exclusively by the runtime control manager.
+/// Optional per-signal item metrics for a node input channel.
+#[metric_set(
+    name = "node.consumer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ConsumedItemMetrics {
+    /// Consumed signal items, grouped by the `signal` datapoint attribute.
+    #[metric(name = "consumed.items", unit = "{item}")]
+    pub consumed_items: Counter<u64>,
+}
+
+/// Ack/nack metrics for produced messages, owned exclusively by the runtime control manager.
 /// Registered under the output channel entity key so they share the same
 /// channel attributes as the transport metrics.
-#[metric_set(name = "node.producer")]
+#[metric_set(
+    name = "node.producer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
 #[derive(Debug, Default, Clone)]
 pub struct ProducedMetrics {
     /// Duration from production until the corresponding ack or nack is
     /// routed, in nanoseconds. This is reported at the detailed level,
-    /// only in receivers. Processors report consumed_refused.
+    /// only in receivers. Processors report `consumed.messages`.
     ///
     /// TODO: make this Option<Box<Mmsc or Histogram>>.
     #[metric(name = "produced.duration", unit = "ns")]
     pub produced_duration_ns: Mmsc,
-    /// Produced requests acknowledged by downstream.
-    #[metric(name = "produced.success", unit = "{requests}")]
-    pub produced_success: Counter<u64>,
-    /// Produced requests that failed, this are retryable errors.
-    #[metric(name = "produced.failure", unit = "{requests}")]
-    pub produced_failure: Counter<u64>,
-    /// Produced requests refused, also known as permanent failures.
-    #[metric(name = "produced.refused", unit = "{requests}")]
-    pub produced_refused: Counter<u64>,
+    /// Produced messages, grouped by `signal` and `outcome` datapoint attributes.
+    #[metric(name = "produced.messages", unit = "{message}")]
+    pub produced_messages: Counter<u64>,
+}
+
+/// Optional per-signal item metrics for a node output channel.
+#[metric_set(
+    name = "node.producer",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct ProducedItemMetrics {
+    /// Produced signal items, grouped by the `signal` datapoint attribute.
+    #[metric(name = "produced.items", unit = "{item}")]
+    pub produced_items: Counter<u64>,
 }
 
 pub(crate) const CHANNEL_KIND_CONTROL: &str = "control";
@@ -166,6 +185,10 @@ impl ChannelSenderMetricsState {
     ) -> Result<(), TelemetryError> {
         metrics_reporter.report(&mut self.metrics)
     }
+
+    fn snapshot(&self) -> Option<MetricSetSnapshot> {
+        (!self.metrics.is_empty()).then(|| self.metrics.snapshot())
+    }
 }
 
 pub(crate) struct ChannelReceiverMetricsState {
@@ -200,6 +223,11 @@ impl ChannelReceiverMetricsState {
     ) -> Result<(), TelemetryError> {
         self.metrics.capacity.set(self.capacity);
         metrics_reporter.report(&mut self.metrics)
+    }
+
+    fn snapshot(&mut self) -> MetricSetSnapshot {
+        self.metrics.capacity.set(self.capacity);
+        self.metrics.snapshot()
     }
 }
 
@@ -239,6 +267,27 @@ impl ChannelMetricsHandle {
                 Ok(mut metrics) => metrics.report(metrics_reporter),
                 Err(_) => Ok(()),
             },
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<MetricSetSnapshot> {
+        match self {
+            ChannelMetricsHandle::LocalSender(metrics) => metrics
+                .try_borrow()
+                .ok()
+                .and_then(|metrics| metrics.snapshot()),
+            ChannelMetricsHandle::SharedSender(metrics) => metrics
+                .try_lock()
+                .ok()
+                .and_then(|metrics| metrics.snapshot()),
+            ChannelMetricsHandle::LocalReceiver(metrics) => metrics
+                .try_borrow_mut()
+                .ok()
+                .map(|mut metrics| metrics.snapshot()),
+            ChannelMetricsHandle::SharedReceiver(metrics) => metrics
+                .try_lock()
+                .ok()
+                .map(|mut metrics| metrics.snapshot()),
         }
     }
 }

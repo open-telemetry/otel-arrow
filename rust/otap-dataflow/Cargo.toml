@@ -7,7 +7,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.49.0"
+version = "0.50.0"
 authors = ["OpenTelemetry"]
 edition = "2024"
 repository = "https://github.com/open-telemetry/otel-arrow"
@@ -17,8 +17,8 @@ rust-version = "1.87.0"
 
 [package]
 name = "otap-df"
-version = "0.49.0"
-description = "OpenTelemetry Rust Dataflow Engine supporting natively OTLP and OTAP Data Formats"
+version = "0.50.0"
+description = "OTel-Arrow Dataflow Engine supporting natively OTLP and OTAP Data Formats"
 edition.workspace = true
 repository.workspace = true
 license.workspace = true
@@ -68,6 +68,8 @@ data_engine_expressions = { path = "../experimental/query_engine/expressions" }
 data_engine_kql_parser = { path = "../experimental/query_engine/kql-parser" }
 data_engine_parser_abstractions = { path = "../experimental/query_engine/parser-abstractions"}
 
+aws-config = "1.0"
+aws-msk-iam-sasl-signer = "1.0.1"
 ahash = "0.8.11"
 arc-swap = "1.7"
 arrayvec = "0.7.6"
@@ -103,14 +105,15 @@ flume = { version = "0.12.0", default-features = false, features = ["async"] }
 futures = "0.3.32"
 futures-core = "0.3.32"
 futures-channel = "0.3.32"
-futures-util = "0.3.32"
 futures-timer = "3.0.3"
+futures-util = "0.3.32"
 async-channel = { version = "2.5.0" }
 hashbrown = { version = "0.17", features = ["equivalent"] }
 http = "1.4"
 humantime = "2.3.0"
 humantime-serde = "1.1.1"
 iso8601 = "0.6.3"
+insta = { version = "1.44", features = ["redactions"] }
 itoa = "1"
 itertools = "0.15.0"
 k8s-openapi = { version = "0.28.0", features = ["latest"] }
@@ -139,11 +142,6 @@ once_cell = "1.20.2"
 # exporters, hence the "logs" feature.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs"]}
 
-opentelemetry = "0.32.0"
-opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["metrics", "internal-logs"] }
-opentelemetry-stdout = { version = "0.32.0", default-features = false, features = ["metrics"] }
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["http-proto", "http-json", "reqwest-blocking-client", "metrics", "internal-logs"] }
-opentelemetry-prometheus = { version = "0.32.0", default-features = false, features = ["internal-logs"] }
 parking_lot = "0.12.5"
 paste = "1"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
@@ -157,6 +155,7 @@ prost-types = "0.14"
 quote = "1.0"
 rand = "0.10.1"
 rcgen = "0.14"
+rdkafka = { version = "=0.38.0", features = ["tokio", "tracing"] }
 regex = "1.12"
 roaring = "0.11.2"
 ryu = "1"
@@ -171,8 +170,10 @@ secrecy = { version = "0.10.3", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_cbor = "0.11.2"
 serde_json = { version = "1.0.149" }
+serde-transcode = "1.1.1"
 serde_yaml = "0.9.34-deprecated"        # Deprecated, but no good alternative yet
 crc32fast = "1.4.2"
+hex = "0.4.3"
 replace_with = "0.1.8"
 simdutf8 = "0.1.5"
 slotmap = "1.0.7"
@@ -197,6 +198,7 @@ tonic = { version = "0.14", default-features = false, features = [
     "gzip",
     "router",
     "server",
+    "tls-native-roots",
     "transport",
     "zstd",
 ] }
@@ -211,29 +213,32 @@ trybuild = "1.0"
 unsync = "0.1.2"
 url = "2.5.7"
 uuid = { version = "1.17.0", features = ["v4", "v7"] }
-weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
-weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
-weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
-weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
-weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "62117732a3368c6f53b3ecc3d48538ee832239ee" } # v0.24.2
+weaver_common = { git = "https://github.com/open-telemetry/weaver.git", rev = "f7f39d9f57a657429bc8d32a929a5ebd712f0693" } # v0.24.2
+weaver_forge = { git = "https://github.com/open-telemetry/weaver.git", rev = "f7f39d9f57a657429bc8d32a929a5ebd712f0693" } # v0.24.2
+weaver_resolved_schema = { git = "https://github.com/open-telemetry/weaver.git", rev = "f7f39d9f57a657429bc8d32a929a5ebd712f0693" } # v0.24.2
+weaver_resolver = { git = "https://github.com/open-telemetry/weaver.git", rev = "f7f39d9f57a657429bc8d32a929a5ebd712f0693" } # v0.24.2
+weaver_semconv = { git = "https://github.com/open-telemetry/weaver.git", rev = "f7f39d9f57a657429bc8d32a929a5ebd712f0693" } # v0.24.2
 sha1 = { version = "0.11" }
 sha2 = "0.11.0"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zip = "=8.6.0"
 byte-unit = { version = "5.2.0", features = ["serde"] }
+clickhouse = { version = "0.15.1", features = ["rustls-tls-ring", "rustls-tls-native-roots"] }
+clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
 one_collect = "0.1.34811"
 
-azure_core = {version = "1.0.0", default-features = false }
-azure_identity = {version = "1.0.0", default-features = false }
+# TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
+azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00", default-features = false }
+azure_identity = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00", default-features = false }
 flate2 = "1.1.5"
 
 # Keep reqwest default features off to avoid pulling in default-tls (and aws-lc-rs via reqwest's rustls feature).
 # TLS remains enabled through rustls-no-provider, with the provider installed at startup via crypto-* features.
 reqwest = { version = "0.13.1", default-features = false, features = ["rustls-no-provider", "json", "query", "http2", "stream", "charset", "system-proxy"] }
 
-time = ">=0.3.47, <0.3.54"
+time = ">=0.3.47, <0.3.55"
 wiremock = "0.6.5"
 anyhow = "1.0.98"
 crossterm = "0.29"
@@ -272,7 +277,7 @@ default = ["jemalloc", "crypto-ring", "dev-tools", "admin-live-logs-ws"]
 jemalloc = ["dep:tikv-jemallocator", "otap-df-engine/jemalloc"]
 mimalloc = ["dep:mimalloc"]
 azure = ["otap-df-otap/azure"]
-aws = ["otap-df-otap/aws"]
+aws = ["otap-df-otap/aws", "otap-df-contrib-nodes/aws"]
 unsafe-optimizations = ["unchecked-index", "unchecked-arithmetic"]
 unchecked-index = []
 unchecked-arithmetic = []
@@ -300,14 +305,21 @@ crypto-openssl = ["otap-df-otap/crypto-openssl"]
 # Contrib exporters (opt-in) - now in contrib-nodes
 contrib-exporters = ["otap-df-contrib-nodes/contrib-exporters"]
 geneva-exporter = ["otap-df-contrib-nodes/geneva-exporter"]
-azure-monitor-exporter = ["otap-df-contrib-nodes/azure-monitor-exporter"]
+# The Azure Monitor exporter requires the Azure Identity auth extension to
+# authenticate outbound requests, so enabling it pulls in that extension.
+azure-monitor-exporter = [
+    "otap-df-contrib-nodes/azure-monitor-exporter",
+    "azure-identity-auth-extension",
+]
 # Contrib extensions (opt-in) - in contrib-extensions
 contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
+kafka-receiver = ["otap-df-contrib-nodes/kafka-receiver"]
 user_events-receiver = ["otap-df-contrib-nodes/user_events-receiver"]
 user_events-eventheader = ["otap-df-contrib-nodes/user_events-eventheader"]
+clickhouse-exporter = ["otap-df-contrib-nodes/clickhouse-exporter"]
 # Contrib processors (opt-in) - now in contrib-nodes
 contrib-processors = ["otap-df-contrib-nodes/contrib-processors"]
 condense-attributes-processor = ["otap-df-contrib-nodes/condense-attributes-processor"]
@@ -326,7 +338,7 @@ rust_2021_compatibility = { level = "warn", priority = -1 }
 rust_2024_compatibility = { level = "warn", priority = -1 }
 future_incompatible = { level = "warn", priority = -1 }
 nonstandard_style = { level = "warn", priority = -1 }
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(validation_tests)"] }
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(validation_tests)", "cfg(feature, values(\"test-helpers\"))"] }
 
 # Strict safety & quality standards
 missing_docs = "deny"
