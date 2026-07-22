@@ -629,16 +629,12 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 ///
 /// Like [`Mmsc`], this is a delta instrument: observations are recorded over an
 /// interval and then cleared via [`reset`](Distribution::reset) after each
-/// report. The histogram tiers are boxed so the enum stays pointer-small when
-/// carried by value.
+/// report. All tiers are boxed so the enum stays pointer-small when carried by
+/// value.
 #[derive(Debug)]
-// The 32-byte inline `Mmsc` basic tier is intentionally not boxed: it is the
-// hot, always-available tier and boxing it would add an allocation and an
-// indirection to every basic distribution for no memory win.
-#[allow(variant_size_differences)]
 pub enum Distribution {
     /// Basic tier: exact min/max/sum/count with no buckets.
-    Basic(Mmsc),
+    Basic(Box<Mmsc>),
     /// Normal tier: exponential histogram with [`HISTOGRAM_NORMAL_WORDS`] bucket words.
     Normal(Box<Histogram<HISTOGRAM_NORMAL_WORDS>>),
     /// Detailed tier: exponential histogram with [`HISTOGRAM_DETAILED_WORDS`] bucket words.
@@ -650,7 +646,7 @@ impl Distribution {
     #[inline]
     #[must_use]
     pub fn basic() -> Self {
-        Self::Basic(Mmsc::default())
+        Self::Basic(Box::<Mmsc>::default())
     }
 
     /// Creates a normal-tier exponential-histogram distribution.
@@ -718,7 +714,7 @@ impl Distribution {
     /// assertions.
     pub fn merge(&mut self, other: &Self) {
         match (self, other) {
-            (Self::Basic(dst), Self::Basic(src)) => dst.merge(*src),
+            (Self::Basic(dst), Self::Basic(src)) => dst.merge(**src),
             (Self::Normal(dst), Self::Normal(src)) => {
                 Self::check_hist(dst.merge_from(&**src), "merge overflow");
             }
