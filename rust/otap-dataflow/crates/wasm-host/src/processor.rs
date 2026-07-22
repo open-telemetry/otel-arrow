@@ -121,13 +121,10 @@ impl WasmProcessor {
             Err(err) => {
                 // Best-effort cleanup: the guest may already have consumed or
                 // dropped this handle before trapping/returning an error.
-                let _ = self
-                    .store
-                    .data_mut()
-                    .table
-                    .delete(wasmtime::component::Resource::<HostPdata>::new_own(
-                        input_rep,
-                    ));
+                let _ =
+                    self.store.data_mut().table.delete(
+                        wasmtime::component::Resource::<HostPdata>::new_own(input_rep),
+                    );
                 return Err(err);
             }
         };
