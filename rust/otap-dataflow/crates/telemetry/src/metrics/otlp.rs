@@ -530,7 +530,7 @@ fn coalesce_metric_sets(
 fn validate_metric_set(metric_set: &MetricSetExport) -> Result<(), Error> {
     validate_value_count(metric_set)?;
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
-        validate_value_kind(field, *value)?;
+        validate_value_kind(field, value)?;
     }
     Ok(())
 }
@@ -551,11 +551,11 @@ fn merge_metric_set(target: &mut MetricSetExport, incoming: &MetricSetExport) {
         .zip(&incoming.values)
     {
         match field.instrument {
-            Instrument::Gauge => *current = *incoming,
+            Instrument::Gauge => *current = incoming.clone(),
             Instrument::Counter
             | Instrument::UpDownCounter
             | Instrument::Histogram
-            | Instrument::Mmsc => current.add_in_place(*incoming),
+            | Instrument::Mmsc => current.add_in_place(incoming),
         }
     }
 }
@@ -570,10 +570,10 @@ fn encode_metric_set_without_views(
     let mut metrics = Vec::with_capacity(metric_set.values.len());
     let datapoint_attributes = encode_datapoint_attributes(metric_set);
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
-        validate_value_kind(field, *value)?;
+        validate_value_kind(field, value)?;
         if let Some(metric) = encode_metric(
             field,
-            *value,
+            value,
             metric_set,
             time_unix_nano,
             field.name,
@@ -614,11 +614,11 @@ fn encode_metric_set_with_views<'a>(
         })
         .or_insert_with(|| HashMap::with_capacity(metric_set.values.len()));
     for (field, value) in metric_set.descriptor.metrics.iter().zip(&metric_set.values) {
-        validate_value_kind(field, *value)?;
+        validate_value_kind(field, value)?;
         for stream in resolve_views(field, &scope_views) {
             if let Some(metric) = encode_metric(
                 field,
-                *value,
+                value,
                 metric_set,
                 time_unix_nano,
                 stream.name,
@@ -795,7 +795,7 @@ fn resolve_views<'a>(
 /// Projects one multivariate metric field into its univariate OTLP data type.
 fn encode_metric(
     field: &'static MetricsField,
-    value: MetricValue,
+    value: &MetricValue,
     metric_set: &MetricSetExport,
     time_unix_nano: u64,
     name: &str,
@@ -839,7 +839,7 @@ fn encode_metric(
                 return Ok(None);
             }
             let point = crate::metrics::exphist::mmsc_exponential_histogram_data_point(
-                &snapshot,
+                snapshot,
                 metric_set.delta_start_time_unix_nano,
                 time_unix_nano,
                 datapoint_attributes,
@@ -861,7 +861,7 @@ fn encode_metric(
 }
 
 /// Validates the descriptor/value pairing before any lossy projection occurs.
-fn validate_value_kind(field: &MetricsField, value: MetricValue) -> Result<(), Error> {
+fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), Error> {
     let expected = match field.instrument {
         Instrument::Mmsc => "mmsc",
         _ => match field.value_type {
@@ -873,6 +873,7 @@ fn validate_value_kind(field: &MetricsField, value: MetricValue) -> Result<(), E
         MetricValue::U64(_) => "u64",
         MetricValue::F64(_) => "f64",
         MetricValue::Mmsc(_) => "mmsc",
+        MetricValue::Distribution(_) => "distribution",
     };
 
     if expected == actual {
@@ -888,7 +889,7 @@ fn validate_value_kind(field: &MetricsField, value: MetricValue) -> Result<(), E
 
 /// Creates a scalar OTLP point, saturating unsigned values to OTLP's signed range.
 fn number_data_point(
-    value: MetricValue,
+    value: &MetricValue,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
     datapoint_attributes: &[KeyValue],
@@ -898,9 +899,11 @@ fn number_data_point(
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano);
     match value {
-        MetricValue::U64(value) => builder.value_int(saturating_i64(value)).finish(),
-        MetricValue::F64(value) => builder.value_double(value).finish(),
-        MetricValue::Mmsc(_) => unreachable!("metric value kind was validated before encoding"),
+        MetricValue::U64(value) => builder.value_int(saturating_i64(*value)).finish(),
+        MetricValue::F64(value) => builder.value_double(*value).finish(),
+        MetricValue::Mmsc(_) | MetricValue::Distribution(_) => {
+            unreachable!("metric value kind was validated before encoding")
+        }
     }
 }
 
@@ -910,7 +913,7 @@ fn number_data_point(
 /// their output shape consistent across native ITS releases.
 /// [`Instrument::Mmsc`] follows a separate, bucketless path above.
 fn scalar_histogram_data_point(
-    value: MetricValue,
+    value: &MetricValue,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
     datapoint_attributes: &[KeyValue],
@@ -921,9 +924,11 @@ fn scalar_histogram_data_point(
     ];
 
     let value = match value {
-        MetricValue::U64(value) => value as f64,
-        MetricValue::F64(value) => value,
-        MetricValue::Mmsc(_) => unreachable!("metric value kind was validated before encoding"),
+        MetricValue::U64(value) => *value as f64,
+        MetricValue::F64(value) => *value,
+        MetricValue::Mmsc(_) | MetricValue::Distribution(_) => {
+            unreachable!("metric value kind was validated before encoding")
+        }
     };
     let bucket = DEFAULT_BOUNDS
         .iter()
@@ -1902,10 +1907,14 @@ mod tests {
                         MetricValue::F64(-1.0),
                         MetricValue::F64(3.0),
                         MetricValue::F64(4.0),
-                        empty_mmsc,
+                        empty_mmsc.clone(),
                     ],
                 ),
-                metric_set(&MMSC_ONLY_DESCRIPTOR, empty_attributes(), vec![empty_mmsc]),
+                metric_set(
+                    &MMSC_ONLY_DESCRIPTOR,
+                    empty_attributes(),
+                    vec![empty_mmsc.clone()],
+                ),
                 metric_set(
                     &MMSC_ONLY_DESCRIPTOR,
                     empty_attributes(),
@@ -2027,7 +2036,7 @@ mod tests {
         ];
 
         for (value, expected_bucket, expected_value) in cases {
-            let point = scalar_histogram_data_point(value, DELTA_START, COLLECTION_TIME, &[]);
+            let point = scalar_histogram_data_point(&value, DELTA_START, COLLECTION_TIME, &[]);
             assert_eq!(point.count, 1);
             assert_eq!(
                 point.sum,

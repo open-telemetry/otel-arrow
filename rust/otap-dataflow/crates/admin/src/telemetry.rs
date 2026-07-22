@@ -501,8 +501,8 @@ fn aggregate_metric_groups(
         for (field, value) in metrics_iter {
             let _ = metrics_map
                 .entry(field.name.to_string())
-                .and_modify(|existing| existing.add_in_place(value))
-                .or_insert(value);
+                .and_modify(|existing| existing.add_in_place(&value))
+                .or_insert_with(|| value.clone());
         }
     };
 
@@ -545,7 +545,7 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
             if let Some(val) = g.metrics.get(field.name) {
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
-                    value: *val,
+                    value: val.clone(),
                 });
             }
         }
@@ -579,14 +579,14 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => {
                     let int_val = match value {
                         MetricValue::U64(v) => v,
                         MetricValue::F64(v) => v as u64,
-                        MetricValue::Mmsc(_) => unreachable!(),
+                        MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
                     };
                     format!("{int_val}i")
                 }
@@ -596,6 +596,11 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
         // MMSC values are expanded into multiple fields at the call site;
         // this arm should not be reached.
         MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into multiple fields at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("Distribution values must be expanded at the call site")
+        }
     }
 }
 
@@ -673,13 +678,13 @@ fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) ->
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => match value {
                     MetricValue::U64(v) => v.to_string(),
                     MetricValue::F64(v) => (v as u64).to_string(),
-                    MetricValue::Mmsc(_) => unreachable!(),
+                    MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
                 },
                 MetricValueType::F64 => value.to_f64().to_string(),
             }
@@ -687,6 +692,11 @@ fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) ->
         // MMSC values are expanded into summary lines at the call site;
         // this arm should not be reached.
         MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into summary lines at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("Distribution values must be expanded at the call site")
+        }
     }
 }
 
@@ -727,7 +737,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}={}",
                         escape_lp_field_key(fname),
-                        format_lp_value(*val, field_type)
+                        format_lp_value(val.clone(), field_type)
                     );
                 }
                 MetricValue::Mmsc(s) => {
@@ -757,6 +767,11 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         escape_lp_field_key(fname),
                         s.count
                     );
+                }
+                // Distribution metrics are not yet produced by any instrument;
+                // rendering them is deferred to a follow-up change.
+                MetricValue::Distribution(_) => {
+                    unreachable!("Distribution rendering is not yet wired up")
                 }
             }
         }
@@ -1014,13 +1029,18 @@ fn agg_prometheus_text(
                         collect_scalar_metric(
                             &mut prom_groups,
                             field,
-                            *value,
+                            value.clone(),
                             &base_labels,
                             &ts_suffix,
                         );
                     }
                     MetricValue::Mmsc(s) => {
                         collect_mmsc_metric(&mut prom_groups, field, s, &base_labels, &ts_suffix);
+                    }
+                    // Distribution metrics are not yet produced by any
+                    // instrument; rendering them is deferred to a follow-up.
+                    MetricValue::Distribution(_) => {
+                        unreachable!("Distribution rendering is not yet wired up")
                     }
                 }
             }
@@ -1244,6 +1264,11 @@ fn format_line_protocol(
                         s.count
                     );
                 }
+                // Distribution metrics are not yet produced by any instrument;
+                // rendering them is deferred to a follow-up change.
+                MetricValue::Distribution(_) => {
+                    unreachable!("Distribution rendering is not yet wired up")
+                }
             }
         }
 
@@ -1302,6 +1327,11 @@ fn format_prometheus_text(
                 }
                 MetricValue::Mmsc(ref s) => {
                     collect_mmsc_metric(&mut groups, field, s, &base_labels, &ts_suffix);
+                }
+                // Distribution metrics are not yet produced by any instrument;
+                // rendering them is deferred to a follow-up change.
+                MetricValue::Distribution(_) => {
+                    unreachable!("Distribution rendering is not yet wired up")
                 }
             }
         }
@@ -3552,7 +3582,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 

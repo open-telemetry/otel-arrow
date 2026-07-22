@@ -631,7 +631,7 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 /// interval and then cleared via [`reset`](Distribution::reset) after each
 /// report. All tiers are boxed so the enum stays pointer-small when carried by
 /// value.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Distribution {
     /// Basic tier: exact min/max/sum/count with no buckets.
     Basic(Box<Mmsc>),
@@ -706,6 +706,38 @@ impl Distribution {
         self.count() == 0
     }
 
+    /// Returns the tier name (`"basic"`, `"normal"`, or `"detailed"`).
+    #[inline]
+    #[must_use]
+    pub fn tier_name(&self) -> &'static str {
+        match self {
+            Self::Basic(_) => "basic",
+            Self::Normal(_) => "normal",
+            Self::Detailed(_) => "detailed",
+        }
+    }
+
+    /// Returns a `(count, sum, min, max)` summary of this interval's observations.
+    ///
+    /// For an empty distribution `min`/`max` are the aggregation's sentinels.
+    #[must_use]
+    pub fn summary(&self) -> (u64, f64, f64, f64) {
+        match self {
+            Self::Basic(mmsc) => {
+                let s = mmsc.get();
+                (s.count, s.sum, s.min, s.max)
+            }
+            Self::Normal(hist) => {
+                let s = hist.view().stats();
+                (s.count, s.sum, s.min, s.max)
+            }
+            Self::Detailed(hist) => {
+                let s = hist.view().stats();
+                (s.count, s.sum, s.min, s.max)
+            }
+        }
+    }
+
     /// Merges another distribution of the same tier into this one.
     ///
     /// Merging mismatched tiers is a programming error: in debug builds it
@@ -730,6 +762,35 @@ impl Distribution {
         if let Err(error) = result {
             debug_assert!(false, "Distribution::{context}: {error}");
         }
+    }
+}
+
+/// Summary equality: two distributions are equal when they share a tier and
+/// agree on the observable aggregate statistics (count, sum, min, max).
+///
+/// The vendored [`Histogram`] does not implement structural equality, and the
+/// bucket layout is an implementation detail; comparing the summary is
+/// sufficient for the registry's equality needs and for tests. Distinct bucket
+/// distributions that share a summary compare equal.
+impl PartialEq for Distribution {
+    fn eq(&self, other: &Self) -> bool {
+        fn summary(dist: &Distribution) -> (u8, u64, f64, f64, f64) {
+            match dist {
+                Distribution::Basic(mmsc) => {
+                    let s = mmsc.get();
+                    (0, s.count, s.sum, s.min, s.max)
+                }
+                Distribution::Normal(hist) => {
+                    let s = hist.view().stats();
+                    (1, s.count, s.sum, s.min, s.max)
+                }
+                Distribution::Detailed(hist) => {
+                    let s = hist.view().stats();
+                    (2, s.count, s.sum, s.min, s.max)
+                }
+            }
+        }
+        summary(self) == summary(other)
     }
 }
 

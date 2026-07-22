@@ -68,6 +68,17 @@ fn format_metric_value(value: &MetricValue) -> String {
                 s.min, s.max, s.sum, s.count
             )
         }
+        MetricValue::Distribution(d) => {
+            let (count, sum, min, max) = d.summary();
+            format!(
+                "tier={} min={} max={} sum={} count={}",
+                d.tier_name(),
+                min,
+                max,
+                sum,
+                count
+            )
+        }
     }
 }
 
