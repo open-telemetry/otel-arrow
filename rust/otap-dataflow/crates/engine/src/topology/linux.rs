@@ -310,6 +310,10 @@ mod tests {
         fs::write(dir.join("cpulist"), cpus).unwrap();
     }
 
+    /// Scenario: synthetic sysfs describes two NUMA nodes and process affinity
+    /// restricts execution to one node.
+    /// Guarantees: discovery intersects sysfs topology with process affinity
+    /// and exposes only usable CPUs.
     #[test]
     fn discovers_synthetic_sysfs_and_intersects_affinity() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -331,6 +335,10 @@ mod tests {
         assert_eq!(topology.numa_node(0), None);
     }
 
+    /// Scenario: cgroup v2 exposes an effective cpuset narrower than process
+    /// affinity.
+    /// Guarantees: discovery intersects affinity and cgroup visibility before
+    /// reporting visible CPUs.
     #[test]
     fn intersects_cgroup_effective_cpuset_when_present() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -351,6 +359,9 @@ mod tests {
         assert_eq!(topology.visible_nodes(), &BTreeSet::from([0]));
     }
 
+    /// Scenario: process affinity and cgroup effective CPUs are disjoint.
+    /// Guarantees: discovery records a known empty visible CPU set instead of
+    /// falling back to all host cores.
     #[test]
     fn disjoint_affinity_and_cgroup_keep_known_empty_visibility() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -370,6 +381,10 @@ mod tests {
         assert!(topology.visible_nodes().is_empty());
     }
 
+    /// Scenario: one sysfs NUMA node has an invalid cpulist while another node
+    /// is readable.
+    /// Guarantees: discovery keeps usable mappings and marks the topology
+    /// partial.
     #[test]
     fn marks_partial_on_bad_node_and_keeps_good_mapping() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -389,6 +404,10 @@ mod tests {
         assert_eq!(topology.numa_node_or_zero(99), 0);
     }
 
+    /// Scenario: partial sysfs topology leaves some allowed CPUs without NUMA
+    /// mappings.
+    /// Guarantees: unmapped allowed CPUs remain visible for placement and the
+    /// topology is partial.
     #[test]
     fn partial_sysfs_keeps_allowed_unmapped_cpus_visible() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -409,6 +428,9 @@ mod tests {
         assert_eq!(topology.numa_node(2), None);
     }
 
+    /// Scenario: sysfs topology is missing but process CPU affinity is known.
+    /// Guarantees: discovery preserves allowed CPUs as visible with unknown
+    /// NUMA mapping.
     #[test]
     fn missing_sysfs_keeps_allowed_cpus_visible_without_numa_mapping() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -427,6 +449,9 @@ mod tests {
         assert_eq!(topology.numa_node(0), None);
     }
 
+    /// Scenario: two NUMA node cpulists claim the same CPU.
+    /// Guarantees: duplicate CPU mappings are removed and the topology is
+    /// marked partial.
     #[test]
     fn duplicate_cpu_mappings_are_degraded_and_unmapped() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -448,6 +473,9 @@ mod tests {
         assert_eq!(topology.numa_node(3), Some(1));
     }
 
+    /// Scenario: sysfs contains a NUMA node directory with an empty cpulist.
+    /// Guarantees: discovery ignores CPU-less nodes without degrading valid
+    /// topology.
     #[test]
     fn ignores_empty_cpu_less_node_cpulist() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -467,6 +495,10 @@ mod tests {
         assert_eq!(topology.visible_nodes(), &BTreeSet::from([0]));
     }
 
+    /// Scenario: sched affinity discovery fails while sysfs topology remains
+    /// readable.
+    /// Guarantees: discovery marks the topology partial and falls back to
+    /// sysfs-discovered visible CPUs.
     #[test]
     fn marks_partial_when_affinity_degrades() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -484,6 +516,10 @@ mod tests {
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([0, 1, 2, 3]));
     }
 
+    /// Scenario: sched affinity discovery fails but cgroup effective CPUs are
+    /// known.
+    /// Guarantees: discovery uses cgroup visibility and marks the topology
+    /// partial.
     #[test]
     fn marks_partial_when_affinity_degrades_but_cgroup_is_known() {
         let sysfs = tempfile::tempdir().unwrap();
@@ -502,6 +538,8 @@ mod tests {
         assert_eq!(topology.visible_cpus(), &BTreeSet::from([1, 2]));
     }
 
+    /// Scenario: both sysfs topology and allowed-CPU discovery are unavailable.
+    /// Guarantees: discovery reports unknown topology with no visible CPUs.
     #[test]
     fn unknown_when_sysfs_and_allowed_cpus_are_unavailable() {
         let cgroup = tempfile::tempdir().unwrap();

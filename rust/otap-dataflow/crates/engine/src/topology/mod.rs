@@ -315,6 +315,9 @@ pub use linux::LinuxNumaTopologyProvider as DefaultNumaTopologyProvider;
 mod tests {
     use super::*;
 
+    /// Scenario: a Linux cpulist contains ranges, singleton CPUs, and
+    /// duplicate entries.
+    /// Guarantees: parsing returns a deduplicated sorted CPU set.
     #[test]
     fn parse_cpu_list_accepts_ranges_and_deduplicates() {
         assert_eq!(
@@ -323,6 +326,9 @@ mod tests {
         );
     }
 
+    /// Scenario: a Linux cpulist is empty, malformed, reversed, or too large.
+    /// Guarantees: parsing rejects invalid inputs with the expected error
+    /// classification.
     #[test]
     fn parse_cpu_list_rejects_bad_inputs() {
         assert_eq!(parse_cpu_list("").unwrap_err(), ParseCpuListError::Empty);
@@ -348,6 +354,10 @@ mod tests {
         );
     }
 
+    /// Scenario: topology construction receives an empty CPU-to-NUMA map even
+    /// when the caller marks it complete.
+    /// Guarantees: empty mappings are downgraded to unknown topology and
+    /// telemetry fallback remains node zero.
     #[test]
     fn topology_unknown_when_empty_even_if_marked_complete() {
         let topology = NumaTopology::new(BTreeMap::new(), TopologyCompleteness::Complete);
@@ -356,6 +366,10 @@ mod tests {
         assert_eq!(topology.numa_node_or_zero(42), 0);
     }
 
+    /// Scenario: visible CPU discovery succeeds but no NUMA mapping is
+    /// available for those CPUs.
+    /// Guarantees: visible CPUs remain available for placement while NUMA
+    /// mapping stays unknown.
     #[test]
     fn topology_can_keep_visible_cpus_without_numa_mapping() {
         let topology = NumaTopology::with_visible_cpus(
@@ -370,6 +384,10 @@ mod tests {
         assert_eq!(topology.numa_node(2), None);
     }
 
+    /// Scenario: a topology marked complete is missing a visible CPU's NUMA
+    /// mapping.
+    /// Guarantees: topology completeness is downgraded to partial and the
+    /// unmapped CPU remains unknown.
     #[test]
     fn topology_downgrades_complete_when_visible_cpu_is_unmapped() {
         let topology = NumaTopology::with_visible_cpus(

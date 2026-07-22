@@ -1416,6 +1416,8 @@ impl<
             observability_pipeline.policies.health.clone(),
         );
         let topology = NumaTopology::detect();
+        let observability_numa_node_id =
+            topology.numa_node_or_zero(observability_core.id as u32) as usize;
         otel_info!(
             "controller.numa_topology.detected",
             completeness = format!("{:?}", topology.completeness()),
@@ -1490,6 +1492,7 @@ impl<
             telemetry_reporting_interval,
             &memory_pressure_tx,
             internal_tracing_setup,
+            observability_numa_node_id,
         )?;
 
         // Initialize the global subscriber AFTER the observability pipeline has signaled
@@ -2428,6 +2431,7 @@ impl<
         telemetry_reporting_interval: Duration,
         memory_pressure_tx: &tokio::sync::watch::Sender<MemoryPressureChanged>,
         tracing_setup: TracingSetup,
+        observability_numa_node_id: usize,
     ) -> Result<LaunchedPipelineThread<PData>, Error> {
         debug_assert_eq!(
             observability_pipeline.role,
@@ -2445,7 +2449,7 @@ impl<
             pipeline_factory,
             observability_key,
             observability_core,
-            0,
+            observability_numa_node_id,
             Arc::new(ListenerGroupSnapshot::empty()),
             1,
             pipeline_config,

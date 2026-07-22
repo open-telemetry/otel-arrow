@@ -202,6 +202,10 @@ mod tests {
         }
     }
 
+    /// Scenario: an OTLP receiver exposes both gRPC and HTTP listening
+    /// addresses.
+    /// Guarantees: listener planning emits one TCP listener-group plan for
+    /// each configured OTLP bind address.
     #[test]
     fn extracts_otlp_grpc_and_http_listener_groups() {
         let pipeline = resolved_pipeline(
@@ -243,6 +247,9 @@ nodes:
         assert_eq!(snapshot.plans[0].expected_members.len(), 2);
     }
 
+    /// Scenario: an OTAP receiver exposes a top-level listening address.
+    /// Guarantees: listener planning recognizes the OTAP bind identity as a
+    /// TCP listener group.
     #[test]
     fn extracts_otap_top_level_listener_group() {
         let pipeline = resolved_pipeline(
@@ -262,6 +269,10 @@ nodes:
         assert_eq!(snapshot.plans[0].key.protocol, ListenerProtocol::Tcp);
     }
 
+    /// Scenario: multiple listener-capable receiver nodes are discovered in a
+    /// pipeline config.
+    /// Guarantees: listener-group plans are returned in deterministic key
+    /// order independent of config map iteration.
     #[test]
     fn listener_group_plans_are_sorted_by_key() {
         let pipeline = resolved_pipeline(
@@ -287,6 +298,9 @@ nodes:
         assert_eq!(snapshot.plans[1].key.receiver_node_id.as_ref(), "z_otap");
     }
 
+    /// Scenario: a syslog CEF receiver exposes a UDP listening address.
+    /// Guarantees: listener planning preserves the UDP protocol and per-core
+    /// NUMA metadata for expected members.
     #[test]
     fn extracts_syslog_udp_listener_group() {
         let pipeline = resolved_pipeline(
@@ -308,6 +322,10 @@ nodes:
         assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, Some(1));
     }
 
+    /// Scenario: pipeline nodes either use unknown receiver URNs or known
+    /// receivers with unsupported config shapes.
+    /// Guarantees: listener planning skips unsupported nodes instead of
+    /// guessing bind identities.
     #[test]
     fn ignores_unknown_receivers_and_unknown_shapes() {
         let pipeline = resolved_pipeline(
@@ -329,6 +347,10 @@ nodes:
         assert!(snapshot.plans.is_empty());
     }
 
+    /// Scenario: listener planning receives placement built from unknown NUMA
+    /// topology.
+    /// Guarantees: listener members keep NUMA node metadata unknown rather than
+    /// publishing fallback node zero as discovered topology.
     #[test]
     fn unknown_topology_keeps_numa_nodes_unknown() {
         let mut placement = placement();
@@ -352,6 +374,10 @@ nodes:
         assert_eq!(snapshot.plans[0].expected_members[1].numa_node_id, None);
     }
 
+    /// Scenario: listener planning receives partial topology where one
+    /// selected core has no NUMA mapping.
+    /// Guarantees: mapped cores retain their NUMA node and unmapped cores remain
+    /// unknown in listener metadata.
     #[test]
     fn partial_topology_keeps_unmapped_member_numa_node_unknown() {
         let mut placement = placement();

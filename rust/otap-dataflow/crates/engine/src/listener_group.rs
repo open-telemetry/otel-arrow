@@ -142,6 +142,10 @@ impl ListenerGroupSnapshot {
 mod tests {
     use super::*;
 
+    /// Scenario: a listener snapshot contains one plan for a receiver bind
+    /// identity.
+    /// Guarantees: consumers can find the plan by receiver, address, and
+    /// protocol, then resolve member metadata by core id.
     #[test]
     fn snapshot_finds_plan_by_receiver_identity() {
         let addr: SocketAddr = "127.0.0.1:4317".parse().unwrap();

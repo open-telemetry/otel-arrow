@@ -597,8 +597,9 @@ fn terminal_shutdown_record(
 
 /// Scenario: a reconfigure request changes only the effective core
 /// allocation from one assigned core to two.
-/// Guarantees: rollout planning classifies the change as a resize, starts
-/// only the added core, and keeps the current generation unchanged.
+/// Guarantees: rollout planning classifies the change as a resize, starts only
+/// the added core, keeps the active generation unchanged, and assigns a fresh
+/// placement generation.
 #[test]
 fn prepare_rollout_plan_accepts_core_allocation_scale_up() {
     let config = engine_config_with_pipeline(
@@ -669,6 +670,7 @@ connections:
     assert_eq!(plan.resize_start_cores, vec![1]);
     assert!(plan.resize_stop_cores.is_empty());
     assert_eq!(plan.target_generation, 0);
+    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 1);
     assert_eq!(
         plan.rollout
             .cores
@@ -1813,8 +1815,12 @@ connections:
     );
 }
 
+/// Scenario: a socket receiver changes only its `core_count` allocation while
+/// keeping the same listener bind identity.
+/// Guarantees: rollout planning preserves the resize path and updates listener
+/// membership under a fresh placement generation.
 #[test]
-fn prepare_rollout_plan_replaces_when_listener_membership_changes() {
+fn prepare_rollout_plan_resizes_when_listener_membership_changes() {
     let config = engine_config_with_pipeline(
         r#"
         policies:
@@ -1878,13 +1884,25 @@ connections:
         )
         .expect("resize should be planned");
 
-    assert_eq!(plan.action, RolloutAction::Replace);
+    assert_eq!(plan.action, RolloutAction::Resize);
+    assert_eq!(plan.target_generation, 0);
+    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 1);
+    let listener_plan = plan.target_placement.listener_group_snapshot.plans[0].clone();
+    assert_eq!(
+        listener_plan
+            .expected_members
+            .iter()
+            .map(|member| member.core_id)
+            .collect::<Vec<_>>(),
+        vec![0, 1, 2]
+    );
 }
 
 /// Scenario: a reconfigure request changes only the effective core
 /// allocation from two assigned cores to one.
-/// Guarantees: rollout planning classifies the change as a resize, stops
-/// only the removed core, and keeps the current generation unchanged.
+/// Guarantees: rollout planning classifies the change as a resize, stops only
+/// the removed core, keeps the active generation unchanged, and assigns a fresh
+/// placement generation.
 #[test]
 fn prepare_rollout_plan_accepts_core_allocation_scale_down() {
     let config = engine_config_with_pipeline(
@@ -1957,7 +1975,7 @@ connections:
     assert!(plan.resize_start_cores.is_empty());
     assert_eq!(plan.resize_stop_cores, vec![1]);
     assert_eq!(plan.target_generation, 0);
-    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 0);
+    assert_eq!(plan.target_placement.listener_group_snapshot.generation, 1);
     assert_eq!(
         plan.rollout
             .cores

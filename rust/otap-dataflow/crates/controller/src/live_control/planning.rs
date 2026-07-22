@@ -569,7 +569,7 @@ impl<
             &resolved_pipeline,
             &reserved_core_ids,
         )?;
-        let listener_group_plans_unchanged = current_record
+        let listener_group_keys_unchanged = current_record
             .as_ref()
             .zip(current_pipeline_placement.as_ref())
             .is_none_or(|(record, placement)| {
@@ -580,7 +580,11 @@ impl<
                     &target_pipeline_placement,
                     0,
                 );
-                current_snapshot.plans == target_snapshot.plans
+                current_snapshot
+                    .plans
+                    .iter()
+                    .map(|plan| &plan.key)
+                    .eq(target_snapshot.plans.iter().map(|plan| &plan.key))
             });
         let current_assigned_cores: Vec<usize> = current_pipeline_placement
             .as_ref()
@@ -638,7 +642,7 @@ impl<
                 && record.resolved.runtime_matches(&resolved_pipeline);
             let resize_only = current_core_set != target_core_set
                 && !active_runtime_state.has_foreign_active_generations
-                && listener_group_plans_unchanged
+                && listener_group_keys_unchanged
                 && record
                     .resolved
                     .runtime_shape_matches_ignoring_resources(&resolved_pipeline);
@@ -696,7 +700,7 @@ impl<
                 }
             };
             let placement_generation = match action {
-                RolloutAction::NoOp | RolloutAction::Resize => current_record
+                RolloutAction::NoOp => current_record
                     .as_ref()
                     .map(|record| record.placement_generation)
                     .ok_or_else(|| ControlPlaneError::Internal {
@@ -707,7 +711,7 @@ impl<
                             pipeline_key.pipeline_id().as_ref()
                         ),
                     })?,
-                RolloutAction::Create | RolloutAction::Replace => {
+                RolloutAction::Create | RolloutAction::Resize | RolloutAction::Replace => {
                     let generation = state.next_placement_generation;
                     state.next_placement_generation += 1;
                     generation

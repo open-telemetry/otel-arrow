@@ -262,6 +262,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a placement planner is constructed with a non-default
+    /// strategy implementation.
+    /// Guarantees: controller placement honors the injected strategy while
+    /// still applying reservation validation.
     #[test]
     fn planner_can_use_injected_strategy() {
         let topology = NumaTopology::unknown();
@@ -285,6 +289,10 @@ mod tests {
         );
     }
 
+    /// Scenario: a placement strategy returns duplicate, unavailable,
+    /// reserved, or under-sized core selections.
+    /// Guarantees: planner validation rejects invalid strategy output before
+    /// it can become a committed pipeline placement.
     #[test]
     fn planner_rejects_invalid_strategy_output() {
         let topology = NumaTopology::unknown();
@@ -330,6 +338,9 @@ mod tests {
         );
     }
 
+    /// Scenario: no single NUMA node can satisfy the requested core count.
+    /// Guarantees: the NUMA-packing strategy falls back to deterministic
+    /// global visible-core order.
     #[test]
     fn numa_packing_fallback_uses_global_core_order() {
         let topology = NumaTopology::with_visible_cpus(
