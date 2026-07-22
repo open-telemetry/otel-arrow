@@ -313,11 +313,11 @@ impl<
             .map_err(|err| ControlPlaneError::InvalidRequest {
                 message: err.to_string(),
             })?;
-        Controller::<PData>::validate_engine_components_with_factory(
-            self.pipeline_factory,
-            &candidate_config,
-        )
-        .map_err(|message| ControlPlaneError::InvalidRequest { message })?;
+        startup::validate_engine_components(&candidate_config, self.pipeline_factory).map_err(
+            |error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            },
+        )?;
 
         let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
         let candidate_profiles = Self::pipeline_topic_profiles(&candidate_config)?;
@@ -1436,11 +1436,11 @@ impl<
             .map_err(|err| ControlPlaneError::InvalidRequest {
                 message: err.to_string(),
             })?;
-        Controller::<PData>::validate_engine_components_with_factory(
-            self.pipeline_factory,
-            &desired_config,
-        )
-        .map_err(|message| ControlPlaneError::InvalidRequest { message })?;
+        startup::validate_engine_components(&desired_config, self.pipeline_factory).map_err(
+            |error| ControlPlaneError::InvalidRequest {
+                message: error.to_string(),
+            },
+        )?;
 
         let current_profiles = Self::pipeline_topic_profiles(&live_config)?;
         let desired_profiles = Self::pipeline_topic_profiles(&desired_config)?;

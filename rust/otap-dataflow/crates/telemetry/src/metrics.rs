@@ -7,7 +7,6 @@
 //! live in their respective nodes/crates and implement the `MetricSetHandler` trait defined
 //! here.
 
-pub mod dispatcher;
 pub mod otlp;
 
 use crate::attributes::{AttributeSetHandler, MeasurementAttributeSet};
