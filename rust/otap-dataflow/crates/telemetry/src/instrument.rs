@@ -11,6 +11,7 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
+use otap_df_expohisto::{Error as HistogramError, Histogram};
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -599,6 +600,143 @@ pub struct MmscSnapshot {
     pub count: u64,
 }
 
+// Distribution implementation.
+// ============================
+
+/// Number of `u64` bucket words in the "normal" resolution exponential
+/// histogram tier.
+///
+/// Sized for a compact per-series footprint suitable for always-on internal
+/// telemetry while still capturing a useful bucket range.
+pub const HISTOGRAM_NORMAL_WORDS: usize = 10;
+
+/// Number of `u64` bucket words in the "detailed" resolution exponential
+/// histogram tier.
+///
+/// Trades a larger per-series footprint for finer bucket coverage, for metrics
+/// that warrant high-resolution distributions.
+pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
+
+/// A delta distribution instrument with three resolution tiers.
+///
+/// Every tier projects onto the OTLP exponential-histogram point type, so
+/// distributions are represented consistently regardless of resolution:
+/// - [`Distribution::Basic`] keeps only exact min/max/sum/count and encodes as
+///   a bucketless point.
+/// - [`Distribution::Normal`] and [`Distribution::Detailed`] keep full
+///   exponential-histogram bucket ranges sized by [`HISTOGRAM_NORMAL_WORDS`]
+///   and [`HISTOGRAM_DETAILED_WORDS`] respectively.
+///
+/// Like [`Mmsc`], this is a delta instrument: observations are recorded over an
+/// interval and then cleared via [`reset`](Distribution::reset) after each
+/// report. The histogram tiers are boxed so the enum stays pointer-small when
+/// carried by value.
+#[derive(Debug)]
+// The 32-byte inline `Mmsc` basic tier is intentionally not boxed: it is the
+// hot, always-available tier and boxing it would add an allocation and an
+// indirection to every basic distribution for no memory win.
+#[allow(variant_size_differences)]
+pub enum Distribution {
+    /// Basic tier: exact min/max/sum/count with no buckets.
+    Basic(Mmsc),
+    /// Normal tier: exponential histogram with [`HISTOGRAM_NORMAL_WORDS`] bucket words.
+    Normal(Box<Histogram<HISTOGRAM_NORMAL_WORDS>>),
+    /// Detailed tier: exponential histogram with [`HISTOGRAM_DETAILED_WORDS`] bucket words.
+    Detailed(Box<Histogram<HISTOGRAM_DETAILED_WORDS>>),
+}
+
+impl Distribution {
+    /// Creates a basic-tier distribution tracking only min/max/sum/count.
+    #[inline]
+    #[must_use]
+    pub fn basic() -> Self {
+        Self::Basic(Mmsc::default())
+    }
+
+    /// Creates a normal-tier exponential-histogram distribution.
+    #[inline]
+    #[must_use]
+    pub fn normal() -> Self {
+        Self::Normal(Box::new(Histogram::new()))
+    }
+
+    /// Creates a detailed-tier exponential-histogram distribution.
+    #[inline]
+    #[must_use]
+    pub fn detailed() -> Self {
+        Self::Detailed(Box::new(Histogram::new()))
+    }
+
+    /// Records a single non-negative observation.
+    ///
+    /// Mirrors [`Mmsc::record`]: negative, NaN, and infinite values are
+    /// invalid. In debug builds an invalid value trips a debug assertion; in
+    /// release builds it is dropped so a misbehaving call site cannot corrupt
+    /// the aggregation.
+    #[inline]
+    pub fn record(&mut self, value: f64) {
+        match self {
+            Self::Basic(mmsc) => mmsc.record(value),
+            Self::Normal(hist) => Self::check_hist(hist.update(value), "record rejected value"),
+            Self::Detailed(hist) => Self::check_hist(hist.update(value), "record rejected value"),
+        }
+    }
+
+    /// Resets all state for the next reporting interval.
+    #[inline]
+    pub fn reset(&mut self) {
+        match self {
+            Self::Basic(mmsc) => mmsc.reset(),
+            Self::Normal(hist) => hist.clear(),
+            Self::Detailed(hist) => hist.clear(),
+        }
+    }
+
+    /// Returns the total number of observations recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Basic(mmsc) => mmsc.get().count,
+            Self::Normal(hist) => hist.view().stats().count,
+            Self::Detailed(hist) => hist.view().stats().count,
+        }
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// Merges another distribution of the same tier into this one.
+    ///
+    /// Merging mismatched tiers is a programming error: in debug builds it
+    /// trips an assertion and in release builds it is a no-op. Histogram merges
+    /// that would overflow a bucket counter are likewise reported as debug
+    /// assertions.
+    pub fn merge(&mut self, other: &Self) {
+        match (self, other) {
+            (Self::Basic(dst), Self::Basic(src)) => dst.merge(*src),
+            (Self::Normal(dst), Self::Normal(src)) => {
+                Self::check_hist(dst.merge_from(&**src), "merge overflow");
+            }
+            (Self::Detailed(dst), Self::Detailed(src)) => {
+                Self::check_hist(dst.merge_from(&**src), "merge overflow");
+            }
+            _ => debug_assert!(false, "Distribution::merge across mismatched tiers"),
+        }
+    }
+
+    #[inline]
+    fn check_hist(result: Result<(), HistogramError>, context: &str) {
+        if let Err(error) = result {
+            debug_assert!(false, "Distribution::{context}: {error}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,5 +915,111 @@ mod tests {
         a.merge(b);
         let snap = a.get();
         assert_eq!(snap.count, 0);
+    }
+
+    // Scenario: A basic-tier distribution records several non-negative values.
+    // Guarantees: The basic tier preserves exact min/max/sum/count, matching
+    // the standalone Mmsc instrument it wraps.
+    #[test]
+    fn test_distribution_basic_records_mmsc_summary() {
+        let mut dist = Distribution::basic();
+        for v in [10.0, 5.0, 20.0, 15.0] {
+            dist.record(v);
+        }
+        assert_eq!(dist.count(), 4);
+        let Distribution::Basic(mmsc) = &dist else {
+            panic!("expected basic tier")
+        };
+        let snap = mmsc.get();
+        assert_eq!(snap.min, 5.0);
+        assert_eq!(snap.max, 20.0);
+        assert_eq!(snap.sum, 50.0);
+        assert_eq!(snap.count, 4);
+    }
+
+    // Scenario: Normal- and detailed-tier distributions record positive values.
+    // Guarantees: Both histogram tiers accept observations and expose the exact
+    // count and sum through their view, confirming the boxed histograms are
+    // wired to the vendored expohisto aggregation.
+    #[test]
+    fn test_distribution_histogram_tiers_record_into_buckets() {
+        for mut dist in [Distribution::normal(), Distribution::detailed()] {
+            for v in [1.5_f64, 2.7, 4.0, 100.0] {
+                dist.record(v);
+            }
+            assert_eq!(dist.count(), 4);
+            let stats = match &dist {
+                Distribution::Normal(hist) => hist.view().stats(),
+                Distribution::Detailed(hist) => hist.view().stats(),
+                Distribution::Basic(_) => panic!("expected histogram tier"),
+            };
+            assert_eq!(stats.count, 4);
+            assert!((stats.sum - 108.2).abs() < 1e-9);
+            assert_eq!(stats.min, 1.5);
+            assert_eq!(stats.max, 100.0);
+        }
+    }
+
+    // Scenario: A fresh distribution and a reset distribution are inspected.
+    // Guarantees: A new instrument is empty, and resetting after recording
+    // returns it to the empty state so each delta interval starts clean.
+    #[test]
+    fn test_distribution_reset_clears_all_tiers() {
+        for mut dist in [
+            Distribution::basic(),
+            Distribution::normal(),
+            Distribution::detailed(),
+        ] {
+            assert!(dist.is_empty());
+            dist.record(3.0);
+            assert!(!dist.is_empty());
+            dist.reset();
+            assert!(dist.is_empty());
+            assert_eq!(dist.count(), 0);
+        }
+    }
+
+    // Scenario: Two same-tier distributions with disjoint observations are
+    // merged, for both the basic and histogram tiers.
+    // Guarantees: Merging accumulates counts and sums across tiers, which the
+    // registry relies on to fold per-thread aggregations together.
+    #[test]
+    fn test_distribution_merge_same_tier_accumulates() {
+        let mut basic_a = Distribution::basic();
+        basic_a.record(2.0);
+        basic_a.record(8.0);
+        let mut basic_b = Distribution::basic();
+        basic_b.record(1.0);
+        basic_b.record(10.0);
+        basic_a.merge(&basic_b);
+        let Distribution::Basic(mmsc) = &basic_a else {
+            panic!("expected basic tier")
+        };
+        let snap = mmsc.get();
+        assert_eq!(snap.count, 4);
+        assert_eq!(snap.min, 1.0);
+        assert_eq!(snap.max, 10.0);
+        assert_eq!(snap.sum, 21.0);
+
+        let mut hist_a = Distribution::normal();
+        hist_a.record(1.5);
+        hist_a.record(2.5);
+        let mut hist_b = Distribution::normal();
+        hist_b.record(3.5);
+        hist_a.merge(&hist_b);
+        assert_eq!(hist_a.count(), 3);
+    }
+
+    // Scenario: The normal tier is asked to record a negative value in a debug
+    // build.
+    // Guarantees: Invalid observations are rejected the same way the basic tier
+    // rejects them, tripping the shared debug assertion rather than silently
+    // corrupting the aggregation.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Distribution::record rejected value")]
+    fn test_distribution_histogram_rejects_negative() {
+        let mut dist = Distribution::normal();
+        dist.record(-1.0);
     }
 }
