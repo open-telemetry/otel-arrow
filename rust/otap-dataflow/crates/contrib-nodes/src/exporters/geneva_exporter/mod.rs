@@ -49,7 +49,7 @@ use otap_df_telemetry::instrument::{Counter, Mmsc};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::otel_info;
 use otap_df_telemetry_macros::metric_set;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -57,7 +57,10 @@ use std::time::Instant;
 // Geneva uploader dependencies
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig, LogMethod, SpanMethod};
+use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
+use geneva_uploader::{
+    LogsEventNameMapping, LogsEventNameRoutingKey, SpanEventNameMapping, SpanEventNameRoutingKey,
+};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
@@ -69,18 +72,312 @@ use otap_df_otap::pdata::OtapPdata;
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
 
-/// Log table configuration
-#[derive(Debug, Deserialize, Clone, Default)]
-pub struct LogConfig {
-    /// Default event name (table name) for logs sent to Geneva
-    pub default_event_name: Option<String>,
+/// Deserializable wrapper for LogsEventNameRoutingKey
+#[derive(Debug, Clone)]
+pub enum LogsEventNameRoutingKeyConfig {
+    /// Route by event name
+    EventName,
+    /// Route by resource attribute
+    ResourceAttribute {
+        /// The resource attribute key to route on
+        resource_attribute: String,
+    },
+    /// Route by scope attribute
+    ScopeAttribute {
+        /// The scope attribute key to route on
+        scope_attribute: String,
+    },
+    /// Route by log record attribute
+    LogRecordAttribute {
+        /// The log record attribute key to route on
+        log_record_attribute: String,
+    },
 }
 
-/// Span table configuration
+impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, MapAccess, Visitor};
+
+        struct RoutingKeyVisitor;
+
+        impl<'de> Visitor<'de> for RoutingKeyVisitor {
+            type Value = LogsEventNameRoutingKeyConfig;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(
+                    "either a string 'event_name' or a map with exactly one of: \
+                     'resource_attribute', 'scope_attribute', or 'log_record_attribute'",
+                )
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                match value {
+                    "event_name" => Ok(LogsEventNameRoutingKeyConfig::EventName),
+                    _ => Err(de::Error::unknown_variant(
+                        value,
+                        &[
+                            "event_name",
+                            "resource_attribute",
+                            "scope_attribute",
+                            "log_record_attribute",
+                        ],
+                    )),
+                }
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut found_key: Option<String> = None;
+                let mut routing_value: Option<String> = None;
+
+                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                    if found_key.is_some() {
+                        return Err(de::Error::custom(
+                            "routing_key must have exactly one field, found multiple fields",
+                        ));
+                    }
+
+                    match key.as_str() {
+                        "event_name" => {
+                            found_key = Some("event_name".to_string());
+                        }
+                        "resource_attribute" => {
+                            found_key = Some("resource_attribute".to_string());
+                            routing_value = Some(value);
+                        }
+                        "scope_attribute" => {
+                            found_key = Some("scope_attribute".to_string());
+                            routing_value = Some(value);
+                        }
+                        "log_record_attribute" => {
+                            found_key = Some("log_record_attribute".to_string());
+                            routing_value = Some(value);
+                        }
+                        other => {
+                            return Err(de::Error::unknown_field(
+                                other,
+                                &[
+                                    "event_name",
+                                    "resource_attribute",
+                                    "scope_attribute",
+                                    "log_record_attribute",
+                                ],
+                            ));
+                        }
+                    }
+                }
+
+                let non_empty = |field: &str, value: Option<String>| -> Result<String, M::Error> {
+                    let value = value.unwrap_or_default();
+                    if value.trim().is_empty() {
+                        return Err(de::Error::custom(format!(
+                            "'{field}' must be a non-empty attribute name"
+                        )));
+                    }
+                    Ok(value)
+                };
+
+                match found_key.as_deref() {
+                    Some("event_name") => Ok(LogsEventNameRoutingKeyConfig::EventName),
+                    Some("resource_attribute") => {
+                        Ok(LogsEventNameRoutingKeyConfig::ResourceAttribute {
+                            resource_attribute: non_empty("resource_attribute", routing_value)?,
+                        })
+                    }
+                    Some("scope_attribute") => Ok(LogsEventNameRoutingKeyConfig::ScopeAttribute {
+                        scope_attribute: non_empty("scope_attribute", routing_value)?,
+                    }),
+                    Some("log_record_attribute") => {
+                        Ok(LogsEventNameRoutingKeyConfig::LogRecordAttribute {
+                            log_record_attribute: non_empty("log_record_attribute", routing_value)?,
+                        })
+                    }
+                    _ => Err(de::Error::custom(
+                        "routing_key must have one of: 'event_name', 'resource_attribute', 'scope_attribute', or 'log_record_attribute'",
+                    )),
+                }
+            }
+        }
+
+        deserializer.deserialize_any(RoutingKeyVisitor)
+    }
+}
+
+impl From<LogsEventNameRoutingKeyConfig> for LogsEventNameRoutingKey {
+    fn from(config: LogsEventNameRoutingKeyConfig) -> Self {
+        match config {
+            LogsEventNameRoutingKeyConfig::EventName => LogsEventNameRoutingKey::EventName,
+            LogsEventNameRoutingKeyConfig::ResourceAttribute { resource_attribute } => {
+                LogsEventNameRoutingKey::ResourceAttribute(resource_attribute)
+            }
+            LogsEventNameRoutingKeyConfig::ScopeAttribute { scope_attribute } => {
+                LogsEventNameRoutingKey::ScopeAttribute(scope_attribute)
+            }
+            LogsEventNameRoutingKeyConfig::LogRecordAttribute {
+                log_record_attribute,
+            } => LogsEventNameRoutingKey::LogRecordAttribute(log_record_attribute),
+        }
+    }
+}
+
+/// Deserializable wrapper for LogsEventNameMapping
+#[derive(Debug, Deserialize, Clone)]
+pub struct LogsEventNameMappingConfig {
+    /// The routing key configuration (determines which attribute to route on)
+    pub routing_key: LogsEventNameRoutingKeyConfig,
+    /// Map of source values to destination table names.
+    /// A null value means the source value is used as the destination.
+    pub events: std::collections::HashMap<String, Option<String>>,
+}
+
+impl From<LogsEventNameMappingConfig> for LogsEventNameMapping {
+    fn from(config: LogsEventNameMappingConfig) -> Self {
+        LogsEventNameMapping {
+            routing_key: LogsEventNameRoutingKey::from(config.routing_key),
+            events: config.events,
+        }
+    }
+}
+
+/// Log table configuration (wrapper for YAML deserialization)
+/// Deserializes to Geneva uploader's LogsConfig
 #[derive(Debug, Deserialize, Clone, Default)]
-pub struct SpanConfig {
+pub struct LogsConfig {
+    /// Default event name (table name) for logs sent to Geneva
+    pub default_event_name: Option<String>,
+    /// Optional logs routing configuration for mapping records to different tables
+    #[serde(default)]
+    pub event_name_mapping: Option<LogsEventNameMappingConfig>,
+}
+
+/// Span routing key configuration (custom deserializer for validation)
+#[derive(Debug, Clone)]
+pub enum SpansEventNameRoutingKeyConfig {
+    /// Use resource attribute value as routing key
+    ResourceAttribute {
+        /// Name of the resource attribute
+        resource_attribute: String,
+    },
+    /// Use scope attribute value as routing key
+    ScopeAttribute {
+        /// Name of the scope attribute
+        scope_attribute: String,
+    },
+    /// Use span attribute value as routing key
+    SpanAttribute {
+        /// Name of the span attribute
+        span_attribute: String,
+    },
+}
+
+impl From<SpansEventNameRoutingKeyConfig> for SpanEventNameRoutingKey {
+    fn from(config: SpansEventNameRoutingKeyConfig) -> Self {
+        match config {
+            SpansEventNameRoutingKeyConfig::ResourceAttribute { resource_attribute } => {
+                SpanEventNameRoutingKey::ResourceAttribute(resource_attribute)
+            }
+            SpansEventNameRoutingKeyConfig::ScopeAttribute { scope_attribute } => {
+                SpanEventNameRoutingKey::ScopeAttribute(scope_attribute)
+            }
+            SpansEventNameRoutingKeyConfig::SpanAttribute { span_attribute } => {
+                SpanEventNameRoutingKey::SpanAttribute(span_attribute)
+            }
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SpansEventNameRoutingKeyConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let map: std::collections::BTreeMap<String, String> =
+            Deserialize::deserialize(deserializer)?;
+
+        let mut found_key: Option<(String, String)> = None;
+
+        for (key, value) in &map {
+            match key.as_str() {
+                "resource_attribute" | "scope_attribute" | "span_attribute" => {
+                    if found_key.is_some() {
+                        return Err(serde::de::Error::custom(
+                            "only one of: resource_attribute, scope_attribute, span_attribute should be specified",
+                        ));
+                    }
+                    found_key = Some((key.clone(), value.clone()));
+                }
+                _ => {
+                    return Err(serde::de::Error::unknown_field(
+                        key,
+                        &["resource_attribute", "scope_attribute", "span_attribute"],
+                    ));
+                }
+            }
+        }
+
+        match found_key {
+            Some((key, value)) => {
+                if value.trim().is_empty() {
+                    return Err(serde::de::Error::custom(format!(
+                        "'{key}' must be a non-empty attribute name"
+                    )));
+                }
+                match key.as_str() {
+                    "resource_attribute" => Ok(SpansEventNameRoutingKeyConfig::ResourceAttribute {
+                        resource_attribute: value,
+                    }),
+                    "scope_attribute" => Ok(SpansEventNameRoutingKeyConfig::ScopeAttribute {
+                        scope_attribute: value,
+                    }),
+                    "span_attribute" => Ok(SpansEventNameRoutingKeyConfig::SpanAttribute {
+                        span_attribute: value,
+                    }),
+                    _ => unreachable!(),
+                }
+            }
+            None => Err(serde::de::Error::custom(
+                "one of: resource_attribute, scope_attribute, span_attribute must be specified",
+            )),
+        }
+    }
+}
+
+/// Deserializable wrapper for SpanEventNameMapping
+#[derive(Debug, Deserialize, Clone)]
+pub struct SpansEventNameMappingConfig {
+    /// The routing key configuration (determines which attribute to route on)
+    pub routing_key: SpansEventNameRoutingKeyConfig,
+    /// Map of source values to destination table names.
+    /// A null value means the source value is used as the destination.
+    pub events: std::collections::HashMap<String, Option<String>>,
+}
+
+impl From<SpansEventNameMappingConfig> for SpanEventNameMapping {
+    fn from(config: SpansEventNameMappingConfig) -> Self {
+        SpanEventNameMapping {
+            routing_key: SpanEventNameRoutingKey::from(config.routing_key),
+            events: config.events,
+        }
+    }
+}
+
+/// Span table configuration (wrapper for YAML deserialization)
+/// Deserializes to Geneva uploader's TracesConfig
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct TracesConfig {
     /// Default event name (table name) for spans sent to Geneva
     pub default_event_name: Option<String>,
+    /// Optional spans routing configuration for mapping records to different tables
+    #[serde(default)]
+    pub event_name_mapping: Option<SpansEventNameMappingConfig>,
 }
 
 /// Configuration for the Geneva Exporter
@@ -109,10 +406,10 @@ pub struct Config {
     pub auth: AuthConfig,
     /// Log table configuration
     #[serde(default)]
-    pub logs: LogConfig,
+    pub logs: Option<LogsConfig>,
     /// Span table configuration
     #[serde(default)]
-    pub spans: SpanConfig,
+    pub spans: Option<TracesConfig>,
     /// Maximum buffer size before forcing flush (default: 1000)
     /// Note: This field is currently reserved for future use and does not affect runtime behavior.
     #[serde(default = "default_buffer_size")]
@@ -317,13 +614,22 @@ impl GenevaExporter {
             AuthConfig::Certificate { .. } => None,
         };
 
-        // Create LogMethod and SpanMethod from the configuration
-        let log_method = LogMethod {
-            default_event_name: config.logs.default_event_name.clone(),
-        };
-        let span_method = SpanMethod {
-            default_event_name: config.spans.default_event_name.clone(),
-        };
+        // Create LogsConfig and TracesConfig from the configuration
+        let logs_config = config
+            .logs
+            .as_ref()
+            .map(|logs| geneva_uploader::client::LogsConfig {
+                default_event_name: logs.default_event_name.clone(),
+                event_name_mapping: logs.event_name_mapping.clone().map(|m| m.into()),
+            });
+        let traces_config =
+            config
+                .spans
+                .as_ref()
+                .map(|spans| geneva_uploader::client::TracesConfig {
+                    default_event_name: spans.default_event_name.clone(),
+                    event_name_mapping: spans.event_name_mapping.clone().map(|m| m.into()),
+                });
 
         // Create GenevaClient configuration
         let client_config = GenevaClientConfig {
@@ -338,8 +644,8 @@ impl GenevaExporter {
             role_name: config.role_name.clone(),
             role_instance: config.role_instance.clone(),
             msi_resource,
-            logs: log_method,
-            spans: span_method,
+            logs: logs_config,
+            spans: traces_config,
             obo_event_map: None,
         };
 
@@ -1147,7 +1453,20 @@ mod tests {
         assert_eq!(config.tenant, "test-tenant");
         assert_eq!(config.role_name, "test-role");
         assert_eq!(config.role_instance, "test-instance");
-        assert_eq!(config.logs.default_event_name, Some("OtlpLogs".to_string()));
+        assert_eq!(
+            config
+                .logs
+                .as_ref()
+                .and_then(|l| l.default_event_name.as_deref()),
+            Some("OtlpLogs")
+        );
+        assert_eq!(
+            config
+                .spans
+                .as_ref()
+                .and_then(|s| s.default_event_name.as_deref()),
+            Some("OtlpSpans")
+        );
         assert_eq!(config.max_buffer_size, 1000); // default
         assert_eq!(config.max_concurrent_uploads, 4); // default
 
@@ -1250,6 +1569,707 @@ mod tests {
             exporter.is_ok(),
             "Exporter should initialise with UserManagedIdentityByArmResourceId auth"
         );
+    }
+
+    #[test]
+    fn test_routing_key_event_name_variant() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": "event_name",
+                    "events": {
+                        "test1": "Test1"
+                    }
+                }
+            },
+            "spans": {
+                "default_event_name": "Span"
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed_config: Config = serde_json::from_value(config).unwrap();
+        let logs = parsed_config
+            .logs
+            .as_ref()
+            .expect("logs should be configured");
+        assert!(logs.event_name_mapping.is_some());
+
+        let mapping = logs.event_name_mapping.as_ref().unwrap();
+        match &mapping.routing_key {
+            LogsEventNameRoutingKeyConfig::EventName => {
+                // Expected
+            }
+            _ => panic!("Expected EventName variant"),
+        }
+    }
+
+    #[test]
+    fn test_routing_key_scope_attribute_variant() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "scope_attribute": "scope.name"
+                    },
+                    "events": {
+                        "test1": "Test1",
+                        "test2": "Test2"
+                    }
+                }
+            },
+            "spans": {
+                "default_event_name": "Span"
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed_config: Config = serde_json::from_value(config).unwrap();
+        let logs = parsed_config
+            .logs
+            .as_ref()
+            .expect("logs should be configured");
+        assert!(logs.event_name_mapping.is_some());
+
+        let mapping = logs.event_name_mapping.as_ref().unwrap();
+        match &mapping.routing_key {
+            LogsEventNameRoutingKeyConfig::ScopeAttribute { scope_attribute } => {
+                assert_eq!(scope_attribute, "scope.name");
+            }
+            _ => panic!("Expected ScopeAttribute variant"),
+        }
+    }
+
+    #[test]
+    fn test_routing_key_validation_rejects_multiple_fields() {
+        // Test that providing multiple routing_key fields is rejected for logs
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "scope_attribute": "scope.name",
+                        "resource_attribute": "resource.id"
+                    },
+                    "events": {
+                        "test1": "Test1"
+                    }
+                }
+            },
+            "spans": {
+                "default_event_name": "Span"
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "Should reject multiple routing_key fields");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("exactly one field"),
+            "Error should mention exactly one field requirement: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_span_routing_key_resource_attribute_variant() {
+        // Test that resource_attribute variant deserializes correctly
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "resource_attribute": "resource.cluster"
+                    },
+                    "events": {
+                        "clusterA": "PremiumSpan",
+                        "clusterB": null
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_ok(),
+            "Should deserialize valid span resource_attribute config"
+        );
+
+        let config = result.unwrap();
+        assert!(config.spans.is_some(), "Config should have spans section");
+
+        let spans = config.spans.unwrap();
+        assert_eq!(spans.default_event_name, Some("Span".to_string()));
+
+        let mapping = spans.event_name_mapping.as_ref().unwrap();
+        match &mapping.routing_key {
+            SpansEventNameRoutingKeyConfig::ResourceAttribute { resource_attribute } => {
+                assert_eq!(resource_attribute, "resource.cluster");
+            }
+            _ => panic!("Expected ResourceAttribute routing key"),
+        }
+
+        // Verify events map
+        assert_eq!(
+            mapping.events.get("clusterA"),
+            Some(&Some("PremiumSpan".to_string()))
+        );
+        assert_eq!(mapping.events.get("clusterB"), Some(&None));
+    }
+
+    #[test]
+    fn test_span_routing_key_scope_attribute_variant() {
+        // Test that scope_attribute variant deserializes correctly
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "scope_attribute": "instrumentation.name"
+                    },
+                    "events": {
+                        "otel-sdk": "SDKSpan",
+                        "custom": null
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_ok(),
+            "Should deserialize valid span scope_attribute config"
+        );
+
+        let config = result.unwrap();
+        let spans = config.spans.unwrap();
+        let mapping = spans.event_name_mapping.as_ref().unwrap();
+
+        match &mapping.routing_key {
+            SpansEventNameRoutingKeyConfig::ScopeAttribute { scope_attribute } => {
+                assert_eq!(scope_attribute, "instrumentation.name");
+            }
+            _ => panic!("Expected ScopeAttribute routing key"),
+        }
+    }
+
+    #[test]
+    fn test_span_routing_key_span_attribute_variant() {
+        // Test that span_attribute variant deserializes correctly
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "span_attribute": "span.kind"
+                    },
+                    "events": {
+                        "SERVER": "ServerSpan",
+                        "CLIENT": "ClientSpan"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_ok(),
+            "Should deserialize valid span_attribute config"
+        );
+
+        let config = result.unwrap();
+        let spans = config.spans.unwrap();
+        let mapping = spans.event_name_mapping.as_ref().unwrap();
+
+        match &mapping.routing_key {
+            SpansEventNameRoutingKeyConfig::SpanAttribute { span_attribute } => {
+                assert_eq!(span_attribute, "span.kind");
+            }
+            _ => panic!("Expected SpanAttribute routing key"),
+        }
+
+        assert_eq!(
+            mapping.events.get("SERVER"),
+            Some(&Some("ServerSpan".to_string()))
+        );
+        assert_eq!(
+            mapping.events.get("CLIENT"),
+            Some(&Some("ClientSpan".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_span_routing_key_validation_rejects_multiple_fields() {
+        // Test that providing multiple routing_key fields is rejected
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "resource_attribute": "resource.id",
+                        "span_attribute": "span.kind"
+                    },
+                    "events": {
+                        "test1": "Test1"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject multiple span routing_key fields"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("only one of"),
+            "Error should mention exactly one field requirement: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_logs_routing_key_rejects_empty_attribute() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "resource_attribute": ""
+                    },
+                    "events": {
+                        "test1": "Test1"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "Should reject empty logs attribute name");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("non-empty attribute name"),
+            "Error should mention non-empty attribute requirement: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_span_routing_key_rejects_empty_attribute() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "span_attribute": "   "
+                    },
+                    "events": {
+                        "test1": "Test1"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "Should reject empty span attribute name");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("non-empty attribute name"),
+            "Error should mention non-empty attribute requirement: {}",
+            error_msg
+        );
+    }
+
+    #[test]
+    fn test_logs_routing_key_resource_attribute_variant() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "resource_attribute": "cluster"
+                    },
+                    "events": {
+                        "clusterA": "PremiumLog"
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        let mapping = parsed
+            .logs
+            .as_ref()
+            .and_then(|l| l.event_name_mapping.as_ref())
+            .expect("logs mapping should be configured");
+        match &mapping.routing_key {
+            LogsEventNameRoutingKeyConfig::ResourceAttribute { resource_attribute } => {
+                assert_eq!(resource_attribute, "cluster");
+            }
+            _ => panic!("Expected ResourceAttribute variant"),
+        }
+    }
+
+    #[test]
+    fn test_logs_routing_key_log_record_attribute_variant() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "log_record_attribute": "custom_event_name"
+                    },
+                    "events": {
+                        "test1": null
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        let mapping = parsed
+            .logs
+            .as_ref()
+            .and_then(|l| l.event_name_mapping.as_ref())
+            .expect("logs mapping should be configured");
+        match &mapping.routing_key {
+            LogsEventNameRoutingKeyConfig::LogRecordAttribute {
+                log_record_attribute,
+            } => {
+                assert_eq!(log_record_attribute, "custom_event_name");
+            }
+            _ => panic!("Expected LogRecordAttribute variant"),
+        }
+    }
+
+    #[test]
+    fn test_logs_mapping_converts_to_uploader_type() {
+        // Verify the config wrapper converts into the geneva-uploader
+        // LogsEventNameMapping, preserving the reserved `scope.name` routing key
+        // and null (passthrough) destination values.
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "scope_attribute": "scope.name"
+                    },
+                    "events": {
+                        "mapped": "DestTable",
+                        "passthrough": null
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        let mapping_config = parsed
+            .logs
+            .and_then(|l| l.event_name_mapping)
+            .expect("logs mapping should be configured");
+
+        let uploader_mapping: LogsEventNameMapping = mapping_config.into();
+        match &uploader_mapping.routing_key {
+            LogsEventNameRoutingKey::ScopeAttribute(key) => assert_eq!(key, "scope.name"),
+            other => panic!("Expected ScopeAttribute routing key, got {other:?}"),
+        }
+        assert_eq!(
+            uploader_mapping.events.get("mapped"),
+            Some(&Some("DestTable".to_string()))
+        );
+        assert_eq!(uploader_mapping.events.get("passthrough"), Some(&None));
+    }
+
+    #[test]
+    fn test_spans_mapping_converts_to_uploader_type() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": {
+                        "span_attribute": "span.kind"
+                    },
+                    "events": {
+                        "SERVER": "ServerSpan",
+                        "CLIENT": null
+                    }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        let mapping_config = parsed
+            .spans
+            .and_then(|s| s.event_name_mapping)
+            .expect("spans mapping should be configured");
+
+        let uploader_mapping: SpanEventNameMapping = mapping_config.into();
+        match &uploader_mapping.routing_key {
+            SpanEventNameRoutingKey::SpanAttribute(key) => assert_eq!(key, "span.kind"),
+            other => panic!("Expected SpanAttribute routing key, got {other:?}"),
+        }
+        assert_eq!(
+            uploader_mapping.events.get("SERVER"),
+            Some(&Some("ServerSpan".to_string()))
+        );
+        assert_eq!(uploader_mapping.events.get("CLIENT"), Some(&None));
+    }
+
+    #[test]
+    fn test_logs_routing_key_from_conversion_all_variants() {
+        assert!(matches!(
+            LogsEventNameRoutingKey::from(LogsEventNameRoutingKeyConfig::EventName),
+            LogsEventNameRoutingKey::EventName
+        ));
+        assert!(matches!(
+            LogsEventNameRoutingKey::from(LogsEventNameRoutingKeyConfig::ResourceAttribute {
+                resource_attribute: "r".to_string()
+            }),
+            LogsEventNameRoutingKey::ResourceAttribute(k) if k == "r"
+        ));
+        assert!(matches!(
+            LogsEventNameRoutingKey::from(LogsEventNameRoutingKeyConfig::ScopeAttribute {
+                scope_attribute: "s".to_string()
+            }),
+            LogsEventNameRoutingKey::ScopeAttribute(k) if k == "s"
+        ));
+        assert!(matches!(
+            LogsEventNameRoutingKey::from(LogsEventNameRoutingKeyConfig::LogRecordAttribute {
+                log_record_attribute: "l".to_string()
+            }),
+            LogsEventNameRoutingKey::LogRecordAttribute(k) if k == "l"
+        ));
+    }
+
+    #[test]
+    fn test_span_routing_key_from_conversion_all_variants() {
+        assert!(matches!(
+            SpanEventNameRoutingKey::from(SpansEventNameRoutingKeyConfig::ResourceAttribute {
+                resource_attribute: "r".to_string()
+            }),
+            SpanEventNameRoutingKey::ResourceAttribute(k) if k == "r"
+        ));
+        assert!(matches!(
+            SpanEventNameRoutingKey::from(SpansEventNameRoutingKeyConfig::ScopeAttribute {
+                scope_attribute: "s".to_string()
+            }),
+            SpanEventNameRoutingKey::ScopeAttribute(k) if k == "s"
+        ));
+        assert!(matches!(
+            SpanEventNameRoutingKey::from(SpansEventNameRoutingKeyConfig::SpanAttribute {
+                span_attribute: "sp".to_string()
+            }),
+            SpanEventNameRoutingKey::SpanAttribute(k) if k == "sp"
+        ));
+    }
+
+    #[test]
+    fn test_logs_and_spans_optional_default_to_none() {
+        // Omitting the logs/spans sections yields None, which the uploader maps
+        // to the default "Log"/"Span" tables.
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        assert!(parsed.logs.is_none(), "logs should default to None");
+        assert!(parsed.spans.is_none(), "spans should default to None");
     }
 
     // TODO: Add integration tests when we can mock GenevaClient:
