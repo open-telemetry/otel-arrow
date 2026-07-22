@@ -1174,7 +1174,7 @@ impl PipelineConfigBuilder {
                     capabilities: HashMap::new(),
                     header_capture: None,
                     header_propagation: None,
-                    telemetry: None,
+                    policies: None,
                 },
             );
         }

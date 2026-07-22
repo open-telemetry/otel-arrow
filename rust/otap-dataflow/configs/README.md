@@ -78,7 +78,7 @@ emit:
 - Only opted-in nodes report `node.producer.produced.items` and
   `node.consumer.consumed.items`, each split by the `signal` datapoint attribute;
   nodes that are not opted in omit these metrics
-  (per-node `telemetry.produced_consumed_item_counts: true`, or globally via
+  (per-node `policies.telemetry.item_counts: true`, or globally via
   `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
   higher.
 - View metrics at:

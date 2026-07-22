@@ -64,13 +64,12 @@ pub struct Context {
     /// active at a time (non-overlapping ranges).
     flow_compute_ns: Option<NonZeroU64>,
     /// Signal type of the payload, captured on the forward path to attribute
-    /// per-signal produced/consumed item counts during ack/nack unwinding.
+    /// per-signal produced/consumed metrics during ack/nack unwinding.
     ///
     /// A pdata batch is homogeneous, so signal is a pdata-level property stored
     /// once here rather than duplicated on every routing frame. It is captured
-    /// while the payload is live (at send/receive stamping) and survives
-    /// payload drop, so it stays readable throughout unwinding. `None` until
-    /// stamped.
+    /// while the payload is live whenever node message metrics are enabled and
+    /// survives payload drop, so it stays readable throughout unwinding.
     signal: Option<SignalType>,
 }
 
@@ -300,7 +299,7 @@ impl Context {
     /// time onto the top frame, and remember the pdata's signal on the context.
     /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
     pub(crate) fn stamp_produced_items(&mut self, items: u32, signal: SignalType) {
-        self.signal = Some(signal);
+        self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
             top.produced_items = items;
         }
@@ -310,14 +309,19 @@ impl Context {
     /// time onto the top frame, and remember the pdata's signal on the context.
     /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
     pub(crate) fn stamp_consumed_items(&mut self, items: u32, signal: SignalType) {
-        self.signal = Some(signal);
+        self.capture_signal(signal);
         if let Some(top) = self.stack.last_mut() {
             top.consumed_items = items;
         }
     }
 
+    /// Capture the signal type while the payload is available for later metric
+    /// attribution during ack/nack unwinding.
+    pub(crate) fn capture_signal(&mut self, signal: SignalType) {
+        self.signal = Some(signal);
+    }
+
     /// Signal captured on the forward path for per-signal metric attribution.
-    /// `None` until an item count has been stamped.
     #[must_use]
     pub(crate) fn signal(&self) -> Option<SignalType> {
         self.signal
@@ -739,6 +743,9 @@ impl OtapPdata {
                 node_id,
                 node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
             );
+            if node_interests.contains(Interests::PRODUCER_METRICS) {
+                self.context.capture_signal(self.signal_type());
+            }
             // Produced counts are only recorded under PRODUCER_METRICS, so only
             // pay the num_items() parse when that interest is also present
             // (e.g. avoid it for a source-tagging-only frame).
@@ -1030,6 +1037,9 @@ impl_message_source_ext!(
 impl otap_df_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
+        if node_interests.contains(Interests::CONSUMER_METRICS) {
+            self.context.capture_signal(self.signal_type());
+        }
         // Consumed counts are only recorded under CONSUMER_METRICS, so only pay
         // the num_items() parse when that interest is also present (e.g. avoid
         // it for a per-node opt-in below the `normal` metric level).
@@ -1713,9 +1723,11 @@ mod test {
         assert_eq!(frames[0].interests, Interests::empty());
     }
 
+    /// Scenario: a node records normal-level consumed messages without item-count opt-in.
+    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
     #[test]
     fn test_received_at_node_stamps_consumed_items() {
-        use otap_df_engine::ReceivedAtNode;
+        use otap_df_engine::{ReceivedAtNode, Unwindable};
 
         // CONSUMER_METRICS + item counts: entry frame carries consumed count.
         let mut pdata = create_test_pdata();
@@ -1731,13 +1743,15 @@ mod test {
         assert_eq!(frames[0].consumed_items, n);
         assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
 
-        // CONSUMER_METRICS without item-count interest: no consumed count stamped.
+        // CONSUMER_METRICS without item-count interest: no consumed count stamped,
+        // but the signal remains available for normal-level message metrics.
         let mut pdata_cm = create_test_pdata();
         pdata_cm.received_at_node(43, Interests::CONSUMER_METRICS);
         let f_cm = pdata_cm.context.frames();
         assert_eq!(f_cm.len(), 1);
         assert_eq!(f_cm[0].consumed_items, 0);
-        assert_eq!(pdata_cm.context.signal(), None);
+        assert_eq!(pdata_cm.context.signal(), Some(SignalType::Logs));
+        assert_eq!(pdata_cm.signal(), Some(SignalType::Logs));
 
         // ENTRY_TIMESTAMP only (no CONSUMER_METRICS): no consumed count stamped.
         let mut pdata2 = create_test_pdata();
@@ -1760,6 +1774,8 @@ mod test {
         assert_eq!(pdata4.context.signal(), None);
     }
 
+    /// Scenario: a source records normal-level produced messages without item-count opt-in.
+    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
     #[test]
     fn test_prepare_source_send_stamps_produced_items() {
         // PRODUCER_METRICS | PRODUCED_CONSUMED_ITEM_COUNTS: source frame carries
@@ -1785,6 +1801,7 @@ mod test {
             .last()
             .expect("source frame");
         assert_eq!(frame_no_optin.produced_items, 0);
+        assert_eq!(pdata_no_optin.context.signal(), Some(SignalType::Logs));
 
         // SOURCE_TAGGING only (no PRODUCER_METRICS): no produced count stamped.
         let mut pdata2 = create_test_pdata();

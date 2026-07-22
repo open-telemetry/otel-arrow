@@ -382,14 +382,15 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         let metric_level = telemetry_policy.runtime_metrics;
         let base_node_interests = Interests::from_metric_level(metric_level);
-        // Nodes opting in via `node.telemetry.produced_consumed_item_counts`
+        // Nodes opting in via `node.policies.telemetry.item_counts`
         // get the counts without requiring the `detailed` metric level.
         let item_count_optin: HashSet<&str> = pipeline_config
             .node_iter()
             .filter(|(_, cfg)| {
-                cfg.telemetry
+                cfg.policies
                     .as_ref()
-                    .is_some_and(|t| t.produced_consumed_item_counts)
+                    .and_then(|policies| policies.telemetry.as_ref())
+                    .is_some_and(|telemetry| telemetry.item_counts)
             })
             .map(|(node_id, _)| node_id.as_ref())
             .collect();

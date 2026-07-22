@@ -327,7 +327,7 @@ pub struct Interests: u16 {
 
     /// Per-signal produced/consumed item counts requested. Opt-in (counting
     /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
-    /// level, or per node via `telemetry.produced_consumed_item_counts`.
+    /// level, or per node via `policies.telemetry.item_counts`.
     const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
 
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.

@@ -157,12 +157,19 @@ pub struct NodeUserConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub header_propagation: Option<HeaderPropagationPolicy>,
 
-    /// Node-level telemetry policy override.
+    /// Node-level policy overrides.
     ///
-    /// Like the `header_capture` / `header_propagation` node overrides, this
-    /// exposes only the telemetry knobs honored per node (not the full
-    /// pipeline-scope `TelemetryPolicy`). When absent, the node inherits the
-    /// resolved pipeline telemetry policy.
+    /// This exposes only the policies honored per node, rather than the full
+    /// pipeline-scope [`crate::policy::Policies`] model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policies: Option<NodePolicies>,
+}
+
+/// Node-level policy overrides supported by the pipeline engine.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NodePolicies {
+    /// Node-level telemetry policy override.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<NodeTelemetryPolicy>,
 }
@@ -179,7 +186,7 @@ pub struct NodeTelemetryPolicy {
     /// `runtime_metrics` is `normal` or higher; `runtime_metrics: detailed`
     /// enables it for every node without this flag.
     #[serde(default)]
-    pub produced_consumed_item_counts: bool,
+    pub item_counts: bool,
 }
 
 /// Node kinds
@@ -229,7 +236,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
-            telemetry: None,
+            policies: None,
         }
     }
 
@@ -249,7 +256,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
-            telemetry: None,
+            policies: None,
         }
     }
 
@@ -269,7 +276,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
-            telemetry: None,
+            policies: None,
         }
     }
 
@@ -286,7 +293,7 @@ impl NodeUserConfig {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
-            telemetry: None,
+            policies: None,
         }
     }
 
@@ -505,6 +512,25 @@ mod tests {
         let cfg: NodeUserConfig = serde_json::from_str(json).unwrap();
         assert!(matches!(cfg.kind(), NodeKind::Receiver));
         assert!(cfg.outputs.is_empty());
+    }
+
+    /// Scenario: a node config opts into item counts through its restricted policy block.
+    /// Guarantees: node telemetry configuration stays namespaced under `policies`.
+    #[test]
+    fn node_user_config_parses_item_count_policy() {
+        let yaml = r#"
+type: "processor:batch"
+policies:
+  telemetry:
+    item_counts: true
+"#;
+        let cfg: NodeUserConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(
+            cfg.policies
+                .as_ref()
+                .and_then(|policies| policies.telemetry.as_ref())
+                .is_some_and(|telemetry| telemetry.item_counts)
+        );
     }
 
     #[test]
