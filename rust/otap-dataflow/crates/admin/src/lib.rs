@@ -265,7 +265,7 @@ impl AppState {
 ///
 /// Mirrors the non-CSP subset of the UI/static header set from `dashboard.rs`:
 /// `Cache-Control`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
-/// Content-Security-Policy is intentionally omitted — it is only meaningful for
+/// Content-Security-Policy is intentionally omitted - it is only meaningful for
 /// HTML responses served by the UI, not for JSON API endpoints.
 /// Centralising them as a layer on `api_routes` means new endpoints inherit them.
 ///
@@ -273,32 +273,32 @@ impl AppState {
 ///
 /// | Header | Source | Purpose |
 /// |---|---|---|
-/// | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 §5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses |
+/// | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 section 5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses |
 /// | `X-Frame-Options: DENY` | [RFC 7034](https://www.rfc-editor.org/rfc/rfc7034) (deprecated, legacy fallback) | Legacy anti-clickjacking |
 /// | `X-Content-Type-Options: nosniff` | [WHATWG Fetch](https://fetch.spec.whatwg.org/#x-content-type-options-header) | Stop MIME-sniffing |
 /// | `Referrer-Policy: no-referrer` | [W3C Referrer Policy](https://www.w3.org/TR/referrer-policy/) | Avoid leaking URLs via the Referer header |
 async fn attach_api_security_headers(mut response: Response) -> Response {
     use axum::http::{HeaderName, HeaderValue, header};
     let h = response.headers_mut();
-    // RFC 9111 §5.2.2 — `no-store` forbids caching; `no-cache` and `must-revalidate`
+    // RFC 9111 section 5.2.2 - `no-store` forbids caching; `no-cache` and `must-revalidate`
     // add defensive coverage for older proxies.
     let _ = h.insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static("no-store, no-cache, must-revalidate"),
     );
-    // WHATWG Fetch Standard — instructs browser to honor declared Content-Type
+    // WHATWG Fetch Standard - instructs browser to honor declared Content-Type
     // and not MIME-sniff responses as executable script or HTML.
     let _ = h.insert(
         HeaderName::from_static("x-content-type-options"),
         HeaderValue::from_static("nosniff"),
     );
-    // RFC 7034 (Informational, deprecated) — legacy anti-clickjacking fallback
+    // RFC 7034 (Informational, deprecated) - legacy anti-clickjacking fallback
     // for browsers that do not implement CSP `frame-ancestors`.
     let _ = h.insert(
         HeaderName::from_static("x-frame-options"),
         HeaderValue::from_static("DENY"),
     );
-    // W3C Referrer Policy — strips Referer header so admin URLs do not leak
+    // W3C Referrer Policy - strips Referer header so admin URLs do not leak
     // to third parties through outbound links.
     let _ = h.insert(
         HeaderName::from_static("referrer-policy"),

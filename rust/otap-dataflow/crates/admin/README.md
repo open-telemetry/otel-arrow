@@ -86,7 +86,7 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
 
   | Header | Source | Purpose |
   |---|---|---|
-  | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 §5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses; `no-store` is the strongest directive, `no-cache`/`must-revalidate` add coverage for older proxies |
+  | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 section 5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses; `no-store` is the strongest directive, `no-cache`/`must-revalidate` add coverage for older proxies |
   | `X-Frame-Options: DENY` | [RFC 7034](https://www.rfc-editor.org/rfc/rfc7034) (Informational, deprecated) | Legacy anti-clickjacking fallback for browsers that do not implement CSP `frame-ancestors` |
   | `Content-Security-Policy` | [W3C CSP Level 3](https://www.w3.org/TR/CSP3/) | Modern anti-clickjacking and injection defense; `frame-ancestors 'none'` supersedes `X-Frame-Options` in compliant browsers. Applied to UI/static routes only (not meaningful for JSON API responses) |
   | `X-Content-Type-Options: nosniff` | [WHATWG Fetch Standard](https://fetch.spec.whatwg.org/#x-content-type-options-header) | Instructs browser to honor the declared `Content-Type` and not MIME-sniff, preventing responses from being misinterpreted as executable script or HTML |
