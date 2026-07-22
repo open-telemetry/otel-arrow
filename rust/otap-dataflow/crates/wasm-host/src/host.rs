@@ -17,7 +17,7 @@ use crate::bindings::otel::otap_dataflow_plugin::otel_kernels::{self, AttrScope}
 ///
 /// This is the concrete type mapped to the WIT `pdata` resource. Guests never
 /// see its contents; they only pass the handle back to host kernels.
-pub struct HostPdataData {
+pub struct HostPdata {
     /// The root Arrow record batch the kernels operate on.
     pub record_batch: RecordBatch,
 }
@@ -48,14 +48,14 @@ impl Default for HostState {
 }
 
 impl otel_kernels::HostPdata for HostState {
-    fn drop(&mut self, data: Resource<HostPdataData>) -> wasmtime::Result<()> {
+    fn drop(&mut self, data: Resource<HostPdata>) -> wasmtime::Result<()> {
         let _ = self.table.delete(data)?;
         Ok(())
     }
 }
 
 impl otel_kernels::Host for HostState {
-    fn pdata_num_rows(&mut self, data: Resource<HostPdataData>) -> u32 {
+    fn pdata_num_rows(&mut self, data: Resource<HostPdata>) -> u32 {
         self.table
             .get(&data)
             .expect("invalid wasm host pdata resource handle")
@@ -65,11 +65,11 @@ impl otel_kernels::Host for HostState {
 
     fn filter_by_attribute_eq(
         &mut self,
-        data: Resource<HostPdataData>,
+        data: Resource<HostPdata>,
         scope: AttrScope,
         key: String,
         value: String,
-    ) -> Resource<HostPdataData> {
+    ) -> Resource<HostPdata> {
         // Read the input batch, consume the input handle, and return a fresh
         // handle for the result. Invalid handles are a contract violation and
         // should trap instead of silently dropping data.
@@ -97,7 +97,7 @@ impl otel_kernels::Host for HostState {
         };
 
         self.table
-            .push(HostPdataData {
+            .push(HostPdata {
                 record_batch: result,
             })
             .expect("resource table push")
@@ -244,7 +244,7 @@ mod tests {
         let mut host = HostState::new();
         let handle = host
             .table
-            .push(HostPdataData {
+            .push(HostPdata {
                 record_batch: batch_with_severity(&["ERROR", "INFO", "WARN"]),
             })
             .expect("push input batch");
@@ -266,7 +266,7 @@ mod tests {
     #[should_panic(expected = "invalid wasm host pdata resource handle")]
     fn invalid_handle_for_pdata_num_rows_traps() {
         let mut host = HostState::new();
-        let invalid = Resource::<HostPdataData>::new_own(u32::MAX);
+        let invalid = Resource::<HostPdata>::new_own(u32::MAX);
         let _ = <HostState as otel_kernels::Host>::pdata_num_rows(&mut host, invalid);
     }
 
@@ -278,7 +278,7 @@ mod tests {
     #[should_panic(expected = "invalid wasm host pdata resource handle")]
     fn invalid_handle_for_filter_traps() {
         let mut host = HostState::new();
-        let invalid = Resource::<HostPdataData>::new_own(u32::MAX);
+        let invalid = Resource::<HostPdata>::new_own(u32::MAX);
         let _ = <HostState as otel_kernels::Host>::filter_by_attribute_eq(
             &mut host,
             invalid,

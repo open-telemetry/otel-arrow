@@ -53,7 +53,7 @@ mod bindings {
         world: "kernel-processor",
         path: "wit",
         with: {
-            "otel:otap-dataflow-plugin/otel-kernels@0.1.0.pdata": crate::host::HostPdataData,
+            "otel:otap-dataflow-plugin/otel-kernels@0.1.0.pdata": crate::host::HostPdata,
         },
     });
 }

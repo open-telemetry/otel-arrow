@@ -40,7 +40,7 @@ use wasmtime::{Engine, Store};
 
 use crate::bindings::KernelProcessor;
 use crate::bridge;
-use crate::host::{HostPdataData, HostState};
+use crate::host::{HostPdata, HostState};
 
 /// URN identifying the WASM processor component.
 pub const WASM_PROCESSOR_URN: &str = "urn:otel:processor:wasm_processor";
@@ -107,7 +107,7 @@ impl WasmProcessor {
     /// Push `batch` into the handle table, invoke the guest `process`, and
     /// return the resulting batch (or `None` when the guest dropped it).
     fn run_guest(&mut self, batch: RecordBatch) -> wasmtime::Result<Option<RecordBatch>> {
-        let input = self.store.data_mut().table.push(HostPdataData {
+        let input = self.store.data_mut().table.push(HostPdata {
             record_batch: batch,
         })?;
         let input_rep = input.rep();
@@ -125,7 +125,7 @@ impl WasmProcessor {
                     .store
                     .data_mut()
                     .table
-                    .delete(wasmtime::component::Resource::<HostPdataData>::new_own(
+                    .delete(wasmtime::component::Resource::<HostPdata>::new_own(
                         input_rep,
                     ));
                 return Err(err);
