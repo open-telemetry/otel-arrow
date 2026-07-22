@@ -11,17 +11,24 @@
 //! Example: `encode/3_attrs/1000_events` = 300 µs → 300 ns per event
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_config::observed_state::SendPolicy;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::eventname_filter::EventNameFilter;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{
     DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, encode_export_logs_request,
     format_log_record_to_string,
 };
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 use std::time::SystemTime;
 use tracing::{Event, Subscriber};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::FilterExt;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
@@ -226,6 +233,297 @@ where
     }
 }
 
+/// ITS producer-side sink that constructs the same `LogEvent` as the production
+/// structured logging layer and sends it to a continuously drained channel.
+struct ItsNoopLayer {
+    reporter: ObservedEventReporter,
+}
+
+impl<S> Layer<S> for ItsNoopLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        self.reporter.log(LogEvent {
+            time: SystemTime::now(),
+            record: LogRecord::new(event, LogContext::new()),
+        });
+    }
+}
+
+fn emit_enabled_baseline() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_baseline",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_disabled_level() {
+    otap_df_telemetry::otel_info!("benchmark.disabled_level", value = std::hint::black_box(42));
+}
+
+fn emit_disabled_level_with_filter() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_level_with_filter",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_enabled_allow_all() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_allow_all",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_enabled_exact_match() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_exact_match",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_disabled_exact_miss() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_exact_miss",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_enabled_prefix_match() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_prefix_match",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_disabled_prefix_miss() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_prefix_miss",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_enabled_deny_miss() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.enabled_deny_miss",
+        value = std::hint::black_box(42)
+    );
+}
+
+fn emit_disabled_deny_match() {
+    otap_df_telemetry::otel_info!(
+        "benchmark.disabled_deny_match",
+        value = std::hint::black_box(42)
+    );
+}
+
+/// Measures one producer-side emission while a bounded noop consumer drains
+/// accepted events. The consumer prevents backpressure but is not timed.
+fn run_its_emission_bench(
+    b: &mut criterion::Bencher<'_>,
+    level: &str,
+    event_filter: Option<EventNameFilter>,
+    emit: fn(),
+    expected_enabled: bool,
+) {
+    let (sender, receiver) = flume::bounded(4096);
+    let reporter = ObservedEventReporter::new(
+        SendPolicy {
+            blocking_timeout: None,
+            console_fallback: false,
+        },
+        sender,
+    );
+    let received = Arc::new(AtomicU64::new(0));
+    let received_by_consumer = Arc::clone(&received);
+    let consumer = thread::spawn(move || {
+        while let Ok(ObservedEvent::Log(_)) = receiver.recv() {
+            _ = received_by_consumer.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    let dispatch = match event_filter {
+        Some(filter) => tracing::Dispatch::new(
+            tracing_subscriber::registry()
+                .with(ItsNoopLayer { reporter }.with_filter(EnvFilter::new(level).and(filter))),
+        ),
+        None => tracing::Dispatch::new(
+            tracing_subscriber::registry()
+                .with(ItsNoopLayer { reporter }.with_filter(EnvFilter::new(level))),
+        ),
+    };
+
+    tracing::dispatcher::with_default(&dispatch, || b.iter(emit));
+    drop(dispatch);
+    consumer.join().expect("noop ITS consumer should stop");
+
+    if expected_enabled {
+        assert!(
+            received.load(Ordering::Relaxed) > 0,
+            "enabled benchmark must reach the noop sink"
+        );
+    } else {
+        assert_eq!(
+            received.load(Ordering::Relaxed),
+            0,
+            "disabled benchmark must be filtered before ITS"
+        );
+    }
+}
+
+fn bench_its_emission(c: &mut Criterion) {
+    let mut group = c.benchmark_group("its_emission");
+
+    _ = group.bench_function("enabled/baseline_no_event_filter", |b| {
+        run_its_emission_bench(b, "info", None, emit_enabled_baseline, true);
+    });
+    _ = group.bench_function("disabled/baseline_level_off", |b| {
+        run_its_emission_bench(b, "off", None, emit_disabled_level, false);
+    });
+    _ = group.bench_function("disabled/level_off_with_filter_allow_all", |b| {
+        run_its_emission_bench(
+            b,
+            "off",
+            Some(EventNameFilter::allow_all()),
+            emit_disabled_level_with_filter,
+            false,
+        );
+    });
+    _ = group.bench_function("enabled/event_filter_allow_all", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allow_all()),
+            emit_enabled_allow_all,
+            true,
+        );
+    });
+    _ = group.bench_function("enabled/event_filter_exact_match", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allowing(["benchmark.enabled_exact_match"])),
+            emit_enabled_exact_match,
+            true,
+        );
+    });
+    _ = group.bench_function("disabled/event_filter_exact_miss", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allowing(["benchmark.some_other_event"])),
+            emit_disabled_exact_miss,
+            false,
+        );
+    });
+    _ = group.bench_function("enabled/event_filter_prefix_match", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allowing(["benchmark.enabled_prefix*"])),
+            emit_enabled_prefix_match,
+            true,
+        );
+    });
+    _ = group.bench_function("disabled/event_filter_prefix_miss", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::allowing(["benchmark.some_other_prefix*"])),
+            emit_disabled_prefix_miss,
+            false,
+        );
+    });
+    _ = group.bench_function("enabled/event_filter_deny_miss", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::denying(["benchmark.disabled_deny_match"])),
+            emit_enabled_deny_miss,
+            true,
+        );
+    });
+    _ = group.bench_function("disabled/event_filter_deny_match", |b| {
+        run_its_emission_bench(
+            b,
+            "info",
+            Some(EventNameFilter::denying(["benchmark.disabled_deny_match"])),
+            emit_disabled_deny_match,
+            false,
+        );
+    });
+
+    group.finish();
+}
+
+struct PolicyUpdateNoopLayer;
+
+impl<S> Layer<S> for PolicyUpdateNoopLayer where S: Subscriber {}
+
+fn register_policy_update_callsites() {
+    tracing::info!(name: "benchmark.event_0", value = 0);
+    tracing::info!(name: "benchmark.event_1", value = 1);
+    tracing::info!(name: "benchmark.event_2", value = 2);
+    tracing::info!(name: "benchmark.event_3", value = 3);
+    tracing::info!(name: "benchmark.event_4", value = 4);
+    tracing::info!(name: "benchmark.event_5", value = 5);
+    tracing::info!(name: "benchmark.event_6", value = 6);
+    tracing::info!(name: "benchmark.event_7", value = 7);
+}
+
+/// Measures total policy replacement cost for the callsites registered in this
+/// benchmark binary. Production update cost also scales with the collector
+/// binary's total registered callsite count.
+fn bench_event_filter_policy_update(c: &mut Criterion) {
+    let mut group = c.benchmark_group("event_filter_policy_update");
+
+    for pattern_count in [1, 10, 100] {
+        for (pattern_kind, patterns) in [
+            (
+                "exact",
+                (0..pattern_count)
+                    .map(|index| format!("benchmark.event_{index}"))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "prefix",
+                (0..pattern_count)
+                    .map(|index| format!("benchmark.event_{index}*"))
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            for mode in ["allow", "deny"] {
+                let (filter, handle) = EventNameFilter::new();
+                let subscriber = tracing_subscriber::registry()
+                    .with(PolicyUpdateNoopLayer.with_filter(EnvFilter::new("info").and(filter)));
+                let dispatch = tracing::Dispatch::new(subscriber);
+
+                _ = group.bench_with_input(
+                    BenchmarkId::new(format!("{mode}_{pattern_kind}"), pattern_count),
+                    &patterns,
+                    |b, patterns| {
+                        tracing::dispatcher::with_default(&dispatch, || {
+                            register_policy_update_callsites();
+                            match mode {
+                                "allow" => {
+                                    b.iter(|| handle.allow(std::hint::black_box(patterns)));
+                                }
+                                "deny" => {
+                                    b.iter(|| handle.deny(std::hint::black_box(patterns)));
+                                }
+                                _ => unreachable!("benchmark mode is fixed"),
+                            }
+                        });
+                    },
+                );
+            }
+        }
+    }
+
+    group.finish();
+}
+
 /// Macro to generate benchmark functions for different attribute counts.
 /// Each variant emits a consistent log statement for fair comparison.
 macro_rules! emit_log {
@@ -380,7 +678,8 @@ mod bench_entry {
         name = benches;
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
-                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic
+                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic,
+                  bench_its_emission, bench_event_filter_policy_update
     );
 }
 

@@ -7486,6 +7486,7 @@ dependencies = [
 name = "otap-df-telemetry"
 version = "0.50.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "bytes",
  "chrono",

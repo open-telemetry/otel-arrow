@@ -579,6 +579,20 @@ mod tests {
     }
 
     #[test]
+    fn test_invalid_logs_config_rejected() {
+        let mut config = TelemetryConfig::default();
+        config.logs.events.allow = vec!["receiver.*".into()];
+        config.logs.events.deny = vec!["receiver.stop".into()];
+
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("logs.events cannot set both 'allow' and 'deny'"),
+            "expected EventName filter validation error, got: {err}"
+        );
+    }
+
+    #[test]
     fn test_attribute_value_deserialize_yaml() {
         let yaml_str = r#"
             string_attr: "example"
