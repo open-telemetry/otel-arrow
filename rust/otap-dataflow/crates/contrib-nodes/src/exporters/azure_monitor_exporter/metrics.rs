@@ -8,7 +8,13 @@ use std::rc::Rc;
 
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
-use otap_df_telemetry::common_attributes::{HttpResponse, Outcome};
+use otap_df_telemetry::common_attributes::{
+    HttpResponse, Outcome, OutcomeAttributes, SignalRegistrationAttributes,
+};
+pub use otap_df_telemetry::common_attributes::{
+    HttpResponseAttributes, OutcomeAttributes as ExportOutcomeAttributes,
+    SignalRegistrationAttributes as ExportSignalAttributes,
+};
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::instrument::{Counter, Gauge, Mmsc, MmscSnapshot};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -45,27 +51,11 @@ pub struct AzureMonitorExporterOperationalMetrics {
     pub log_entries_too_large: Counter<u64>,
 }
 
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-/// Attributes that partition completed exports by outcome.
-pub struct ExportOutcomeAttributes {
-    /// Outcome of the completed export.
-    pub outcome: Outcome,
-}
-
-#[attribute_set(item, registration)]
-#[derive(Debug, Clone, Copy)]
-/// Fixed signal context for Azure Monitor exports.
-pub struct ExportSignalAttributes {
-    /// Signal exported by this logs-only component.
-    pub signal: SignalType,
-}
-
 /// Export completion metrics partitioned by outcome.
 #[metric_set(
     name = "exporter.azure_monitor.exports",
-    registration_attributes = ExportSignalAttributes,
-    measurement_attributes = ExportOutcomeAttributes
+    registration_attributes = SignalRegistrationAttributes,
+    measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterExportMetrics {
@@ -78,14 +68,6 @@ pub struct AzureMonitorExporterExportMetrics {
     /// Number of messages resolved by export outcome.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-}
-
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-/// Attributes that partition HTTP attempts by response category.
-pub struct HttpResponseAttributes {
-    /// Response category from an HTTP export attempt.
-    pub response: HttpResponse,
 }
 
 /// HTTP export attempts partitioned by response category.
@@ -131,7 +113,7 @@ struct AzureMonitorExporterStateMetrics {
 /// Heartbeat send metrics partitioned by outcome.
 #[metric_set(
     name = "exporter.azure_monitor.heartbeats",
-    measurement_attributes = ExportOutcomeAttributes
+    measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterHeartbeatMetrics {
@@ -164,7 +146,7 @@ impl AzureMonitorExporterMetricsTracker {
             operational_metrics: AzureMonitorExporterOperationalMetrics::register(pipeline_ctx),
             export_metrics: AzureMonitorExporterExportMetrics::register(
                 pipeline_ctx,
-                &ExportSignalAttributes {
+                &SignalRegistrationAttributes {
                     signal: SignalType::Logs,
                 },
             ),
@@ -200,7 +182,7 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     #[must_use]
     pub(super) fn export_for(&self, outcome: Outcome) -> &AzureMonitorExporterExportMetrics {
-        self.export_metrics.get(ExportOutcomeAttributes { outcome })
+        self.export_metrics.get(OutcomeAttributes { outcome })
     }
 
     #[inline]
@@ -217,9 +199,7 @@ impl AzureMonitorExporterMetricsTracker {
 
     #[inline]
     pub(super) fn record_export(&mut self, outcome: Outcome, items: u64, messages: u64) {
-        let metrics = self
-            .export_metrics
-            .with(ExportOutcomeAttributes { outcome });
+        let metrics = self.export_metrics.with(OutcomeAttributes { outcome });
         metrics.items.add(items);
         metrics.batches.inc();
         metrics.messages.add(messages);
@@ -270,7 +250,7 @@ impl AzureMonitorExporterMetricsTracker {
     #[inline]
     pub(super) fn record_heartbeat(&mut self, outcome: Outcome) {
         self.heartbeat_metrics
-            .with(ExportOutcomeAttributes { outcome })
+            .with(OutcomeAttributes { outcome })
             .sends
             .inc();
     }
@@ -388,7 +368,7 @@ mod tests {
         assert_eq!(
             metrics
                 .heartbeat_metrics
-                .get(ExportOutcomeAttributes {
+                .get(OutcomeAttributes {
                     outcome: Outcome::Success,
                 })
                 .sends
@@ -398,7 +378,7 @@ mod tests {
         assert_eq!(
             metrics
                 .heartbeat_metrics
-                .get(ExportOutcomeAttributes {
+                .get(OutcomeAttributes {
                     outcome: Outcome::Failure,
                 })
                 .sends

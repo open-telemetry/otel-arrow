@@ -10,14 +10,15 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use otap_df_engine::capability::bearer_token_provider::{
-    BearerToken, BearerTokenProvider as BearerTokenProviderCap, TokenStream,
+use otap_df_engine::capability::auth::BearerToken;
+use otap_df_engine::capability::auth::bearer_token_provider::{
+    BearerTokenProvider as BearerTokenProviderCap, TokenStream,
 };
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_engine::control::ExtensionControlMsg;
 use otap_df_engine::error::Error as EngineError;
 use otap_df_engine::extension::EffectHandler;
-use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_telemetry::otel_warn;

@@ -1,0 +1,7 @@
+# Use this changelog template to create an entry for release notes.
+
+change_type: breaking
+component: pipeline
+note: Consolidate shared exporter outcome and OTLP receiver metrics into bounded signal, outcome, protocol, and error type dimensions.
+issues: [3300]
+subtext:

@@ -107,7 +107,7 @@ use deferred_retry_state::DeferredRetryState;
 use deferred_retry_state::RETRY_WAKEUP_SLOT;
 use metrics::{BundleOutcome, DurableBufferMetrics, IngestFailure, LossReason};
 #[cfg(test)]
-use metrics::{LossAttributes, SignalAttributes, SignalLossAttributes};
+use metrics::{LossAttributes, SignalLossAttributes};
 
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -128,6 +128,8 @@ use otap_df_engine::{
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
+#[cfg(test)]
+use otap_df_telemetry::common_attributes::SignalAttributes;
 
 /// URN for the durable buffer.
 pub const DURABLE_BUFFER_URN: &str = "urn:otel:processor:durable_buffer";

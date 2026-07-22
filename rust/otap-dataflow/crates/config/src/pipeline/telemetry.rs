@@ -3,16 +3,14 @@
 
 //! Engine-wide internal telemetry configuration.
 
-pub mod metrics;
-
 use crate::settings::telemetry::logs::LogsConfig;
-use metrics::MetricsConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, time::Duration};
 
 /// Telemetry backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
     #[serde(default = "default_reporting_channel_size")]
@@ -21,9 +19,6 @@ pub struct TelemetryConfig {
     #[serde(with = "humantime_serde", default = "default_reporting_interval")]
     #[schemars(with = "String")]
     pub reporting_interval: Duration,
-    /// Metrics system configuration.
-    #[serde(default)]
-    pub metrics: MetricsConfig,
     /// Internal logs configuration.
     #[serde(default)]
     pub logs: LogsConfig,
@@ -33,10 +28,10 @@ pub struct TelemetryConfig {
 }
 
 impl TelemetryConfig {
-    /// Returns `true` when at least one internal signal is routed through ITS.
+    /// Returns `true` when an upstream log producer routes logs through ITS.
     #[must_use]
-    pub const fn uses_its_provider(&self) -> bool {
-        self.logs.providers.uses_its_provider() || self.metrics.uses_its_provider()
+    pub const fn routes_logs_through_its(&self) -> bool {
+        self.logs.providers.routes_logs_through_its()
     }
 
     /// Validates the telemetry configuration for every internal signal.
@@ -46,45 +41,13 @@ impl TelemetryConfig {
                 error: "engine.telemetry.reporting_interval must be greater than zero".to_string(),
             });
         }
-        self.logs.validate()?;
-        self.metrics.validate()
-    }
-
-    /// Returns a clone of this telemetry config with credential header values
-    /// redacted from every metrics reader's opaque exporter `config`, for safe
-    /// exposure through the admin/config snapshot APIs.
-    ///
-    /// Each reader's exporter `config` is a raw [`serde_json::Value`] (the same
-    /// opaque mechanism as a node's [`config`](crate::node::NodeUserConfig::config))
-    /// that is retained verbatim and re-serialized. The periodic OTLP exporter
-    /// schema (`OtlpExporterConfig`) does not reject unknown fields, so an
-    /// operator who sets a static `headers` map (e.g. an `authorization` token
-    /// for an OTLP telemetry backend) would otherwise have those values served
-    /// in cleartext. Both reader arms are masked here for defensive consistency
-    /// with pipeline nodes/extensions — even the pull/Prometheus schema, which
-    /// rejects unknown fields today, since the stored value is still opaque. The
-    /// stored config is left unchanged.
-    #[must_use]
-    pub fn redacted_for_snapshot(&self) -> TelemetryConfig {
-        let mut redacted = self.clone();
-        for reader in &mut redacted.metrics.readers {
-            match reader {
-                metrics::readers::MetricsReaderConfig::Periodic(periodic) => {
-                    crate::node::redact_secret_headers(&mut periodic.exporter.config);
-                }
-                metrics::readers::MetricsReaderConfig::Pull(pull) => {
-                    crate::node::redact_secret_headers(&mut pull.exporter.config);
-                }
-            }
-        }
-        redacted
+        self.logs.validate()
     }
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            metrics: MetricsConfig::default(),
             logs: LogsConfig::default(),
             resource: HashMap::default(),
             reporting_channel_size: default_reporting_channel_size(),
@@ -295,7 +258,7 @@ impl Serialize for AttributeValueArray {
 impl AttributeValue {
     /// Render this attribute value as a single OTel-compatible string,
     /// suitable for downstream consumers that require a flat string
-    /// representation (e.g. Prometheus label values, OTel SDK resource
+    /// representation (e.g. Prometheus label values or OTLP resource
     /// attributes that have already been narrowed to strings).
     ///
     /// Conversion is round-trip lossless for every variant:
@@ -462,11 +425,6 @@ mod tests {
             reporting_interval: "3s"
             resource:
                 service.version: "1.0.0"
-            metrics:
-                readers:
-                    - periodic:
-                        exporter:
-                            type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_str).unwrap();
 
@@ -478,91 +436,31 @@ mod tests {
         } else {
             panic!("Expected service.version to be a String attribute value");
         }
-        assert!(config.metrics.uses_opentelemetry_provider());
-        assert_eq!(config.metrics.readers.len(), 1);
     }
 
+    /// Scenario: a configuration still uses the removed top-level metrics SDK settings.
+    /// Guarantees: deserialization reports the unsupported field instead of silently ignoring it.
     #[test]
-    fn test_telemetry_config_detects_metrics_its_provider() {
-        let config: TelemetryConfig = serde_yaml::from_str(
+    fn test_telemetry_config_rejects_legacy_metrics_settings() {
+        let error = serde_yaml::from_str::<TelemetryConfig>(
             r#"
             metrics:
                 provider: its
             "#,
         )
-        .expect("ITS metrics config should deserialize");
-
-        assert!(config.metrics.uses_its_provider());
-        assert!(config.uses_its_provider());
-        config
-            .validate()
-            .expect("ITS metrics config should validate");
+        .expect_err("legacy metrics settings must be rejected");
+        assert!(error.to_string().contains("unknown field `metrics`"));
     }
 
-    #[test]
-    fn redacted_for_snapshot_masks_metrics_exporter_headers() {
-        // Each metrics reader's exporter `config` is a raw JSON value that
-        // retains unknown fields (the exporter schemas ignore them), so static
-        // credential `headers` set there would otherwise be served in cleartext
-        // by the admin/config snapshot API. `redacted_for_snapshot` must mask
-        // them on both the periodic and pull reader variants.
-        let yaml_str = r#"
-            metrics:
-                readers:
-                    - periodic:
-                        exporter:
-                            type: otlp
-                            config:
-                                endpoint: "http://backend.example:4318/v1/metrics"
-                                protocol: "http/protobuf"
-                                headers:
-                                    authorization: "Bearer periodic-super-secret"
-                        interval: "10s"
-                    - pull:
-                        exporter:
-                            type: prometheus
-                            config:
-                                host: "0.0.0.0"
-                                port: 9090
-                                headers:
-                                    authorization: "Bearer pull-super-secret"
-            "#;
-        let config: TelemetryConfig =
-            serde_yaml::from_str(yaml_str).expect("telemetry config deserializes");
-        let redacted = config.redacted_for_snapshot();
-
-        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
-        assert!(
-            !redacted_json.contains("periodic-super-secret"),
-            "periodic exporter credential must not survive redaction: {redacted_json}"
-        );
-        assert!(
-            !redacted_json.contains("pull-super-secret"),
-            "pull exporter credential must not survive redaction: {redacted_json}"
-        );
-        assert!(
-            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
-            "redaction placeholder should be present: {redacted_json}"
-        );
-
-        // Redaction is a copy: the stored config keeps the cleartext.
-        let original_json = serde_json::to_string(&config).expect("config serializes");
-        assert!(
-            original_json.contains("periodic-super-secret")
-                && original_json.contains("pull-super-secret"),
-            "original telemetry config must retain the cleartext credentials: {original_json}"
-        );
-    }
-
+    /// Scenario: telemetry settings are omitted.
+    /// Guarantees: defaults preserve ConsoleAsync logs and the standard metrics cadence.
     #[test]
     fn test_telemetry_config_default() {
         let config = TelemetryConfig::default();
         assert_eq!(config.reporting_channel_size, 100);
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
         assert!(config.resource.is_empty());
-        assert!(config.metrics.uses_opentelemetry_provider());
-        assert!(!config.uses_its_provider());
-        assert_eq!(config.metrics.readers.len(), 0);
+        assert!(!config.routes_logs_through_its());
     }
 
     #[test]
