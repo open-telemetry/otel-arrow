@@ -1,0 +1,15 @@
+change_type: breaking
+
+component: engine
+
+note: Self-telemetry resource attributes are now produced by configurable OpenTelemetry ResourceDetectors, selected via `engine.telemetry.detectors`, replacing the bespoke host/container/instance detection.
+
+issues: [3177]
+
+subtext: |
+  Defaults to `["env", "service_instance"]`; `host`, `os`, `process`, `container`,
+  and `k8s` are opt-in. Static `resource` attributes still take precedence over
+  detected ones. Behavior change for the default self-telemetry resource:
+  `host.id` and `container.id` are no longer emitted unless opted in; `host.id`
+  (when enabled) now derives from machine-id rather than hostname; and
+  `service.instance.id` is a UUIDv7 instead of a base32 string.
