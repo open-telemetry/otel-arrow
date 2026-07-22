@@ -128,8 +128,8 @@ groups:
                   end_node: debug
                 metrics:
                   - compute_duration
-                  - signals_incoming
-                  - signals_outgoing
+                  - consumed_items
+                  - produced_items
                 purpose: manual_test
         nodes:
           generator:
