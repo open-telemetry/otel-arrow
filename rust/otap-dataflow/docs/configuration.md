@@ -493,8 +493,16 @@ Apply these mappings when migrating:
 - Replace an `http/protobuf` SDK exporter with `exporter:otlp_http`. The native
   exporter accepts a base `endpoint` and optional full signal-specific endpoint
   overrides. The native exporter does not support the former `http/json` mode.
-- Remove exporter `temporality`. Native export uses the temporality declared by
-  each internal instrument instead of a reader-wide preference.
+- Remove exporter `temporality`. Native ITS currently emits its canonical
+  low-memory representation: synchronous counters and histograms are delta,
+  while up-down and observed counters are cumulative. Instrument types describe
+  how component code records measurements; they do not select a
+  consumer-specific export preference. The pipeline cannot yet convert this
+  representation to another temporality, and `processor:temporal_reaggregation`
+  does not perform that conversion. Consequently, a former explicit
+  `cumulative` or `delta` preference has no exact native equivalent yet. This
+  limitation is tracked in
+  [#3543](https://github.com/open-telemetry/otel-arrow/issues/3543).
 - Replace a console reader with an `exporter:console` node. Fan out the internal
   receiver to multiple exporters when they share the same emission interval.
 - Replace a Prometheus pull reader with `engine.http_admin.bind_address` and
