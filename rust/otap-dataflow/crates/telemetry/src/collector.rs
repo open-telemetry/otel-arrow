@@ -338,6 +338,7 @@ mod tests {
             reporting_interval: Duration::from_millis(reporting_interval_ms),
             logs: LogsConfig::default(),
             resource: HashMap::new(),
+            detectors: Vec::new(),
         }
     }
 
