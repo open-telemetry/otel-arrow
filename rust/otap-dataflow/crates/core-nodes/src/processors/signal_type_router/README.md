@@ -6,7 +6,7 @@
 
 - Type: `processor:type_router` (`urn:otel:processor:type_router`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

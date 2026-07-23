@@ -6,7 +6,7 @@
 
 - Type: `processor:debug` (`urn:otel:processor:debug`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

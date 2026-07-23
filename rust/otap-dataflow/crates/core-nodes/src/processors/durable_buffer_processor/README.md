@@ -6,7 +6,7 @@
 
 - Type: `processor:durable_buffer` (`urn:otel:processor:durable_buffer`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

@@ -6,7 +6,7 @@
 
 - Type: `exporter:otap` (`urn:otel:exporter:otap`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

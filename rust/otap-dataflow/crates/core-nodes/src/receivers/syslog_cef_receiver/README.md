@@ -6,7 +6,7 @@
 
 - Type: `receiver:syslog_cef` (`urn:otel:receiver:syslog_cef`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

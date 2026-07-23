@@ -6,7 +6,7 @@
 
 - Type: `processor:attribute` (`urn:otel:processor:attribute`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

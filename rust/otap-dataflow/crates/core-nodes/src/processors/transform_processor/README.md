@@ -6,7 +6,7 @@
 
 - Type: `processor:transform` (`urn:otel:processor:transform`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

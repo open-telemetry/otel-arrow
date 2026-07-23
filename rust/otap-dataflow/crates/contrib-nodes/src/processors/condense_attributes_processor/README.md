@@ -4,7 +4,7 @@
 
 - Type: `processor:condense_attributes` (`urn:otel:processor:condense_attributes`)
 - Feature gate: `condense-attributes-processor`
-- Stability: WIP
+- Stability: experimental
 
 ## Overview
 

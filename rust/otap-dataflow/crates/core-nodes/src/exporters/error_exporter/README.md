@@ -6,7 +6,7 @@
 
 - Type: `exporter:error` (`urn:otel:exporter:error`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 
