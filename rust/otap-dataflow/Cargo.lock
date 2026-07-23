@@ -5643,9 +5643,9 @@ dependencies = [
 
 [[package]]
 name = "kstring"
-version = "2.0.4"
+version = "2.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b609e7ca5ea38f093c20a4a102335b247221c9643b7a6bc3510f196f99499a9e"
+checksum = "0b5c39158205a1955370d20163dcd3957e155463717747464719462f6578e149"
 dependencies = [
  "static_assertions",
 ]
@@ -6961,6 +6961,7 @@ dependencies = [
  "tracing-subscriber",
  "urlencoding",
  "uuid",
+ "windows-sys 0.59.0",
  "wiremock",
  "xxhash-rust",
 ]
