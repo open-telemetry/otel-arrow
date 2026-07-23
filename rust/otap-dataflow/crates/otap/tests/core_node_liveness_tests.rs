@@ -307,19 +307,27 @@ fn capture_batch_metrics(
     registry: &otap_df_telemetry::registry::TelemetryRegistryHandle,
 ) -> BatchMetricsSnapshot {
     let mut snapshot = BatchMetricsSnapshot::default();
-    registry.visit_current_metrics(|desc, _attrs, iter| {
-        if desc.name == "otap.processor.batch" {
-            for (field, value) in iter {
-                if let MetricValue::Mmsc(_) = value {
-                    continue;
-                }
+    registry.visit_current_metrics_with_item_attrs(
+        |desc, _attrs, dp_attrs, iter| {
+            if desc.name == "otap.processor.batch" {
+                let signal_suffix = dp_attrs
+                    .iter()
+                    .find(|(k, _)| *k == "signal")
+                    .map(|(_, v)| format!(".{}", v.to_ascii_lowercase()))
+                    .unwrap_or_default();
 
-                let _ = snapshot
-                    .fields
-                    .insert(field.name.to_owned(), value.to_u64_lossy());
+                for (field, value) in iter {
+                    if let otap_df_telemetry::metrics::MetricValue::Mmsc(_) = value {
+                        continue;
+                    }
+
+                    let key_name = format!("{}{}", field.name, signal_suffix);
+                    let _ = snapshot.fields.insert(key_name, value.to_u64_lossy());
+                }
             }
-        }
-    });
+        },
+        false,
+    );
     snapshot
 }
 
