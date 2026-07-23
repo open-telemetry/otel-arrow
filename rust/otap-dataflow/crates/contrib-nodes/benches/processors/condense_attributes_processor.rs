@@ -76,7 +76,7 @@ fn bench_condense(c: &mut Criterion) {
                     || records.clone(),
                     |records| {
                         let condensed = processor
-                            .condense(records)
+                            .condense_for_benchmark(records)
                             .expect("condense generated records");
                         let _ = black_box(condensed);
                         let _ = black_box(records);

@@ -166,6 +166,7 @@ contrib-processors = [
     "resource-validator-processor",
 ]
 condense-attributes-processor = []
+condense-attributes-processor-bench = ["condense-attributes-processor"]
 recordset-kql-processor = [
     "dep:data_engine_expressions",
     "dep:data_engine_kql_parser",
@@ -226,7 +227,7 @@ required-features = ["recordset-kql-processor"]
 name = "condense_attributes"
 path = "benches/processors/condense_attributes_processor.rs"
 harness = false
-required-features = ["condense-attributes-processor"]
+required-features = ["condense-attributes-processor-bench"]
 
 [[test]]
 name = "otlp_kql_recordset"
