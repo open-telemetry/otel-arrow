@@ -1676,7 +1676,7 @@ mod tests {
     }
 
     /// Helper to verify that batch counters were incremented to the expected
-    /// values. `expected_counts` is `(consumed_batches, produced_batches)` —
+    /// values. `expected_counts` is `(consumed_batches, produced_batches)` --
     /// i.e. the number of input requests consumed by the processor and the
     /// number of output batches it produced.
     fn verify_batch_metrics(
@@ -3611,13 +3611,13 @@ mod tests {
 
     /// take_remaining retained-partial path, single contributing input.
     ///
-    /// Scenario: one 8-item input from peer A → `make_batches` splits into
+    /// Scenario: one 8-item input from peer A -> `make_batches` splits into
     /// `[5, 3]`. The 3-item tail is below `min_size=4` and is re-buffered
     /// via `take_remaining`. A follow-up 2-item input from peer A then
     /// triggers a 5-item size flush whose contents come from the retained
     /// portion (peer A) + the new input (peer A).
     ///
-    /// Guarantee: the second flush's batch carries `peer_addr = A` — the
+    /// Guarantee: the second flush's batch carries `peer_addr = A` -- the
     /// retained portion correctly remembered its single contributor's peer.
     #[test]
     fn test_take_remaining_preserves_peer_addr_single_input() {
@@ -3634,7 +3634,7 @@ mod tests {
             .run_test(move |mut ctx| async move {
                 let peer: SocketAddr = "10.0.0.1:5000".parse().unwrap();
 
-                // 8-item input from peer A → batches [5, 3]; the 3-item
+                // 8-item input from peer A -> batches [5, 3]; the 3-item
                 // tail is retained because 3 < min_size=4.
                 let big = encode_logs_otap_batch(&logs_with_n_records(0, 8)).expect("encode logs");
                 ctx.process(Message::PData(
@@ -3651,7 +3651,7 @@ mod tests {
                     "single-peer first batch must preserve peer_addr"
                 );
 
-                // 2-item follow-up from peer A: retained(3, A) + new(2, A) = 5 → flush.
+                // 2-item follow-up from peer A: retained(3, A) + new(2, A) = 5 -> flush.
                 let extra =
                     encode_logs_otap_batch(&logs_with_n_records(1, 2)).expect("encode logs");
                 ctx.process(Message::PData(
@@ -3675,12 +3675,12 @@ mod tests {
     /// that all share one peer.
     ///
     /// Scenario: three inputs of sizes [3, 3, 2] all from peer A
-    /// (total 8 items) → `make_batches` splits into `[5, 3]`. The 3-item
-    /// tail spans inputs #2 and #3 — both peer A. A follow-up 2-item input
+    /// (total 8 items) -> `make_batches` splits into `[5, 3]`. The 3-item
+    /// tail spans inputs #2 and #3 -- both peer A. A follow-up 2-item input
     /// from peer A triggers a second size flush over the retained portion.
     ///
     /// Guarantee: the second flush's batch carries `peer_addr = A`, even
-    /// though the retained portion spans more than one input — because all
+    /// though the retained portion spans more than one input -- because all
     /// contributors agreed.
     #[test]
     fn test_take_remaining_preserves_peer_addr_multi_input_same_peer() {
@@ -3734,11 +3734,11 @@ mod tests {
     /// from distinct peers.
     ///
     /// Scenario: inputs of sizes [3, 3, 2] from peers [A, A, B]
-    /// (total 8 items) → `make_batches` splits into `[5, 3]`. The 3-item
-    /// tail spans inputs #2 (peer A) and #3 (peer B) — mixed peers. A
+    /// (total 8 items) -> `make_batches` splits into `[5, 3]`. The 3-item
+    /// tail spans inputs #2 (peer A) and #3 (peer B) -- mixed peers. A
     /// follow-up 2-item input from peer A triggers a second size flush.
     ///
-    /// Guarantee: the second flush's batch carries `peer_addr = None` —
+    /// Guarantee: the second flush's batch carries `peer_addr = None` --
     /// the retained portion correctly recorded the mixed-peer merge as
     /// `None` rather than misattributing to one arbitrary contributor.
     #[test]

@@ -163,7 +163,7 @@ impl TopicRegistry {
     /// Look up a topic name by its assigned ID.
     ///
     /// Returns a cheap `Arc<str>` clone so callers can hold an owned handle to
-    /// the topic name without borrowing the registry — avoiding a borrow
+    /// the topic name without borrowing the registry -- avoiding a borrow
     /// conflict when the same call site also needs `&mut self` (e.g. to mutate
     /// the offset tracker), and without allocating a fresh `String` per ack.
     fn name_for(&self, id: u32) -> Option<Arc<str>> {
@@ -413,7 +413,7 @@ impl KafkaReceiver {
     /// messages, telemetry, or shutdown.
     ///
     /// Because the commit is async, the returned `Ok(())` only means the request
-    /// was enqueued — not that the broker accepted it. The eventual broker
+    /// was enqueued -- not that the broker accepted it. The eventual broker
     /// outcome is observed via
     /// [`RebalancingConsumerContext::commit_callback`](super::rebalance::RebalancingConsumerContext),
     /// which folds success/failure counts into
@@ -464,7 +464,7 @@ impl KafkaReceiver {
     /// [`reconcile_rebalance_state`](Self::reconcile_rebalance_state)) **and** at
     /// the start of every commit (via [`commit_offsets`](Self::commit_offsets)),
     /// so no commit path can ever persist an offset for a partition this
-    /// consumer no longer owns — even if the revocation was queued by the
+    /// consumer no longer owns -- even if the revocation was queued by the
     /// callback after the last loop-top reconcile (e.g. just before a
     /// `TimerTick`, shutdown commit, or poison-pill advance).
     fn purge_revoked_partitions(&mut self) {
@@ -564,10 +564,10 @@ impl KafkaReceiver {
 
     /// Handle an Ack/Nack carrying Kafka offset identity in its `CallData`.
     ///
-    /// Decodes the topic/partition/offset, applies a **late-ack guard** — if
+    /// Decodes the topic/partition/offset, applies a **late-ack guard** -- if
     /// the partition is no longer assigned to this consumer (revoked during a
     /// rebalance), the ack is dropped without committing, since the new owner
-    /// is now responsible for that partition — and otherwise advances the
+    /// is now responsible for that partition -- and otherwise advances the
     /// offset tracker, committing when the watermark advances.
     ///
     /// Caller must ensure manual-commit mode and a non-empty `calldata`.
@@ -745,7 +745,7 @@ impl KafkaReceiver {
                         Ok(NodeControlMsg::Nack(nack_msg)) => {
                             self.metrics.nacks_received.add(1);
                             // Treat nack as ack (advance past failed message).
-                            // TODO: future work — retry logic, DLQ
+                            // TODO: future work -- retry logic, DLQ
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_offset_feedback(
                                     &nack_msg.unwind.route.calldata,
@@ -777,7 +777,7 @@ impl KafkaReceiver {
                             return Err(EngineError::ChannelRecvError(e));
                         }
                         _ => {
-                            // unknown control message — do nothing
+                            // unknown control message -- do nothing
                         }
                     }
                 }
@@ -927,7 +927,7 @@ impl KafkaReceiver {
                                         // Poison pill: track then immediately
                                         // advance past it so it does not block
                                         // the partition. This path intentionally
-                                        // skips the late-ack guard — a poison
+                                        // skips the late-ack guard -- a poison
                                         // message must be advanced past
                                         // regardless of assignment. Stamped with
                                         // this partition's ownership generation for
@@ -1527,7 +1527,7 @@ mod tests {
     ///
     /// This backs the integration-testing suite so the tests run in-process with
     /// no external dependency. Returns the mock cluster handle (which must stay
-    /// alive — and on the current thread, as it is `!Send` — for the broker to
+    /// alive -- and on the current thread, as it is `!Send` -- for the broker to
     /// keep serving) and its `bootstrap.servers` string.
     ///
     /// `topics` are pre-created each with a single partition. The mock only
@@ -2959,7 +2959,7 @@ mod tests {
 
     #[test]
     fn invalid_regex_topic_fails_at_construction() {
-        // Unbalanced parenthesis is an invalid regex — rejected at config validation time
+        // Unbalanced parenthesis is an invalid regex -- rejected at config validation time
         let result = KafkaReceiverConfig::try_from(
             KafkaReceiverConfigBuilder::new("unused:9092", "g", "c")
                 .with_traces(SignalConfig::new(vec!["^traces-(".to_string()])),

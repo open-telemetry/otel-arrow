@@ -1330,7 +1330,7 @@ mod test {
         let expression = "attributes[\"x\"]";
         let header_name = "partition-header";
 
-        // only 1 outbound slot — but a batch producing 3 partitions needs 3
+        // only 1 outbound slot -- but a batch producing 3 partitions needs 3
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
@@ -1346,7 +1346,7 @@ mod test {
             .run_test(move |mut ctx| async move {
                 let upstream_node_id = 999;
 
-                // 3 distinct partition values → 3 partitions
+                // 3 distinct partition values -> 3 partitions
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(
                         Resource::default(),
@@ -1399,7 +1399,7 @@ mod test {
                 ctx.set_runtime_ctrl_sender(runtime_ctrl_tx);
                 ctx.set_pipeline_completion_sender(pipeline_completion_tx);
 
-                // Ack the single emitted outbound — should trigger a Nack for the inbound
+                // Ack the single emitted outbound -- should trigger a Nack for the inbound
                 // because some partitions were not emitted
                 send_ack(&mut ctx, outbound_context, SignalType::Logs)
                     .await
@@ -1428,7 +1428,7 @@ mod test {
         let expression = "attributes[\"x\"]";
         let header_name = "partition-header";
 
-        // 2 outbound slots — the first batch (2 partitions) will fill them
+        // 2 outbound slots -- the first batch (2 partitions) will fill them
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
@@ -1445,7 +1445,7 @@ mod test {
             .run_test(move |mut ctx| async move {
                 let upstream_node_id = 999;
 
-                // 2 distinct partition values → 2 partitions → fills 2 outbound slots
+                // 2 distinct partition values -> 2 partitions -> fills 2 outbound slots
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(
                         Resource::default(),
@@ -1477,7 +1477,7 @@ mod test {
                 let first_batch_out = ctx.drain_pdata().await;
                 assert_eq!(first_batch_out.len(), 2);
 
-                // second batch — outbound slots are full, first insert_outbound fails immediately
+                // second batch -- outbound slots are full, first insert_outbound fails immediately
                 let pdata2 = create_pdata_with_subscriber(
                     otap_batch.clone(),
                     Interests::ACKS_OR_NACKS,
@@ -1510,7 +1510,7 @@ mod test {
                         .unwrap();
                 }
 
-                // a new batch should now succeed — verifying the inbound slot from the failed
+                // a new batch should now succeed -- verifying the inbound slot from the failed
                 // second batch was properly cleaned up (not leaked)
                 let pdata3 = create_pdata_with_subscriber(
                     otap_batch,
@@ -1554,7 +1554,7 @@ mod test {
             .run_test(move |mut ctx| async move {
                 let upstream_node_id = 999;
 
-                // 2 distinct partition values → 2 partitions (triggers the multi-partition path
+                // 2 distinct partition values -> 2 partitions (triggers the multi-partition path
                 // which is the only path that allocates inbound slots)
                 let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
                     resource_logs: vec![ResourceLogs::new(

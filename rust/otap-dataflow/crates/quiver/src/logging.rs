@@ -46,13 +46,13 @@
 //!
 //! ## Message Convention
 //!
-//! Most events need **no message** — the event name, level, and structured
+//! Most events need **no message** -- the event name, level, and structured
 //! attributes are sufficient. Only add a `message` attribute when it provides
 //! context that cannot be inferred from the other fields (e.g., consequences,
 //! recovery actions, or remediation taken):
 //!
 //! ```ignore
-//! // No message needed — event name + attrs say it all
+//! // No message needed -- event name + attrs say it all
 //! otel_info!("quiver.wal.rotate", rotation_id = 3, rotated_file_count = 2);
 //! otel_debug!("quiver.segment.flush", segment = 7, bytes_written = 4096);
 //!
@@ -72,10 +72,10 @@
 //! When logging an error with `error = %e`, add an `error_type` attribute with
 //! a low-cardinality classifier for filtering and alerting:
 //!
-//! - `"io"` — filesystem or network I/O failures
-//! - `"decode"` — deserialization or format-parsing failures
-//! - `"config"` — configuration validation errors
-//! - `"corruption"` — data integrity or CRC failures
+//! - `"io"` -- filesystem or network I/O failures
+//! - `"decode"` -- deserialization or format-parsing failures
+//! - `"config"` -- configuration validation errors
+//! - `"corruption"` -- data integrity or CRC failures
 //!
 //! ```ignore
 //! otel_error!("quiver.segment.flush",
@@ -88,13 +88,13 @@
 //!
 //! ## Event Name Examples
 //!
-//! - `quiver.wal.replay` — all WAL replay events (level + fields distinguish outcomes)
-//! - `quiver.segment.drop` — all segment removal (reason + phase attrs differentiate)
-//! - `quiver.segment.scan` — startup segment scanning
-//! - `quiver.wal.cursor.load` — cursor sidecar loading (reason attr for failure type)
-//! - `quiver.wal.file.init` — WAL file open/seek (file_type attr for variant)
-//! - `quiver.wal.drop.flush` — drop-time flush (reason attr for skip/failure cause)
-//! - `quiver.subscriber.progress.load` — subscriber progress file loading
+//! - `quiver.wal.replay` -- all WAL replay events (level + fields distinguish outcomes)
+//! - `quiver.segment.drop` -- all segment removal (reason + phase attrs differentiate)
+//! - `quiver.segment.scan` -- startup segment scanning
+//! - `quiver.wal.cursor.load` -- cursor sidecar loading (reason attr for failure type)
+//! - `quiver.wal.file.init` -- WAL file open/seek (file_type attr for variant)
+//! - `quiver.wal.drop.flush` -- drop-time flush (reason attr for skip/failure cause)
+//! - `quiver.subscriber.progress.load` -- subscriber progress file loading
 //!
 //! ## Usage
 //!
@@ -117,7 +117,7 @@
 /// `otel_event!` macros.
 ///
 /// Event names must be short, stable identifiers (e.g. `quiver.wal.rotate`)
-/// — not free-form sentences. This function is called from a `const`
+/// -- not free-form sentences. This function is called from a `const`
 /// context so any violation surfaces as a compile error at the macro call
 /// site, not at runtime.
 ///

@@ -333,9 +333,9 @@ impl<W: std::io::Write> std::io::Write for CountingWriter<W> {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Dictionary unification helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Maximum dictionary key width that downstream readers support.
 ///
@@ -761,7 +761,7 @@ fn dict_values<'a>(col: &'a ArrayRef, key_type: &DataType) -> Result<&'a dyn Arr
 /// Maximum number of dictionary values addressable by a given key type.
 ///
 /// For signed types, only the non-negative range is usable since Arrow
-/// dictionary keys are zero-based indices (e.g., `Int8` → 128 values,
+/// dictionary keys are zero-based indices (e.g., `Int8` -> 128 values,
 /// not 256).
 fn key_type_capacity(dt: &DataType) -> usize {
     match dt {
@@ -1569,9 +1569,9 @@ mod tests {
         );
     }
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ---------------------------------------------------------------------
     // Struct-with-dictionary tests (OTAP schemas embed Dict inside Struct)
-    // ─────────────────────────────────────────────────────────────────────
+    // ---------------------------------------------------------------------
 
     /// Creates a schema resembling OTAP's resource/scope pattern:
     /// a top-level int column plus a Struct column whose children include
@@ -1996,7 +1996,7 @@ mod tests {
         assert_eq!(names0.value(count - 1), &format!("a_{}", count - 1));
     }
 
-    // ─────────────────────────────────────────────────────────────────────
+    // ---------------------------------------------------------------------
     // Non-Utf8 dictionary value type tests
     //
     // The unification logic is value-type-agnostic (uses arrow::concat),
@@ -2005,11 +2005,11 @@ mod tests {
     // multi-batch unification path. These cover OTAP fields like
     // severity_number (Dict<UInt8,Int32>), trace_id (Dict<UInt8,FSB(16)>),
     // and bytes/ser (Dict<UInt16,Binary>).
-    // ─────────────────────────────────────────────────────────────────────
+    // ---------------------------------------------------------------------
 
     #[test]
     fn write_to_with_dict_int32_values() {
-        // Exercises Dict(UInt8, Int32) — used by OTAP severity_number,
+        // Exercises Dict(UInt8, Int32) -- used by OTAP severity_number,
         // kind, status.code.
         let schema = Arc::new(Schema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -2076,7 +2076,7 @@ mod tests {
 
     #[test]
     fn write_to_with_dict_fixed_size_binary_values() {
-        // Exercises Dict(UInt8, FixedSizeBinary(16)) — used by OTAP
+        // Exercises Dict(UInt8, FixedSizeBinary(16)) -- used by OTAP
         // trace_id. This is the field that originally triggered the
         // dictionary replacement bug.
         use arrow_array::FixedSizeBinaryArray;
@@ -2171,7 +2171,7 @@ mod tests {
 
     #[test]
     fn write_to_with_dict_binary_values() {
-        // Exercises Dict(UInt16, Binary) — used by OTAP bytes/ser
+        // Exercises Dict(UInt16, Binary) -- used by OTAP bytes/ser
         // attribute columns.
         use arrow_array::BinaryArray;
 

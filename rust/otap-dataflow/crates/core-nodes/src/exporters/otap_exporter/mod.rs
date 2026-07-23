@@ -332,7 +332,7 @@ impl OTAPExporter {
                 Ok(EnqueueResult::Done)
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(item)) => {
-                // Queue is full — return to caller so it can wait for capacity
+                // Queue is full -- return to caller so it can wait for capacity
                 // while still polling the control channel in the main select.
                 Ok(EnqueueResult::QueueFull(item, enqueue_start))
             }
@@ -3173,19 +3173,19 @@ mod tests {
 
             local_set
                 .run_until(async move {
-                    // Send first batch — exporter forwards it to a stream worker.
+                    // Send first batch -- exporter forwards it to a stream worker.
                     let log_message = create_otap_batch(LOG_BATCH_ID, ArrowPayloadType::Logs);
                     let pdata1 = OtapPdata::new_default(log_message.into());
                     pdata_tx.send(pdata1).await.unwrap();
 
                     tokio::time::sleep(Duration::from_millis(50)).await;
 
-                    // Send second batch — fills the stream queue (capacity=1).
+                    // Send second batch -- fills the stream queue (capacity=1).
                     let log_message = create_otap_batch(LOG_BATCH_ID + 1, ArrowPayloadType::Logs);
                     let pdata2 = OtapPdata::new_default(log_message.into());
                     pdata_tx.send(pdata2).await.unwrap();
 
-                    // Send third batch in a background task — this will block inside
+                    // Send third batch in a background task -- this will block inside
                     // enqueue_stream_batch waiting for queue space, simulating full
                     // backpressure with an unreachable downstream.
                     let log_message = create_otap_batch(LOG_BATCH_ID + 2, ArrowPayloadType::Logs);
@@ -3197,7 +3197,7 @@ mod tests {
 
                     tokio::time::sleep(Duration::from_millis(50)).await;
 
-                    // Request shutdown — before the fix, the exporter would deadlock
+                    // Request shutdown -- before the fix, the exporter would deadlock
                     // because the main loop was blocked in enqueue_stream_batch and
                     // could never process this Shutdown control message.
                     control_sender

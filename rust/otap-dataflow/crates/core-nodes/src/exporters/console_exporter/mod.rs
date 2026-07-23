@@ -178,9 +178,9 @@ struct TreeChars {
 
 impl TreeChars {
     const UNICODE: Self = Self {
-        vertical: "│",
-        tee: "├─",
-        corner: "└─",
+        vertical: "\u{2502}",
+        tee: "\u{251C}\u{2500}",
+        corner: "\u{2514}\u{2500}",
     };
     const ASCII: Self = Self {
         vertical: "|",
@@ -428,12 +428,12 @@ mod tests {
         // - scope-beta/2.0.0: ERROR + DEBUG
         let expected = "\
 2025-01-15T10:30:00.000Z  RESOURCE   v1.Resource [res.id=self]
-2025-01-15T10:30:00.000Z  │ SCOPE    scope-alpha/1.0.0 [scopekey=scopeval]
-2025-01-15T10:30:00.000Z  │ ├─ INFO  event_1: first log in alpha
-2025-01-15T10:30:01.000Z  │ ├─ WARN  second log in alpha
-2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0
-2025-01-15T10:30:02.000Z  │ ├─ HOTHOT first log in beta
-2025-01-15T10:30:03.000Z  │ └─ DEBUG event_2: [detail=no body here]
+2025-01-15T10:30:00.000Z  \u{2502} SCOPE    scope-alpha/1.0.0 [scopekey=scopeval]
+2025-01-15T10:30:00.000Z  \u{2502} \u{251C}\u{2500} INFO  event_1: first log in alpha
+2025-01-15T10:30:01.000Z  \u{2502} \u{251C}\u{2500} WARN  second log in alpha
+2025-01-15T10:30:02.000Z  \u{2502} SCOPE    scope-beta/2.0.0
+2025-01-15T10:30:02.000Z  \u{2502} \u{251C}\u{2500} HOTHOT first log in beta
+2025-01-15T10:30:03.000Z  \u{2502} \u{2514}\u{2500} DEBUG event_2: [detail=no body here]
 ";
         assert_eq!(text, expected);
     }

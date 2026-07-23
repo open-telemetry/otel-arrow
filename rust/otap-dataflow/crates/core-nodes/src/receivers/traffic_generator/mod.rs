@@ -1254,7 +1254,7 @@ mod tests {
 
     /// Regression test: verifies that a non-terminal control message
     /// (CollectTelemetry) arriving during the rate-limit sleep does NOT
-    /// break the sleep early – the receiver should still respect the
+    /// break the sleep early - the receiver should still respect the
     /// original wait_till deadline.
     #[test]
     fn test_non_terminal_ctrl_msg_does_not_break_rate_limit_sleep() {

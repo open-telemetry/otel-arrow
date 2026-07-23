@@ -32,6 +32,12 @@ coverage:
 ignore:
   - "rust/otap-dataflow/crates/quiver-e2e/**" # Test tool, not production code
   - "rust/otap-dataflow/xtask/src/component_inventory.rs" # AST static scanner tool
+  # cargo xtask dev build-task entrypoints: non-shipped tooling. These command
+  # functions are already annotated #[cfg(not(tarpaulin_include))] in-source; CI
+  # measures coverage with cargo-llvm-cov (which does not honor the tarpaulin
+  # cfg), so exempt them here instead. diagnostics.rs/genproto.rs stay covered.
+  - "rust/otap-dataflow/xtask/src/main.rs"
+  - "rust/otap-dataflow/xtask/src/structure_check.rs"
 
 comment:
   layout: "header, diff, flags, components"
