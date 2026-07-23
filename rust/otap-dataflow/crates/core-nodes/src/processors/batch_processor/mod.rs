@@ -1851,7 +1851,7 @@ mod tests {
         F: FnOnce(&[EventOutputs]) + Send + 'static,
         P: Fn(usize, &OtapPdata) -> AckPolicy + Send + 'static,
     {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(config);
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(config);
 
         // Collect events and extract inputs for reference
         let events: Vec<TestEvent> = events.collect();
@@ -2210,7 +2210,7 @@ mod tests {
     // input later.
     #[test]
     fn test_timer_flush_ignores_stale_wakeup() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 5,
                 "max_size": 10,
@@ -2317,7 +2317,7 @@ mod tests {
             }
         }
 
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 5,
                 "max_size": 10,
@@ -2372,7 +2372,7 @@ mod tests {
     /// state, and the real/current wakeup still flushes the buffered input later.
     #[test]
     fn test_unknown_wakeup_slot_is_ignored_without_side_effects() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 5,
                 "max_size": 10,
@@ -2506,7 +2506,7 @@ mod tests {
     // rather than leaving correlated requests stuck.
     #[test]
     fn test_shutdown_flushes_buffered_input_and_releases_completion() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 10,
                 "max_size": 10,
@@ -3050,7 +3050,7 @@ mod tests {
     /// configured threshold against pending bytes, not against log-record count.
     #[test]
     fn test_otlp_byte_min_size_triggers_size_flush() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otlp",
             "otlp": {
                 "min_size": 4,
@@ -3100,7 +3100,7 @@ mod tests {
     /// batch buffer.
     #[test]
     fn test_otlp_zero_byte_request_acked_immediately() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otlp",
             "otlp": {
                 "min_size": 100,
@@ -3134,7 +3134,7 @@ mod tests {
     /// like any other input.
     #[test]
     fn test_otlp_empty_container_passes_through_batcher() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otlp",
             "otlp": {
                 "min_size": 1,
@@ -3173,7 +3173,7 @@ mod tests {
     /// arranges mixed-format inputs.
     #[test]
     fn test_preserve_mode_mixed_formats() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "preserve",
             "otap": {
                 "min_size": 100,  // Won't trigger size flush
