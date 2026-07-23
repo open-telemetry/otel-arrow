@@ -43,6 +43,16 @@ pub enum Category {
     Processor,
     /// An extension: shared, non-pipeline functionality (`urn:...:extension:...`).
     Extension,
+    /// Built-in HTTP/gRPC admin server (`urn:...:admin:...`).
+    Admin,
+    /// Pipeline controller or OpAMP engine (`urn:...:controller:...`).
+    Controller,
+    /// Command line tooling (`urn:...:cli:...`).
+    Cli,
+    /// Core infrastructure subsystem (`urn:...:subsystem:...`).
+    Subsystem,
+    /// Safety guardrails such as memory limiter (`urn:...:safety:...`).
+    Safety,
 }
 
 impl Category {
@@ -57,6 +67,11 @@ impl Category {
             Category::Exporter => "exporter",
             Category::Processor => "processor",
             Category::Extension => "extension",
+            Category::Admin => "admin",
+            Category::Controller => "controller",
+            Category::Cli => "cli",
+            Category::Subsystem => "subsystem",
+            Category::Safety => "safety",
         }
     }
 }

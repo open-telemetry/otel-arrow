@@ -61,6 +61,7 @@ pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
 pub mod inventory;
+pub use otap_df_engine_macros::component_inventory;
 pub mod message;
 pub mod processor;
 pub mod receiver;

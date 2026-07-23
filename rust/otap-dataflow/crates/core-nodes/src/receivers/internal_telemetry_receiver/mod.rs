@@ -153,6 +153,7 @@ pub struct InternalTelemetryReceiver {
 
 /// Declares the internal telemetry receiver as a local receiver factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: INTERNAL_TELEMETRY_RECEIVER_URN,

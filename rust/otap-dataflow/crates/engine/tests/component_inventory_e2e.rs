@@ -78,13 +78,49 @@ fn non_factory_entry_uses_explicit_id() {
     assert!(meta.attributes.is_empty());
 }
 
-/// Scenario: `Category::urn_segment()` is called for each factory variant.
-/// Guarantees: each variant maps to its lowercase URN segment, keeping the
-/// enum and the URN cross-check in the macro consistent.
+/// Scenario: `Category::urn_segment()` is called for all category variants.
+/// Guarantees: each variant (factory and non-factory) maps to its lowercase URN segment,
+/// keeping the enum and the URN cross-check in the macro consistent.
 #[test]
 fn category_urn_segment_mapping() {
     assert_eq!(Category::Receiver.urn_segment(), "receiver");
     assert_eq!(Category::Exporter.urn_segment(), "exporter");
     assert_eq!(Category::Processor.urn_segment(), "processor");
     assert_eq!(Category::Extension.urn_segment(), "extension");
+    assert_eq!(Category::Admin.urn_segment(), "admin");
+    assert_eq!(Category::Controller.urn_segment(), "controller");
+    assert_eq!(Category::Cli.urn_segment(), "cli");
+    assert_eq!(Category::Subsystem.urn_segment(), "subsystem");
+    assert_eq!(Category::Safety.urn_segment(), "safety");
+}
+
+/// A non-factory item annotated with `Category::Admin`.
+#[component_inventory(
+    id = "urn:otel:admin:test_server",
+    category = Admin,
+    description = "Test admin server",
+)]
+#[allow(dead_code)]
+struct TestAdminServer;
+
+/// A non-factory item annotated with `Category::Safety`.
+#[component_inventory(
+    id = "urn:otel:safety:test_limiter",
+    category = Safety,
+    description = "Test memory limiter",
+)]
+#[allow(dead_code)]
+struct TestSafetyLimiter;
+
+/// Scenario: non-factory components are annotated with `Admin` and `Safety` categories.
+/// Guarantees: the entries are registered under their explicit URN IDs and matching categories in `COMPONENT_INVENTORY`.
+#[test]
+fn non_factory_categories_are_registered() {
+    let admin_meta = find("urn:otel:admin:test_server");
+    assert_eq!(admin_meta.category, Category::Admin);
+    assert_eq!(admin_meta.description, Some("Test admin server"));
+
+    let safety_meta = find("urn:otel:safety:test_limiter");
+    assert_eq!(safety_meta.category, Category::Safety);
+    assert_eq!(safety_meta.description, Some("Test memory limiter"));
 }

@@ -49,6 +49,7 @@ pub struct DelayConfig {
 
 /// Register the delay processor as an OTAP processor factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static DELAY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: DELAY_PROCESSOR_URN,

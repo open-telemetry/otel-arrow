@@ -45,6 +45,7 @@ use std::sync::Arc;
 const LOG_SAMPLING_PROCESSOR_URN: &str = "urn:otel:processor:log_sampling";
 
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 static LOG_SAMPLING_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

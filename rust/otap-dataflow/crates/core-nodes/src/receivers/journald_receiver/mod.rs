@@ -136,6 +136,7 @@ pub struct JournaldReceiver {
 }
 
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// Declares the journald receiver as a local receiver factory.
 pub static JOURNALD_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {

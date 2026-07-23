@@ -134,12 +134,19 @@ use live_control::{
     RuntimeInstanceExit,
 };
 
+use otap_df_engine::component_inventory;
+
 /// Controller for managing pipelines in a thread-per-core model.
 ///
 /// # Thread Safety
 /// This struct is designed to be used in multi-threaded contexts. Each pipeline is run on a
 /// dedicated thread pinned to a CPU core.
 /// Intended for use as a long-lived process controller.
+#[component_inventory(
+    id = "urn:otel:controller:main",
+    category = Controller,
+    description = "Pipeline controller managing pipeline lifecycle, dynamic re-configuration, and health monitoring",
+)]
 pub struct Controller<PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
     /// The pipeline factory used to build runtime pipelines.
     pipeline_factory: &'static PipelineFactory<PData>,

@@ -48,12 +48,20 @@ use syn::{
     token::Comma,
 };
 
-/// Categories accepted by the macro in Phase 1 (RFC 0001).
+/// Categories accepted by the macro (RFC 0001).
 ///
-/// Kept in sync with `otap_df_engine::inventory::Category`. Only the four
-/// factory categories ship in Phase 1; the non-factory categories are deferred
-/// to Phase 2.
-const KNOWN_CATEGORIES: &[&str] = &["Receiver", "Exporter", "Processor", "Extension"];
+/// Kept in sync with `otap_df_engine::inventory::Category`.
+const KNOWN_CATEGORIES: &[&str] = &[
+    "Receiver",
+    "Exporter",
+    "Processor",
+    "Extension",
+    "Admin",
+    "Controller",
+    "Cli",
+    "Subsystem",
+    "Safety",
+];
 
 /// Map a `Category` identifier to its URN segment, for the URN cross-check.
 fn category_urn_segment(cat: &str) -> Option<&'static str> {
@@ -62,6 +70,11 @@ fn category_urn_segment(cat: &str) -> Option<&'static str> {
         "Exporter" => Some("exporter"),
         "Processor" => Some("processor"),
         "Extension" => Some("extension"),
+        "Admin" => Some("admin"),
+        "Controller" => Some("controller"),
+        "Cli" => Some("cli"),
+        "Subsystem" => Some("subsystem"),
+        "Safety" => Some("safety"),
         _ => None,
     }
 }
@@ -274,6 +287,8 @@ fn try_expand(args: ComponentInventoryArgs, item: &Item) -> syn::Result<TokenStr
     // Unique static name for the generated entry, derived from the item ident.
     let entry_ident = format_ident!("_COMPONENT_META_{}", item_ident);
 
+    let engine_path = engine_crate_path();
+
     Ok(quote! {
         // Re-emit the annotated item unchanged.
         #item
@@ -288,18 +303,28 @@ fn try_expand(args: ComponentInventoryArgs, item: &Item) -> syn::Result<TokenStr
         #[allow(unsafe_code)]
         #[allow(non_upper_case_globals)]
         #[doc(hidden)]
-        #[::linkme::distributed_slice(::otap_df_engine::inventory::COMPONENT_INVENTORY)]
+        #[::linkme::distributed_slice(#engine_path::inventory::COMPONENT_INVENTORY)]
         #[linkme(crate = ::linkme)]
-        static #entry_ident: ::otap_df_engine::inventory::ComponentMeta =
-            ::otap_df_engine::inventory::ComponentMeta {
+        static #entry_ident: #engine_path::inventory::ComponentMeta =
+            #engine_path::inventory::ComponentMeta {
                 id: #id_expr,
-                category: ::otap_df_engine::inventory::Category::#category,
+                category: #engine_path::inventory::Category::#category,
                 description: #description_expr,
                 file: ::core::file!(),
                 line: ::core::line!(),
                 attributes: &[ #( (#attr_keys, #attr_vals) ),* ],
             };
     })
+}
+
+/// Path to `otap_df_engine` crate: `crate` when compiled within `otap-df-engine`,
+/// otherwise `::otap_df_engine`.
+fn engine_crate_path() -> TokenStream {
+    if std::env::var("CARGO_CRATE_NAME").as_deref() == Ok("otap_df_engine") {
+        quote! { crate }
+    } else {
+        quote! { ::otap_df_engine }
+    }
 }
 
 /// Inspect the annotated item, returning:
@@ -539,5 +564,18 @@ mod tests {
         let expected =
             r#"attributes : & [("port" , "4317") , ("protocol" , "gRPC") , ("auth" , "mTLS")]"#;
         assert!(out.contains(expected), "attributes not as expected: {out}");
+    }
+
+    /// Scenario: a non-factory item is expanded with category `Admin` and an explicit URN `id`.
+    /// Guarantees: expansion succeeds, category `Admin` is validated, and the `id` is used.
+    #[test]
+    fn non_factory_admin_category_expansion_ok() {
+        let out = expand(
+            r#"id = "urn:otel:admin:http_server", category = Admin"#,
+            r#"pub struct AdminServer;"#,
+        );
+        assert!(!out.contains("compile_error"));
+        assert!(out.contains(r#"id : "urn:otel:admin:http_server""#));
+        assert!(out.contains("Category :: Admin"));
     }
 }
