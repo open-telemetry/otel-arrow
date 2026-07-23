@@ -273,7 +273,7 @@ fn segment_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("segment_write");
     let rt = Runtime::new().expect("tokio runtime");
 
-    // ── Single-slot write (varying bundle counts) ──
+    // -- Single-slot write (varying bundle counts) --
     for num_bundles in [10, 50, 100] {
         let bundle = BenchBundle::single_slot(1_000, [0u8; 32]);
 
@@ -308,7 +308,7 @@ fn segment_write(c: &mut Criterion) {
         );
     }
 
-    // ── Multi-stream write (schema evolution scenario) ──
+    // -- Multi-stream write (schema evolution scenario) --
     // 10 different fingerprints = 10 different streams
     {
         let bundles: Vec<BenchBundle> = (0..10u8)
@@ -342,7 +342,7 @@ fn segment_write(c: &mut Criterion) {
         });
     }
 
-    // ── Multi-slot write (OTAP logs payload structure) ──
+    // -- Multi-slot write (OTAP logs payload structure) --
     // 4 slots: ResourceAttrs, ScopeAttrs, Logs, LogAttrs
     {
         let bundle = BenchBundle::multi_slot(1_000);
@@ -377,9 +377,9 @@ fn segment_write(c: &mut Criterion) {
     group.finish();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Read benchmarks
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Helper to create a segment file for read benchmarks.
 fn create_test_segment(num_bundles: usize, num_rows: usize) -> (tempfile::TempDir, PathBuf) {

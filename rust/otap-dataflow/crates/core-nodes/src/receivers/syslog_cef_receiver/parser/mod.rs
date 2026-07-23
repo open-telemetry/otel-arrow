@@ -55,7 +55,7 @@ pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
         }
     }
 
-    // Parse priority once — both RFC 5424 and RFC 3164 start with <priority>.
+    // Parse priority once -- both RFC 5424 and RFC 3164 start with <priority>.
     // Messages without a valid priority prefix skip straight to RFC 3164 (no-PRI path).
     if input.starts_with(b"<") {
         if let Ok((priority, remaining)) = parse_priority(input) {
@@ -77,13 +77,13 @@ pub(crate) fn parse(input: &[u8]) -> Result<ParsedSyslogMessage<'_>, ParseError>
                 return try_rfc3164_cef(rfc3164_msg, input);
             }
         } else {
-            // Invalid PRI format — RFC 3164 no-PRI path (entire input as content)
+            // Invalid PRI format -- RFC 3164 no-PRI path (entire input as content)
             if let Ok(rfc3164_msg) = parse_rfc3164(None, input, input) {
                 return try_rfc3164_cef(rfc3164_msg, input);
             }
         }
     } else {
-        // No '<' prefix — RFC 3164 no-PRI path
+        // No '<' prefix -- RFC 3164 no-PRI path
         if let Ok(rfc3164_msg) = parse_rfc3164(None, input, input) {
             return try_rfc3164_cef(rfc3164_msg, input);
         }
@@ -176,7 +176,7 @@ pub(super) fn parse_priority(input: &[u8]) -> Result<(Priority, &[u8]), ParseErr
     Ok((Priority { facility, severity }, &input[end + 1..]))
 }
 
-/// Benchmark support — exposes internal parser helpers for benchmarking only.
+/// Benchmark support -- exposes internal parser helpers for benchmarking only.
 ///
 /// This module is **not** part of the public API and is gated behind the `bench`
 /// Cargo feature. Items here may change or be removed without notice.

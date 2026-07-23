@@ -10,7 +10,7 @@
 //!    context, its value becomes the topic for the batch. If the header is
 //!    present but its value is an invalid Kafka topic, routing fails with
 //!    [`TopicRoutingError::InvalidHeaderTopic`] and the batch is permanently
-//!    nacked — it does **not** fall back to the static topic.
+//!    nacked -- it does **not** fall back to the static topic.
 //! 2. **Static fallback**: The per-signal `topic` from config, used only when
 //!    the configured header is absent (or no header key is configured).
 //!

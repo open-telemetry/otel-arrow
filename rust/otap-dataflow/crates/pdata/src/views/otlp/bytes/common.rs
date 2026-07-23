@@ -186,7 +186,7 @@ impl FieldRanges for InstrumentationScopeFieldOffsets {
     }
 }
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// Iterator of KeyValues - produces implementation of KeyValueView from the byte array which
 /// contains a protobuf serialized repeated KeyValues
@@ -246,7 +246,7 @@ impl<'a> Iterator for AnyValueIter<'a> {
     }
 }
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl AttributeView for RawKeyValue<'_> {
     type Val<'val>

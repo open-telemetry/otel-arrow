@@ -290,7 +290,7 @@ pub fn system_info<PData: 'static + Clone + Debug>(
     let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
 
     let debug_warning = if cfg!(debug_assertions) {
-        "\n\n⚠️  WARNING: This binary was compiled in debug mode.
+        "\n\n\u{26A0}\u{FE0F}  WARNING: This binary was compiled in debug mode.
    Debug builds are NOT recommended for production, benchmarks, or performance testing.
    Use 'cargo build --release' for optimal performance."
     } else {

@@ -574,7 +574,7 @@ pub trait BoundedBuf {
         }
     }
 
-    /// Returns the narrowest placeholder width (1–4 bytes) sufficient
+    /// Returns the narrowest placeholder width (1-4 bytes) sufficient
     /// for this buffer's remaining space.
     #[inline]
     fn placeholder_width(&self) -> usize {
@@ -1083,7 +1083,7 @@ impl SortedBatchCursor {
         T::Native: PartialOrd,
     {
         // If the most recently consumed row's parent id is `<= target`, then `target`'s rows (if
-        // any) are at or after `curr_index`, so a forward scan suffices — no search needed. Nulls
+        // any) are at or after `curr_index`, so a forward scan suffices -- no search needed. Nulls
         // (value_at == None) fall through to the search, as does the very first seek of a batch.
         if self.curr_index > 0 {
             if let Some(prev) = parent_id_col.value_at(self.sorted_indices[self.curr_index - 1]) {
@@ -1211,11 +1211,11 @@ impl BatchSorter {
                     .sorted_indices
                     .extend(self.u32_ids.iter().map(|(i, _)| *i));
             }
-            // Single ID column — sort directly by u16 value.
+            // Single ID column -- sort directly by u16 value.
             [Some(ids), None, None] => {
                 self.init_cursor_for_u16_id_column(&MaybeDictArrayAccessor::Native(ids), cursor);
             }
-            // No ID columns — visit in natural order.
+            // No ID columns -- visit in natural order.
             [None, None, None] => {
                 cursor.sorted_indices.extend(0..record_batch.num_rows());
             }
@@ -1896,7 +1896,7 @@ mod test {
 
         // Append another field after the partial one and confirm it parses.
         buf.encode_string(8, "after").unwrap();
-        // Find "after" by scanning — it must be intact at the end.
+        // Find "after" by scanning -- it must be intact at the end.
         assert!(
             buf.as_ref().windows(5).any(|w| w == b"after"),
             "subsequent field is intact when partial used"

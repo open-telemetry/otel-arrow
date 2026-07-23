@@ -11,37 +11,37 @@
 //! A segment file has the following structure:
 //!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────────────┐
-//! │                         Stream Data Region                              │
-//! │  ┌──────────────────────────────────────────────────────────────────┐   │
-//! │  │ Stream 0: Arrow IPC File bytes                                   │   │
-//! │  ├──────────────────────────────────────────────────────────────────┤   │
-//! │  │ Stream 1: Arrow IPC File bytes                                   │   │
-//! │  ├──────────────────────────────────────────────────────────────────┤   │
-//! │  │ ...                                                              │   │
-//! │  └──────────────────────────────────────────────────────────────────┘   │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │                         Stream Directory                                │
-//! │  Encoded as Arrow IPC (self-describing schema)                          │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │                         Batch Manifest                                  │
-//! │  Encoded as Arrow IPC (self-describing schema)                          │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │                         Footer (variable size, version-dependent)       │
-//! │  - Version: u16                                                         │
-//! │  - Stream count: u32                                                    │
-//! │  - Bundle count: u32                                                    │
-//! │  - Directory offset: u64                                                │
-//! │  - Directory length: u32                                                │
-//! │  - Manifest offset: u64                                                 │
-//! │  - Manifest length: u32                                                 │
-//! │  - (Future versions may add more fields here)                           │
-//! ├─────────────────────────────────────────────────────────────────────────┤
-//! │                         Trailer (fixed 16 bytes)                        │
-//! │  - Footer size: u32 (size of footer, not including trailer)             │
-//! │  - Magic: b"QUIVER\0S" (8 bytes)                                        │
-//! │  - CRC32: u32 (covers footer + trailer except CRC itself)               │
-//! └─────────────────────────────────────────────────────────────────────────┘
+//! +-------------------------------------------------------------------------+
+//! |                         Stream Data Region                              |
+//! |  +------------------------------------------------------------------+   |
+//! |  | Stream 0: Arrow IPC File bytes                                   |   |
+//! |  +------------------------------------------------------------------+   |
+//! |  | Stream 1: Arrow IPC File bytes                                   |   |
+//! |  +------------------------------------------------------------------+   |
+//! |  | ...                                                              |   |
+//! |  +------------------------------------------------------------------+   |
+//! +-------------------------------------------------------------------------+
+//! |                         Stream Directory                                |
+//! |  Encoded as Arrow IPC (self-describing schema)                          |
+//! +-------------------------------------------------------------------------+
+//! |                         Batch Manifest                                  |
+//! |  Encoded as Arrow IPC (self-describing schema)                          |
+//! +-------------------------------------------------------------------------+
+//! |                         Footer (variable size, version-dependent)       |
+//! |  - Version: u16                                                         |
+//! |  - Stream count: u32                                                    |
+//! |  - Bundle count: u32                                                    |
+//! |  - Directory offset: u64                                                |
+//! |  - Directory length: u32                                                |
+//! |  - Manifest offset: u64                                                 |
+//! |  - Manifest length: u32                                                 |
+//! |  - (Future versions may add more fields here)                           |
+//! +-------------------------------------------------------------------------+
+//! |                         Trailer (fixed 16 bytes)                        |
+//! |  - Footer size: u32 (size of footer, not including trailer)             |
+//! |  - Magic: b"QUIVER\0S" (8 bytes)                                        |
+//! |  - CRC32: u32 (covers footer + trailer except CRC itself)               |
+//! +-------------------------------------------------------------------------+
 //! ```
 //!
 //! The trailer is always at the end of the file with a fixed size, allowing
@@ -104,9 +104,9 @@ use crate::record_bundle::{ArrowPrimitive, SlotId};
 /// <https://arrow.apache.org/docs/format/Columnar.html#buffer-alignment-and-padding>
 const STREAM_ALIGNMENT: u64 = 64;
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // SegmentWriter
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Writes segment data to a file.
 ///
@@ -124,7 +124,7 @@ pub struct SegmentWriter {
     /// When `true` (the default), finalized segment files have their
     /// permissions set to `0o440` (Unix) or read-only (other platforms)
     /// to enforce immutability.  When `false`, the permission change is
-    /// skipped — this is necessary on filesystems that do not support
+    /// skipped -- this is necessary on filesystems that do not support
     /// `chmod` (e.g., SMB/CIFS mounts, certain Kubernetes volumeMounts).
     enforce_file_readonly: bool,
 }
@@ -291,9 +291,9 @@ impl SegmentWriter {
         let mut hasher = Hasher::new();
         let mut offset: u64 = 0;
 
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         // 1. Write stream data region (streaming)
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         let mut stream_metadata_list: Vec<StreamMetadata> = Vec::with_capacity(accumulators.len());
 
         for accumulator in accumulators {
@@ -316,9 +316,9 @@ impl SegmentWriter {
             stream_metadata_list.push(metadata);
         }
 
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         // 2. Write stream directory (as Arrow IPC)
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         let directory_offset = offset;
         let directory_bytes = Self::encode_stream_directory(&stream_metadata_list)?;
         writer
@@ -328,9 +328,9 @@ impl SegmentWriter {
         offset += directory_bytes.len() as u64;
         let directory_length = directory_bytes.len() as u32;
 
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         // 3. Write batch manifest (as Arrow IPC)
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         let manifest_offset = offset;
         let manifest_bytes = Self::encode_manifest(&manifest)?;
         writer
@@ -340,9 +340,9 @@ impl SegmentWriter {
         offset += manifest_bytes.len() as u64;
         let manifest_length = manifest_bytes.len() as u32;
 
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         // 4. Write footer (variable size, version-dependent)
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         let footer = Footer {
             version: SEGMENT_VERSION,
             stream_count: stream_metadata_list.len() as u32,
@@ -360,9 +360,9 @@ impl SegmentWriter {
         hasher.update(&footer_bytes);
         offset += footer_bytes.len() as u64;
 
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         // 5. Write trailer (fixed 16 bytes)
-        // ─────────────────────────────────────────────────────────────────────
+        // ---------------------------------------------------------------------
         let trailer = Trailer {
             footer_size: footer_bytes.len() as u32,
         };
@@ -448,11 +448,11 @@ impl SegmentWriter {
     ///
     /// # Schema
     ///
-    /// - `bundle_index`: UInt32 — ordinal of the bundle within the segment
-    /// - `slot_refs`: List<Struct<...>> — references to stream chunks
-    ///   - `slot_id`: UInt16 — which payload slot this reference is for
-    ///   - `stream_id`: UInt32 — index into the stream directory
-    ///   - `chunk_index`: UInt32 — which Arrow RecordBatch within the stream
+    /// - `bundle_index`: UInt32 -- ordinal of the bundle within the segment
+    /// - `slot_refs`: List<Struct<...>> -- references to stream chunks
+    ///   - `slot_id`: UInt16 -- which payload slot this reference is for
+    ///   - `stream_id`: UInt32 -- index into the stream directory
+    ///   - `chunk_index`: UInt32 -- which Arrow RecordBatch within the stream
     ///
     /// Using Arrow's native List and Struct types enables zero-copy decoding
     /// and avoids string parsing overhead compared to the previous JSON encoding.
@@ -542,9 +542,9 @@ impl SegmentWriter {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Encodes a RecordBatch as Arrow IPC file format bytes.
 fn encode_as_ipc(batch: &RecordBatch) -> Result<Vec<u8>, SegmentError> {
@@ -562,9 +562,9 @@ fn encode_as_ipc(batch: &RecordBatch) -> Result<Vec<u8>, SegmentError> {
     Ok(buf)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Helper Types
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// A writer wrapper that updates a CRC32 hasher as data is written.
 struct HashingWriter<'a, W> {
@@ -614,9 +614,9 @@ async fn sync_parent_dir(path: &Path) -> Result<(), SegmentError> {
     Ok(())
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

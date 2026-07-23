@@ -4,13 +4,13 @@
 //! **Backend-agnostic, zero-copy view traits for OTLP Logs.**
 //! ```text
 //! LogsView
-//! └─ ResourceLogsView
-//!    │  resource::ResourceView
-//!    └─ ScopeLogsView
-//!       │  InstrumentationScopeView
-//!       └─ LogRecordView
-//!          └─ common::AttributeView
-//!             └─ common::AnyValueView
+//! +- ResourceLogsView
+//!    |  resource::ResourceView
+//!    +- ScopeLogsView
+//!       |  InstrumentationScopeView
+//!       +- LogRecordView
+//!          +- common::AttributeView
+//!             +- common::AnyValueView
 //! ```
 
 use crate::views::{

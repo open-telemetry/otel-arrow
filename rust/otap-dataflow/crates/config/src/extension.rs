@@ -3,7 +3,7 @@
 
 //! Extension configuration types.
 //!
-//! Extensions have a simpler configuration model than data-path nodes — they
+//! Extensions have a simpler configuration model than data-path nodes -- they
 //! have no output ports, no wiring contracts, and no header policies.
 
 pub use crate::extension_urn::ExtensionUrn;
@@ -14,7 +14,7 @@ use serde_json::Value;
 /// User configuration for an extension instance.
 ///
 /// Unlike [`NodeUserConfig`](crate::node::NodeUserConfig), extensions have no
-/// output ports, wiring contracts, or transport header policies — they only
+/// output ports, wiring contracts, or transport header policies -- they only
 /// need a type URN and extension-specific configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]

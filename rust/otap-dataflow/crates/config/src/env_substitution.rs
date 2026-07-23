@@ -47,7 +47,7 @@ pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
         output.push_str(&rest[..pos]);
         rest = &rest[pos..];
 
-        // `$$` → literal `$`
+        // `$$` -> literal `$`
         if rest.starts_with("$$") {
             output.push('$');
             rest = &rest[2..];
@@ -92,7 +92,7 @@ pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
                     output.push_str(&value);
                     rest = &rest[2 + close + 1..]; // skip past `}`
                 } else {
-                    // Not an `env:` provider — pass through verbatim.
+                    // Not an `env:` provider -- pass through verbatim.
                     output.push_str(&rest[..2 + close + 1]);
                     rest = &rest[2 + close + 1..];
                 }
@@ -100,7 +100,7 @@ pub fn substitute_env_vars(input: &str) -> Result<String, Error> {
             }
         }
 
-        // Bare `$` with no recognised pattern — emit and advance.
+        // Bare `$` with no recognised pattern -- emit and advance.
         output.push('$');
         rest = &rest[1..];
     }
@@ -241,15 +241,19 @@ mod tests {
 
     #[test]
     fn test_non_ascii_characters() {
-        with_var("GREETING", "こんにちは", || {
-            let result = substitute_env_vars(
-                "message: \"${env:GREETING}\", endpoint: \"château-élève.example.com:4317\"",
-            )
-            .unwrap();
-            assert_eq!(
-                result,
-                "message: \"こんにちは\", endpoint: \"château-élève.example.com:4317\""
-            );
-        });
+        with_var(
+            "GREETING",
+            "こんにちは", // sanitycheck: allow-non-ascii-line
+            || {
+                let result = substitute_env_vars(
+                    "message: \"${env:GREETING}\", endpoint: \"château-élève.example.com:4317\"", // sanitycheck: allow-non-ascii-line
+                )
+                .unwrap();
+                assert_eq!(
+                    result,
+                    "message: \"こんにちは\", endpoint: \"château-élève.example.com:4317\"" // sanitycheck: allow-non-ascii-line
+                );
+            },
+        );
     }
 }

@@ -23,7 +23,7 @@ use std::sync::Arc;
 ///   communication semantics. For example, it can route each message to one destination (`one_of`), or
 ///   in the future it can broadcast to every destination.
 ///
-/// This configuration defines the pipeline’s nodes, the interconnections
+/// This configuration defines the pipeline's nodes, the interconnections
 /// (hyper-edges) and optional pipeline-level policies.
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
@@ -44,7 +44,7 @@ pub struct PipelineConfig {
 
     /// All data-path nodes in this pipeline, keyed by node ID.
     ///
-    /// This includes receivers, processors, and exporters — but NOT extensions.
+    /// This includes receivers, processors, and exporters -- but NOT extensions.
     /// Extensions are configured in the sibling `extensions` section.
     #[serde(default)]
     nodes: PipelineNodes,
@@ -2795,7 +2795,7 @@ sink:
         assert!(config.connection_iter().next().is_none());
     }
 
-    // ── Extension config tests ──────────────────────────────────────
+    // -- Extension config tests --------------------------------------
 
     #[test]
     fn test_extensions_parsed_separately_from_nodes() {
@@ -2869,7 +2869,7 @@ connections:
 
     #[test]
     fn test_same_name_in_nodes_and_extensions_allowed() {
-        // Nodes and extensions are separate namespaces — same name is valid.
+        // Nodes and extensions are separate namespaces -- same name is valid.
         let config = PipelineConfigBuilder::new()
             .add_receiver("myname", "urn:test:receiver:example", None)
             .add_exporter("exp", "urn:test:exporter:example", None)
@@ -3102,7 +3102,7 @@ connections:
     fn test_capabilities_on_extension_rejected() {
         // ExtensionUserConfig uses #[serde(deny_unknown_fields)], so
         // `capabilities` on an extension is caught at deserialization time
-        // (extensions don't consume capabilities — they provide them).
+        // (extensions don't consume capabilities -- they provide them).
         let yaml = r#"
 nodes:
   receiver:

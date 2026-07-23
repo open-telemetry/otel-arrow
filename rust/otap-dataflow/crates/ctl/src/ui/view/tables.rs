@@ -655,7 +655,7 @@ pub(super) fn draw_state_table<const N: usize>(
         .style(panel_style(app.color_enabled))
         .column_spacing(1)
         .row_highlight_style(selected_style(app.color_enabled))
-        .highlight_symbol("▶ ");
+        .highlight_symbol("\u{25B6} ");
     let mut state = TableState::default();
     state.select(selected);
     frame.render_stateful_widget(table, area, &mut state);

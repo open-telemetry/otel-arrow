@@ -22,9 +22,9 @@
     | cef_extensions/one_extension                      | 20.282 ns    |
     | cef_extensions/ten_extensions                     | 188.09 ns    |
     | cef_extensions/ten_extensions_with_escape         | 207.15 ns    |
-    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 95.808 µs    |
-    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 47.463 µs    |
-    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.892 µs    |
+    | arrow_batch_creation/rfc3164_arrow_batch_100_msgs | 95.808 us    |
+    | arrow_batch_creation/rfc5424_arrow_batch_100_msgs | 47.463 us    |
+    | arrow_batch_creation/cef_arrow_batch_100_msgs     | 43.892 us    |
 */
 
 #![allow(missing_docs)]

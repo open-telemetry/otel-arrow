@@ -22,7 +22,7 @@ use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
 
-// ── Cloneable produce closures ──────────────────────────────────────────────
+// -- Cloneable produce closures ----------------------------------------------
 //
 // `Box<dyn Fn>` is not `Clone`, so we thread cloning through an
 // object-safe `clone_box` method. One extension may provide multiple
@@ -32,7 +32,7 @@ use std::rc::Rc;
 /// Object-safe `Fn + Clone` producing an erased shared trait object.
 ///
 /// The stored closure returns `Box<Box<dyn C::Shared>>` erased as
-/// `Box<dyn Any + Send>` — the double-box envelope the registry uses.
+/// `Box<dyn Any + Send>` -- the double-box envelope the registry uses.
 #[doc(hidden)]
 pub trait SharedProduce: Fn() -> Box<dyn Any + Send> + Send {
     fn clone_box(&self) -> Box<dyn SharedProduce>;
@@ -50,7 +50,7 @@ where
 /// Object-safe `Fn + Clone` producing an erased local trait object.
 ///
 /// The stored closure returns `Box<Box<dyn C::Local>>` erased as
-/// `Box<dyn Any>` — the double-box envelope the registry uses,
+/// `Box<dyn Any>` -- the double-box envelope the registry uses,
 /// mirroring the shared-side shape (without the `Send` bound).
 #[doc(hidden)]
 pub trait LocalProduce: Fn() -> Box<dyn Any> {
@@ -66,12 +66,12 @@ where
     }
 }
 
-// ── Registry entries ────────────────────────────────────────────────────────
+// -- Registry entries --------------------------------------------------------
 
 /// A type-erased local (!Send) capability entry.
 ///
-/// The `produce` closure — built by the `#[capability]`-generated
-/// `local_entry::<E>` caster — mints a fresh `Box<dyn C::Local>` by
+/// The `produce` closure -- built by the `#[capability]`-generated
+/// `local_entry::<E>` caster -- mints a fresh `Box<dyn C::Local>` by
 /// calling the extension's `LocalInstanceFactory`, downcasting to `E`,
 /// and coercing to the trait object.
 #[doc(hidden)]
@@ -101,9 +101,9 @@ impl LocalCapabilityEntry {
 /// Two closures/fn pointers, both minted by the
 /// `#[capability]`-generated `shared_entry::<E>` caster:
 ///
-/// - `produce` — builds `Box<Box<dyn C::Shared>>` erased as
+/// - `produce` -- builds `Box<Box<dyn C::Shared>>` erased as
 ///   `Box<dyn Any + Send>`. Called per consumer.
-/// - `adapt_as_local` — takes that same erased double box and returns
+/// - `adapt_as_local` -- takes that same erased double box and returns
 ///   `Box<Box<dyn C::Local>>` erased as `Box<dyn Any>`. Used by the
 ///   `SharedAsLocal` fallback path in `resolve_bindings`.
 #[doc(hidden)]
@@ -139,19 +139,19 @@ impl SharedCapabilityEntry {
     }
 }
 
-// ── Resolved entries (per-node) ─────────────────────────────────────────────
+// -- Resolved entries (per-node) ---------------------------------------------
 
 /// A resolved local capability entry for a specific node.
 ///
 /// Inserted only for **native** local registrations. The
 /// SharedAsLocal fallback path does *not* produce a separate local
-/// entry — instead, [`Capabilities::require_local`] falls through to
+/// entry -- instead, [`Capabilities::require_local`] falls through to
 /// the [`ResolvedSharedEntry`] when no native local entry exists,
 /// taking the shared `produce` cell and routing its output through
 /// the entry's `adapt_as_local` fn pointer. This collapses the
 /// fallback's two former entries into one, so the per-binding
 /// one-shot guard is encoded directly in the shared entry's
-/// `Cell::take()` — no separate claim flag needed.
+/// `Cell::take()` -- no separate claim flag needed.
 pub(crate) struct ResolvedLocalEntry {
     /// Per-node produce closure, cloned from the registry entry.
     ///

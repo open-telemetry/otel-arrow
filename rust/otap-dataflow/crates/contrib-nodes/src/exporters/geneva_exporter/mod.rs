@@ -547,7 +547,7 @@ impl GenevaExporter {
                     OtapArrowRecords::Traces(otap_records) => {
                         // TODO: Zero-copy view path for future optimization (when TracesView is ready)
 
-                        // Fallback path: Convert OTAP Arrow → OTLP bytes
+                        // Fallback path: Convert OTAP Arrow -> OTLP bytes
                         otel_info!(
                             "geneva_exporter.convert",
                             message = "Converting OTAP traces to OTLP bytes (fallback path)"
@@ -602,7 +602,7 @@ impl GenevaExporter {
                 }
             }
 
-            // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver → Geneva exporter without batch processor)
+            // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver -> Geneva exporter without batch processor)
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
