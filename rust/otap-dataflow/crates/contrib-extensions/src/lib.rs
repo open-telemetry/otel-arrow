@@ -10,6 +10,9 @@
 #[cfg(feature = "azure-identity-auth-extension")]
 pub mod azure_identity_auth;
 
+#[cfg(feature = "k8s-sat-token-authorizer-extension")]
+pub mod k8s_sat_token_authorizer;
+
 #[cfg(feature = "oauth2-client-auth-extension")]
 pub mod oauth2_client_auth;
 
