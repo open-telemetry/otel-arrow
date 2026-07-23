@@ -501,8 +501,8 @@ fn aggregate_metric_groups(
         for (field, value) in metrics_iter {
             let _ = metrics_map
                 .entry(field.name.to_string())
-                .and_modify(|existing| existing.add_in_place(value))
-                .or_insert(value);
+                .and_modify(|existing| existing.add_in_place(&value))
+                .or_insert_with(|| value.clone());
         }
     };
 
@@ -545,7 +545,7 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
             if let Some(val) = g.metrics.get(field.name) {
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
-                    value: *val,
+                    value: val.clone(),
                 });
             }
         }
@@ -579,14 +579,14 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => {
                     let int_val = match value {
                         MetricValue::U64(v) => v,
                         MetricValue::F64(v) => v as u64,
-                        MetricValue::Mmsc(_) => unreachable!(),
+                        MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
                     };
                     format!("{int_val}i")
                 }
@@ -596,6 +596,11 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
         // MMSC values are expanded into multiple fields at the call site;
         // this arm should not be reached.
         MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into multiple fields at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("Distribution values must be expanded at the call site")
+        }
     }
 }
 
@@ -673,13 +678,13 @@ fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) ->
             let vtype = value_type.unwrap_or(match value {
                 MetricValue::U64(_) => MetricValueType::U64,
                 MetricValue::F64(_) => MetricValueType::F64,
-                MetricValue::Mmsc(_) => unreachable!(),
+                MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
             });
             match vtype {
                 MetricValueType::U64 => match value {
                     MetricValue::U64(v) => v.to_string(),
                     MetricValue::F64(v) => (v as u64).to_string(),
-                    MetricValue::Mmsc(_) => unreachable!(),
+                    MetricValue::Mmsc(_) | MetricValue::Distribution(_) => unreachable!(),
                 },
                 MetricValueType::F64 => value.to_f64().to_string(),
             }
@@ -687,6 +692,11 @@ fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) ->
         // MMSC values are expanded into summary lines at the call site;
         // this arm should not be reached.
         MetricValue::Mmsc(_) => unreachable!("MMSC values must be expanded at the call site"),
+        // Distribution values are expanded into summary lines at the call
+        // site; this arm should not be reached.
+        MetricValue::Distribution(_) => {
+            unreachable!("Distribution values must be expanded at the call site")
+        }
     }
 }
 
@@ -727,7 +737,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}={}",
                         escape_lp_field_key(fname),
-                        format_lp_value(*val, field_type)
+                        format_lp_value(val.clone(), field_type)
                     );
                 }
                 MetricValue::Mmsc(s) => {
@@ -756,6 +766,37 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         "{}_count={}i",
                         escape_lp_field_key(fname),
                         s.count
+                    );
+                }
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
+                        continue;
+                    }
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
+                        if !first {
+                            fields.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            &mut fields,
+                            "{}{}={}",
+                            escape_lp_field_key(fname),
+                            suffix,
+                            fval
+                        );
+                    }
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}_count={}i",
+                        escape_lp_field_key(fname),
+                        count
                     );
                 }
             }
@@ -802,6 +843,9 @@ fn collect_scalar_metric(
             // carrying buckets/sum/count.
             Instrument::Histogram => "gauge",
             Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+            Instrument::ExponentialHistogram => {
+                unreachable!("distributions are not scalars")
+            }
         };
         PromMetricMetadata {
             help: if field.brief.is_empty() {
@@ -899,6 +943,22 @@ fn collect_mmsc_metric(
             ts_suffix,
         );
         group.samples.push(sample);
+    }
+}
+
+/// Materializes a distribution's `(count, sum, min, max)` summary as an
+/// [`MmscSnapshot`] so it renders with the same min/max/sum/count expansion as
+/// an MMSC metric. Full exponential-bucket rendering is deferred; the admin
+/// endpoints expose the summary statistics only.
+fn distribution_summary_snapshot(
+    value: &otap_df_telemetry::instrument::DistributionValue,
+) -> otap_df_telemetry::instrument::MmscSnapshot {
+    let (count, sum, min, max) = value.summary();
+    otap_df_telemetry::instrument::MmscSnapshot {
+        min,
+        max,
+        sum,
+        count,
     }
 }
 
@@ -1014,13 +1074,22 @@ fn agg_prometheus_text(
                         collect_scalar_metric(
                             &mut prom_groups,
                             field,
-                            *value,
+                            value.clone(),
                             &base_labels,
                             &ts_suffix,
                         );
                     }
                     MetricValue::Mmsc(s) => {
                         collect_mmsc_metric(&mut prom_groups, field, s, &base_labels, &ts_suffix);
+                    }
+                    MetricValue::Distribution(d) => {
+                        collect_mmsc_metric(
+                            &mut prom_groups,
+                            field,
+                            &distribution_summary_snapshot(d.as_ref()),
+                            &base_labels,
+                            &ts_suffix,
+                        );
                     }
                 }
             }
@@ -1244,6 +1313,37 @@ fn format_line_protocol(
                         s.count
                     );
                 }
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(ref d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
+                        continue;
+                    }
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
+                        if !first {
+                            fields.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            &mut fields,
+                            "{}{}={}",
+                            escape_lp_field_key(field.name),
+                            suffix,
+                            fval
+                        );
+                    }
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}_count={}i",
+                        escape_lp_field_key(field.name),
+                        count
+                    );
+                }
             }
         }
 
@@ -1302,6 +1402,15 @@ fn format_prometheus_text(
                 }
                 MetricValue::Mmsc(ref s) => {
                     collect_mmsc_metric(&mut groups, field, s, &base_labels, &ts_suffix);
+                }
+                MetricValue::Distribution(ref d) => {
+                    collect_mmsc_metric(
+                        &mut groups,
+                        field,
+                        &distribution_summary_snapshot(d.as_ref()),
+                        &base_labels,
+                        &ts_suffix,
+                    );
                 }
             }
         }
@@ -3552,7 +3661,7 @@ mod tests {
         }
 
         fn needs_flush(&self) -> bool {
-            self.values.iter().any(|&v| !v.is_zero())
+            self.values.iter().any(|v| !v.is_zero())
         }
     }
 

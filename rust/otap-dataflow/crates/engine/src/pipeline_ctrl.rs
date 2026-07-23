@@ -3406,7 +3406,7 @@ mod tests {
                 .entry(label)
                 .and_modify(|existing| {
                     for (dst, src) in existing.iter_mut().zip(values.iter()) {
-                        dst.add_in_place(*src);
+                        dst.add_in_place(src);
                     }
                 })
                 .or_insert(values);
@@ -3416,15 +3416,15 @@ mod tests {
 
     /// Extract u64 from a MetricValue, panicking with context on mismatch.
     fn assert_u64(values: &[MetricValue], index: usize, expected: u64, msg: &str) {
-        match values[index] {
-            MetricValue::U64(v) => assert_eq!(v, expected, "{msg}"),
+        match &values[index] {
+            MetricValue::U64(v) => assert_eq!(*v, expected, "{msg}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
 
     fn assert_u64_gte(values: &[MetricValue], index: usize, min: u64, msg: &str) {
-        match values[index] {
-            MetricValue::U64(v) => assert!(v >= min, "{msg}: expected >= {min}, got {v}"),
+        match &values[index] {
+            MetricValue::U64(v) => assert!(*v >= min, "{msg}: expected >= {min}, got {v}"),
             other => panic!("{msg}: expected U64, got {other:?}"),
         }
     }
@@ -3435,8 +3435,8 @@ mod tests {
         index: usize,
         msg: &str,
     ) -> otap_df_telemetry::instrument::MmscSnapshot {
-        match values[index] {
-            MetricValue::Mmsc(snap) => snap,
+        match &values[index] {
+            MetricValue::Mmsc(snap) => *snap,
             other => panic!("{msg}: expected Mmsc, got {other:?}"),
         }
     }
@@ -3491,9 +3491,9 @@ mod tests {
         for values in iter {
             for (index, value) in values.iter().enumerate() {
                 if gauge_indices.contains(&index) {
-                    merged[index] = *value;
+                    merged[index] = value.clone();
                 } else {
-                    merged[index].add_in_place(*value);
+                    merged[index].add_in_place(value);
                 }
             }
         }

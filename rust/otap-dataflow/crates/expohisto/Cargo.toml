@@ -1,0 +1,28 @@
+[package]
+name = "otap-df-expohisto"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+description = "Allocation-free OpenTelemetry exponential histogram"
+
+[features]
+default = ["std", "boundary", "quantile"]
+
+# Enables `std::error::Error` impls. Disable for `#![no_std]` builds.
+std = []
+
+# Boundary computation (`lower_boundary`). Uses `exp()` from std.
+boundary = ["std"]
+
+# Quantile estimation over histogram buckets.
+quantile = ["boundary"]
+
+[dependencies]
+# intentionally empty
+
+[lints]
+workspace = true

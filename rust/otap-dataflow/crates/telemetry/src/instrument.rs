@@ -11,6 +11,8 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
+use otap_df_expohisto::{Error as HistogramError, Histogram, HistogramView};
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -599,6 +601,510 @@ pub struct MmscSnapshot {
     pub count: u64,
 }
 
+// Distribution implementation.
+// ============================
+
+/// Number of `u64` bucket words in the "normal" resolution exponential
+/// histogram tier.
+///
+/// Sized for a compact per-series footprint suitable for always-on internal
+/// telemetry while still capturing a useful bucket range.
+pub const HISTOGRAM_NORMAL_WORDS: usize = 10;
+
+/// Number of `u64` bucket words in the "detailed" resolution exponential
+/// histogram tier.
+///
+/// Trades a larger per-series footprint for finer bucket coverage, for metrics
+/// that warrant high-resolution distributions.
+pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
+
+/// A delta distribution instrument with three resolution tiers.
+///
+/// Every tier projects onto the OTLP exponential-histogram point type, so
+/// distributions are represented consistently regardless of resolution:
+/// - [`Distribution::Basic`] keeps only exact min/max/sum/count and encodes as
+///   a bucketless point.
+/// - [`Distribution::Normal`] and [`Distribution::Detailed`] keep full
+///   exponential-histogram bucket ranges sized by [`HISTOGRAM_NORMAL_WORDS`]
+///   and [`HISTOGRAM_DETAILED_WORDS`] respectively.
+///
+/// Like [`Mmsc`], this is a delta instrument: observations are recorded over an
+/// interval and then cleared via [`reset`](Distribution::reset) after each
+/// report. All tiers are boxed so the enum stays pointer-small when carried by
+/// value.
+#[derive(Debug, Clone)]
+pub enum Distribution {
+    /// Basic tier: exact min/max/sum/count with no buckets.
+    Basic(Box<Mmsc>),
+    /// Normal tier: exponential histogram with [`HISTOGRAM_NORMAL_WORDS`] bucket words.
+    Normal(Box<Histogram<HISTOGRAM_NORMAL_WORDS>>),
+    /// Detailed tier: exponential histogram with [`HISTOGRAM_DETAILED_WORDS`] bucket words.
+    Detailed(Box<Histogram<HISTOGRAM_DETAILED_WORDS>>),
+}
+
+impl Distribution {
+    /// Creates a basic-tier distribution tracking only min/max/sum/count.
+    #[inline]
+    #[must_use]
+    pub fn basic() -> Self {
+        Self::Basic(Box::<Mmsc>::default())
+    }
+
+    /// Creates a normal-tier exponential-histogram distribution.
+    #[inline]
+    #[must_use]
+    pub fn normal() -> Self {
+        Self::Normal(Box::new(Histogram::new()))
+    }
+
+    /// Creates a detailed-tier exponential-histogram distribution.
+    #[inline]
+    #[must_use]
+    pub fn detailed() -> Self {
+        Self::Detailed(Box::new(Histogram::new()))
+    }
+
+    /// Records a single non-negative observation.
+    ///
+    /// Mirrors [`Mmsc::record`]: negative, NaN, and infinite values are
+    /// invalid. In debug builds an invalid value trips a debug assertion; in
+    /// release builds it is dropped so a misbehaving call site cannot corrupt
+    /// the aggregation.
+    #[inline]
+    pub fn record(&mut self, value: f64) {
+        match self {
+            Self::Basic(mmsc) => mmsc.record(value),
+            Self::Normal(hist) => Self::check_hist(hist.update(value), "record rejected value"),
+            Self::Detailed(hist) => Self::check_hist(hist.update(value), "record rejected value"),
+        }
+    }
+
+    /// Resets all state for the next reporting interval.
+    #[inline]
+    pub fn reset(&mut self) {
+        match self {
+            Self::Basic(mmsc) => mmsc.reset(),
+            Self::Normal(hist) => hist.clear(),
+            Self::Detailed(hist) => hist.clear(),
+        }
+    }
+
+    /// Returns the total number of observations recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Basic(mmsc) => mmsc.get().count,
+            Self::Normal(hist) => hist.view().stats().count,
+            Self::Detailed(hist) => hist.view().stats().count,
+        }
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// Returns the tier name (`"basic"`, `"normal"`, or `"detailed"`).
+    #[inline]
+    #[must_use]
+    pub fn tier_name(&self) -> &'static str {
+        match self {
+            Self::Basic(_) => "basic",
+            Self::Normal(_) => "normal",
+            Self::Detailed(_) => "detailed",
+        }
+    }
+
+    /// Returns a `(count, sum, min, max)` summary of this interval's observations.
+    ///
+    /// For an empty distribution `min`/`max` are the aggregation's sentinels.
+    #[must_use]
+    pub fn summary(&self) -> (u64, f64, f64, f64) {
+        match self {
+            Self::Basic(mmsc) => {
+                let s = mmsc.get();
+                (s.count, s.sum, s.min, s.max)
+            }
+            Self::Normal(hist) => {
+                let s = hist.view().stats();
+                (s.count, s.sum, s.min, s.max)
+            }
+            Self::Detailed(hist) => {
+                let s = hist.view().stats();
+                (s.count, s.sum, s.min, s.max)
+            }
+        }
+    }
+
+    /// Projects this distribution onto its OTel exponential-histogram point
+    /// form ([`ExponentialHistogramPoint`]).
+    ///
+    /// The "basic" tier projects onto a bucketless point (scale 0, no positive
+    /// buckets, no zeros), consistent with how the basic tier is exported to
+    /// OTLP. The "normal"/"detailed" tiers project their positive bucket range
+    /// at the view's current scale, recovering `zero_count` as
+    /// `count - sum(positive bucket counts)`.
+    #[must_use]
+    pub fn to_point(&self) -> ExponentialHistogramPoint {
+        match self {
+            Self::Basic(mmsc) => {
+                let s = mmsc.get();
+                ExponentialHistogramPoint {
+                    scale: 0,
+                    zero_count: 0,
+                    positive_offset: 0,
+                    positive_buckets: Vec::new(),
+                    count: s.count,
+                    sum: (s.count > 0 && s.min >= 0.0).then_some(s.sum),
+                    min: (s.count > 0).then_some(s.min),
+                    max: (s.count > 0).then_some(s.max),
+                }
+            }
+            Self::Normal(hist) => point_from_view(&hist.view()),
+            Self::Detailed(hist) => point_from_view(&hist.view()),
+        }
+    }
+
+    /// Merges another distribution of the same tier into this one.
+    ///
+    /// Merging mismatched tiers is a programming error: in debug builds it
+    /// trips an assertion and in release builds it is a no-op. Histogram merges
+    /// that would overflow a bucket counter are likewise reported as debug
+    /// assertions.
+    pub fn merge(&mut self, other: &Self) {
+        match (self, other) {
+            (Self::Basic(dst), Self::Basic(src)) => dst.merge(**src),
+            (Self::Normal(dst), Self::Normal(src)) => {
+                Self::check_hist(dst.merge_from(&**src), "merge overflow");
+            }
+            (Self::Detailed(dst), Self::Detailed(src)) => {
+                Self::check_hist(dst.merge_from(&**src), "merge overflow");
+            }
+            _ => debug_assert!(false, "Distribution::merge across mismatched tiers"),
+        }
+    }
+
+    #[inline]
+    fn check_hist(result: Result<(), HistogramError>, context: &str) {
+        if let Err(error) = result {
+            debug_assert!(false, "Distribution::{context}: {error}");
+        }
+    }
+}
+
+/// Summary equality: two distributions are equal when they share a tier and
+/// agree on the observable aggregate statistics (count, sum, min, max).
+///
+/// The vendored [`Histogram`] does not implement structural equality, and the
+/// bucket layout is an implementation detail; comparing the summary is
+/// sufficient for the registry's equality needs and for tests. Distinct bucket
+/// distributions that share a summary compare equal.
+impl PartialEq for Distribution {
+    fn eq(&self, other: &Self) -> bool {
+        fn summary(dist: &Distribution) -> (u8, u64, f64, f64, f64) {
+            match dist {
+                Distribution::Basic(mmsc) => {
+                    let s = mmsc.get();
+                    (0, s.count, s.sum, s.min, s.max)
+                }
+                Distribution::Normal(hist) => {
+                    let s = hist.view().stats();
+                    (1, s.count, s.sum, s.min, s.max)
+                }
+                Distribution::Detailed(hist) => {
+                    let s = hist.view().stats();
+                    (2, s.count, s.sum, s.min, s.max)
+                }
+            }
+        }
+        summary(self) == summary(other)
+    }
+}
+
+/// Projects an exponential-histogram view onto an [`ExponentialHistogramPoint`].
+fn point_from_view<const N: usize>(view: &HistogramView<'_, N>) -> ExponentialHistogramPoint {
+    let stats = view.stats();
+    let positive = view.positive();
+    let positive_buckets: Vec<u64> = positive.iter().collect();
+    let positive_total: u64 = positive_buckets.iter().sum();
+    // Zeros contribute to `count` but are never bucketed.
+    let zero_count = stats.count.saturating_sub(positive_total);
+    ExponentialHistogramPoint {
+        scale: view.scale(),
+        zero_count,
+        positive_offset: positive.offset(),
+        positive_buckets,
+        count: stats.count,
+        sum: (stats.count > 0).then_some(stats.sum),
+        min: (stats.count > 0).then_some(stats.min),
+        max: (stats.count > 0).then_some(stats.max),
+    }
+}
+
+/// A materialized exponential-histogram point in the OTel exponential-histogram
+/// form.
+///
+/// This is the stable *wire* representation of a [`Distribution`]: a live
+/// distribution serializes into this shape (see [`DistributionValue`]) and
+/// deserializing a distribution yields this read-only form. `sum`/`min`/`max`
+/// are absent for an empty point, matching OTLP semantics.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExponentialHistogramPoint {
+    /// OTel scale of the positive bucket range.
+    pub scale: i32,
+    /// Number of exact-zero observations.
+    pub zero_count: u64,
+    /// Bucket index of the first entry in `positive_buckets`.
+    pub positive_offset: i32,
+    /// Positive bucket counts, starting at `positive_offset`.
+    pub positive_buckets: Vec<u64>,
+    /// Total number of observations (including zeros).
+    pub count: u64,
+    /// Sum of observations, present only for a non-empty point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sum: Option<f64>,
+    /// Minimum observation, present only for a non-empty point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Maximum observation, present only for a non-empty point.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+impl ExponentialHistogramPoint {
+    /// Returns a `(count, sum, min, max)` summary, using `0.0`/sentinels for an
+    /// empty point.
+    #[must_use]
+    pub fn summary(&self) -> (u64, f64, f64, f64) {
+        (
+            self.count,
+            self.sum.unwrap_or(0.0),
+            self.min.unwrap_or(f64::MAX),
+            self.max.unwrap_or(f64::MIN),
+        )
+    }
+}
+
+/// A distribution value carried by [`crate::metrics::MetricValue`].
+///
+/// A distribution can be present in two forms:
+/// - [`DistributionValue::Live`] is the live aggregation produced by an
+///   instrument. It is what the registry merges and what encoding projects.
+/// - [`DistributionValue::Point`] is the read-only materialized point produced
+///   by *deserializing* the wire form. The vendored histogram cannot be rebuilt
+///   from buckets, so a deserialized distribution is a point, not a live
+///   aggregation.
+///
+/// Both forms serialize identically to the OTel exponential-histogram point
+/// form, so the representation is transparent on the wire.
+#[derive(Debug, Clone)]
+pub enum DistributionValue {
+    /// A live aggregation produced by an instrument.
+    Live(Distribution),
+    /// A read-only materialized point from a deserialized wire value.
+    Point(ExponentialHistogramPoint),
+}
+
+impl DistributionValue {
+    /// Projects this value onto its exponential-histogram point form.
+    #[must_use]
+    pub fn to_point(&self) -> ExponentialHistogramPoint {
+        match self {
+            Self::Live(dist) => dist.to_point(),
+            Self::Point(point) => point.clone(),
+        }
+    }
+
+    /// Returns the number of observations recorded this interval.
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        match self {
+            Self::Live(dist) => dist.count(),
+            Self::Point(point) => point.count,
+        }
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// Returns a `(count, sum, min, max)` summary of this interval.
+    #[must_use]
+    pub fn summary(&self) -> (u64, f64, f64, f64) {
+        match self {
+            Self::Live(dist) => dist.summary(),
+            Self::Point(point) => point.summary(),
+        }
+    }
+
+    /// Returns the tier name, or `"point"` for a materialized wire value.
+    #[must_use]
+    pub fn tier_name(&self) -> &'static str {
+        match self {
+            Self::Live(dist) => dist.tier_name(),
+            Self::Point(_) => "point",
+        }
+    }
+
+    /// Resets a live aggregation for the next interval. Materialized points are
+    /// read-only, so resetting one is a programming error (a debug assertion).
+    pub fn reset(&mut self) {
+        match self {
+            Self::Live(dist) => dist.reset(),
+            Self::Point(_) => {
+                debug_assert!(false, "DistributionValue::reset on a materialized point")
+            }
+        }
+    }
+
+    /// Merges another live distribution into this one. Only `Live`-into-`Live`
+    /// merges are valid; other combinations are a programming error (a debug
+    /// assertion) because materialized points cannot be aggregated.
+    pub fn merge(&mut self, other: &Self) {
+        match (self, other) {
+            (Self::Live(dst), Self::Live(src)) => dst.merge(src),
+            _ => debug_assert!(
+                false,
+                "DistributionValue::merge requires two live distributions"
+            ),
+        }
+    }
+}
+
+impl PartialEq for DistributionValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.to_point() == other.to_point()
+    }
+}
+
+impl Serialize for DistributionValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.to_point().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for DistributionValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Self::Point(ExponentialHistogramPoint::deserialize(
+            deserializer,
+        )?))
+    }
+}
+
+#[inline]
+fn check_hist_update(result: Result<(), HistogramError>, context: &str) {
+    if let Err(error) = result {
+        debug_assert!(false, "{context}: {error}");
+    }
+}
+
+/// A normal-tier exponential-histogram instrument.
+///
+/// Records non-negative observations into a [`Histogram`] with
+/// [`HISTOGRAM_NORMAL_WORDS`] bucket words and snapshots them as a live
+/// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
+/// normal tier.
+#[derive(Clone, Default)]
+pub struct HistogramNormal(Histogram<HISTOGRAM_NORMAL_WORDS>);
+
+impl Debug for HistogramNormal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistogramNormal")
+            .field("count", &self.0.view().stats().count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HistogramNormal {
+    /// Records a single non-negative observation (see [`Distribution::record`]).
+    #[inline]
+    pub fn record(&mut self, value: f64) {
+        check_hist_update(
+            self.0.update(value),
+            "HistogramNormal::record rejected value",
+        );
+    }
+
+    /// Returns the current aggregation as a live [`Distribution`].
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> Distribution {
+        Distribution::Normal(Box::new(self.0.clone()))
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.view().stats().count == 0
+    }
+
+    /// Resets the histogram for the next reporting interval.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// A detailed-tier exponential-histogram instrument.
+///
+/// Records non-negative observations into a [`Histogram`] with
+/// [`HISTOGRAM_DETAILED_WORDS`] bucket words and snapshots them as a live
+/// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
+/// detailed tier.
+#[derive(Clone, Default)]
+pub struct HistogramDetailed(Histogram<HISTOGRAM_DETAILED_WORDS>);
+
+impl Debug for HistogramDetailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistogramDetailed")
+            .field("count", &self.0.view().stats().count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HistogramDetailed {
+    /// Records a single non-negative observation (see [`Distribution::record`]).
+    #[inline]
+    pub fn record(&mut self, value: f64) {
+        check_hist_update(
+            self.0.update(value),
+            "HistogramDetailed::record rejected value",
+        );
+    }
+
+    /// Returns the current aggregation as a live [`Distribution`].
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> Distribution {
+        Distribution::Detailed(Box::new(self.0.clone()))
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.view().stats().count == 0
+    }
+
+    /// Resets the histogram for the next reporting interval.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.0.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,5 +1283,180 @@ mod tests {
         a.merge(b);
         let snap = a.get();
         assert_eq!(snap.count, 0);
+    }
+
+    // Scenario: A basic-tier distribution records several non-negative values.
+    // Guarantees: The basic tier preserves exact min/max/sum/count, matching
+    // the standalone Mmsc instrument it wraps.
+    #[test]
+    fn test_distribution_basic_records_mmsc_summary() {
+        let mut dist = Distribution::basic();
+        for v in [10.0, 5.0, 20.0, 15.0] {
+            dist.record(v);
+        }
+        assert_eq!(dist.count(), 4);
+        let Distribution::Basic(mmsc) = &dist else {
+            panic!("expected basic tier")
+        };
+        let snap = mmsc.get();
+        assert_eq!(snap.min, 5.0);
+        assert_eq!(snap.max, 20.0);
+        assert_eq!(snap.sum, 50.0);
+        assert_eq!(snap.count, 4);
+    }
+
+    // Scenario: Normal- and detailed-tier distributions record positive values.
+    // Guarantees: Both histogram tiers accept observations and expose the exact
+    // count and sum through their view, confirming the boxed histograms are
+    // wired to the vendored expohisto aggregation.
+    #[test]
+    fn test_distribution_histogram_tiers_record_into_buckets() {
+        for mut dist in [Distribution::normal(), Distribution::detailed()] {
+            for v in [1.5_f64, 2.7, 4.0, 100.0] {
+                dist.record(v);
+            }
+            assert_eq!(dist.count(), 4);
+            let stats = match &dist {
+                Distribution::Normal(hist) => hist.view().stats(),
+                Distribution::Detailed(hist) => hist.view().stats(),
+                Distribution::Basic(_) => panic!("expected histogram tier"),
+            };
+            assert_eq!(stats.count, 4);
+            assert!((stats.sum - 108.2).abs() < 1e-9);
+            assert_eq!(stats.min, 1.5);
+            assert_eq!(stats.max, 100.0);
+        }
+    }
+
+    // Scenario: A fresh distribution and a reset distribution are inspected.
+    // Guarantees: A new instrument is empty, and resetting after recording
+    // returns it to the empty state so each delta interval starts clean.
+    #[test]
+    fn test_distribution_reset_clears_all_tiers() {
+        for mut dist in [
+            Distribution::basic(),
+            Distribution::normal(),
+            Distribution::detailed(),
+        ] {
+            assert!(dist.is_empty());
+            dist.record(3.0);
+            assert!(!dist.is_empty());
+            dist.reset();
+            assert!(dist.is_empty());
+            assert_eq!(dist.count(), 0);
+        }
+    }
+
+    // Scenario: Two same-tier distributions with disjoint observations are
+    // merged, for both the basic and histogram tiers.
+    // Guarantees: Merging accumulates counts and sums across tiers, which the
+    // registry relies on to fold per-thread aggregations together.
+    #[test]
+    fn test_distribution_merge_same_tier_accumulates() {
+        let mut basic_a = Distribution::basic();
+        basic_a.record(2.0);
+        basic_a.record(8.0);
+        let mut basic_b = Distribution::basic();
+        basic_b.record(1.0);
+        basic_b.record(10.0);
+        basic_a.merge(&basic_b);
+        let Distribution::Basic(mmsc) = &basic_a else {
+            panic!("expected basic tier")
+        };
+        let snap = mmsc.get();
+        assert_eq!(snap.count, 4);
+        assert_eq!(snap.min, 1.0);
+        assert_eq!(snap.max, 10.0);
+        assert_eq!(snap.sum, 21.0);
+
+        let mut hist_a = Distribution::normal();
+        hist_a.record(1.5);
+        hist_a.record(2.5);
+        let mut hist_b = Distribution::normal();
+        hist_b.record(3.5);
+        hist_a.merge(&hist_b);
+        assert_eq!(hist_a.count(), 3);
+    }
+
+    // Scenario: The normal tier is asked to record a negative value in a debug
+    // build.
+    // Guarantees: Invalid observations are rejected the same way the basic tier
+    // rejects them, tripping the shared debug assertion rather than silently
+    // corrupting the aggregation.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "Distribution::record rejected value")]
+    fn test_distribution_histogram_rejects_negative() {
+        let mut dist = Distribution::normal();
+        dist.record(-1.0);
+    }
+
+    /// Scenario: A normal-tier distribution records positive values and exact
+    /// zeros, then is projected to an exponential-histogram point.
+    /// Guarantees: The point preserves the total count and per-observation
+    /// stats, recovers `zero_count` so `zero_count + sum(positive_buckets) ==
+    /// count`, and carries the view's scale.
+    #[test]
+    fn test_distribution_to_point_projects_buckets_and_zeros() {
+        let mut dist = Distribution::normal();
+        dist.record(0.0);
+        for v in [1.5_f64, 2.7, 4.0] {
+            dist.record(v);
+        }
+
+        let point = dist.to_point();
+
+        assert_eq!(point.count, 4);
+        assert!((point.sum.expect("sum present") - 8.2).abs() < 1e-9);
+        // Zeros count toward the total but do not lower the recorded min/max.
+        assert_eq!(point.min, Some(1.5));
+        assert_eq!(point.max, Some(4.0));
+        let bucketed: u64 = point.positive_buckets.iter().sum();
+        assert_eq!(point.zero_count + bucketed, point.count);
+        assert_eq!(point.zero_count, 1);
+    }
+
+    /// Scenario: A live distribution is serialized and deserialized through the
+    /// exponential-histogram point wire form.
+    /// Guarantees: Deserialization yields a read-only materialized point whose
+    /// summary matches the live distribution's, and both forms are equal under
+    /// the summary-based `PartialEq`.
+    #[test]
+    fn test_distribution_value_serialize_yields_materialized_point() {
+        let mut dist = Distribution::detailed();
+        for v in [1.0_f64, 2.0, 3.0, 100.0] {
+            dist.record(v);
+        }
+        let live = DistributionValue::Live(dist);
+
+        let yaml = serde_yaml::to_string(&live).expect("serialize distribution value");
+        let back: DistributionValue = serde_yaml::from_str(&yaml).expect("deserialize");
+
+        assert!(matches!(back, DistributionValue::Point(_)));
+        assert_eq!(live.summary(), back.summary());
+        assert_eq!(live, back);
+    }
+
+    /// Scenario: `reset` and `merge` are invoked on a materialized (read-only)
+    /// point.
+    /// Guarantees: In release builds these are no-ops that leave the point
+    /// unchanged, documenting that materialized points cannot be aggregated.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn test_distribution_point_reset_and_merge_are_noops() {
+        let point = ExponentialHistogramPoint {
+            scale: 0,
+            zero_count: 0,
+            positive_offset: 0,
+            positive_buckets: vec![],
+            count: 2,
+            sum: Some(3.0),
+            min: Some(1.0),
+            max: Some(2.0),
+        };
+        let mut value = DistributionValue::Point(point.clone());
+        value.reset();
+        value.merge(&DistributionValue::Point(point.clone()));
+        assert_eq!(value, DistributionValue::Point(point));
     }
 }
