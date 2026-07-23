@@ -1,0 +1,7 @@
+# Use this changelog template to create an entry for release notes.
+
+change_type: breaking
+component: pipeline
+note: Consolidate retry processor metrics into bounded signal and outcome dimensions.
+issues: [3300]
+subtext:
