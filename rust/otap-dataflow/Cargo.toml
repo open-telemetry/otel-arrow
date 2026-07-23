@@ -149,6 +149,13 @@ once_cell = "1.20.2"
 # exporters, hence the "logs" feature.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs"]}
 
+# The SDK is pulled in as a slim, detector-only dependency (`default-features = false`) for its
+# `Resource` type and the `ResourceDetector` trait. Note the work for the slim sdk is finished
+# upstream in opentelemetry-rust #3593, but pending a release. Version 0.32.1 is not slim, but the
+# next version will be.
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.1", default-features = false }
+
 parking_lot = "0.12.5"
 paste = "1"
 parquet = { version = "58.3", default-features = false, features = ["arrow", "async", "object_store"]}
@@ -190,6 +197,7 @@ ipnet = "2.11.0"
 syn = { version = "2.0", features = ["full", "extra-traits"] }
 zstd = "0.13"
 sysinfo = "0.39"
+temp-env = "0.3.6"
 tempfile = "3"
 thiserror = "2.0.17"
 tracing = { version = ">=0.1.40", default-features = false }
@@ -273,6 +281,9 @@ tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
 geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "c0a28d7541afd51dc763b7dea3458ebb3aee4d52" }
+# Pinned to a rev containing upstream resource detector work. Swap to a published version once
+# contrib cuts one.
+opentelemetry-resource-detectors = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "4f5296b92b2a8e50d2078e011fa04371b69a5cf6" }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }

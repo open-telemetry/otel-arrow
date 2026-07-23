@@ -6947,6 +6947,7 @@ dependencies = [
  "js-sys",
  "pin-project-lite",
  "thiserror 2.0.19",
+ "tracing",
 ]
 
 [[package]]
@@ -6959,6 +6960,22 @@ dependencies = [
  "opentelemetry_sdk",
  "prost",
 ]
+
+[[package]]
+name = "opentelemetry-resource-detectors"
+version = "0.11.0"
+source = "git+https://github.com/open-telemetry/opentelemetry-rust-contrib.git?rev=4f5296b92b2a8e50d2078e011fa04371b69a5cf6#4f5296b92b2a8e50d2078e011fa04371b69a5cf6"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+]
+
+[[package]]
+name = "opentelemetry-semantic-conventions"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c913ac17a6c451661ee255f4625d143e51647ae78ebd969b75e41c4442f4fe47"
 
 [[package]]
 name = "opentelemetry_sdk"
@@ -7359,7 +7376,6 @@ dependencies = [
  "bitflags 2.13.1",
  "bytemuck",
  "cpu-time",
- "data-encoding",
  "flume",
  "futures",
  "futures-core",
@@ -7386,7 +7402,6 @@ dependencies = [
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -7655,6 +7670,9 @@ dependencies = [
  "bytes",
  "chrono",
  "flume",
+ "opentelemetry",
+ "opentelemetry-resource-detectors",
+ "opentelemetry_sdk",
  "otap-df-config",
  "otap-df-pdata",
  "otap-df-pdata-views",
@@ -7665,6 +7683,7 @@ dependencies = [
  "serde_yaml",
  "slotmap",
  "smallvec",
+ "temp-env",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -10037,6 +10056,15 @@ name = "target-lexicon"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+
+[[package]]
+name = "temp-env"
+version = "0.3.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96374855068f47402c3121c6eed88d29cb1de8f3ab27090e273e420bdabcf050"
+dependencies = [
+ "parking_lot",
+]
 
 [[package]]
 name = "tempfile"
