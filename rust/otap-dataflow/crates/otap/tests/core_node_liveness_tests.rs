@@ -533,7 +533,9 @@ fn test_batch_pipeline_eventually_flushes_partial_batch() {
 //   node-local wakeup path fired and delivered the timeout back through the
 //   real inbox/runtime path
 // - the processor emits 5 output log batches after consuming 5 input log
-//   batches, so the wakeup-triggered flushes are producing real downstream pdata batches rather than being dropped internally, verifying delivery and flush metrics.
+//   batches, so the wakeup-triggered flushes are producing real downstream
+//   pdata batches rather than being dropped internally, verifying delivery
+//   and flush metrics.
 #[test]
 fn test_batch_pipeline_uses_timer_wakeup_metrics_with_otlp_bytes_config() {
     let pipeline_group_id: PipelineGroupId = "liveness-group".into();
