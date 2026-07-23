@@ -55,17 +55,8 @@ use otap_df_pdata::{
     otap::batching::make_item_batches, otlp::batching::make_bytes_batches,
 };
 use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetRegistrar};
-use otap_df_telemetry_macros::{attribute_set, metric_set};
-
-/// Attributes used for dimensional metrics by signal type
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-pub struct SignalAttributes {
-    /// The type of telemetry signal (logs, metrics, traces)
-    pub signal: SignalType,
-}
-
+use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry_macros::metric_set;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::SocketAddr;
@@ -473,7 +464,6 @@ pub struct BatchProcessor {
     otap_signals: Option<SignalBatches<OtapArrowRecords>>,
     otlp_signals: Option<SignalBatches<OtlpProtoBytes>>,
     metrics: MetricSet<BatchProcessorMetrics>,
-    signal_metrics: MeasurementMetricSet<BatchProcessorSignalMetrics>,
 }
 
 struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
@@ -481,7 +471,6 @@ struct BatchProcessorFormat<'a, T: OtapPayloadHelpers> {
     fmtcfg: &'a FormatConfig,
     signals: &'a mut SignalBatches<T>,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
-    signal_metrics: &'a mut MeasurementMetricSet<BatchProcessorSignalMetrics>,
 }
 
 struct BatchProcessorSignal<'a, T: OtapPayloadHelpers>
@@ -493,7 +482,6 @@ where
     fmtcfg: &'a FormatConfig,
     buffer: &'a mut SignalBuffer<T>,
     metrics: &'a mut MetricSet<BatchProcessorMetrics>,
-    signal_metrics: &'a mut MeasurementMetricSet<BatchProcessorSignalMetrics>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -508,19 +496,6 @@ enum FlushReason {
     Size,
     Timer,
     Shutdown,
-}
-
-/// Signal-specific metrics for the batch processor.
-#[metric_set(name = "otap.processor.batch", measurement_attributes = SignalAttributes)]
-#[derive(Debug, Default, Clone)]
-pub struct BatchProcessorSignalMetrics {
-    /// Total batches consumed
-    #[metric(name = "consumed.batches", unit = "{item}")]
-    consumed_batches: Counter<u64>,
-
-    /// Total batches produced
-    #[metric(name = "produced.batches", unit = "{item}")]
-    produced_batches: Counter<u64>,
 }
 
 /// Minimal, essential metrics for the batch processor.
@@ -604,7 +579,6 @@ impl BatchProcessor {
     pub fn build_from_json(
         cfg: &Value,
         metrics: MetricSet<BatchProcessorMetrics>,
-        signal_metrics: MeasurementMetricSet<BatchProcessorSignalMetrics>,
     ) -> Result<Self, ConfigError> {
         let config: Config =
             serde_json::from_value(cfg.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -629,7 +603,6 @@ impl BatchProcessor {
             otap_signals,
             otlp_signals,
             metrics,
-            signal_metrics,
         })
     }
 
@@ -641,9 +614,8 @@ impl BatchProcessor {
         cfg: &Value,
         proc_cfg: &ProcessorConfig,
         metrics: MetricSet<BatchProcessorMetrics>,
-        signal_metrics: MeasurementMetricSet<BatchProcessorSignalMetrics>,
     ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
-        let proc = Self::build_from_json(cfg, metrics, signal_metrics)?;
+        let proc = Self::build_from_json(cfg, metrics)?;
         let user_config = Arc::new(NodeUserConfig::new_processor_config(
             OTAP_BATCH_PROCESSOR_URN,
         ));
@@ -680,7 +652,6 @@ impl BatchProcessor {
                 fmtcfg: &self.config.otap,
                 signals,
                 metrics: &mut self.metrics,
-                signal_metrics: &mut self.signal_metrics,
             })
     }
 
@@ -692,7 +663,6 @@ impl BatchProcessor {
                 fmtcfg: &self.config.otlp,
                 signals,
                 metrics: &mut self.metrics,
-                signal_metrics: &mut self.signal_metrics,
             })
     }
 
@@ -726,10 +696,6 @@ impl BatchProcessor {
         request: OtapPdata,
     ) -> Result<(), EngineError> {
         let signal = request.signal_type();
-        self.signal_metrics
-            .with(SignalAttributes { signal })
-            .consumed_batches
-            .add(1);
 
         let (ctx, payload) = request.into_parts();
 
@@ -786,7 +752,6 @@ where
                 SignalType::Metrics => &mut self.signals.metrics,
             },
             metrics: self.metrics,
-            signal_metrics: self.signal_metrics,
         }
     }
 }
@@ -1074,13 +1039,6 @@ where
             let weight = self.fmtcfg.sizer.batch_size(&records)?;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            self.signal_metrics
-                .with(SignalAttributes {
-                    signal: self.signal,
-                })
-                .produced_batches
-                .add(1);
-
             // If any inputs in this batch require notification, get an
             // outbound slot and subscribe.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
@@ -1215,9 +1173,7 @@ pub fn create_otap_batch_processor(
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let metrics = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
-    let signal_metrics =
-        pipeline_ctx.register_measurement_metric_set::<BatchProcessorSignalMetrics>();
-    let proc = BatchProcessor::build_from_json(&node_config.config, metrics, signal_metrics)?;
+    let proc = BatchProcessor::build_from_json(&node_config.config, metrics)?;
     Ok(ProcessorWrapper::local(
         proc,
         node,
@@ -1261,7 +1217,6 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                                 message: e.to_string(),
                             }
                         })?;
-                        _ = metrics_reporter.report_measurement(&mut self.signal_metrics);
                         Ok(())
                     }
                     NodeControlMsg::Wakeup { slot, when, .. } => {
