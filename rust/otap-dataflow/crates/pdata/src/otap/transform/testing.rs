@@ -17,7 +17,7 @@ use crate::otap::transform::util::{access_column, payload_relations, payload_to_
 /// indices map to each parent by ordinal position (smallest parent ID = 0,
 /// second smallest = 1, etc).  This captures structural relationships
 /// independent of actual ID values, so it should be identical before and
-/// after any ID‑rewriting transform.
+/// after any ID-rewriting transform.
 #[must_use]
 pub(crate) fn extract_relation_fingerprints<S: OtapBatchStore, const N: usize>(
     batches: &[[Option<RecordBatch>; N]],

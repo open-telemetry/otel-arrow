@@ -527,7 +527,7 @@ impl AssignPipelineStage {
             }
         }
 
-        // Coerce static scalar integers to the destination field type (e.g. AnyInt literal → UInt32).
+        // Coerce static scalar integers to the destination field type (e.g. AnyInt literal -> UInt32).
         // Mirrors the same cast done in assign_to_root.
         if let Some(dest_logical_type) = nested_struct_field_type(dest_field_name) {
             if let Some(dest_arrow_type) = dest_logical_type.datatype() {
@@ -2311,7 +2311,7 @@ fn coerce_to_any_value_struct_column(values: ArrayRef) -> Result<ArrayRef> {
                     Ok(values)
                 }
             } else {
-                // Dict not allowed for this value type — downcast to plain
+                // Dict not allowed for this value type -- downcast to plain
                 Ok(cast(&values, value_type.as_ref())?)
             }
         }
@@ -8079,18 +8079,18 @@ mod test {
     /// (no key present, not even an explicit null) are not dropped.
     async fn test_update_attr_coalesce_missing_attributes<P: Parser>() {
         let logs_data = to_logs_data(vec![
-            // log 0: has attr1 — coalesce picks attr1
+            // log 0: has attr1 -- coalesce picks attr1
             LogRecord::build()
                 .attributes(vec![
                     KeyValue::new("attr1", AnyValue::new_string("X")),
                     KeyValue::new("attr2", AnyValue::new_string("Y")),
                 ])
                 .finish(),
-            // log 1: attr1 absent entirely (no key), only attr2 — coalesce must pick attr2
+            // log 1: attr1 absent entirely (no key), only attr2 -- coalesce must pick attr2
             LogRecord::build()
                 .attributes(vec![KeyValue::new("attr2", AnyValue::new_string("Z"))])
                 .finish(),
-            // log 2: both absent — coalesce falls through to the literal "foo"
+            // log 2: both absent -- coalesce falls through to the literal "foo"
             LogRecord::build().attributes(vec![]).finish(),
         ]);
 
@@ -8260,7 +8260,7 @@ mod test {
     /// attributes, `extend attributes[...]` fills the null root-id column with `max+1`
     /// ids. That can place a larger id on an earlier-visited scope than a later one,
     /// breaking the monotonic-id invariant the OTLP decoder's attribute-join cursor
-    /// relies on — silently dropping *all* attributes from an unrelated record.
+    /// relies on -- silently dropping *all* attributes from an unrelated record.
     ///
     /// Each record here lives under its own scope; the `error` attribute follows the
     /// pattern `[present, absent, present]`. Every record must keep its original

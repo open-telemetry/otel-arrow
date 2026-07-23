@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`resolve_bindings`] — the per-node resolution pass that validates
+//! [`resolve_bindings`] -- the per-node resolution pass that validates
 //! a node's capability bindings against the registry and produces a
 //! [`Capabilities`] for consumption.
 
@@ -17,10 +17,10 @@ use std::collections::{HashMap, HashSet};
 ///
 /// For each `(capability_name, extension_name)` in the node's config:
 ///
-/// 1. **Extension exists** — `extension_name` is in `known_extensions`.
-/// 2. **Known capability** — `capability_name` is in `KNOWN_CAPABILITIES`.
-/// 3. **Capability provided** — The registry has an entry for this capability.
-/// 4. **Specific extension provides it** — The registry entry was registered
+/// 1. **Extension exists** -- `extension_name` is in `known_extensions`.
+/// 2. **Known capability** -- `capability_name` is in `KNOWN_CAPABILITIES`.
+/// 3. **Capability provided** -- The registry has an entry for this capability.
+/// 4. **Specific extension provides it** -- The registry entry was registered
 ///    by `extension_name`.
 ///
 /// On success, returns a [`Capabilities`] for the node and updates the
@@ -42,7 +42,7 @@ pub(crate) fn resolve_bindings(
     known_extensions: &HashSet<ExtensionId>,
     tracker: &mut ConsumedTracker,
 ) -> Result<Capabilities, Error> {
-    // Build lookup from capability name → KnownCapability
+    // Build lookup from capability name -> KnownCapability
     let known_caps: HashMap<&str, &crate::capability::KnownCapability> =
         crate::capability::KNOWN_CAPABILITIES
             .iter()
@@ -113,7 +113,7 @@ pub(crate) fn resolve_bindings(
 
         // Resolve local entry. Native local registrations get their
         // own resolved entry; the SharedAsLocal fallback is *not*
-        // materialized here — instead, [`Capabilities::require_local`]
+        // materialized here -- instead, [`Capabilities::require_local`]
         // falls through to the shared entry below and runs its
         // `adapt_as_local` adapter at consumption time. This collapses
         // the fallback's two former entries into one, so the

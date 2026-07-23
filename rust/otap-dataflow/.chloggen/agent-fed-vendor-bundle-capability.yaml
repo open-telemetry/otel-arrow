@@ -1,0 +1,14 @@
+change_type: enhancement
+
+component: engine
+
+note: Add the `VendorBundle` capability so an agent-fed extension can hand an opaque, vendor-defined attribute bag (a JSON object) to data-path nodes.
+
+issues: [3477]
+
+subtext: |
+  Complements the `BearerTokenProvider` capability for the agent-fed auth path:
+  the `#[capability]`-generated `VendorBundle` trait carries host-resolved,
+  vendor-defined attributes the engine passes through untouched, so a consumer
+  can skip its own config-service handshake. Token-only scopes do not provide
+  this capability.

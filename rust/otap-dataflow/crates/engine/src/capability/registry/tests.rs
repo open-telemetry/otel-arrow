@@ -3,8 +3,8 @@
 
 //! Unit tests for the capability registry.
 //!
-//! These exercise the registry infrastructure — register, resolve,
-//! consume, SharedAsLocal adapter — via a hand-written `TestCap`
+//! These exercise the registry infrastructure -- register, resolve,
+//! consume, SharedAsLocal adapter -- via a hand-written `TestCap`
 //! capability. The `#[capability]` proc macro cannot be invoked from
 //! within the engine crate because proc macros cannot target paths in
 //! their own host crate (`crate::capability::*`); the hand-written
@@ -15,7 +15,7 @@ use otap_df_config::ExtensionId;
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
-// ── Hand-written test capability ─────────────────────────────────────
+// -- Hand-written test capability -------------------------------------
 
 /// A minimal test capability trait (local version).
 trait TestCapLocal {
@@ -58,7 +58,7 @@ static _TEST_CAP: super::super::KnownCapability = super::super::KnownCapability 
     type_id: || TypeId::of::<TestCap>(),
 };
 
-// ── `#[capability]`-style helpers on TestCap ────────────────────────────────
+// -- `#[capability]`-style helpers on TestCap --------------------------------
 //
 // The `#[capability]` proc macro emits these on real capabilities. The
 // extension-side `extension_capabilities!(shared: E => [TestCap])` macro
@@ -109,7 +109,7 @@ impl TestCap {
     }
 }
 
-// ── Test implementations ─────────────────────────────────────────────
+// -- Test implementations ---------------------------------------------
 
 #[derive(Clone)]
 struct SharedImpl(&'static str);
@@ -127,7 +127,7 @@ impl TestCapLocal for LocalImpl {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// -- Helpers ----------------------------------------------------------
 
 // Build a SharedInstanceFactory that always produces a new
 // `Box<SharedImpl>` with the given value. Mimics the builder's
@@ -177,7 +177,7 @@ fn known_exts(names: &[&'static str]) -> HashSet<ExtensionId> {
     names.iter().map(|n| (*n).into()).collect()
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[test]
 fn test_registry_register_and_get() {
@@ -344,7 +344,7 @@ fn test_consumed_tracking_local_marks_shared_via_adapter() {
     let _ = caps.require_local::<TestCap>().unwrap();
 
     // The extension only registered a shared variant, so there is no
-    // native local tracker entry for this (cap, ext) pair — the
+    // native local tracker entry for this (cap, ext) pair -- the
     // SharedAsLocal adapter's consumption counts as shared use.
     assert!(tracker.unconsumed_local().is_empty());
     assert!(
@@ -367,7 +367,7 @@ fn test_unconsumed_tracking() {
     )
     .unwrap();
 
-    // Not consumed — should appear in unconsumed
+    // Not consumed -- should appear in unconsumed
     let unconsumed = tracker.unconsumed_shared();
     assert_eq!(unconsumed.len(), 1);
     assert_eq!(unconsumed[0].0.as_ref(), "ext-a");
@@ -442,7 +442,7 @@ fn test_multiple_providers_same_capability() {
 ///
 /// Scenario: two nodes bind `test_cap` to `ext-a` (local). Node A
 /// consumes it, node B does not. The tracker should still report the
-/// capability as consumed (because at least one node consumed it) —
+/// capability as consumed (because at least one node consumed it) --
 /// otherwise the engine will drop an extension variant that's actually
 /// in use.
 #[test]
@@ -471,7 +471,7 @@ fn test_consumed_tracking_persists_across_nodes_local() {
     )
     .unwrap();
 
-    // At least one node consumed it — should not appear in unconsumed.
+    // At least one node consumed it -- should not appear in unconsumed.
     assert!(
         tracker.unconsumed_local().is_empty(),
         "unconsumed_local should be empty but got {:?}",
@@ -511,7 +511,7 @@ fn test_consumed_tracking_persists_across_nodes_shared() {
 /// Regression for Option C: each node resolving a `SharedAsLocal`
 /// binding receives its own clone of the shared extension instance.
 /// This preserves the per-node instance semantics that a shared impl
-/// may rely on (e.g. per-caller mutable state) — the adapter is not
+/// may rely on (e.g. per-caller mutable state) -- the adapter is not
 /// pre-built once and shared across nodes.
 #[test]
 fn test_shared_as_local_builds_new_adapter_per_node() {
@@ -534,7 +534,7 @@ fn test_shared_as_local_builds_new_adapter_per_node() {
     )
     .unwrap();
 
-    // The adapter must not run at registration time — work is deferred
+    // The adapter must not run at registration time -- work is deferred
     // to the consumer's `require_local` call.
     assert_eq!(counter.load(Ordering::SeqCst), 0);
 
@@ -569,7 +569,7 @@ fn test_shared_as_local_builds_new_adapter_per_node() {
     assert_eq!(counter.load(Ordering::SeqCst), 2);
 }
 
-/// Duplicate registrations indicate a programmer bug — the registry
+/// Duplicate registrations indicate a programmer bug -- the registry
 /// must reject them loudly rather than silently overwriting.
 #[test]
 fn test_register_local_rejects_duplicate() {
@@ -603,7 +603,7 @@ fn test_register_shared_rejects_duplicate() {
     assert!(msg.contains("ext-a"), "error: {msg}");
 }
 
-// ── One-shot consumption contract ───────────────────────────────────────────
+// -- One-shot consumption contract -------------------------------------------
 
 #[test]
 fn test_require_local_second_call_returns_already_consumed() {
@@ -718,7 +718,7 @@ fn test_fallback_local_and_shared_share_one_shot_guard() {
     // (one in `local_entries`, one in `shared_entries`) backed by the
     // same shared registration. They share a single per-binding
     // `claimed` flag so the binding may be claimed at most once per
-    // node across all four accessors — claiming the local
+    // node across all four accessors -- claiming the local
     // execution model (via the adapter) consumes the binding for
     // the native shared execution model too, and vice versa.
     let mut reg = CapabilityRegistry::new();
@@ -765,7 +765,7 @@ fn test_fallback_local_and_shared_share_one_shot_guard() {
     }
 }
 
-// ── End-to-end: builder → bundle → register_into → resolve → require ────────
+// -- End-to-end: builder -> bundle -> register_into -> resolve -> require --------
 //
 // Proves the full wiring from the typestate builder (which owns the
 // `SharedInstanceFactory`), through `ExtensionBundle::register_into`
@@ -810,7 +810,7 @@ fn test_end_to_end_shared_only_via_bundle() {
         register_local: |_, _, _| Ok(()),
     };
 
-    // 3. Drain bundle → registry via register_into.
+    // 3. Drain bundle -> registry via register_into.
     let mut registry = CapabilityRegistry::new();
     bundle
         .register_into(Some(&caps), &mut registry)
@@ -902,7 +902,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
     // With the `.constructed()` (factory) policy, the instance factory
     // invokes the user's closure on each produce(); each consumer
     // should observe its own instance. Shared+Clone consumers observe
-    // clone-of-prototype semantics — also independent here since
+    // clone-of-prototype semantics -- also independent here since
     // SharedImpl has no interior mutability.
     use crate::capability::ExtensionCapabilities;
     use crate::config::ExtensionConfig;
@@ -991,7 +991,7 @@ fn test_end_to_end_shared_constructed_policy_mints_independent_instances() {
     );
 }
 
-// ── Envelope / error-shape regression tests ─────────────────────────────────
+// -- Envelope / error-shape regression tests ---------------------------------
 
 /// `register_into` must reject a metadata-vs-bundle mismatch: when the
 /// `extension_capabilities!` macro advertises an execution model that the runtime
@@ -1161,7 +1161,7 @@ fn test_require_shared_unbound_returns_capability_not_bound() {
 /// When a node binds a shared-only extension through its *local*-facing
 /// capability (the `SharedAsLocal` fallback), consumption of the
 /// fallback adapter must flip the shared bucket of `ConsumedTracker`
-/// — not a phantom local bucket. Otherwise `unconsumed_shared` would
+/// -- not a phantom local bucket. Otherwise `unconsumed_shared` would
 /// claim the shared variant is unused and the engine would drop it
 /// while the adapter still depended on it.
 #[test]
@@ -1211,7 +1211,7 @@ fn test_native_dual_local_claim_invalidates_shared_on_same_node() {
     // node returns `CapabilityAlreadyConsumed` even though the shared
     // entry is a distinct object. This is enforced by `require_local`
     // taking (and dropping unrun) the shared entry's `produce` cell on
-    // success — no auxiliary flag needed.
+    // success -- no auxiliary flag needed.
     //
     // Counterpart: `test_native_dual_shared_claim_invalidates_local_on_same_node`
     // verifies the symmetric direction.
@@ -1247,7 +1247,7 @@ fn test_native_dual_local_claim_invalidates_shared_on_same_node() {
         Err(crate::error::Error::CapabilityAlreadyConsumed { .. })
     ));
 
-    // Cross-node tracker: only the local bucket flipped — the shared
+    // Cross-node tracker: only the local bucket flipped -- the shared
     // variant was *not* consumed by any node, just invalidated locally.
     // The engine should still call `drop_shared()` on `ext-a` if no
     // other node claims it.
@@ -1258,7 +1258,7 @@ fn test_native_dual_local_claim_invalidates_shared_on_same_node() {
     assert_eq!(
         tracker.unconsumed_shared().len(),
         1,
-        "native local claim must NOT flip the shared bucket — invalidating \
+        "native local claim must NOT flip the shared bucket \u{2014} invalidating \
          the shared alternative is not the same as consuming it",
     );
 }
@@ -1306,12 +1306,12 @@ fn test_native_dual_shared_claim_invalidates_local_on_same_node() {
     assert_eq!(
         tracker.unconsumed_local().len(),
         1,
-        "native shared claim must NOT flip the local bucket — invalidating \
+        "native shared claim must NOT flip the local bucket \u{2014} invalidating \
          the local alternative is not the same as consuming it",
     );
 }
 
-// ── Background extension tests ──────────────────────────────────────────────
+// -- Background extension tests ----------------------------------------------
 
 /// Background extensions pass `None` to `register_into` and contribute zero
 /// entries to the registry. `ConsumedTracker` is untouched because no
@@ -1329,7 +1329,7 @@ fn test_register_into_background_no_op() {
     use std::sync::Arc;
 
     // A minimal shared bg-task type. The body of `start()` is irrelevant
-    // for this test — we only build the bundle and call register_into.
+    // for this test -- we only build the bundle and call register_into.
     #[derive(Clone)]
     struct BgTask;
 
@@ -1385,12 +1385,12 @@ fn test_register_into_background_no_op() {
 /// should surface the existing Step-4 error: the Background extension is
 /// known (it is loaded), but it does not provide the requested capability.
 /// This is the same behavior as binding to any active/passive extension
-/// that simply doesn't list the capability — Background is not a special
+/// that simply doesn't list the capability -- Background is not a special
 /// case at the resolution layer.
 #[test]
 fn test_resolve_bindings_background_not_a_provider() {
     // Registry contains `provider-ext` providing `test_cap`. The node
-    // config tries to bind `test_cap` to `bg-ext` — a known-loaded
+    // config tries to bind `test_cap` to `bg-ext` -- a known-loaded
     // Background extension that registered nothing.
     let mut reg = CapabilityRegistry::new();
     register_shared(&mut reg, "provider-ext", "v");
@@ -1411,7 +1411,7 @@ fn test_resolve_bindings_background_not_a_provider() {
     );
 }
 
-// ── Box-clone refactor regression tests ─────────────────────────────────────
+// -- Box-clone refactor regression tests -------------------------------------
 
 /// The local-side registry envelope must mirror the shared envelope
 /// shape: `Box<Box<dyn C::Local>>` erased as `Box<dyn Any>`.
@@ -1431,7 +1431,7 @@ fn test_local_entry_produce_uses_double_box_envelope() {
     assert_eq!((*boxed_trait_object).value(), "envelope-val");
 }
 
-// A separate test capability whose method takes `&mut self` — proving
+// A separate test capability whose method takes `&mut self` -- proving
 // the proc macro relaxation is end-to-end exercisable through both the
 // native local path and the SharedAsLocal fallback. Hand-rolled because
 // `#[capability]` cannot expand inside the engine crate.
@@ -1527,7 +1527,7 @@ impl MutSelfCapShared for MutSelfImpl {
 }
 
 /// `&mut self` methods are callable through `Box<dyn local::Trait>`
-/// — the whole point of the Box-clone refactor on the local side.
+/// -- the whole point of the Box-clone refactor on the local side.
 #[test]
 fn test_local_capability_supports_mut_self_native() {
     let mut reg = CapabilityRegistry::new();
@@ -1555,7 +1555,7 @@ fn test_local_capability_supports_mut_self_native() {
     assert_eq!(handle.bump(), 3);
 }
 
-/// `&mut self` is also callable through the SharedAsLocal fallback —
+/// `&mut self` is also callable through the SharedAsLocal fallback --
 /// the adapter holds the inner `Box<dyn shared::Trait>` in a field
 /// (`self.0`), which `&mut self` adapter methods can reborrow as
 /// `&mut *self.0` to delegate.
@@ -1588,7 +1588,7 @@ fn test_local_capability_supports_mut_self_via_shared_as_local() {
 
 /// Two consumers binding the same `.passive().cloned().local(E)`
 /// extension must each receive an independent boxed clone. Mutating
-/// one must not be observable through the other — proving the Box-
+/// one must not be observable through the other -- proving the Box-
 /// clone refactor honors per-consumer ownership rather than fanning
 /// `Rc::clone`s of a shared instance.
 #[test]

@@ -888,7 +888,7 @@ impl AppState {
                     enabled: current_cores > 1,
                 });
                 entries.push(ActionMenuEntry {
-                    label: "Set core count…".to_string(),
+                    label: "Set core count\u{2026}".to_string(),
                     detail: format!("Edit the explicit core_count starting from {current_cores}."),
                     action: UiAction::PipelineSetCoreCount {
                         group_id: group_id.clone(),
@@ -899,7 +899,7 @@ impl AppState {
                 });
             }
             Some(PipelineScaleSupport::Unsupported { reason }) => {
-                for label in ["Scale up", "Scale down", "Set core count…"] {
+                for label in ["Scale up", "Scale down", "Set core count\u{2026}"] {
                     entries.push(ActionMenuEntry {
                         label: label.to_string(),
                         detail: reason.clone(),
@@ -916,7 +916,7 @@ impl AppState {
         }
 
         entries.push(ActionMenuEntry {
-            label: "Edit and redeploy…".to_string(),
+            label: "Edit and redeploy\u{2026}".to_string(),
             detail: format!(
                 "Open the current config for {group_id}/{pipeline_id} in an external editor."
             ),
