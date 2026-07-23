@@ -322,6 +322,20 @@ impl GenevaExporter {
             obo_event_map: None,
         };
 
+        // The Geneva exporter uses rustls for mTLS. If no process-wide crypto
+        // provider was installed at startup (i.e. the binary was built without
+        // any `crypto-*` feature), fail fast with an actionable error instead
+        // of surfacing an opaque rustls handshake failure at export time.
+        if !otap_df_otap::crypto::is_crypto_provider_installed() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
+                        Build with exactly one of the crypto-* features \
+                        (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
+                        otap_df_otap::crypto::install_crypto_provider() runs at startup."
+                    .to_string(),
+            });
+        }
+
         // Initialize Geneva client
         let geneva_client = GenevaClient::new(client_config).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -962,6 +976,9 @@ mod tests {
 
     #[test]
     fn geneva_exporter_emits_ack_for_empty_payload() {
+        // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
+        // process-wide crypto provider, which production installs at startup.
+        otap_df_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -1001,6 +1018,9 @@ mod tests {
 
     #[test]
     fn geneva_exporter_emits_nack_for_decode_failure() {
+        // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
+        // process-wide crypto provider, which production installs at startup.
+        otap_df_otap::crypto::ensure_crypto_provider();
         let test_runtime = TestRuntime::new();
         let exporter = create_exporter_from_factory(&GENEVA_EXPORTER, test_config()).unwrap();
 
@@ -1184,6 +1204,9 @@ mod tests {
 
     #[test]
     fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
+        // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
+        // process-wide crypto provider, which production installs at startup.
+        otap_df_otap::crypto::ensure_crypto_provider();
         let config = serde_json::json!({
             "endpoint": "https://localhost",
             "environment": "test",
