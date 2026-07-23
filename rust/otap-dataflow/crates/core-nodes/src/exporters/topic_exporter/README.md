@@ -6,7 +6,7 @@
 
 - Type: `exporter:topic` (`urn:otel:exporter:topic`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

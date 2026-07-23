@@ -6,7 +6,7 @@
 
 - Type: `processor:batch` (`urn:otel:processor:batch`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

@@ -6,7 +6,7 @@
 
 - Type: `exporter:otlp_grpc` (`urn:otel:exporter:otlp_grpc`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 
