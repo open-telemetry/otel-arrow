@@ -1,14 +1,18 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The Kubernetes SAT authorizer extension: `Arc<Inner>` state, the
+//! The Kubernetes SAT authorizer extension: `Arc<Inner>` state and the
 //! `BearerTokenAuthorizer` capability implementation with a bounded decision
-//! cache, and the client-initialization loop driven by the active
-//! `Extension::start()` task.
+//! cache.
+//!
+//! This is a **passive** extension: it runs no event loop. The Kubernetes
+//! client is constructed lazily on the first `authorize()` call (a construction
+//! or API-server failure is undetermined, so callers fail closed and the next
+//! request retries).
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::{Arc, MutexGuard};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -17,20 +21,10 @@ use otap_df_engine::capability::auth::{
     AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
 };
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
-use otap_df_engine::control::ExtensionControlMsg;
-use otap_df_engine::error::Error as EngineError;
-use otap_df_engine::extension::EffectHandler;
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
-use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
-use otap_df_engine::terminal_state::TerminalState;
-use otap_df_telemetry::otel_warn;
-use tokio::sync::watch;
+use tokio::sync::OnceCell;
 
-use super::metrics::K8sSatTokenAuthorizerMetricsTracker;
 use super::reviewer::{ReviewOutcome, Reviewer};
-
-/// Delay between attempts to construct the Kubernetes client during startup.
-const CLIENT_INIT_RETRY_SECS: u64 = 10;
 
 /// A cached admission decision and the instant it stops being valid.
 struct CachedDecision {
@@ -102,9 +96,9 @@ impl DecisionCache {
 
 /// Shared, clonable Kubernetes SAT authorizer extension.
 ///
-/// Every clone (consumers + the initialization task) observes the same
-/// [`Inner`] state via `Arc`, so they share one Kubernetes client, one decision
-/// cache, and one metric set.
+/// Every clone (each consumer receives one) observes the same [`Inner`] state
+/// via `Arc`, so they share one lazily-built Kubernetes client and one decision
+/// cache.
 #[derive(Clone)]
 pub struct K8sSatTokenAuthorizerExtension {
     inner: Arc<Inner>,
@@ -114,10 +108,9 @@ pub struct K8sSatTokenAuthorizerExtension {
 struct Inner {
     /// Audiences requested on every `TokenReview`.
     audiences: Vec<String>,
-    /// The Kubernetes reviewer, published once the client is constructed in
-    /// `start()`. `None` until then; a request arriving before readiness fails
-    /// closed.
-    reviewer: watch::Sender<Option<Arc<Reviewer>>>,
+    /// The Kubernetes reviewer, built on first use. A failed build leaves the
+    /// cell empty so the next request retries.
+    reviewer: OnceCell<Arc<Reviewer>>,
     /// Allow-list of admitted service-account usernames, or `None` to admit any
     /// authenticated account.
     allowed_service_accounts: Option<HashSet<String>>,
@@ -126,9 +119,6 @@ struct Inner {
     cache: Mutex<DecisionCache>,
     /// Pre-tagged capability error builder.
     cap_err: CapabilityErrorSource<BearerTokenAuthorizerCap>,
-    /// Metric tracker. Its critical sections are short and never span an
-    /// `.await`, so a `std` `Mutex` is appropriate.
-    metrics: Mutex<K8sSatTokenAuthorizerMetricsTracker>,
 }
 
 impl K8sSatTokenAuthorizerExtension {
@@ -140,29 +130,37 @@ impl K8sSatTokenAuthorizerExtension {
         allowed_service_accounts: Option<HashSet<String>>,
         cache_ttl: Duration,
         cache_max_entries: usize,
-        metrics: K8sSatTokenAuthorizerMetricsTracker,
     ) -> Self {
-        let (reviewer, _rx) = watch::channel(None);
         Self {
             inner: Arc::new(Inner {
                 audiences,
-                reviewer,
+                reviewer: OnceCell::new(),
                 allowed_service_accounts,
                 cache: Mutex::new(DecisionCache::new(cache_ttl, cache_max_entries)),
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
-                metrics: Mutex::new(metrics),
             }),
         }
+    }
+
+    /// Returns the lazily-built reviewer, constructing the Kubernetes client on
+    /// first use. A construction failure is undetermined (fail closed) and
+    /// leaves the cell empty so the next call retries.
+    async fn reviewer(&self) -> Result<Arc<Reviewer>, CapabilityError> {
+        let inner = &self.inner;
+        inner
+            .reviewer
+            .get_or_try_init(|| async {
+                Reviewer::try_new(inner.audiences.clone())
+                    .await
+                    .map(Arc::new)
+                    .map_err(|e| inner.cap_err.error(e))
+            })
+            .await
+            .map(Arc::clone)
     }
 }
 
 impl Inner {
-    /// Locks the metric tracker, ignoring poisoning (a poisoned metrics lock
-    /// must never fail an authorization decision).
-    fn metrics(&self) -> Option<MutexGuard<'_, K8sSatTokenAuthorizerMetricsTracker>> {
-        self.metrics.lock().ok()
-    }
-
     /// Admits an authenticated identity against the configured allow-list,
     /// producing the final decision.
     fn admit(&self, username: Option<String>, audiences: Vec<String>) -> AuthzDecision {
@@ -204,11 +202,7 @@ impl SharedBearerTokenAuthorizer for K8sSatTokenAuthorizerExtension {
         // An empty credential is a missing credential (401); never round-trip it
         // to the API server.
         if token.is_empty() {
-            let decision = AuthzDecision::deny(DenyReason::MissingCredential);
-            if let Some(mut metrics) = inner.metrics() {
-                metrics.record_deny();
-            }
-            return Ok(decision);
+            return Ok(AuthzDecision::deny(DenyReason::MissingCredential));
         }
 
         // Fast path: a still-valid cached decision avoids a TokenReview.
@@ -219,49 +213,19 @@ impl SharedBearerTokenAuthorizer for K8sSatTokenAuthorizerExtension {
             .ok()
             .and_then(|cache| cache.get(token, now))
         {
-            if let Some(mut metrics) = inner.metrics() {
-                metrics.record_cache_hit();
-                record_decision(&mut metrics, &decision);
-            }
             return Ok(decision);
         }
 
-        // The reviewer is published once the client is built in `start()`. If it
-        // is not ready yet, fail closed: an undetermined decision must never
-        // grant access.
-        let reviewer = match inner.reviewer.borrow().clone() {
-            Some(reviewer) => reviewer,
-            None => {
-                if let Some(mut metrics) = inner.metrics() {
-                    metrics.record_error();
-                }
-                return Err(inner
-                    .cap_err
-                    .error("authorizer not ready: Kubernetes client is still initializing"));
-            }
-        };
+        // Lazily build the Kubernetes client on first use; a build failure is
+        // undetermined, so fail closed and let the next request retry.
+        let reviewer = self.reviewer().await?;
 
-        // Slow path: perform the TokenReview (no lock held across the await).
-        let start = Instant::now();
-        let outcome = reviewer.review(token).await;
-        let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
-
-        let outcome = match outcome {
-            Ok(outcome) => {
-                if let Some(mut metrics) = inner.metrics() {
-                    metrics.record_token_review(latency_ms);
-                }
-                outcome
-            }
-            Err(err) => {
-                if let Some(mut metrics) = inner.metrics() {
-                    metrics.record_token_review(latency_ms);
-                    metrics.record_error();
-                }
-                // Undetermined: the caller must fail closed. Do not cache.
-                return Err(inner.cap_err.error(err));
-            }
-        };
+        // Perform the TokenReview (no lock held across the await). A request
+        // failure is undetermined: fail closed and do not cache.
+        let outcome = reviewer
+            .review(token)
+            .await
+            .map_err(|err| inner.cap_err.error(err))?;
 
         let decision = match outcome {
             ReviewOutcome::Authenticated {
@@ -276,23 +240,11 @@ impl SharedBearerTokenAuthorizer for K8sSatTokenAuthorizerExtension {
             },
         };
 
-        // Cache the reached decision (allow or deny) and record it.
+        // Cache the reached decision (allow or deny).
         if let Ok(mut cache) = inner.cache.lock() {
             cache.insert(token.to_owned(), decision.clone(), Instant::now());
         }
-        if let Some(mut metrics) = inner.metrics() {
-            record_decision(&mut metrics, &decision);
-        }
         Ok(decision)
-    }
-}
-
-/// Records the allow/deny counter for a reached decision.
-fn record_decision(metrics: &mut K8sSatTokenAuthorizerMetricsTracker, decision: &AuthzDecision) {
-    if decision.is_allowed() {
-        metrics.record_allow();
-    } else {
-        metrics.record_deny();
     }
 }
 
@@ -324,86 +276,5 @@ impl K8sSatTokenAuthorizerExtension {
     /// Returns the number of live entries in the shared cache. Test-only.
     pub(crate) fn cache_len_for_test(&self) -> usize {
         self.inner.cache.lock().expect("cache lock").entries.len()
-    }
-}
-
-#[async_trait]
-impl SharedExtension for K8sSatTokenAuthorizerExtension {
-    async fn start(
-        self: Box<Self>,
-        mut ctrl: ControlChannel,
-        effect_handler: EffectHandler,
-    ) -> Result<TerminalState, EngineError> {
-        let inner = Arc::clone(&self.inner);
-
-        // Build the Kubernetes client, retrying on a fixed cadence until it
-        // succeeds or the engine shuts us down. The readiness probe holds
-        // data-path node startup until we signal ready, so consumers never
-        // observe a not-ready authorizer once the pipeline is running.
-        loop {
-            match Reviewer::try_new(inner.audiences.clone()).await {
-                Ok(reviewer) => {
-                    let _ = inner.reviewer.send_replace(Some(Arc::new(reviewer)));
-                    effect_handler.signal_ready();
-                    break;
-                }
-                Err(error) => {
-                    otel_warn!(
-                        "k8s_sat_token_authorizer.client_init_failed",
-                        error = %error
-                    );
-                    // Race the retry delay against the control channel so a
-                    // shutdown during initialization is honored promptly.
-                    tokio::select! {
-                        _ = tokio::time::sleep(Duration::from_secs(CLIENT_INIT_RETRY_SECS)) => {}
-                        ctrl_msg = ctrl.recv() => {
-                            match ctrl_msg {
-                                Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
-                                    let snapshot = inner.metrics().map(|m| m.snapshot());
-                                    return Ok(match snapshot {
-                                        Some(snapshot) => TerminalState::new(deadline, [snapshot]),
-                                        None => TerminalState::default(),
-                                    });
-                                }
-                                Err(_) => return Ok(TerminalState::default()),
-                                Ok(ExtensionControlMsg::Config { .. }) => {}
-                                Ok(ExtensionControlMsg::CollectTelemetry {
-                                    mut metrics_reporter,
-                                }) => {
-                                    if let Some(mut metrics) = inner.metrics() {
-                                        let _ = metrics.report(&mut metrics_reporter);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Steady state: the authorizer serves requests directly from the shared
-        // state; this loop only services control messages (telemetry, shutdown).
-        loop {
-            match ctrl.recv().await {
-                Ok(ExtensionControlMsg::Shutdown { deadline, .. }) => {
-                    let snapshot = inner.metrics().map(|m| m.snapshot());
-                    return Ok(match snapshot {
-                        Some(snapshot) => TerminalState::new(deadline, [snapshot]),
-                        None => TerminalState::default(),
-                    });
-                }
-                Err(_) => break,
-                Ok(ExtensionControlMsg::Config { .. }) => {}
-                Ok(ExtensionControlMsg::CollectTelemetry {
-                    mut metrics_reporter,
-                }) => {
-                    if let Some(mut metrics) = inner.metrics() {
-                        let _ = metrics.report(&mut metrics_reporter);
-                    }
-                }
-            }
-        }
-
-        Ok(TerminalState::default())
     }
 }

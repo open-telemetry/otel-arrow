@@ -12,7 +12,6 @@
 pub mod config;
 pub mod error;
 mod extension;
-mod metrics;
 mod reviewer;
 
 #[cfg(test)]
@@ -27,14 +26,12 @@ use otap_df_engine::ExtensionFactory;
 use otap_df_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::ExtensionContext;
-use otap_df_engine::extension::wrapper::ExtensionVariant;
 use otap_df_engine::extension::{ExtensionBundle, ExtensionWrapper};
 use otap_df_engine::extension_capabilities;
 use otap_df_otap::OTAP_EXTENSION_FACTORIES;
 
 use self::config::Config;
 use self::extension::K8sSatTokenAuthorizerExtension;
-use self::metrics::{K8sSatTokenAuthorizerMetrics, K8sSatTokenAuthorizerMetricsTracker};
 
 /// URN under which this extension is registered.
 pub const K8S_SAT_TOKEN_AUTHORIZER_URN: &str = "urn:otel:extension:k8s_sat_token_authorizer";
@@ -58,7 +55,7 @@ fn validate_config(config: &serde_json::Value) -> Result<(), ConfigError> {
 
 /// Builds a `K8sSatTokenAuthorizerExtension` bundle.
 fn create(
-    ext_ctx: &ExtensionContext,
+    _ext_ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     ext_config: Arc<ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -67,24 +64,19 @@ fn create(
     let config = parse_config(&ext_config.config)?;
     let allowed = config.allowed_service_account_set();
 
-    // Register a dedicated entity + metric set for this extension instance.
-    let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
-    let metric_set =
-        ext_ctx.register_metric_set_for_entity::<K8sSatTokenAuthorizerMetrics>(entity_key);
-    let tracker = K8sSatTokenAuthorizerMetricsTracker::new(metric_set);
-
     let extension = K8sSatTokenAuthorizerExtension::new(
         &name,
         config.audiences.clone(),
         allowed,
         config.cache_ttl,
         config.cache_max_entries,
-        tracker,
     );
 
+    // Passive: the extension runs no event loop. It exposes the authorizer
+    // capability and builds its Kubernetes client lazily on first use.
     ExtensionWrapper::builder(name, ext_config, extension_config)
-        .active()
-        .with_readiness_probe_timeout_override(config.startup_timeout)
+        .passive()
+        .cloned()
         .shared::<K8sSatTokenAuthorizerExtension>(extension)
         .build()
         .map_err(|e| ConfigError::InvalidUserConfig {
@@ -97,7 +89,7 @@ fn create(
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static K8S_SAT_TOKEN_AUTHORIZER_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: K8S_SAT_TOKEN_AUTHORIZER_URN,
-    description: "Active+Shared extension exposing BearerTokenAuthorizer via Kubernetes TokenReview",
+    description: "Passive+Shared extension exposing BearerTokenAuthorizer via Kubernetes TokenReview",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
         shared: K8sSatTokenAuthorizerExtension => [BearerTokenAuthorizer]

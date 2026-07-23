@@ -19,16 +19,6 @@ fn default_cache_max_entries() -> usize {
     1024
 }
 
-/// Default startup readiness timeout.
-///
-/// Larger than the engine's 5 s readiness-probe default: constructing the
-/// in-cluster Kubernetes client (reading the projected service-account token and
-/// cluster CA, resolving the API server) plus a first-attempt retry on a ~10 s
-/// cadence can exceed 5 s, so the gate must allow room for a retry.
-fn default_startup_timeout() -> Duration {
-    Duration::from_secs(30)
-}
-
 /// Configuration for the Kubernetes SAT authorizer extension.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,13 +47,6 @@ pub struct Config {
     /// greater than zero.
     #[serde(default = "default_cache_max_entries")]
     pub cache_max_entries: usize,
-
-    /// How long the engine holds data-path node startup waiting for this
-    /// extension to construct its Kubernetes client, before aborting pipeline
-    /// startup. Accepts human-readable durations (e.g. `30s`, `1m`). Must be
-    /// non-zero.
-    #[serde(with = "humantime_serde", default = "default_startup_timeout")]
-    pub startup_timeout: Duration,
 }
 
 impl Config {
@@ -80,9 +63,6 @@ impl Config {
         }
         if self.cache_max_entries == 0 {
             return Err("`cache_max_entries` must be greater than zero".to_string());
-        }
-        if self.startup_timeout.is_zero() {
-            return Err("`startup_timeout` must be greater than zero".to_string());
         }
         // Surface a malformed allow-list entry at wiring time rather than
         // silently never matching it at request time.
