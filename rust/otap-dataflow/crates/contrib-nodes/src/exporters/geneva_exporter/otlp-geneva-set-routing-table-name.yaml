@@ -62,8 +62,8 @@ groups:
               max_concurrent_uploads: 4
               logs:
                 default_event_name: "Test1"
-                # You can use one of the following routing configurations to map logs to different event names (tables) in Geneva:
-                # Example routing using event_name.
+                # # You can use one of the following routing configurations to map logs to different event names (tables) in Geneva:
+                # # Example routing using event_name.
                 # event_name_mapping:
                 #   routing_key: event_name
                 #   events:
@@ -71,12 +71,12 @@ groups:
                 #     Log1: Log1
 
                 # Or use resource_attribute:
-                # event_name_mapping:
-                #  routing_key:
-                #    resource_attribute: cluster
-                #  events:
-                #    Test1: Log1
-                #    Log1: 
+                event_name_mapping:
+                 routing_key:
+                   resource_attribute: cluster
+                 events:
+                   Test1: Log1
+                   Log1: 
 
                 # Or use scope_attribute:
                 # event_name_mapping:
@@ -92,7 +92,16 @@ groups:
                 #    log_record_attribute: custom_event_name  # Note: event_name at this level will not work, it has to be log_record_attribute
                 #  events:
                 #    Test1:
-                #    Log1:               
+                #    Log1:         
+
+              spans:
+                default_event_name: "Span"
+                # Invalid configuration for spans, as event_name_mapping is not supported for spans in this example.
+                # event_name_mapping:
+                #   routing_key: event_name
+                #   events:
+                #     Test1: Log1
+                #     Span1:    
 
           geneva-exporter-traces:
             type: "urn:microsoft:exporter:geneva"
@@ -115,12 +124,12 @@ groups:
               spans:
                 default_event_name: "Test2"
                 # Example span routing configurations (similar to logs):
-                # event_name_mapping:
-                #  routing_key:
-                #    resource_attribute: cluster
-                #  events:
-                #    Test2: Test2
-                #    Span2: MyEvent
+                event_name_mapping:
+                 routing_key:
+                   resource_attribute: cluster
+                 events:
+                   Test2: Test2
+                   Span2: MyEvent
                 
                 # Or use scope_attribute:
                 # event_name_mapping:

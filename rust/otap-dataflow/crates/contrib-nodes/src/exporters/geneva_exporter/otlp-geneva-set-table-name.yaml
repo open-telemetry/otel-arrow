@@ -34,15 +34,7 @@ groups:
                 grpc:
                   listening_addr: "127.0.0.1:4317"
 
-          # Type router - splits logs and traces into separate paths
-          signal-router:
-            type: "urn:otel:processor:type_router"
-            outputs:
-              - logs
-              - traces
-            config: {}
-
-          geneva-exporter-logs:
+          geneva-exporter:
             type: "urn:microsoft:exporter:geneva"
             config:
               endpoint: "https://gcs.ppe.monitoring.core.windows.net/"
@@ -62,37 +54,10 @@ groups:
               max_concurrent_uploads: 4
               logs:
                 default_event_name: "Test1"
-
-          geneva-exporter-traces:
-            type: "urn:microsoft:exporter:geneva"
-            config:
-              endpoint: "https://gcs.ppe.monitoring.core.windows.net/"
-              environment: "test"
-              account: "PipelineAgent2Demo"
-              namespace: "PAdemo2"
-              region: "westus2"
-              config_major_version: 2
-              tenant: "PAdemo2"
-              role_name: "otlp-collector"
-              role_instance: "ragudevbox-collector-002"
-              auth:
-                type: "certificate"
-                path: "C:\\Official_New\\Cert\\pipelineagentkv-NSAonecert-20260520.pfx"
-                password: ""
-              max_buffer_size: 1000
-              max_concurrent_uploads: 4
               spans:
                 default_event_name: "Test2"
 
         connections:
           # Shared receiver → type router
           - from: otlp-receiver
-            to: signal-router
-
-          # Logs path: router["logs"] → attr → transform → exporter
-          - from: signal-router["logs"]
-            to: geneva-exporter-logs
-
-          # Traces path: router["traces"] → attr → exporter
-          - from: signal-router["traces"]
-            to: geneva-exporter-traces
+            to: geneva-exporter
