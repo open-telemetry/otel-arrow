@@ -52,9 +52,17 @@ use smallvec::smallvec;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::time::MissedTickBehavior;
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
+
+/// Bounded broker timeout for a single per-partition consumer-lag watermark
+/// lookup. This bounds *each* `fetch_watermarks` call, not the whole refresh:
+/// a refresh queries every owned partition sequentially, so the worst-case time
+/// spent in one refresh scales with the number of owned partitions
+/// (`partitions * timeout`).
+const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -502,12 +510,18 @@ impl KafkaReceiver {
 
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
+            self.metrics.rebalances_total.add(delta.rebalances_total);
             self.metrics
-                .partitions_assigned
-                .add(delta.partitions_assigned);
+                .partition_assignments
+                .add(delta.partition_assignments);
             self.metrics
-                .partitions_revoked
-                .add(delta.partitions_revoked);
+                .partition_revocations
+                .add(delta.partition_revocations);
+            // `partitions_assigned` is a gauge: set it to the current owned count
+            // snapshot rather than accumulating. Folded only when a rebalance
+            // actually occurred (guarded by `is_empty`, which ignores this
+            // gauge-only field) to avoid redundant writes on idle ticks.
+            self.metrics.partitions_assigned.set(delta.partitions_owned);
             self.metrics
                 .rebalance_commit_errors
                 .add(delta.rebalance_commit_errors);
@@ -529,6 +543,73 @@ impl KafkaReceiver {
         }
         self.rebalance_state
             .set_committable_snapshot(self.offset_tracker.committable_snapshot());
+    }
+
+    /// Recompute the per-partition average consumer lag and set the
+    /// `consumer_lag` gauge directly.
+    ///
+    /// For each owned partition with a known committed offset, the lag is
+    /// `high_watermark - committed_offset` (clamped at 0). The reported value is
+    /// the mean across those partitions, or `0.0` when none are owned.
+    ///
+    /// The broker high-watermark lookup ([`Consumer::fetch_watermarks`]) is a
+    /// blocking call; it is issued only from the dedicated consumer-lag timer
+    /// branch of the receive loop (never on the per-message hot path) and bounded
+    /// by `timeout` so a slow or unreachable broker cannot stall the receive loop
+    /// indefinitely. Disabled in auto-commit mode (no committed-offset tracking
+    /// to compare against).
+    fn refresh_consumer_lag<C: ConsumerContext>(
+        &mut self,
+        consumer: &StreamConsumer<C>,
+        timeout: Duration,
+    ) {
+        if self.config.is_auto_commit() {
+            return;
+        }
+
+        // Committed offsets we would persist for each owned partition. Using the
+        // tracker snapshot avoids an extra broker `committed()` round-trip.
+        let committed = self.offset_tracker.committable_snapshot();
+        if committed.is_empty() {
+            self.metrics.consumer_lag.set(0.0);
+            return;
+        }
+
+        let mut total_lag: i64 = 0;
+        let mut counted: u64 = 0;
+        for ((topic, partition), committed_offset) in &committed {
+            // Skip partitions no longer owned by this consumer.
+            if !self.rebalance_state.is_assigned(topic, *partition) {
+                continue;
+            }
+            match consumer.fetch_watermarks(topic, *partition, timeout) {
+                Ok((_low, high)) => {
+                    // committable_snapshot stores the next-offset-to-commit, i.e.
+                    // one past the last processed record; the broker high
+                    // watermark is likewise one past the last produced record, so
+                    // their difference is the outstanding record count.
+                    let lag = high.saturating_sub(*committed_offset).max(0);
+                    total_lag = total_lag.saturating_add(lag);
+                    counted += 1;
+                }
+                Err(e) => {
+                    self.metrics.transport_errors.add(1);
+                    otel_error!(
+                        "kafka.lag.fetch_watermarks_failed",
+                        topic = %topic,
+                        partition = *partition,
+                        error = %e,
+                    );
+                }
+            }
+        }
+
+        let avg = if counted == 0 {
+            0.0
+        } else {
+            total_lag as f64 / counted as f64
+        };
+        self.metrics.consumer_lag.set(avg);
     }
 
     /// Advance the offset tracker for a processed message and, if the
@@ -664,6 +745,23 @@ impl KafkaReceiver {
                     .await?;
             }
         }
+
+        // Opt-in consumer-lag refresh timer, derived from the configured
+        // interval. Stays `None` (disabled) in auto-commit mode (no committed
+        // offset to compare against) or when no interval is set, so the dedicated
+        // `select!` branch below is never polled and no timer is armed. `reset()`
+        // defers the first tick by one full interval so the first refresh is
+        // periodic, not immediate.
+        let mut lag_ticker: Option<tokio::time::Interval> = manual_commit
+            .then(|| self.config.lag_refresh_interval_ms())
+            .flatten()
+            .map(Duration::from_millis)
+            .map(|dur| {
+                let mut ticker = tokio::time::interval(dur);
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                ticker.reset();
+                ticker
+            });
 
         // Set once the receiver-first drain protocol begins. After this the
         // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
@@ -966,6 +1064,21 @@ impl KafkaReceiver {
                             }
                         }
                     }
+                }
+
+                // 3. Periodic consumer-lag refresh (opt-in, dedicated timer).
+                // `lag_ticker` is None when disabled, so the branch is never
+                // polled; it also stops firing once draining begins so no broker
+                // watermark calls are issued during shutdown.
+                _ = async {
+                    match lag_ticker.as_mut() {
+                        Some(ticker) => ticker.tick().await,
+                        // Unreachable: the branch guard keeps this future from
+                        // being polled when the ticker is disabled.
+                        None => std::future::pending().await,
+                    }
+                }, if lag_ticker.is_some() && draining_deadline.is_none() => {
+                    self.refresh_consumer_lag(&consumer, LAG_FETCH_PARTITION_TIMEOUT);
                 }
             }
         }
@@ -2022,6 +2135,64 @@ mod tests {
             Some(&Offset::Offset(200)),
             "owned partition 1 must remain committable",
         );
+    }
+
+    /// Scenario: a rebalance assigns partitions and the receive loop reconciles.
+    /// Guarantees: `reconcile_rebalance_state` folds the rebalance deltas into
+    /// the metric set - counting the rebalance event and cumulative
+    /// acquisitions, and setting the `partitions_assigned` gauge to the current
+    /// owned count rather than accumulating it.
+    #[test]
+    fn reconcile_folds_consumer_group_metrics() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Simulate a rebalance that assigns two partitions.
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let _ = tpl.add_partition("traces", 1);
+        receiver.rebalance_state.set_assignment_for_test(&tpl);
+
+        receiver.reconcile_rebalance_state();
+
+        // Gauge reflects current ownership; cumulative counter reflects the
+        // acquisitions.
+        assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
+        assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+
+        // A second reconcile with no further rebalance activity must not change
+        // the gauge (it is folded only when a rebalance occurred) or double
+        // count the counter.
+        receiver.reconcile_rebalance_state();
+        assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
+        assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+    }
+
+    /// Scenario: consumer-lag refresh runs with no tracked committed offsets.
+    /// Guarantees: `refresh_consumer_lag` sets the `consumer_lag` gauge directly
+    /// to 0.0 when there are no owned committed offsets to compare, without
+    /// issuing a broker watermark call.
+    #[tokio::test]
+    async fn refresh_consumer_lag_sets_zero_when_no_committed_offsets() {
+        let (_mock, brokers) = start_mock_kafka(&["traces"]);
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .set("group.id", "lag-test")
+            .set("enable.auto.commit", "false")
+            .create()
+            .expect("failed to create consumer");
+
+        // Empty offset tracker => empty committable snapshot => the gauge is set
+        // to 0.0 directly, before any fetch_watermarks broker call.
+        receiver.refresh_consumer_lag(&consumer, LAG_FETCH_PARTITION_TIMEOUT);
+        assert!(receiver.metrics.consumer_lag.get().abs() < f64::EPSILON);
     }
 
     #[test]
