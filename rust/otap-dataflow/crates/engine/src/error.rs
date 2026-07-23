@@ -479,7 +479,7 @@ pub enum Error {
 
     /// All nodes were removed from the pipeline (none are connected).
     #[error(
-        "Pipeline has no connected nodes after removing unconnected entries — check pipeline configuration"
+        "Pipeline has no connected nodes after removing unconnected entries \u{2014} check pipeline configuration"
     )]
     EmptyPipeline,
 

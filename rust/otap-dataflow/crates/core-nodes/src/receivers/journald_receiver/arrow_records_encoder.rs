@@ -52,7 +52,7 @@ impl JournalEntry {
             .map(|field| field.value.as_slice())
     }
 
-    /// Returns the log body: the value at `message_body_index` — the entry's
+    /// Returns the log body: the value at `message_body_index` -- the entry's
     /// first `MESSAGE` field if it was kept, otherwise `None` (including the
     /// case where the first `MESSAGE` was dropped but a later `MESSAGE` survives
     /// in `fields`). Reads the bytes back from `fields`, so the message payload

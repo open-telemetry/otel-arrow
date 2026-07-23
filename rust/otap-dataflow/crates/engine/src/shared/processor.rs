@@ -134,7 +134,7 @@ pub struct EffectHandler<PData> {
     /// [`EndFlowMetrics`] for field-level documentation.
     ///
     /// `Mutex` is used inside the marker/accumulator cells because shared
-    /// processors run on worker threads — contention is bounded to the
+    /// processors run on worker threads -- contention is bounded to the
     /// per-processor sequential `process()` loop and the periodic
     /// telemetry drain.
     pub(crate) flow: SharedFlowMetricState,

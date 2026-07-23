@@ -643,7 +643,7 @@ impl ArrayComparator {
         } else {
             None
         };
-        // suppress unused variable warning — next_group_id is intentionally kept up-to-date
+        // suppress unused variable warning -- next_group_id is intentionally kept up-to-date
         // for clarity even though it's not read after this point.
         let _ = next_group_id;
 
@@ -859,7 +859,7 @@ fn set_range_bits(range: Range<usize>, bool_buffer: &mut [u8]) {
         bit_util::set_bit(bool_buffer, i);
     }
 
-    // full bytes — memset
+    // full bytes -- memset
     let first_full_byte = aligned_start_index / 8;
     let last_full_byte = aligned_end_index / 8;
     bool_buffer[first_full_byte..last_full_byte].fill(0xFF);

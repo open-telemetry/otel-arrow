@@ -66,7 +66,7 @@ pub fn install_crypto_provider() -> Result<(), String> {
 
 /// Installs the crypto provider idempotently (intended for test setup).
 ///
-/// Uses [`std::sync::Once`] so it is safe to call from every test — the actual
+/// Uses [`std::sync::Once`] so it is safe to call from every test -- the actual
 /// installation happens at most once per process.
 pub fn ensure_crypto_provider() {
     use std::sync::Once;

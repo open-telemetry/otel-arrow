@@ -219,10 +219,10 @@ pub enum StorageType {
 /// extracts that discarded path so it can be used with `PrefixStore`.
 ///
 /// Examples:
-/// - `s3://bucket/telemetry` → `Some(Path::from("telemetry"))`
-/// - `s3://bucket` → `None`
-/// - `az://container/prefix` → `Some(Path::from("prefix"))`
-/// - `https://account.blob.core.windows.net/container/prefix` → `Some(Path::from("prefix"))`
+/// - `s3://bucket/telemetry` -> `Some(Path::from("telemetry"))`
+/// - `s3://bucket` -> `None`
+/// - `az://container/prefix` -> `Some(Path::from("prefix"))`
+/// - `https://account.blob.core.windows.net/container/prefix` -> `Some(Path::from("prefix"))`
 #[cfg(any(feature = "azure", feature = "aws"))]
 fn extract_path_prefix(base_uri: &str) -> Result<Option<Path>, object_store::Error> {
     let url = url::Url::parse(base_uri).map_err(|e| object_store::Error::Generic {

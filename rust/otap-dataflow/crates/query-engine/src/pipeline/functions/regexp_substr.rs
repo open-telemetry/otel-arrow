@@ -47,7 +47,7 @@ const FUNC_NAME: &str = "regexp_substr";
 /// - `flags` (string, optional): Regex modifier flags passed to the regex engine. Supported:
 ///   `i` (case-insensitive), `m` (multi-line), `s` (dot-all), `c` (case-sensitive, default).
 /// - `group` (integer, optional, default `0`): Which capture group to return. `0` returns the
-///   full match. If the group is not present in the pattern, returns NULL. Negative → NULL.
+///   full match. If the group is not present in the pattern, returns NULL. Negative -> NULL.
 ///
 /// # Return Type
 ///
@@ -631,7 +631,7 @@ where
             if arr.data_type().is_integer()
                 || matches!(arr.data_type(), DataType::Dictionary(_, v) if v.is_integer())
             {
-                // Integer group array — capture group by index
+                // Integer group array -- capture group by index
                 let casted = cast_int_array_to_int64(arr)?;
                 let int_arr = casted.as_primitive::<Int64Type>();
                 regex_substr_core(
@@ -645,7 +645,7 @@ where
                     }),
                 )
             } else {
-                // String group array — capture group by name
+                // String group array -- capture group by name
                 let casted = cast_str_array_to_utf8(arr)?;
                 let str_arr = casted.as_string::<i32>();
                 regex_substr_core(
@@ -659,7 +659,7 @@ where
             }
         }
         ColumnarValue::Scalar(scalar) => match scalar {
-            // String scalar — capture group by name
+            // String scalar -- capture group by name
             ScalarValue::Utf8(name) => {
                 let group = name.as_deref().map(CaptureGroupRef::Name);
                 regex_substr_core(
@@ -671,7 +671,7 @@ where
                     std::iter::repeat(group),
                 )
             }
-            // Integer scalar — capture group by index
+            // Integer scalar -- capture group by index
             _ => {
                 let group = match scalar.cast_to(&DataType::UInt64) {
                     Ok(unsigned_scalar) => {
@@ -715,7 +715,7 @@ fn columnar_int_scalar_to_usize(scalar: &ScalarValue) -> Result<Option<usize>> {
             };
             Ok(val.map(|i| i as usize))
         }
-        // negative integer → treat as null
+        // negative integer -> treat as null
         _ => Ok(None),
     }
 }
@@ -765,13 +765,13 @@ where
     for (((((value, pattern), flag), start), occurrence), group) in iter {
         match (value, pattern, start, occurrence, group) {
             (Some(value), Some(pattern), Some(start), Some(occurrence), Some(group)) => {
-                // Apply the start offset (1-based char position → byte offset).
+                // Apply the start offset (1-based char position -> byte offset).
                 let byte_offset = if start <= 1 {
                     0
                 } else {
                     match value.char_indices().nth(start - 1) {
                         Some((byte_idx, _)) => byte_idx,
-                        // start is beyond the string length → null
+                        // start is beyond the string length -> null
                         None => {
                             null_run += 1;
                             continue;
@@ -1812,7 +1812,7 @@ mod test {
     async fn test_start_parameter() {
         let session_context = Pipeline::create_session_context();
 
-        // regexp_substr("xxhello world", "hello (\\w+)", start=3) — skip first 2 chars
+        // regexp_substr("xxhello world", "hello (\\w+)", start=3) -- skip first 2 chars
         let plan = Expr::ScalarFunction(ScalarFunction::new_udf(
             regexp_substr(),
             vec![col("test_col"), lit("hello (\\w+)"), lit(3i64)],

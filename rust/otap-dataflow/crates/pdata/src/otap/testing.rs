@@ -26,7 +26,7 @@ use crate::schema::schema::{DataType as OtapDataType, SimpleType};
 /// Known ID column paths that need plain encoding metadata.
 pub const ID_COLUMN_PATHS: &[&str] = &["id", "resource.id", "scope.id", "parent_id"];
 
-/// Build a [`Logs`] store from payload‑type / column specs.
+/// Build a [`Logs`] store from payload-type / column specs.
 ///
 /// Missing required columns are automatically filled in using the schema spec.
 /// Use `.into()` to convert to [`OtapArrowRecords`], or `.into_batches()` to
@@ -57,7 +57,7 @@ macro_rules! logs {
 }
 pub use logs;
 
-/// Build a [`Traces`] store from payload‑type / column specs.
+/// Build a [`Traces`] store from payload-type / column specs.
 ///
 /// Missing required columns are automatically filled in using the schema spec.
 /// Use `.into()` to convert to [`OtapArrowRecords`], or `.into_batches()` to
@@ -80,7 +80,7 @@ macro_rules! traces {
 }
 pub use traces;
 
-/// Build a [`Metrics`] store from payload‑type / column specs.
+/// Build a [`Metrics`] store from payload-type / column specs.
 ///
 /// Missing required columns are automatically filled in using the schema spec.
 /// Use `.into()` to convert to [`OtapArrowRecords`], or `.into_batches()` to
@@ -271,10 +271,10 @@ pub fn complete_batch(payload_type: ArrowPayloadType, batch: RecordBatch) -> Rec
 
 /// Create a default-valued Arrow array for the given OTAP data type with `num_rows` rows.
 ///
-/// - `Simple` types → concrete zero-valued arrays
-/// - `Dictionary` types → produce native (non-dictionary) form
-/// - `Struct` types → recursively build all sub-fields
-/// - `List` types → create `num_rows` empty lists
+/// - `Simple` types -> concrete zero-valued arrays
+/// - `Dictionary` types -> produce native (non-dictionary) form
+/// - `Struct` types -> recursively build all sub-fields
+/// - `List` types -> create `num_rows` empty lists
 fn default_array(data_type: &OtapDataType, num_rows: usize) -> (DataType, ArrayRef) {
     match data_type {
         OtapDataType::Simple(s) | OtapDataType::Dictionary { value_type: s, .. } => {
