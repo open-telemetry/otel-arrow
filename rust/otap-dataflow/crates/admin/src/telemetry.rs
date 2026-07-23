@@ -768,10 +768,36 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         s.count
                     );
                 }
-                // Distribution metrics are not yet produced by any instrument;
-                // rendering them is deferred to a follow-up change.
-                MetricValue::Distribution(_) => {
-                    unreachable!("Distribution rendering is not yet wired up")
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
+                        continue;
+                    }
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
+                        if !first {
+                            fields.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            &mut fields,
+                            "{}{}={}",
+                            escape_lp_field_key(fname),
+                            suffix,
+                            fval
+                        );
+                    }
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}_count={}i",
+                        escape_lp_field_key(fname),
+                        count
+                    );
                 }
             }
         }
@@ -817,6 +843,9 @@ fn collect_scalar_metric(
             // carrying buckets/sum/count.
             Instrument::Histogram => "gauge",
             Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
+            Instrument::ExponentialHistogram => {
+                unreachable!("distributions are not scalars")
+            }
         };
         PromMetricMetadata {
             help: if field.brief.is_empty() {
@@ -914,6 +943,22 @@ fn collect_mmsc_metric(
             ts_suffix,
         );
         group.samples.push(sample);
+    }
+}
+
+/// Materializes a distribution's `(count, sum, min, max)` summary as an
+/// [`MmscSnapshot`] so it renders with the same min/max/sum/count expansion as
+/// an MMSC metric. Full exponential-bucket rendering is deferred; the admin
+/// endpoints expose the summary statistics only.
+fn distribution_summary_snapshot(
+    value: &otap_df_telemetry::instrument::DistributionValue,
+) -> otap_df_telemetry::instrument::MmscSnapshot {
+    let (count, sum, min, max) = value.summary();
+    otap_df_telemetry::instrument::MmscSnapshot {
+        min,
+        max,
+        sum,
+        count,
     }
 }
 
@@ -1037,10 +1082,14 @@ fn agg_prometheus_text(
                     MetricValue::Mmsc(s) => {
                         collect_mmsc_metric(&mut prom_groups, field, s, &base_labels, &ts_suffix);
                     }
-                    // Distribution metrics are not yet produced by any
-                    // instrument; rendering them is deferred to a follow-up.
-                    MetricValue::Distribution(_) => {
-                        unreachable!("Distribution rendering is not yet wired up")
+                    MetricValue::Distribution(d) => {
+                        collect_mmsc_metric(
+                            &mut prom_groups,
+                            field,
+                            &distribution_summary_snapshot(d.as_ref()),
+                            &base_labels,
+                            &ts_suffix,
+                        );
                     }
                 }
             }
@@ -1264,10 +1313,36 @@ fn format_line_protocol(
                         s.count
                     );
                 }
-                // Distribution metrics are not yet produced by any instrument;
-                // rendering them is deferred to a follow-up change.
-                MetricValue::Distribution(_) => {
-                    unreachable!("Distribution rendering is not yet wired up")
+                // Distribution metrics render their summary statistics only;
+                // full exponential-bucket rendering is deferred.
+                MetricValue::Distribution(ref d) => {
+                    let (count, sum, min, max) = d.summary();
+                    if count == 0 {
+                        continue;
+                    }
+                    for (suffix, fval) in [("_min", min), ("_max", max), ("_sum", sum)] {
+                        if !first {
+                            fields.push(',');
+                        }
+                        first = false;
+                        let _ = write!(
+                            &mut fields,
+                            "{}{}={}",
+                            escape_lp_field_key(field.name),
+                            suffix,
+                            fval
+                        );
+                    }
+                    if !first {
+                        fields.push(',');
+                    }
+                    first = false;
+                    let _ = write!(
+                        &mut fields,
+                        "{}_count={}i",
+                        escape_lp_field_key(field.name),
+                        count
+                    );
                 }
             }
         }
@@ -1328,10 +1403,14 @@ fn format_prometheus_text(
                 MetricValue::Mmsc(ref s) => {
                     collect_mmsc_metric(&mut groups, field, s, &base_labels, &ts_suffix);
                 }
-                // Distribution metrics are not yet produced by any instrument;
-                // rendering them is deferred to a follow-up change.
-                MetricValue::Distribution(_) => {
-                    unreachable!("Distribution rendering is not yet wired up")
+                MetricValue::Distribution(ref d) => {
+                    collect_mmsc_metric(
+                        &mut groups,
+                        field,
+                        &distribution_summary_snapshot(d.as_ref()),
+                        &base_labels,
+                        &ts_suffix,
+                    );
                 }
             }
         }

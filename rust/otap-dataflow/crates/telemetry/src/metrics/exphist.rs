@@ -31,9 +31,6 @@ use otap_df_pdata::proto::opentelemetry::metrics::v1::{
 /// `sum`, `min`, and `max` are populated only when at least one observation
 /// has been recorded. The sum is always OTLP-valid here because the source
 /// histogram rejects negative values.
-// Wired into `encode_metric` once the histogram-carrying `MetricValue`
-// variant lands; kept standalone and tested in this staged step.
-#[allow(dead_code)]
 pub(crate) fn exponential_histogram_data_point<const N: usize>(
     view: &HistogramView<'_, N>,
     start_time_unix_nano: u64,
@@ -92,6 +89,37 @@ pub(crate) fn mmsc_exponential_histogram_data_point(
         builder = builder.sum(snapshot.sum);
     }
     builder.finish()
+}
+
+/// Projects a live [`Distribution`] onto an OTLP `ExponentialHistogramDataPoint`,
+/// dispatching each tier onto the matching primitive.
+pub(crate) fn distribution_exponential_histogram_data_point(
+    distribution: &crate::instrument::Distribution,
+    start_time_unix_nano: u64,
+    time_unix_nano: u64,
+    attributes: &[KeyValue],
+) -> ExponentialHistogramDataPoint {
+    use crate::instrument::Distribution;
+    match distribution {
+        Distribution::Basic(mmsc) => mmsc_exponential_histogram_data_point(
+            &mmsc.get(),
+            start_time_unix_nano,
+            time_unix_nano,
+            attributes,
+        ),
+        Distribution::Normal(hist) => exponential_histogram_data_point(
+            &hist.view(),
+            start_time_unix_nano,
+            time_unix_nano,
+            attributes,
+        ),
+        Distribution::Detailed(hist) => exponential_histogram_data_point(
+            &hist.view(),
+            start_time_unix_nano,
+            time_unix_nano,
+            attributes,
+        ),
+    }
 }
 
 #[cfg(test)]

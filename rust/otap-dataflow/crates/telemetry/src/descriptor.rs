@@ -22,6 +22,11 @@ pub enum Instrument {
     /// Internally tracked as an `Mmsc` instrument; the OTLP bridge exports the
     /// aggregated snapshot as a bucketless OTel histogram.
     Mmsc,
+    /// Exponential-histogram distribution (normal/detailed tiers).
+    ///
+    /// Tracked as a [`crate::instrument::Distribution`]; the OTLP bridge exports
+    /// the aggregation as an OTel exponential-histogram point.
+    ExponentialHistogram,
 }
 
 /// Aggregation temporality for sum-like instruments.

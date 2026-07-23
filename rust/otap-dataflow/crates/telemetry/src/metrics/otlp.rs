@@ -104,6 +104,7 @@
 use crate::attributes::{AttributeSetHandler, AttributeValue};
 use crate::descriptor::{Instrument, MetricsField, Temporality};
 use crate::entity::EntityAttributeSet;
+use crate::instrument::DistributionValue;
 use crate::metrics::{MetricExportBatch, MetricSetExport, MetricValue};
 use bytes::Bytes;
 use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
@@ -555,7 +556,8 @@ fn merge_metric_set(target: &mut MetricSetExport, incoming: &MetricSetExport) {
             Instrument::Counter
             | Instrument::UpDownCounter
             | Instrument::Histogram
-            | Instrument::Mmsc => current.add_in_place(incoming),
+            | Instrument::Mmsc
+            | Instrument::ExponentialHistogram => current.add_in_place(incoming),
         }
     }
 }
@@ -849,6 +851,27 @@ fn encode_metric(
                 vec![point],
             ))
         }
+        Instrument::ExponentialHistogram => {
+            let MetricValue::Distribution(distribution) = value else {
+                unreachable!("metric value kind was validated before encoding")
+            };
+            let DistributionValue::Live(live) = distribution.as_ref() else {
+                unreachable!("registry distributions are always live aggregations")
+            };
+            if live.is_empty() {
+                return Ok(None);
+            }
+            let point = crate::metrics::exphist::distribution_exponential_histogram_data_point(
+                live,
+                metric_set.delta_start_time_unix_nano,
+                time_unix_nano,
+                datapoint_attributes,
+            );
+            metric::Data::ExponentialHistogram(ExponentialHistogram::new(
+                AggregationTemporality::Delta,
+                vec![point],
+            ))
+        }
     };
 
     Ok(Some(Metric {
@@ -864,6 +887,7 @@ fn encode_metric(
 fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), Error> {
     let expected = match field.instrument {
         Instrument::Mmsc => "mmsc",
+        Instrument::ExponentialHistogram => "distribution",
         _ => match field.value_type {
             crate::descriptor::MetricValueType::U64 => "u64",
             crate::descriptor::MetricValueType::F64 => "f64",
@@ -1077,6 +1101,18 @@ mod tests {
             unit: "ms",
             brief: "Empty pre-aggregated histogram",
             instrument: Instrument::Mmsc,
+            temporality: Some(Temporality::Delta),
+            value_type: MetricValueType::F64,
+        }],
+    };
+
+    static DISTRIBUTION_ONLY_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+        name: "test.distribution",
+        metrics: &[MetricsField {
+            name: "histogram.distribution",
+            unit: "ms",
+            brief: "Exponential-histogram distribution",
+            instrument: Instrument::ExponentialHistogram,
             temporality: Some(Temporality::Delta),
             value_type: MetricValueType::F64,
         }],
@@ -1754,6 +1790,68 @@ mod tests {
         assert_eq!(histogram.data_points[0].max, Some(5.0));
         assert_eq!(histogram.data_points[0].sum, Some(12.0));
         assert_eq!(histogram.data_points[0].count, 4);
+    }
+
+    // Scenario: A delta exponential-histogram distribution field is recorded,
+    // aggregated across two snapshots, then encoded to OTLP.
+    // Guarantees: The merged distribution exports as a single delta
+    // ExponentialHistogram data point whose count/sum/min/max reflect every
+    // recorded observation and whose delta start time is preserved.
+    #[test]
+    fn encodes_distribution_as_delta_exponential_histogram_point() {
+        use crate::instrument::{Distribution, DistributionValue};
+
+        let attributes = empty_attributes();
+        let mut first_dist = Distribution::normal();
+        for value in [1.0_f64, 2.0, 4.0] {
+            first_dist.record(value);
+        }
+        let first = metric_set(
+            &DISTRIBUTION_ONLY_DESCRIPTOR,
+            attributes.clone(),
+            vec![MetricValue::Distribution(Box::new(
+                DistributionValue::Live(first_dist),
+            ))],
+        );
+
+        let mut second_dist = Distribution::normal();
+        second_dist.record(8.0);
+        let second = metric_set(
+            &DISTRIBUTION_ONLY_DESCRIPTOR,
+            attributes,
+            vec![MetricValue::Distribution(Box::new(
+                DistributionValue::Live(second_dist),
+            ))],
+        );
+
+        let batch = MetricExportBatch {
+            time_unix_nano: COLLECTION_TIME,
+            metric_sets: vec![first, second],
+        };
+
+        let request = decode_request(
+            empty_resource_encoder()
+                .encode(&batch)
+                .expect("distribution batch should encode")
+                .expect("distribution batch should produce a request"),
+        );
+        let scope = only_scope(&request);
+        let metric = metric_named(scope, "histogram.distribution");
+        let Some(metric::Data::ExponentialHistogram(histogram)) = metric.data.as_ref() else {
+            panic!("expected exponential histogram metric")
+        };
+        assert_eq!(
+            histogram.aggregation_temporality,
+            AggregationTemporality::Delta as i32
+        );
+        let [point] = histogram.data_points.as_slice() else {
+            panic!("expected one exponential histogram data point")
+        };
+        assert_eq!(point.count, 4);
+        assert_eq!(point.sum, Some(15.0));
+        assert_eq!(point.min, Some(1.0));
+        assert_eq!(point.max, Some(8.0));
+        assert_eq!(point.start_time_unix_nano, DELTA_START);
     }
 
     #[test]

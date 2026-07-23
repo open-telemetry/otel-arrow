@@ -1046,7 +1046,7 @@ impl MetricSetRegistry {
                     // Gauges report absolute values; replace.
                     *current = incoming.clone();
                 }
-                Instrument::Histogram | Instrument::Mmsc => {
+                Instrument::Histogram | Instrument::Mmsc | Instrument::ExponentialHistogram => {
                     // Histograms and MMSC instruments report per-interval changes.
                     current.add_in_place(incoming);
                 }

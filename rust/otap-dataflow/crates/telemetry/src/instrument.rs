@@ -1002,6 +1002,109 @@ impl<'de> Deserialize<'de> for DistributionValue {
     }
 }
 
+#[inline]
+fn check_hist_update(result: Result<(), HistogramError>, context: &str) {
+    if let Err(error) = result {
+        debug_assert!(false, "{context}: {error}");
+    }
+}
+
+/// A normal-tier exponential-histogram instrument.
+///
+/// Records non-negative observations into a [`Histogram`] with
+/// [`HISTOGRAM_NORMAL_WORDS`] bucket words and snapshots them as a live
+/// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
+/// normal tier.
+#[derive(Clone, Default)]
+pub struct HistogramNormal(Histogram<HISTOGRAM_NORMAL_WORDS>);
+
+impl Debug for HistogramNormal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistogramNormal")
+            .field("count", &self.0.view().stats().count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HistogramNormal {
+    /// Records a single non-negative observation (see [`Distribution::record`]).
+    #[inline]
+    pub fn record(&mut self, value: f64) {
+        check_hist_update(
+            self.0.update(value),
+            "HistogramNormal::record rejected value",
+        );
+    }
+
+    /// Returns the current aggregation as a live [`Distribution`].
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> Distribution {
+        Distribution::Normal(Box::new(self.0.clone()))
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.view().stats().count == 0
+    }
+
+    /// Resets the histogram for the next reporting interval.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// A detailed-tier exponential-histogram instrument.
+///
+/// Records non-negative observations into a [`Histogram`] with
+/// [`HISTOGRAM_DETAILED_WORDS`] bucket words and snapshots them as a live
+/// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
+/// detailed tier.
+#[derive(Clone, Default)]
+pub struct HistogramDetailed(Histogram<HISTOGRAM_DETAILED_WORDS>);
+
+impl Debug for HistogramDetailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistogramDetailed")
+            .field("count", &self.0.view().stats().count)
+            .finish_non_exhaustive()
+    }
+}
+
+impl HistogramDetailed {
+    /// Records a single non-negative observation (see [`Distribution::record`]).
+    #[inline]
+    pub fn record(&mut self, value: f64) {
+        check_hist_update(
+            self.0.update(value),
+            "HistogramDetailed::record rejected value",
+        );
+    }
+
+    /// Returns the current aggregation as a live [`Distribution`].
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> Distribution {
+        Distribution::Detailed(Box::new(self.0.clone()))
+    }
+
+    /// Returns `true` when no observations have been recorded this interval.
+    #[inline]
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.view().stats().count == 0
+    }
+
+    /// Resets the histogram for the next reporting interval.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.0.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
