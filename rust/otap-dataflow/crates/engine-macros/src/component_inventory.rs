@@ -8,6 +8,11 @@
 //! distributed slice at link time, mirroring the `#[capability]` ->
 //! `KNOWN_CAPABILITIES` mechanism. The annotated item is re-emitted unchanged.
 //!
+//! The attribute-argument grammar ([`ComponentInventoryArgs`]) is defined once
+//! in the shared `otap-df-engine-inventory-syntax` crate and reused by both
+//! this macro and the `cargo xtask component-inventory` scanner, so the two can
+//! never disagree about what an annotation means.
+//!
 //! # Accepted forms
 //!
 //! Factory `static` (the common case) -- `id` is derived from the factory's
@@ -39,187 +44,16 @@
 //! pub struct AdminServer { /* ... */ }
 //! ```
 
+use otap_df_engine_inventory_syntax::ComponentInventoryArgs;
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
-use syn::{
-    Attribute, Expr, ExprLit, Ident, Item, Lit, LitStr, Meta, Token,
-    parse::{Parse, ParseStream},
-    punctuated::Punctuated,
-    token::Comma,
-};
-
-/// Categories accepted by the macro (RFC 0001).
-///
-/// Kept in sync with `otap_df_engine::inventory::Category`.
-const KNOWN_CATEGORIES: &[&str] = &[
-    "Receiver",
-    "Exporter",
-    "Processor",
-    "Extension",
-    "Admin",
-    "Controller",
-    "Cli",
-    "Subsystem",
-    "Safety",
-];
-
-/// Map a `Category` identifier to its URN segment, for the URN cross-check.
-fn category_urn_segment(cat: &str) -> Option<&'static str> {
-    match cat {
-        "Receiver" => Some("receiver"),
-        "Exporter" => Some("exporter"),
-        "Processor" => Some("processor"),
-        "Extension" => Some("extension"),
-        "Admin" => Some("admin"),
-        "Controller" => Some("controller"),
-        "Cli" => Some("cli"),
-        "Subsystem" => Some("subsystem"),
-        "Safety" => Some("safety"),
-        _ => None,
-    }
-}
-
-/// Parsed arguments from `#[component_inventory(...)]`.
-pub(crate) struct ComponentInventoryArgs {
-    /// Explicit `id = "..."` (required only when the annotated item is not a
-    /// factory static with a `name` field).
-    pub id: Option<LitStr>,
-    /// `category = <Ident>` (required). Validated against `KNOWN_CATEGORIES`.
-    pub category: Ident,
-    /// Optional `description = "..."`.
-    pub description: Option<LitStr>,
-    /// Optional `attributes(key = "value", ...)` list.
-    pub attributes: Vec<(LitStr, LitStr)>,
-}
-
-impl Parse for ComponentInventoryArgs {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut id: Option<LitStr> = None;
-        let mut category: Option<Ident> = None;
-        let mut description: Option<LitStr> = None;
-        let mut attributes: Vec<(LitStr, LitStr)> = Vec::new();
-
-        let metas = Punctuated::<Meta, Comma>::parse_terminated(input)?;
-        for meta in metas {
-            match meta {
-                // key = value forms: id, category, description.
-                Meta::NameValue(nv) => {
-                    let key = nv
-                        .path
-                        .get_ident()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
-                    match key.as_str() {
-                        "id" => id = Some(expect_str(&nv.value, "id")?),
-                        "description" => {
-                            description = Some(expect_str(&nv.value, "description")?);
-                        }
-                        "category" => {
-                            // `category = Receiver` parses as a path expression.
-                            let ident = match &nv.value {
-                                Expr::Path(p) => p.path.get_ident().cloned(),
-                                _ => None,
-                            };
-                            category = Some(ident.ok_or_else(|| {
-                                syn::Error::new_spanned(
-                                    &nv.value,
-                                    "`category` must be a bare identifier, e.g. `Receiver`",
-                                )
-                            })?);
-                        }
-                        _ => {
-                            return Err(syn::Error::new_spanned(
-                                nv.path,
-                                "unknown `#[component_inventory]` attribute; expected \
-                                 `id`, `category`, `description`, or `attributes(...)`",
-                            ));
-                        }
-                    }
-                }
-                // attributes(key = "value", ...) form.
-                Meta::List(list) if list.path.is_ident("attributes") => {
-                    let pairs =
-                        list.parse_args_with(Punctuated::<AttrPair, Comma>::parse_terminated)?;
-                    for pair in pairs {
-                        attributes.push((pair.key, pair.value));
-                    }
-                }
-                other => {
-                    return Err(syn::Error::new_spanned(
-                        other,
-                        "unknown `#[component_inventory]` attribute; expected \
-                         `id`, `category`, `description`, or `attributes(...)`",
-                    ));
-                }
-            }
-        }
-
-        let category =
-            category.ok_or_else(|| input.error("missing required `category = <Category>`"))?;
-
-        // Validate the category identifier at macro time so a misspelling like
-        // `Reciever` is a clear compile error rather than a silent bad entry.
-        let cat_str = category.to_string();
-        if !KNOWN_CATEGORIES.contains(&cat_str.as_str()) {
-            return Err(syn::Error::new_spanned(
-                &category,
-                format!(
-                    "unknown component category `{cat_str}`; expected one of: {}",
-                    KNOWN_CATEGORIES.join(", ")
-                ),
-            ));
-        }
-
-        Ok(ComponentInventoryArgs {
-            id,
-            category,
-            description,
-            attributes,
-        })
-    }
-}
-
-/// One `key = "value"` pair inside `attributes(...)`.
-struct AttrPair {
-    key: LitStr,
-    value: LitStr,
-}
-
-impl Parse for AttrPair {
-    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        // Accept either `port = "4317"` (bare ident key) or `"port" = "4317"`.
-        let key = if input.peek(LitStr) {
-            input.parse::<LitStr>()?
-        } else {
-            let ident = input.parse::<Ident>()?;
-            LitStr::new(&ident.to_string(), ident.span())
-        };
-        let _eq: Token![=] = input.parse()?;
-        let value = input.parse::<LitStr>()?;
-        Ok(AttrPair { key, value })
-    }
-}
-
-/// Extract a string literal from a `key = <expr>` value.
-fn expect_str(expr: &Expr, key: &str) -> syn::Result<LitStr> {
-    if let Expr::Lit(ExprLit {
-        lit: Lit::Str(s), ..
-    }) = expr
-    {
-        Ok(s.clone())
-    } else {
-        Err(syn::Error::new_spanned(
-            expr,
-            format!("`{key}` must be a string literal"),
-        ))
-    }
-}
+use syn::{Attribute, Expr, ExprLit, Ident, Item, Lit};
 
 /// Expand `#[component_inventory(...)]` on `item`.
 ///
 /// Re-emits `item` unchanged and appends one `COMPONENT_INVENTORY` slice entry.
 pub(crate) fn expand_component_inventory(args: ComponentInventoryArgs, item: Item) -> TokenStream {
-    match try_expand(args, &item) {
+    match try_expand(&args, &item) {
         Ok(ts) => ts,
         Err(err) => {
             // Emit the original item plus the error so downstream references
@@ -233,7 +67,7 @@ pub(crate) fn expand_component_inventory(args: ComponentInventoryArgs, item: Ite
     }
 }
 
-fn try_expand(args: ComponentInventoryArgs, item: &Item) -> syn::Result<TokenStream> {
+fn try_expand(args: &ComponentInventoryArgs, item: &Item) -> syn::Result<TokenStream> {
     // Derive the identity of the annotated item and (for factory statics) the
     // `name` field expression used as the id.
     let (item_ident, name_field_expr, cfg_attrs) = inspect_item(item)?;
@@ -258,23 +92,8 @@ fn try_expand(args: ComponentInventoryArgs, item: &Item) -> syn::Result<TokenStr
     // literal visible at macro time (explicit `id`, or a `name` field written
     // as a literal). When the URN is a `const` path (the common factory case),
     // the value is not visible here; the xtask scanner performs the full
-    // cross-check with resolved values in a later phase.
-    if let Some(seg) = category_urn_segment(&args.category.to_string()) {
-        if let Some(urn) = literal_urn(&args, &name_field_expr) {
-            if let Some(mid) = urn.split(':').nth(2) {
-                if mid != seg {
-                    return Err(syn::Error::new_spanned(
-                        &args.category,
-                        format!(
-                            "category `{}` (URN segment `{seg}`) does not match the \
-                             component URN `{urn}` (segment `{mid}`)",
-                            args.category
-                        ),
-                    ));
-                }
-            }
-        }
-    }
+    // cross-check with resolved values.
+    args.check_urn_category(literal_urn(args, &name_field_expr).as_deref())?;
 
     let category = &args.category;
     let description_expr: TokenStream = match &args.description {
@@ -395,7 +214,8 @@ fn cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
 // a prebuilt archive in `--offline` mode, and trybuild spawns a nested `cargo`
 // build for its fixture crate that cannot resolve dependencies offline. The
 // expansion/argument-parsing helpers below exercise the same error paths in a
-// self-contained, environment-independent way.
+// self-contained, environment-independent way. (Argument-parsing errors are
+// additionally covered by unit tests in `otap-df-engine-inventory-syntax`.)
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,13 +226,6 @@ mod tests {
         let args: ComponentInventoryArgs = syn::parse_str(args_src).expect("parse args");
         let item: Item = syn::parse_str(item_src).expect("parse item");
         expand_component_inventory(args, item).to_string()
-    }
-
-    /// Parse only the args, returning the error text on failure.
-    fn parse_args_err(args_src: &str) -> Option<String> {
-        syn::parse_str::<ComponentInventoryArgs>(args_src)
-            .err()
-            .map(|e| e.to_string())
     }
 
     /// Scenario: a factory `static` with a `name` field is expanded without an
@@ -462,34 +275,6 @@ mod tests {
         assert!(out.contains("struct Foo")); // item still emitted
         assert!(out.contains("compile_error"));
         assert!(out.contains("requires an explicit"));
-    }
-
-    /// Scenario: a misspelled `category` identifier (e.g. `Reciever`) is parsed.
-    /// Guarantees: argument parsing fails with an "unknown component category"
-    /// error instead of silently emitting a bad entry.
-    #[test]
-    fn unknown_category_is_rejected() {
-        let err = parse_args_err(r#"category = Reciever"#).expect("should error");
-        assert!(err.contains("unknown component category"));
-        assert!(err.contains("Reciever"));
-    }
-
-    /// Scenario: the annotation omits the required `category`.
-    /// Guarantees: argument parsing fails with a "missing required `category`"
-    /// error.
-    #[test]
-    fn missing_category_is_rejected() {
-        let err = parse_args_err(r#"description = "x""#).expect("should error");
-        assert!(err.contains("missing required `category"));
-    }
-
-    /// Scenario: the annotation contains an unrecognized key (e.g. `bogus`).
-    /// Guarantees: argument parsing fails with an "unknown `#[component_inventory]`
-    /// attribute" error.
-    #[test]
-    fn unknown_key_is_rejected() {
-        let err = parse_args_err(r#"category = Receiver, bogus = "x""#).expect("should error");
-        assert!(err.contains("unknown `#[component_inventory]` attribute"));
     }
 
     /// Scenario: an explicit literal URN `id` whose category segment disagrees
