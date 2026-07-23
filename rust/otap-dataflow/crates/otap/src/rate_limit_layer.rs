@@ -3,11 +3,11 @@
 
 //! Tower middleware that rejects gRPC requests when a receiver rate bucket is exhausted.
 
-use crate::otlp_metrics::OtlpReceiverMetrics;
+use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::rate_limiter::RateLimiter;
 use futures::future::BoxFuture;
 use http::{Request, Response};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::task::{Context, Poll};
@@ -29,7 +29,7 @@ pub fn grpc_rate_limit_status(retry_after_secs: u32) -> Status {
 #[derive(Clone)]
 pub struct RateLimitLayer {
     rate_limiter: Option<RateLimiter>,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 }
 
 impl RateLimitLayer {
@@ -37,7 +37,7 @@ impl RateLimitLayer {
     #[must_use]
     pub fn new(
         rate_limiter: Option<RateLimiter>,
-        metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     ) -> Self {
         Self {
             rate_limiter,
@@ -64,7 +64,7 @@ impl<S> Layer<S> for RateLimitLayer {
 pub struct RateLimitService<S> {
     inner: S,
     rate_limiter: Option<RateLimiter>,
-    metrics: Arc<Mutex<MetricSet<OtlpReceiverMetrics>>>,
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     reject_next_call: bool,
 }
 
@@ -99,9 +99,9 @@ where
                 .rate_limiter
                 .as_ref()
                 .map_or(1, RateLimiter::retry_after_secs);
-            let mut metrics = self.metrics.lock();
-            metrics.rejected_requests.inc();
-            metrics.refused_rate_limit.inc();
+            self.metrics
+                .lock()
+                .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit);
             let response = grpc_rate_limit_status(retry_after_secs).into_http();
             return Box::pin(async move { Ok(response) });
         }
@@ -188,9 +188,7 @@ mod tests {
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = Arc::new(Mutex::new(
-            pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
-        ));
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
         let inner = CountingService::new();
         let poll_ready_calls = inner.poll_ready_calls.clone();
         let call_count = inner.call_count.clone();
@@ -222,8 +220,13 @@ mod tests {
         );
 
         let metrics = metrics.lock();
-        assert_eq!(metrics.rejected_requests.get(), 1);
-        assert_eq!(metrics.refused_rate_limit.get(), 1);
+        assert_eq!(
+            metrics
+                .rejections_for(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit,)
+                .requests
+                .get(),
+            1
+        );
     }
 
     /// Scenario: rate exhaustion appears after the layer has polled the inner service ready.
@@ -240,9 +243,7 @@ mod tests {
             otap_df_engine::context::ControllerContext::new(metrics_registry_handle);
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-        let metrics = Arc::new(Mutex::new(
-            pipeline_ctx.register_metrics::<OtlpReceiverMetrics>(),
-        ));
+        let metrics = Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx)));
         let inner = CountingService::new();
         let poll_ready_calls = inner.poll_ready_calls.clone();
         let call_count = inner.call_count.clone();
@@ -269,7 +270,12 @@ mod tests {
         );
 
         let metrics = metrics.lock();
-        assert_eq!(metrics.rejected_requests.get(), 0);
-        assert_eq!(metrics.refused_rate_limit.get(), 0);
+        assert_eq!(
+            metrics
+                .rejections_for(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit,)
+                .requests
+                .get(),
+            0
+        );
     }
 }

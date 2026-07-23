@@ -206,13 +206,13 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
-/// Validates that every node in every pipeline (including the observability
-/// pipeline, if configured) references a component URN registered in the
+/// Validates that every node in every pipeline (including the engine
+/// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
 ///
 /// This is the top-level validation entry point that iterates over all
-/// pipeline groups, all pipelines within each group, and the optional
-/// observability pipeline.
+/// pipeline groups, all pipelines within each group, and the observability
+/// pipeline.
 pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
@@ -355,12 +355,13 @@ mod tests {
     use super::*;
     use otap_df_config::policy::{CoreRange, Policies, RateLimitUnit};
     use otap_df_config::{PipelineGroupId, PipelineId, node::NodeUserConfig};
-    use otap_df_engine::config::{ExporterConfig, ReceiverConfig};
+    use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
     use otap_df_engine::context::PipelineContext;
     use otap_df_engine::exporter::ExporterWrapper;
+    use otap_df_engine::processor::ProcessorWrapper;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::wiring_contract::WiringContract;
-    use otap_df_engine::{ExporterFactory, ReceiverFactory};
+    use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
     use std::sync::Arc;
 
     fn test_receiver_create(
@@ -383,21 +384,65 @@ mod tests {
         panic!("test exporter factory should not be constructed")
     }
 
+    fn test_processor_create(
+        _pipeline_ctx: PipelineContext,
+        _node: otap_df_engine::node::NodeId,
+        _node_config: Arc<NodeUserConfig>,
+        _processor_config: &ProcessorConfig,
+        _capabilities: &otap_df_engine::capability::registry::Capabilities,
+    ) -> Result<ProcessorWrapper<()>, otap_df_config::error::Error> {
+        panic!("test processor factory should not be constructed")
+    }
+
     fn test_factory(supported_rate_units: &'static [RateLimitUnit]) -> PipelineFactory<()> {
-        let receiver_factories = Box::leak(Box::new([ReceiverFactory {
-            name: "urn:test:receiver:example",
-            create: test_receiver_create,
+        let receiver_factories = Box::leak(Box::new([
+            ReceiverFactory {
+                name: "urn:test:receiver:example",
+                create: test_receiver_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                supported_rate_units,
+                validate_config: otap_df_config::validation::no_config,
+            },
+            ReceiverFactory {
+                name: "urn:otel:receiver:internal_telemetry",
+                create: test_receiver_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                supported_rate_units: &[],
+                validate_config: otap_df_config::validation::no_config,
+            },
+        ]));
+        let processor_factories = Box::leak(Box::new([ProcessorFactory {
+            name: "urn:otel:processor:type_router",
+            create: test_processor_create,
             wiring_contract: WiringContract::UNRESTRICTED,
-            supported_rate_units,
             validate_config: otap_df_config::validation::no_config,
         }]));
-        let exporter_factories = Box::leak(Box::new([ExporterFactory {
-            name: "urn:test:exporter:example",
-            create: test_exporter_create,
-            wiring_contract: WiringContract::UNRESTRICTED,
-            validate_config: otap_df_config::validation::no_config,
-        }]));
-        PipelineFactory::new(receiver_factories, &[], exporter_factories, &[])
+        let exporter_factories = Box::leak(Box::new([
+            ExporterFactory {
+                name: "urn:test:exporter:example",
+                create: test_exporter_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+            ExporterFactory {
+                name: "urn:otel:exporter:console",
+                create: test_exporter_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+            ExporterFactory {
+                name: "urn:otel:exporter:noop",
+                create: test_exporter_create,
+                wiring_contract: WiringContract::UNRESTRICTED,
+                validate_config: otap_df_config::validation::no_config,
+            },
+        ]));
+        PipelineFactory::new(
+            receiver_factories,
+            processor_factories,
+            exporter_factories,
+            &[],
+        )
     }
 
     fn minimal_engine_yaml() -> &'static str {
@@ -558,6 +603,32 @@ extensions:
         assert!(
             msg.contains("urn:test:receiver:example"),
             "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: the component factory omits the built-in observability components.
+    /// Guarantees: engine validation checks the default pipeline under `system/observability`.
+    #[test]
+    fn validate_engine_components_checks_default_observability_pipeline() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+groups: {}
+"#,
+        )
+        .expect("minimal engine config should parse");
+        let factory: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
+
+        let error = validate_engine_components(&config, &factory)
+            .expect_err("missing observability components must fail validation");
+        let message = error.to_string();
+        assert!(
+            message.contains("Unknown ") && message.contains(" component `urn:otel:"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("pipeline_group=system pipeline=observability"),
+            "unexpected error: {message}"
         );
     }
 

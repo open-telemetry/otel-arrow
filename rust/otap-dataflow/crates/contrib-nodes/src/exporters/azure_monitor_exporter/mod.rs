@@ -44,7 +44,7 @@ pub use metrics::{
 };
 pub use transformer::Transformer;
 
-use otap_df_engine::capability::bearer_token_provider::BearerTokenProvider;
+use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 
 /// URN identifying the Azure Monitor Exporter in configuration pipelines.
 pub const AZURE_MONITOR_EXPORTER_URN: &str = "urn:microsoft:exporter:azure_monitor";

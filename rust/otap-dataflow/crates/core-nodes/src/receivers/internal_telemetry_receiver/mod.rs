@@ -4,8 +4,11 @@
 //! Internal telemetry receiver.
 //!
 //! This receiver consumes internal logs from the logging channel and drains
-//! internal metrics from the telemetry registry. It emits both signals as
-//! OTLP export requests into the observability pipeline.
+//! internal metrics from the telemetry registry. The receiver's `signals`
+//! configuration independently controls which signals are emitted as OTLP
+//! export requests into the observability pipeline. When metrics are disabled,
+//! their export accumulator is still drained without OTLP conversion so that
+//! retired metric sets can be released.
 //!
 //! Registry-backed metrics can use a receiver-local export interval and a
 //! subset of OpenTelemetry metric views:
@@ -55,18 +58,57 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{Instant, Interval, MissedTickBehavior, interval_at};
+use tokio::time::{Instant, MissedTickBehavior, interval_at};
 
 /// The URN for the internal telemetry receiver.
-pub use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
+pub use otap_df_config::engine::INTERNAL_TELEMETRY_RECEIVER_URN;
+
+/// Signal type emitted by the internal telemetry receiver.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum InternalTelemetrySignal {
+    /// Internal log records.
+    Logs,
+    /// Registry-backed internal metrics.
+    Metrics,
+}
+
+impl InternalTelemetrySignal {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Logs => "logs",
+            Self::Metrics => "metrics",
+        }
+    }
+}
+
+fn default_signals() -> Vec<InternalTelemetrySignal> {
+    vec![
+        InternalTelemetrySignal::Logs,
+        InternalTelemetrySignal::Metrics,
+    ]
+}
 
 /// Configuration for the internal telemetry receiver.
-#[derive(Clone, Debug, Deserialize, Serialize, Default, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Non-empty set of signals emitted by this receiver.
+    #[serde(default = "default_signals")]
+    pub signals: Vec<InternalTelemetrySignal>,
+
     /// Configuration for registry-backed internal metrics.
     #[serde(default)]
     pub metrics: MetricsConfig,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            signals: default_signals(),
+            metrics: MetricsConfig::default(),
+        }
+    }
 }
 
 /// Registry-backed internal metrics configuration.
@@ -121,12 +163,6 @@ pub struct ViewStream {
     pub description: Option<String>,
 }
 
-impl MetricsConfig {
-    const fn is_empty(&self) -> bool {
-        self.interval.is_none() && self.views.is_empty()
-    }
-}
-
 impl From<ViewConfig> for MetricView {
     fn from(view: ViewConfig) -> Self {
         Self {
@@ -169,7 +205,6 @@ pub static INTERNAL_TELEMETRY_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFac
         })?;
 
         let config = InternalTelemetryReceiver::parse_config(&node_config.config)?;
-        config.validate_metrics_enabled(internal_telemetry.metrics_interval.is_some())?;
 
         Ok(ReceiverWrapper::local(
             InternalTelemetryReceiver::new_with_telemetry(config, internal_telemetry),
@@ -214,6 +249,24 @@ impl InternalTelemetryReceiver {
 
 impl Config {
     fn validate(&self) -> Result<(), otap_df_config::error::Error> {
+        if self.signals.is_empty() {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: "internal telemetry receiver signals must not be empty".to_owned(),
+            });
+        }
+        let mut unique_signals = std::collections::HashSet::new();
+        if let Some(signal) = self
+            .signals
+            .iter()
+            .find(|signal| !unique_signals.insert(**signal))
+        {
+            return Err(otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "internal telemetry receiver signal '{}' is configured more than once",
+                    signal.as_str()
+                ),
+            });
+        }
         if self
             .metrics
             .interval
@@ -239,20 +292,20 @@ impl Config {
         Ok(())
     }
 
-    fn validate_metrics_enabled(
-        &self,
-        metrics_enabled: bool,
-    ) -> Result<(), otap_df_config::error::Error> {
-        if !metrics_enabled && !self.metrics.is_empty() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "internal telemetry receiver metrics configuration requires engine internal metrics to use the ITS provider".to_owned(),
-            });
-        }
-        Ok(())
+    fn logs_enabled(&self) -> bool {
+        self.signals.contains(&InternalTelemetrySignal::Logs)
     }
 
-    fn metrics_interval(&self, engine_interval: Option<Duration>) -> Option<Duration> {
-        engine_interval.map(|interval| self.metrics.interval.unwrap_or(interval))
+    fn metrics_enabled(&self) -> bool {
+        self.signals.contains(&InternalTelemetrySignal::Metrics)
+    }
+
+    fn metric_drain_interval(&self, engine_interval: Duration) -> Duration {
+        if self.metrics_enabled() {
+            self.metrics.interval.unwrap_or(engine_interval)
+        } else {
+            engine_interval
+        }
     }
 }
 
@@ -264,31 +317,33 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, Error> {
         let internal = self.internal_telemetry.clone();
-        let logs_receiver = internal.logs_receiver;
-        let resource_bytes = internal.resource_bytes;
-        let log_tap = internal.log_tap;
-        let registry = internal.registry;
-        let mut scope_cache = ScopeToBytesMap::new(registry.clone());
-        let metrics_interval = self.config.metrics_interval(internal.metrics_interval);
-        let views = self
+        let mut scope_cache = ScopeToBytesMap::new(internal.registry.clone());
+        let logs_enabled = self.config.logs_enabled();
+        let metrics_enabled = self.config.metrics_enabled();
+        let metrics_interval = self
             .config
-            .metrics
-            .views
-            .into_iter()
-            .map(MetricView::from)
-            .collect();
-        let metrics_encoder = metrics_interval
-            .map(|_| MetricsOtlpEncoder::new_with_views(&resource_bytes, views))
-            .transpose()
-            .map_err(|error| Error::PdataConversionError {
-                error: error.to_string(),
-            })?;
-        let mut metrics_interval = metrics_interval.map(|period| {
-            let mut interval = interval_at(Instant::now() + period, period);
-            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            interval
-        });
-        let mut logs_channel_open = true;
+            .metric_drain_interval(internal.default_metric_drain_interval);
+        let metrics_encoder = if metrics_enabled {
+            let views = self
+                .config
+                .metrics
+                .views
+                .into_iter()
+                .map(MetricView::from)
+                .collect();
+            Some(
+                MetricsOtlpEncoder::new_with_views(&internal.resource_field_bytes, views).map_err(
+                    |error| Error::PdataConversionError {
+                        error: error.to_string(),
+                    },
+                )?,
+            )
+        } else {
+            None
+        };
+        let mut metrics_interval = interval_at(Instant::now() + metrics_interval, metrics_interval);
+        metrics_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        let mut logs_channel_open = logs_enabled;
         let mut pending_metric_export = None;
 
         loop {
@@ -304,17 +359,11 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                             // restores the drained values before the bounded
                             // terminal attempt below.
                             drop(pending_metric_export.take());
-                            while let Ok(event) = logs_receiver.try_recv() {
-                                if let ObservedEvent::Log(log_event) = event {
-                                    if let Some(log_tap) = log_tap.as_ref() {
-                                        log_tap.record(log_event.clone());
-                                    }
-                                    Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
-                                }
-                            }
-                            Self::send_metric_batch_until(
+                            Self::flush_terminal_telemetry(
                                 &effect_handler,
-                                &registry,
+                                &internal,
+                                logs_enabled,
+                                &mut scope_cache,
                                 metrics_encoder.as_ref(),
                                 deadline,
                             ).await?;
@@ -323,18 +372,11 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                         }
                         Ok(NodeControlMsg::Shutdown { deadline, .. }) => {
                             drop(pending_metric_export.take());
-                            // Drain any remaining logs from channel before shutdown
-                            while let Ok(event) = logs_receiver.try_recv() {
-                                if let ObservedEvent::Log(log_event) = event {
-                                    if let Some(log_tap) = log_tap.as_ref() {
-                                        log_tap.record(log_event.clone());
-                                    }
-                                    Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
-                                }
-                            }
-                            Self::send_metric_batch_until(
+                            Self::flush_terminal_telemetry(
                                 &effect_handler,
-                                &registry,
+                                &internal,
+                                logs_enabled,
+                                &mut scope_cache,
                                 metrics_encoder.as_ref(),
                                 deadline,
                             ).await?;
@@ -362,32 +404,35 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
                     result?;
                 }
 
-                // Drain and emit registry metrics at the configured cold-path interval.
-                _ = Self::next_metrics_tick(&mut metrics_interval), if pending_metric_export.is_none() => {
-                    pending_metric_export = Some(Box::pin(Self::send_metric_batch(
+                // Drain registry metrics at the configured cold-path interval,
+                // emitting them only when the metrics signal is enabled.
+                _ = metrics_interval.tick(), if pending_metric_export.is_none() => {
+                    pending_metric_export = Some(Box::pin(Self::process_metric_batch(
                         &effect_handler,
-                        &registry,
+                        &internal.registry,
                         metrics_encoder.as_ref(),
                     )));
                 }
 
                 // Receive logs from the channel
-                result = logs_receiver.recv_async(), if logs_channel_open => {
+                result = internal.logs_receiver.recv_async(), if logs_channel_open => {
                     match result {
                         Ok(ObservedEvent::Log(log_event)) => {
-                            if let Some(log_tap) = log_tap.as_ref() {
+                            if let Some(log_tap) = internal.log_tap.as_ref() {
                                 log_tap.record(log_event.clone());
                             }
-                            Self::send_log_event(&effect_handler, log_event, &resource_bytes, &mut scope_cache).await?;
+                            Self::send_log_event(
+                                &effect_handler,
+                                log_event,
+                                &internal.resource_field_bytes,
+                                &mut scope_cache,
+                            ).await?;
                         }
                         Ok(ObservedEvent::Engine(_)) => {
                             // Engine events are not yet processed
                         }
                         Err(_) => {
                             logs_channel_open = false;
-                            if metrics_encoder.is_none() {
-                                return Ok(TerminalState::default());
-                            }
                         }
                     }
                 }
@@ -397,20 +442,41 @@ impl local::Receiver<OtapPdata> for InternalTelemetryReceiver {
 }
 
 impl InternalTelemetryReceiver {
-    async fn next_metrics_tick(interval: &mut Option<Interval>) {
-        match interval {
-            Some(interval) => {
-                let _ = interval.tick().await;
+    /// Drains queued logs and performs the final bounded metric-registry drain.
+    async fn flush_terminal_telemetry(
+        effect_handler: &local::EffectHandler<OtapPdata>,
+        internal: &otap_df_telemetry::InternalTelemetrySettings,
+        logs_enabled: bool,
+        scope_cache: &mut ScopeToBytesMap,
+        encoder: Option<&MetricsOtlpEncoder>,
+        deadline: std::time::Instant,
+    ) -> Result<(), Error> {
+        if logs_enabled {
+            while let Ok(event) = internal.logs_receiver.try_recv() {
+                if let ObservedEvent::Log(log_event) = event {
+                    if let Some(log_tap) = internal.log_tap.as_ref() {
+                        log_tap.record(log_event.clone());
+                    }
+                    Self::send_log_event(
+                        effect_handler,
+                        log_event,
+                        &internal.resource_field_bytes,
+                        scope_cache,
+                    )
+                    .await?;
+                }
             }
-            None => std::future::pending().await,
         }
+
+        Self::process_metric_batch_until(effect_handler, &internal.registry, encoder, deadline)
+            .await
     }
 
-    /// Attempts one final metric export within the pipeline shutdown deadline.
+    /// Attempts one final metric drain within the pipeline shutdown deadline.
     ///
-    /// Timing out cancels [`Self::send_metric_batch`]; its uncommitted export
+    /// Timing out cancels [`Self::process_metric_batch`]; its uncommitted export
     /// transaction is then dropped and restores the drained registry values.
-    async fn send_metric_batch_until(
+    async fn process_metric_batch_until(
         effect_handler: &local::EffectHandler<OtapPdata>,
         registry: &TelemetryRegistryHandle,
         encoder: Option<&MetricsOtlpEncoder>,
@@ -418,7 +484,7 @@ impl InternalTelemetryReceiver {
     ) -> Result<(), Error> {
         tokio::time::timeout_at(
             Instant::from_std(deadline),
-            Self::send_metric_batch(effect_handler, registry, encoder),
+            Self::process_metric_batch(effect_handler, registry, encoder),
         )
         .await
         .map_err(|_| Error::InternalError {
@@ -426,20 +492,17 @@ impl InternalTelemetryReceiver {
         })?
     }
 
-    /// Flushes pending snapshots and transactionally sends one direct OTLP request.
+    /// Flushes pending snapshots and consumes one registry export window.
     ///
-    /// The registry lock is released before encoding and downstream delivery.
-    /// The batch is committed only after the downstream channel accepts it;
-    /// encoding errors, send errors, and cancellation roll it back on drop.
-    async fn send_metric_batch(
+    /// When an encoder is provided, the batch is converted to OTLP and committed
+    /// only after downstream delivery. Without an encoder, the export-only
+    /// accumulator is committed immediately without conversion or emission. The
+    /// independent admin accumulator is unaffected in both cases.
+    async fn process_metric_batch(
         effect_handler: &local::EffectHandler<OtapPdata>,
         registry: &TelemetryRegistryHandle,
         encoder: Option<&MetricsOtlpEncoder>,
     ) -> Result<(), Error> {
-        let Some(encoder) = encoder else {
-            return Ok(());
-        };
-
         registry
             .flush_pending_metrics()
             .await
@@ -447,6 +510,10 @@ impl InternalTelemetryReceiver {
                 message: format!("failed to flush internal metrics collector: {error}"),
             })?;
         let export = registry.begin_metric_export_batch();
+        let Some(encoder) = encoder else {
+            let _ = export.commit();
+            return Ok(());
+        };
         let Some(metrics) =
             encoder
                 .encode(export.batch())
@@ -469,12 +536,12 @@ impl InternalTelemetryReceiver {
     async fn send_log_event(
         effect_handler: &local::EffectHandler<OtapPdata>,
         log_event: LogEvent,
-        resource_bytes: &Bytes,
+        resource_field_bytes: &Bytes,
         scope_cache: &mut ScopeToBytesMap,
     ) -> Result<(), Error> {
         let mut buf = ProtoBuffer::with_capacity(512);
 
-        encode_export_logs_request(&mut buf, &log_event, resource_bytes, scope_cache);
+        encode_export_logs_request(&mut buf, &log_event, resource_field_bytes, scope_cache);
 
         let pdata = OtapPdata::new(
             Context::default(),
@@ -489,12 +556,9 @@ impl InternalTelemetryReceiver {
 mod tests {
     use super::*;
     use otap_df_config::observed_state::SendPolicy;
-    use otap_df_config::pipeline::telemetry::{
-        TelemetryConfig,
-        metrics::{MetricsConfig as SdkMetricsConfig, MetricsProvider},
-    };
+    use otap_df_config::pipeline::telemetry::TelemetryConfig;
     use otap_df_config::settings::telemetry::logs::{LoggingProviders, LogsConfig, ProviderMode};
-    use otap_df_engine::control::{NodeControlMsg, runtime_ctrl_msg_channel};
+    use otap_df_engine::control::{NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel};
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::local::receiver::Receiver as _;
     use otap_df_engine::message::{Receiver as EngineReceiver, Sender as EngineSender};
@@ -554,6 +618,8 @@ mod tests {
         value
     }
 
+    /// Scenario: metric settings include an interval, views, and scalar selectors.
+    /// Guarantees: supported settings parse and omitted signals enable both signals.
     #[test]
     fn parses_supported_metrics_configuration() {
         let config = InternalTelemetryReceiver::parse_config(&serde_json::json!({
@@ -579,9 +645,11 @@ mod tests {
         }))
         .expect("supported metrics config should parse");
 
-        assert_eq!(config.metrics.interval, Some(Duration::from_secs(60)));
+        assert_eq!(config.signals, default_signals());
+        let metrics = config.metrics;
+        assert_eq!(metrics.interval, Some(Duration::from_secs(60)));
         assert_eq!(
-            config.metrics.views,
+            metrics.views,
             vec![ViewConfig {
                 selector: ViewSelector {
                     scope_name: Some("engine".to_owned()),
@@ -602,10 +670,18 @@ mod tests {
                 },
             }]
         );
+
+        let null_metrics = InternalTelemetryReceiver::parse_config(&serde_json::json!({
+            "metrics": null
+        }))
+        .expect_err("the metrics configuration block cannot be null");
+        assert!(null_metrics.to_string().contains("invalid type: null"));
     }
 
+    /// Scenario: receiver settings contain invalid fields, selectors, intervals, or signals.
+    /// Guarantees: malformed settings are rejected while each non-empty signal subset is valid.
     #[test]
-    fn validates_metrics_configuration() {
+    fn validates_receiver_configuration() {
         let zero_interval = InternalTelemetryReceiver::parse_config(&serde_json::json!({
             "metrics": { "interval": "0s" }
         }))
@@ -646,39 +722,70 @@ mod tests {
                 .contains("must be a scalar value"),
             "unexpected error: {array_selector}"
         );
+
+        let logs_only = InternalTelemetryReceiver::parse_config(&serde_json::json!({
+            "signals": ["logs"]
+        }))
+        .expect("logs-only signal selection should be valid");
+        assert!(logs_only.logs_enabled());
+        assert!(!logs_only.metrics_enabled());
+
+        for (signals, expected) in [
+            (serde_json::json!([]), "must not be empty"),
+            (
+                serde_json::json!(["metrics", "metrics"]),
+                "configured more than once",
+            ),
+        ] {
+            let error = InternalTelemetryReceiver::parse_config(&serde_json::json!({
+                "signals": signals
+            }))
+            .expect_err("invalid signal selection must be rejected");
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected error: {error}"
+            );
+        }
     }
 
+    /// Scenario: metric emission has and does not have a receiver-local interval override.
+    /// Guarantees: the receiver uses the override when present and the engine interval otherwise.
     #[test]
-    fn resolves_receiver_interval_only_when_its_metrics_are_enabled() {
-        let inherited = Config::default();
+    fn resolves_receiver_metrics_interval_override() {
+        let defaults = Config::default();
         assert_eq!(
-            inherited.metrics_interval(Some(Duration::from_secs(60))),
-            Some(Duration::from_secs(60))
+            defaults.metric_drain_interval(Duration::from_secs(60)),
+            Duration::from_secs(60)
         );
 
         let configured = Config {
+            signals: default_signals(),
             metrics: MetricsConfig {
                 interval: Some(Duration::from_secs(5)),
                 views: Vec::new(),
             },
         };
         assert_eq!(
-            configured.metrics_interval(Some(Duration::from_secs(60))),
-            Some(Duration::from_secs(5))
+            configured.metric_drain_interval(Duration::from_secs(60)),
+            Duration::from_secs(5)
         );
-        assert_eq!(configured.metrics_interval(None), None);
-        configured
-            .validate_metrics_enabled(true)
-            .expect("configured metrics are valid when ITS metrics are enabled");
-        assert!(
-            configured.validate_metrics_enabled(false).is_err(),
-            "configured metrics must be rejected when ITS metrics are disabled"
+
+        let logs_only = Config {
+            signals: vec![InternalTelemetrySignal::Logs],
+            metrics: MetricsConfig {
+                interval: Some(Duration::from_secs(5)),
+                views: Vec::new(),
+            },
+        };
+        assert_eq!(
+            logs_only.metric_drain_interval(Duration::from_secs(60)),
+            Duration::from_secs(60),
+            "a disabled signal must not let its emission settings control cleanup"
         );
-        Config::default()
-            .validate_metrics_enabled(false)
-            .expect("an empty metrics config is valid when metrics are disabled");
     }
 
+    /// Scenario: downstream delivery fails after a metric export transaction begins.
+    /// Guarantees: the drained metric values are restored for a later delivery attempt.
     #[test]
     fn failed_downstream_send_restores_drained_metric_batch() {
         let (runtime, local_tasks) = setup_test_runtime();
@@ -708,7 +815,7 @@ mod tests {
                 metrics_reporter,
             );
 
-            let _error = InternalTelemetryReceiver::send_metric_batch(
+            let _error = InternalTelemetryReceiver::process_metric_batch(
                 &effect_handler,
                 &registry,
                 Some(&encoder),
@@ -725,6 +832,57 @@ mod tests {
         }));
     }
 
+    /// Scenario: the receiver consumes registry metrics while metric emission is disabled.
+    /// Guarantees: the export accumulator is committed without downstream output or admin loss.
+    #[test]
+    fn disabled_metrics_are_drained_without_emission() {
+        let (runtime, local_tasks) = setup_test_runtime();
+        runtime.block_on(local_tasks.run_until(async move {
+            let registry = TelemetryRegistryHandle::new();
+            let metric_set: otap_df_telemetry::metrics::MetricSet<TestMetrics> =
+                registry.register_metric_set(EmptyAttributes());
+            registry.accumulate_metric_set_snapshot(
+                metric_set.metric_set_key(),
+                0,
+                &[otap_df_telemetry::metrics::MetricValue::U64(9)],
+            );
+
+            let (output_tx, output_rx) = create_not_send_channel(1);
+            drop(output_rx);
+            let mut outputs = HashMap::new();
+            let _ = outputs.insert("".into(), EngineSender::Local(LocalSender::mpsc(output_tx)));
+            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(1);
+            let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+            let effect_handler = local::EffectHandler::new(
+                test_node("internal_telemetry_receiver"),
+                outputs,
+                None,
+                runtime_ctrl_tx,
+                metrics_reporter,
+            );
+
+            InternalTelemetryReceiver::process_metric_batch(&effect_handler, &registry, None)
+                .await
+                .expect("disabled metrics must not access the closed downstream");
+            assert!(
+                registry.drain_metric_export_batch().is_empty(),
+                "disabled metric output must still commit the export accumulator"
+            );
+
+            let mut admin_values = Vec::new();
+            registry.visit_admin_metrics_and_reset(|_, _, metrics| {
+                admin_values.extend(metrics.map(|(_, value)| value));
+            });
+            assert_eq!(
+                admin_values,
+                vec![otap_df_telemetry::metrics::MetricValue::U64(9)],
+                "discarding an ITS export must not consume the admin accumulator"
+            );
+        }));
+    }
+
+    /// Scenario: a periodic metric export is blocked when shutdown begins.
+    /// Guarantees: shutdown cancels the blocked attempt and bounds the terminal retry.
     #[test]
     fn shutdown_interrupts_periodic_metric_export_blocked_by_downstream_backpressure() {
         let (runtime, local_tasks) = setup_test_runtime();
@@ -741,6 +899,7 @@ mod tests {
             let (logs_sender, logs_receiver) = flume::bounded(1);
             let receiver = InternalTelemetryReceiver::new_with_telemetry(
                 Config {
+                    signals: vec![InternalTelemetrySignal::Metrics],
                     metrics: MetricsConfig {
                         interval: Some(Duration::from_millis(10)),
                         views: Vec::new(),
@@ -748,9 +907,9 @@ mod tests {
                 },
                 otap_df_telemetry::InternalTelemetrySettings {
                     logs_receiver,
-                    resource_bytes: ResourceLogs::default().encode_to_vec().into(),
+                    resource_field_bytes: ResourceLogs::default().encode_to_vec().into(),
                     registry: registry.clone(),
-                    metrics_interval: Some(Duration::from_millis(10)),
+                    default_metric_drain_interval: Duration::from_millis(10),
                     log_tap: None,
                 },
             );
@@ -807,8 +966,10 @@ mod tests {
         }));
     }
 
+    /// Scenario: real metric sets cross collection intervals and receiver ingress drain.
+    /// Guarantees: terminal metrics flow once and the receiver reports that ingress is drained.
     #[test]
-    fn metric_set_flows_through_collector_across_intervals_and_shutdown() {
+    fn metric_set_flows_through_collector_across_intervals_and_drain_ingress() {
         let (runtime, local_tasks) = setup_test_runtime();
         runtime.block_on(local_tasks.run_until(async move {
             let engine_reporting_interval = Duration::from_secs(60);
@@ -816,10 +977,6 @@ mod tests {
             let registry = TelemetryRegistryHandle::new();
             let config = TelemetryConfig {
                 reporting_interval: engine_reporting_interval,
-                metrics: SdkMetricsConfig {
-                    provider: MetricsProvider::Its,
-                    ..SdkMetricsConfig::default()
-                },
                 logs: LogsConfig {
                     providers: LoggingProviders {
                         global: ProviderMode::Noop,
@@ -833,6 +990,7 @@ mod tests {
             };
             let telemetry = InternalTelemetrySystem::new(
                 &config,
+                engine_reporting_interval,
                 registry.clone(),
                 None,
                 SendPolicy::default(),
@@ -846,20 +1004,19 @@ mod tests {
 
             let receiver = InternalTelemetryReceiver::new_with_telemetry(
                 Config {
+                    signals: vec![InternalTelemetrySignal::Metrics],
                     metrics: MetricsConfig {
                         interval: Some(receiver_interval),
                         views: Vec::new(),
                     },
                 },
-                telemetry
-                    .internal_telemetry_settings()
-                    .expect("ITS metrics should configure the receiver"),
+                telemetry.internal_telemetry_settings(),
             );
 
             let (output_tx, output_rx) = create_not_send_channel(4);
             let mut outputs = HashMap::new();
             let _ = outputs.insert("".into(), EngineSender::Local(LocalSender::mpsc(output_tx)));
-            let (runtime_ctrl_tx, _runtime_ctrl_rx) = runtime_ctrl_msg_channel(4);
+            let (runtime_ctrl_tx, mut runtime_ctrl_rx) = runtime_ctrl_msg_channel(4);
             let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(4);
             let effect_handler = local::EffectHandler::new(
                 test_node("internal_telemetry_receiver"),
@@ -923,7 +1080,7 @@ mod tests {
                 "an empty registry interval must not emit pdata"
             );
 
-            // Queue the final snapshot immediately before shutdown. The
+            // Queue the final snapshot immediately before ingress drain. The
             // receiver's FIFO barrier guarantees that it reaches the registry
             // before the final drain, regardless of collector scheduling.
             metric_set.emitted.add(5);
@@ -931,23 +1088,32 @@ mod tests {
                 .report(&mut metric_set)
                 .expect("final metric snapshot should be queued");
             ctrl_tx
-                .send(NodeControlMsg::Shutdown {
+                .send(NodeControlMsg::DrainIngress {
                     deadline: StdInstant::now() + Duration::from_secs(1),
-                    reason: "test shutdown".to_owned(),
+                    reason: "test ingress drain".to_owned(),
                 })
-                .expect("shutdown control should be sent");
+                .expect("ingress-drain control should be sent");
 
-            let shutdown_output = tokio::time::timeout(Duration::from_secs(1), output_rx.recv())
+            let final_output = tokio::time::timeout(Duration::from_secs(1), output_rx.recv())
                 .await
                 .expect("timed out waiting for final metrics drain")
                 .expect("receiver output channel should remain open");
-            assert_eq!(decode_metric_value(shutdown_output), 5);
+            assert_eq!(decode_metric_value(final_output), 5);
+
+            let drained = tokio::time::timeout(Duration::from_secs(1), runtime_ctrl_rx.recv())
+                .await
+                .expect("timed out waiting for receiver-drained notification")
+                .expect("runtime control channel should remain open");
+            assert!(
+                matches!(drained, RuntimeControlMsg::ReceiverDrained { .. }),
+                "unexpected runtime control message: {drained:?}"
+            );
 
             let receiver_result = receiver_task.await.expect("receiver task should join");
             assert!(receiver_result.is_ok(), "receiver should stop cleanly");
             assert!(
                 output_rx.try_recv().is_err(),
-                "the shutdown snapshot must be emitted exactly once"
+                "the terminal snapshot must be emitted exactly once"
             );
 
             collector_cancel.cancel();
@@ -955,9 +1121,7 @@ mod tests {
                 .await
                 .expect("collector task should join")
                 .expect("collector should stop cleanly");
-            telemetry
-                .shutdown_otel()
-                .expect("ITS telemetry shutdown should succeed");
+            drop(telemetry);
         }));
     }
 }

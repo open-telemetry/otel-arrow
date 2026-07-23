@@ -1,0 +1,70 @@
+// WIT contract for OTAP dataflow WASM plugins.
+//
+// UNSTABLE / EXPERIMENTAL: This contract is under active development and is
+// NOT stable. Every identifier, signature, and shape below is subject to
+// breaking changes without notice while the WASM binary plugin system is being
+// built out. Do not depend on this interface for anything outside the
+// in-tree experimental slice.
+//
+// This contract (see open-telemetry/otel-arrow#2973 and #3227) freezes only
+// the tiny surface this vertical slice needs. The full package described in
+// #3227 (opl-executor, batch-builder, host-services, exporter/receiver/extension
+// worlds, the complete kernel vocabulary and escape hatches) is intentionally
+// deferred and grown kernel-by-kernel behind working code.
+//
+// NOTE: `resource` and `record` are WIT keywords, so the `attr-scope` cases are
+// escaped with `%` while keeping the identifiers required by #3227.
+
+package otel:otap-dataflow-plugin@0.1.0;
+
+/// Host-provided, OTel-semantic operations over host-managed pdata resources.
+///
+/// The guest only ever holds an opaque `pdata` resource handle; bulk Arrow
+/// data never crosses the WASM boundary. Kernels run natively on the host's
+/// Arrow arrays.
+interface otel-kernels {
+    /// Opaque handle to a host-managed pdata resource. The guest cannot inspect
+    /// underlying buffers; it can only pass the handle back to host kernels.
+    resource pdata;
+
+    /// OTel attribute scope selector.
+    enum attr-scope {
+        %resource,
+        scope,
+        %record,
+    }
+
+    /// Number of rows in the pdata resource's root record batch.
+    pdata-num-rows: func(data: borrow<pdata>) -> u32;
+
+    /// Return a new pdata resource keeping only rows whose attribute `key` in
+    /// `scope` equals `value`. Consumes the input resource and returns a new
+    /// resource.
+    ///
+    /// Current experimental behavior:
+    /// - only `record` scope over the root record batch is implemented
+    /// - `resource` and `scope` are rejected (trap) until implemented
+    /// - invalid keys and invalid data-shape operations are rejected (trap)
+    filter-by-attribute-eq: func(
+        data: pdata,
+        scope: attr-scope,
+        key: string,
+        value: string,
+    ) -> pdata;
+}
+
+/// Processor plugin export.
+interface processor {
+    use otel-kernels.{pdata};
+
+    /// Process one pdata resource. Return `none` to drop the pdata entirely.
+    process: func(data: pdata) -> option<pdata>;
+}
+
+/// Capability tier for kernel-only processor plugins.
+///
+/// TODO: add `host-services` import and the `opl-processor` world.
+world kernel-processor {
+    import otel-kernels;
+    export processor;
+}

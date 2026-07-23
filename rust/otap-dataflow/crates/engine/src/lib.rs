@@ -31,8 +31,10 @@ use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::MetricLevel;
+use otap_df_config::SignalType;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
+    engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
     policy::{ChannelCapacityPolicy, RateLimitPolicy, RateLimitUnit, TelemetryPolicy},
@@ -40,7 +42,6 @@ use otap_df_config::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
 };
-use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
 use std::borrow::Cow;
@@ -293,11 +294,11 @@ where
 }
 
 bitflags::bitflags! {
-/// An 8-bit flags struct intended to store various intents describing
+/// A 16-bit flags struct intended to store various intents describing
 /// callers in a pipeline, e.g., detail about whether Ack and/or
 /// Nack should be delivered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Interests: u8 {
+pub struct Interests: u16 {
     /// Acks interest
     const ACKS   = 1 << 0;
 
@@ -325,9 +326,12 @@ pub struct Interests: u8 {
     const SOURCE_TAGGING = 1 << 6;
 
     /// Process-duration timing requested for processors.
-    // NOTE: this is the last available bit in u8. Adding another flag
-    // requires widening the repr to u16.
     const PROCESS_DURATION = 1 << 7;
+
+    /// Per-signal produced/consumed item counts requested. Opt-in (counting
+    /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
+    /// level, or per node via `policies.telemetry.item_counts`.
+    const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
 
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
@@ -340,14 +344,18 @@ impl Interests {
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
     /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION | ENTRY_TIMESTAMP
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
+    ///           | ENTRY_TIMESTAMP | PRODUCED_CONSUMED_ITEM_COUNTS
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
             MetricLevel::Normal => Self::PIPELINE_METRICS | Self::PROCESS_DURATION,
             MetricLevel::Detailed => {
-                Self::PIPELINE_METRICS | Self::PROCESS_DURATION | Self::ENTRY_TIMESTAMP
+                Self::PIPELINE_METRICS
+                    | Self::PROCESS_DURATION
+                    | Self::ENTRY_TIMESTAMP
+                    | Self::PRODUCED_CONSUMED_ITEM_COUNTS
             }
         }
     }
@@ -364,6 +372,17 @@ pub trait Unwindable {
     /// Remove and return the top frame.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
+    /// Signal type of the payload, used to attribute per-signal produced /
+    /// consumed item counts during unwinding. Returns `None` when unknown or
+    /// not applicable.
+    ///
+    /// Signal is a property of the whole pdata batch (a batch is homogeneous),
+    /// so it is stored once on the pdata context rather than per frame. It is
+    /// captured on the forward path while the payload is live and survives
+    /// [`Unwindable::drop_payload`], so it remains readable throughout
+    /// unwinding.
+    fn signal(&self) -> Option<SignalType>;
+
     /// Drop the retained payload unless RETURN_DATA is set.
     fn drop_payload(&mut self);
 }
@@ -375,6 +394,9 @@ impl Unwindable for () {
     fn pop_frame(&mut self) -> Option<control::Frame> {
         None
     }
+    fn signal(&self) -> Option<SignalType> {
+        None
+    }
     fn drop_payload(&mut self) {}
 }
 
@@ -383,6 +405,9 @@ impl Unwindable for String {
         false
     }
     fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn signal(&self) -> Option<SignalType> {
         None
     }
     fn drop_payload(&mut self) {}

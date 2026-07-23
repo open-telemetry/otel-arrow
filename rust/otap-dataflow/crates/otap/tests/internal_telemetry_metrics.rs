@@ -170,16 +170,16 @@ fn decode_test_metrics(bytes: &[u8]) -> ((String, String, i64), i64) {
     )
 }
 
+/// Scenario: a custom observability receiver configures a short interval and one view.
+/// Guarantees: registry metrics reach OTLP with the interval and selective rename applied.
 #[test]
-fn applies_receiver_interval_and_view_in_the_internal_telemetry_pipeline() {
+fn applies_receiver_interval_and_view_in_the_engine_observability_pipeline() {
     let spec = OtelDataflowSpec::from_yaml(&format!(
         r#"
 version: otel_dataflow/v1
 engine:
   telemetry:
     reporting_interval: 60s
-    metrics:
-      provider: its
     logs:
       providers:
         global: noop
@@ -239,6 +239,7 @@ groups: {{}}
     let registry = TelemetryRegistryHandle::new();
     let telemetry_system = InternalTelemetrySystem::new(
         &engine.telemetry,
+        engine.telemetry.reporting_interval,
         registry.clone(),
         None,
         SendPolicy::default(),
@@ -246,9 +247,7 @@ groups: {{}}
         None,
     )
     .expect("ITS telemetry system should initialize");
-    let internal_settings = telemetry_system
-        .internal_telemetry_settings()
-        .expect("ITS metrics should create receiver settings");
+    let internal_settings = telemetry_system.internal_telemetry_settings();
 
     let collector_cancel = CancellationToken::new();
     // Constructing the run future synchronously publishes collector readiness,
@@ -385,7 +384,5 @@ groups: {{}}
             5,
         ),
     );
-    telemetry_system
-        .shutdown_otel()
-        .expect("ITS mode has no SDK shutdown failure");
+    drop(telemetry_system);
 }

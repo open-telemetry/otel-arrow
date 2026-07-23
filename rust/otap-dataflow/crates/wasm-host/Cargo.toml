@@ -1,0 +1,49 @@
+[package]
+name = "otap-df-wasm-host"
+description = "WASM host-kernel runtime for OTAP dataflow processor plugins (experimental)"
+version.workspace = true
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+publish.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+# The WASM host runtime is experimental and OFF by default. Enabling `wasm`
+# pulls in wasmtime and registers the `wasm_processor` factory. The WIT
+# contract and host surface are unstable and subject to breaking changes while
+# the binary plugin system is in development.
+default = []
+wasm = ["dep:wasmtime"]
+
+[dependencies]
+otap-df-config.workspace = true
+otap-df-engine.workspace = true
+otap-df-otap.workspace = true
+otap-df-pdata.workspace = true
+arrow.workspace = true
+arrow-cast.workspace = true
+arrow-select.workspace = true
+wasmtime = { workspace = true, optional = true }
+async-trait.workspace = true
+linkme.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+otap-df-engine = { workspace = true, features = ["test-utils"] }
+otap-df-pdata = { workspace = true, features = ["testing"] }
+otap-df-telemetry.workspace = true
+tokio.workspace = true
+
+# The end-to-end integration test drives the wasmtime runtime, so it only
+# builds when the experimental `wasm` feature is enabled.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+required-features = ["wasm"]
+
+[lints]
+workspace = true

@@ -179,26 +179,25 @@ impl OtelDataflowSpec {
             })
             .collect();
 
-        if let Some(obs_pipeline) = self.engine.observability.pipeline.clone() {
-            let obs_as_policies = obs_pipeline
-                .policies
-                .as_ref()
-                .map(|p| p.clone().into_policies())
-                .unwrap_or_default();
-            let mut policies = Policies::resolve([&obs_as_policies, &self.policies]);
-            // Observability pipelines use default resources and do not consume
-            // user-facing receiver policies.
-            policies.resources = ResourcesPolicy::default();
-            policies.transport_headers = None;
-            policies.rate_limit = None;
-            pipelines.push(ResolvedPipelineConfig {
-                pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
-                pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
-                pipeline: obs_pipeline.into_pipeline_config(),
-                policies,
-                role: ResolvedPipelineRole::ObservabilityInternal,
-            });
-        }
+        let obs_pipeline = self.engine.observability.pipeline.clone();
+        let obs_as_policies = obs_pipeline
+            .policies
+            .as_ref()
+            .map(|p| p.clone().into_policies())
+            .unwrap_or_default();
+        let mut policies = Policies::resolve([&obs_as_policies, &self.policies]);
+        // Observability pipelines use default resources and do not consume
+        // user-facing receiver policies.
+        policies.resources = ResourcesPolicy::default();
+        policies.transport_headers = None;
+        policies.rate_limit = None;
+        pipelines.push(ResolvedPipelineConfig {
+            pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
+            pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
+            pipeline: obs_pipeline.into_pipeline_config(),
+            policies,
+            role: ResolvedPipelineRole::ObservabilityInternal,
+        });
 
         ResolvedOtelDataflowSpec {
             engine: self.engine.clone(),
