@@ -9,12 +9,9 @@ use std::time::{Duration, Instant};
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
-use otap_df_telemetry::registry::TelemetryRegistryHandle;
-use otap_df_telemetry::testing::EmptyAttributes;
 
 use super::config::{Config, normalize_service_account};
 use super::extension::K8sSatTokenAuthorizerExtension;
-use super::metrics::{K8sSatTokenAuthorizerMetrics, K8sSatTokenAuthorizerMetricsTracker};
 use super::*;
 
 // ── Config tests ───────────────────────────────────────────
@@ -25,7 +22,7 @@ fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
 
 /// Scenario: parse a minimal config specifying only the required `audiences`.
 /// Guarantees: every optional field takes its documented default (cache TTL
-/// 300s, cache max 1024, startup timeout 30s, empty allow-list).
+/// 300s, cache max 1024, empty allow-list).
 #[test]
 fn config_defaults_apply() {
     let cfg = config_from_json(serde_json::json!({ "audiences": ["my-service"] }))
@@ -34,7 +31,6 @@ fn config_defaults_apply() {
     assert!(cfg.allowed_service_accounts.is_empty());
     assert_eq!(cfg.cache_ttl, Duration::from_secs(300));
     assert_eq!(cfg.cache_max_entries, 1024);
-    assert_eq!(cfg.startup_timeout, Duration::from_secs(30));
 }
 
 /// Scenario: parse configs that omit `audiences` entirely and that supply an
@@ -57,10 +53,9 @@ fn audiences_are_required_and_non_empty() {
     );
 }
 
-/// Scenario: parse configs with a zero `cache_ttl`, zero `cache_max_entries`,
-/// and zero `startup_timeout`.
+/// Scenario: parse configs with a zero `cache_ttl` and zero `cache_max_entries`.
 /// Guarantees: each zero value is rejected so the extension never runs with a
-/// degenerate cache or readiness gate.
+/// degenerate cache.
 #[test]
 fn zero_valued_fields_are_rejected() {
     assert!(
@@ -71,11 +66,6 @@ fn zero_valued_fields_are_rejected() {
         config_from_json(serde_json::json!({ "audiences": ["a"], "cache_max_entries": 0 }))
             .is_err(),
         "zero cache_max_entries must be rejected"
-    );
-    assert!(
-        config_from_json(serde_json::json!({ "audiences": ["a"], "startup_timeout": "0s" }))
-            .is_err(),
-        "zero startup_timeout must be rejected"
     );
 }
 
@@ -89,19 +79,16 @@ fn unknown_field_is_rejected() {
     assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
 }
 
-/// Scenario: parse human-readable durations for `cache_ttl` and
-/// `startup_timeout`.
-/// Guarantees: the durations deserialize to the exact wall-clock values.
+/// Scenario: parse a human-readable duration for `cache_ttl`.
+/// Guarantees: the duration deserializes to the exact wall-clock value.
 #[test]
 fn human_readable_durations_parse() {
     let cfg = config_from_json(serde_json::json!({
         "audiences": ["a"],
         "cache_ttl": "90s",
-        "startup_timeout": "1m",
     }))
     .expect("durations parse");
     assert_eq!(cfg.cache_ttl, Duration::from_secs(90));
-    assert_eq!(cfg.startup_timeout, Duration::from_secs(60));
 }
 
 /// Scenario: parse a config whose `allowed_service_accounts` contains a
@@ -206,13 +193,6 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
 
 // ── Extension behavior tests ───────────────────────────────
 
-fn make_tracker() -> K8sSatTokenAuthorizerMetricsTracker {
-    let registry = TelemetryRegistryHandle::new();
-    let metric_set =
-        registry.register_metric_set::<K8sSatTokenAuthorizerMetrics>(EmptyAttributes());
-    K8sSatTokenAuthorizerMetricsTracker::new(metric_set)
-}
-
 fn make_extension(allowed: Option<HashSet<String>>) -> K8sSatTokenAuthorizerExtension {
     K8sSatTokenAuthorizerExtension::new(
         "test-authorizer",
@@ -220,7 +200,6 @@ fn make_extension(allowed: Option<HashSet<String>>) -> K8sSatTokenAuthorizerExte
         allowed,
         Duration::from_secs(300),
         1024,
-        make_tracker(),
     )
 }
 
@@ -299,22 +278,6 @@ async fn authorize_empty_credential_is_missing() {
     assert_eq!(decision, AuthzDecision::deny(DenyReason::MissingCredential));
 }
 
-/// Scenario: authorize a non-empty token before the Kubernetes client has been
-/// constructed (reviewer not yet published).
-/// Guarantees: the call fails closed with a capability error rather than
-/// allowing the request while undetermined.
-#[tokio::test]
-async fn authorize_before_ready_fails_closed() {
-    let ext = make_extension(None);
-    let result = ext
-        .authorize(&BearerToken::without_expiry("some-token".to_string()))
-        .await;
-    assert!(
-        result.is_err(),
-        "a request before readiness must fail closed, not allow"
-    );
-}
-
 // ── Decision cache tests ───────────────────────────────────
 
 /// Scenario: insert a decision and read it back before and after its TTL
@@ -345,7 +308,6 @@ fn cache_respects_max_entries() {
         None,
         Duration::from_secs(300),
         2,
-        make_tracker(),
     );
     let now = Instant::now();
     for i in 0..10 {

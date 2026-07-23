@@ -9,7 +9,7 @@
 | **URN** | `urn:otel:extension:k8s_sat_token_authorizer` |
 | **Feature gate** | `k8s-sat-token-authorizer-extension` |
 | **Capability** | `bearer_token_authorizer` |
-| **Execution model** | Active + Shared |
+| **Execution model** | Passive + Shared |
 
 Authenticates and admits inbound Kubernetes service-account tokens for data-path
 nodes (typically receivers) through the `BearerTokenAuthorizer` capability, so a
