@@ -107,7 +107,7 @@ struct ExtensionMonitorEntry {
 impl Drop for ExtensionMonitorEntry {
     // TODO(engine-telemetry-teardown): same drain-then-unregister race exists
     // in EngineMetricsMonitor / PipelineMetricsMonitor / PipelineCtrl /
-    // ControlPlaneMetricsMonitor / EntityContext — needs a cross-cutting fix.
+    // ControlPlaneMetricsMonitor / EntityContext -- needs a cross-cutting fix.
     fn drop(&mut self) {
         let _ = self
             .registry
@@ -946,7 +946,7 @@ mod tests {
         let reporter = MetricsReporter::new(rep_tx);
         monitor.maybe_collect_telemetry(Instant::now(), &reporter);
 
-        // No state flip, no counter movement — failure is observability-only.
+        // No state flip, no counter movement -- failure is observability-only.
         assert_eq!(
             monitor.entries[0].state,
             ExtensionRuntimeState::Spawned,
@@ -974,7 +974,7 @@ mod tests {
     }
 
     /// The `state` gauge must remain asserted across many consecutive
-    /// ticks for long-running extensions — no transient zeros between
+    /// ticks for long-running extensions -- no transient zeros between
     /// ticks even though gauges are reset semantics on the framework
     /// side.
     #[tokio::test(flavor = "current_thread")]

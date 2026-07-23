@@ -568,6 +568,9 @@ jobs:
       - name: Build the test collector
         if: runner.os == 'Linux'
         run: make otelarrowcol
+      - name: Install wasm32-wasip2 target (Linux)
+        if: runner.os == 'Linux'
+        run: rustup target add wasm32-wasip2
       - name: Download nextest archive
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -620,6 +623,8 @@ jobs:
           tool: cargo-llvm-cov,cargo-nextest
       - name: Build the test collector
         run: make otelarrowcol
+      - name: Install wasm32-wasip2 target
+        run: rustup target add wasm32-wasip2
       - name: Run tests with coverage
         run: cargo llvm-cov nextest --locked --profile ci --all-features --workspace --lcov --output-path lcov.info
         working-directory: ./rust/otap-dataflow

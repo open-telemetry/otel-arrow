@@ -88,7 +88,7 @@ pub type NodeId = Cow<'static, str>;
 
 /// The id of an extension in the pipeline.
 ///
-/// Extensions have a separate ID namespace from nodes — an extension and a
+/// Extensions have a separate ID namespace from nodes -- an extension and a
 /// node may share the same name without collision.
 pub type ExtensionId = Cow<'static, str>;
 

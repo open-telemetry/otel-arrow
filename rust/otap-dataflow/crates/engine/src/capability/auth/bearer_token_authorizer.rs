@@ -10,17 +10,17 @@
 //!
 //! A `BearerTokenAuthorizer` performs **authentication** (establishing who the
 //! caller is from the token) and **admission** (deciding whether that token is
-//! acceptable — e.g. against a configured allow-list), behind one call, so a
+//! acceptable -- e.g. against a configured allow-list), behind one call, so a
 //! receiver depends on this single capability rather than orchestrating the
 //! steps itself. For example, a Kubernetes service-account-token authorizer
 //! validates the token via the `TokenReview` API (authentication) and then
 //! checks the returned service account against a configured allow-list
-//! (admission) — deriving both the trust source and the allowed identities from
+//! (admission) -- deriving both the trust source and the allowed identities from
 //! its own configuration, so the caller supplies only the token.
 //!
 //! It admits on the token alone; it does not perform contextual, per-request
 //! authorization (route, tenant, signal, or action scoping), which needs
-//! request context it never receives and belongs downstream — consuming the
+//! request context it never receives and belongs downstream -- consuming the
 //! [`AuthorizedIdentity`](super::AuthorizedIdentity) this capability emits.
 //!
 //! This capability is bearer-specific by design (the credential is always a
@@ -28,7 +28,7 @@
 //! by [`BearerToken`](super::BearerToken), a secret-protecting wrapper built
 //! from plain `&str` (a bare token or a whole `Authorization` header value),
 //! never from any HTTP/RPC crate's request type. A receiver extracts it from
-//! whatever transport it uses (gRPC, HTTP, …).
+//! whatever transport it uses (gRPC, HTTP, ...).
 //!
 //! The `#[capability]` proc macro expands the trait into:
 //!
@@ -59,7 +59,7 @@ pub trait BearerTokenAuthorizer {
     /// The authorizer **authenticates** the token (verifying its
     /// signature/authenticity, expiry, issuer, audience, or via an external
     /// check such as a Kubernetes `TokenReview`) and then **admits** the
-    /// resulting identity against its own policy (e.g. an allow-list) — both
+    /// resulting identity against its own policy (e.g. an allow-list) -- both
     /// steps behind this one call, so a receiver need not authenticate
     /// separately. The trust source and the allowed identities come from the
     /// authorizer's own configuration, so the caller supplies only the
@@ -74,11 +74,11 @@ pub trait BearerTokenAuthorizer {
     /// freshness.
     ///
     /// Returns `Ok(`[`AuthzDecision::Allow`]`)` or `Ok(`[`AuthzDecision::Deny`]`)`
-    /// when the authorizer reaches a verdict — a deny (including an
+    /// when the authorizer reaches a verdict -- a deny (including an
     /// authentication failure such as a missing, expired, or untrusted token)
     /// is a normal outcome, not an error. Returns a [`CapabilityError`] only
     /// when the authorizer **cannot reach a decision** (e.g. its token-review or
-    /// policy backend is unreachable). Callers must **fail closed** — treat an
-    /// `Err` as a deny — since an undetermined decision must never grant access.
+    /// policy backend is unreachable). Callers must **fail closed** -- treat an
+    /// `Err` as a deny -- since an undetermined decision must never grant access.
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError>;
 }

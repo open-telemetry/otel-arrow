@@ -27,7 +27,7 @@ use crate::error::{Error, Result};
 /// Detect AnyValue columns by structural shape: a struct field containing a sub-field
 /// named `consts::ATTRIBUTE_TYPE` (`"type"`) with `DataType::UInt8`.
 ///
-/// This avoids any explicit metadata bookkeeping — AnyValue columns are recognized
+/// This avoids any explicit metadata bookkeeping -- AnyValue columns are recognized
 /// by their characteristic layout (type discriminant + value fields).
 pub(crate) fn find_any_value_columns(schema: &Schema) -> Vec<usize> {
     schema
@@ -158,7 +158,7 @@ fn compute_type_distribution(type_array: &UInt8Array) -> Result<AnyValueTypeDist
     let partitions = arrow::compute::partition(&[type_col])?;
     let ranges = partitions.ranges();
 
-    // Single partition → all rows have the same type value
+    // Single partition -> all rows have the same type value
     if ranges.len() <= 1 {
         let first = type_array.value(0);
         let type_val = AttributeValueType::try_from(first).map_err(|_| Error::ExecutionError {
@@ -167,7 +167,7 @@ fn compute_type_distribution(type_array: &UInt8Array) -> Result<AnyValueTypeDist
         return Ok(AnyValueTypeDistribution::Uniform(type_val));
     }
 
-    // Multiple partitions → group contiguous runs by type value, coalescing non-adjacent
+    // Multiple partitions -> group contiguous runs by type value, coalescing non-adjacent
     // runs that share the same type.
     let mut groups: Vec<(u8, RowRanges)> = Vec::new();
     for range in ranges {
@@ -213,7 +213,7 @@ fn any_value_type_to_column_name(type_val: AttributeValueType) -> Result<&'stati
 
 /// Map an Arrow [`DataType`] to the corresponding [`AttributeValueType`] and AnyValue field name.
 ///
-/// This is the reverse of [`any_value_type_to_column_name`] — given an expression result's
+/// This is the reverse of [`any_value_type_to_column_name`] -- given an expression result's
 /// Arrow type, determine which AnyValue field it belongs in.
 pub(crate) fn arrow_type_to_any_value_type(
     dt: &DataType,
@@ -398,7 +398,7 @@ fn slice_batch_by_ranges(batch: &RecordBatch, ranges: &RowRanges) -> Result<Reco
 /// `local_ranges` are ranges within this partition's (sub-)batch.
 /// The result is the corresponding ranges in the original batch.
 ///
-/// Operates in chunks over the ranges directly — no per-row iteration or intermediate
+/// Operates in chunks over the ranges directly -- no per-row iteration or intermediate
 /// allocation beyond a small cumulative-length array.
 fn map_local_ranges_to_original(
     partition_ranges: &RowRanges,
@@ -584,7 +584,7 @@ pub(crate) fn stitch_partitioned_results(
 /// Stitch partitions that all share the same Arrow data type into a single array in
 /// original row order.
 ///
-/// Builds the output array directly via [`MutableArrayData`] in one pass — no intermediate
+/// Builds the output array directly via [`MutableArrayData`] in one pass -- no intermediate
 /// concatenation or take-indices allocation.
 fn stitch_same_type(
     partition_results: &[(ArrayRef, RowRanges)],
@@ -716,7 +716,7 @@ fn stitch_as_any_value_struct(
         let first_matching = matching_partitions[0];
         let field_data_type = partition_results[first_matching].0.data_type().clone();
 
-        // Prepare MutableArrayData source arrays — one per matching partition.
+        // Prepare MutableArrayData source arrays -- one per matching partition.
         let source_arrays: Vec<&dyn Array> = matching_partitions
             .iter()
             .map(|&pi| partition_results[pi].0.as_ref())
@@ -737,7 +737,7 @@ fn stitch_as_any_value_struct(
         while i < merged_rows.len() {
             let (_, part_idx) = merged_rows[i];
             if let Some(source_idx) = part_to_source[part_idx] {
-                // This row matches this field — find how many consecutive rows also match
+                // This row matches this field -- find how many consecutive rows also match
                 // the same source.
                 let start = i;
                 let start_offset = merged_offsets[i];
@@ -754,7 +754,7 @@ fn stitch_as_any_value_struct(
                 }
                 mutable.extend(source_idx, start_offset, start_offset + (i - start));
             } else {
-                // This row doesn't match — count consecutive non-matching rows.
+                // This row doesn't match -- count consecutive non-matching rows.
                 let start = i;
                 i += 1;
                 while i < merged_rows.len() {
@@ -1003,7 +1003,7 @@ mod test {
     #[test]
     #[allow(clippy::single_range_in_vec_init)]
     fn test_map_local_ranges_single_partition_range() {
-        // Partition covers original rows 5..10. Local range 1..4 → original 6..9.
+        // Partition covers original rows 5..10. Local range 1..4 -> original 6..9.
         let partition_ranges: RowRanges = smallvec![5..10];
         let local_ranges: RowRanges = smallvec![1..4];
         let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
@@ -1013,7 +1013,7 @@ mod test {
     #[test]
     #[allow(clippy::single_range_in_vec_init)]
     fn test_map_local_ranges_multi_partition_within_one() {
-        // Partition covers [5..8, 12..15]. Local range 0..2 → original 5..7 (within first range).
+        // Partition covers [5..8, 12..15]. Local range 0..2 -> original 5..7 (within first range).
         let partition_ranges: RowRanges = smallvec![5..8, 12..15];
         let local_ranges: RowRanges = smallvec![0..2];
         let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
@@ -1023,7 +1023,7 @@ mod test {
     #[test]
     fn test_map_local_ranges_spanning_boundary() {
         // Partition covers [5..8, 12..15]. Local indices 0..6 = all rows.
-        // Local 0..3 → original 5..8, local 3..6 → original 12..15.
+        // Local 0..3 -> original 5..8, local 3..6 -> original 12..15.
         // These are non-contiguous in original space, so we get two ranges.
         let partition_ranges: RowRanges = smallvec![5..8, 12..15];
         let local_ranges: RowRanges = smallvec![0..6];
@@ -1034,7 +1034,7 @@ mod test {
     #[test]
     fn test_map_local_ranges_spanning_partial() {
         // Partition covers [5..8, 12..15]. Local range 2..5 spans the boundary:
-        // local 2 → original 7, local 3 → original 12, local 4 → original 13.
+        // local 2 -> original 7, local 3 -> original 12, local 4 -> original 13.
         let partition_ranges: RowRanges = smallvec![5..8, 12..15];
         let local_ranges: RowRanges = smallvec![2..5];
         let result = map_local_ranges_to_original(&partition_ranges, &local_ranges);
@@ -1109,7 +1109,7 @@ mod test {
 
     #[test]
     fn test_project_any_value_no_any_value_columns() {
-        // A batch with no AnyValue struct columns — should pass through as single partition.
+        // A batch with no AnyValue struct columns -- should pass through as single partition.
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Arc::new(Field::new(
                 "x",
@@ -1128,7 +1128,7 @@ mod test {
     #[test]
     #[allow(clippy::single_range_in_vec_init)]
     fn test_project_any_value_uniform_type() {
-        // All rows are Str — should produce single partition with concrete Utf8 column.
+        // All rows are Str -- should produce single partition with concrete Utf8 column.
         let struct_col = make_any_value_struct(
             &[1, 1, 1],
             vec![Some("a"), Some("b"), Some("c")],
@@ -1149,7 +1149,7 @@ mod test {
     #[test]
     #[allow(clippy::single_range_in_vec_init)]
     fn test_project_any_value_mixed_types() {
-        // [Str, Str, Int, Int] — should produce two partitions.
+        // [Str, Str, Int, Int] -- should produce two partitions.
         let struct_col = make_any_value_struct(
             &[1, 1, 2, 2],
             vec![Some("a"), Some("b"), None, None],
@@ -1182,7 +1182,7 @@ mod test {
 
     #[test]
     fn test_project_any_value_all_empty() {
-        // All rows have type=Empty — should produce zero partitions.
+        // All rows have type=Empty -- should produce zero partitions.
         let struct_col = make_any_value_struct(
             &[0, 0, 0],
             vec![None, None, None],
@@ -1198,7 +1198,7 @@ mod test {
 
     #[test]
     fn test_project_any_value_mixed_with_empty() {
-        // [Int, Empty, Int, Empty] — Empty rows skipped, Int rows kept.
+        // [Int, Empty, Int, Empty] -- Empty rows skipped, Int rows kept.
         let struct_col = make_any_value_struct(
             &[2, 0, 2, 0],
             vec![None, None, None, None],

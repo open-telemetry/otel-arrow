@@ -59,7 +59,7 @@ pub struct Context {
     /// `Some(ns)` when a message is inside a flow_metric range (between
     /// start and end nodes). Stored value equals the real accumulated
     /// nanoseconds. `start_flow_metric` initializes to 1ns as an "active"
-    /// sentinel — duration measurements are required to be >0 ns, so the
+    /// sentinel -- duration measurements are required to be >0 ns, so the
     /// 1ns sentinel is acceptable drift. At most one flow_metric can be
     /// active at a time (non-overlapping ranges).
     flow_compute_ns: Option<NonZeroU64>,
@@ -96,13 +96,13 @@ impl Context {
     ) {
         if let Some(top) = self.stack.last_mut() {
             if top.node_id == node_id {
-                // Same node → merge interests, replace user data.
+                // Same node -> merge interests, replace user data.
                 // Engine fields (time_ns) are preserved.
                 top.interests |= interests;
                 top.route.calldata = calldata;
                 return;
             }
-            // Different node → inherit RETURN_DATA from predecessor.
+            // Different node -> inherit RETURN_DATA from predecessor.
             interests |= top.interests & Interests::RETURN_DATA;
         }
         let entry_time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
@@ -263,7 +263,7 @@ impl Context {
                 return;
             }
         }
-        // Different node (or empty stack) → push new frame.
+        // Different node (or empty stack) -> push new frame.
         let mut frame_interests = interests;
         if let Some(last) = self.stack.last() {
             frame_interests |= last.interests & Interests::RETURN_DATA;
@@ -391,7 +391,7 @@ impl Context {
     ///
     /// Returns `Some(addr)` only when every contributing input observed the
     /// same peer address. Returns `None` if any input was peerless or if
-    /// distinct peers contributed — merging processors must use this to
+    /// distinct peers contributed -- merging processors must use this to
     /// avoid attributing a multi-peer output to one arbitrary contributor.
     #[must_use]
     pub fn merge_peer_addr<I>(inputs: I) -> Option<SocketAddr>
@@ -509,8 +509,8 @@ impl FlowMetricAccumulation for OtapPdata {
     fn start_flow_metric(&mut self) {
         // Build-time validation in `build_flow_metric_state` rejects flow_metrics
         // that share a start or end node, but it does NOT yet detect
-        // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
-        // path 1→2→3→4). Until that gap is closed (see TODO(flow_metric-interleave)
+        // interleaved ranges with distinct endpoints (e.g. 1->3 + 2->4 on the
+        // path 1->2->3->4). Until that gap is closed (see TODO(flow_metric-interleave)
         // in engine/src/flow_metrics.rs), keep a defensive runtime warning so a
         // misconfigured pipeline is diagnosable instead of silently producing
         // truncated histograms.
@@ -518,7 +518,7 @@ impl FlowMetricAccumulation for OtapPdata {
             otap_df_telemetry::otel_warn!(
                 "flow_metrics.overlap",
                 "start_flow_metric called while another flow_metric is active; \
-                 overlapping ranges are not supported — previous accumulator discarded"
+                 overlapping ranges are not supported \u{2014} previous accumulator discarded"
             );
         }
         // Use a 1ns active sentinel because flow_metric duration measurements
@@ -909,7 +909,7 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         }
         // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
-        // reflects the post-process count — what is actually leaving
+        // reflects the post-process count -- what is actually leaving
         // the flow_metric range. Recorded unconditionally (including 0)
         // so signals.outgoing.count stays in lockstep with
         // compute.duration.count and 0-out traversals stay visible.
@@ -922,7 +922,7 @@ impl FlowMetricHook for OtapPdata {
         flow_accumulate(handler, self);
     }
 
-    /// At the flow_metric start node, count items *entering* the range —
+    /// At the flow_metric start node, count items *entering* the range --
     /// i.e. before `process()` runs and may filter or drop them. This
     /// gives the true input volume to compare against the end-node
     /// output volume recorded in [`flow_accumulate`]. Recorded
@@ -939,11 +939,11 @@ impl FlowMetricHook for OtapPdata {
 /// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
 ///
 /// Parameters:
-///   $async_attr   – `async_trait(?Send)` for local or `async_trait` for shared
-///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
-///   $handler      – fully-qualified EffectHandler type
-///   $id_method    – `processor_id` or `receiver_id`
-///   $hook         – `with_hook` (processors: invokes `before_processor_send`)
+///   $async_attr   - `async_trait(?Send)` for local or `async_trait` for shared
+///   $trait_name   - `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
+///   $handler      - fully-qualified EffectHandler type
+///   $id_method    - `processor_id` or `receiver_id`
+///   $hook         - `with_hook` (processors: invokes `before_processor_send`)
 ///                   or `no_hook` (receivers: no per-send bookkeeping)
 macro_rules! maybe_processor_send_hook {
     (with_hook, $handler:expr, $data:expr) => {
@@ -2014,7 +2014,7 @@ mod test {
         ctx.set_source_node(42);
         assert_eq!(ctx.source_node(), Some(42));
         assert_eq!(ctx.stack.len(), 1);
-        // Source-node-only frames have empty interests — not subscribers.
+        // Source-node-only frames have empty interests -- not subscribers.
         assert!(!ctx.has_subscribers());
 
         // Same node_id is a no-op (dedup).
@@ -2058,7 +2058,7 @@ mod test {
         // Without RETURN_DATA propagation in set_source_node, the source frame
         // breaks the chain and node 3's frame won't inherit RETURN_DATA.
         // When next_ack finds node 3, it sees no RETURN_DATA and drops the
-        // payload — even though node 1 needs it for retry.
+        // payload -- even though node 1 needs it for retry.
         let (test_data, pdata) = create_test();
 
         let pdata = pdata
@@ -2091,7 +2091,7 @@ mod test {
         let (node_id, ack_msg) = next_ack(ack).expect("should find node 3");
         assert_eq!(node_id, 3);
 
-        // The payload must be preserved — node 1 needs it for retry.
+        // The payload must be preserved -- node 1 needs it for retry.
         assert_eq!(
             ack_msg.accepted.num_items(),
             1,
@@ -2137,7 +2137,7 @@ mod test {
     }
 
     // -----------------------------------------------------------------------
-    // W13 — Interests gating tests for push_entry_frame / subscribe_to
+    // W13 -- Interests gating tests for push_entry_frame / subscribe_to
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2234,7 +2234,7 @@ mod test {
         let original_time = ctx.frames()[0].route.entry_time_ns;
         assert!(original_time > 0);
 
-        // Component subscribes on the same node — should merge, preserving time_ns.
+        // Component subscribes on the same node -- should merge, preserving time_ns.
         let user = TestCallData::default();
         ctx.subscribe_to(
             Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
@@ -2549,7 +2549,7 @@ mod test {
         assert!(!pdata.has_active_flow_metric());
         assert_eq!(pdata.take_flow_compute(), None);
 
-        // Start → accumulate → take.
+        // Start -> accumulate -> take.
         pdata.start_flow_metric();
         assert!(pdata.has_active_flow_metric());
         pdata.add_flow_compute(100);
@@ -2578,8 +2578,8 @@ mod test {
         pdata.start_flow_metric();
         pdata.add_flow_compute(100);
 
-        // Second flow_metric starts while first is still active — this is
-        // the interleaved 1→3 + 2→4 scenario that build-time validation
+        // Second flow_metric starts while first is still active -- this is
+        // the interleaved 1->3 + 2->4 scenario that build-time validation
         // does not yet detect. The runtime warning fires and the accumulator
         // is reset to the 1ns active sentinel.
         pdata.start_flow_metric();
@@ -2632,24 +2632,24 @@ mod test {
         let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
         let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
 
-        // Empty input → None.
+        // Empty input -> None.
         assert_eq!(Context::merge_peer_addr(std::iter::empty()), None);
 
-        // Single Some → that address.
+        // Single Some -> that address.
         assert_eq!(Context::merge_peer_addr([Some(a)]), Some(a));
 
-        // All identical → that address.
+        // All identical -> that address.
         assert_eq!(
             Context::merge_peer_addr([Some(a), Some(a), Some(a)]),
             Some(a)
         );
 
-        // Any None → None.
+        // Any None -> None.
         assert_eq!(Context::merge_peer_addr([Some(a), None]), None);
         assert_eq!(Context::merge_peer_addr([None, Some(a)]), None);
         assert_eq!(Context::merge_peer_addr([None, None]), None);
 
-        // Distinct Somes → None (refuse to misattribute).
+        // Distinct Somes -> None (refuse to misattribute).
         assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
     }
 
