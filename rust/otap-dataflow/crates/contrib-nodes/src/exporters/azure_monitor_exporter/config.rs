@@ -114,11 +114,8 @@ pub struct ApiConfig {
     ///
     /// When omitted (or left empty), no mappings are applied: only the
     /// mandatory `TimeGenerated` column is auto-injected (from the record's
-    /// event time), and every other section is empty. Only the sections you
-    /// configure are emitted; unmapped resource attributes, scope attributes,
-    /// and log-record fields are dropped, not passed through. See
-    /// [`SchemaConfig`] for per-section mapping, including attribute passthrough
-    /// on `log_record_mapping`.
+    /// event time). See [`SchemaConfig`] for per-section mapping, including
+    /// attribute passthrough on `log_record_mapping`.
     #[serde(default)]
     pub schema: SchemaConfig,
 
@@ -152,22 +149,22 @@ pub struct SchemaConfig {
 
     /// Log record field mappings.
     ///
-    /// Each key maps a log-record field (e.g. `body`, `severity_text`,
-    /// `time_unix_nano`) to a destination column name. The special key
+    /// Each key maps a log-record field (`body`, `severity_text`,
+    /// `time_unix_nano`, ...) to a destination column name. The special key
     /// `attributes` accepts either an explicit `{ <attr key>: <column> }` object
-    /// (map specific attributes) or the string `passthrough`: in passthrough
-    /// mode every log-record attribute is emitted as-is as its own top-level
-    /// `"<key>": <value>` column (the attribute key becomes the column name),
-    /// avoiding per-attribute configuration.
+    /// OR the string `passthrough`; the two forms cannot be combined within
+    /// `attributes` (all-or-nothing).
     ///
-    /// Passthrough composes with `resource_mapping`, `scope_mapping`, and the
-    /// other `log_record_mapping` fields, which continue to emit their own
-    /// columns. If a passed-through attribute key collides with a mapped column,
-    /// the attribute value wins (innermost) and the column is emitted once.
+    /// In `passthrough`, every log-record attribute is emitted as-is as a
+    /// top-level `"<key>": <value>` column. Other `log_record_mapping` fields,
+    /// plus `resource_mapping` and `scope_mapping`, continue to emit their own
+    /// columns independently. If a passthrough attribute key collides with a
+    /// mapped column, the attribute value wins (innermost) and the column is
+    /// emitted once.
     ///
-    /// Note: passthrough column names are runtime attribute keys, so they are
-    /// not validated for duplicates at config time (unlike explicit mappings);
-    /// any collision is resolved at emit time by the innermost-wins rule above.
+    /// Passthrough column names are runtime attribute keys, so unlike explicit
+    /// mappings they are not checked for duplicates at config load; collisions
+    /// are resolved at emit time by the rule above.
     #[serde(default)]
     pub log_record_mapping: HashMap<String, Value>,
 }
