@@ -25,8 +25,16 @@ pub enum Error {
         source: kube::Error,
     },
 
-    /// The API server returned a `TokenReview` response with no `status`, so no
+    /// The `SubjectAccessReview` (RBAC) request to the API server could not be
+    /// completed. This is an undetermined outcome: callers must fail closed.
+    #[error("SubjectAccessReview request failed: {source}")]
+    SubjectAccessReview {
+        /// Underlying kube error.
+        source: kube::Error,
+    },
+
+    /// The API server returned a review response with no `status`, so no
     /// decision could be derived from it.
-    #[error("TokenReview response had no status")]
+    #[error("review response had no status")]
     MissingStatus,
 }

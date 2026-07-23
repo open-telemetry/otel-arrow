@@ -17,8 +17,10 @@
 This document describes the design of the **Kubernetes SAT authorizer
 extension** (`k8s_sat_token_authorizer`) for the OTAP dataflow engine. The
 extension authenticates and admits inbound Kubernetes service-account tokens
-(SATs) presented on data-path requests and exposes the verdict to data-path
-nodes through a `BearerTokenAuthorizer` capability.
+(SATs) presented on data-path requests -- authenticating via `TokenReview` and
+admitting via a service-account allow-list or an RBAC `SubjectAccessReview` --
+and exposes the verdict to data-path nodes through a `BearerTokenAuthorizer`
+capability.
 
 It builds on the extension system foundations:
 
@@ -49,8 +51,9 @@ its first production implementation.
 
 - Validate an inbound SAT via the Kubernetes `TokenReview` API
   (**authentication**).
-- Admit the resulting service account against a configured audience and optional
-  service-account allow-list (**admission**).
+- Admit the resulting identity via one of two strategies (**admission**): a
+  static service-account allow-list, or a Kubernetes RBAC check via
+  `SubjectAccessReview`.
 - Return a single `AuthzDecision` (`Allow` carrying an `AuthorizedIdentity`, or a
   coarse `Deny`), behind one `authorize` call, so receivers do not orchestrate
   the steps themselves.
@@ -64,6 +67,9 @@ its first production implementation.
 - Contextual, per-request authorization (route, tenant, signal, or action
   scoping). That needs request context this capability never receives and
   belongs downstream, consuming the `AuthorizedIdentity` this extension emits.
+  The optional RBAC check uses a **fixed** resource/verb from configuration (the
+  same for every request), so it is admission "on the token alone", not
+  per-request authorization.
 - Non-Kubernetes token schemes (OIDC/JWT validated against a JWKS, opaque OAuth
   introspection). Those are separate authorizer implementations.
 - Issuing or refreshing tokens (the outbound side is `BearerTokenProvider`).
@@ -114,23 +120,37 @@ extensions is a future enhancement).
    undetermined and returns an `Err` -- fail closed (the next request retries).
 4. **`TokenReview`** is submitted for the token with the configured audiences.
    The API server answer maps to:
-   - authenticated -> **admission** against the allow-list (below);
+   - authenticated -> **admission** (below);
    - not authenticated -> `Deny(InvalidCredential)` with the API server's
      message as log-only detail;
    - request failure / missing status -> `Err` (undetermined; not cached).
-5. The reached decision (allow or deny) is cached and returned.
+5. **Admission** (only when authenticated): allow-list / audience-only admission
+   is decided in-process, while RBAC admission issues a second API call
+   (`SubjectAccessReview`); an RBAC request failure is `Err` (undetermined; not
+   cached).
+6. The reached decision (allow or deny) is cached and returned.
 
-No lock is held across the `TokenReview` await; the cache uses short
+No lock is held across the API-server awaits; the cache uses short
 `std::sync::Mutex` critical sections that never span an `.await`.
 
 ### Admission
 
-After authentication, if an allow-list is configured, the returned username
-(`system:serviceaccount:<namespace>:<name>`) must be a member or the request is
-`Deny(NotPermitted)`. An empty allow-list admits any authenticated account
-(audience-only admission). Allow-list entries accept three shapes -- the full
-username, `<namespace>/<name>`, and `<namespace>:<name>` -- all normalized to the
-canonical username at wiring time for an O(1) set lookup.
+Admission runs after authentication and uses exactly one strategy (the two
+config fields are mutually exclusive):
+
+- **Audience-only** (neither field set): any authenticated service account is
+  admitted.
+- **Allow-list** (`allowed_service_accounts`): the returned username
+  (`system:serviceaccount:<namespace>:<name>`) must be a member, else
+  `Deny(NotPermitted)`. Entries accept three shapes -- the full username,
+  `<namespace>/<name>`, and `<namespace>:<name>` -- all normalized to the
+  canonical username at wiring time for an O(1) set lookup.
+- **RBAC** (`resource_attributes`): a `SubjectAccessReview` asks the API server
+  whether the authenticated subject (user, uid, groups, and extra from the
+  `TokenReview`) may perform the configured `verb` on the configured resource.
+  `allowed` (and not `denied`) admits; anything else is `Deny(NotPermitted)`
+  with the API server's reason as log-only detail. A failed `SubjectAccessReview`
+  call is undetermined and fails closed.
 
 An `Allow` carries an `AuthorizedIdentity` whose `subject` is the SA username and
 whose `audience` is the confirmed audience, so downstream per-tenant/route
@@ -152,11 +172,15 @@ capability's `Allow` carries no validity window).
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `audiences` | list of strings | *required* | Audiences requested on `TokenReview`; the token must be valid for at least one. Must be non-empty. |
-| `allowed_service_accounts` | list of strings | `[]` | Admitted service accounts (`system:serviceaccount:<ns>:<name>`, `<ns>/<name>`, or `<ns>:<name>`). Empty admits any authenticated account. |
+| `allowed_service_accounts` | list of strings | `[]` | Allow-list admission. Admitted service accounts (`system:serviceaccount:<ns>:<name>`, `<ns>/<name>`, or `<ns>:<name>`). Mutually exclusive with `resource_attributes`. |
+| `resource_attributes` | object | *unset* | RBAC admission via `SubjectAccessReview`. `resource` and `verb` are required; `group`, `version`, `namespace`, `name`, `subresource` are optional. Mutually exclusive with `allowed_service_accounts`. |
 | `cache_ttl` | duration | `5m` | How long a reached decision is cached, keyed by the opaque token. Must be non-zero. |
 | `cache_max_entries` | integer | `1024` | Upper bound on cached decisions. Must be greater than zero. |
 
-Example:
+When neither `allowed_service_accounts` nor `resource_attributes` is set, any
+authenticated service account is admitted (audience-only).
+
+Allow-list example:
 
 ```yaml
 extensions:
@@ -170,8 +194,45 @@ extensions:
       cache_ttl: 5m
 ```
 
+RBAC example:
+
+```yaml
+extensions:
+  k8s_authz:
+    urn: urn:otel:extension:k8s_sat_token_authorizer
+    config:
+      audiences:
+        - https://my-collector.observability.svc
+      resource_attributes:
+        group: telemetry.opentelemetry.io
+        resource: telemetry
+        verb: export
+        namespace: observability
+```
+
 A receiver binds it via its `capabilities:` map (see
 [`docs/configuration-model.md`](configuration-model.md)).
+
+### Collector RBAC
+
+The collector's own ServiceAccount must be allowed to call the review APIs it
+uses: `create` on `authentication.k8s.io/tokenreviews`, plus `create` on
+`authorization.k8s.io/subjectaccessreviews` when `resource_attributes` (RBAC
+admission) is configured. For example:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: otel-collector-sat-authorizer
+rules:
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  - apiGroups: ["authorization.k8s.io"]
+    resources: ["subjectaccessreviews"]
+    verbs: ["create"]
+```
 
 ### Telemetry
 
