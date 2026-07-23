@@ -340,6 +340,7 @@ azure-monitor-exporter = [
 # Contrib extensions (opt-in) - in contrib-extensions
 contrib-extensions = ["otap-df-contrib-extensions/contrib-extensions"]
 azure-identity-auth-extension = ["otap-df-contrib-extensions/azure-identity-auth-extension"]
+k8s-sat-token-authorizer-extension = ["otap-df-contrib-extensions/k8s-sat-token-authorizer-extension"]
 # Contrib receivers (opt-in) - now in contrib-nodes
 contrib-receivers = ["otap-df-contrib-nodes/contrib-receivers"]
 kafka-receiver = ["otap-df-contrib-nodes/kafka-receiver"]
