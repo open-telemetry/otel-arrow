@@ -6,102 +6,111 @@
 //! Note: We try as much as possible to follow the following
 //! [RFC Pipeline Component Telemetry](https://github.com/open-telemetry/opentelemetry-collector/blob/main/docs/rfcs/component-universal-telemetry.md).
 
-use otap_df_config::SignalType;
+use otap_df_telemetry::common_attributes::SignalOutcomeAttributes;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
-/// PData metrics for exporters.
-/// Namespace grouped under `exporter.pdata`.
-/// Uses a monotonic counter per outcome.
-#[metric_set(name = "exporter.pdata")]
+/// Completed PData export operations.
+#[metric_set(
+    name = "exporter.pdata.exports",
+    measurement_attributes = SignalOutcomeAttributes
+)]
 #[derive(Debug, Default, Clone)]
-pub struct ExporterPDataMetrics {
-    /// Number of pdata metrics consumed by this exporter.
-    #[metric(unit = "{msg}")]
-    pub metrics_consumed: Counter<u64>,
-
-    /// Number of pdata metrics successfully exported.
-    #[metric(unit = "{msg}")]
-    pub metrics_exported: Counter<u64>,
-
-    /// Number of pdata metrics that failed to be exported.
-    #[metric(unit = "{msg}")]
-    pub metrics_failed: Counter<u64>,
-
-    /// Number of pdata logs consumed by this exporter.
-    #[metric(unit = "{msg}")]
-    pub logs_consumed: Counter<u64>,
-
-    /// Number of pdata logs successfully exported.
-    #[metric(unit = "{msg}")]
-    pub logs_exported: Counter<u64>,
-
-    /// Number of pdata logs that failed to be exported.
-    #[metric(unit = "{msg}")]
-    pub logs_failed: Counter<u64>,
-
-    /// Number of pdata traces consumed by this exporter.
-    #[metric(unit = "{msg}")]
-    pub traces_consumed: Counter<u64>,
-
-    /// Number of pdata traces successfully exported.
-    #[metric(unit = "{msg}")]
-    pub traces_exported: Counter<u64>,
-
-    /// Number of pdata traces that failed to be exported.
-    #[metric(unit = "{msg}")]
-    pub traces_failed: Counter<u64>,
+pub struct ExporterPDataExportMetrics {
+    /// Number of PData messages whose export reached a terminal outcome.
+    #[metric(unit = "{message}")]
+    pub messages: Counter<u64>,
 }
 
-impl ExporterPDataMetrics {
-    /// Increment the number of pdata messages consumed.
-    pub const fn inc_consumed(&mut self, st: SignalType) {
-        self.add_consumed(st, 1);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::SignalType;
+    use otap_df_engine::context::ControllerContext;
+    use otap_df_telemetry::common_attributes::Outcome;
+    use otap_df_telemetry::metrics::MeasurementMetricSet;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    fn new_test_metrics() -> MeasurementMetricSet<ExporterPDataExportMetrics> {
+        let registry = TelemetryRegistryHandle::new();
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        ExporterPDataExportMetrics::register(&pipeline_ctx)
     }
 
-    /// Increment the number of pdata messages exported.
-    pub const fn inc_exported(&mut self, st: SignalType) {
-        self.add_exported(st, 1);
+    /// Scenario: An exporter completes successful and failed exports for multiple signals.
+    /// Guarantees: Terminal export counts are isolated by signal and outcome.
+    #[test]
+    fn exporter_metrics_are_partitioned_by_signal_and_outcome() {
+        let mut metrics = new_test_metrics();
+        metrics
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Logs,
+                outcome: Outcome::Success,
+            })
+            .messages
+            .add(2);
+        metrics
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Logs,
+                outcome: Outcome::Failure,
+            })
+            .messages
+            .inc();
+
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .get(),
+            2
+        );
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .get(SignalOutcomeAttributes {
+                    signal: SignalType::Metrics,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .get(),
+            0
+        );
     }
 
-    /// Increment the number of pdata messages that failed to be exported.
-    pub const fn inc_failed(&mut self, st: SignalType) {
-        self.add_failed(st, 1);
-    }
+    /// Scenario: Export outcome metrics are handed off during terminal shutdown twice.
+    /// Guarantees: Only touched buckets are emitted and each bucket is cleared after handoff.
+    #[test]
+    fn terminal_snapshots_emit_touched_buckets_once() {
+        let mut metrics = new_test_metrics();
+        metrics
+            .with(SignalOutcomeAttributes {
+                signal: SignalType::Traces,
+                outcome: Outcome::Success,
+            })
+            .messages
+            .inc();
 
-    /// Add to the number of pdata messages consumed.
-    pub const fn add_consumed(&mut self, st: SignalType, count: u64) {
-        if count == 0 {
-            return;
-        }
-        match st {
-            SignalType::Metrics => self.metrics_consumed.add(count),
-            SignalType::Logs => self.logs_consumed.add(count),
-            SignalType::Traces => self.traces_consumed.add(count),
-        }
-    }
-
-    /// Add to the number of pdata messages exported.
-    pub const fn add_exported(&mut self, st: SignalType, count: u64) {
-        if count == 0 {
-            return;
-        }
-        match st {
-            SignalType::Metrics => self.metrics_exported.add(count),
-            SignalType::Logs => self.logs_exported.add(count),
-            SignalType::Traces => self.traces_exported.add(count),
-        }
-    }
-
-    /// Add to the number of pdata messages that failed to be exported.
-    pub const fn add_failed(&mut self, st: SignalType, count: u64) {
-        if count == 0 {
-            return;
-        }
-        match st {
-            SignalType::Metrics => self.metrics_failed.add(count),
-            SignalType::Logs => self.logs_failed.add(count),
-            SignalType::Traces => self.traces_failed.add(count),
-        }
+        let snapshots = metrics.terminal_snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "exporter.pdata.exports"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot.measurement_attribute_value("outcome") == Some("success")
+        }));
+        assert!(metrics.terminal_snapshots().is_empty());
     }
 }

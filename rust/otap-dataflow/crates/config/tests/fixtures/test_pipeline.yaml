@@ -1,11 +1,6 @@
 engine:
   telemetry:
     reporting_interval: "5s"
-    metrics:
-      readers:
-        - periodic:
-            exporter:
-              type: console
     logs:
       level: "debug"
       processors:

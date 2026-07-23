@@ -93,11 +93,11 @@ pub(super) fn draw_top_tabs(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     draw_tab_bar(frame, area, &titles, selected, app.color_enabled);
 }
 
-/// Draw the title, OpenTelemetry brand label, and current target URL.
+/// Draw the title, OTel-Arrow brand label, and current target URL.
 pub(super) fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) {
     let mut spans = brand_spans(app);
     spans.extend([
-        Span::styled(" - Arrow Dataflow Engine", title_style(app.color_enabled)),
+        Span::styled(" Dataflow Engine", title_style(app.color_enabled)),
         Span::styled("  |  ", separator_style(app.color_enabled)),
         Span::styled("target ", muted_style(app.color_enabled)),
         Span::styled(app.target_url(), target_style(app.color_enabled)),
@@ -109,16 +109,16 @@ pub(super) fn draw_title_bar(frame: &mut Frame<'_>, area: Rect, app: &AppState) 
     frame.render_widget(title, area);
 }
 
-/// Build the styled OpenTelemetry brand spans, shimmering them while background activity runs.
+/// Build the styled OTel-Arrow brand spans, shimmering them while background activity runs.
 pub(super) fn brand_spans(app: &AppState) -> Vec<Span<'static>> {
     if !app.color_enabled || !app.is_activity_active() {
         return vec![
-            Span::styled("Open", open_brand_style(app.color_enabled)),
-            Span::styled("Telemetry", telemetry_brand_style(app.color_enabled)),
+            Span::styled("OTel", open_brand_style(app.color_enabled)),
+            Span::styled("-Arrow", telemetry_brand_style(app.color_enabled)),
         ];
     }
 
-    "OpenTelemetry"
+    "OTel-Arrow"
         .chars()
         .enumerate()
         .map(|(index, character)| {
@@ -131,12 +131,12 @@ pub(super) fn brand_spans(app: &AppState) -> Vec<Span<'static>> {
 }
 
 fn shimmering_brand_style(index: usize, frame: u16) -> Style {
-    let base_style = if index < "Open".len() {
+    let base_style = if index < "OTel".len() {
         open_brand_style(true)
     } else {
         telemetry_brand_style(true)
     };
-    let brand_len = "OpenTelemetry".len();
+    let brand_len = "OTel-Arrow".len();
     let cycle_len = brand_len + 4;
     let center = (usize::from(frame) % cycle_len) as isize - 2;
     let distance = (index as isize - center).unsigned_abs();
