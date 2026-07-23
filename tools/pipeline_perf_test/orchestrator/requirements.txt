@@ -13,12 +13,12 @@ psutil==7.2.2
 kubernetes==36.0.3
 
 # Other dependencies
-duckdb==1.5.4
+duckdb==1.5.5
 jinja2==3.1.6
-opentelemetry-exporter-otlp==1.43.0
-opentelemetry-sdk==1.43.0
-opentelemetry-proto==1.43.0
+opentelemetry-exporter-otlp==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-proto==1.44.0
 prometheus_client==0.25.0
-pandas==3.0.4
+pandas==3.0.5
 pyarrow==24.0.0
 tabulate==0.10.0
