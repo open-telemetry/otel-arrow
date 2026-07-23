@@ -32,9 +32,7 @@ groups:
                 max_duration: "50ms"
               providers:
                 # Rustic Provider (Custom)
-                # - guid: "d2387720-2907-5677-8625-c1bdc4155197"
-                #  level: verbose
-                - name: "RusticDemoProvider"
+                - guid: "d2387720-2907-5677-8625-c1bdc4155197"
                   level: verbose
           console:
             type: exporter:console
