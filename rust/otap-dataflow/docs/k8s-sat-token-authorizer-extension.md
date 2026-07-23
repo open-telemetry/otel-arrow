@@ -8,7 +8,7 @@
 
 **Capability exposed:** `BearerTokenAuthorizer`
 
-**Execution model:** Active + Shared
+**Execution model:** Passive + Shared
 
 **Target crate:** `crates/contrib-extensions`
 
@@ -82,28 +82,25 @@ extension_capabilities!(
 )
 ```
 
-It is an **Active + Shared** extension. Every consumer and the extension's own
-`start()` task observe the same `Arc<Inner>` state, so they share one Kubernetes
-client, one decision cache, and one metric set.
+It is a **Passive + Shared** extension: it runs no event loop. Every consumer
+receives a clone that shares the same `Arc<Inner>` state, so they share one
+Kubernetes client and one decision cache.
 
-The extension is *active* (rather than passive) for two reasons even though it
-has no periodic work:
+The Kubernetes client is built **lazily on the first `authorize()` call**, not
+up front. `kube::Client::try_default()` is async (it reads the projected
+service-account token and cluster CA and resolves the API server), so it cannot
+run in the synchronous `create()` factory hook; a `tokio::sync::OnceCell` builds
+it once, on demand. A build failure is undetermined -- the request fails closed
+and the empty cell lets the next request retry -- so no separate readiness/warmup
+gate is needed (an early request simply pays the one-time construction latency,
+and an inability to construct fails closed rather than allowing).
 
-1. **Asynchronous client construction.** `kube::Client::try_default()` is async
-   (it reads the projected service-account token and cluster CA and resolves the
-   API server), so it cannot run in the synchronous `create()` factory hook. The
-   `start()` task builds the client, publishes it, and signals readiness. The
-   engine holds data-path node startup on the readiness probe
-   (`with_readiness_probe_timeout_override(startup_timeout)`) until the client is
-   ready, so a running pipeline never observes a not-ready authorizer.
-2. **Telemetry and shutdown.** The active control loop services
-   `CollectTelemetry` and `Shutdown` messages, mirroring the other auth
-   extension.
-
-If client construction fails, `start()` retries on a fixed cadence, racing the
-retry delay against the control channel so a shutdown during initialization is
-honored promptly. Persistent failure trips the readiness timeout, which aborts
-pipeline startup.
+The extension is *passive* rather than *active* because it has no periodic work
+and nothing to drain or flush at shutdown: no background loop, no in-flight
+requests to await, and an in-memory-only cache. Dropping it is a clean shutdown.
+The trade-off is that a passive extension receives no `CollectTelemetry` control
+message, so this version exposes **no metrics** (metric support for passive
+extensions is a future enhancement).
 
 ### Request path
 
@@ -113,7 +110,8 @@ pipeline startup.
    API call.
 2. **Cache hit** (a still-valid decision keyed by the opaque token) is returned
    directly.
-3. **Not ready** (client still initializing) returns an `Err` -- fail closed.
+3. **Client init** builds the Kubernetes client on first use; a build failure is
+   undetermined and returns an `Err` -- fail closed (the next request retries).
 4. **`TokenReview`** is submitted for the token with the configured audiences.
    The API server answer maps to:
    - authenticated -> **admission** against the allow-list (below);
@@ -122,7 +120,7 @@ pipeline startup.
    - request failure / missing status -> `Err` (undetermined; not cached).
 5. The reached decision (allow or deny) is cached and returned.
 
-No lock is held across the `TokenReview` await; the cache and metrics use short
+No lock is held across the `TokenReview` await; the cache uses short
 `std::sync::Mutex` critical sections that never span an `.await`.
 
 ### Admission
@@ -157,7 +155,6 @@ capability's `Allow` carries no validity window).
 | `allowed_service_accounts` | list of strings | `[]` | Admitted service accounts (`system:serviceaccount:<ns>:<name>`, `<ns>/<name>`, or `<ns>:<name>`). Empty admits any authenticated account. |
 | `cache_ttl` | duration | `5m` | How long a reached decision is cached, keyed by the opaque token. Must be non-zero. |
 | `cache_max_entries` | integer | `1024` | Upper bound on cached decisions. Must be greater than zero. |
-| `startup_timeout` | duration | `30s` | How long the engine holds node startup waiting for the Kubernetes client to be constructed. Must be non-zero. |
 
 Example:
 
@@ -178,16 +175,9 @@ A receiver binds it via its `capabilities:` map (see
 
 ### Telemetry
 
-Metric set `extension.k8s_sat_token_authorizer`:
-
-| Metric | Kind | Description |
-| --- | --- | --- |
-| `authz_allow` | counter | Requests admitted. |
-| `authz_deny` | counter | Requests denied. |
-| `authz_error` | counter | Undetermined outcomes (callers fail closed). |
-| `token_review_calls` | counter | `TokenReview` calls to the API server (cache misses). |
-| `cache_hits` | counter | Decisions served from the local cache. |
-| `token_review_latency` | min/max/sum/count | `TokenReview` call latency, milliseconds. |
+None in this version. As a passive extension it receives no `CollectTelemetry`
+control message, so it registers no metric set. Exposing metrics from passive
+extensions is a planned enhancement.
 
 ## Security considerations
 
