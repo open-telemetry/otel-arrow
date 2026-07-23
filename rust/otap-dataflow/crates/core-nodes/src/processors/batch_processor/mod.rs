@@ -1648,13 +1648,6 @@ mod tests {
     /// values. `expected_counts` is `(consumed_batches, produced_batches)` —
     /// i.e. the number of input requests consumed by the processor and the
     /// number of output batches it produced.
-    fn verify_batch_metrics(
-        _telemetry_registry: &TelemetryRegistryHandle,
-        _signal: SignalType,
-        _expected_counts: (usize, usize),
-    ) {
-        // Batch metrics were removed, nothing to verify.
-    }
 
     fn mmsc_metric_count(
         telemetry_registry: &TelemetryRegistryHandle,
@@ -2056,7 +2049,6 @@ mod tests {
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let produced = produced_total.load(std::sync::atomic::Ordering::SeqCst);
-                verify_batch_metrics(&telemetry_registry, signal, (num_inputs, produced));
             });
     }
 
@@ -2299,7 +2291,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 3 inputs consumed; 2 batches produced (one size flush after
                 // the second input, one timer flush after the third).
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (3, 2));
             });
     }
 
@@ -2362,7 +2353,6 @@ mod tests {
                 // 4 inputs consumed; 3 size-flushed batches produced (the
                 // first input only arms the timer; each subsequent input
                 // size-flushes one batch).
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (4, 3));
                 assert_eq!(
                     mmsc_metric_count(
                         &telemetry_registry,
@@ -2437,7 +2427,6 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 1 input consumed; 1 batch produced by the real wakeup.
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -2593,7 +2582,6 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 1 input consumed; 1 batch produced by the shutdown flush.
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3105,7 +3093,6 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 1 input consumed; 1 batch produced by the byte-size flush.
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3139,7 +3126,6 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 0));
             });
     }
 
@@ -3180,7 +3166,6 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3266,8 +3251,6 @@ mod tests {
                 let outputs: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
 
                 assert_equivalent(&[logs1, logs2], &outputs);
-
-                // Collect telemetry for verify_batch_metrics.
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
                 }))
@@ -3278,7 +3261,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 2 inputs consumed (one OTLP, one OTAP); 2 batches produced
                 // (one per format, both flushed by their respective wakeups).
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (2, 2));
             });
     }
 
