@@ -528,8 +528,8 @@ fn enumerate_registered_providers() -> Result<HashMap<String, RegisteredProvider
     // reported. `count` comes from the OS-populated header; clamp it to what
     // the buffer can actually hold so the `array_ptr.add(i)` reads below stay
     // in-bounds even if the header and buffer size were ever inconsistent.
-    let array_offset = size_of::<PROVIDER_ENUMERATION_INFO>()
-        .saturating_sub(size_of::<TRACE_PROVIDER_INFO>());
+    let array_offset =
+        size_of::<PROVIDER_ENUMERATION_INFO>().saturating_sub(size_of::<TRACE_PROVIDER_INFO>());
     let max_entries = byte_len.saturating_sub(array_offset) / size_of::<TRACE_PROVIDER_INFO>();
     let count = count.min(max_entries);
 
@@ -1769,7 +1769,11 @@ mod tests {
     }
 
     /// Builds a registered-provider map entry for hermetic resolution tests.
-    fn registered(name: &str, guid: Guid, schema_source: u32) -> HashMap<String, RegisteredProvider> {
+    fn registered(
+        name: &str,
+        guid: Guid,
+        schema_source: u32,
+    ) -> HashMap<String, RegisteredProvider> {
         let mut map = HashMap::new();
         let _ = map.insert(
             name.to_ascii_lowercase(),
