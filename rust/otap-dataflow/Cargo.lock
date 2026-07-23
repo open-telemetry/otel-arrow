@@ -7390,9 +7390,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "otap-df-engine-inventory-syntax"
+version = "0.50.0"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "otap-df-engine-macros"
 version = "0.50.0"
 dependencies = [
+ "otap-df-engine-inventory-syntax",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -12232,10 +12241,13 @@ name = "xtask"
 version = "0.50.0"
 dependencies = [
  "anyhow",
+ "otap-df-engine-inventory-syntax",
  "otap-df-pdata-otlp-model",
+ "proc-macro2",
  "prost-build",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "toml",
  "tonic-prost-build",
 ]

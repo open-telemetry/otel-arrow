@@ -257,6 +257,7 @@ minijinja = "2"
 otap-df-admin = { path = 'crates/admin' }
 otap-df-channel = { path = 'crates/channel' }
 otap-df-engine-macros = { path = 'crates/engine-macros' }
+otap-df-engine-inventory-syntax = { path = 'crates/engine-inventory-syntax' }
 otap-df-query-engine-languages = { path = 'crates/query-engine-languages' }
 otap-df-query-engine = { path = 'crates/query-engine' }
 otap-df-quiver = { path = 'crates/quiver' }

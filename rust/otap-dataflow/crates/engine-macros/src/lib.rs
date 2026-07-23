@@ -183,7 +183,7 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 /// crate: it emits fully-qualified `::otap_df_engine::inventory::*` paths.
 #[proc_macro_attribute]
 pub fn component_inventory(args: TokenStream, input: TokenStream) -> TokenStream {
-    let args = parse_macro_input!(args as component_inventory::ComponentInventoryArgs);
+    let args = parse_macro_input!(args as otap_df_engine_inventory_syntax::ComponentInventoryArgs);
     let item = parse_macro_input!(input as Item);
     component_inventory::expand_component_inventory(args, item).into()
 }

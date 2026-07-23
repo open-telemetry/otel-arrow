@@ -1,6 +1,9 @@
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
+
 [package]
-name = "otap-df-engine-macros"
-description = "Proc macros for the async pipeline engine"
+name = "otap-df-engine-inventory-syntax"
+description = "Shared syn parser for the #[component_inventory] attribute (RFC 0001), used by both the proc-macro and the xtask scanner"
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -9,14 +12,9 @@ publish.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
-[lib]
-proc-macro = true
-
 [lints]
 workspace = true
 
 [dependencies]
-otap-df-engine-inventory-syntax = { workspace = true }
 proc-macro2 = { workspace = true }
-quote = { workspace = true }
 syn = { workspace = true }

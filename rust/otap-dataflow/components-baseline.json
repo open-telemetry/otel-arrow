@@ -1,11 +1,5 @@
 [
   {
-    "id": "urn:derived:unknown:INTERNAL_TELEMETRY_RECEIVER_URN",
-    "category": "Receiver",
-    "description": null,
-    "attributes": {}
-  },
-  {
     "id": "urn:microsoft:exporter:azure_monitor",
     "category": "Exporter",
     "description": null,
@@ -32,7 +26,7 @@
   {
     "id": "urn:otel:controller:main",
     "category": "Controller",
-    "description": null,
+    "description": "Pipeline controller managing pipeline lifecycle, dynamic re-configuration, and health monitoring",
     "attributes": {}
   },
   {
@@ -198,6 +192,12 @@
     "attributes": {}
   },
   {
+    "id": "urn:otel:processor:wasm_processor",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
     "id": "urn:otel:receiver:etw",
     "category": "Receiver",
     "description": null,
@@ -205,6 +205,12 @@
   },
   {
     "id": "urn:otel:receiver:host_metrics",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:internal_telemetry",
     "category": "Receiver",
     "description": null,
     "attributes": {}
