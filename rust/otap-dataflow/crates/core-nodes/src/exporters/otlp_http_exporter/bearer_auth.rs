@@ -47,7 +47,10 @@ pub(crate) struct BearerAuth {
 }
 
 impl BearerAuth {
-    /// Subscribes to `provider`'s token stream.
+    /// Subscribes to `provider`'s token stream. Per the
+    /// `BearerTokenProvider::token_stream` contract, a subscription created
+    /// after a token has been published immediately yields that current token,
+    /// so the exporter needs no separate `get_token()` seeding step.
     pub(crate) fn new(provider: Box<dyn BearerTokenProvider>) -> Self {
         Self {
             stream: provider.token_stream(),
