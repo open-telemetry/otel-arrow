@@ -31,7 +31,7 @@ materializing intermediate OTLP records.  We recommend [PData
 Views](./otap-dataflow/crates/pdata-views/README.md) for producing and
 consuming OTLP bytes in the OTAP-Dataflow engine.
 
-Rust reference implementation for the [OpenTelemetry-Arrow Protocol
+Rust reference implementation for the [OTel-Arrow Protocol
 (OTAP)](../../../../README.md). Here are some of the main data use-cases:
 
 ## High-level interfaces
