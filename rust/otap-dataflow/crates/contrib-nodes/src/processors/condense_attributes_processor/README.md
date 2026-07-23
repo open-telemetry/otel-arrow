@@ -75,6 +75,10 @@ config:
   Configuration validation will fail if this occurs.
 - If an input attribute has the same key as `destination_key`, it will be
   automatically skipped (not condensed) to prevent circular references.
+- Only string, integer, double, and boolean values are condensed. Bytes, arrays,
+  maps, and empty values remain separate attributes, even when selected by
+  `source_keys` or not excluded by `exclude_keys`. This avoids introducing an
+  ambiguous serialization format for non-scalar values.
 
 ## Behavior
 

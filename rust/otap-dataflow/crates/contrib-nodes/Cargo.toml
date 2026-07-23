@@ -222,6 +222,12 @@ path = "benches/processors/recordset_kql_processor/extend.rs"
 harness = false
 required-features = ["recordset-kql-processor"]
 
+[[bench]]
+name = "condense_attributes"
+path = "benches/processors/condense_attributes_processor.rs"
+harness = false
+required-features = ["condense-attributes-processor"]
+
 [[test]]
 name = "otlp_kql_recordset"
 path = "tests/processors/recordset_kql_processor/otlp_kql_recordset.rs"
