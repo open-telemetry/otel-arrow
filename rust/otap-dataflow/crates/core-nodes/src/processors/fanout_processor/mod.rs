@@ -1273,6 +1273,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
 
         let pipeline_ctx =
@@ -1332,6 +1333,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         }
     }
 
@@ -1383,6 +1385,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1423,6 +1426,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1456,6 +1460,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1481,6 +1486,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
     }
@@ -1517,6 +1523,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1552,6 +1559,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1600,6 +1608,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1644,6 +1653,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
         let err = cfg
             .validate(&node_cfg)
@@ -1697,6 +1707,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
 
         let metrics_system = InternalTelemetrySystem::default();
@@ -2561,6 +2572,7 @@ mod tests {
             capabilities: HashMap::new(),
             header_capture: None,
             header_propagation: None,
+            policies: None,
         };
 
         let pipeline_ctx =

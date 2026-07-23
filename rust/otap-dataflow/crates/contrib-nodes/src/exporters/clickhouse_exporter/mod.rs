@@ -42,13 +42,14 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MetricSetHandler;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -89,7 +90,7 @@ const SUPPORTED_ARROW_PAYLOAD_TYPES: &[ArrowPayloadType] = &[
 /// Clickhouse exporter that sends OTAP data to Clickhouse backend
 pub struct ClickhouseExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
     ch_metrics: MetricSet<ClickhouseExporterMetrics>,
 }
 
@@ -100,7 +101,7 @@ impl ClickhouseExporter {
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
         let ch_metrics = pipeline_ctx.register_metrics::<ClickhouseExporterMetrics>();
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
         let patch: ConfigPatch = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -124,14 +125,12 @@ impl ClickhouseExporter {
 
     fn terminal_state(
         deadline: Instant,
-        pdata_metrics: MetricSet<ExporterPDataMetrics>,
+        mut pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
         ch_metrics: MetricSet<ClickhouseExporterMetrics>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
-        if pdata_metrics.needs_flush() {
-            snapshots.push(pdata_metrics.snapshot());
-        }
+        snapshots.extend(pdata_metrics.terminal_snapshots());
         if ch_metrics.needs_flush() {
             snapshots.push(ch_metrics.snapshot());
         }
@@ -215,14 +214,11 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                     _ = metrics_reporter.report(&mut self.ch_metrics);
                 }
                 Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
-
-                    // Mark as consumed for this signal
-                    self.pdata_metrics.inc_consumed(signal_type);
 
                     let (_context, payload) = pdata.into_parts();
 
@@ -230,7 +226,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     {
                         Ok(arrow_records) => arrow_records,
                         Err(e) => {
-                            self.pdata_metrics.inc_failed(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                             otap_df_telemetry::otel_warn!(
                                 "clickhouse.exporter.convert.error",
                                 message =
@@ -245,7 +247,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     arrow_records
                         .decode_transport_optimized_ids()
                         .map_err(|e| {
-                            self.pdata_metrics.inc_failed(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                             let source_detail = format_error_sources(&e);
                             Error::ExporterError {
                                 exporter: exporter_id.clone(),
@@ -258,7 +266,13 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                     let write_batches = match batch_transformer.apply_plan(arrow_records) {
                         Ok(batches) => batches,
                         Err(e) => {
-                            self.pdata_metrics.inc_failed(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                             otap_df_telemetry::otel_warn!(
                                 "clickhouse.exporter.transform.error",
                                 message = "Error transforming batch for export.",
@@ -273,10 +287,22 @@ impl Exporter<OtapPdata> for ClickhouseExporter {
                         .await
                     {
                         Ok(_) => {
-                            self.pdata_metrics.inc_exported(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Success,
+                                })
+                                .messages
+                                .inc();
                         }
                         Err(e) => {
-                            self.pdata_metrics.inc_failed(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                             otap_df_telemetry::otel_warn!(
                                 "clickhouse.exporter.write.error",
                                 message = format!("Error writing batch to clickhouse: {}", e),

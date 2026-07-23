@@ -52,7 +52,8 @@
 //!
 //! - **Permanent NACKs** (e.g., malformed data, schema validation failures): The bundle
 //!   is immediately rejected via `handle.reject()` and will not be retried. Monitor the
-//!   `bundles_nacked_permanent` metric to detect data being dropped due to permanent failures.
+//!   `resolved{outcome="permanently_rejected"}` metric to detect data being dropped due to
+//!   permanent failures.
 //!
 //! - **Transient NACKs** (e.g., network issues, temporary downstream unavailability): Bundles
 //!   are retried with exponential backoff until either delivery succeeds or the data is evicted
@@ -63,8 +64,9 @@
 //!
 //! **Operational guidance:**
 //!
-//! - Monitor `bundles_nacked_permanent` metric to detect permanent failures (data loss)
-//! - Monitor `retries_scheduled` metric to detect persistently failing data
+//! - Monitor `resolved{outcome="permanently_rejected"}` to detect permanent failures (data loss)
+//! - Monitor `retries.scheduled` in the `processor.durable_buffer` metric scope to detect
+//!   persistently failing data
 //! - Use `retention_size_cap` to bound storage; `drop_oldest` policy evicts
 //!   stuck data when space is needed for new data
 //! - `max_in_flight` limit prevents thundering herd after recovery
@@ -72,6 +74,7 @@
 mod bundle_adapter;
 mod config;
 mod deferred_retry_state;
+mod metrics;
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -102,6 +105,9 @@ pub use config::{DurableBufferConfig, OtlpHandling, SizeCapPolicy};
 use deferred_retry_state::DeferredRetryState;
 #[cfg(test)]
 use deferred_retry_state::RETRY_WAKEUP_SLOT;
+use metrics::{BundleOutcome, DurableBufferMetrics, IngestFailure, LossReason};
+#[cfg(test)]
+use metrics::{LossAttributes, SignalLossAttributes};
 
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
@@ -122,9 +128,8 @@ use otap_df_engine::{
     ProcessorRuntimeRequirements, ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
-use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
-use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry_macros::metric_set;
+#[cfg(test)]
+use otap_df_telemetry::common_attributes::SignalAttributes;
 
 /// URN for the durable buffer.
 pub const DURABLE_BUFFER_URN: &str = "urn:otel:processor:durable_buffer";
@@ -136,205 +141,6 @@ const WARN_RATE_LIMIT: Duration = Duration::from_secs(10);
 
 /// Subscriber ID used by this processor.
 const SUBSCRIBER_ID: &str = "durable-buffer";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Metrics
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Metrics for the durable buffer processor.
-///
-/// Follows RFC-aligned telemetry conventions:
-/// - Metric set name follows `otap.<role>.<component>` pattern
-/// - Channel metrics already track bundle send/receive counts
-/// - This tracks ACK/NACK status, item counts, storage, and retries
-///
-/// Please update the documentation at Telemetry.md when adding new
-/// metrics.
-#[metric_set(name = "otap.processor.durable_buffer")]
-#[derive(Debug, Default, Clone)]
-pub struct DurableBufferMetrics {
-    // ─── ACK/NACK tracking ──────────────────────────────────────────────────
-    // Note: Bundle send/receive counts are tracked by channel metrics.
-    // These metrics track downstream acknowledgement status.
-    /// Number of bundles acknowledged by downstream.
-    #[metric(unit = "{bundle}")]
-    pub bundles_acked: Counter<u64>,
-
-    /// Number of bundles deferred for retry after transient downstream failures.
-    #[metric(unit = "{bundle}")]
-    pub bundles_nacked_deferred: Counter<u64>,
-
-    /// Number of bundles permanently rejected by downstream (not retried).
-    /// These indicate data loss due to permanent failures (e.g., malformed data).
-    #[metric(unit = "{bundle}")]
-    pub bundles_nacked_permanent: Counter<u64>,
-
-    // ─── Rejected item metrics (per signal type) ────────────────────────
-    /// Number of log records rejected.
-    #[metric(unit = "{log_record}")]
-    pub rejected_log_records: Counter<u64>,
-
-    /// Number of metric data points rejected.
-    #[metric(unit = "{data_point}")]
-    pub rejected_metric_points: Counter<u64>,
-
-    /// Number of spans rejected.
-    #[metric(unit = "{span}")]
-    pub rejected_spans: Counter<u64>,
-
-    // ─── Consumed item metrics (per signal type) ────────────────────────
-    /// Number of log records consumed (ingested to durable storage).
-    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{log_record}")]
-    pub consumed_log_records: Counter<u64>,
-
-    /// Number of metric data points consumed (ingested to durable storage).
-    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{data_point}")]
-    pub consumed_metric_points: Counter<u64>,
-
-    /// Number of spans consumed (ingested to durable storage).
-    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{span}")]
-    pub consumed_spans: Counter<u64>,
-
-    // ─── Produced item metrics (per signal type) ────────────────────────
-    /// Number of log records produced (sent downstream).
-    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{log_record}")]
-    pub produced_log_records: Counter<u64>,
-
-    /// Number of metric data points produced (sent downstream).
-    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{data_point}")]
-    pub produced_metric_points: Counter<u64>,
-
-    /// Number of spans produced (sent downstream).
-    /// For OTLP bytes, counted by scanning the protobuf wire format without full deserialization.
-    #[metric(unit = "{span}")]
-    pub produced_spans: Counter<u64>,
-
-    // ─── Error and backpressure metrics ─────────────────────────────────────
-    /// Number of ingest errors (excludes backpressure/capacity rejections).
-    #[metric(unit = "{error}")]
-    pub ingest_errors: Counter<u64>,
-
-    /// Number of ingest rejections due to storage backpressure (soft cap exceeded).
-    #[metric(unit = "{rejection}")]
-    pub ingest_backpressure: Counter<u64>,
-
-    /// Number of read errors.
-    #[metric(unit = "{error}")]
-    pub read_errors: Counter<u64>,
-
-    // ─── Storage metrics (updated on telemetry collection) ──────────────────
-    /// Current bytes used by persistent storage (WAL + segments).
-    #[metric(unit = "By")]
-    pub storage_bytes_used: Gauge<u64>,
-
-    /// Configured storage capacity cap.
-    #[metric(unit = "By")]
-    pub storage_bytes_cap: Gauge<u64>,
-
-    /// Total segments force-dropped due to DropOldest retention policy.
-    /// Non-zero values indicate data loss.
-    #[metric(unit = "{segment}")]
-    pub dropped_segments: ObserveCounter<u64>,
-
-    /// Total bundles lost due to force-dropped segments (DropOldest policy).
-    /// Non-zero values indicate data loss.
-    #[metric(unit = "{bundle}")]
-    pub dropped_bundles: ObserveCounter<u64>,
-
-    /// Total individual items (log records, data points, spans) lost due to
-    /// force-dropped segments (DropOldest policy). Non-zero values indicate data loss.
-    #[metric(unit = "{item}")]
-    pub dropped_items: ObserveCounter<u64>,
-
-    /// Total bundles lost due to expired segments (max_age retention).
-    /// Non-zero values indicate data aged out before delivery.
-    #[metric(unit = "{bundle}")]
-    pub expired_bundles: ObserveCounter<u64>,
-
-    /// Total individual items (log records, data points, spans) lost due to
-    /// expired segments (max_age retention). Non-zero values indicate data
-    /// aged out before delivery.
-    #[metric(unit = "{item}")]
-    pub expired_items: ObserveCounter<u64>,
-
-    // ─── Retry metrics ──────────────────────────────────────────────────────
-    /// Number of retry attempts scheduled.
-    #[metric(unit = "{retry}")]
-    pub retries_scheduled: Counter<u64>,
-
-    /// Current number of bundles in-flight to downstream.
-    #[metric(unit = "{bundle}")]
-    pub in_flight: Gauge<u64>,
-
-    // ─── Requeued item metrics (per signal type) ────────────────────────────
-    // These count individual items in NACKed bundles when scheduled for retry.
-    /// Number of individual log records requeued for retry after NACK.
-    #[metric(unit = "{log_record}")]
-    pub requeued_log_records: Counter<u64>,
-
-    /// Number of individual metric data points requeued for retry after NACK.
-    #[metric(unit = "{data_point}")]
-    pub requeued_metric_points: Counter<u64>,
-
-    /// Number of individual spans requeued for retry after NACK.
-    #[metric(unit = "{span}")]
-    pub requeued_spans: Counter<u64>,
-
-    // ─── Queued item metrics (per signal type) ──────────────────────────────
-    /// Current number of log records queued (ingested but not yet ACKed).
-    #[metric(unit = "{log_record}")]
-    pub queued_log_records: Gauge<u64>,
-
-    /// Current number of metric data points queued (ingested but not yet ACKed).
-    #[metric(unit = "{data_point}")]
-    pub queued_metric_points: Gauge<u64>,
-
-    /// Current number of spans queued (ingested but not yet ACKed).
-    #[metric(unit = "{span}")]
-    pub queued_spans: Gauge<u64>,
-
-    // ─── Flush metrics ──────────────────────────────────────────────────────
-    /// Number of segment finalization (flush) failures.
-    /// Non-zero values indicate data at risk -- check logs for root cause.
-    /// Data may still be recoverable via WAL replay on restart.
-    #[metric(unit = "{error}")]
-    pub flush_failures: Counter<u64>,
-
-    // ─── Utilization metrics ────────────────────────────────────────────────
-    /// Current storage utilization ratio (0.0 to 1.0).
-    #[metric(unit = "{1}")]
-    pub storage_utilization: Gauge<f64>,
-
-    // ─── Data-loss metrics (per signal type) ────────────────────────────────
-    /// Log records lost due to force-dropped segments (DropOldest policy).
-    #[metric(unit = "{log_record}")]
-    pub dropped_log_records: Counter<u64>,
-
-    /// Spans lost due to force-dropped segments (DropOldest policy).
-    #[metric(unit = "{span}")]
-    pub dropped_spans: Counter<u64>,
-
-    /// Metric data points lost due to force-dropped segments (DropOldest policy).
-    #[metric(unit = "{data_point}")]
-    pub dropped_metric_datapoints: Counter<u64>,
-
-    /// Log records lost due to expired segments (max_age retention).
-    #[metric(unit = "{log_record}")]
-    pub expired_log_records: Counter<u64>,
-
-    /// Spans lost due to expired segments (max_age retention).
-    #[metric(unit = "{span}")]
-    pub expired_spans: Counter<u64>,
-
-    /// Metric data points lost due to expired segments (max_age retention).
-    #[metric(unit = "{data_point}")]
-    pub expired_metric_datapoints: Counter<u64>,
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BundleRef CallData Encoding
@@ -479,7 +285,7 @@ pub struct DurableBuffer {
     num_cores: usize,
 
     /// Metrics.
-    metrics: MetricSet<DurableBufferMetrics>,
+    metrics: DurableBufferMetrics,
 
     /// Whether timer has been started.
     timer_started: bool,
@@ -519,7 +325,7 @@ impl DurableBuffer {
         config: DurableBufferConfig,
         pipeline_ctx: &PipelineContext,
     ) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<DurableBufferMetrics>();
+        let metrics = DurableBufferMetrics::new(pipeline_ctx);
         let core_id = pipeline_ctx.core_id();
         let num_cores = pipeline_ctx.num_cores();
 
@@ -970,39 +776,48 @@ impl DurableBuffer {
         // either engine-side drain methods or a dispatcher-level fix rather than
         // reintroducing per-metric last-value bookkeeping here.
         self.metrics
-            .dropped_segments
+            .loss_for(LossReason::DropOldest)
+            .segments
             .observe(engine.force_dropped_segments());
         self.metrics
-            .dropped_bundles
+            .loss_for(LossReason::DropOldest)
+            .bundles
             .observe(engine.force_dropped_bundles());
         self.metrics
-            .dropped_items
+            .loss_for(LossReason::DropOldest)
+            .items
             .observe(engine.force_dropped_items());
         self.metrics
-            .expired_bundles
+            .loss_for(LossReason::Expired)
+            .segments
+            .observe(engine.expired_segments());
+        self.metrics
+            .loss_for(LossReason::Expired)
+            .bundles
             .observe(engine.expired_bundles());
-        self.metrics.expired_items.observe(engine.expired_items());
+        self.metrics
+            .loss_for(LossReason::Expired)
+            .items
+            .observe(engine.expired_items());
 
         // Update dropped and expired metrics by draining the engine's pending bundles
         // and aggregating by signal type via signal_type_from_slot_id(). This handles all
         // slot ranges (Arrow 10-45 and OTLP 60-62) without hardcoding any slot IDs here.
         for (slot_ids, count) in engine.drain_dropped_bundles_pending() {
-            let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
-            match sig {
-                Some(SignalType::Logs) => self.metrics.dropped_log_records.add(count),
-                Some(SignalType::Metrics) => self.metrics.dropped_metric_datapoints.add(count),
-                Some(SignalType::Traces) => self.metrics.dropped_spans.add(count),
-                None => {}
+            if let Some(signal) = slot_ids.iter().copied().find_map(signal_type_from_slot_id) {
+                self.metrics
+                    .item_loss_for(signal, LossReason::DropOldest)
+                    .items
+                    .add(count);
             }
         }
 
         for (slot_ids, count) in engine.drain_expired_bundles_pending() {
-            let sig = slot_ids.iter().copied().find_map(signal_type_from_slot_id);
-            match sig {
-                Some(SignalType::Logs) => self.metrics.expired_log_records.add(count),
-                Some(SignalType::Metrics) => self.metrics.expired_metric_datapoints.add(count),
-                Some(SignalType::Traces) => self.metrics.expired_spans.add(count),
-                None => {}
+            if let Some(signal) = slot_ids.iter().copied().find_map(signal_type_from_slot_id) {
+                self.metrics
+                    .item_loss_for(signal, LossReason::Expired)
+                    .items
+                    .add(count);
             }
         }
 
@@ -1010,9 +825,18 @@ impl DurableBuffer {
             .retain(|seq| progress_snapshot.contains_key(&SegmentSeq::new(*seq)));
         self.enforce_segment_cache_bound();
 
-        self.metrics.queued_log_records.set(logs);
-        self.metrics.queued_metric_points.set(metrics);
-        self.metrics.queued_spans.set(spans);
+        self.metrics
+            .items_for_signal(SignalType::Logs)
+            .queued
+            .set(logs);
+        self.metrics
+            .items_for_signal(SignalType::Metrics)
+            .queued
+            .set(metrics);
+        self.metrics
+            .items_for_signal(SignalType::Traces)
+            .queued
+            .set(spans);
     }
 
     /// Initialize the Quiver engine and subscriber.
@@ -1137,7 +961,10 @@ impl DurableBuffer {
         let engine = match self.engine() {
             Ok((engine, _)) => engine,
             Err(e) => {
-                self.metrics.ingest_errors.add(1);
+                self.metrics
+                    .ingest_for(IngestFailure::Error)
+                    .failures
+                    .add(1);
                 otel_error!("durable_buffer.engine.unavailable", error = %e);
                 let nack_pdata = OtapPdata::new(context, payload);
                 effect_handler
@@ -1174,7 +1001,10 @@ impl DurableBuffer {
                             }
                             Err((e, original_bytes)) => {
                                 // Adapter creation failed - NACK with original bytes
-                                self.metrics.ingest_errors.add(1);
+                                self.metrics
+                                    .ingest_for(IngestFailure::Error)
+                                    .failures
+                                    .add(1);
                                 otel_error!("durable_buffer.otlp.adapter_failed", error = %e);
 
                                 let nack_pdata =
@@ -1212,7 +1042,10 @@ impl DurableBuffer {
                             }
                             Err(e) => {
                                 // Conversion failed - NACK with original bytes so upstream can retry
-                                self.metrics.ingest_errors.add(1);
+                                self.metrics
+                                    .ingest_for(IngestFailure::Error)
+                                    .failures
+                                    .add(1);
                                 otel_error!("durable_buffer.otlp.conversion_failed", error = %e);
 
                                 let nack_pdata =
@@ -1244,12 +1077,10 @@ impl DurableBuffer {
         // Handle ingest result
         match ingest_result {
             Ok(()) => {
-                // Track consumed items by signal type
-                match signal_type {
-                    SignalType::Logs => self.metrics.consumed_log_records.add(item_count),
-                    SignalType::Metrics => self.metrics.consumed_metric_points.add(item_count),
-                    SignalType::Traces => self.metrics.consumed_spans.add(item_count),
-                }
+                self.metrics
+                    .items_for_signal(signal_type)
+                    .consumed
+                    .add(item_count);
 
                 // ACK upstream after successful durable write.
                 // Data will be forwarded downstream via timer tick after segment finalization.
@@ -1261,7 +1092,10 @@ impl DurableBuffer {
                 if e.is_at_capacity() {
                     // Normal backpressure: soft cap exceeded. Count separately
                     // and rate-limit logging to avoid flooding.
-                    self.metrics.ingest_backpressure.add(1);
+                    self.metrics
+                        .ingest_for(IngestFailure::Backpressure)
+                        .failures
+                        .add(1);
                     let now = Instant::now();
                     let should_log = self
                         .last_backpressure_warn
@@ -1271,7 +1105,10 @@ impl DurableBuffer {
                         otel_warn!("durable_buffer.ingest.backpressure", error = %e);
                     }
                 } else {
-                    self.metrics.ingest_errors.add(1);
+                    self.metrics
+                        .ingest_for(IngestFailure::Error)
+                        .failures
+                        .add(1);
                     otel_error!("durable_buffer.ingest.failed", error = %e);
                 }
 
@@ -1308,7 +1145,7 @@ impl DurableBuffer {
         {
             let (engine, _) = self.engine()?;
             if let Err(e) = engine.flush().await {
-                self.metrics.flush_failures.add(1);
+                self.metrics.operational_metrics.flush_failures.add(1);
                 // Rate-limit flush warnings since the timer tick fires every
                 // poll_interval (~100ms).
                 let now = Instant::now();
@@ -1410,7 +1247,7 @@ impl DurableBuffer {
                     break;
                 }
                 Err(e) => {
-                    self.metrics.read_errors.add(1);
+                    self.metrics.operational_metrics.read_errors.add(1);
                     otel_error!("durable_buffer.poll.failed", error = %e);
                     break;
                 }
@@ -1504,14 +1341,10 @@ impl DurableBuffer {
                 // Try non-blocking send downstream
                 match effect_handler.try_send_message(pdata) {
                     Ok(()) => {
-                        // Track produced items by signal type
-                        match signal_type {
-                            SignalType::Logs => self.metrics.produced_log_records.add(item_count),
-                            SignalType::Metrics => {
-                                self.metrics.produced_metric_points.add(item_count)
-                            }
-                            SignalType::Traces => self.metrics.produced_spans.add(item_count),
-                        }
+                        self.metrics
+                            .items_for_signal(signal_type)
+                            .produced
+                            .add(item_count);
 
                         otel_debug!(
                             "durable_buffer.bundle.forwarded",
@@ -1532,6 +1365,7 @@ impl DurableBuffer {
                             },
                         );
                         self.metrics
+                            .operational_metrics
                             .in_flight
                             .set(self.pending_bundles.len() as u64);
                         ProcessBundleResult::Sent
@@ -1569,7 +1403,7 @@ impl DurableBuffer {
                 }
             }
             Err(e) => {
-                self.metrics.read_errors.add(1);
+                self.metrics.operational_metrics.read_errors.add(1);
                 otel_error!("durable_buffer.bundle.conversion_failed", error = %e);
                 // Reject the bundle since we can't process it
                 handle.reject();
@@ -1596,8 +1430,12 @@ impl DurableBuffer {
         // Remove from pending and acknowledge in Quiver using the stored handle
         if let Some(pending) = self.pending_bundles.remove(&key) {
             pending.handle.ack();
-            self.metrics.bundles_acked.add(1);
             self.metrics
+                .bundles_for(BundleOutcome::Acked)
+                .resolved
+                .add(1);
+            self.metrics
+                .operational_metrics
                 .in_flight
                 .set(self.pending_bundles.len() as u64);
             otel_debug!(
@@ -1639,20 +1477,20 @@ impl DurableBuffer {
         // Handle based on whether this is a permanent or transient failure
         if let Some(pending) = self.pending_bundles.remove(&key) {
             self.metrics
+                .operational_metrics
                 .in_flight
                 .set(self.pending_bundles.len() as u64);
 
             // Permanent failures should not be retried - reject the bundle immediately
             if nack.permanent {
-                // Track permanently rejected items by signal type (individual items in NACKed bundles)
-                match pending.signal_type {
-                    SignalType::Logs => self.metrics.rejected_log_records.add(pending.item_count),
-                    SignalType::Metrics => {
-                        self.metrics.rejected_metric_points.add(pending.item_count)
-                    }
-                    SignalType::Traces => self.metrics.rejected_spans.add(pending.item_count),
-                }
-                self.metrics.bundles_nacked_permanent.add(1);
+                self.metrics
+                    .items_for_signal(pending.signal_type)
+                    .rejected
+                    .add(pending.item_count);
+                self.metrics
+                    .bundles_for(BundleOutcome::PermanentlyRejected)
+                    .resolved
+                    .add(1);
 
                 otel_warn!(
                     "durable_buffer.bundle.rejected_permanent",
@@ -1669,13 +1507,14 @@ impl DurableBuffer {
             // Transient failure - schedule retry with exponential backoff
             let retry_count = pending.retry_count + 1;
 
-            // Track requeued items by signal type (individual items in NACKed bundles)
-            match pending.signal_type {
-                SignalType::Logs => self.metrics.requeued_log_records.add(pending.item_count),
-                SignalType::Metrics => self.metrics.requeued_metric_points.add(pending.item_count),
-                SignalType::Traces => self.metrics.requeued_spans.add(pending.item_count),
-            }
-            self.metrics.bundles_nacked_deferred.add(1);
+            self.metrics
+                .items_for_signal(pending.signal_type)
+                .requeued
+                .add(pending.item_count);
+            self.metrics
+                .bundles_for(BundleOutcome::Deferred)
+                .resolved
+                .add(1);
 
             // Calculate backoff delay with jitter
             let backoff = self.calculate_backoff(retry_count);
@@ -1702,7 +1541,7 @@ impl DurableBuffer {
                 backoff,
                 effect_handler,
             ) {
-                self.metrics.retries_scheduled.add(1);
+                self.metrics.operational_metrics.retries_scheduled.add(1);
             } else {
                 otel_warn!(
                     "durable_buffer.retry.schedule_failed",
@@ -1809,7 +1648,7 @@ impl DurableBuffer {
             {
                 let (engine, _) = self.engine()?;
                 if let Err(e) = engine.flush().await {
-                    self.metrics.flush_failures.add(1);
+                    self.metrics.operational_metrics.flush_failures.add(1);
                     otel_error!("durable_buffer.shutdown.flush_failed", error = %e);
                 }
             }
@@ -1934,6 +1773,7 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                             engine.force_dropped_segments(),
                             engine.force_dropped_bundles(),
                             engine.force_dropped_items(),
+                            engine.expired_segments(),
                             engine.expired_bundles(),
                             engine.expired_items(),
                             engine.clone(),
@@ -1949,27 +1789,53 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         dropped_segs,
                         dropped_buns,
                         dropped_items,
+                        expired_segs,
                         expired_buns,
                         expired_items,
                         engine,
                         subscriber_id,
                     )) = quiver_metrics
                     {
-                        self.metrics.storage_bytes_used.set(used);
-                        self.metrics.storage_bytes_cap.set(cap);
+                        self.metrics
+                            .operational_metrics
+                            .storage_bytes_used
+                            .set(used);
+                        self.metrics.operational_metrics.storage_bytes_cap.set(cap);
 
                         let utilization = if cap > 0 {
                             (used.min(cap) as f64) / (cap as f64)
                         } else {
                             0.0
                         };
-                        self.metrics.storage_utilization.set(utilization);
+                        self.metrics
+                            .operational_metrics
+                            .storage_utilization
+                            .set(utilization);
 
-                        self.metrics.dropped_segments.observe(dropped_segs);
-                        self.metrics.dropped_bundles.observe(dropped_buns);
-                        self.metrics.dropped_items.observe(dropped_items);
-                        self.metrics.expired_bundles.observe(expired_buns);
-                        self.metrics.expired_items.observe(expired_items);
+                        self.metrics
+                            .loss_for(LossReason::DropOldest)
+                            .segments
+                            .observe(dropped_segs);
+                        self.metrics
+                            .loss_for(LossReason::DropOldest)
+                            .bundles
+                            .observe(dropped_buns);
+                        self.metrics
+                            .loss_for(LossReason::DropOldest)
+                            .items
+                            .observe(dropped_items);
+                        self.metrics
+                            .loss_for(LossReason::Expired)
+                            .segments
+                            .observe(expired_segs);
+                        self.metrics
+                            .loss_for(LossReason::Expired)
+                            .bundles
+                            .observe(expired_buns);
+                        self.metrics
+                            .loss_for(LossReason::Expired)
+                            .items
+                            .observe(expired_items);
 
                         // Recompute queued item gauges from the subscriber
                         // registry. This is the single source of truth for
@@ -1978,8 +1844,8 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
                         self.recompute_metrics(&engine, &subscriber_id);
                     }
 
-                    metrics_reporter
-                        .report(&mut self.metrics)
+                    self.metrics
+                        .report(&mut metrics_reporter)
                         .map_err(|e| Error::InternalError {
                             message: e.to_string(),
                         })
@@ -2053,6 +1919,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use otap_df_engine::context::ControllerContext;
+    use otap_df_telemetry::attributes::AttributeEnum;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::reporter::MetricsReporter;
     use quiver::record_bundle::{
@@ -2151,17 +2018,6 @@ mod tests {
             item_count,
         }
     }
-
-    // Metric field indices matching `DurableBufferMetrics` declaration order.
-    // New metrics MUST be appended to the struct so these never shift.
-    const IDX_BUNDLES_ACKED: usize = 0;
-    const IDX_BUNDLES_NACKED_DEFERRED: usize = 1;
-    const IDX_BUNDLES_NACKED_PERMANENT: usize = 2;
-    const IDX_RETRIES_SCHEDULED: usize = 22;
-    const IDX_QUEUED_LOG_RECORDS: usize = 27;
-    const IDX_QUEUED_METRIC_POINTS: usize = 28;
-    const IDX_QUEUED_SPANS: usize = 29;
-    const EXPECTED_METRIC_COUNT: usize = 38;
 
     #[test]
     fn test_bundle_ref_encoding_roundtrip() {
@@ -2621,14 +2477,7 @@ mod tests {
         assert!(backoff100 <= Duration::from_millis(30000));
     }
 
-    /// Test that DurableBufferMetrics snapshot correctly reports NACK metrics.
-    ///
-    /// Verifies:
-    /// - bundles_nacked_deferred (index 1) and bundles_nacked_permanent (index 2)
-    ///   are distinct counters reported at the correct positions
-    /// - retries_scheduled (index 22) is correctly reported
-    /// - bundles_acked (index 0) is correctly reported
-    /// - Snapshot clears values (delta semantics)
+    /// Bundle resolution outcomes are exported as separate items.
     #[test]
     fn test_nack_metrics_snapshot_field_positions() {
         use otap_df_engine::context::ControllerContext;
@@ -2656,85 +2505,32 @@ mod tests {
 
         let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
 
-        // Simulate the metric increments that handle_nack would perform
-        // for permanent NACKs:
-        processor.metrics.bundles_nacked_permanent.add(3);
+        processor
+            .metrics
+            .bundles_for(BundleOutcome::PermanentlyRejected)
+            .resolved
+            .add(3);
+        processor
+            .metrics
+            .bundles_for(BundleOutcome::Deferred)
+            .resolved
+            .add(5);
+        processor
+            .metrics
+            .bundles_for(BundleOutcome::Acked)
+            .resolved
+            .add(10);
 
-        // for transient NACKs:
-        processor.metrics.bundles_nacked_deferred.add(5);
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(3);
+        reporter
+            .report_measurement(&mut processor.metrics.bundle_metrics)
+            .unwrap();
 
-        // for retries scheduled (only on transient):
-        processor.metrics.retries_scheduled.add(5);
-
-        // for ACKs:
-        processor.metrics.bundles_acked.add(10);
-
-        // Take a snapshot and verify field positions
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snapshot = metrics_rx.try_recv().unwrap();
-        let values = snapshot.get_metrics();
-
-        // Verify total metric count matches DurableBufferMetrics field count
-        assert_eq!(
-            values.len(),
-            EXPECTED_METRIC_COUNT,
-            "DurableBufferMetrics should have {EXPECTED_METRIC_COUNT} fields, got {}",
-            values.len()
-        );
-
-        assert_eq!(
-            values[IDX_BUNDLES_ACKED].to_u64_lossy(),
-            10,
-            "bundles_acked should be 10"
-        );
-
-        assert_eq!(
-            values[IDX_BUNDLES_NACKED_DEFERRED].to_u64_lossy(),
-            5,
-            "bundles_nacked_deferred should be 5"
-        );
-
-        assert_eq!(
-            values[IDX_BUNDLES_NACKED_PERMANENT].to_u64_lossy(),
-            3,
-            "bundles_nacked_permanent should be 3"
-        );
-
-        assert_eq!(
-            values[IDX_RETRIES_SCHEDULED].to_u64_lossy(),
-            5,
-            "retries_scheduled should be 5"
-        );
-
-        // Verify delta semantics: after snapshot, counters should be cleared.
-        // The NACK-related counter values we set above should now be zero.
-        // (Gauges may still report due to Gauge::clear semantics, so we verify
-        // counters specifically by taking another snapshot.)
-        reporter.report(&mut processor.metrics).unwrap_or(());
-        if let Ok(snap2) = metrics_rx.try_recv() {
-            let vals2 = snap2.get_metrics();
-            assert_eq!(
-                vals2[IDX_BUNDLES_ACKED].to_u64_lossy(),
-                0,
-                "bundles_acked should be 0 after reset"
-            );
-            assert_eq!(
-                vals2[IDX_BUNDLES_NACKED_DEFERRED].to_u64_lossy(),
-                0,
-                "bundles_nacked_deferred should be 0 after reset"
-            );
-            assert_eq!(
-                vals2[IDX_BUNDLES_NACKED_PERMANENT].to_u64_lossy(),
-                0,
-                "bundles_nacked_permanent should be 0 after reset"
-            );
-            assert_eq!(
-                vals2[IDX_RETRIES_SCHEDULED].to_u64_lossy(),
-                0,
-                "retries_scheduled should be 0 after reset"
-            );
+        let mut outcomes = [0u64; BundleOutcome::CARDINALITY];
+        while let Ok(snapshot) = metrics_rx.try_recv() {
+            outcomes[snapshot.bucket()] = snapshot.get_metrics()[0].to_u64_lossy();
         }
+        assert_eq!(outcomes, [10, 5, 3]);
     }
 
     /// Test that permanent NACKs decrement the `queued_*` gauges.
@@ -2747,7 +2543,6 @@ mod tests {
     fn test_permanent_nack_decrements_queued_gauge() {
         use otap_df_engine::context::ControllerContext;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
-        use otap_df_telemetry::reporter::MetricsReporter;
 
         let registry = TelemetryRegistryHandle::default();
         let controller_ctx = ControllerContext::new(registry);
@@ -2769,34 +2564,52 @@ mod tests {
         };
 
         let mut processor = DurableBuffer::new(config, &pipeline_ctx).unwrap();
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(10);
+        let logs = SignalAttributes {
+            signal: SignalType::Logs,
+        };
+        let metrics = SignalAttributes {
+            signal: SignalType::Metrics,
+        };
+        let traces = SignalAttributes {
+            signal: SignalType::Traces,
+        };
 
         // Simulate: 100 log records queued (as if 100 items were ingested).
         let mut queued_log_records = 100u64;
-        processor.metrics.queued_log_records.set(queued_log_records);
+        processor
+            .metrics
+            .item_metrics
+            .with(logs)
+            .queued
+            .set(queued_log_records);
 
         // Simulate: permanent NACK path decrements by 30 items
         // (mirrors the code in handle_nack when nack.permanent is true)
         queued_log_records = queued_log_records.saturating_sub(30);
-        processor.metrics.queued_log_records.set(queued_log_records);
+        processor
+            .metrics
+            .item_metrics
+            .with(logs)
+            .queued
+            .set(queued_log_records);
 
-        // Snapshot should show queued_log_records = 70
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
         assert_eq!(
-            snap.get_metrics()[IDX_QUEUED_LOG_RECORDS].to_u64_lossy(),
+            processor.metrics.item_metrics.get(logs).queued.get(),
             70,
             "queued_log_records should be 70 after decrementing 30 from 100"
         );
 
         // Simulate: ACK the remaining 70
         queued_log_records = queued_log_records.saturating_sub(70);
-        processor.metrics.queued_log_records.set(queued_log_records);
+        processor
+            .metrics
+            .item_metrics
+            .with(logs)
+            .queued
+            .set(queued_log_records);
 
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap2 = metrics_rx.try_recv().unwrap();
         assert_eq!(
-            snap2.get_metrics()[IDX_QUEUED_LOG_RECORDS].to_u64_lossy(),
+            processor.metrics.item_metrics.get(logs).queued.get(),
             0,
             "queued_log_records should be 0 after all items resolved"
         );
@@ -2805,28 +2618,40 @@ mod tests {
         let mut queued_metric_points = 50u64;
         processor
             .metrics
-            .queued_metric_points
+            .item_metrics
+            .with(metrics)
+            .queued
             .set(queued_metric_points);
         queued_metric_points = queued_metric_points.saturating_sub(50);
         processor
             .metrics
-            .queued_metric_points
+            .item_metrics
+            .with(metrics)
+            .queued
             .set(queued_metric_points);
 
         let mut queued_spans = 25u64;
-        processor.metrics.queued_spans.set(queued_spans);
+        processor
+            .metrics
+            .item_metrics
+            .with(traces)
+            .queued
+            .set(queued_spans);
         queued_spans = queued_spans.saturating_sub(25);
-        processor.metrics.queued_spans.set(queued_spans);
+        processor
+            .metrics
+            .item_metrics
+            .with(traces)
+            .queued
+            .set(queued_spans);
 
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap3 = metrics_rx.try_recv().unwrap();
         assert_eq!(
-            snap3.get_metrics()[IDX_QUEUED_METRIC_POINTS].to_u64_lossy(),
+            processor.metrics.item_metrics.get(metrics).queued.get(),
             0,
             "queued_metric_points should be 0"
         );
         assert_eq!(
-            snap3.get_metrics()[IDX_QUEUED_SPANS].to_u64_lossy(),
+            processor.metrics.item_metrics.get(traces).queued.get(),
             0,
             "queued_spans should be 0"
         );
@@ -2859,12 +2684,15 @@ mod tests {
 
         processor.recompute_metrics(&engine, &subscriber_id);
 
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-
         assert_eq!(
-            snap.get_metrics()[IDX_QUEUED_LOG_RECORDS].to_u64_lossy(),
+            processor
+                .metrics
+                .item_metrics
+                .get(SignalAttributes {
+                    signal: SignalType::Logs,
+                })
+                .queued
+                .get(),
             5,
             "queued_log_records gauge should include open-segment items"
         );
@@ -3013,9 +2841,9 @@ mod tests {
                 let snap = metrics_rx.try_recv().unwrap();
                 let metrics = snap.get_metrics();
 
-                const IDX_STORAGE_UTILIZATION: usize = 31;
-                const IDX_STORAGE_BYTES_USED: usize = 15;
-                const IDX_STORAGE_BYTES_CAP: usize = 16;
+                const IDX_STORAGE_UTILIZATION: usize = 6;
+                const IDX_STORAGE_BYTES_USED: usize = 1;
+                const IDX_STORAGE_BYTES_CAP: usize = 2;
 
                 let used = metrics[IDX_STORAGE_BYTES_USED].to_u64_lossy();
                 let cap = metrics[IDX_STORAGE_BYTES_CAP].to_u64_lossy();
@@ -3032,30 +2860,42 @@ mod tests {
             .validate(|_| async {});
     }
 
+    /// Scenario: DropOldest and max_age retention each remove log segments.
+    /// Guarantees: Per-signal item loss stays interval-scoped and aggregate expiry loss includes the expired segment count.
     #[tokio::test]
     async fn test_per_signal_dropped_expired_metrics() {
         let (mut processor, engine, subscriber_id, _temp_dir) =
             setup_test_processor(Some(Duration::from_millis(5))).await;
 
-        // Data-loss Counters. As delta-native synchronous counters they are reset
-        // by the reporter after every flush, so each report carries only the loss
-        // observed in that interval.
-        const DROPPED_LOG_RECORDS: usize = 32;
-        const EXPIRED_LOG_RECORDS: usize = 35;
-
         let slot_id = SlotId::new(30);
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(6);
 
         // Report a fresh interval; returns (dropped_log_records, expired_log_records).
         let mut sample = |p: &mut DurableBuffer| {
             p.recompute_metrics(&engine, &subscriber_id);
-            reporter.report(&mut p.metrics).unwrap();
-            let snap = metrics_rx.try_recv().unwrap();
-            let m = snap.get_metrics();
-            (
-                m[DROPPED_LOG_RECORDS].to_u64_lossy(),
-                m[EXPIRED_LOG_RECORDS].to_u64_lossy(),
-            )
+            let sample = (
+                p.metrics
+                    .item_loss_metrics
+                    .get(SignalLossAttributes {
+                        signal: SignalType::Logs,
+                        reason: LossReason::DropOldest,
+                    })
+                    .items
+                    .get(),
+                p.metrics
+                    .item_loss_metrics
+                    .get(SignalLossAttributes {
+                        signal: SignalType::Logs,
+                        reason: LossReason::Expired,
+                    })
+                    .items
+                    .get(),
+            );
+            reporter
+                .report_measurement(&mut p.metrics.item_loss_metrics)
+                .unwrap();
+            while metrics_rx.try_recv().is_ok() {}
+            sample
         };
 
         // Interval 1: drop a 5-record segment -> dropped reports 5.
@@ -3078,6 +2918,17 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert_eq!(engine.cleanup_expired_segments().unwrap(), 1);
         assert_eq!(sample(&mut processor), (0, 3));
+        assert_eq!(
+            processor
+                .metrics
+                .loss_metrics
+                .get(LossAttributes {
+                    reason: LossReason::Expired,
+                })
+                .segments
+                .get(),
+            1
+        );
 
         // Interval 3: drop a 4-record segment. Dropped reports only this interval's
         // 4 (not the lifetime 9); expired was reset and reads 0.
@@ -3106,15 +2957,29 @@ mod tests {
 
         processor.recompute_metrics(&engine, &subscriber_id);
 
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-        let metrics = snap.get_metrics();
-
-        const IDX_DROPPED_METRIC_DATAPOINTS: usize = 34;
-        assert_eq!(metrics[IDX_DROPPED_METRIC_DATAPOINTS].to_u64_lossy(), 42);
-        const IDX_DROPPED_ITEMS: usize = 19;
-        assert_eq!(metrics[IDX_DROPPED_ITEMS].to_u64_lossy(), 42);
+        assert_eq!(
+            processor
+                .metrics
+                .item_loss_metrics
+                .get(SignalLossAttributes {
+                    signal: SignalType::Metrics,
+                    reason: LossReason::DropOldest,
+                })
+                .items
+                .get(),
+            42
+        );
+        assert_eq!(
+            processor
+                .metrics
+                .loss_metrics
+                .get(LossAttributes {
+                    reason: LossReason::DropOldest,
+                })
+                .items
+                .get(),
+            42
+        );
     }
 
     #[tokio::test]
@@ -3133,15 +2998,18 @@ mod tests {
 
         processor.recompute_metrics(&engine, &subscriber_id);
 
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-        let metrics = snap.get_metrics();
-
-        const IDX_DROPPED_SPANS: usize = 33;
-        assert_eq!(metrics[IDX_DROPPED_SPANS].to_u64_lossy(), 55);
-        const IDX_DROPPED_ITEMS: usize = 19;
-        assert_eq!(metrics[IDX_DROPPED_ITEMS].to_u64_lossy(), 55);
+        assert_eq!(
+            processor
+                .metrics
+                .item_loss_metrics
+                .get(SignalLossAttributes {
+                    signal: SignalType::Traces,
+                    reason: LossReason::DropOldest,
+                })
+                .items
+                .get(),
+            55
+        );
     }
 
     #[tokio::test]
@@ -3160,16 +3028,19 @@ mod tests {
 
         processor.recompute_metrics(&engine, &subscriber_id);
 
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-        let metrics = snap.get_metrics();
-
-        const IDX_DROPPED_LOG_RECORDS: usize = 32;
         // Verify we tracked the logical item count (99) rather than the batch row count (1)
-        assert_eq!(metrics[IDX_DROPPED_LOG_RECORDS].to_u64_lossy(), 99);
-        const IDX_DROPPED_ITEMS: usize = 19;
-        assert_eq!(metrics[IDX_DROPPED_ITEMS].to_u64_lossy(), 99);
+        assert_eq!(
+            processor
+                .metrics
+                .item_loss_metrics
+                .get(SignalLossAttributes {
+                    signal: SignalType::Logs,
+                    reason: LossReason::DropOldest,
+                })
+                .items
+                .get(),
+            99
+        );
     }
 
     #[tokio::test]
@@ -3224,29 +3095,36 @@ mod tests {
 
         processor.recompute_metrics(&engine, &subscriber_id);
 
-        let (metrics_rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
-        reporter.report(&mut processor.metrics).unwrap();
-        let snap = metrics_rx.try_recv().unwrap();
-        let metrics = snap.get_metrics();
-
-        const IDX_DROPPED_ITEMS: usize = 19;
-        const IDX_EXPIRED_ITEMS: usize = 21;
-        const IDX_DROPPED_LOG_RECORDS: usize = 32;
-        const IDX_DROPPED_SPANS: usize = 33;
-        const IDX_DROPPED_METRIC_DATAPOINTS: usize = 34;
-        const IDX_EXPIRED_LOG_RECORDS: usize = 35;
-        const IDX_EXPIRED_SPANS: usize = 36;
-        const IDX_EXPIRED_METRIC_DATAPOINTS: usize = 37;
-
-        let dropped_logs = metrics[IDX_DROPPED_LOG_RECORDS].to_u64_lossy();
-        let dropped_spans = metrics[IDX_DROPPED_SPANS].to_u64_lossy();
-        let dropped_metrics = metrics[IDX_DROPPED_METRIC_DATAPOINTS].to_u64_lossy();
-        let dropped_items = metrics[IDX_DROPPED_ITEMS].to_u64_lossy();
-
-        let expired_logs = metrics[IDX_EXPIRED_LOG_RECORDS].to_u64_lossy();
-        let expired_spans = metrics[IDX_EXPIRED_SPANS].to_u64_lossy();
-        let expired_metrics = metrics[IDX_EXPIRED_METRIC_DATAPOINTS].to_u64_lossy();
-        let expired_items = metrics[IDX_EXPIRED_ITEMS].to_u64_lossy();
+        let item_loss = |signal, reason| {
+            processor
+                .metrics
+                .item_loss_metrics
+                .get(SignalLossAttributes { signal, reason })
+                .items
+                .get()
+        };
+        let dropped_logs = item_loss(SignalType::Logs, LossReason::DropOldest);
+        let dropped_spans = item_loss(SignalType::Traces, LossReason::DropOldest);
+        let dropped_metrics = item_loss(SignalType::Metrics, LossReason::DropOldest);
+        let expired_logs = item_loss(SignalType::Logs, LossReason::Expired);
+        let expired_spans = item_loss(SignalType::Traces, LossReason::Expired);
+        let expired_metrics = item_loss(SignalType::Metrics, LossReason::Expired);
+        let dropped_items = processor
+            .metrics
+            .loss_metrics
+            .get(LossAttributes {
+                reason: LossReason::DropOldest,
+            })
+            .items
+            .get();
+        let expired_items = processor
+            .metrics
+            .loss_metrics
+            .get(LossAttributes {
+                reason: LossReason::Expired,
+            })
+            .items
+            .get();
 
         // Assert dropped reconciliation
         assert_eq!(dropped_logs, 10);

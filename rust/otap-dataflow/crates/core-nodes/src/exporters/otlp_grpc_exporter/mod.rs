@@ -28,7 +28,7 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::otap_grpc::client_settings::GrpcClientSettings;
 use otap_df_otap::otap_grpc::otlp::client::{
     LogsServiceClient, MetricsServiceClient, TraceServiceClient,
@@ -40,8 +40,8 @@ use otap_df_pdata::otlp::metrics::MetricsProtoBytesEncoder;
 use otap_df_pdata::otlp::traces::TracesProtoBytesEncoder;
 use otap_df_pdata::otlp::{ProtoBuffer, ProtoBytesEncoder};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
-use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::{otel_debug, otel_info, otel_warn};
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -83,7 +83,7 @@ pub(crate) const fn default_num_connections() -> usize {
 /// Exporter that sends OTLP data via gRPC
 pub struct OTLPExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
 }
 
 /// Declare the OTLP Exporter as a local exporter factory
@@ -133,7 +133,7 @@ impl OTLPExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
             otap_df_config::error::Error::InvalidUserConfig {
@@ -302,12 +302,15 @@ impl Exporter<OtapPdata> for OTLPExporter {
                             grpc_clients.release(client);
                         }
                     }
-                    return Ok(TerminalState::new(deadline, [self.pdata_metrics]));
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.pdata_metrics.terminal_snapshots(),
+                    ));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                 }
                 Message::PData(pdata) => {
                     if inflight_exports.len() >= max_in_flight {
@@ -317,7 +320,6 @@ impl Exporter<OtapPdata> for OTLPExporter {
 
                     let signal_type = pdata.signal_type();
                     let (context, payload) = pdata.into_parts();
-                    self.pdata_metrics.inc_consumed(signal_type);
 
                     // Build gRPC metadata from configured static headers and
                     // any propagated transport headers. Computed once before
@@ -342,7 +344,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics.logs_failed,
+                                &mut self.pdata_metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -361,7 +363,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics.metrics_failed,
+                                &mut self.pdata_metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -380,7 +382,7 @@ impl Exporter<OtapPdata> for OTLPExporter {
                                     make_export_future(encoded, client)
                                 },
                                 &mut inflight_exports,
-                                &mut self.pdata_metrics.traces_failed,
+                                &mut self.pdata_metrics,
                                 &effect_handler,
                             )
                             .await;
@@ -676,7 +678,7 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
     encoder: &mut Enc,
     make_future: MakeFuture,
     inflight: &mut InFlightExports<Fut, CompletedExport>,
-    failed_counter: &mut Counter<u64>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
     effect_handler: &EffectHandler<OtapPdata>,
 ) where
     Enc: ProtoBytesEncoder,
@@ -696,7 +698,13 @@ async fn dispatch_otap_export<Enc, Fut, MakeFuture>(
             inflight.push(make_future(encoded));
         }
         Err(error) => {
-            failed_counter.inc();
+            pdata_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: signal_type,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .inc();
             _ = notify_prepare_error(error, effect_handler).await;
         }
     }
@@ -728,7 +736,7 @@ async fn notify_prepare_error(
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
-    pdata_metrics: &mut MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
 ) -> SignalClient {
     let CompletedExport {
         result,
@@ -739,14 +747,28 @@ async fn finalize_completed_export(
     } = completed;
 
     match route_export_result(result, context, saved_payload, effect_handler).await {
-        Ok(()) => pdata_metrics.add_exported(signal_type, 1),
+        Ok(()) => {
+            pdata_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: signal_type,
+                    outcome: Outcome::Success,
+                })
+                .messages
+                .inc();
+        }
         Err(e) => {
             otel_warn!(
                 "otlp.exporter.http.export_error",
                 message = "OTLP Exporter gRPC service request did not succeed",
                 error = %e
             );
-            pdata_metrics.add_failed(signal_type, 1)
+            pdata_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: signal_type,
+                    outcome: Outcome::Failure,
+                })
+                .messages
+                .inc();
         }
     }
 
@@ -1328,7 +1350,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1452,7 +1474,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             test_node(test_runtime.config().name.clone()),
             node_config,
@@ -1490,6 +1512,8 @@ mod tests {
         );
     }
 
+    /// Scenario: The OTLP gRPC endpoint repeatedly stops and restarts while exporting logs.
+    /// Guarantees: The exporter reconnects and reports one terminal outcome per export operation.
     #[test]
     fn test_receiver_not_ready_on_start_and_reconnect() {
         // the purpose of this test is to that the exporter behaves as expected in the face of
@@ -1522,7 +1546,7 @@ mod tests {
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             node_id.clone(),
             node_config,
@@ -1690,10 +1714,25 @@ mod tests {
                 })
                 .await
                 .unwrap();
-            let metrics = metrics_receiver.recv_async().await.unwrap();
-            let logs_exported_count = metrics.get_metrics()[4].to_u64_lossy(); // logs exported
+            let mut logs_exported_count = 0;
+            let mut logs_failed_count = 0;
+            for _ in 0..2 {
+                let metrics = metrics_receiver.recv_async().await.unwrap();
+                if metrics.descriptor().name == "exporter.pdata.exports"
+                    && metrics.measurement_attribute_value("signal") == Some("logs")
+                {
+                    match metrics.measurement_attribute_value("outcome") {
+                        Some("success") => {
+                            logs_exported_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        Some("failure") => {
+                            logs_failed_count = metrics.get_metrics()[0].to_u64_lossy();
+                        }
+                        _ => {}
+                    }
+                }
+            }
             assert_eq!(logs_exported_count, 2);
-            let logs_failed_count = metrics.get_metrics()[5].to_u64_lossy(); // logs failed
             assert_eq!(logs_failed_count, 2);
 
             control_sender
@@ -1757,7 +1796,7 @@ mod tests {
             .await;
         });
 
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
+        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(3);
 
         let (exporter_result, test_drive_result) = tokio_rt.block_on(async move {
             tokio::join!(
@@ -2069,7 +2108,7 @@ mod tests {
                     max_in_flight: 1,
                     num_connections: default_num_connections(),
                 },
-                pdata_metrics: pipeline_ctx.register_metrics::<ExporterPDataMetrics>(),
+                pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
             node_id.clone(),
             node_config,
