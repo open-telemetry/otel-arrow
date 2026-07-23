@@ -113,6 +113,9 @@ mod tests {
         detect(&names).unwrap().into_iter().collect()
     }
 
+    /// Scenario: each `opentelemetry::Value` variant is converted via `value_to_attr`.
+    /// Guarantees: scalars and arrays map to the matching `AttributeValue` variant rather
+    /// than being flattened to a string.
     #[test]
     fn value_to_attr_maps_each_variant() {
         use opentelemetry::{Array, Value};
@@ -132,6 +135,8 @@ mod tests {
         );
     }
 
+    /// Scenario: `detect` is given a name with no registered detector.
+    /// Guarantees: it returns `DetectorError::Unknown` carrying the missing name.
     #[test]
     fn unknown_detector_names_the_culprit() {
         assert!(matches!(
@@ -140,19 +145,24 @@ mod tests {
         ));
     }
 
+    /// Scenario: `detect` is called with an empty detector list.
+    /// Guarantees: no attributes are produced.
     #[test]
     fn empty_list_detects_nothing() {
         assert!(detect(&[]).unwrap().is_empty());
     }
 
+    /// Scenario: every name in the registry is run through `detect`.
+    /// Guarantees: each row's factory builds and its detector runs without error.
     #[test]
     fn every_registered_detector_resolves_and_runs() {
-        // Every registry row must build and run
         for name in known_detector_names() {
             let _ = detect(&[name.to_string()]).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
     }
 
+    /// Scenario: the `env` detector runs with `OTEL_RESOURCE_ATTRIBUTES` set.
+    /// Guarantees: each `key=value` pair is parsed into a string `AttributeValue`.
     #[test]
     fn env_detector_parses_otel_resource_attributes() {
         temp_env::with_var("OTEL_RESOURCE_ATTRIBUTES", Some("foo=bar,baz=qux"), || {
@@ -168,6 +178,8 @@ mod tests {
         });
     }
 
+    /// Scenario: the `service_instance` detector runs.
+    /// Guarantees: it emits `service.instance.id` as a 36-char hyphenated UUID string.
     #[test]
     fn service_instance_detector_emits_uuid() {
         let attrs = detect_map(&["service_instance"]);
@@ -179,6 +191,8 @@ mod tests {
         }
     }
 
+    /// Scenario: a `Resource` holding a typed (I64) attribute is converted.
+    /// Guarantees: `resource_to_attrs` preserves the I64 type instead of flattening to a string.
     #[test]
     fn resource_to_attrs_preserves_typed_values() {
         let resource = Resource::builder_empty()
@@ -190,9 +204,10 @@ mod tests {
         );
     }
 
+    /// Scenario: two detectors emit the same key, with `env` listed last.
+    /// Guarantees: the later detector's value wins the merge.
     #[test]
     fn later_detector_wins_on_key_conflict() {
-        // Both detectors set service.instance.id; env runs last in the list and wins.
         temp_env::with_var(
             "OTEL_RESOURCE_ATTRIBUTES",
             Some("service.instance.id=from-env"),
