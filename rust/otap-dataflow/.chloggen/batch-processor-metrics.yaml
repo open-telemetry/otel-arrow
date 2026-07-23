@@ -1,0 +1,4 @@
+change_type: enhancement
+component: pipeline
+note: Migrate `batch_processor` metrics to use enum attributes.
+issues: [3530]

@@ -527,7 +527,6 @@ pub struct BatchProcessorSignalMetrics {
 #[metric_set(name = "otap.processor.batch")]
 #[derive(Debug, Default, Clone)]
 pub struct BatchProcessorMetrics {
-
     /// Number of flushes triggered by size threshold (all signals)
     #[metric(unit = "{flush}")]
     flushes_size: Counter<u64>,
@@ -674,23 +673,27 @@ impl BatchProcessor {
     }
 
     fn otap_format(&mut self) -> Option<BatchProcessorFormat<'_, OtapArrowRecords>> {
-        self.otap_signals.as_mut().map(|signals| BatchProcessorFormat {
-            config: &self.config,
-            fmtcfg: &self.config.otap,
-            signals,
-            metrics: &mut self.metrics,
-            signal_metrics: &mut self.signal_metrics,
-        })
+        self.otap_signals
+            .as_mut()
+            .map(|signals| BatchProcessorFormat {
+                config: &self.config,
+                fmtcfg: &self.config.otap,
+                signals,
+                metrics: &mut self.metrics,
+                signal_metrics: &mut self.signal_metrics,
+            })
     }
 
     fn otlp_format(&mut self) -> Option<BatchProcessorFormat<'_, OtlpProtoBytes>> {
-        self.otlp_signals.as_mut().map(|signals| BatchProcessorFormat {
-            config: &self.config,
-            fmtcfg: &self.config.otlp,
-            signals,
-            metrics: &mut self.metrics,
-            signal_metrics: &mut self.signal_metrics,
-        })
+        self.otlp_signals
+            .as_mut()
+            .map(|signals| BatchProcessorFormat {
+                config: &self.config,
+                fmtcfg: &self.config.otlp,
+                signals,
+                metrics: &mut self.metrics,
+                signal_metrics: &mut self.signal_metrics,
+            })
     }
 
     fn format_for_signal_format(
@@ -723,7 +726,10 @@ impl BatchProcessor {
         request: OtapPdata,
     ) -> Result<(), EngineError> {
         let signal = request.signal_type();
-        self.signal_metrics.with(SignalAttributes { signal }).consumed_batches.add(1);
+        self.signal_metrics
+            .with(SignalAttributes { signal })
+            .consumed_batches
+            .add(1);
 
         let (ctx, payload) = request.into_parts();
 
@@ -1068,7 +1074,12 @@ where
             let weight = self.fmtcfg.sizer.batch_size(&records)?;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            self.signal_metrics.with(SignalAttributes { signal: self.signal }).produced_batches.add(1);
+            self.signal_metrics
+                .with(SignalAttributes {
+                    signal: self.signal,
+                })
+                .produced_batches
+                .add(1);
 
             // If any inputs in this batch require notification, get an
             // outbound slot and subscribe.
@@ -1204,7 +1215,8 @@ pub fn create_otap_batch_processor(
     processor_config: &ProcessorConfig,
 ) -> Result<ProcessorWrapper<OtapPdata>, ConfigError> {
     let metrics = pipeline_ctx.register_metrics::<BatchProcessorMetrics>();
-    let signal_metrics = pipeline_ctx.register_measurement_metric_set::<BatchProcessorSignalMetrics>();
+    let signal_metrics =
+        pipeline_ctx.register_measurement_metric_set::<BatchProcessorSignalMetrics>();
     let proc = BatchProcessor::build_from_json(&node_config.config, metrics, signal_metrics)?;
     Ok(ProcessorWrapper::local(
         proc,
@@ -1689,32 +1701,31 @@ mod tests {
         let mut consumed_batches = 0u64;
         let mut produced_batches = 0u64;
 
-        telemetry_registry.visit_current_metrics_with_item_attrs(|desc, _attrs, dp_attrs, iter| {
-            if desc.name == "otap.processor.batch" {
-                let signal_str = match signal {
-                    SignalType::Logs => "logs",
-                    SignalType::Traces => "traces",
-                    SignalType::Metrics => "metrics",
-                };
-                let has_signal = dp_attrs
-                    .iter()
-                    .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case(signal_str));
-                
-                if has_signal {
-                    for (field, value) in iter {
-                        match field.name {
-                            "consumed.batches" => {
-                                consumed_batches = value.to_u64_lossy()
+        telemetry_registry.visit_current_metrics_with_item_attrs(
+            |desc, _attrs, dp_attrs, iter| {
+                if desc.name == "otap.processor.batch" {
+                    let signal_str = match signal {
+                        SignalType::Logs => "logs",
+                        SignalType::Traces => "traces",
+                        SignalType::Metrics => "metrics",
+                    };
+                    let has_signal = dp_attrs
+                        .iter()
+                        .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case(signal_str));
+
+                    if has_signal {
+                        for (field, value) in iter {
+                            match field.name {
+                                "consumed.batches" => consumed_batches = value.to_u64_lossy(),
+                                "produced.batches" => produced_batches = value.to_u64_lossy(),
+                                _ => {}
                             }
-                            "produced.batches" => {
-                                produced_batches = value.to_u64_lossy()
-                            }
-                            _ => {}
                         }
                     }
                 }
-            }
-        }, false);
+            },
+            false,
+        );
 
         let (expected_consumed, expected_produced) = expected_counts;
         assert_eq!(
