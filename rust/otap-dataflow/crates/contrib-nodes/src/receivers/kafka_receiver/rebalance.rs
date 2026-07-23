@@ -13,14 +13,14 @@
 //! This module bridges the two worlds with a small amount of shared,
 //! synchronized state ([`RebalanceState`]):
 //!
-//! - **`assigned`** — the set of topic-partitions currently owned by this
+//! - **`assigned`** -- the set of topic-partitions currently owned by this
 //!   consumer. Updated by the rebalance callbacks and read by the receive loop
 //!   to scope commits to owned partitions only.
-//! - **`committable`** — a snapshot of the offset that would be committed for
+//! - **`committable`** -- a snapshot of the offset that would be committed for
 //!   each tracked partition, refreshed by the receive loop after each
 //!   ack/commit cycle. Read by [`pre_rebalance`](ConsumerContext::pre_rebalance)
 //!   to commit owned partitions *before* they are revoked (commit-before-revoke).
-//! - **`revoked`** — a queue of partitions revoked since the loop last
+//! - **`revoked`** -- a queue of partitions revoked since the loop last
 //!   reconciled. Drained by the receive loop, which then purges the tracker.
 //!
 //! Rebalance handling is a no-op when auto-commit is enabled, since librdkafka
@@ -54,7 +54,7 @@ use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 /// periodic timer tick never commits an offset for a partition that has been
 /// reassigned to another consumer.
 ///
-/// The generation changes only when *this* partition's ownership is (re)acquired — it
+/// The generation changes only when *this* partition's ownership is (re)acquired -- it
 /// is stable while the partition stays continuously owned across unrelated
 /// rebalances. This is intentionally decoupled from any global rebalance counter:
 /// two records tracked during one continuous ownership must carry the same generation,
@@ -487,7 +487,7 @@ impl RebalanceState {
     /// [`handle_assign`](Self::handle_assign). Unlike
     /// [`set_assignment`](Self::set_assignment) (which treats its argument as the
     /// complete owned set and replaces), this only *adds* partitions reported in
-    /// `delta` that are not already owned — so it can never drop a partition this
+    /// `delta` that are not already owned -- so it can never drop a partition this
     /// consumer still owns, even if `delta` is an incremental cooperative-sticky
     /// delta rather than the full set. All partitions newly added in this call
     /// share a single fresh ownership generation (allocated lazily, at most once
@@ -514,7 +514,7 @@ impl RebalanceState {
     ///
     /// Real generations start at `1` (the allocator starts at `0` and this
     /// returns `previous + 1`), so `0` is reserved as a safe "unowned/absent"
-    /// sentinel that can never collide with a real generation — which keeps the
+    /// sentinel that can never collide with a real generation -- which keeps the
     /// generation comparisons in the offset tracker unambiguous.
     fn next_generation(&self) -> u64 {
         self.generation_allocator.fetch_add(1, Ordering::Relaxed) + 1

@@ -9,7 +9,7 @@ use serde::Deserialize;
 ///
 /// Serde renames ensure the enum deserializes from the exact user-facing
 /// config strings (e.g., `"PLAIN"`, `"SCRAM-SHA-256"`).  Unknown strings
-/// are rejected at deserialization time — no separate runtime validation
+/// are rejected at deserialization time -- no separate runtime validation
 /// is needed for the mechanism itself.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Deserialize)]
 pub enum SaslMechanism {
@@ -277,7 +277,7 @@ impl Auth {
 mod tests {
     use super::*;
 
-    // ── SaslMechanism ───────────────────────────────────────
+    // -- SaslMechanism ---------------------------------------
 
     #[test]
     fn mechanism_as_rdkafka_str() {
@@ -308,7 +308,7 @@ mod tests {
         assert!(!SaslMechanism::AwsMskIamOauthbearer.is_username_password());
     }
 
-    // ── SaslAuth::validate ──────────────────────────────────
+    // -- SaslAuth::validate ----------------------------------
 
     #[test]
     fn validate_plain_with_credentials_succeeds() {
@@ -497,7 +497,7 @@ mod tests {
         assert!(err.contains("region"), "unexpected error: {err}");
     }
 
-    // ── Auth::validate (delegates) ──────────────────────────
+    // -- Auth::validate (delegates) --------------------------
 
     #[cfg(feature = "aws")]
     #[test]
@@ -512,7 +512,7 @@ mod tests {
         assert!(auth.validate().is_ok());
     }
 
-    // ── Deserialization ─────────────────────────────────────
+    // -- Deserialization -------------------------------------
 
     #[test]
     fn deserialize_mechanism_plain() {

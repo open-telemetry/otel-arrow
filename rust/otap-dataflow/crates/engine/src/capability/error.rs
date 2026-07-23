@@ -23,8 +23,8 @@ use std::marker::PhantomData;
 
 /// The error returned by a failed capability method invocation.
 ///
-/// Carries the identity of the provider that failed — the extension
-/// instance id and the capability name — alongside the underlying
+/// Carries the identity of the provider that failed -- the extension
+/// instance id and the capability name -- alongside the underlying
 /// `source` error, so a consumer can attribute the failure without
 /// knowing the provider's internal error types.
 ///
@@ -48,8 +48,8 @@ pub struct CapabilityError {
 ///
 /// An extension constructs one of these once (at `create()` time) with
 /// its own [`ExtensionId`] and stores it. Each call to [`error`](Self::error)
-/// stamps the stored extension id and the capability name — read from
-/// `C::NAME` via the [`ExtensionCapability`] type — onto a fresh
+/// stamps the stored extension id and the capability name -- read from
+/// `C::NAME` via the [`ExtensionCapability`] type -- onto a fresh
 /// `CapabilityError`. This keeps the capability name a compile-time fact
 /// rather than a string repeated at every failure site.
 ///

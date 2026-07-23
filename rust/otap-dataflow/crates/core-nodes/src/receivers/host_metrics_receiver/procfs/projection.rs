@@ -89,7 +89,7 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
     let start = snap.start_time_unix_nano;
     let cs = &snap.counter_starts;
 
-    // ── CPU ──────────────────────────────────────────────────────────────────
+    // -- CPU ------------------------------------------------------------------
     if let Some(cpu) = snap.cpu {
         let m = b.begin_counter_f64(metric::CPU_TIME, "s");
         for (mode, value) in [
@@ -160,7 +160,7 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
         b.append_f64_gauge_dp(m, now, load.fifteen_minutes, |_| {});
     }
 
-    // ── Memory ───────────────────────────────────────────────────────────────
+    // -- Memory ---------------------------------------------------------------
     if let Some(memory) = snap.memory {
         let m = b.begin_updown_i64(metric::MEMORY_USAGE, "By");
         for (state, value) in [
@@ -213,13 +213,13 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
         }
     }
 
-    // ── System / uptime ──────────────────────────────────────────────────────
+    // -- System / uptime ------------------------------------------------------
     if let Some(uptime) = snap.uptime_seconds {
         let m = b.begin_gauge_f64(metric::UPTIME, "s");
         b.append_f64_gauge_dp(m, now, uptime, |_| {});
     }
 
-    // ── Paging ───────────────────────────────────────────────────────────────
+    // -- Paging ---------------------------------------------------------------
     if let Some(paging) = snap.paging {
         let m = b.begin_counter_i64(metric::PAGING_FAULTS, "{fault}");
         for (fault_type, value) in [
@@ -286,7 +286,7 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
         }
     }
 
-    // ── Processes ────────────────────────────────────────────────────────────
+    // -- Processes ------------------------------------------------------------
     if let Some(processes) = snap.processes {
         let m = b.begin_updown_i64(metric::PROCESS_COUNT, "{process}");
         b.append_i64_sum_dp(m, start, now, saturating_i64(processes.running), |w| {
@@ -307,7 +307,7 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
         project_per_process_metrics(snap, b);
     }
 
-    // ── Disk ─────────────────────────────────────────────────────────────────
+    // -- Disk -----------------------------------------------------------------
     if snap.disks.iter().any(|disk| disk.limit_bytes.is_some()) {
         let m = b.begin_updown_i64(metric::DISK_LIMIT, "By");
         for disk in &snap.disks {
@@ -397,7 +397,7 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
         }
     }
 
-    // ── Filesystem ───────────────────────────────────────────────────────────
+    // -- Filesystem -----------------------------------------------------------
     if !snap.filesystems.is_empty() {
         let m = b.begin_updown_i64(metric::FILESYSTEM_USAGE, "By");
         for fs in &snap.filesystems {
@@ -457,7 +457,7 @@ pub(super) fn project_snapshot(snap: &HostSnapshot, b: &mut HostMetricsArrowBuil
         }
     }
 
-    // ── Network ──────────────────────────────────────────────────────────────
+    // -- Network --------------------------------------------------------------
     if !snap.networks.is_empty() {
         let m = b.begin_counter_i64(metric::NETWORK_IO, "By");
         for net in &snap.networks {

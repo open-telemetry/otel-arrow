@@ -79,7 +79,7 @@ pub struct HttpClientSettings {
     ///
     /// Values are wrapped in [`SecretString`] so a header credential is not
     /// accidentally leaked through `Debug`/telemetry; the cleartext is reached
-    /// only through an explicit [`ExposeSecret::expose_secret`] call — during
+    /// only through an explicit [`ExposeSecret::expose_secret`] call -- during
     /// [`HttpClientSettings::validate`] and at the request-construction site.
     ///
     /// Protocol headers (`Content-Type` / `Content-Encoding` /
