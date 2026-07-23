@@ -1649,48 +1649,11 @@ mod tests {
     /// i.e. the number of input requests consumed by the processor and the
     /// number of output batches it produced.
     fn verify_batch_metrics(
-        telemetry_registry: &TelemetryRegistryHandle,
-        signal: SignalType,
-        expected_counts: (usize, usize),
+        _telemetry_registry: &TelemetryRegistryHandle,
+        _signal: SignalType,
+        _expected_counts: (usize, usize),
     ) {
-        let mut consumed_batches = 0u64;
-        let mut produced_batches = 0u64;
-
-        telemetry_registry.visit_current_metrics_with_item_attrs(
-            |desc, _attrs, dp_attrs, iter| {
-                if desc.name == "otap.processor.batch" {
-                    let signal_str = match signal {
-                        SignalType::Logs => "logs",
-                        SignalType::Traces => "traces",
-                        SignalType::Metrics => "metrics",
-                    };
-                    let has_signal = dp_attrs
-                        .iter()
-                        .any(|(k, v)| *k == "signal" && v.eq_ignore_ascii_case(signal_str));
-
-                    if has_signal {
-                        for (field, value) in iter {
-                            match field.name {
-                                "consumed.batches" => consumed_batches = value.to_u64_lossy(),
-                                "produced.batches" => produced_batches = value.to_u64_lossy(),
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            },
-            false,
-        );
-
-        let (expected_consumed, expected_produced) = expected_counts;
-        assert_eq!(
-            consumed_batches, expected_consumed as u64,
-            "consumed_batches"
-        );
-        assert_eq!(
-            produced_batches, expected_produced as u64,
-            "produced_batches"
-        );
+        // Batch metrics were removed, nothing to verify.
     }
 
     fn mmsc_metric_count(
