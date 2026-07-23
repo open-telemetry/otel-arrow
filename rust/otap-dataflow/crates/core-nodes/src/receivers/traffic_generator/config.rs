@@ -48,7 +48,7 @@ pub enum GenerationStrategy {
     /// - Timestamps and IDs will repeat (stale)
     /// - Lowest CPU cost, maximum throughput
     PreGenerated,
-    // Future: Templates variant — pre-generate signal templates, clone and update
+    // Future: Templates variant -- pre-generate signal templates, clone and update
     // timestamps/IDs per batch for moderate CPU cost with fresh data per batch.
     // Not yet implemented.
     // Templates,
@@ -82,7 +82,7 @@ pub enum ProductionMode {
 pub struct ResourceAttributeSet {
     /// Key-value pairs merged into the resource of every generated signal.
     pub attrs: HashMap<String, String>,
-    /// Relative batch weight (must be ≥ 1).  Defaults to 1.
+    /// Relative batch weight (must be >= 1).  Defaults to 1.
     #[serde(default = "default_resource_weight")]
     pub weight: NonZeroU32,
 }
@@ -131,7 +131,7 @@ pub struct Config {
     ///   - {"tenant.id": "ppe"}
     /// ```
     ///
-    /// List of weighted entries (3:1 split — prod gets 3 batches per ppe batch):
+    /// List of weighted entries (3:1 split -- prod gets 3 batches per ppe batch):
     /// ```yaml
     /// resource_attributes:
     ///   - attrs: {"tenant.id": "prod"}
@@ -479,7 +479,7 @@ pub(crate) fn build_rotation_table(entries: &[ResourceAttributeSet]) -> Vec<usiz
 }
 
 /// Accepts a plain map, a list of plain maps, a list of weighted structs, or a
-/// mixed list — all normalized to `Vec<ResourceAttributeSet>`.
+/// mixed list -- all normalized to `Vec<ResourceAttributeSet>`.
 fn deserialize_resource_attributes<'de, D>(
     deserializer: D,
 ) -> Result<Vec<ResourceAttributeSet>, D::Error>
@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn resource_attributes_unknown_field_is_rejected() {
-        // "weights" is a common typo for "weight" — must not silently fall back
+        // "weights" is a common typo for "weight" -- must not silently fall back
         // to weight=1 with the stray field ignored.
         let result = serde_json::from_value::<Config>(json!({
             "traffic_config": base_traffic(),

@@ -511,7 +511,7 @@ fn render_throughput_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64
         .block(
             Block::default()
                 .title(format!(
-                    " Consumed Throughput (bundles/sec) │ max: {} ",
+                    " Consumed Throughput (bundles/sec) \u{2502} max: {} ",
                     max_val
                 ))
                 .borders(Borders::ALL),
@@ -530,7 +530,7 @@ fn render_memory_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64], c
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Heap (MB) │ current: {:.1} ", current))
+                .title(format!(" Heap (MB) \u{2502} current: {:.1} ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -548,7 +548,7 @@ fn render_rss_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" RSS (MB) │ current: {} ", current))
+                .title(format!(" RSS (MB) \u{2502} current: {} ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -567,7 +567,7 @@ fn render_cpu_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" CPU │ current: {:.1}% ", current))
+                .title(format!(" CPU \u{2502} current: {:.1}% ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -585,7 +585,7 @@ fn render_disk_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]) {
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Disk │ current: {} MB ", current))
+                .title(format!(" Disk \u{2502} current: {} MB ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -603,11 +603,14 @@ fn render_segment_write_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[
     // Display in MB/s if >= 1024 KB/s, otherwise KB/s
     let title = if current >= 1024 {
         format!(
-            " Segment Writes (.qseg) │ current: {:.1} MB/s ",
+            " Segment Writes (.qseg) \u{2502} current: {:.1} MB/s ",
             current as f64 / 1024.0
         )
     } else {
-        format!(" Segment Writes (.qseg) │ current: {} KB/s ", current)
+        format!(
+            " Segment Writes (.qseg) \u{2502} current: {} KB/s ",
+            current
+        )
     };
 
     let sparkline = Sparkline::default()
@@ -624,7 +627,7 @@ fn render_read_iops_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]
     let current = history.last().copied().unwrap_or(0);
     let max_val = history.iter().max().copied().unwrap_or(1).max(1);
 
-    let title = format!(" Read IOPS │ current: {} ops/s ", current);
+    let title = format!(" Read IOPS \u{2502} current: {} ops/s ", current);
 
     let sparkline = Sparkline::default()
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -640,7 +643,7 @@ fn render_write_iops_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64
     let current = history.last().copied().unwrap_or(0);
     let max_val = history.iter().max().copied().unwrap_or(1).max(1);
 
-    let title = format!(" Write IOPS │ current: {} ops/s ", current);
+    let title = format!(" Write IOPS \u{2502} current: {} ops/s ", current);
 
     let sparkline = Sparkline::default()
         .block(Block::default().title(title).borders(Borders::ALL))
@@ -660,11 +663,11 @@ fn render_minor_faults_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u
     // Display in K if >= 1000
     let title = if current >= 1000 {
         format!(
-            " Minor Faults (soft) │ current: {:.1}K/s ",
+            " Minor Faults (soft) \u{2502} current: {:.1}K/s ",
             current as f64 / 1000.0
         )
     } else {
-        format!(" Minor Faults (soft) │ current: {}/s ", current)
+        format!(" Minor Faults (soft) \u{2502} current: {}/s ", current)
     };
 
     let sparkline = Sparkline::default()
@@ -685,11 +688,11 @@ fn render_major_faults_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u
     // Display in K if >= 1000
     let title = if current >= 1000 {
         format!(
-            " Major Faults (hard) │ current: {:.1}K/s ",
+            " Major Faults (hard) \u{2502} current: {:.1}K/s ",
             current as f64 / 1000.0
         )
     } else {
-        format!(" Major Faults (hard) │ current: {}/s ", current)
+        format!(" Major Faults (hard) \u{2502} current: {}/s ", current)
     };
 
     let sparkline = Sparkline::default()
@@ -709,11 +712,14 @@ fn render_wal_write_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64]
     // Display in MB/s if >= 1024 KB/s, otherwise KB/s
     let title = if current >= 1024 {
         format!(
-            " WAL Writes (quiver.wal*) │ current: {:.1} MB/s ",
+            " WAL Writes (quiver.wal*) \u{2502} current: {:.1} MB/s ",
             current as f64 / 1024.0
         )
     } else {
-        format!(" WAL Writes (quiver.wal*) │ current: {} KB/s ", current)
+        format!(
+            " WAL Writes (quiver.wal*) \u{2502} current: {} KB/s ",
+            current
+        )
     };
 
     let sparkline = Sparkline::default()
@@ -733,7 +739,7 @@ fn render_buffered_sparkline(frame: &mut Frame<'_>, area: Rect, history: &[u64])
     let sparkline = Sparkline::default()
         .block(
             Block::default()
-                .title(format!(" Buffered │ current: {} bundles ", current))
+                .title(format!(" Buffered \u{2502} current: {} bundles ", current))
                 .borders(Borders::ALL),
         )
         .data(history)
@@ -871,7 +877,7 @@ fn render_steady_state_header(
     let rem_secs = remaining.as_secs() % 60;
 
     let title = format!(
-        " Quiver Steady-State Test │ Elapsed: {:02}:{:02}:{:02} │ Remaining: {:02}:{:02}:{:02} │ Press 'q' to quit ",
+        " Quiver Steady-State Test \u{2502} Elapsed: {:02}:{:02}:{:02} \u{2502} Remaining: {:02}:{:02}:{:02} \u{2502} Press 'q' to quit ",
         hours, minutes, seconds, rem_hours, rem_mins, rem_secs
     );
 
@@ -1133,7 +1139,7 @@ fn render_steady_state_config(frame: &mut Frame<'_>, area: Rect, config: &Steady
     let config_lines = vec![
         Line::from(format!("Data dir: {}", config.data_dir)),
         Line::from(format!(
-            "Mode: Steady-State │ Bundles/batch: {} │ Rows/bundle: {} │ Subscribers: {} │ Delay: {}",
+            "Mode: Steady-State \u{2502} Bundles/batch: {} \u{2502} Rows/bundle: {} \u{2502} Subscribers: {} \u{2502} Delay: {}",
             config.bundles_per_batch, config.rows_per_bundle, config.subscribers, delay_str,
         )),
     ];

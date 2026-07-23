@@ -135,13 +135,13 @@ impl HeaderCapturePolicy {
                     continue;
                 }
 
-                // Enforce name length limit — drop oversized names.
+                // Enforce name length limit -- drop oversized names.
                 if wire_name.len() > defaults.max_name_bytes {
                     skipped_name_too_long += 1;
                     continue;
                 }
 
-                // Enforce value length limit — drop oversized values.
+                // Enforce value length limit -- drop oversized values.
                 if value.len() > defaults.max_value_bytes {
                     skipped_value_too_long += 1;
                     continue;

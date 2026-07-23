@@ -187,13 +187,13 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
-/// Validates that every node in every pipeline (including the observability
-/// pipeline, if configured) references a component URN registered in the
+/// Validates that every node in every pipeline (including the engine
+/// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
 ///
 /// This is the top-level validation entry point that iterates over all
-/// pipeline groups, all pipelines within each group, and the optional
-/// observability pipeline.
+/// pipeline groups, all pipelines within each group, and the observability
+/// pipeline.
 pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
@@ -204,18 +204,20 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
         }
     }
 
-    // Also validate the observability pipeline nodes, if configured.
-    if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
-        let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-        let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-        let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
-        validate_pipeline_components(
-            &obs_group_id,
-            &obs_pipeline_id,
-            &obs_pipeline_config,
-            factory,
-        )?;
-    }
+    let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+    let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+    let obs_pipeline_config = engine_cfg
+        .engine
+        .observability
+        .pipeline
+        .clone()
+        .into_pipeline_config();
+    validate_pipeline_components(
+        &obs_group_id,
+        &obs_pipeline_id,
+        &obs_pipeline_config,
+        factory,
+    )?;
 
     Ok(())
 }
@@ -288,7 +290,7 @@ pub fn system_info<PData: 'static + Clone + Debug>(
     let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
 
     let debug_warning = if cfg!(debug_assertions) {
-        "\n\n⚠️  WARNING: This binary was compiled in debug mode.
+        "\n\n\u{26A0}\u{FE0F}  WARNING: This binary was compiled in debug mode.
    Debug builds are NOT recommended for production, benchmarks, or performance testing.
    Use 'cargo build --release' for optimal performance."
     } else {
@@ -434,6 +436,32 @@ extensions:
             "unexpected error: {msg}"
         );
         assert!(msg.contains("not-registered"), "unexpected error: {msg}");
+    }
+
+    /// Scenario: the component factory omits the built-in observability components.
+    /// Guarantees: engine validation checks the default pipeline under `system/observability`.
+    #[test]
+    fn validate_engine_components_checks_default_observability_pipeline() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+groups: {}
+"#,
+        )
+        .expect("minimal engine config should parse");
+        let factory: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
+
+        let error = validate_engine_components(&config, &factory)
+            .expect_err("missing observability components must fail validation");
+        let message = error.to_string();
+        assert!(
+            message.contains("Unknown ") && message.contains(" component `urn:otel:"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("pipeline_group=system pipeline=observability"),
+            "unexpected error: {message}"
+        );
     }
 
     #[test]

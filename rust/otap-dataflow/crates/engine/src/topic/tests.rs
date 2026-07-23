@@ -42,7 +42,7 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 
 // =========================================================================
-// Balanced mode – single group
+// Balanced mode - single group
 // =========================================================================
 
 // Two subscribers in the same consumer group receive all 100 messages between
@@ -214,7 +214,7 @@ async fn balanced_no_duplicates_within_group() {
 }
 
 // =========================================================================
-// Balanced mode – multiple groups
+// Balanced mode - multiple groups
 // =========================================================================
 
 // Two consumer groups on the same topic each receive all messages independently,
@@ -1034,7 +1034,7 @@ async fn mixed_disconnects_only_lagging_broadcast_subscriber() {
 }
 
 // =========================================================================
-// Subscriber choice – publisher API identical
+// Subscriber choice - publisher API identical
 // =========================================================================
 
 // A single publish call delivers the message to both a balanced and a broadcast
@@ -2085,7 +2085,7 @@ async fn remove_topic_allows_recreation_with_same_name() {
     old_handle.publish(Arc::new(1)).await.unwrap();
     _ = broker.remove_topic("reuse");
 
-    // Recreate — should be an independent topic.
+    // Recreate -- should be an independent topic.
     let new_handle = broker
         .create_topic("reuse", TopicOptions::default(), InMemoryBackend)
         .unwrap();

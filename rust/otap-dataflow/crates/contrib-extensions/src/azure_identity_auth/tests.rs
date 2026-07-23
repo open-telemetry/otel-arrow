@@ -10,7 +10,7 @@ use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions}
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
@@ -22,7 +22,7 @@ use super::extension::AzureIdentityAuthExtension;
 use super::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
 use super::*;
 
-// ── Config tests ───────────────────────────────────────────
+// -- Config tests -------------------------------------------
 
 fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
@@ -137,7 +137,7 @@ fn factory_is_registered_with_capability() {
     );
 }
 
-// ── Credential construction tests ──────────────────────────────
+// -- Credential construction tests ------------------------------
 
 #[test]
 fn managed_identity_system_assigned_credential_constructs() {
@@ -185,7 +185,7 @@ fn workload_identity_credential_construct_is_attempted() {
     }
 }
 
-// ── Token acquisition / cache tests ───────────────────────────
+// -- Token acquisition / cache tests ---------------------------
 
 #[derive(Debug)]
 struct MockCredential {
@@ -338,7 +338,7 @@ async fn clones_share_one_token_cache() {
     assert_eq!(streamed.expose_token(), "shared");
 }
 
-// ── Metrics tracker tests ─────────────────────────────────────
+// -- Metrics tracker tests -------------------------------------
 
 #[test]
 fn metrics_tracker_records_snapshots_and_reports() {
@@ -441,14 +441,17 @@ async fn token_stream_skips_initial_none() {
     assert_eq!(published.expose_token(), "streamed");
 }
 
-// ── schedule_next timing tests ────────────────────────────────
+// -- schedule_next timing tests --------------------------------
 
+/// Scenario: schedule the next refresh for a token expiring in ~1 hour.
+/// Guarantees: the refresh is scheduled TOKEN_EXPIRY_BUFFER_SECS before expiry
+/// (~3301s out), so refresh happens ahead of expiry with buffer to spare.
 #[tokio::test]
 async fn schedule_next_refreshes_before_expiry() {
-    use otap_df_engine::capability::bearer_token_provider::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
     use std::time::{Duration, Instant};
 
-    let token = BearerToken::new(
+    let token = BearerToken::with_expiry(
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(3600)),
     );
@@ -460,14 +463,18 @@ async fn schedule_next_refreshes_before_expiry() {
     assert!((secs - 3301.0).abs() < 5.0, "expected ~3301s, got {secs}");
 }
 
+/// Scenario: schedule the next refresh for a token expiring in only 5s, where
+/// subtracting the expiry buffer would underflow past now.
+/// Guarantees: the schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s)
+/// instead of scheduling in the past.
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
-    use otap_df_engine::capability::bearer_token_provider::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
     use std::time::{Duration, Instant};
 
     // Expires in 5s: the refresh target underflows past `now`, so the
     // MIN_TOKEN_REFRESH_INTERVAL_SECS (10s) floor applies.
-    let token = BearerToken::new(
+    let token = BearerToken::with_expiry(
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(5)),
     );
@@ -478,11 +485,14 @@ async fn schedule_next_floors_near_expiry() {
     assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
 }
 
+/// Scenario: schedule the next refresh for a non-expiring token.
+/// Guarantees: the refresh is pushed far into the future (~1 year), so a
+/// non-expiring token is not needlessly refreshed.
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
-    use otap_df_engine::capability::bearer_token_provider::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
 
-    let token = BearerToken::new("t".to_owned(), None);
+    let token = BearerToken::without_expiry("t".to_owned());
     let refresh_at = extension::schedule_next(&token);
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
@@ -494,7 +504,7 @@ async fn schedule_next_pushes_non_expiring_far_out() {
     );
 }
 
-// ── retry backoff tests ───────────────────────────────────────
+// -- retry backoff tests ---------------------------------------
 
 #[test]
 fn retry_backoff_grows_exponentially_and_caps() {
@@ -512,7 +522,7 @@ fn retry_backoff_grows_exponentially_and_caps() {
     assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
 }
 
-// ── jitter_refresh tests ──────────────────────────────────────
+// -- jitter_refresh tests --------------------------------------
 
 #[tokio::test]
 async fn jitter_refresh_preserves_min_interval_floor() {

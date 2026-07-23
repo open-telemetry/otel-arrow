@@ -46,7 +46,7 @@ use otap_df_pdata::views::otap::OtapLogsView;
 use otap_df_pdata::views::otlp::bytes::logs::RawLogsData;
 use otap_df_pdata::{OtapArrowRecords, OtapPayload};
 use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::otel_info;
 use otap_df_telemetry_macros::metric_set;
 use serde::Deserialize;
@@ -57,14 +57,17 @@ use std::time::Instant;
 // Geneva uploader dependencies
 use futures::StreamExt;
 use geneva_uploader::AuthMethod;
-use geneva_uploader::client::{EncodedBatch, GenevaClient, GenevaClientConfig};
+use geneva_uploader::client::{
+    EncodedBatch, GenevaClient, GenevaClientConfig, LogsConfig, TracesConfig,
+};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message as ProstMessage;
 
 // Use crate-relative paths since we're now a module within otap
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 
 /// The URN for the Geneva exporter
 pub const GENEVA_EXPORTER_URN: &str = "urn:microsoft:exporter:geneva";
@@ -248,7 +251,7 @@ struct ExporterMetrics {
 /// Geneva exporter that sends OTAP data to Geneva backend
 pub struct GenevaExporter {
     config: Config,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
     metrics: MetricSet<ExporterMetrics>,
     geneva_client: GenevaClient,
 }
@@ -259,7 +262,7 @@ impl GenevaExporter {
         pipeline_ctx: PipelineContext,
         config: &serde_json::Value,
     ) -> Result<Self, otap_df_config::error::Error> {
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
         let metrics = pipeline_ctx.register_metrics::<ExporterMetrics>();
 
         let config: Config = serde_json::from_value(config.clone()).map_err(|e| {
@@ -310,6 +313,12 @@ impl GenevaExporter {
             role_name: config.role_name.clone(),
             role_instance: config.role_instance.clone(),
             msi_resource,
+            logs: LogsConfig {
+                default_event_name: None,
+            },
+            spans: TracesConfig {
+                default_event_name: None,
+            },
             obo_event_map: None,
         };
 
@@ -538,7 +547,7 @@ impl GenevaExporter {
                     OtapArrowRecords::Traces(otap_records) => {
                         // TODO: Zero-copy view path for future optimization (when TracesView is ready)
 
-                        // Fallback path: Convert OTAP Arrow → OTLP bytes
+                        // Fallback path: Convert OTAP Arrow -> OTLP bytes
                         otel_info!(
                             "geneva_exporter.convert",
                             message = "Converting OTAP traces to OTLP bytes (fallback path)"
@@ -593,7 +602,7 @@ impl GenevaExporter {
                 }
             }
 
-            // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver → Geneva exporter without batch processor)
+            // OTLP path: Direct OTLP bytes from receivers without OTAP conversion (e.g., OTLP receiver -> Geneva exporter without batch processor)
             OtapPayload::OtlpBytes(otlp_bytes) => {
                 match otlp_bytes {
                     OtlpProtoBytes::ExportLogsRequest(bytes) => {
@@ -720,21 +729,21 @@ impl Exporter<OtapPdata> for GenevaExporter {
                         message = "Geneva exporter shutting down"
                     );
 
-                    return Ok(TerminalState::new(
-                        deadline,
-                        [self.pdata_metrics.snapshot(), self.metrics.snapshot()],
-                    ));
+                    return Ok(TerminalState::new(deadline, {
+                        let mut snapshots = self.pdata_metrics.terminal_snapshots();
+                        snapshots.push(self.metrics.snapshot());
+                        snapshots
+                    }));
                 }
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                     _ = metrics_reporter.report(&mut self.metrics);
                 }
                 Message::PData(pdata) => {
                     let (context, payload) = pdata.into_parts();
                     let signal_type = payload.signal_type();
-                    self.pdata_metrics.inc_consumed(signal_type);
 
                     let saved_payload = if context.may_return_payload() {
                         payload.clone()
@@ -744,13 +753,25 @@ impl Exporter<OtapPdata> for GenevaExporter {
 
                     match self.export_payload(payload, &effect_handler).await {
                         Ok(_batches_uploaded) => {
-                            self.pdata_metrics.inc_exported(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Success,
+                                })
+                                .messages
+                                .inc();
                             effect_handler
                                 .notify_ack(AckMsg::new(OtapPdata::new(context, saved_payload)))
                                 .await?;
                         }
                         Err(e) => {
-                            self.pdata_metrics.inc_failed(signal_type);
+                            self.pdata_metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                             otel_info!(
                                 "geneva_exporter.error",
                                 error = e,

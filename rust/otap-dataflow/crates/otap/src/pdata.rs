@@ -59,10 +59,18 @@ pub struct Context {
     /// `Some(ns)` when a message is inside a flow_metric range (between
     /// start and end nodes). Stored value equals the real accumulated
     /// nanoseconds. `start_flow_metric` initializes to 1ns as an "active"
-    /// sentinel — duration measurements are required to be >0 ns, so the
+    /// sentinel -- duration measurements are required to be >0 ns, so the
     /// 1ns sentinel is acceptable drift. At most one flow_metric can be
     /// active at a time (non-overlapping ranges).
     flow_compute_ns: Option<NonZeroU64>,
+    /// Signal type of the payload, captured on the forward path to attribute
+    /// per-signal produced/consumed metrics during ack/nack unwinding.
+    ///
+    /// A pdata batch is homogeneous, so signal is a pdata-level property stored
+    /// once here rather than duplicated on every routing frame. It is captured
+    /// while the payload is live whenever node message metrics are enabled and
+    /// survives payload drop, so it stays readable throughout unwinding.
+    signal: Option<SignalType>,
 }
 
 impl Context {
@@ -75,6 +83,7 @@ impl Context {
             transport_headers: None,
             peer_addr: None,
             flow_compute_ns: None,
+            signal: None,
         }
     }
 
@@ -87,13 +96,13 @@ impl Context {
     ) {
         if let Some(top) = self.stack.last_mut() {
             if top.node_id == node_id {
-                // Same node → merge interests, replace user data.
+                // Same node -> merge interests, replace user data.
                 // Engine fields (time_ns) are preserved.
                 top.interests |= interests;
                 top.route.calldata = calldata;
                 return;
             }
-            // Different node → inherit RETURN_DATA from predecessor.
+            // Different node -> inherit RETURN_DATA from predecessor.
             interests |= top.interests & Interests::RETURN_DATA;
         }
         let entry_time_ns = if interests.contains(Interests::ENTRY_TIMESTAMP) {
@@ -109,6 +118,8 @@ impl Context {
                 entry_time_ns,
                 ..Default::default()
             },
+            produced_items: 0,
+            consumed_items: 0,
         });
     }
 
@@ -215,6 +226,8 @@ impl Context {
             interests,
             node_id,
             route: RouteData::default(),
+            produced_items: 0,
+            consumed_items: 0,
         });
     }
 
@@ -250,7 +263,7 @@ impl Context {
                 return;
             }
         }
-        // Different node (or empty stack) → push new frame.
+        // Different node (or empty stack) -> push new frame.
         let mut frame_interests = interests;
         if let Some(last) = self.stack.last() {
             frame_interests |= last.interests & Interests::RETURN_DATA;
@@ -268,6 +281,8 @@ impl Context {
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
+            produced_items: 0,
+            consumed_items: 0,
         });
     }
 
@@ -278,6 +293,38 @@ impl Context {
         if let Some(top) = self.stack.last_mut() {
             top.route.output_port_index = index;
         }
+    }
+
+    /// Record the per-signal item count produced by the current node at send
+    /// time onto the top frame, and remember the pdata's signal on the context.
+    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
+    pub(crate) fn stamp_produced_items(&mut self, items: u32, signal: SignalType) {
+        self.capture_signal(signal);
+        if let Some(top) = self.stack.last_mut() {
+            top.produced_items = items;
+        }
+    }
+
+    /// Record the per-signal item count consumed by the current node at receive
+    /// time onto the top frame, and remember the pdata's signal on the context.
+    /// Called only when the node has `PRODUCED_CONSUMED_ITEM_COUNTS` interest.
+    pub(crate) fn stamp_consumed_items(&mut self, items: u32, signal: SignalType) {
+        self.capture_signal(signal);
+        if let Some(top) = self.stack.last_mut() {
+            top.consumed_items = items;
+        }
+    }
+
+    /// Capture the signal type while the payload is available for later metric
+    /// attribution during ack/nack unwinding.
+    pub(crate) fn capture_signal(&mut self, signal: SignalType) {
+        self.signal = Some(signal);
+    }
+
+    /// Signal captured on the forward path for per-signal metric attribution.
+    #[must_use]
+    pub(crate) fn signal(&self) -> Option<SignalType> {
+        self.signal
     }
 
     /// Push an entry frame for a queue-consumer node (processor/exporter).
@@ -307,6 +354,8 @@ impl Context {
                 entry_time_ns: time_ns,
                 ..Default::default()
             },
+            produced_items: 0,
+            consumed_items: 0,
         });
     }
 
@@ -342,7 +391,7 @@ impl Context {
     ///
     /// Returns `Some(addr)` only when every contributing input observed the
     /// same peer address. Returns `None` if any input was peerless or if
-    /// distinct peers contributed — merging processors must use this to
+    /// distinct peers contributed -- merging processors must use this to
     /// avoid attributing a multi-peer output to one arbitrary contributor.
     #[must_use]
     pub fn merge_peer_addr<I>(inputs: I) -> Option<SocketAddr>
@@ -441,6 +490,10 @@ impl otap_df_engine::Unwindable for OtapPdata {
         self.context.pop_frame()
     }
 
+    fn signal(&self) -> Option<SignalType> {
+        self.context.signal()
+    }
+
     fn drop_payload(&mut self) {
         let _ = self.take_payload();
     }
@@ -456,8 +509,8 @@ impl FlowMetricAccumulation for OtapPdata {
     fn start_flow_metric(&mut self) {
         // Build-time validation in `build_flow_metric_state` rejects flow_metrics
         // that share a start or end node, but it does NOT yet detect
-        // interleaved ranges with distinct endpoints (e.g. 1→3 + 2→4 on the
-        // path 1→2→3→4). Until that gap is closed (see TODO(flow_metric-interleave)
+        // interleaved ranges with distinct endpoints (e.g. 1->3 + 2->4 on the
+        // path 1->2->3->4). Until that gap is closed (see TODO(flow_metric-interleave)
         // in engine/src/flow_metrics.rs), keep a defensive runtime warning so a
         // misconfigured pipeline is diagnosable instead of silently producing
         // truncated histograms.
@@ -465,7 +518,7 @@ impl FlowMetricAccumulation for OtapPdata {
             otap_df_telemetry::otel_warn!(
                 "flow_metrics.overlap",
                 "start_flow_metric called while another flow_metric is active; \
-                 overlapping ranges are not supported — previous accumulator discarded"
+                 overlapping ranges are not supported \u{2014} previous accumulator discarded"
             );
         }
         // Use a 1ns active sentinel because flow_metric duration measurements
@@ -589,6 +642,7 @@ impl OtapPdata {
                 transport_headers: self.context.transport_headers.clone(),
                 peer_addr: self.context.peer_addr,
                 flow_compute_ns: None,
+                signal: None,
             },
             payload: self.payload.clone(),
         }
@@ -689,6 +743,19 @@ impl OtapPdata {
                 node_id,
                 node_interests & (Interests::PRODUCER_METRICS | Interests::ENTRY_TIMESTAMP),
             );
+            if node_interests.contains(Interests::PRODUCER_METRICS) {
+                self.context.capture_signal(self.signal_type());
+            }
+            // Produced counts are only recorded under PRODUCER_METRICS, so only
+            // pay the num_items() parse when that interest is also present
+            // (e.g. avoid it for a source-tagging-only frame).
+            if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
+                && node_interests.contains(Interests::PRODUCER_METRICS)
+            {
+                let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
+                let signal = self.signal_type();
+                self.context.stamp_produced_items(items, signal);
+            }
         }
     }
 
@@ -842,7 +909,7 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         }
         // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
-        // reflects the post-process count — what is actually leaving
+        // reflects the post-process count -- what is actually leaving
         // the flow_metric range. Recorded unconditionally (including 0)
         // so signals.outgoing.count stays in lockstep with
         // compute.duration.count and 0-out traversals stay visible.
@@ -855,7 +922,7 @@ impl FlowMetricHook for OtapPdata {
         flow_accumulate(handler, self);
     }
 
-    /// At the flow_metric start node, count items *entering* the range —
+    /// At the flow_metric start node, count items *entering* the range --
     /// i.e. before `process()` runs and may filter or drop them. This
     /// gives the true input volume to compare against the end-node
     /// output volume recorded in [`flow_accumulate`]. Recorded
@@ -872,11 +939,11 @@ impl FlowMetricHook for OtapPdata {
 /// Implements a `MessageSource{Local,Shared}EffectHandlerExtension` for an EffectHandler type.
 ///
 /// Parameters:
-///   $async_attr   – `async_trait(?Send)` for local or `async_trait` for shared
-///   $trait_name   – `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
-///   $handler      – fully-qualified EffectHandler type
-///   $id_method    – `processor_id` or `receiver_id`
-///   $hook         – `with_hook` (processors: invokes `before_processor_send`)
+///   $async_attr   - `async_trait(?Send)` for local or `async_trait` for shared
+///   $trait_name   - `MessageSourceLocalEffectHandlerExtension` or `MessageSourceSharedEffectHandlerExtension`
+///   $handler      - fully-qualified EffectHandler type
+///   $id_method    - `processor_id` or `receiver_id`
+///   $hook         - `with_hook` (processors: invokes `before_processor_send`)
 ///                   or `no_hook` (receivers: no per-send bookkeeping)
 macro_rules! maybe_processor_send_hook {
     (with_hook, $handler:expr, $data:expr) => {
@@ -970,6 +1037,19 @@ impl_message_source_ext!(
 impl otap_df_engine::ReceivedAtNode for OtapPdata {
     fn received_at_node(&mut self, node_id: usize, node_interests: Interests) {
         self.context.push_entry_frame(node_id, node_interests);
+        if node_interests.contains(Interests::CONSUMER_METRICS) {
+            self.context.capture_signal(self.signal_type());
+        }
+        // Consumed counts are only recorded under CONSUMER_METRICS, so only pay
+        // the num_items() parse when that interest is also present (e.g. avoid
+        // it for a per-node opt-in below the `normal` metric level).
+        if node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS)
+            && node_interests.contains(Interests::CONSUMER_METRICS)
+        {
+            let items = u32::try_from(self.num_items()).unwrap_or(u32::MAX);
+            let signal = self.signal_type();
+            self.context.stamp_consumed_items(items, signal);
+        }
     }
 }
 
@@ -1643,6 +1723,106 @@ mod test {
         assert_eq!(frames[0].interests, Interests::empty());
     }
 
+    /// Scenario: a node records normal-level consumed messages without item-count opt-in.
+    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
+    #[test]
+    fn test_received_at_node_stamps_consumed_items() {
+        use otap_df_engine::{ReceivedAtNode, Unwindable};
+
+        // CONSUMER_METRICS + item counts: entry frame carries consumed count.
+        let mut pdata = create_test_pdata();
+        let n = pdata.num_items() as u32;
+        assert!(n > 0);
+        pdata.received_at_node(
+            42,
+            Interests::CONSUMER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+        );
+        let frames = pdata.context.frames();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].node_id, 42);
+        assert_eq!(frames[0].consumed_items, n);
+        assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
+
+        // CONSUMER_METRICS without item-count interest: no consumed count stamped,
+        // but the signal remains available for normal-level message metrics.
+        let mut pdata_cm = create_test_pdata();
+        pdata_cm.received_at_node(43, Interests::CONSUMER_METRICS);
+        let f_cm = pdata_cm.context.frames();
+        assert_eq!(f_cm.len(), 1);
+        assert_eq!(f_cm[0].consumed_items, 0);
+        assert_eq!(pdata_cm.context.signal(), Some(SignalType::Logs));
+        assert_eq!(pdata_cm.signal(), Some(SignalType::Logs));
+
+        // ENTRY_TIMESTAMP only (no CONSUMER_METRICS): no consumed count stamped.
+        let mut pdata2 = create_test_pdata();
+        pdata2.received_at_node(7, Interests::ENTRY_TIMESTAMP);
+        let f2 = pdata2.context.frames();
+        assert_eq!(f2.len(), 1);
+        assert_eq!(f2[0].consumed_items, 0);
+        assert_eq!(pdata2.context.signal(), None);
+
+        // Neither interest: no frame pushed at all.
+        let mut pdata3 = create_test_pdata();
+        pdata3.received_at_node(9, Interests::empty());
+        assert_eq!(pdata3.context.frames().len(), 0);
+
+        // Opt-in bit alone (e.g. per-node opt-in below the `normal` level):
+        // no frame, no stamp, and no num_items() parse.
+        let mut pdata4 = create_test_pdata();
+        pdata4.received_at_node(11, Interests::PRODUCED_CONSUMED_ITEM_COUNTS);
+        assert_eq!(pdata4.context.frames().len(), 0);
+        assert_eq!(pdata4.context.signal(), None);
+    }
+
+    /// Scenario: a source records normal-level produced messages without item-count opt-in.
+    /// Guarantees: the real pdata retains its signal for message metric attribution without parsing item counts.
+    #[test]
+    fn test_prepare_source_send_stamps_produced_items() {
+        // PRODUCER_METRICS | PRODUCED_CONSUMED_ITEM_COUNTS: source frame carries
+        // the produced count.
+        let mut pdata = create_test_pdata();
+        let n = pdata.num_items() as u32;
+        assert!(n > 0);
+        pdata.prepare_source_send(
+            Interests::PRODUCER_METRICS | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            5,
+        );
+        let frame = pdata.context.frames().last().expect("source frame");
+        assert_eq!(frame.node_id, 5);
+        assert_eq!(frame.produced_items, n);
+        assert_eq!(pdata.context.signal(), Some(SignalType::Logs));
+
+        // PRODUCER_METRICS without the opt-in bit: no produced count stamped.
+        let mut pdata_no_optin = create_test_pdata();
+        pdata_no_optin.prepare_source_send(Interests::PRODUCER_METRICS, 7);
+        let frame_no_optin = pdata_no_optin
+            .context
+            .frames()
+            .last()
+            .expect("source frame");
+        assert_eq!(frame_no_optin.produced_items, 0);
+        assert_eq!(pdata_no_optin.context.signal(), Some(SignalType::Logs));
+
+        // SOURCE_TAGGING only (no PRODUCER_METRICS): no produced count stamped.
+        let mut pdata2 = create_test_pdata();
+        pdata2.prepare_source_send(Interests::SOURCE_TAGGING, 6);
+        let frame2 = pdata2.context.frames().last().expect("source frame");
+        assert_eq!(frame2.produced_items, 0);
+        assert_eq!(pdata2.context.signal(), None);
+
+        // SOURCE_TAGGING | opt-in bit but no PRODUCER_METRICS (e.g. a tagging
+        // receiver opting in below the `normal` level): a frame is pushed for
+        // tagging, but no produced count is stamped and no num_items() parse.
+        let mut pdata3 = create_test_pdata();
+        pdata3.prepare_source_send(
+            Interests::SOURCE_TAGGING | Interests::PRODUCED_CONSUMED_ITEM_COUNTS,
+            8,
+        );
+        let frame3 = pdata3.context.frames().last().expect("source frame");
+        assert_eq!(frame3.produced_items, 0);
+        assert_eq!(pdata3.context.signal(), None);
+    }
+
     #[test]
     fn test_context_next_ack_drops_payload_without_return_data() {
         let (test_data, pdata) = create_test();
@@ -1834,7 +2014,7 @@ mod test {
         ctx.set_source_node(42);
         assert_eq!(ctx.source_node(), Some(42));
         assert_eq!(ctx.stack.len(), 1);
-        // Source-node-only frames have empty interests — not subscribers.
+        // Source-node-only frames have empty interests -- not subscribers.
         assert!(!ctx.has_subscribers());
 
         // Same node_id is a no-op (dedup).
@@ -1878,7 +2058,7 @@ mod test {
         // Without RETURN_DATA propagation in set_source_node, the source frame
         // breaks the chain and node 3's frame won't inherit RETURN_DATA.
         // When next_ack finds node 3, it sees no RETURN_DATA and drops the
-        // payload — even though node 1 needs it for retry.
+        // payload -- even though node 1 needs it for retry.
         let (test_data, pdata) = create_test();
 
         let pdata = pdata
@@ -1911,7 +2091,7 @@ mod test {
         let (node_id, ack_msg) = next_ack(ack).expect("should find node 3");
         assert_eq!(node_id, 3);
 
-        // The payload must be preserved — node 1 needs it for retry.
+        // The payload must be preserved -- node 1 needs it for retry.
         assert_eq!(
             ack_msg.accepted.num_items(),
             1,
@@ -1957,7 +2137,7 @@ mod test {
     }
 
     // -----------------------------------------------------------------------
-    // W13 — Interests gating tests for push_entry_frame / subscribe_to
+    // W13 -- Interests gating tests for push_entry_frame / subscribe_to
     // -----------------------------------------------------------------------
 
     #[test]
@@ -2054,7 +2234,7 @@ mod test {
         let original_time = ctx.frames()[0].route.entry_time_ns;
         assert!(original_time > 0);
 
-        // Component subscribes on the same node — should merge, preserving time_ns.
+        // Component subscribes on the same node -- should merge, preserving time_ns.
         let user = TestCallData::default();
         ctx.subscribe_to(
             Interests::ACKS | Interests::NACKS | Interests::RETURN_DATA,
@@ -2369,7 +2549,7 @@ mod test {
         assert!(!pdata.has_active_flow_metric());
         assert_eq!(pdata.take_flow_compute(), None);
 
-        // Start → accumulate → take.
+        // Start -> accumulate -> take.
         pdata.start_flow_metric();
         assert!(pdata.has_active_flow_metric());
         pdata.add_flow_compute(100);
@@ -2398,8 +2578,8 @@ mod test {
         pdata.start_flow_metric();
         pdata.add_flow_compute(100);
 
-        // Second flow_metric starts while first is still active — this is
-        // the interleaved 1→3 + 2→4 scenario that build-time validation
+        // Second flow_metric starts while first is still active -- this is
+        // the interleaved 1->3 + 2->4 scenario that build-time validation
         // does not yet detect. The runtime warning fires and the accumulator
         // is reset to the 1ns active sentinel.
         pdata.start_flow_metric();
@@ -2452,24 +2632,24 @@ mod test {
         let a: SocketAddr = "10.0.0.1:1".parse().unwrap();
         let b: SocketAddr = "10.0.0.2:2".parse().unwrap();
 
-        // Empty input → None.
+        // Empty input -> None.
         assert_eq!(Context::merge_peer_addr(std::iter::empty()), None);
 
-        // Single Some → that address.
+        // Single Some -> that address.
         assert_eq!(Context::merge_peer_addr([Some(a)]), Some(a));
 
-        // All identical → that address.
+        // All identical -> that address.
         assert_eq!(
             Context::merge_peer_addr([Some(a), Some(a), Some(a)]),
             Some(a)
         );
 
-        // Any None → None.
+        // Any None -> None.
         assert_eq!(Context::merge_peer_addr([Some(a), None]), None);
         assert_eq!(Context::merge_peer_addr([None, Some(a)]), None);
         assert_eq!(Context::merge_peer_addr([None, None]), None);
 
-        // Distinct Somes → None (refuse to misattribute).
+        // Distinct Somes -> None (refuse to misattribute).
         assert_eq!(Context::merge_peer_addr([Some(a), Some(b)]), None);
     }
 

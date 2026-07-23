@@ -7,42 +7,43 @@
 //! Extensions register capabilities via [`ExtensionCapabilities`], and
 //! node factories consume them via [`registry::Capabilities`].
 //!
-//! Capability traits are defined per-capability in submodules (e.g.,
-//! `bearer_token_provider`), with local (!Send) and shared (Send) variants
-//! re-exported from [`local::capability`](crate::local::capability) and
+//! Capability traits are defined per-capability in submodules grouped by domain
+//! (e.g., `auth::bearer_token_provider`), with local (!Send) and shared (Send)
+//! variants re-exported from [`local::capability`](crate::local::capability) and
 //! [`shared::capability`](crate::shared::capability).
 
 // Capability code is organized so every public item has exactly **one** export
-// surface — no item is reachable via two paths:
+// surface -- no item is reachable via two paths:
 //
 // - A capability's **data types and registration handle** are exposed only on
-//   the **scoped** surface `capability::<name>` — e.g.
-//   `capability::bearer_token_provider::{BearerTokenProvider, BearerToken,
-//   TokenStream}`. Scoping namespaces every item by its owning
-//   capability, so two capabilities can each define an identically named type
-//   (e.g. both a `BearerToken`) with no clash.
+//   the **scoped** surface under its domain. Types shared across a domain's
+//   capabilities are re-exported at the domain root, `capability::<domain>`
+//   (e.g. `capability::auth::BearerToken`); a capability's own handle and
+//   capability-specific types live in its submodule, `capability::<domain>::<name>`
+//   (e.g. `capability::auth::bearer_token_provider::{BearerTokenProvider,
+//   TokenStream}`). Their defining modules stay private, so each item has a
+//   single public path.
 //
 // - A capability's **trait variants** (the `local` `!Send` / `shared` `Send`
 //   traits the `#[capability]` macro generates) are exposed only on the
-//   **execution-model** surface, `{local,shared}::capability::<name>` — the
-//   surface extensions implement against, alongside `{local,shared}::extension`,
+//   **execution-model** surface, `{local,shared}::capability::<domain>::<name>` --
+//   the surface extensions implement against, alongside `{local,shared}::extension`,
 //   etc.
 //
 // The two surfaces don't overlap because the `#[capability]` macro emits its
 // `local`/`shared` trait modules as `pub(crate)` (an implementation detail), so
-// they are never a public path under `capability::<name>`; the traits become
-// public only through the hand-written `{local,shared}::capability` re-exports.
-// The capability module itself is a plain `pub mod`, directly exposing the data
-// types and handle — no facade or `#[path]` indirection required.
+// they are never a public path under `capability::<domain>::<name>`; the traits
+// become public only through the hand-written `{local,shared}::capability`
+// re-exports.
 //
-// - Genuinely **shared** framework infrastructure — used across capabilities
-//   rather than owned by one — is re-exported flat at `capability::` (below): the
+// - Genuinely **shared** framework infrastructure -- used across capabilities
+//   rather than owned by one -- is re-exported flat at `capability::` (below): the
 //   error types (`error`), the instance-factory types (`factory`), and the
 //   `ExtensionCapability` trait plus `KNOWN_CAPABILITIES` (defined in this
 //   module). These are unique, collision-free vocabulary where a single short
 //   canonical path is worth more than namespacing. `registry` stays `pub`
 //   because `registry::Capabilities` is not re-exported at the root.
-pub mod bearer_token_provider;
+pub mod auth;
 pub(crate) mod error;
 pub(crate) mod factory;
 pub mod registry;
@@ -50,9 +51,9 @@ pub mod registry;
 pub use error::{CapabilityError, CapabilityErrorSource};
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
 
-// ── Sealed ExtensionCapability trait ─────────────────────────────────────────
+// -- Sealed ExtensionCapability trait -----------------------------------------
 
-/// Sealing module — prevents external crates from implementing
+/// Sealing module -- prevents external crates from implementing
 /// [`ExtensionCapability`].
 mod private {
     /// Sealed marker trait. Only the `#[capability]` proc macro (or
@@ -60,7 +61,7 @@ mod private {
     pub trait Sealed {}
 }
 
-/// Compile-time–sealed trait binding a capability registration struct
+/// Compile-time-sealed trait binding a capability registration struct
 /// to its local and shared trait object types.
 ///
 /// Each capability (e.g., `BearerTokenProvider`) has a zero-sized
@@ -69,7 +70,7 @@ mod private {
 /// and [`Capabilities::require_shared`](registry::Capabilities::require_shared)
 /// which concrete `dyn Trait` to downcast to.
 ///
-/// This trait is sealed — only the engine crate (via the
+/// This trait is sealed -- only the engine crate (via the
 /// `#[capability]` proc macro or manual impls) can add new
 /// capabilities.
 pub trait ExtensionCapability: private::Sealed + 'static {
@@ -78,11 +79,11 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     const NAME: &'static str;
 
     /// The local (!Send) trait object type for this capability
-    /// (e.g., `dyn local::capability::bearer_token_provider::BearerTokenProvider`).
+    /// (e.g., `dyn local::capability::auth::bearer_token_provider::BearerTokenProvider`).
     type Local: ?Sized + 'static;
 
     /// The shared (Send) trait object type for this capability
-    /// (e.g., `dyn shared::capability::bearer_token_provider::BearerTokenProvider`).
+    /// (e.g., `dyn shared::capability::auth::bearer_token_provider::BearerTokenProvider`).
     type Shared: ?Sized + Send + 'static;
 
     /// Human-readable name used in error messages and config validation.
@@ -96,7 +97,7 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// The `#[capability]` proc macro generates an impl that constructs
     /// the capability's `SharedAsLocal` adapter. Because `local::Trait`
     /// and `shared::Trait` are generated from the same source trait,
-    /// the adapter is always constructible — there is no opt-out.
+    /// the adapter is always constructible -- there is no opt-out.
     /// A capability whose local and shared semantics diverge should be
     /// split into two distinct capabilities rather than expressed as an
     /// adapter refusal.
@@ -111,7 +112,7 @@ pub trait ExtensionCapability: private::Sealed + 'static {
     /// Invoked **once per node** that binds the capability via the
     /// fallback path, with a new `Box<Self::Shared>` minted by the
     /// factory for that node. This matches the per-node instance
-    /// semantics of [`Capabilities::require_shared`] — every binding
+    /// semantics of [`Capabilities::require_shared`] -- every binding
     /// gets its own instance.
     ///
     /// If your shared impl relies on state that must be reset **per call**
@@ -135,9 +136,9 @@ pub trait ExtensionCapability: private::Sealed + 'static {
 #[doc(hidden)]
 pub(crate) use private::Sealed as CapabilitySealed;
 
-// ── KNOWN_CAPABILITIES (link-time registration) ──────────────────────────────
+// -- KNOWN_CAPABILITIES (link-time registration) ------------------------------
 
-/// A link-time–registered capability descriptor.
+/// A link-time-registered capability descriptor.
 ///
 /// Each `#[capability]` invocation produces a static entry in the
 /// [`KNOWN_CAPABILITIES`] distributed slice. The engine uses this at
@@ -169,7 +170,7 @@ pub struct KnownCapability {
 #[linkme::distributed_slice]
 pub static KNOWN_CAPABILITIES: [KnownCapability] = [..];
 
-// ── ExtensionCapabilities (factory metadata) ─────────────────────────────────
+// -- ExtensionCapabilities (factory metadata) ---------------------------------
 
 /// Static metadata describing which capabilities an extension factory provides.
 ///
@@ -214,8 +215,8 @@ pub struct ExtensionCapabilities {
 
 /// Declares which capabilities an extension provides.
 ///
-/// The left-hand side names the extension type(s) — one or two,
-/// depending on form — and the right-hand side is a single capability
+/// The left-hand side names the extension type(s) -- one or two,
+/// depending on form -- and the right-hand side is a single capability
 /// list shared by both execution models.
 /// Three forms:
 ///
@@ -226,7 +227,7 @@ pub struct ExtensionCapabilities {
 /// // Local-only.
 /// extension_capabilities!(local: MyLocalExt => [KeyValueStore]);
 ///
-/// // Dual-type — distinct shared/local types, same capability list.
+/// // Dual-type -- distinct shared/local types, same capability list.
 /// extension_capabilities!(
 ///     (shared: MySharedKv, local: MyLocalKv) => [KeyValueStore]
 /// );
@@ -238,7 +239,7 @@ pub struct ExtensionCapabilities {
 /// instance factory, and inserts the result into the registry.
 ///
 /// In the dual form, `S` must implement `shared::$cap` and `L` must
-/// implement `local::$cap` for every capability in the list — mismatches
+/// implement `local::$cap` for every capability in the list -- mismatches
 /// surface as standard trait-bound errors at the macro call site.
 #[macro_export]
 macro_rules! extension_capabilities {
@@ -276,7 +277,7 @@ macro_rules! extension_capabilities {
             },
         }
     };
-    // Dual-type extension — distinct shared/local types, same capability list.
+    // Dual-type extension -- distinct shared/local types, same capability list.
     ((shared: $sext:ty, local: $lext:ty) => [$($cap:ty),+ $(,)?]) => {
         $crate::capability::ExtensionCapabilities {
             shared: &[$(<$cap as $crate::capability::ExtensionCapability>::NAME),+],

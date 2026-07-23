@@ -13,11 +13,11 @@
 //!
 //! ```text
 //! LogsView
-//! └── ResourceLogsView (groups by resource/host)
-//!     └── ScopeLogsView (groups by application/service scope)
-//!         └── LogRecordView (individual log entries)
-//!             └── AttributeView (key-value metadata)
-//!                 └── AnyValueView (typed values)
+//! +-- ResourceLogsView (groups by resource/host)
+//!     +-- ScopeLogsView (groups by application/service scope)
+//!         +-- LogRecordView (individual log entries)
+//!             +-- AttributeView (key-value metadata)
+//!                 +-- AnyValueView (typed values)
 //! ```
 //!
 //! ## Supported Backends

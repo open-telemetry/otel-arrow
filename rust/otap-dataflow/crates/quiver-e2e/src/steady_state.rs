@@ -60,7 +60,7 @@ impl OutputMode {
     /// Log a warning.
     pub fn log_warn(&self, msg: &str) {
         match self {
-            OutputMode::Tui(_) => eprintln!("⚠️  {}", msg),
+            OutputMode::Tui(_) => eprintln!("\u{26A0}\u{FE0F}  {}", msg),
             OutputMode::Text => warn!("{}", msg),
         }
     }
@@ -160,9 +160,9 @@ pub async fn run(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Log header (text mode only)
     if !output.is_tui() {
-        output.log("╔════════════════════════════════════════════════════════════╗");
-        output.log("║         Quiver Steady-State Stress Test                    ║");
-        output.log("╚════════════════════════════════════════════════════════════╝");
+        output.log("\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}");
+        output.log("\u{2551}         Quiver Steady-State Stress Test                    \u{2551}");
+        output.log("\u{255A}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255D}");
         output.log("");
         if config.engines > 1 {
             output.log(&format!(
@@ -563,7 +563,7 @@ pub async fn run(
         let elapsed = start.elapsed();
         let bundle_rate = final_ingested as f64 / elapsed.as_secs_f64();
         output.log("");
-        output.log("═══ Final Summary ═══");
+        output.log("\u{2550}\u{2550}\u{2550} Final Summary \u{2550}\u{2550}\u{2550}");
         output.log(&format!("Duration: {:?}", elapsed));
         output.log(&format!("Engines: {}", config.engines));
         output.log(&format!("Bundles ingested: {}", final_ingested));
@@ -617,7 +617,7 @@ pub async fn run(
         output.log("Steady-state test stopped by user");
         Ok(())
     } else {
-        output.log("🎉 Steady-state stress test completed!");
+        output.log("\u{1F389} Steady-state stress test completed!");
         Ok(())
     }
 }

@@ -51,7 +51,7 @@ pub(crate) fn parse_kinded_urn<'a>(
     let parts: Vec<&str> = raw.split(':').collect();
 
     match parts.as_slice() {
-        // Short form: <kind>:<id> → urn:otel:<kind>:<id>
+        // Short form: <kind>:<id> -> urn:otel:<kind>:<id>
         [kind, id] => {
             let kind = match_kind(raw, kind, accepted_kinds, urn_label)?;
             validate_segment(raw, "otel", "namespace", urn_label)?;
