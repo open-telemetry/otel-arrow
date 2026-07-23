@@ -16,7 +16,7 @@ use otap_df_pdata::encode::record::{
 use otap_df_pdata::otap::{Logs, OtapArrowRecords};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
-use super::session::{EtwAttributeValue, EtwEventData};
+use super::session::{CanonicalGuid, EtwAttributeValue, EtwEventData};
 
 // ── ETW level → OTel severity number mapping ─────────────────────────────────
 
@@ -85,26 +85,23 @@ enum AttrValue<'a> {
 /// Lowercase hex digits used when formatting GUID byte arrays.
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-/// Format a 16-byte Windows GUID into a fixed 36-byte stack buffer as
+/// Format a 16-byte canonical GUID into a fixed 36-byte stack buffer as
 /// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`, avoiding a heap allocation.
 ///
-/// The input is the raw in-memory GUID layout, where the first three fields
-/// (`Data1: u32`, `Data2: u16`, `Data3: u16`) are stored little-endian and the
-/// trailing eight bytes (`Data4`) are already in display order. Those first
-/// three fields are byte-swapped back so the rendered string matches the
-/// canonical, registered GUID (the same form shown by `wevtutil`, PerfView,
-/// and the provider manifest, and accepted by the receiver's `parse_guid`)
-/// rather than a byte-swapped variant.
+/// The input is a [`CanonicalGuid`], whose bytes are already in big-endian
+/// display order: any little-endian in-memory byte swap was performed once, at
+/// the session boundary, when the value was produced. This function therefore
+/// only renders hex digits and inserts the four dashes; it has no knowledge of
+/// the source byte order and cannot double-swap a value that is already
+/// canonical.
 ///
 /// Returns the buffer; callers turn it into a `&str` (the output is always
 /// valid ASCII/UTF-8) for attribute encoding.
-fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
-    // Maps each output byte (left to right) to its source index in the raw
-    // little-endian GUID: Data1/Data2/Data3 are reversed, Data4 is kept as-is.
-    const BYTE_ORDER: [usize; 16] = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+fn format_guid(guid: &CanonicalGuid) -> [u8; 36] {
     // Positions of the four '-' separators in the canonical GUID layout.
     const DASH_AT: [usize; 4] = [8, 13, 18, 23];
 
+    let bytes = &guid.0;
     let mut out = [b'-'; 36];
     let mut src_idx = 0;
     let mut out_idx = 0;
@@ -114,7 +111,7 @@ fn format_guid(guid: &[u8; 16]) -> [u8; 36] {
             out_idx += 1;
             continue;
         }
-        let byte = guid[BYTE_ORDER[src_idx]];
+        let byte = bytes[src_idx];
         out[out_idx] = HEX_DIGITS[(byte >> 4) as usize];
         out[out_idx + 1] = HEX_DIGITS[(byte & 0x0f) as usize];
         src_idx += 1;
@@ -245,7 +242,7 @@ impl EtwArrowRecordsBuilder {
         );
 
         // Activity ID — only emit when non-zero (provider set a correlation ID)
-        if event.activity_id != [0u8; 16] {
+        if !event.activity_id.is_zero() {
             let activity = format_guid(&event.activity_id);
             // safety: `format_guid` only writes ASCII hex digits and '-'.
             let activity =
@@ -343,11 +340,13 @@ impl EtwArrowRecordsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::receivers::etw_receiver::session::{DecodedField, EtwAttributeValue, EtwEventData};
+    use crate::receivers::etw_receiver::session::{
+        CanonicalGuid, DecodedField, EtwAttributeValue, EtwEventData,
+    };
 
     fn test_event() -> EtwEventData {
         EtwEventData {
-            provider_id: [0u8; 16],
+            provider_id: CanonicalGuid([0u8; 16]),
             timestamp: 123456789,
             process_id: 1234,
             thread_id: 5678,
@@ -357,7 +356,7 @@ mod tests {
             level: 4, // Information
             keywords: 0xFF,
             event_name: "TestEvent".to_string(),
-            activity_id: [0u8; 16],
+            activity_id: CanonicalGuid([0u8; 16]),
             decoded_fields: vec![
                 DecodedField {
                     name: "ProcessId".to_string(),
@@ -562,35 +561,34 @@ mod tests {
         assert_eq!(attrs_rb.num_rows(), 8);
     }
 
-    // Scenario: format_guid renders raw in-memory (little-endian) GUID bytes
-    //           whose Data1/Data2/Data3 differ from Data4 in byte order.
-    // Guarantees: the first three fields are byte-swapped and dashes land at
-    //             positions 8/13/18/23, producing the canonical GUID string;
-    //             locks in BYTE_ORDER and dash placement against regressions.
+    // Scenario: a typed GUID produced at the session boundary via
+    //           `CanonicalGuid::from(one_collect::Guid::from_u128(..))` is
+    //           rendered by `format_guid`.
+    // Guarantees: the typed value flows through to the canonical dashed hex
+    //             string unchanged (dashes at positions 8/13/18/23), pinning
+    //             the typed-value -> canonical-string contract so a future
+    //             canonical-byte producer cannot be silently byte-swapped
+    //             again.
     #[test]
-    fn format_guid_byte_swaps_data1_2_3_and_places_dashes() {
-        // Raw in-memory layout of provider GUID 1c95126e-7eea-49a9-a3fe-a378b03ddb4d:
-        // Data1 (u32 LE), Data2 (u16 LE), Data3 (u16 LE), Data4 (as-is).
-        let raw: [u8; 16] = [
-            0x6e, 0x12, 0x95, 0x1c, // Data1: 1c95126e reversed
-            0xea, 0x7e, // Data2: 7eea reversed
-            0xa9, 0x49, // Data3: 49a9 reversed
-            0xa3, 0xfe, // Data4 high bytes (kept as-is)
-            0xa3, 0x78, 0xb0, 0x3d, 0xdb, 0x4d, // Data4 node (kept as-is)
-        ];
+    fn format_guid_renders_canonical_from_typed_guid() {
+        use one_collect::Guid;
 
-        let formatted = format_guid(&raw);
+        // `Guid::from_u128` maps the u128's big-endian bits into the GUID
+        // fields, so `CanonicalGuid::from` yields exactly the u128's
+        // big-endian bytes — the canonical display order.
+        let guid = CanonicalGuid::from(Guid::from_u128(0x1c95126e_7eea_49a9_a3fe_a378b03ddb4d));
+        let formatted = format_guid(&guid);
         let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
 
         assert_eq!(s, "1c95126e-7eea-49a9-a3fe-a378b03ddb4d");
     }
 
-    // Scenario: format_guid is fed the all-zero GUID.
+    // Scenario: format_guid is fed the all-zero canonical GUID.
     // Guarantees: every hex digit is '0' and the four dashes remain at their
     //             canonical positions, covering the zero/edge case.
     #[test]
     fn format_guid_all_zero() {
-        let formatted = format_guid(&[0u8; 16]);
+        let formatted = format_guid(&CanonicalGuid([0u8; 16]));
         let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
         assert_eq!(s, "00000000-0000-0000-0000-000000000000");
     }
