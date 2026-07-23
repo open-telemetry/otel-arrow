@@ -121,9 +121,9 @@ pub(crate) struct PipelineFlowMetricState {
     pub duration_metrics: Vec<Option<MetricSet<FlowDurationMetrics>>>,
     /// Produced item metric sets indexed by internal flow index.
     pub produced_items_metrics: Vec<Option<MetricSet<FlowProducedItemsMetrics>>>,
-    /// Mapping from node index → flow metric index where this node is the end node.
+    /// Mapping from node index -> flow metric index where this node is the end node.
     pub end_nodes: HashMap<usize, usize>,
-    /// Mapping from node index → flow metric index where this node is the start node.
+    /// Mapping from node index -> flow metric index where this node is the start node.
     pub start_nodes: HashMap<usize, usize>,
     /// Decision-node candidates keyed by node index. A processor at one of
     /// these indices that declares the drop capability records
@@ -148,7 +148,7 @@ pub(crate) struct DecisionCandidate {
 /// Start-side measurements for a node that begins a flow_metric range.
 ///
 /// Groups the metric set and its accumulator so that they share the
-/// `Option` on `FlowMetricState` — non-start nodes pay no allocation for
+/// `Option` on `FlowMetricState` -- non-start nodes pay no allocation for
 /// either.
 #[derive(Clone)]
 pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
@@ -159,7 +159,7 @@ pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
 /// Stop-side measurements for a node that terminates a flow_metric range.
 ///
 /// Groups the metric set and its accumulators so that they share the
-/// `Option` on `FlowMetricState` — non-stop nodes pay no allocation for
+/// `Option` on `FlowMetricState` -- non-stop nodes pay no allocation for
 /// either.
 #[derive(Clone)]
 pub(crate) struct EndFlowMetrics<DurationAccumulator, ItemAccumulator> {
@@ -173,7 +173,7 @@ pub(crate) struct EndFlowMetrics<DurationAccumulator, ItemAccumulator> {
 /// within a flow_metric range.
 ///
 /// Groups the metric sets and their accumulators so that they share the
-/// `Option` on `FlowMetricState` — non-decision nodes pay no allocation for
+/// `Option` on `FlowMetricState` -- non-decision nodes pay no allocation for
 /// either.
 #[derive(Clone)]
 pub(crate) struct DecisionFlowMetrics<ItemAccumulator> {
@@ -186,7 +186,7 @@ pub(crate) struct DecisionFlowMetrics<ItemAccumulator> {
 ///
 /// Groups the flow_metric-related fields that every processor
 /// `EffectHandler` carries. Generic over the cell types used to store
-/// the per-message send marker and the periodic-report accumulator —
+/// the per-message send marker and the periodic-report accumulator --
 /// the local (`!Send`) handler instantiates it with `Rc<Cell<_>>` /
 /// `Cell<_>`, the shared (`Send + Sync`) handler with
 /// `Arc<Mutex<_>>` / `Arc<Mutex<_>>`. The plain fields
@@ -223,7 +223,7 @@ pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> 
     /// `dropped.items`-only flow pays no `Instant::now()` cost).
     pub needs_timing: bool,
     /// Start-side measurements (metric set + accumulator).
-    /// `None` when this node is not a flow_metric start node — non-start
+    /// `None` when this node is not a flow_metric start node -- non-start
     /// nodes pay no allocation cost for the metric set or accumulator.
     pub consumed: ConsumedFlowMetrics<ItemAccumulator>,
     /// End-side measurements.
@@ -303,7 +303,7 @@ impl Default for SharedFlowMetricState {
 ///
 /// Returns `Err(Error::ConfigError(InvalidUserConfig))` if any flow_metric
 /// references an unknown node, has a non-processor endpoint, or overlaps
-/// with another flow_metric — these are configuration mistakes that should
+/// with another flow_metric -- these are configuration mistakes that should
 /// fail pipeline startup rather than be silently skipped.
 pub(crate) fn build_flow_metric_state(
     telemetry_policy: &TelemetryPolicy,
@@ -394,7 +394,7 @@ pub(crate) fn build_flow_metric_state(
         // within this flow's active range (inclusive of start and end). A
         // processor at one of these indices that declares the drop
         // capability records `dropped.items` attributed to itself. A decision
-        // node must belong to at most one flow — otherwise its single dropped
+        // node must belong to at most one flow -- otherwise its single dropped
         // count could not be unambiguously attributed to one `flow.id`. The
         // pairwise overlap check below only rejects shared start/end nodes, so
         // we explicitly reject shared interior nodes here (e.g. fan-in/merge
@@ -736,7 +736,7 @@ mod tests {
         }
     }
 
-    /// Helper: build name→index and processor_indices for a set of node
+    /// Helper: build name->index and processor_indices for a set of node
     /// names.  All nodes are processors unless listed in `non_processors`.
     fn test_maps(
         all_nodes: &[&str],
@@ -865,7 +865,7 @@ mod tests {
         let (ctx, _) = test_pipeline_ctx();
         // Fan-in/merge topology: two ranges meet at interior node `m`.
         // a -> m -> b  and  c -> m -> d. Neither range contains the other's
-        // start node, so the interleave check passes — but both ranges include
+        // start node, so the interleave check passes -- but both ranges include
         // `m`, which would otherwise silently overwrite the decision candidate.
         let (names, procs) = test_maps(&["a", "c", "m", "b", "d"], &[]);
         let edges = test_edges(&[("a", "m"), ("c", "m"), ("m", "b"), ("m", "d")], &names);
@@ -965,7 +965,7 @@ mod tests {
     fn disjoint_flow_metrics_are_both_registered() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
-        // Non-overlapping: a→b and c→d.
+        // Non-overlapping: a->b and c->d.
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "c", "d")]);
 
         let edges = test_edges(&[("a", "b"), ("b", "c"), ("c", "d")], &names);
@@ -975,8 +975,8 @@ mod tests {
         assert_eq!(state.duration_metrics.len(), 2);
         assert!(state.start_nodes.contains_key(&0)); // "a"
         assert!(state.start_nodes.contains_key(&2)); // "c"
-        assert_eq!(state.end_nodes.get(&1), Some(&0)); // "b" → sw1
-        assert_eq!(state.end_nodes.get(&3), Some(&1)); // "d" → sw2
+        assert_eq!(state.end_nodes.get(&1), Some(&0)); // "b" -> sw1
+        assert_eq!(state.end_nodes.get(&3), Some(&1)); // "d" -> sw2
     }
 
     // Validation of flow metric interleaving detection.

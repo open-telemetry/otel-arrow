@@ -385,7 +385,7 @@ fn execute_split<const N: usize>(
     ranges: &[Range<usize>],
     output: &mut Vec<[Option<RecordBatch>; N]>,
 ) -> Result<()> {
-    // Entire batch fits into the required limit — push as-is.
+    // Entire batch fits into the required limit -- push as-is.
     if ranges.len() == 1 {
         output.push(batch);
         return Ok(());
@@ -592,7 +592,7 @@ where
     let mut write_idx = 0;
     for read_idx in 1..ranges.len() {
         if *ranges[read_idx].start() <= *ranges[write_idx].end() + one {
-            // Overlapping or adjacent — extend the current range.
+            // Overlapping or adjacent -- extend the current range.
             if ranges[read_idx].end() > ranges[write_idx].end() {
                 ranges[write_idx] = *ranges[write_idx].start()..=*ranges[read_idx].end();
             }
@@ -1144,10 +1144,10 @@ mod tests {
     #[rustfmt::skip]
     fn test_split_metrics_mixed_types() {
         // One metric of each type in the same batch:
-        //   metric 0 → Gauge        (2 dp)
-        //   metric 1 → Histogram    (2 dp)
-        //   metric 2 → ExpHistogram (2 dp)
-        //   metric 3 → Summary      (2 dp)
+        //   metric 0 -> Gauge        (2 dp)
+        //   metric 1 -> Histogram    (2 dp)
+        //   metric 2 -> ExpHistogram (2 dp)
+        //   metric 3 -> Summary      (2 dp)
         test_split_stores(&[metrics!(
             (UnivariateMetrics,
                 ("id", UInt16, vec![0u16, 1, 2, 3]),
@@ -1350,7 +1350,7 @@ mod tests {
 
             // Every output batch must respect the max_items limit, except
             // for oversized singleton metrics (a single metric whose data
-            // points exceed the limit — these have exactly 1 root row).
+            // points exceed the limit -- these have exactly 1 root row).
             for batch in &result {
                 let item_count = num_items(batch);
                 if item_count > i {

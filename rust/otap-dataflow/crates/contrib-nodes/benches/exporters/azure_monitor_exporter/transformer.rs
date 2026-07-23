@@ -6,7 +6,7 @@
 //! MacOS M4 Pro baseline results (1000 records):
 //!   Original (per-record resource/scope mapping):  1.60ms (~625K records/s)
 //!   Hoisted (resource/scope computed once):        1.36ms (~735K records/s)  +17%
-//!   Hoisted + Direct Serialization (current):      425µs  (~2.35M records/s) +275%
+//!   Hoisted + Direct Serialization (current):      425us  (~2.35M records/s) +275%
 
 #![allow(unused_results)]
 

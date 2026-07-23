@@ -39,6 +39,9 @@ jobs:
     - name: run sanitycheck.py
       run: python3 ./tools/sanitycheck.py
 
+    - name: run sanitycheck.py unit tests
+      run: python3 ./tools/test_sanitycheck.py
+
   renovate-config-validation:
     runs-on: ubuntu-latest
 

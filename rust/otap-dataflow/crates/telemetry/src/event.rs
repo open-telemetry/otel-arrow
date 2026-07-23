@@ -13,7 +13,7 @@ use std::time::SystemTime;
 
 /// A sharable/clonable observed event reporter sending events to an `ObservedStore`.
 ///
-/// Engine lifecycle events (Admitted, Ready, …) can optionally be routed through
+/// Engine lifecycle events (Admitted, Ready, ...) can optionally be routed through
 /// a dedicated unbounded channel so they are never silently dropped under
 /// backpressure.  Log events always use the bounded/lossy path controlled by
 /// [`SendPolicy`].

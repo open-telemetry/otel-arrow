@@ -475,7 +475,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
         let mut node_telemetry_guards: Vec<NodeTelemetryGuard> = Vec::new();
 
-        // Build a name→index map from NodeDefs so we can resolve flow_metric
+        // Build a name->index map from NodeDefs so we can resolve flow_metric
         // config before processors are spawned.
         let node_name_to_index: HashMap<String, usize> = _nodes
             .iter()
