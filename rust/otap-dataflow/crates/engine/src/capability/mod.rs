@@ -47,6 +47,7 @@ pub mod auth;
 pub(crate) mod error;
 pub(crate) mod factory;
 pub mod registry;
+pub mod vendor_bundle;
 
 pub use error::{CapabilityError, CapabilityErrorSource};
 pub use factory::{LocalInstanceFactory, SharedInstanceFactory};
