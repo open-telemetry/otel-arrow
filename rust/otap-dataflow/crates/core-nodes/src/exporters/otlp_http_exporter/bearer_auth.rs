@@ -91,6 +91,28 @@ impl BearerAuth {
         self.cached_header.clone()
     }
 
+    /// The instant at which a currently-usable, expiring token crosses the
+    /// usability margin (when [`is_ready`](Self::is_ready) flips to false).
+    /// `None` when no usable token is cached or the token never expires, so the
+    /// caller arms no timer in those cases. When `Some`, it is always in the
+    /// future: a usable token is by definition still beyond the margin.
+    pub(crate) fn refresh_deadline(&self) -> Option<Instant> {
+        if !self.is_ready() {
+            return None;
+        }
+        self.cached_expiry
+            .and_then(|expires_on| expires_on.checked_sub(TOKEN_USABLE_MARGIN))
+    }
+
+    /// Drops the cached token so [`is_ready`](Self::is_ready) returns false until
+    /// the next refresh delivers a new one. Called when the server rejects the
+    /// current token (HTTP 401) so a retry waits for a fresh token rather than
+    /// reusing the rejected one.
+    pub(crate) fn invalidate(&mut self) {
+        self.cached_header = None;
+        self.cached_expiry = None;
+    }
+
     /// Awaits the next published token and refreshes the cache. Only meaningful
     /// while [`is_active`](Self::is_active); on stream close it flips inactive
     /// and keeps the last cached token. Malformed tokens and stream closure are

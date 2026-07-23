@@ -316,8 +316,28 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
             let accepting_pdata = auth.as_ref().is_none_or(BearerAuth::is_ready)
                 && inflight_exports.len() < max_in_flight;
 
+            // Instant at which a currently-usable token crosses the usability
+            // margin. Used to wake the loop so `accepting_pdata` re-evaluates
+            // (and gates) before a near-expiry batch is admitted, since the recv
+            // arm below may already be parked when the margin is reached.
+            let token_margin_deadline = auth.as_ref().and_then(BearerAuth::refresh_deadline);
+
             let msg = tokio::select! {
                 biased;
+
+                // Wake when the cached token reaches its usability margin so the
+                // next loop iteration gates intake. The `async` block keeps this
+                // lazy; the `None` arm is unreachable while the guard holds.
+                () = async {
+                    match token_margin_deadline {
+                        Some(deadline) => {
+                            tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await
+                        }
+                        None => std::future::pending().await,
+                    }
+                }, if token_margin_deadline.is_some() => {
+                    continue;
+                }
 
                 // Pick up token refreshes (initial + subsequent) even while pdata
                 // intake is gated, so a pending token can arrive and unblock us.
@@ -341,13 +361,21 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // which would otherwise busy-loop.
                 completed = inflight_exports.next_completion(), if !inflight_exports.is_empty() => {
                     if let Some(completed) = completed {
-                        finalize_completed_export(
+                        let auth_rejected = finalize_completed_export(
                             completed,
                             &effect_handler,
                             &mut self.pdata_metrics,
                             auth_bound,
                         )
                         .await;
+                        if auth_rejected {
+                            // Server rejected the current token (401); drop it so
+                            // intake back-pressures until `token_stream` delivers a
+                            // fresh one, and the retry never reuses the rejected token.
+                            if let Some(a) = auth.as_mut() {
+                                a.invalidate();
+                            }
+                        }
                     }
                     continue;
                 }
@@ -366,7 +394,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
-                            finalize_completed_export(
+                            let _ = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
@@ -522,6 +550,25 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     });
 
                     let max_response_body_len = self.config.max_response_body_length;
+
+                    // Enforce the in-flight cap on the send path too. Normal
+                    // intake is gated by `accepting_pdata`, but shutdown
+                    // force-drains buffered pdata past that gate, so bound
+                    // concurrency here as well by draining a completion first.
+                    while inflight_exports.len() >= max_in_flight {
+                        match inflight_exports.next_completion().await {
+                            Some(completed) => {
+                                let _ = finalize_completed_export(
+                                    completed,
+                                    &effect_handler,
+                                    &mut self.pdata_metrics,
+                                    auth_bound,
+                                )
+                                .await;
+                            }
+                            None => break,
+                        }
+                    }
 
                     let client = client_pool.get_client();
                     inflight_exports.push(async move {
@@ -682,18 +729,16 @@ impl ServiceRequestError {
         }
     }
 
-    /// Whether this is an HTTP auth-failure response (401/403). When a bearer
-    /// token provider is bound these are treated as retryable, because they
-    /// usually mean the cached token lapsed or a refresh raced; the batch can
-    /// succeed once a fresh token is in use.
+    /// Whether this is an HTTP 401 Unauthorized response. When a bearer token
+    /// provider is bound this is treated as retryable, because it usually means
+    /// the cached token lapsed or a refresh raced; the batch can succeed once a
+    /// fresh token is in use. 403 Forbidden is intentionally excluded: it
+    /// signals a scope or permission problem that a token refresh will not fix.
     fn is_auth_failure(&self) -> bool {
         matches!(
             self,
             Self::RequestError { err }
-                if matches!(
-                    err.status(),
-                    Some(StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-                )
+                if err.status() == Some(StatusCode::UNAUTHORIZED)
         )
     }
 }
@@ -765,7 +810,7 @@ async fn finalize_completed_export(
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
     auth_bound: bool,
-) {
+) -> bool {
     let CompletedExport {
         result,
         context,
@@ -775,6 +820,9 @@ async fn finalize_completed_export(
 
     let pdata = OtapPdata::new(context, saved_payload);
 
+    // Set when the server rejected the current bearer token (401), so the caller
+    // can invalidate it before the batch is retried.
+    let mut auth_rejected = false;
     let err = match result {
         Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
             // As per OTLP HTTP spec, the server may use partial success to convey information
@@ -802,10 +850,12 @@ async fn finalize_completed_export(
             }
         }),
         Err(e) => {
-            // With a bearer token provider bound, a 401/403 usually means the
-            // cached token lapsed or a refresh raced; retry rather than drop, so
-            // the batch can succeed once a fresh token is in use.
-            let retryable = e.is_retryable() || (auth_bound && e.is_auth_failure());
+            // With a bearer token provider bound, a 401 usually means the cached
+            // token lapsed or a refresh raced, so retry rather than drop; flag it
+            // so the caller invalidates the rejected token before the retry.
+            let auth_failure = auth_bound && e.is_auth_failure();
+            auth_rejected = auth_failure;
+            let retryable = e.is_retryable() || auth_failure;
             Some((e.to_string(), retryable))
         }
     };
@@ -837,6 +887,8 @@ async fn finalize_completed_export(
         })
         .messages
         .inc();
+
+    auth_rejected
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.
@@ -1222,7 +1274,7 @@ mod test {
     }
 
     /// Runs a server that answers every request with a fixed HTTP status and an
-    /// empty body. Used to drive the auth-failure (401/403) handling path.
+    /// empty body. Used to drive the auth-failure (401/403) handling paths.
     fn run_fixed_status_server(
         tokio_rt: &Runtime,
         endpoint_addr: &str,
@@ -1332,6 +1384,73 @@ mod test {
                         }
                         PipelineCompletionMsg::DeliverAck { .. } => {
                             panic!("a 401 response must not Ack")
+                        }
+                    }
+                })
+            });
+
+        cancel.cancel();
+    }
+
+    // Scenario: A bound bearer provider is present and the backend answers 403 Forbidden.
+    // Guarantees: 403 is NACK'd as permanent (not retryable), because a scope or
+    // permission problem is not fixed by refreshing the token.
+    #[test]
+    fn test_forbidden_is_permanent_even_when_provider_bound() {
+        otap_df_otap::crypto::ensure_crypto_provider();
+        let tokio_rt = Runtime::new().unwrap();
+        let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let endpoint_addr = format!("127.0.0.1:{port}");
+        let endpoint = format!("http://{endpoint_addr}");
+
+        let cancel = run_fixed_status_server(&tokio_rt, &endpoint_addr, 403);
+        wait_for_port_ready(&endpoint_addr);
+
+        let config = default_test_config(endpoint);
+        let test_runtime = TestRuntime::<OtapPdata>::new();
+        let exporter =
+            exporter_with_provider(&test_runtime, config, MockTokenProvider::new("token"));
+
+        let (logs_batch, _, _) = gen_batches_for_each_signal_type();
+        let mut bytes = Vec::new();
+        logs_batch.encode(&mut bytes).unwrap();
+        let pdatas = subscribe_pdatas(
+            vec![OtapPdata::new_default(OtapPayload::OtlpBytes(
+                OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes)),
+            ))],
+            false,
+        );
+
+        test_runtime
+            .set_exporter(exporter)
+            .run_test(|ctx| {
+                Box::pin(async move {
+                    for pdata in pdatas {
+                        ctx.send_pdata(pdata).await.unwrap();
+                    }
+                    ctx.send_shutdown(Instant::now() + Duration::from_millis(200), "test complete")
+                        .await
+                        .unwrap();
+                })
+            })
+            .run_validation(|mut ctx, result| {
+                Box::pin(async move {
+                    result.unwrap();
+                    let mut pipeline_completion_rx =
+                        ctx.take_pipeline_completion_receiver().unwrap();
+                    let msg = pipeline_completion_rx
+                        .recv()
+                        .await
+                        .expect("expected a pipeline completion message");
+                    match msg {
+                        PipelineCompletionMsg::DeliverNack { nack } => {
+                            assert!(
+                                nack.permanent,
+                                "a 403 must be permanent even with a bound provider"
+                            );
+                        }
+                        PipelineCompletionMsg::DeliverAck { .. } => {
+                            panic!("a 403 response must not Ack")
                         }
                     }
                 })
@@ -2381,7 +2500,7 @@ mod test {
             signal_type: SignalType::Logs,
         };
 
-        Runtime::new().unwrap().block_on(finalize_completed_export(
+        let _ = Runtime::new().unwrap().block_on(finalize_completed_export(
             completed,
             &effect_handler,
             &mut metrics,
