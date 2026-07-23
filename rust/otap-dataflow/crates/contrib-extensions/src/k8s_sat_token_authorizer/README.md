@@ -15,9 +15,9 @@ Authenticates and admits inbound Kubernetes service-account tokens for data-path
 nodes (typically receivers) through the `BearerTokenAuthorizer` capability, so a
 node depends on this single capability rather than validating tokens itself. Each
 presented token is validated via the Kubernetes `TokenReview` API
-(authentication) and the resulting service account is checked against a
-configured audience and optional service-account allow-list (admission), behind
-one `authorize` call.
+(authentication) and the resulting identity is admitted (admission) by one of two
+mutually exclusive strategies -- a static service-account allow-list, or a
+Kubernetes RBAC `SubjectAccessReview` check -- behind one `authorize` call.
 
 Reached decisions are cached, keyed by the opaque token and bounded by a
 configurable TTL and entry cap, to bound `TokenReview` calls to the API server. A

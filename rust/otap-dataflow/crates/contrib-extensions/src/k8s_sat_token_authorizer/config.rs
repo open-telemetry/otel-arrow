@@ -34,8 +34,24 @@ pub struct Config {
     /// (`system:serviceaccount:<namespace>:<name>`), or the shorthand
     /// `<namespace>:<name>` or `<namespace>/<name>`. An empty list admits any
     /// service account the API server authenticates (audience-only admission).
+    ///
+    /// Mutually exclusive with [`resource_attributes`](Self::resource_attributes):
+    /// admission is either a static allow-list or a Kubernetes RBAC check, not
+    /// both.
     #[serde(default)]
     pub allowed_service_accounts: Vec<String>,
+
+    /// Kubernetes RBAC admission via `SubjectAccessReview`. When set, after the
+    /// token is authenticated the extension asks the API server whether the
+    /// authenticated identity may perform `verb` on the described resource; the
+    /// request is admitted only if RBAC allows it.
+    ///
+    /// Mutually exclusive with
+    /// [`allowed_service_accounts`](Self::allowed_service_accounts). When
+    /// neither is set, any authenticated service account is admitted
+    /// (audience-only admission).
+    #[serde(default)]
+    pub resource_attributes: Option<ResourceAttributesConfig>,
 
     /// How long a reached decision is cached, keyed by the opaque token, to
     /// bound `TokenReview` calls to the API server. Accepts human-readable
@@ -47,6 +63,36 @@ pub struct Config {
     /// greater than zero.
     #[serde(default = "default_cache_max_entries")]
     pub cache_max_entries: usize,
+}
+
+/// Kubernetes RBAC resource the authenticated identity must be permitted to act
+/// on, checked via `SubjectAccessReview`.
+///
+/// Mirrors the fields of the Kubernetes `ResourceAttributes` type. `resource`
+/// and `verb` are required; the rest narrow the check.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceAttributesConfig {
+    /// API group of the resource (e.g. `telemetry.opentelemetry.io`). Empty for
+    /// the core group.
+    #[serde(default)]
+    pub group: Option<String>,
+    /// API version of the resource (e.g. `v1`).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Resource type to authorize (e.g. `telemetry`). Required.
+    pub resource: String,
+    /// Action to authorize (e.g. `export`, `create`). Required.
+    pub verb: String,
+    /// Namespace for namespaced resources. Empty means cluster-scoped.
+    #[serde(default)]
+    pub namespace: Option<String>,
+    /// Specific resource name. Empty means any resource of this type.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Subresource to authorize (e.g. `status`).
+    #[serde(default)]
+    pub subresource: Option<String>,
 }
 
 impl Config {
@@ -70,6 +116,23 @@ impl Config {
             let _ = normalize_service_account(entry)
                 .map_err(|e| format!("invalid `allowed_service_accounts` entry `{entry}`: {e}"))?;
         }
+
+        if let Some(ra) = &self.resource_attributes {
+            // Admission is one strategy: a static allow-list or an RBAC check.
+            if !self.allowed_service_accounts.is_empty() {
+                return Err(
+                    "`allowed_service_accounts` and `resource_attributes` are mutually exclusive; set only one"
+                        .to_string(),
+                );
+            }
+            if ra.resource.trim().is_empty() {
+                return Err("`resource_attributes.resource` must not be empty".to_string());
+            }
+            if ra.verb.trim().is_empty() {
+                return Err("`resource_attributes.verb` must not be empty".to_string());
+            }
+        }
+
         Ok(())
     }
 

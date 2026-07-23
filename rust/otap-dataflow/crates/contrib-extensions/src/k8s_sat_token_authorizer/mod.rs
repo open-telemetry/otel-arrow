@@ -68,6 +68,7 @@ fn create(
         &name,
         config.audiences.clone(),
         allowed,
+        config.resource_attributes.clone(),
         config.cache_ttl,
         config.cache_max_entries,
     );

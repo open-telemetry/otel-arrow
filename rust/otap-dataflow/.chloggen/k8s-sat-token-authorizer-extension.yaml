@@ -8,7 +8,7 @@ change_type: new_component
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add the `k8s_sat_token_authorizer` contrib extension, which exposes the `BearerTokenAuthorizer` capability by validating inbound Kubernetes service-account tokens via the `TokenReview` API and admitting them against a configured audience and service-account allow-list.
+note: Add the `k8s_sat_token_authorizer` contrib extension, which exposes the `BearerTokenAuthorizer` capability by validating inbound Kubernetes service-account tokens via the `TokenReview` API and admitting them with either a service-account allow-list or a Kubernetes RBAC `SubjectAccessReview` check.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3494]
