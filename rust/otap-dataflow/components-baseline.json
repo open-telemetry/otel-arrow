@@ -1,0 +1,266 @@
+[
+  {
+    "id": "urn:derived:unknown:INTERNAL_TELEMETRY_RECEIVER_URN",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:microsoft:exporter:azure_monitor",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:microsoft:exporter:geneva",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:microsoft:extension:azure_identity_auth",
+    "category": "Extension",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:microsoft:processor:recordset_kql",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:controller:main",
+    "category": "Controller",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:clickhouse",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:console",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:error",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:kafka",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:noop",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:otap",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:otlp_grpc",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:otlp_http",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:parquet",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:perf",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:exporter:topic",
+    "category": "Exporter",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:attribute",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:batch",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:condense_attributes",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:content_router",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:debug",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:delay",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:durable_buffer",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:fanout",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:filter",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:log_sampling",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:partition",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:resource_validator",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:retry",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:temporal_reaggregation",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:transform",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:processor:type_router",
+    "category": "Processor",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:etw",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:host_metrics",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:journald",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:kafka",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:otap",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:otlp",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:syslog_cef",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:topic",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:traffic_generator",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:receiver:user_events",
+    "category": "Receiver",
+    "description": null,
+    "attributes": {}
+  },
+  {
+    "id": "urn:otel:safety:memory_limiter",
+    "category": "Safety",
+    "description": "Engine memory pressure monitor and shedding controller",
+    "attributes": {}
+  }
+]

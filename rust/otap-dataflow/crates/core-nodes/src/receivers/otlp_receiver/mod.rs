@@ -192,6 +192,7 @@ pub struct OTLPReceiver {
 
 /// Declares the OTLP receiver as a shared receiver factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: OTLP_RECEIVER_URN,

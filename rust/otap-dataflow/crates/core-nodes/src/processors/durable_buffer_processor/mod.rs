@@ -1903,6 +1903,7 @@ pub fn create_durable_buffer(
 
 /// Register DurableBuffer as an OTAP processor factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static DURABLE_BUFFER_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: DURABLE_BUFFER_URN,
