@@ -107,6 +107,83 @@ fn malformed_allow_list_entry_is_rejected() {
     );
 }
 
+// ── RBAC (SubjectAccessReview) config tests ────────────────
+
+/// Scenario: parse a config with a valid `resource_attributes` RBAC block.
+/// Guarantees: the required `resource`/`verb` and optional fields deserialize.
+#[test]
+fn resource_attributes_parses() {
+    let cfg = config_from_json(serde_json::json!({
+        "audiences": ["a"],
+        "resource_attributes": {
+            "group": "telemetry.opentelemetry.io",
+            "resource": "telemetry",
+            "verb": "export",
+            "namespace": "observability",
+        },
+    }))
+    .expect("valid RBAC config parses");
+    let ra = cfg
+        .resource_attributes
+        .expect("resource_attributes present");
+    assert_eq!(ra.resource, "telemetry");
+    assert_eq!(ra.verb, "export");
+    assert_eq!(ra.group.as_deref(), Some("telemetry.opentelemetry.io"));
+    assert_eq!(ra.namespace.as_deref(), Some("observability"));
+}
+
+/// Scenario: parse `resource_attributes` blocks that omit the required
+/// `resource` or `verb`, or leave them blank.
+/// Guarantees: each is rejected so an RBAC check is never issued without a
+/// resource and verb to authorize.
+#[test]
+fn resource_attributes_requires_resource_and_verb() {
+    // Missing verb (deserialization: required field absent).
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": ["a"],
+            "resource_attributes": { "resource": "telemetry" },
+        }))
+        .is_err(),
+        "missing verb must be rejected"
+    );
+    // Missing resource.
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": ["a"],
+            "resource_attributes": { "verb": "export" },
+        }))
+        .is_err(),
+        "missing resource must be rejected"
+    );
+    // Blank verb (validation).
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": ["a"],
+            "resource_attributes": { "resource": "telemetry", "verb": "  " },
+        }))
+        .is_err(),
+        "blank verb must be rejected"
+    );
+}
+
+/// Scenario: parse a config that sets both `allowed_service_accounts` and
+/// `resource_attributes`.
+/// Guarantees: the two admission strategies are rejected together, so exactly
+/// one admission model is active.
+#[test]
+fn allow_list_and_rbac_are_mutually_exclusive() {
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": ["a"],
+            "allowed_service_accounts": ["default/reader"],
+            "resource_attributes": { "resource": "telemetry", "verb": "export" },
+        }))
+        .is_err(),
+        "allow-list and RBAC must be mutually exclusive"
+    );
+}
+
 // ── Service-account normalization tests ────────────────────
 
 /// Scenario: normalize the three accepted allow-list shapes (full username,
@@ -198,6 +275,7 @@ fn make_extension(allowed: Option<HashSet<String>>) -> K8sSatTokenAuthorizerExte
         "test-authorizer",
         vec!["my-service".to_string()],
         allowed,
+        None,
         Duration::from_secs(300),
         1024,
     )
@@ -305,6 +383,7 @@ fn cache_respects_max_entries() {
     let ext = K8sSatTokenAuthorizerExtension::new(
         "test-authorizer",
         vec!["my-service".to_string()],
+        None,
         None,
         Duration::from_secs(300),
         2,

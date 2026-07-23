@@ -24,7 +24,19 @@ use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 use tokio::sync::OnceCell;
 
-use super::reviewer::{ReviewOutcome, Reviewer};
+use super::config::ResourceAttributesConfig;
+use super::reviewer::{AccessOutcome, AuthenticatedUser, ReviewOutcome, Reviewer};
+
+/// How an authenticated identity is admitted.
+enum Admission {
+    /// Admit any authenticated service account (audience-only admission).
+    Any,
+    /// Admit only service accounts whose username is in the allow-list.
+    AllowList(HashSet<String>),
+    /// Admit only identities Kubernetes RBAC permits for the configured
+    /// resource/verb, checked via `SubjectAccessReview`.
+    Rbac(ResourceAttributesConfig),
+}
 
 /// A cached admission decision and the instant it stops being valid.
 struct CachedDecision {
@@ -111,9 +123,8 @@ struct Inner {
     /// The Kubernetes reviewer, built on first use. A failed build leaves the
     /// cell empty so the next request retries.
     reviewer: OnceCell<Arc<Reviewer>>,
-    /// Allow-list of admitted service-account usernames, or `None` to admit any
-    /// authenticated account.
-    allowed_service_accounts: Option<HashSet<String>>,
+    /// How an authenticated identity is admitted.
+    admission: Admission,
     /// Bounded, TTL'd decision cache. Its critical sections are short and never
     /// span an `.await`, so a `std` `Mutex` is appropriate.
     cache: Mutex<DecisionCache>,
@@ -123,19 +134,31 @@ struct Inner {
 
 impl K8sSatTokenAuthorizerExtension {
     /// Builds a new extension instance.
+    ///
+    /// `allowed_service_accounts` and `resource_attributes` are mutually
+    /// exclusive (enforced at config validation); when both are `None` any
+    /// authenticated account is admitted.
     #[must_use]
     pub fn new(
         name: &str,
         audiences: Vec<String>,
         allowed_service_accounts: Option<HashSet<String>>,
+        resource_attributes: Option<ResourceAttributesConfig>,
         cache_ttl: Duration,
         cache_max_entries: usize,
     ) -> Self {
+        let admission = match (allowed_service_accounts, resource_attributes) {
+            // RBAC takes precedence if somehow both are set; config validation
+            // rejects that combination before we get here.
+            (_, Some(attrs)) => Admission::Rbac(attrs),
+            (Some(allow_list), None) => Admission::AllowList(allow_list),
+            (None, None) => Admission::Any,
+        };
         Self {
             inner: Arc::new(Inner {
                 audiences,
                 reviewer: OnceCell::new(),
-                allowed_service_accounts,
+                admission,
                 cache: Mutex::new(DecisionCache::new(cache_ttl, cache_max_entries)),
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
             }),
@@ -161,35 +184,41 @@ impl K8sSatTokenAuthorizerExtension {
 }
 
 impl Inner {
-    /// Admits an authenticated identity against the configured allow-list,
-    /// producing the final decision.
-    fn admit(&self, username: Option<String>, audiences: Vec<String>) -> AuthzDecision {
-        if let Some(allowed) = &self.allowed_service_accounts {
-            match &username {
-                Some(user) if allowed.contains(user) => {}
-                _ => {
-                    return AuthzDecision::deny_with_detail(
-                        DenyReason::NotPermitted,
-                        "service account not in allow-list",
-                    );
-                }
-            }
-        }
-
+    /// Builds the `Allow` identity for an authenticated user, carrying the SA
+    /// subject and the audience it was accepted for.
+    fn allow(&self, user: &AuthenticatedUser) -> AuthzDecision {
         let mut identity = AuthorizedIdentity::new();
-        if let Some(user) = username {
-            identity = identity.with_subject(&user);
+        if let Some(user) = &user.username {
+            identity = identity.with_subject(user);
         }
         // Surface the audience the token was accepted for so downstream routing
         // can use it; prefer the API server's confirmed audience.
-        if let Some(audience) = audiences
-            .into_iter()
-            .next()
+        if let Some(audience) = user
+            .audiences
+            .first()
+            .cloned()
             .or_else(|| self.audiences.first().cloned())
         {
             identity = identity.with_audience(&audience);
         }
         AuthzDecision::allow(identity)
+    }
+
+    /// Admits `user` using the non-RBAC strategies (any / allow-list). The RBAC
+    /// strategy needs an async API call and is handled in `authorize`.
+    fn admit_local(&self, user: &AuthenticatedUser) -> AuthzDecision {
+        match &self.admission {
+            Admission::Any => self.allow(user),
+            Admission::AllowList(allowed) => match &user.username {
+                Some(name) if allowed.contains(name) => self.allow(user),
+                _ => AuthzDecision::deny_with_detail(
+                    DenyReason::NotPermitted,
+                    "service account not in allow-list",
+                ),
+            },
+            // Handled by the async RBAC path; never reached here.
+            Admission::Rbac(_) => AuthzDecision::deny(DenyReason::NotPermitted),
+        }
     }
 }
 
@@ -228,15 +257,31 @@ impl SharedBearerTokenAuthorizer for K8sSatTokenAuthorizerExtension {
             .map_err(|err| inner.cap_err.error(err))?;
 
         let decision = match outcome {
-            ReviewOutcome::Authenticated {
-                username,
-                audiences,
-            } => inner.admit(username, audiences),
             ReviewOutcome::Unauthenticated { error } => match error {
                 Some(detail) => {
                     AuthzDecision::deny_with_detail(DenyReason::InvalidCredential, detail)
                 }
                 None => AuthzDecision::deny(DenyReason::InvalidCredential),
+            },
+            ReviewOutcome::Authenticated(user) => match &inner.admission {
+                // RBAC admission needs a second API call (SubjectAccessReview).
+                // A request failure is undetermined: fail closed, do not cache.
+                Admission::Rbac(attrs) => {
+                    match reviewer
+                        .check_access(&user, attrs)
+                        .await
+                        .map_err(|err| inner.cap_err.error(err))?
+                    {
+                        AccessOutcome::Allowed => inner.allow(&user),
+                        AccessOutcome::Denied { reason } => match reason {
+                            Some(detail) => {
+                                AuthzDecision::deny_with_detail(DenyReason::NotPermitted, detail)
+                            }
+                            None => AuthzDecision::deny(DenyReason::NotPermitted),
+                        },
+                    }
+                }
+                _ => inner.admit_local(&user),
             },
         };
 
@@ -250,13 +295,17 @@ impl SharedBearerTokenAuthorizer for K8sSatTokenAuthorizerExtension {
 
 #[cfg(test)]
 impl K8sSatTokenAuthorizerExtension {
-    /// Runs the admission step against the configured allow-list. Test-only.
+    /// Runs the non-RBAC admission step (any / allow-list). Test-only.
     pub(crate) fn admit_for_test(
         &self,
         username: Option<String>,
         audiences: Vec<String>,
     ) -> AuthzDecision {
-        self.inner.admit(username, audiences)
+        self.inner.admit_local(&AuthenticatedUser {
+            username,
+            audiences,
+            ..Default::default()
+        })
     }
 
     /// Inserts a decision into the shared cache. Test-only.
