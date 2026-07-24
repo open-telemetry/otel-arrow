@@ -12,6 +12,10 @@ subtext: |
   geneva-uploader's agent-fed credential source. Both capabilities must bind
   to the same configured extension. The exporter selects `moniker_map` by the
   configured account, then `default`, then a sole entry, and rejects ambiguous
-  maps. The Azure Monitor exporter already consumes the `BearerTokenProvider`
+  or malformed maps. Extension clones must share one `Arc`-backed token/routing
+  snapshot. Token and bundle reads are non-atomic, so the host and backend must
+  make transient mixed-generation pairs safe or reject them. A rejected upload
+  is NACKed so the pipeline's retry policy can read the capabilities again.
+  The Azure Monitor exporter already consumes the `BearerTokenProvider`
   capability, so an agent-fed host extension bound to that capability serves
   it with no exporter change.

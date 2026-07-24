@@ -17,6 +17,10 @@ use serde_json::{Map, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
+const ENDPOINT_KEY: &str = "endpoint";
+const MONIKER_MAP_KEY: &str = "moniker_map";
+const DEFAULT_MONIKER_KEY: &str = "default";
+
 #[derive(Default)]
 struct FailureLogLimiter {
     consecutive_failures: AtomicU64,
@@ -111,8 +115,11 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
                     return None;
                 }
             };
-            if token.is_empty() {
-                Self::log_invalid_credential(&self.empty_token_failures, "bearer token is empty");
+            if token.trim().is_empty() {
+                Self::log_invalid_credential(
+                    &self.empty_token_failures,
+                    "bearer token is empty or whitespace",
+                );
                 return None;
             }
             self.empty_token_failures.record_success();
@@ -153,9 +160,10 @@ impl AgentFedCredentialSource for AgentFedGenevaSource {
     }
 }
 
-fn non_empty_string(value: Option<&Value>) -> Option<&str> {
+fn non_blank_string(value: Option<&Value>) -> Option<&str> {
     value
         .and_then(Value::as_str)
+        .map(str::trim)
         .filter(|value| !value.is_empty())
 }
 
@@ -163,26 +171,27 @@ fn resolve_routing<'a>(
     attributes: &'a Map<String, Value>,
     account: &str,
 ) -> Result<(&'a str, &'a str), &'static str> {
-    let endpoint = non_empty_string(attributes.get("endpoint"))
+    let endpoint = non_blank_string(attributes.get(ENDPOINT_KEY))
         .ok_or("vendor bundle endpoint is missing or empty")?;
     let moniker_map = attributes
-        .get("moniker_map")
+        .get(MONIKER_MAP_KEY)
         .and_then(Value::as_object)
         .ok_or("vendor bundle moniker_map is missing or invalid")?;
 
-    let moniker = non_empty_string(moniker_map.get(account))
-        .or_else(|| non_empty_string(moniker_map.get("default")))
-        .or_else(|| {
-            (moniker_map.len() == 1)
-                .then(|| moniker_map.values().next())
-                .flatten()
-                .and_then(|value| non_empty_string(Some(value)))
-        })
-        .ok_or(if moniker_map.len() > 1 {
-            "vendor bundle moniker_map is ambiguous for the configured account"
-        } else {
-            "vendor bundle moniker is missing or empty"
-        })?;
+    let account = account.trim();
+    let moniker = if let Some(value) = moniker_map.get(account) {
+        non_blank_string(Some(value))
+            .ok_or("vendor bundle moniker for the configured account is invalid or empty")?
+    } else if let Some(value) = moniker_map.get(DEFAULT_MONIKER_KEY) {
+        non_blank_string(Some(value)).ok_or("vendor bundle default moniker is invalid or empty")?
+    } else if moniker_map.len() == 1 {
+        non_blank_string(moniker_map.values().next())
+            .ok_or("vendor bundle sole moniker is invalid or empty")?
+    } else if moniker_map.is_empty() {
+        return Err("vendor bundle moniker_map is empty");
+    } else {
+        return Err("vendor bundle moniker_map is ambiguous for the configured account");
+    };
 
     Ok((endpoint, moniker))
 }
@@ -261,6 +270,8 @@ mod tests {
         })
     }
 
+    /// Scenario: The provider returns a token and the bundle contains valid routing.
+    /// Guarantees: The adapter returns the exact token, endpoint, and moniker.
     #[tokio::test]
     async fn returns_credential_when_token_and_routing_present() {
         let s = source("tok", false, full_attrs());
@@ -270,6 +281,8 @@ mod tests {
         assert_eq!(c.moniker, "mon");
     }
 
+    /// Scenario: The token provider future yields once before returning a token.
+    /// Guarantees: The adapter awaits the future instead of dropping a pending result.
     #[tokio::test]
     async fn awaits_pending_provider_future() {
         // Regression for the old `now_or_never()`: a provider whose future is
@@ -278,12 +291,24 @@ mod tests {
         assert!(s.current().await.is_some());
     }
 
+    /// Scenario: The bearer token is empty.
+    /// Guarantees: The adapter fails closed and does not emit a credential.
     #[tokio::test]
     async fn fails_closed_on_empty_token() {
         let s = source("", false, full_attrs());
         assert!(s.current().await.is_none());
     }
 
+    /// Scenario: The bearer token contains only whitespace.
+    /// Guarantees: Whitespace cannot be sent as an apparently valid credential.
+    #[tokio::test]
+    async fn fails_closed_on_whitespace_only_token() {
+        let s = source("   ", false, full_attrs());
+        assert!(s.current().await.is_none());
+    }
+
+    /// Scenario: The vendor bundle omits the ingestion endpoint.
+    /// Guarantees: Missing endpoint routing causes the adapter to fail closed.
     #[tokio::test]
     async fn fails_closed_on_missing_endpoint() {
         let attrs = json!({ "moniker_map": { "default": "mon" } });
@@ -291,6 +316,35 @@ mod tests {
         assert!(s.current().await.is_none());
     }
 
+    /// Scenario: The endpoint or selected moniker contains only whitespace.
+    /// Guarantees: Blank routing values are rejected instead of reaching the uploader.
+    #[tokio::test]
+    async fn fails_closed_on_whitespace_only_routing() {
+        let blank_endpoint = json!({
+            "endpoint": "   ",
+            "moniker_map": { "default": "mon" },
+        });
+        assert!(
+            source("tok", false, blank_endpoint)
+                .current()
+                .await
+                .is_none()
+        );
+
+        let blank_moniker = json!({
+            "endpoint": "https://ep",
+            "moniker_map": { "default": "   " },
+        });
+        assert!(
+            source("tok", false, blank_moniker)
+                .current()
+                .await
+                .is_none()
+        );
+    }
+
+    /// Scenario: The vendor bundle omits the moniker map.
+    /// Guarantees: Missing moniker routing causes the adapter to fail closed.
     #[tokio::test]
     async fn fails_closed_on_missing_moniker() {
         let attrs = json!({ "endpoint": "https://ep" });
@@ -298,6 +352,8 @@ mod tests {
         assert!(s.current().await.is_none());
     }
 
+    /// Scenario: The map contains both account-specific and default monikers.
+    /// Guarantees: The configured account mapping takes precedence over default.
     #[tokio::test]
     async fn moniker_prefers_configured_account() {
         let attrs = json!({
@@ -311,6 +367,8 @@ mod tests {
         assert_eq!(s.current().await.unwrap().moniker, "account-moniker");
     }
 
+    /// Scenario: The configured account has no entry and a default is present.
+    /// Guarantees: The adapter selects the explicit default moniker.
     #[tokio::test]
     async fn moniker_falls_back_to_default() {
         let attrs = json!({
@@ -324,6 +382,8 @@ mod tests {
         assert_eq!(s.current().await.unwrap().moniker, "default-moniker");
     }
 
+    /// Scenario: The map has one non-default entry and no account match.
+    /// Guarantees: A sole unambiguous entry is accepted as the moniker.
     #[tokio::test]
     async fn moniker_falls_back_to_sole_entry() {
         let attrs = json!({
@@ -334,6 +394,23 @@ mod tests {
         assert_eq!(s.current().await.unwrap().moniker, "sole-moniker");
     }
 
+    /// Scenario: The account-specific entry is present but malformed.
+    /// Guarantees: Invalid account routing fails instead of silently using default.
+    #[tokio::test]
+    async fn invalid_account_moniker_does_not_fall_back_to_default() {
+        let attrs = json!({
+            "endpoint": "https://ep",
+            "moniker_map": {
+                "account": 42,
+                "default": "default-moniker"
+            },
+        });
+        let s = source("tok", false, attrs);
+        assert!(s.current().await.is_none());
+    }
+
+    /// Scenario: Multiple map entries exist with no account or default match.
+    /// Guarantees: Ambiguous routing is rejected instead of selecting arbitrarily.
     #[tokio::test]
     async fn fails_closed_on_ambiguous_moniker_map() {
         let attrs = json!({
@@ -371,6 +448,41 @@ mod tests {
         }
     }
 
+    struct RecoveringBearer(AtomicUsize);
+
+    #[async_trait]
+    impl BearerTokenProvider for RecoveringBearer {
+        async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Err(CapabilityErrorSource::<BearerTokenProviderCap>::new(
+                    "recovering-bearer".into(),
+                )
+                .error("token unavailable"));
+            }
+            Ok(BearerToken::without_expiry("recovered-token".to_owned()))
+        }
+
+        fn token_stream(&self) -> TokenStream {
+            futures::stream::empty::<BearerToken>().boxed()
+        }
+    }
+
+    struct RecoveringVendor(AtomicUsize);
+
+    impl VendorBundle for RecoveringVendor {
+        fn attributes(&self) -> Result<Arc<Map<String, Value>>, CapabilityError> {
+            if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+                return Err(CapabilityErrorSource::<VendorBundleCap>::new(
+                    "recovering-vendor".into(),
+                )
+                .error("bundle unavailable"));
+            }
+            Ok(obj(full_attrs()))
+        }
+    }
+
+    /// Scenario: The bearer-token capability reports an error.
+    /// Guarantees: Capability failure does not produce a partial credential.
     #[tokio::test]
     async fn fails_closed_when_token_provider_errors() {
         let source = AgentFedGenevaSource::new(
@@ -381,6 +493,8 @@ mod tests {
         assert!(source.current().await.is_none());
     }
 
+    /// Scenario: The vendor-bundle capability reports an error.
+    /// Guarantees: Routing failure does not produce a token-only credential.
     #[tokio::test]
     async fn fails_closed_when_vendor_bundle_errors() {
         let source = AgentFedGenevaSource::new(
@@ -392,6 +506,24 @@ mod tests {
             "account".to_owned(),
         );
         assert!(source.current().await.is_none());
+    }
+
+    /// Scenario: Token and bundle providers recover after initial failures.
+    /// Guarantees: Subsequent reads converge without reconstructing the exporter.
+    #[tokio::test]
+    async fn recovers_when_capabilities_become_available() {
+        let source = AgentFedGenevaSource::new(
+            Box::new(RecoveringBearer(AtomicUsize::new(0))),
+            Box::new(RecoveringVendor(AtomicUsize::new(0))),
+            "account".to_owned(),
+        );
+
+        assert!(source.current().await.is_none());
+        assert!(source.current().await.is_none());
+        let credential = source.current().await.expect("recovered credential");
+        assert_eq!(credential.token, "recovered-token");
+        assert_eq!(credential.endpoint, "https://ep");
+        assert_eq!(credential.moniker, "mon");
     }
 
     struct RotatingBearer(AtomicUsize);
@@ -408,6 +540,8 @@ mod tests {
         }
     }
 
+    /// Scenario: The provider changes its cached bearer token between reads.
+    /// Guarantees: Every upload lookup observes the provider's current token.
     #[tokio::test]
     async fn observes_token_rotation_on_each_read() {
         let source = AgentFedGenevaSource::new(
@@ -419,6 +553,8 @@ mod tests {
         assert_eq!(source.current().await.unwrap().token, "token-2");
     }
 
+    /// Scenario: Credential failures continue and later recover.
+    /// Guarantees: Warning sampling follows powers of two and resets after success.
     #[test]
     fn failure_log_limiter_uses_exponential_sampling_and_resets() {
         let limiter = FailureLogLimiter::default();
@@ -430,6 +566,8 @@ mod tests {
         assert_eq!(limiter.record_failure(), Some(1));
     }
 
+    /// Scenario: Empty-token and routing validation fail independently.
+    /// Guarantees: One failure category cannot suppress another category's warning.
     #[test]
     fn failure_categories_are_sampled_independently() {
         let source = source("tok", false, full_attrs());

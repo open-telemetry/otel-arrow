@@ -27,6 +27,7 @@
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
+use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
@@ -75,6 +76,7 @@ mod agent_fed_source;
 use agent_fed_source::AgentFedGenevaSource;
 use otap_df_engine::capability::ExtensionCapability;
 use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider as BearerTokenProviderCap;
+use otap_df_engine::capability::registry::Capabilities;
 use otap_df_engine::capability::vendor_bundle::VendorBundle as VendorBundleCap;
 
 /// The URN for the Geneva exporter
@@ -556,6 +558,10 @@ struct ConfigBuilder {
     role_name: String,
     role_instance: String,
     auth: AuthConfig,
+    #[serde(default)]
+    logs: Option<LogsConfig>,
+    #[serde(default)]
+    spans: Option<TracesConfig>,
     #[serde(default = "default_buffer_size")]
     max_buffer_size: usize,
     #[serde(default = "default_max_concurrent")]
@@ -571,11 +577,9 @@ const fn default_max_concurrent() -> usize {
 }
 
 impl Config {
-    fn parse(config: &serde_json::Value) -> Result<Self, otap_df_config::error::Error> {
-        serde_json::from_value(config.clone()).map_err(|error| {
-            otap_df_config::error::Error::InvalidUserConfig {
-                error: error.to_string(),
-            }
+    fn parse(config: &serde_json::Value) -> Result<Self, ConfigError> {
+        serde_json::from_value(config.clone()).map_err(|error| ConfigError::InvalidUserConfig {
+            error: error.to_string(),
         })
     }
 
@@ -605,38 +609,6 @@ impl Config {
     /// `GenevaClientConfig` conversion can be unit-tested without initializing
     /// a live `GenevaClient`.
     fn to_geneva_client_config(&self) -> GenevaClientConfig {
-        // Convert AuthConfig to AuthMethod
-        let auth_method = match &self.auth {
-            AuthConfig::Certificate { path, password } => AuthMethod::Certificate {
-                path: PathBuf::from(path),
-                password: password.clone(),
-            },
-            AuthConfig::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
-            AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
-                client_id: client_id.clone(),
-            },
-            AuthConfig::UserManagedIdentityByArmResourceId { resource_id, .. } => {
-                AuthMethod::UserManagedIdentityByResourceId {
-                    resource_id: resource_id.clone(),
-                }
-            }
-            AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
-                resource: msi_resource.clone(),
-            },
-            // `with_agent_fed_source` ignores this field. The placeholder only
-            // satisfies the shared uploader configuration type.
-            AuthConfig::AgentFed => AuthMethod::SystemManagedIdentity,
-        };
-
-        // Get MSI resource if needed for managed identity
-        let msi_resource = match &self.auth {
-            AuthConfig::SystemManagedIdentity { msi_resource }
-            | AuthConfig::UserManagedIdentity { msi_resource, .. }
-            | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
-            | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
-            AuthConfig::Certificate { .. } | AuthConfig::AgentFed => None,
-        };
-
         // Create LogsConfig and TracesConfig from the configuration
         let logs_config = self
             .logs
@@ -660,11 +632,11 @@ impl Config {
             namespace: self.namespace.clone(),
             region: self.region.clone(),
             config_major_version: self.config_major_version,
-            auth_method,
+            auth_method: self.auth.uploader_auth_method(),
             tenant: self.tenant.clone(),
             role_name: self.role_name.clone(),
             role_instance: self.role_instance.clone(),
-            msi_resource,
+            msi_resource: self.auth.msi_resource(),
             logs: logs_config,
             spans: traces_config,
             obo_event_map: None,
@@ -687,16 +659,14 @@ impl TryFrom<ConfigBuilder> for Config {
             role_name: builder.role_name,
             role_instance: builder.role_instance,
             auth: builder.auth,
+            logs: builder.logs,
+            spans: builder.spans,
             max_buffer_size: builder.max_buffer_size,
             max_concurrent_uploads: builder.max_concurrent_uploads,
         };
         config.validate()?;
         Ok(config)
     }
-}
-
-fn validate_config(config: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
-    Config::parse(config).map(|_| ())
 }
 
 /// Authentication configuration
@@ -743,6 +713,42 @@ pub enum AuthConfig {
     /// must bind to the same host extension via the node's `capabilities`
     /// block.
     AgentFed,
+}
+
+impl AuthConfig {
+    fn uploader_auth_method(&self) -> AuthMethod {
+        match self {
+            Self::Certificate { path, password } => AuthMethod::Certificate {
+                path: PathBuf::from(path),
+                password: password.clone(),
+            },
+            Self::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
+            Self::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
+                client_id: client_id.clone(),
+            },
+            Self::UserManagedIdentityByArmResourceId { resource_id, .. } => {
+                AuthMethod::UserManagedIdentityByResourceId {
+                    resource_id: resource_id.clone(),
+                }
+            }
+            Self::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
+                resource: msi_resource.clone(),
+            },
+            // `with_agent_fed_source` ignores this field. The placeholder only
+            // satisfies the shared uploader configuration type.
+            Self::AgentFed => AuthMethod::SystemManagedIdentity,
+        }
+    }
+
+    fn msi_resource(&self) -> Option<String> {
+        match self {
+            Self::SystemManagedIdentity { msi_resource }
+            | Self::UserManagedIdentity { msi_resource, .. }
+            | Self::UserManagedIdentityByArmResourceId { msi_resource, .. }
+            | Self::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
+            Self::Certificate { .. } | Self::AgentFed => None,
+        }
+    }
 }
 
 /// Geneva exporter metrics.
@@ -852,24 +858,22 @@ pub struct GenevaExporter {
 /// Validates the node-level bindings that the config-only factory validation
 /// hook cannot inspect. Called during exporter creation before either
 /// capability is consumed.
-fn validate_agent_fed_capability_bindings(
-    node_config: &NodeUserConfig,
-) -> Result<(), otap_df_config::error::Error> {
+fn validate_agent_fed_capability_bindings(node_config: &NodeUserConfig) -> Result<(), ConfigError> {
     let bearer_name = BearerTokenProviderCap::NAME;
     let vendor_name = VendorBundleCap::NAME;
     let bearer_extension = node_config.capabilities.get(bearer_name).ok_or_else(|| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        ConfigError::InvalidUserConfig {
             error: format!("agent-fed Geneva auth requires a '{bearer_name}' capability binding"),
         }
     })?;
     let vendor_extension = node_config.capabilities.get(vendor_name).ok_or_else(|| {
-        otap_df_config::error::Error::InvalidUserConfig {
+        ConfigError::InvalidUserConfig {
             error: format!("agent-fed Geneva auth requires a '{vendor_name}' capability binding"),
         }
     })?;
 
     if bearer_extension != vendor_extension {
-        return Err(otap_df_config::error::Error::InvalidUserConfig {
+        return Err(ConfigError::InvalidUserConfig {
             error: format!(
                 "agent-fed Geneva auth requires '{bearer_name}' and '{vendor_name}' \
                  to bind to the same configured extension"
@@ -880,68 +884,96 @@ fn validate_agent_fed_capability_bindings(
     Ok(())
 }
 
+fn ensure_crypto_provider() -> Result<(), ConfigError> {
+    if otap_df_otap::crypto::is_crypto_provider_installed() {
+        return Ok(());
+    }
+
+    Err(ConfigError::InvalidUserConfig {
+        error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
+                Build with exactly one of the crypto-* features \
+                (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
+                otap_df_otap::crypto::install_crypto_provider() runs at startup."
+            .to_string(),
+    })
+}
+
+fn validate_geneva_client_prerequisites(
+    config: &Config,
+    node_config: &NodeUserConfig,
+    crypto_provider_check: impl FnOnce() -> Result<(), ConfigError>,
+) -> Result<(), ConfigError> {
+    if matches!(&config.auth, AuthConfig::AgentFed) {
+        // This validates configured extension identity. The extension's Clone
+        // implementation must still share one underlying token/routing snapshot.
+        validate_agent_fed_capability_bindings(node_config)?;
+    }
+
+    // Both GCS and agent-fed uploads use the rustls-backed HTTP client.
+    crypto_provider_check()
+}
+
+fn resolve_agent_fed_source(
+    config: &Config,
+    capabilities: &Capabilities,
+) -> Result<AgentFedGenevaSource, ConfigError> {
+    let bearer = capabilities
+        .require_shared::<BearerTokenProviderCap>()
+        .map_err(|error| ConfigError::InvalidUserConfig {
+            error: format!(
+                "agent-fed Geneva auth requires a bound bearer_token_provider capability: {error}"
+            ),
+        })?;
+    let vendor = capabilities
+        .require_shared::<VendorBundleCap>()
+        .map_err(|error| ConfigError::InvalidUserConfig {
+            error: format!(
+                "agent-fed Geneva auth requires a bound vendor_bundle capability \
+                 (carries the endpoint/moniker routing): {error}"
+            ),
+        })?;
+
+    Ok(AgentFedGenevaSource::new(
+        bearer,
+        vendor,
+        config.account.clone(),
+    ))
+}
+
+fn create_geneva_client(
+    config: &Config,
+    node_config: &NodeUserConfig,
+    capabilities: &Capabilities,
+) -> Result<GenevaClient, ConfigError> {
+    validate_geneva_client_prerequisites(config, node_config, ensure_crypto_provider)?;
+    let client_config = config.to_geneva_client_config();
+
+    match &config.auth {
+        AuthConfig::AgentFed => {
+            let source = resolve_agent_fed_source(config, capabilities)?;
+            GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(|error| {
+                ConfigError::InvalidUserConfig {
+                    error: format!("Failed to initialize agent-fed Geneva client: {error}"),
+                }
+            })
+        }
+        _ => GenevaClient::new(client_config).map_err(|error| ConfigError::InvalidUserConfig {
+            error: format!("Failed to initialize Geneva client: {error}"),
+        }),
+    }
+}
+
 impl GenevaExporter {
     /// Create a new Geneva exporter from configuration
     pub fn from_config(
         pipeline_ctx: PipelineContext,
         node_config: &NodeUserConfig,
-        capabilities: &otap_df_engine::capability::registry::Capabilities,
-    ) -> Result<Self, otap_df_config::error::Error> {
+        capabilities: &Capabilities,
+    ) -> Result<Self, ConfigError> {
+        let config = Config::parse(&node_config.config)?;
+        let geneva_client = create_geneva_client(&config, node_config, capabilities)?;
         let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
         let metrics = pipeline_ctx.register_metrics::<ExporterMetrics>();
-
-        let config = Config::parse(&node_config.config)?;
-
-        let client_config = config.to_geneva_client_config();
-
-        // The Geneva exporter uses rustls for mTLS. If no process-wide crypto
-        // provider was installed at startup (i.e. the binary was built without
-        // any `crypto-*` feature), fail fast with an actionable error instead
-        // of surfacing an opaque rustls handshake failure at export time.
-        if !otap_df_otap::crypto::is_crypto_provider_installed() {
-            return Err(otap_df_config::error::Error::InvalidUserConfig {
-                error: "Geneva exporter requires a rustls CryptoProvider, but none is installed. \
-                        Build with exactly one of the crypto-* features \
-                        (crypto-ring, crypto-aws-lc, crypto-openssl, crypto-symcrypt) and ensure \
-                        otap_df_otap::crypto::install_crypto_provider() runs at startup."
-                    .to_string(),
-            });
-        }
-
-        // Initialize the Geneva client. Agent-fed auth resolves the agent-fed
-        // bearer + vendor capabilities and feeds them to the uploader; all
-        // other auth methods drive the GCS config-service handshake.
-        let geneva_client = match &config.auth {
-            AuthConfig::AgentFed => {
-                validate_agent_fed_capability_bindings(node_config)?;
-                let bearer = capabilities
-                    .require_shared::<BearerTokenProviderCap>()
-                    .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "agent-fed auth requires a bound bearer_token_provider capability: {e}"
-                        ),
-                    })?;
-                let vendor = capabilities
-                    .require_shared::<VendorBundleCap>()
-                    .map_err(|e| otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "agent-fed Geneva auth requires a bound vendor_bundle capability \
-                             (carries the endpoint/moniker routing): {e}"
-                        ),
-                    })?;
-                let source = AgentFedGenevaSource::new(bearer, vendor, config.account.clone());
-                GenevaClient::with_agent_fed_source(client_config, Arc::new(source)).map_err(
-                    |e| otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!("Failed to initialize agent-fed Geneva client: {e}"),
-                    },
-                )?
-            }
-            _ => GenevaClient::new(client_config).map_err(|e| {
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!("Failed to initialize Geneva client: {}", e),
-                }
-            })?,
-        };
 
         Ok(Self {
             config,
@@ -1307,7 +1339,7 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
              node: NodeId,
              node_config: Arc<NodeUserConfig>,
              exporter_config: &ExporterConfig,
-             capabilities: &otap_df_engine::capability::registry::Capabilities| {
+             capabilities: &Capabilities| {
         Ok(ExporterWrapper::local(
             GenevaExporter::from_config(pipeline, &node_config, capabilities)?,
             node,
@@ -1316,7 +1348,7 @@ pub static GENEVA_EXPORTER: ExporterFactory<OtapPdata> = ExporterFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    validate_config,
+    validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
 #[async_trait(?Send)]
@@ -1436,9 +1468,10 @@ mod tests {
         UInt8Array, UInt16Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-    use std::sync::Arc;
+    use std::sync::{Arc, RwLock};
 
     use bytes::Bytes;
+    use geneva_uploader::client::AgentFedCredentialSource;
     use otap_df_engine::Interests;
     use otap_df_engine::capability::SharedInstanceFactory;
     use otap_df_engine::capability::auth::BearerToken;
@@ -1651,6 +1684,10 @@ mod tests {
 
     #[derive(Clone)]
     struct MockAgentExtension {
+        snapshot: Arc<RwLock<MockAgentSnapshot>>,
+    }
+
+    struct MockAgentSnapshot {
         token: String,
         attributes: Arc<serde_json::Map<String, serde_json::Value>>,
     }
@@ -1658,7 +1695,8 @@ mod tests {
     #[async_trait]
     impl SharedBearerTokenProvider for MockAgentExtension {
         async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
-            Ok(BearerToken::without_expiry(self.token.clone()))
+            let snapshot = self.snapshot.read().expect("snapshot read lock");
+            Ok(BearerToken::without_expiry(snapshot.token.clone()))
         }
 
         fn token_stream(&self) -> TokenStream {
@@ -1670,13 +1708,14 @@ mod tests {
         fn attributes(
             &self,
         ) -> Result<Arc<serde_json::Map<String, serde_json::Value>>, CapabilityError> {
-            Ok(self.attributes.clone())
+            let snapshot = self.snapshot.read().expect("snapshot read lock");
+            Ok(snapshot.attributes.clone())
         }
     }
 
     fn resolved_agent_fed_capabilities(
         node_config: &NodeUserConfig,
-    ) -> otap_df_engine::capability::registry::Capabilities {
+    ) -> (Capabilities, Arc<RwLock<MockAgentSnapshot>>) {
         let attributes = serde_json::json!({
             "endpoint": "https://ep",
             "moniker_map": { "test-account": "test-moniker" },
@@ -1684,9 +1723,12 @@ mod tests {
         .as_object()
         .cloned()
         .expect("object");
-        let extension = MockAgentExtension {
+        let snapshot = Arc::new(RwLock::new(MockAgentSnapshot {
             token: "test-token".to_owned(),
             attributes: Arc::new(attributes),
+        }));
+        let extension = MockAgentExtension {
+            snapshot: Arc::clone(&snapshot),
         };
         let extension_capabilities = extension_capabilities!(
             shared: MockAgentExtension => [BearerTokenProviderCap, VendorBundleCap]
@@ -1697,10 +1739,14 @@ mod tests {
         (extension_capabilities.register_shared)("agent".into(), instance_factory, &mut registry)
             .expect("register capabilities");
         let known_extensions = HashSet::<otap_df_config::ExtensionId>::from(["agent".into()]);
-        resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
-            .expect("resolve capabilities")
+        let capabilities =
+            resolve_bindings_for_test(&node_config.capabilities, &registry, &known_extensions)
+                .expect("resolve capabilities");
+        (capabilities, snapshot)
     }
 
+    /// Scenario: The exporter receives an empty OTLP log payload with an ACK subscriber.
+    /// Guarantees: The exporter skips upload and returns an empty successful ACK.
     #[test]
     fn geneva_exporter_emits_ack_for_empty_payload() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
@@ -1743,6 +1789,8 @@ mod tests {
             });
     }
 
+    /// Scenario: The exporter receives malformed non-empty OTLP log bytes.
+    /// Guarantees: Decode failure returns a NACK with the original subscriber route.
     #[test]
     fn geneva_exporter_emits_nack_for_decode_failure() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a
@@ -1793,6 +1841,8 @@ mod tests {
             });
     }
 
+    /// Scenario: The exporter receives a representative OTAP logs record batch.
+    /// Guarantees: The logs view exposes all records after transport ID decoding.
     #[test]
     fn test_geneva_exporter_creates_view_from_otap_records() {
         // This test verifies that the Geneva exporter can successfully create
@@ -1827,6 +1877,8 @@ mod tests {
     }
 
     // Configuration tests
+    /// Scenario: A complete certificate-auth configuration is deserialized.
+    /// Guarantees: Required fields, defaults, and auth data retain their values.
     #[test]
     fn test_config_deserialization() {
         let json = serde_json::json!({
@@ -1891,6 +1943,8 @@ mod tests {
         }
     }
 
+    /// Scenario: Agent-fed configuration omits GCS-only endpoint and region fields.
+    /// Guarantees: The configuration remains valid and preserves the agent-fed mode.
     #[test]
     fn agent_fed_config_can_omit_gcs_endpoint_and_region() {
         let config: Config =
@@ -1900,6 +1954,8 @@ mod tests {
         assert!(matches!(config.auth, AuthConfig::AgentFed));
     }
 
+    /// Scenario: A non-agent-fed configuration omits endpoint or region.
+    /// Guarantees: Existing authentication modes continue to require both fields.
     #[test]
     fn non_agent_fed_config_requires_endpoint_and_region() {
         let mut missing_endpoint = test_config();
@@ -1921,6 +1977,8 @@ mod tests {
         assert!(error.to_string().contains("region is required"));
     }
 
+    /// Scenario: Agent-fed configuration provides an empty account.
+    /// Guarantees: Moniker selection cannot start without a non-empty account.
     #[test]
     fn agent_fed_config_requires_account_for_moniker_selection() {
         let mut config = agent_fed_test_config();
@@ -1929,6 +1987,8 @@ mod tests {
         assert!(error.to_string().contains("account must not be empty"));
     }
 
+    /// Scenario: Bearer and vendor capabilities reference different extension IDs.
+    /// Guarantees: Agent-fed startup accepts only matching configured extensions.
     #[test]
     fn agent_fed_capabilities_must_bind_to_the_same_extension() {
         let node_config = agent_fed_node_config(Some("agent-a"), Some("agent-b"));
@@ -1941,6 +2001,8 @@ mod tests {
             .expect("matching extensions must pass");
     }
 
+    /// Scenario: Either required agent-fed capability binding is absent.
+    /// Guarantees: Startup reports the specific missing capability.
     #[test]
     fn agent_fed_capabilities_require_both_bindings() {
         let missing_bearer = agent_fed_node_config(None, Some("agent"));
@@ -1954,6 +2016,22 @@ mod tests {
         assert!(error.to_string().contains("vendor_bundle"));
     }
 
+    /// Scenario: Agent-fed capability bindings are invalid before TLS setup is checked.
+    /// Guarantees: Binding validation short-circuits without invoking the crypto check.
+    #[test]
+    fn agent_fed_binding_validation_precedes_crypto_check() {
+        let node_config = agent_fed_node_config(Some("agent-a"), Some("agent-b"));
+        let config = Config::parse(&node_config.config).expect("valid agent-fed config");
+        let error = validate_geneva_client_prerequisites(&config, &node_config, || {
+            panic!("crypto provider check must not run before binding validation")
+        })
+        .expect_err("mismatched extensions must fail");
+
+        assert!(error.to_string().contains("same configured extension"));
+    }
+
+    /// Scenario: The factory receives missing or mismatched agent-fed bindings.
+    /// Guarantees: Exporter creation fails with the applicable binding error.
     #[test]
     fn agent_fed_factory_fails_closed_on_invalid_bindings() {
         let exporter_config = ExporterConfig::new("test-exporter");
@@ -1963,7 +2041,7 @@ mod tests {
             test_node("test-exporter".to_owned()),
             Arc::new(agent_fed_node_config(None, None)),
             &exporter_config,
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &Capabilities::empty(),
         );
         let error = match missing_bindings {
             Ok(_) => panic!("missing bindings must fail exporter creation"),
@@ -1976,7 +2054,7 @@ mod tests {
             test_node("test-exporter".to_owned()),
             Arc::new(agent_fed_node_config(Some("agent-a"), Some("agent-b"))),
             &exporter_config,
-            &otap_df_engine::capability::registry::Capabilities::empty(),
+            &Capabilities::empty(),
         );
         let error = match mismatched_bindings {
             Ok(_) => panic!("mismatched bindings must fail exporter creation"),
@@ -1985,10 +2063,51 @@ mod tests {
         assert!(error.to_string().contains("same configured extension"));
     }
 
+    /// Scenario: Registry-created capability clones share one rotating host snapshot.
+    /// Guarantees: A completed host rotation is visible through both capability handles.
+    #[tokio::test]
+    async fn agent_fed_capability_clones_share_rotating_state() {
+        let node_config = agent_fed_node_config(Some("agent"), Some("agent"));
+        let (capabilities, snapshot) = resolved_agent_fed_capabilities(&node_config);
+        let bearer = capabilities
+            .require_shared::<BearerTokenProviderCap>()
+            .expect("bearer capability");
+        let vendor = capabilities
+            .require_shared::<VendorBundleCap>()
+            .expect("vendor capability");
+        let source = AgentFedGenevaSource::new(bearer, vendor, "test-account".to_owned());
+
+        let initial = source.current().await.expect("initial credential");
+        assert_eq!(initial.token, "test-token");
+        assert_eq!(initial.endpoint, "https://ep");
+        assert_eq!(initial.moniker, "test-moniker");
+
+        let rotated_attributes = serde_json::json!({
+            "endpoint": "https://rotated-ep",
+            "moniker_map": { "test-account": "rotated-moniker" },
+        })
+        .as_object()
+        .cloned()
+        .expect("object");
+        {
+            let mut snapshot = snapshot.write().expect("snapshot write lock");
+            snapshot.token = "rotated-token".to_owned();
+            snapshot.attributes = Arc::new(rotated_attributes);
+        }
+
+        let rotated = source.current().await.expect("rotated credential");
+        assert_eq!(rotated.token, "rotated-token");
+        assert_eq!(rotated.endpoint, "https://rotated-ep");
+        assert_eq!(rotated.moniker, "rotated-moniker");
+    }
+
+    /// Scenario: Valid bindings resolve both capabilities from a shared extension.
+    /// Guarantees: The factory constructs an agent-fed exporter successfully.
     #[test]
     fn creates_agent_fed_exporter_with_bound_capabilities() {
+        otap_df_otap::crypto::ensure_crypto_provider();
         let node_config = agent_fed_node_config(Some("agent"), Some("agent"));
-        let capabilities = resolved_agent_fed_capabilities(&node_config);
+        let (capabilities, _snapshot) = resolved_agent_fed_capabilities(&node_config);
         let exporter_config = ExporterConfig::new("test-exporter");
         let result = (GENEVA_EXPORTER.create)(
             create_test_pipeline_context(),
@@ -2000,6 +2119,8 @@ mod tests {
         assert!(result.is_ok(), "agent-fed exporter should initialize");
     }
 
+    /// Scenario: Every supported authentication tag is deserialized.
+    /// Guarantees: Serde maps each public tag to the correct auth variant.
     #[test]
     fn test_auth_config_variants() {
         let cert_json = serde_json::json!({
@@ -2059,11 +2180,15 @@ mod tests {
         assert!(matches!(agent_fed, AuthConfig::AgentFed));
     }
 
+    /// Scenario: Registration code reads the Geneva exporter URN constant.
+    /// Guarantees: The public component identifier remains stable.
     #[test]
     fn test_urn_constant() {
         assert_eq!(GENEVA_EXPORTER_URN, "urn:microsoft:exporter:geneva");
     }
 
+    /// Scenario: Auth uses a user-assigned identity addressed by ARM resource ID.
+    /// Guarantees: The supported auth variant constructs a client successfully.
     #[test]
     fn create_exporter_with_user_managed_identity_by_arm_resource_id() {
         // The Geneva uploader uses rustls (tls-rustls); reqwest needs a

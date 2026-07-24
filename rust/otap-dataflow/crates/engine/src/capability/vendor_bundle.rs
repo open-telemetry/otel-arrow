@@ -8,12 +8,17 @@
 //! interprets the contents; each consumer defines and reads its own keys.
 //! Supplied by an agent-fed extension; token-only scopes do not provide it.
 //!
-//! A provider may derive this bundle and a bearer token from one coordinated
-//! snapshot, but consumers read separate capabilities independently. The
-//! capability API therefore does not guarantee an atomic cross-capability
-//! snapshot. Consumers that require strict consistency must define an explicit
-//! coordination mechanism; consumers that tolerate transient mismatches should
-//! document their retry or convergence behavior.
+//! The host publishes the bundle and bearer token as one atomically-swapped
+//! record, but a consumer reads them through two separate capability calls, so a
+//! swap between the reads can transiently pair a stale token with fresh routing
+//! (or vice versa). The capability API cannot identify that mixed-generation
+//! pair. Consumers must tolerate it, while the host and backend must make the
+//! combination safe or reject it.
+//!
+//! Extensions exposing both capabilities from one configured instance must
+//! ensure that per-consumer clones share the same underlying snapshot, typically
+//! through an `Arc`-backed state object. The extension ID alone does not enforce
+//! shared state across capability handles.
 //!
 //! Like [`bearer_token_provider`](super::auth::bearer_token_provider), the trait is
 //! expanded by the `#[capability]` proc macro into `local` (!Send) and `shared`

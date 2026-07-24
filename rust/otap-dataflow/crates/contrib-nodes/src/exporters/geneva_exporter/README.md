@@ -65,6 +65,15 @@ from `moniker_map` by the configured `account`, then `default`, then a sole map
 entry. A map with multiple entries and no account/default match is rejected.
 Capability bindings are checked when the exporter is created because the
 factory's earlier config-validation hook receives only the `config` object.
+Capability factories create a clone for each consumer, so the host extension's
+clones must share one `Arc`-backed token and routing snapshot.
+
+The token and vendor bundle are separate capability reads and are not an atomic
+snapshot. A host rotation can therefore produce transiently mismatched
+token/routing pairs, which the exporter cannot identify by generation. The host
+and Geneva backend must make such pairs safe or reject them. A rejected upload
+causes the exporter to NACK the payload, allowing a configured retry to read
+the capabilities again; an accepted upload is ACKed normally.
 
 ## Build df_engine with Geneva Exporter
 
