@@ -312,7 +312,7 @@ impl Transformer {
                 // Passthrough combined with explicit mappings needs collision
                 // handling (innermost/attributes win); pure passthrough and pure
                 // mapped records stay on the fast raw path. Records are built in a
-                // reused Vec and bulk-copied into `buf` — benchmarks show one
+                // reused Vec and bulk-copied into `buf` -- benchmarks show one
                 // amortized memcpy beats many small writes straight into BytesMut.
                 let combined =
                     schema.attribute_passthrough && (has_base || !schema.field_mappings.is_empty());
@@ -1903,7 +1903,7 @@ mod tests {
         );
     }
 
-    // ── TimeGenerated auto-injection ───────────────────────────
+    // -- TimeGenerated auto-injection ---------------------------
 
     /// Builds a single-record passthrough request with the given timestamps and
     /// attributes, and returns the emitted JSON object.
