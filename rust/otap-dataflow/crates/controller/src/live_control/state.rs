@@ -481,9 +481,10 @@ pub(super) struct TopicRuntimeProfile {
 
 /// Complete mutable state protected by `ControllerRuntime::state`.
 ///
-/// Keep this type as plain data: methods that enforce lifecycle invariants
-/// should live on `ControllerRuntime` so mutations can update observed state
-/// and wake condition variables consistently.
+/// Keep mutations that enforce lifecycle invariants on `ControllerRuntime` so
+/// they can update observed state and wake condition variables consistently.
+/// Read-only ownership predicates live here so every recovery path classifies
+/// explicit operations identically.
 pub(super) struct ControllerRuntimeState {
     /// Latest accepted full engine config, including committed live changes.
     pub(super) live_config: OtelDataflowSpec,
@@ -538,6 +539,29 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_pipeline_operation_reservation_id: u64,
     /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
+}
+
+impl ControllerRuntimeState {
+    /// Returns whether an explicit operation currently owns this pipeline.
+    pub(super) fn recovery_preempted(&self, pipeline_key: &PipelineKey) -> bool {
+        self.global_shutdown_requested
+            || self.active_rollouts.contains_key(pipeline_key)
+            || self.active_shutdowns.contains_key(pipeline_key)
+            || self
+                .pipeline_operation_reservations
+                .contains_key(pipeline_key)
+            || self.active_engine_operation.is_some()
+    }
+
+    /// Returns whether shutdown owns failures instead of deferring recovery.
+    pub(super) fn recovery_in_shutdown_context(&self, pipeline_key: &PipelineKey) -> bool {
+        self.global_shutdown_requested
+            || self.active_shutdowns.contains_key(pipeline_key)
+            || self
+                .pipeline_operation_reservations
+                .get(pipeline_key)
+                .is_some_and(|reservation| reservation.kind == PipelineOperationKind::Shutdown)
+    }
 }
 
 #[derive(Debug)]

@@ -385,6 +385,35 @@ where
     }
 }
 
+fn wait_for_recovery_candidate_generation(
+    runtime: &ControllerRuntime<()>,
+    pipeline_key: &PipelineKey,
+    core_id: usize,
+) -> u64 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let candidate_generation = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), core_id))
+            .filter(|recovery| recovery.worker_id.is_some())
+            .and_then(|recovery| recovery.candidate_generation);
+        if let Some(candidate_generation) = candidate_generation {
+            return candidate_generation;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for recovery candidate on {}:{} core {}",
+            pipeline_key.pipeline_group_id(),
+            pipeline_key.pipeline_id(),
+            core_id
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 fn engine_config_with_pipeline(pipeline_yaml: &str) -> OtelDataflowSpec {
     OtelDataflowSpec::from_yaml(&format!(
         r#"
@@ -4049,6 +4078,117 @@ fn rollout_reservation_preserves_cancelled_recovery_work() {
     runtime
         .request_shutdown_all(1)
         .expect("global shutdown should cancel the replacement worker");
+}
+
+/// Scenario: two rollout reservations cancel the same failed core while each
+/// recovery worker is waiting in backoff with a two-launch restart budget.
+/// Guarantees: cancelled waits consume no restart budget, and the first actual
+/// replacement launch is still attempted and charged exactly once.
+#[test]
+fn cancelled_recovery_backoffs_do_not_consume_restart_budget() {
+    let config = engine_config_with_pipeline(
+        r#"
+        policies:
+          runtime_recovery:
+            max_restarts: 2
+            initial_backoff: 250ms
+            max_backoff: 250ms
+            startup_timeout: 2s
+            reset_after: 1m
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#,
+    );
+    let runtime = test_runtime_with_factory(&config, &RECOVERY_TEST_PIPELINE_FACTORY);
+    let _runner = ObservedStateRunner::start(&runtime);
+    register_existing_pipeline(&runtime, &config);
+    let _rx =
+        register_runtime_instance(&runtime, "g1", "p1", 0, 0, RuntimeInstanceLifecycle::Active);
+    report_ready(&runtime, deployed_key("g1", "p1", 0, 0));
+
+    let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
+    runtime.note_instance_exit(
+        deployed_key("g1", "p1", 0, 0),
+        RuntimeInstanceExit::Error(RuntimeInstanceError::runtime("boom".to_owned())),
+    );
+
+    let mut cancelled_generations = Vec::new();
+    for cancellation in 1..=2 {
+        cancelled_generations.push(wait_for_recovery_candidate_generation(
+            &runtime,
+            &pipeline_key,
+            0,
+        ));
+        let reservation = runtime
+            .begin_pipeline_operation_reservation(
+                pipeline_key.clone(),
+                PipelineOperationKind::Rollout,
+            )
+            .expect("rollout ownership should be reserved");
+        runtime.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
+        {
+            let state = runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let recovery = state
+                .runtime_recoveries
+                .get(&(pipeline_key.clone(), 0))
+                .expect("cancelled recovery should remain tracked");
+            assert_eq!(
+                recovery.restart_count, 0,
+                "cancellation {cancellation} consumed restart budget"
+            );
+            assert!(recovery.worker_id.is_none());
+            assert!(recovery.candidate_generation.is_none());
+            assert!(
+                state
+                    .deferred_runtime_recoveries
+                    .contains_key(&deployed_key("g1", "p1", 0, 0))
+            );
+        }
+        drop(reservation);
+    }
+
+    let last_cancelled_generation = *cancelled_generations
+        .last()
+        .expect("two recovery candidates should have been cancelled");
+    let status = wait_for_observed_status(&runtime, &pipeline_key, |status| {
+        status.running_cores() == 1
+            && status
+                .serving_generations()
+                .get(&0)
+                .is_some_and(|generation| *generation > last_cancelled_generation)
+    });
+    assert!(status.readiness());
+    let serving_generation = {
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recovery = state
+            .runtime_recoveries
+            .get(&(pipeline_key.clone(), 0))
+            .expect("successful recovery should remain tracked");
+        assert_eq!(recovery.restart_count, 1);
+        recovery.serving_generation
+    };
+
+    runtime
+        .request_instance_shutdown(
+            &deployed_key("g1", "p1", 0, serving_generation),
+            2,
+            "restart budget test cleanup",
+        )
+        .expect("recovered runtime should accept shutdown");
 }
 
 /// Scenario: a serving core fails while an engine-wide operation owns the

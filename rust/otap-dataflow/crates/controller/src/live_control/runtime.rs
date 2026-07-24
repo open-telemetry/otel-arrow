@@ -244,14 +244,7 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.global_shutdown_requested
-                || state.active_engine_operation.is_some()
-                || state.active_rollouts.contains_key(pipeline_key)
-                || state.active_shutdowns.contains_key(pipeline_key)
-                || state
-                    .pipeline_operation_reservations
-                    .contains_key(pipeline_key)
-            {
+            if state.recovery_preempted(pipeline_key) {
                 return;
             }
 
@@ -326,23 +319,13 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let reservation_kind = state
-                .pipeline_operation_reservations
-                .get(&pipeline_key)
-                .map(|reservation| reservation.kind);
-            if state.global_shutdown_requested
-                || state.active_shutdowns.contains_key(&pipeline_key)
-                || reservation_kind == Some(PipelineOperationKind::Shutdown)
-            {
+            if state.recovery_in_shutdown_context(&pipeline_key) {
                 if state.first_error.is_none() {
                     state.first_error = Some(error.message);
                 }
                 return;
             }
-            if state.active_rollouts.contains_key(&pipeline_key)
-                || state.active_engine_operation.is_some()
-                || reservation_kind == Some(PipelineOperationKind::Rollout)
-            {
+            if state.recovery_preempted(&pipeline_key) {
                 // Explicit operations own the generation transition, but a core
                 // can fail after its one-time readiness check. Retain the exit so
                 // ownership release can recover whichever generation ultimately
@@ -387,23 +370,13 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let reservation_kind = state
-                .pipeline_operation_reservations
-                .get(&pipeline_key)
-                .map(|reservation| reservation.kind);
-            if state.global_shutdown_requested
-                || state.active_shutdowns.contains_key(&pipeline_key)
-                || reservation_kind == Some(PipelineOperationKind::Shutdown)
-            {
+            if state.recovery_in_shutdown_context(&pipeline_key) {
                 if state.first_error.is_none() {
                     state.first_error = Some(error.message);
                 }
                 return;
             }
-            if state.active_rollouts.contains_key(&pipeline_key)
-                || state.active_engine_operation.is_some()
-                || reservation_kind == Some(PipelineOperationKind::Rollout)
-            {
+            if state.recovery_preempted(&pipeline_key) {
                 Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
                 return;
             }
@@ -551,9 +524,9 @@ impl<
         mut last_error: String,
     ) {
         loop {
-            // Budget charging and generation reservation happen together under
-            // the state lock. No launch occurs unless this worker still owns the
-            // core and no explicit controller operation has taken precedence.
+            // Reserve a unique generation and compute the tentative attempt
+            // before backoff, but do not charge the restart budget until this
+            // worker is still eligible immediately before launch.
             let attempt =
                 self.prepare_runtime_recovery_attempt(&pipeline_key, core_id, worker_id, &policy);
             let attempt = match attempt {
@@ -614,6 +587,23 @@ impl<
                 return;
             }
 
+            if !self.commit_runtime_recovery_launch(
+                &pipeline_key,
+                core_id,
+                worker_id,
+                attempt.attempt,
+                attempt.target_key.deployment_generation,
+            ) {
+                self.release_cancelled_runtime_recovery_worker(
+                    &pipeline_key,
+                    core_id,
+                    failed_generation,
+                    worker_id,
+                    last_error,
+                );
+                return;
+            }
+
             let target_key = match self.launch_regular_pipeline_instance(
                 &attempt.resolved,
                 core_id,
@@ -651,6 +641,7 @@ impl<
                                 .is_some_and(|instance| {
                                     matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
                                 });
+                        let preempted = state.recovery_preempted(&pipeline_key);
                         let Some(recovery) = state
                             .runtime_recoveries
                             .get_mut(&(pipeline_key.clone(), core_id))
@@ -659,6 +650,7 @@ impl<
                         };
                         if recovery.worker_id != Some(worker_id)
                             || recovery.cancel_requested
+                            || preempted
                             || !target_active
                         {
                             false
@@ -693,13 +685,7 @@ impl<
                                     recovery.worker_id != Some(worker_id)
                                         || recovery.cancel_requested
                                 })
-                                || state.global_shutdown_requested
-                                || state.active_rollouts.contains_key(&pipeline_key)
-                                || state.active_shutdowns.contains_key(&pipeline_key)
-                                || state
-                                    .pipeline_operation_reservations
-                                    .contains_key(&pipeline_key)
-                                || state.active_engine_operation.is_some()
+                                || state.recovery_preempted(&pipeline_key)
                         };
                         let _ = self.shutdown_instance(
                             &target_key,
@@ -768,7 +754,7 @@ impl<
         }
     }
 
-    /// Allocates the next generation and restart ordinal for a recovery worker.
+    /// Reserves the next generation and tentative restart ordinal.
     fn prepare_runtime_recovery_attempt(
         &self,
         pipeline_key: &PipelineKey,
@@ -789,13 +775,7 @@ impl<
         // failed serving generation for post-operation handoff first.
         if recovery.worker_id != Some(worker_id)
             || recovery.cancel_requested
-            || state.global_shutdown_requested
-            || state.active_rollouts.contains_key(pipeline_key)
-            || state.active_shutdowns.contains_key(pipeline_key)
-            || state
-                .pipeline_operation_reservations
-                .contains_key(pipeline_key)
-            || state.active_engine_operation.is_some()
+            || state.recovery_preempted(pipeline_key)
         {
             return RuntimeRecoveryAttemptDecision::Cancelled;
         }
@@ -810,14 +790,7 @@ impl<
         else {
             return RuntimeRecoveryAttemptDecision::Exhausted;
         };
-        let attempt = {
-            let recovery = state
-                .runtime_recoveries
-                .get_mut(&recovery_key)
-                .expect("runtime recovery exists above");
-            recovery.restart_count += 1;
-            recovery.restart_count
-        };
+        let attempt = recovery.restart_count + 1;
         let target_generation = {
             // Recovery and rollouts share this counter. Generations must remain
             // unique across core-local replacements and full-pipeline changes
@@ -849,6 +822,39 @@ impl<
         }))
     }
 
+    /// Charges one restart immediately before its replacement launch.
+    fn commit_runtime_recovery_launch(
+        &self,
+        pipeline_key: &PipelineKey,
+        core_id: usize,
+        worker_id: u64,
+        attempt: usize,
+        target_generation: u64,
+    ) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.recovery_preempted(pipeline_key) {
+            return false;
+        }
+        let Some(recovery) = state
+            .runtime_recoveries
+            .get_mut(&(pipeline_key.clone(), core_id))
+        else {
+            return false;
+        };
+        if recovery.worker_id != Some(worker_id)
+            || recovery.cancel_requested
+            || recovery.candidate_generation != Some(target_generation)
+            || recovery.restart_count.checked_add(1) != Some(attempt)
+        {
+            return false;
+        }
+        recovery.restart_count = attempt;
+        true
+    }
+
     /// Waits for a recovery backoff while remaining cancellable.
     fn wait_for_runtime_recovery_delay(
         &self,
@@ -866,20 +872,14 @@ impl<
         loop {
             // Use the condition variable instead of sleeping so rollout, shutdown,
             // or engine reconciliation can interrupt a long recovery backoff.
-            let active = state
-                .runtime_recoveries
-                .get(&recovery_key)
-                .is_some_and(|recovery| {
-                    recovery.worker_id == Some(worker_id) && !recovery.cancel_requested
-                })
-                && !state.global_shutdown_requested
-                && !state.active_rollouts.contains_key(pipeline_key)
-                && !state.active_shutdowns.contains_key(pipeline_key)
-                && !state
-                    .pipeline_operation_reservations
-                    .contains_key(pipeline_key)
-                && state.active_engine_operation.is_none();
-            if !active {
+            let worker_active =
+                state
+                    .runtime_recoveries
+                    .get(&recovery_key)
+                    .is_some_and(|recovery| {
+                        recovery.worker_id == Some(worker_id) && !recovery.cancel_requested
+                    });
+            if !worker_active || state.recovery_preempted(pipeline_key) {
                 return false;
             }
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
@@ -917,13 +917,7 @@ impl<
                     .is_none_or(|recovery| {
                         recovery.worker_id != Some(worker_id) || recovery.cancel_requested
                     })
-                    || state.global_shutdown_requested
-                    || state.active_rollouts.contains_key(pipeline_key)
-                    || state.active_shutdowns.contains_key(pipeline_key)
-                    || state
-                        .pipeline_operation_reservations
-                        .contains_key(pipeline_key)
-                    || state.active_engine_operation.is_some()
+                    || state.recovery_preempted(pipeline_key)
             };
             if cancelled {
                 return Err(RecoveryReadyError::Cancelled);
@@ -1071,16 +1065,8 @@ impl<
             return;
         }
 
-        let reservation_kind = state
-            .pipeline_operation_reservations
-            .get(pipeline_key)
-            .map(|reservation| reservation.kind);
-        let should_defer = !state.global_shutdown_requested
-            && !state.active_shutdowns.contains_key(pipeline_key)
-            && reservation_kind != Some(PipelineOperationKind::Shutdown)
-            && (state.active_rollouts.contains_key(pipeline_key)
-                || state.active_engine_operation.is_some()
-                || reservation_kind == Some(PipelineOperationKind::Rollout));
+        let should_defer = state.recovery_preempted(pipeline_key)
+            && !state.recovery_in_shutdown_context(pipeline_key);
         if should_defer {
             Self::defer_runtime_recovery_locked(
                 &mut state,

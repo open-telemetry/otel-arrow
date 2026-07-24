@@ -244,6 +244,12 @@ flowchart TD
     owns -->|"No: rollout or engine operation"| defer
 ```
 
+Reconfigure and pipeline-shutdown requests synchronously wait for a preempted
+recovery worker to release its candidate. If a replacement is already in
+flight, candidate cleanup may delay the control-plane response for as long as
+`runtime_recovery.startup_timeout`. Clients should include that interval when
+choosing their request timeout.
+
 ### Controller Safety Behaviors
 
 The controller treats live reconfiguration as a runtime lifecycle operation,

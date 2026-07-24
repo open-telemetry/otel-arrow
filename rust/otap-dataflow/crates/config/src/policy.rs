@@ -264,6 +264,9 @@ impl ResolvedPolicies {
 #[serde(deny_unknown_fields)]
 pub struct RuntimeRecoveryPolicy {
     /// Whether unexpected runtime failures are recovered in-process.
+    ///
+    /// When false, an unexpected runtime failure is fatal and requests
+    /// coordinated engine shutdown instead of launching a replacement.
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Maximum replacement launches allowed in one failure streak.
