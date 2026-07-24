@@ -97,7 +97,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523, signed client assertion). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
-| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override). Production uses an `https://` `token_url`; `http://` (no TLS) is for local testing only. A `timeout` bounds each request. |
+| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override). While `http://` endpoints are allowed, it is strongly recommended to use an `https://` `token_url`. Extension will throw a warning when `http://` endpoints are used. A `timeout` bounds each request. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
 
