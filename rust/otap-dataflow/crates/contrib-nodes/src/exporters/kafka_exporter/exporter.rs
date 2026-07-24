@@ -1216,6 +1216,7 @@ pub mod test_support {
                         .assert_format_otlp();
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
                 },
             )
             .await;
@@ -1249,6 +1250,7 @@ pub mod test_support {
                         .assert_format_otlp();
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+                    exporter.await_stopped().await;
                 },
             )
             .await;
@@ -1282,6 +1284,8 @@ pub mod test_support {
                         .assert_format_otlp();
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
                 },
             )
             .await;
@@ -1321,6 +1325,8 @@ pub mod test_support {
                     );
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
                 },
             )
             .await;
@@ -1358,6 +1364,8 @@ pub mod test_support {
                     let _ = consumer.recv().await.assert_topic(dynamic_topic);
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
                 },
             )
             .await;
@@ -1401,6 +1409,8 @@ pub mod test_support {
                     let _ = consumer.recv().await.assert_key(expected_key.as_bytes());
 
                     exporter.shutdown(Duration::from_millis(500)).await;
+
+                    exporter.await_stopped().await;
                 },
             )
             .await;
@@ -1432,6 +1442,8 @@ pub mod test_support {
                     }
 
                     exporter.shutdown(Duration::from_secs(10)).await;
+
+                    exporter.await_stopped().await;
 
                     let msgs = consumer.recv_n(3).await;
                     for msg in &msgs {

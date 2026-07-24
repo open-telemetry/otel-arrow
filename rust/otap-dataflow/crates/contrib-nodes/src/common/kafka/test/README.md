@@ -147,12 +147,22 @@ cross-test group sharing.
 | `recv_n(n)` | Receive exactly `n` messages. |
 | `collect_until_idle(idle)` | Drain until no message arrives within `idle`. |
 | `assignment()` | Current `(topic, partition)` assignment. |
-| `wait_for_assignment(min_partitions, timeout)` | Drive polling until assigned. |
-| `committed_offset(topic, partition)` | Committed offset for this consumer's group. |
-| `committed_offsets(&[(topic, partition)])` | Committed offsets for several pairs. |
+| `wait_for_assignment(min_partitions, timeout)` | Drive polling until assigned (received records are buffered, not dropped). |
+| `committed_offset(topic, partition)` | Committed offset for this consumer's group (`Result<Option<i64>, TestError>`). |
+| `committed_offsets(&[(topic, partition)])` | Committed offsets for several pairs (`Result<Vec<Option<i64>>, TestError>`). |
+
+`wait_for_assignment` polls the consumer to advance group membership; any
+application record it receives while doing so is buffered internally and
+returned by the next `recv`/`try_recv`, so records produced before the call are
+not lost from later assertions.
 
 The free function `committed_offset(brokers, group, topic, partition)` reads a
-committed offset with an independent probe client (no live consumer needed).
+committed offset with an independent probe client (no live consumer needed). It
+returns `Result<Option<i64>, TestError>`: `Ok(None)` means no offset has been
+committed, while `Err` means the probe itself failed. Keeping these distinct
+prevents a broker error/timeout from masquerading as "uncommitted" and passing a
+negative assertion. `assert_committed_offset` unwraps the probe (panicking on a
+probe error) before comparing.
 
 `TestConsumer` also offers chaining `&Self` assertions: `assert_assignment_count`,
 `assert_assigned`, `assert_not_assigned`, `assert_committed_offset`, plus the async
@@ -164,7 +174,10 @@ Multiple `TestConsumer`s sharing a `group_id` model a consumer group.
 `RebalanceTrigger::join(cluster, group, &[topics], timeout)` joins an extra
 group member and polls it until it holds an assignment, which deterministically
 drives a revoke on the other members. Keep the trigger alive as long as the
-revoke must persist; drop it to let partition ownership revert.
+revoke must persist; drop it to let partition ownership revert. The trigger is a
+throwaway member: any records it receives while polling for its assignment are
+intentionally discarded, so use a `TestConsumer` (which buffers records) to
+consume application data.
 
 ## Manipulating the broker (fault injection)
 
@@ -205,14 +218,20 @@ queries.
 
 | Method | Purpose |
 | --- | --- |
-| `topics()` | All topics and their partition counts (`Vec<TopicInfo>`). |
-| `partitions(topic)` | Per-partition topology: leader, replicas, ISR (`Vec<PartitionInfo>`). |
+| `topics()` | All topics and their partition counts (`Vec<TopicInfo>`; panics on probe failure). |
+| `try_topics()` | Like `topics()` but returns `Result<Vec<TopicInfo>, TestError>` so a metadata-probe failure is observable (e.g. under injected request errors). |
+| `partitions(topic)` | Per-partition topology: leader, replicas, ISR (`Vec<PartitionInfo>`; panics on probe failure). |
+| `try_partitions(topic)` | Like `partitions()` but returns `Result<Vec<PartitionInfo>, TestError>`. |
 | `topic_exists(topic)` | Whether a topic exists. |
 | `watermarks(topic, partition)` | `(low, high)` watermark offsets. |
 | `message_count(topic, partition)` | `high - low` for a partition. |
-| `committed_offset(topic, partition)` | Committed offset (requires `inspect_group`). |
-| `committed_offsets(&[(topic, partition)])` | Committed offsets for several pairs. |
+| `committed_offset(topic, partition)` | Committed offset, `Result<Option<i64>, TestError>` (requires `inspect_group`). |
+| `committed_offsets(&[(topic, partition)])` | Committed offsets for several pairs (`Result<Vec<Option<i64>>, TestError>`). |
 | `probe_timeout(duration)` | Override the probe timeout (default 10s). |
+
+The `try_*` variants surface a probe failure as `Err` instead of panicking,
+which lets a test observe an injected request fault (e.g. via
+`faults().inject_request_errors(..)`) rather than masking it.
 
 The inspector also exposes chaining `&Self` assertions: `assert_topic_exists`,
 `assert_topic_absent`, `assert_partition_count`, `assert_message_count`,
@@ -269,8 +288,8 @@ the `start_for` variants.
 | `start(cluster, cfg)` / `start_for(cluster, topics)` | Start the exporter on the current `LocalSet`. |
 | `send_pdata(pdata)` | Send a pdata batch to the exporter. |
 | `shutdown(deadline)` | Request a graceful shutdown. |
-| `await_stopped()` | Await task completion. |
-| `await_terminal_state()` | Await completion and return the final metric snapshots. |
+| `await_stopped()` | Await task completion; **panics if the node returned an error or the task panicked**. |
+| `await_terminal_state()` | Await completion and return the final metric snapshots; **panics on node error or task panic**. |
 
 `KafkaReceiverHarness`:
 
@@ -282,7 +301,12 @@ the `start_for` variants.
 | `ack(pdata)` | Acknowledge consumed pdata so manual-commit offsets advance. |
 | `drain(deadline)` | Request a receiver-first ingress drain. |
 | `shutdown(deadline)` | Request a graceful shutdown. |
-| `await_stopped()` / `await_terminal_state()` | Await task completion (optionally returning final metric snapshots). |
+| `await_stopped()` / `await_terminal_state()` | Await task completion (optionally returning final metric snapshots); **panics if the node returned an error or the task panicked**. |
+
+Call `await_stopped()` (or `await_terminal_state()`) after `shutdown()` so the
+graceful-shutdown path runs to completion on the `LocalSet` instead of being
+cancelled when the test body returns, and so a node error or task panic during
+shutdown is surfaced (rather than silently reported as a clean stop).
 
 ## Asserting on metrics
 

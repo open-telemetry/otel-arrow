@@ -142,6 +142,7 @@ async fn demo_committed_offset_advancement() {
             let insp = cluster.inspect_group(group);
             let advanced = poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
                 insp.committed_offset("demo-commit", 0)
+                    .expect("kafka-test: committed-offset probe failed")
                     .is_some_and(|o| o >= 3)
             })
             .await;
@@ -283,36 +284,71 @@ async fn demo_round_trip_time_latency() {
     .await;
 }
 
-/// Scenario: inject metadata request errors, then clear them.
-/// Guarantees: the client recovers and delivers once the injected errors are
-/// cleared.
+/// Scenario: inject `Produce` request errors, observe produce failures while
+/// they are active, then clear them and observe delivery recovery.
+/// Guarantees: error injection is observable (produces fail while the fault is
+/// queued) and reversible (produces succeed once cleared), so the test would
+/// fail if `inject_request_errors` were a no-op.
 #[tokio::test]
 async fn demo_request_error_injection() {
+    const TOPIC: &str = "demo-errinject";
     with_cluster(
-        KafkaTestCluster::builder().topic("demo-errinject"),
+        KafkaTestCluster::builder().topic(TOPIC),
         |cluster| async move {
-            cluster.faults().inject_request_errors(
-                RDKafkaApiKey::Metadata,
-                &[
-                    RDKafkaRespErr::RD_KAFKA_RESP_ERR_BROKER_NOT_AVAILABLE,
-                    RDKafkaRespErr::RD_KAFKA_RESP_ERR_BROKER_NOT_AVAILABLE,
-                ],
-            );
-            cluster
-                .faults()
-                .clear_request_errors(RDKafkaApiKey::Metadata);
+            // Clean baseline: without any fault, produces succeed.
+            let baseline = cluster
+                .producer()
+                .message_timeout(Duration::from_millis(800))
+                .build();
+            baseline
+                .send(TOPIC, b"baseline")
+                .await
+                .expect("clean produce should succeed before fault injection");
 
+            // Queue a large stack of produce errors. A clean broker fails zero
+            // produces, so observing any produce failure is attributable to the
+            // injected errors; a no-op `inject_request_errors` would leave every
+            // produce succeeding and fail this assertion.
+            cluster.faults().inject_request_errors(
+                RDKafkaApiKey::Produce,
+                &[RDKafkaRespErr::RD_KAFKA_RESP_ERR_BROKER_NOT_AVAILABLE; 60],
+            );
             let producer = cluster
                 .producer()
-                .message_timeout(Duration::from_secs(10))
+                .message_timeout(Duration::from_millis(800))
                 .build();
+            let mut observed_failure = false;
+            for _ in 0..20 {
+                if producer.send(TOPIC, b"during").await.is_err() {
+                    observed_failure = true;
+                    break;
+                }
+            }
+            assert!(
+                observed_failure,
+                "a produce should fail while Produce errors are injected; \
+                 error injection is not working"
+            );
+
+            // Clear the fault and confirm delivery recovers.
+            cluster
+                .faults()
+                .clear_request_errors(RDKafkaApiKey::Produce);
             let recovered = poll_until_async(
                 Duration::from_secs(10),
                 Duration::from_millis(250),
-                || async { producer.send("demo-errinject", b"ok").await.is_ok() },
+                || async {
+                    cluster
+                        .producer()
+                        .message_timeout(Duration::from_secs(2))
+                        .build()
+                        .send(TOPIC, b"after")
+                        .await
+                        .is_ok()
+                },
             )
             .await;
-            assert!(recovered, "client should recover after errors are cleared");
+            assert!(recovered, "produces should succeed once errors are cleared");
         },
     )
     .await;
@@ -330,7 +366,8 @@ async fn demo_committed_offset_probe_none_when_unconsumed() {
                 "never-consumed-group",
                 "demo-probe",
                 0,
-            );
+            )
+            .expect("kafka-test: committed-offset probe should succeed");
             assert_eq!(
                 offset, None,
                 "unconsumed group should have no committed offset"

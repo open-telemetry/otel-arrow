@@ -10,6 +10,8 @@
 //! deterministic revoke by joining an extra member and polling it until
 //! assigned.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -17,6 +19,7 @@ use rdkafka::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 
+use super::error::TestError;
 use super::message::ConsumedMessage;
 use super::wait::poll_until_async;
 
@@ -134,6 +137,7 @@ impl TestConsumerBuilder {
             consumer,
             brokers: self.brokers,
             group,
+            pending: RefCell::new(VecDeque::new()),
         }
     }
 
@@ -157,6 +161,7 @@ impl TestConsumerBuilder {
             consumer,
             brokers: self.brokers,
             group,
+            pending: RefCell::new(VecDeque::new()),
         }
     }
 }
@@ -166,6 +171,11 @@ pub(crate) struct TestConsumer {
     consumer: StreamConsumer,
     brokers: String,
     group: String,
+    /// Records received while driving a rebalance (e.g. in
+    /// [`TestConsumer::wait_for_assignment`]) are buffered here so a subsequent
+    /// [`TestConsumer::recv`]/[`TestConsumer::try_recv`] returns them instead of
+    /// silently dropping records the caller produced beforehand.
+    pending: RefCell<VecDeque<ConsumedMessage>>,
 }
 
 impl TestConsumer {
@@ -182,11 +192,18 @@ impl TestConsumer {
 
     /// Receives one message within `timeout`, returning `None` on timeout.
     ///
+    /// Any records buffered while driving a rebalance (see
+    /// [`TestConsumer::wait_for_assignment`]) are returned first, before polling
+    /// the broker.
+    ///
     /// # Panics
     ///
     /// Panics on a consume error (a broker/client failure, distinct from an
     /// empty poll).
     pub(crate) async fn try_recv(&self, timeout: Duration) -> Option<ConsumedMessage> {
+        if let Some(buffered) = self.pending.borrow_mut().pop_front() {
+            return Some(buffered);
+        }
         match tokio::time::timeout(timeout, self.consumer.recv()).await {
             Ok(Ok(msg)) => Some(ConsumedMessage::from_borrowed(&msg)),
             Ok(Err(e)) => panic!("kafka-test: consume error: {e}"),
@@ -233,8 +250,13 @@ impl TestConsumer {
             .unwrap_or_default()
     }
 
-    /// Drives `recv()` until at least `min_partitions` are assigned or `timeout`
-    /// elapses. Returns whether the assignment threshold was reached.
+    /// Drives the consumer until at least `min_partitions` are assigned or
+    /// `timeout` elapses. Returns whether the assignment threshold was reached.
+    ///
+    /// Polling to advance group membership may surface application records; they
+    /// are buffered (not discarded) so a subsequent
+    /// [`TestConsumer::recv`]/[`TestConsumer::try_recv`] returns them. This
+    /// preserves records the caller produced before calling this method.
     pub(crate) async fn wait_for_assignment(
         &self,
         min_partitions: usize,
@@ -244,8 +266,15 @@ impl TestConsumer {
             if self.assignment().len() >= min_partitions {
                 return true;
             }
-            // Poll to advance group membership; ignore the result.
-            let _ = self.try_recv(Duration::from_millis(250)).await;
+            // Poll to advance group membership. Buffer any record we receive so
+            // it is not lost from later `recv`/`try_recv` assertions.
+            if let Ok(Ok(msg)) =
+                tokio::time::timeout(Duration::from_millis(250), self.consumer.recv()).await
+            {
+                self.pending
+                    .borrow_mut()
+                    .push_back(ConsumedMessage::from_borrowed(&msg));
+            }
             self.assignment().len() >= min_partitions
         })
         .await
@@ -253,12 +282,31 @@ impl TestConsumer {
 
     /// Returns the committed offset for `(topic, partition)` in this consumer's
     /// group, via an independent probe client.
-    pub(crate) fn committed_offset(&self, topic: &str, partition: i32) -> Option<i64> {
+    ///
+    /// `Ok(None)` means no offset has been committed; `Err` means the probe
+    /// itself failed (broker error/timeout) and is deliberately distinct from
+    /// `Ok(None)` so a broken probe cannot masquerade as "uncommitted".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Consume`] if the committed-offset probe fails.
+    pub(crate) fn committed_offset(
+        &self,
+        topic: &str,
+        partition: i32,
+    ) -> Result<Option<i64>, TestError> {
         committed_offset(&self.brokers, &self.group, topic, partition)
     }
 
     /// Returns committed offsets for several `(topic, partition)` pairs.
-    pub(crate) fn committed_offsets(&self, tps: &[(&str, i32)]) -> Vec<Option<i64>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Consume`] if any committed-offset probe fails.
+    pub(crate) fn committed_offsets(
+        &self,
+        tps: &[(&str, i32)],
+    ) -> Result<Vec<Option<i64>>, TestError> {
         tps.iter()
             .map(|(t, p)| self.committed_offset(t, *p))
             .collect()
@@ -307,7 +355,8 @@ impl TestConsumer {
         expected: Option<i64>,
     ) -> &Self {
         assert_eq!(
-            self.committed_offset(topic, partition),
+            self.committed_offset(topic, partition)
+                .expect("committed-offset probe failed"),
             expected,
             "unexpected committed offset on {topic:?}/{partition}"
         );
@@ -331,18 +380,28 @@ impl TestConsumer {
 }
 
 /// Reads the committed offset for `(topic, partition)` in `group`, using an
-/// independent [`BaseConsumer`] probe client. Returns `Some(offset)` when an
-/// offset has been committed, else `None`.
+/// independent [`BaseConsumer`] probe client.
+///
+/// `Ok(Some(offset))` when an offset has been committed, `Ok(None)` when none
+/// has, and `Err` when the probe itself failed. Keeping the probe error
+/// distinct from `Ok(None)` prevents a broker error/timeout from masquerading
+/// as "no offset committed" (which would let negative assertions pass while
+/// inspection is broken).
+///
+/// # Errors
+///
+/// Returns [`TestError::Consume`] if the committed-offset probe fails.
 ///
 /// # Panics
 ///
-/// Panics (with context) if the probe client cannot be created.
+/// Panics (with context) if the probe client cannot be created (a
+/// test-environment setup bug).
 pub(crate) fn committed_offset(
     brokers: &str,
     group: &str,
     topic: &str,
     partition: i32,
-) -> Option<i64> {
+) -> Result<Option<i64>, TestError> {
     let consumer: BaseConsumer = ClientConfig::new()
         .set("bootstrap.servers", brokers)
         .set("group.id", group)
@@ -355,10 +414,13 @@ pub(crate) fn committed_offset(
 
     let committed = consumer
         .committed_offsets(tpl, COMMITTED_PROBE_TIMEOUT)
-        .ok()?;
-    match committed.find_partition(topic, partition)?.offset() {
-        Offset::Offset(o) => Some(o),
-        _ => None,
+        .map_err(|e| TestError::Consume(format!("committed-offset probe failed: {e}")))?;
+    match committed.find_partition(topic, partition) {
+        Some(elem) => match elem.offset() {
+            Offset::Offset(o) => Ok(Some(o)),
+            _ => Ok(None),
+        },
+        None => Ok(None),
     }
 }
 
@@ -367,6 +429,11 @@ pub(crate) fn committed_offset(
 /// It joins `group`, subscribes to `topics`, and is polled until it holds an
 /// assignment (which drives the revoke on the other members). Keep it alive for
 /// as long as the revoke must persist; drop it to let ownership revert.
+///
+/// This is a throwaway member whose only purpose is to trigger a rebalance on
+/// the node/consumer under test; any records it receives while polling for its
+/// assignment are intentionally discarded. Do not use it to consume application
+/// data -- use a [`TestConsumer`] (which buffers records) for that.
 pub(crate) struct RebalanceTrigger {
     consumer: StreamConsumer,
 }

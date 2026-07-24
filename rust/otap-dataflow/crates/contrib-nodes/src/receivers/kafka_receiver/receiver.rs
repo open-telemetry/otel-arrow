@@ -3174,6 +3174,7 @@ mod tests {
                         Duration::from_millis(250),
                         || {
                             committed_offset(&brokers, group, TOPIC, partition)
+                                .expect("kafka-test: committed-offset probe failed")
                                 .is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
                         },
                     )
@@ -3181,7 +3182,8 @@ mod tests {
                     assert!(
                         committed,
                         "partition {partition} should have committed offset >= {REBALANCE_RECORDS_PER_PARTITION}, got {:?}",
-                        committed_offset(&brokers, group, TOPIC, partition),
+                        committed_offset(&brokers, group, TOPIC, partition)
+                            .expect("kafka-test: committed-offset probe failed"),
                     );
                 }
             },
@@ -3250,8 +3252,10 @@ mod tests {
                     Duration::from_secs(5),
                     Duration::from_millis(250),
                     || {
-                        let c0 = committed_offset(&brokers, group, TOPIC, 0);
-                        let c1 = committed_offset(&brokers, group, TOPIC, 1);
+                        let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed");
+                        let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                            .expect("kafka-test: committed-offset probe failed");
                         c0.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
                             && c1.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
                     },
@@ -3381,6 +3385,7 @@ mod tests {
                     // that accounts for its initial + post-rebalance records.
                     if poll_until(Duration::from_secs(2), Duration::from_millis(250), || {
                         committed_offset(&brokers, group, TOPIC, a_partition)
+                            .expect("kafka-test: committed-offset probe failed")
                             .is_some_and(|o| o >= 2)
                     })
                     .await
@@ -3478,8 +3483,10 @@ mod tests {
                     }
                     // Both partitions should end up with a committed offset that
                     // accounts for the initial + post-reassignment records.
-                    let c0 = committed_offset(&brokers, group, TOPIC, 0);
-                    let c1 = committed_offset(&brokers, group, TOPIC, 1);
+                    let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed");
+                    let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                        .expect("kafka-test: committed-offset probe failed");
                     if c0.is_some_and(|o| o >= 2) && c1.is_some_and(|o| o >= 2) {
                         break;
                     }
@@ -3490,8 +3497,10 @@ mod tests {
                 // committed (offset >= 2). If the generation guard were broken,
                 // the reassigned partition's fresh state would be purged and its
                 // ack dropped, leaving the offset stuck at 1.
-                let c0 = committed_offset(&brokers, group, TOPIC, 0);
-                let c1 = committed_offset(&brokers, group, TOPIC, 1);
+                let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                    .expect("kafka-test: committed-offset probe failed");
                 assert!(
                     c0.is_some_and(|o| o >= 2) || c1.is_some_and(|o| o >= 2),
                     "a reassigned partition must commit its post-reassignment record; \
@@ -3594,13 +3603,15 @@ mod tests {
                 let committed =
                     poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
                         committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
                             .is_some_and(|o| o >= INITIAL as i64)
                     })
                     .await;
                 assert!(
                     committed,
                     "pre-drain offsets should be committed at drain time, got {:?}",
-                    committed_offset(&brokers, group, TOPIC, 0),
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
                 );
 
                 // The receiver must still terminate cleanly on Shutdown; awaiting the

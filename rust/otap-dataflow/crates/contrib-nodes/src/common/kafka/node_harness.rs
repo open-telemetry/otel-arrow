@@ -147,6 +147,7 @@ mod exporter_harness {
     use otap_df_engine::control::{
         Controllable, NodeControlMsg, pipeline_completion_msg_channel, runtime_ctrl_msg_channel,
     };
+    use otap_df_engine::error::Error as EngineError;
     use otap_df_engine::exporter::ExporterWrapper;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::message::{Receiver, Sender};
@@ -166,7 +167,7 @@ mod exporter_harness {
     pub(crate) struct KafkaExporterHarness {
         pdata_tx: Sender<OtapPdata>,
         control_tx: Sender<NodeControlMsg<OtapPdata>>,
-        join: JoinHandle<Option<TerminalState>>,
+        join: JoinHandle<Result<TerminalState, EngineError>>,
         _keep_alive: KeepAlive,
     }
 
@@ -214,7 +215,6 @@ mod exporter_harness {
                         Interests::empty(),
                     )
                     .await
-                    .ok()
             });
 
             Self {
@@ -270,18 +270,38 @@ mod exporter_harness {
         }
 
         /// Awaits the spawned exporter task's completion.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the exporter node returned an error,
+        /// so a test cannot report a clean shutdown after a failure. Call this
+        /// after [`Self::shutdown`] so the graceful-shutdown path runs to
+        /// completion instead of being cancelled when the `LocalSet` stops.
         pub(crate) async fn await_stopped(self) {
-            let _ = self.join.await;
+            match self.join.await {
+                Ok(Ok(_terminal_state)) => {}
+                Ok(Err(e)) => panic!("kafka-test: exporter node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
+            }
         }
 
         /// Awaits the spawned exporter task and returns the [`TerminalState`] it
         /// produced at graceful shutdown (the node's final metric snapshots).
         ///
-        /// Returns `None` if the task panicked or the node returned an error
-        /// instead of a terminal state. Read individual counters from the
-        /// snapshots with [`super::node_metrics::metric_value`].
-        pub(crate) async fn await_terminal_state(self) -> Option<TerminalState> {
-            self.join.await.ok().flatten()
+        /// Read individual counters from the snapshots with
+        /// [`super::node_metrics::metric_value`].
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the exporter node returned an error
+        /// instead of a terminal state, so probe/metric failures are never
+        /// masked as an absent terminal state.
+        pub(crate) async fn await_terminal_state(self) -> TerminalState {
+            match self.join.await {
+                Ok(Ok(terminal_state)) => terminal_state,
+                Ok(Err(e)) => panic!("kafka-test: exporter node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: exporter task panicked: {e}"),
+            }
         }
     }
 }
@@ -312,6 +332,7 @@ mod receiver_harness {
     use otap_df_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
     };
+    use otap_df_engine::error::Error as EngineError;
     use otap_df_engine::local::message::{LocalReceiver, LocalSender};
     use otap_df_engine::local::receiver as local;
     use otap_df_engine::local::receiver::Receiver as _;
@@ -338,7 +359,7 @@ mod receiver_harness {
         pdata_rx: Receiver<OtapPdata>,
         control_tx: mpsc::Sender<NodeControlMsg<OtapPdata>>,
         runtime_rx: RuntimeCtrlMsgReceiver<OtapPdata>,
-        join: JoinHandle<Option<TerminalState>>,
+        join: JoinHandle<Result<TerminalState, EngineError>>,
         _keep_alive: KeepAlive,
     }
 
@@ -383,7 +404,7 @@ mod receiver_harness {
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
 
             let join = tokio::task::spawn_local(async move {
-                receiver.start(ctrl_msg_chan, effect_handler).await.ok()
+                receiver.start(ctrl_msg_chan, effect_handler).await
             });
 
             Self {
@@ -492,18 +513,38 @@ mod receiver_harness {
         }
 
         /// Awaits the spawned receiver task's completion.
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the receiver node returned an error,
+        /// so a test cannot report a clean shutdown after a failure. Call this
+        /// after [`Self::shutdown`] so the graceful-shutdown path runs to
+        /// completion instead of being cancelled when the `LocalSet` stops.
         pub(crate) async fn await_stopped(self) {
-            let _ = self.join.await;
+            match self.join.await {
+                Ok(Ok(_terminal_state)) => {}
+                Ok(Err(e)) => panic!("kafka-test: receiver node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: receiver task panicked: {e}"),
+            }
         }
 
         /// Awaits the spawned receiver task and returns the [`TerminalState`] it
         /// produced at graceful shutdown (the node's final metric snapshots).
         ///
-        /// Returns `None` if the task panicked or the node returned an error
-        /// instead of a terminal state. Read individual counters from the
-        /// snapshots with [`super::node_metrics::metric_value`].
-        pub(crate) async fn await_terminal_state(self) -> Option<TerminalState> {
-            self.join.await.ok().flatten()
+        /// Read individual counters from the snapshots with
+        /// [`super::node_metrics::metric_value`].
+        ///
+        /// # Panics
+        ///
+        /// Panics if the task panicked or the receiver node returned an error
+        /// instead of a terminal state, so probe/metric failures are never
+        /// masked as an absent terminal state.
+        pub(crate) async fn await_terminal_state(self) -> TerminalState {
+            match self.join.await {
+                Ok(Ok(terminal_state)) => terminal_state,
+                Ok(Err(e)) => panic!("kafka-test: receiver node returned an error: {e:?}"),
+                Err(e) => panic!("kafka-test: receiver task panicked: {e}"),
+            }
         }
     }
 }

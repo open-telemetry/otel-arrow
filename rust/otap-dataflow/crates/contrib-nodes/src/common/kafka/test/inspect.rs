@@ -14,6 +14,8 @@ use rdkafka::ClientConfig;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
 
+use super::error::TestError;
+
 /// Default probe timeout for metadata/watermark/committed queries.
 const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -78,36 +80,50 @@ impl BrokerInspector {
             .expect("kafka-test: failed to create inspector probe consumer")
     }
 
+    /// Returns all topics and their partition counts, surfacing a metadata
+    /// probe failure as an error (used to observe injected request faults).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Consume`] if the metadata probe fails.
+    pub(crate) fn try_topics(&self) -> Result<Vec<TopicInfo>, TestError> {
+        let probe = self.probe();
+        let md = probe
+            .fetch_metadata(None, self.probe_timeout)
+            .map_err(|e| TestError::Consume(format!("fetch_metadata failed: {e}")))?;
+        Ok(md
+            .topics()
+            .iter()
+            .map(|t| TopicInfo {
+                name: t.name().to_string(),
+                partition_count: t.partitions().len(),
+            })
+            .collect())
+    }
+
     /// Returns all topics and their partition counts.
     ///
     /// # Panics
     ///
     /// Panics (with context) if metadata cannot be fetched.
     pub(crate) fn topics(&self) -> Vec<TopicInfo> {
-        let probe = self.probe();
-        let md = probe
-            .fetch_metadata(None, self.probe_timeout)
-            .expect("kafka-test: fetch_metadata failed");
-        md.topics()
-            .iter()
-            .map(|t| TopicInfo {
-                name: t.name().to_string(),
-                partition_count: t.partitions().len(),
-            })
-            .collect()
+        self.try_topics()
+            .expect("kafka-test: fetch_metadata failed")
     }
 
-    /// Returns the partition topology for `topic`.
+    /// Returns the partition topology for `topic`, surfacing a metadata probe
+    /// failure as an error (used to observe injected request faults).
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics (with context) if metadata cannot be fetched.
-    pub(crate) fn partitions(&self, topic: &str) -> Vec<PartitionInfo> {
+    /// Returns [`TestError::Consume`] if the metadata probe fails.
+    pub(crate) fn try_partitions(&self, topic: &str) -> Result<Vec<PartitionInfo>, TestError> {
         let probe = self.probe();
         let md = probe
             .fetch_metadata(Some(topic), self.probe_timeout)
-            .expect("kafka-test: fetch_metadata failed");
-        md.topics()
+            .map_err(|e| TestError::Consume(format!("fetch_metadata failed: {e}")))?;
+        Ok(md
+            .topics()
             .iter()
             .find(|t| t.name() == topic)
             .map(|t| {
@@ -121,7 +137,17 @@ impl BrokerInspector {
                     })
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default())
+    }
+
+    /// Returns the partition topology for `topic`.
+    ///
+    /// # Panics
+    ///
+    /// Panics (with context) if metadata cannot be fetched.
+    pub(crate) fn partitions(&self, topic: &str) -> Vec<PartitionInfo> {
+        self.try_partitions(topic)
+            .expect("kafka-test: fetch_metadata failed")
     }
 
     /// Returns whether `topic` exists.
@@ -151,11 +177,23 @@ impl BrokerInspector {
     /// Returns the committed offset for `(topic, partition)` in the inspector's
     /// group.
     ///
+    /// `Ok(None)` means no offset has been committed; `Err` means the probe
+    /// itself failed, kept distinct so a broker error/timeout cannot masquerade
+    /// as "uncommitted".
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Consume`] if the committed-offset probe fails.
+    ///
     /// # Panics
     ///
     /// Panics if the inspector was not created with a group (use
     /// [`super::cluster::KafkaTestCluster::inspect_group`]).
-    pub(crate) fn committed_offset(&self, topic: &str, partition: i32) -> Option<i64> {
+    pub(crate) fn committed_offset(
+        &self,
+        topic: &str,
+        partition: i32,
+    ) -> Result<Option<i64>, TestError> {
         assert!(
             self.group.is_some(),
             "kafka-test: committed_offset requires a group; use inspect_group(..)"
@@ -163,15 +201,27 @@ impl BrokerInspector {
         let probe = self.probe();
         let mut tpl = TopicPartitionList::new();
         let _ = tpl.add_partition(topic, partition);
-        let committed = probe.committed_offsets(tpl, self.probe_timeout).ok()?;
-        match committed.find_partition(topic, partition)?.offset() {
-            Offset::Offset(o) => Some(o),
-            _ => None,
+        let committed = probe
+            .committed_offsets(tpl, self.probe_timeout)
+            .map_err(|e| TestError::Consume(format!("committed-offset probe failed: {e}")))?;
+        match committed.find_partition(topic, partition) {
+            Some(elem) => match elem.offset() {
+                Offset::Offset(o) => Ok(Some(o)),
+                _ => Ok(None),
+            },
+            None => Ok(None),
         }
     }
 
     /// Returns committed offsets for several `(topic, partition)` pairs.
-    pub(crate) fn committed_offsets(&self, tps: &[(&str, i32)]) -> Vec<Option<i64>> {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TestError::Consume`] if any committed-offset probe fails.
+    pub(crate) fn committed_offsets(
+        &self,
+        tps: &[(&str, i32)],
+    ) -> Result<Vec<Option<i64>>, TestError> {
         tps.iter()
             .map(|(t, p)| self.committed_offset(t, *p))
             .collect()
@@ -275,7 +325,8 @@ impl BrokerInspector {
         expected: Option<i64>,
     ) -> &Self {
         assert_eq!(
-            self.committed_offset(topic, partition),
+            self.committed_offset(topic, partition)
+                .expect("committed-offset probe failed"),
             expected,
             "unexpected committed offset on {topic:?}/{partition}"
         );
