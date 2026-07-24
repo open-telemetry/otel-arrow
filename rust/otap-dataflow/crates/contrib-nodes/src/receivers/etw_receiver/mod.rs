@@ -34,11 +34,12 @@
 //! ## Quick start
 //!
 //! A provider may be identified either by its GUID or by its name. Names are
-//! resolved to a GUID at startup: by default (`kind: auto`) manifest-based and
-//! classic (MOF) providers are looked up in the system provider database, and
-//! TraceLogging / `EventSource` providers fall back to the standard name-hash
-//! convention. Set `kind: manifest` to require a registered provider, or
-//! `kind: tracelogging` to derive the GUID from the name without any OS lookup.
+//! resolved to a GUID at startup: by default (when `kind` is omitted)
+//! manifest-based and classic (MOF) providers are looked up in the system
+//! provider database, and TraceLogging / `EventSource` providers fall back to
+//! the standard name-hash convention. Set `kind: manifest` to require a
+//! registered provider, or `kind: tracelogging` to derive the GUID from the
+//! name without any OS lookup.
 //!
 //! ```yaml
 //! etw:
@@ -133,15 +134,16 @@ enum TraceLevel {
 
 /// How a provider's `name` is resolved to a GUID.
 ///
+/// This selects an *explicit* resolution strategy. Omit `kind` for automatic
+/// resolution: the OS-registered provider database is tried first
+/// (manifest-based or classic MOF), then the receiver falls back to the
+/// EventSource/TraceLogging name hash.
+///
 /// Ignored when a `guid` is supplied directly. See
 /// [`resolve_provider_guid`](session) for the resolution rules.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 enum ProviderKind {
-    /// Try the OS-registered provider database first (manifest-based or classic
-    /// MOF), then fall back to the EventSource/TraceLogging name hash. Default.
-    #[default]
-    Auto,
     /// Resolve strictly via the OS-registered provider database (manifest-based
     /// or classic MOF). Fails if the name is not registered; never hashes.
     Manifest,
@@ -166,7 +168,8 @@ struct ProviderConfig {
 
     /// How a `name` is resolved to a GUID. Ignored when `guid` is set
     /// (supplying `kind` together with `guid` is rejected at validation time).
-    /// Defaults to `auto` (registered database first, then name hash).
+    /// Omit for automatic resolution (registered database first, then name
+    /// hash); set `manifest` or `tracelogging` to force a single strategy.
     #[serde(default)]
     pub kind: Option<ProviderKind>,
 
@@ -230,6 +233,7 @@ impl Config {
     ///
     /// * At least one provider must be specified.
     /// * Each provider must specify exactly one of `name` or `guid` (not both, not neither).
+    /// * A specified `name` or `guid` must not be empty or whitespace-only.
     ///
     /// # Errors
     ///
@@ -256,6 +260,30 @@ impl Config {
                     });
                 }
                 _ => {} // Valid: exactly one of name or guid is specified.
+            }
+
+            // A blank (empty or whitespace-only) identifier satisfies
+            // `is_some()` but carries no usable provider name/GUID. Reject it
+            // here rather than letting it fail later (a blank GUID errors at
+            // parse time; a blank name would hash to a bogus GUID on the
+            // automatic path).
+            if let Some(name) = &provider.name {
+                if name.trim().is_empty() {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'name' must not be empty or whitespace-only"
+                        ),
+                    });
+                }
+            }
+            if let Some(guid) = &provider.guid {
+                if guid.trim().is_empty() {
+                    return Err(otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "provider[{i}]: 'guid' must not be empty or whitespace-only"
+                        ),
+                    });
+                }
             }
 
             // `kind` selects a name-resolution strategy and is meaningless for a
@@ -1041,6 +1069,41 @@ mod tests {
             keywords: None,
         }]);
         assert!(cfg.validate().is_ok());
+    }
+
+    /// Scenario: A provider specifies a `name` that is empty or contains only
+    /// whitespace.
+    /// Guarantees: `Config::validate` rejects the config, so a blank name never
+    /// reaches resolution where it would hash to a bogus GUID on the automatic
+    /// path.
+    #[test]
+    fn validate_rejects_blank_name() {
+        for blank in ["", "   ", "\t\n"] {
+            let cfg = make_config(vec![provider_with_name(blank)]);
+            let err = cfg.validate().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'name' must not be empty or whitespace-only"),
+                "unexpected error for {blank:?}: {msg}"
+            );
+        }
+    }
+
+    /// Scenario: A provider specifies a `guid` that is empty or contains only
+    /// whitespace.
+    /// Guarantees: `Config::validate` rejects the config, so a blank GUID is
+    /// surfaced at validation time instead of failing later at GUID-parse time.
+    #[test]
+    fn validate_rejects_blank_guid() {
+        for blank in ["", "   ", "\t\n"] {
+            let cfg = make_config(vec![provider_with_guid(blank)]);
+            let err = cfg.validate().unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'guid' must not be empty or whitespace-only"),
+                "unexpected error for {blank:?}: {msg}"
+            );
+        }
     }
 
     #[test]
