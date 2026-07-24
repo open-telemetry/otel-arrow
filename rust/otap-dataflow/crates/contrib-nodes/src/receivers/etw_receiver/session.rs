@@ -450,8 +450,15 @@ fn log_name_hashed_after_enumeration_error(name: &str, error: &Error) {
 
 /// Namespace seed for the .NET `EventSource` / TraceLogging provider-name to
 /// GUID hashing algorithm. This fixed 16-byte value is defined by the
-/// EventSource specification and is identical to the constant `one_collect`
-/// uses in its own `guid_from_provider` helper.
+/// EventSource specification.
+///
+/// The seed and the name-encoding convention around it are kept here rather
+/// than delegating to any EventSource helper inside `one_collect`: the receiver
+/// shares only the low-level [`Guid::v5_from_name`] primitive (the stable part)
+/// and pins the EventSource-specific encoding itself, so resolution stays
+/// correct regardless of that helper's non-BMP handling or upper-casing rules.
+/// The `eventsource_guid_from_name_matches_known_vector` test guards against the
+/// seed or the encoding drifting from the documented algorithm.
 const EVENTSOURCE_NAMESPACE: [u8; 16] = [
     0x48, 0x2C, 0x2D, 0xB2, 0xC3, 0x90, 0x47, 0xC8, 0x87, 0xF8, 0x1A, 0x15, 0xBF, 0xC1, 0x30, 0xFB,
 ];
@@ -459,24 +466,30 @@ const EVENTSOURCE_NAMESPACE: [u8; 16] = [
 /// Derive an ETW provider GUID from a provider **name** using the .NET
 /// `EventSource` / TraceLogging convention.
 ///
-/// The name is uppercased and encoded as UTF-16 big-endian, then hashed with
+/// The name is upper-cased and encoded as UTF-16 big-endian, then hashed with
 /// [`Guid::v5_from_name`] against [`EVENTSOURCE_NAMESPACE`]. This matches the
-/// algorithm used by .NET `EventSource.GetGuid`, the C/C++ TraceLogging
-/// `TRACELOGGING_DEFINE_PROVIDER` macro, and `one_collect`'s internal
-/// `guid_from_provider`, so the derived GUID matches the one the provider
-/// actually emits under.
+/// algorithm used by .NET `EventSource.GetGuid` and the C/C++ TraceLogging
+/// `TRACELOGGING_DEFINE_PROVIDER` macro, so the derived GUID matches the one the
+/// provider actually emits under.
+///
+/// Provider names are ASCII in practice; upper-casing uses
+/// [`str::to_ascii_uppercase`], which matches .NET `ToUpperInvariant` across the
+/// ASCII range without the full-Unicode case expansions (for example the German
+/// sharp-S expanding to a double 'S') that [`str::to_uppercase`] would apply. A
+/// non-ASCII provider name would require invariant-culture casing to match .NET
+/// exactly and is not supported.
 fn eventsource_guid_from_name(name: &str) -> Guid {
-    // EventSource encodes the (uppercased) name as UTF-16BE before hashing.
+    // EventSource encodes the (upper-cased) name as UTF-16BE before hashing.
     // `encode_utf16` emits proper surrogate pairs for non-BMP characters,
     // unlike a `char as u16` cast which would truncate them.
     let mut name_bytes = Vec::with_capacity(name.len() * 2);
-    for unit in name.to_uppercase().encode_utf16() {
+    for unit in name.to_ascii_uppercase().encode_utf16() {
         name_bytes.extend_from_slice(&unit.to_be_bytes());
     }
     Guid::v5_from_name(&EVENTSOURCE_NAMESPACE, &name_bytes)
 }
 
-// ── Registered provider lookup (TDH) ─────────────────────────────────────────
+// -- Registered provider lookup (TDH) -----------------------------------------
 //
 // The `TdhEnumerateProviders` enumeration itself lives in `one_collect`
 // alongside the rest of the TDH code, exposed as
@@ -1564,7 +1577,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Provider name → GUID resolution ──────────────
+    // -- Provider name -> GUID resolution --
 
     /// Scenario: A provider name is hashed with the EventSource/TraceLogging
     /// algorithm (the fallback for providers absent from the manifest/MOF
@@ -1778,7 +1791,7 @@ mod tests {
         }
     }
 
-    // ── Field value interpretation ───────────────────
+    // -- Field value interpretation --
 
     #[test]
     fn interpret_signed_integers() {
