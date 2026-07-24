@@ -236,7 +236,7 @@ echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" \
 ```
 
 For sustained load testing, see the
-[load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+[load generator](../../../tools/pipeline_perf_test/load_generator/readme.md):
 
 ```bash
 cd tools/pipeline_perf_test/load_generator
