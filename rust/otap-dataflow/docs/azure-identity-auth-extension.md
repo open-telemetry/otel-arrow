@@ -376,15 +376,30 @@ route.
 
 ### OTLP exporters
 
-The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) and HTTP
-(`urn:otel:exporter:otlp_http`) exporters today support only static request
-headers (e.g. a fixed `Authorization` header) and perform no token refresh.
-They will be updated to **optionally** consume `BearerTokenProvider`: when the
-capability is bound, the exporter resolves it at factory time and injects a
-fresh `Authorization: Bearer <token>` on outgoing requests, reading the current
-token from cache via `get_token()`, so credentials refresh without a restart.
-Their factories already receive a `capabilities` argument (currently unused), so
-this is additive and does not change the default (no-auth) behavior.
+The OTLP HTTP (`urn:otel:exporter:otlp_http`) exporter today supports only
+static request headers (e.g. a fixed `Authorization` header) and performs no
+token refresh. It **optionally** consumes `BearerTokenProvider`: when the
+capability is bound, the exporter resolves it at factory time
+(`optional_local()`) and subscribes to `token_stream()`. It rebuilds and caches
+the `Authorization: Bearer <token>` header once per refresh, then clones the
+cached header onto each outgoing request, so credentials refresh without a
+restart and the export hot loop never performs a credential read, header
+formatting, or a blocking token fetch. Subscribing rather than calling
+`get_token()` per request keeps all credential work off the data path
+(`get_token()`'s coalesced slow path can otherwise block the export loop on a
+token-endpoint call during a refresh failure). Until the provider publishes its
+first token the exporter applies backpressure with a retryable NACK rather than
+sending an unauthenticated request. Its factory already receives a
+`capabilities` argument, so this is additive and does not change the default
+(no-auth) behavior.
+
+The OTLP gRPC (`urn:otel:exporter:otlp_grpc`) exporter can adopt the same
+pattern, but is intentionally left out for now: the only bearer provider today
+is `azure_identity_auth` (scope `https://monitor.azure.com/.default`), and Azure
+Monitor's OTLP ingestion endpoints are HTTP-only (per-signal `.../otlp/v1/{logs,
+metrics,traces}` URLs, consumed by the collector's `otlphttp` exporter), so
+there is no gRPC provider + backend combination to exercise it. It can be wired
+up when a gRPC bearer backend or a non-Azure provider exists.
 
 ## Telemetry
 
