@@ -2317,7 +2317,7 @@ mod tests {
             }
         }
 
-        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 5,
                 "max_size": 10,
