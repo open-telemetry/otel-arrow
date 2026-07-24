@@ -33,6 +33,13 @@
 //!
 //! ## Quick start
 //!
+//! A provider may be identified either by its GUID or by its name. Names are
+//! resolved to a GUID at startup: by default (`kind: auto`) manifest-based and
+//! classic (MOF) providers are looked up in the system provider database, and
+//! TraceLogging / `EventSource` providers fall back to the standard name-hash
+//! convention. Set `kind: manifest` to require a registered provider, or
+//! `kind: tracelogging` to derive the GUID from the name without any OS lookup.
+//!
 //! ```yaml
 //! etw:
 //!   type: receiver:etw
@@ -40,6 +47,11 @@
 //!     providers:
 //!       - guid: "d2387720-2907-5677-8625-c1bdc4155197"
 //!         level: verbose
+//!       - name: "Microsoft-Windows-Kernel-Process"
+//!         kind: manifest
+//!         level: information
+//!       - name: "My-Custom-EventSource"
+//!         kind: tracelogging
 //!     batching:
 //!       max_size: 100
 //!       max_duration: "100ms"
@@ -119,6 +131,25 @@ enum TraceLevel {
     Verbose,
 }
 
+/// How a provider's `name` is resolved to a GUID.
+///
+/// Ignored when a `guid` is supplied directly. See
+/// [`resolve_provider_guid`](session) for the resolution rules.
+#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "snake_case")]
+enum ProviderKind {
+    /// Try the OS-registered provider database first (manifest-based or classic
+    /// MOF), then fall back to the EventSource/TraceLogging name hash. Default.
+    #[default]
+    Auto,
+    /// Resolve strictly via the OS-registered provider database (manifest-based
+    /// or classic MOF). Fails if the name is not registered; never hashes.
+    Manifest,
+    /// Derive the GUID directly from the name using the EventSource/
+    /// TraceLogging hash convention, with no OS lookup.
+    Tracelogging,
+}
+
 /// Configuration for a single ETW provider to trace.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -132,6 +163,12 @@ struct ProviderConfig {
     /// Mutually exclusive with `name`.
     #[serde(default)]
     pub guid: Option<String>,
+
+    /// How a `name` is resolved to a GUID. Ignored when `guid` is set
+    /// (supplying `kind` together with `guid` is rejected at validation time).
+    /// Defaults to `auto` (registered database first, then name hash).
+    #[serde(default)]
+    pub kind: Option<ProviderKind>,
 
     /// Trace level filter. Defaults to `information`.
     #[serde(default)]
@@ -219,6 +256,17 @@ impl Config {
                     });
                 }
                 _ => {} // Valid: exactly one of name or guid is specified.
+            }
+
+            // `kind` selects a name-resolution strategy and is meaningless for a
+            // GUID (which is used verbatim). Reject the combination rather than
+            // silently ignoring `kind`.
+            if provider.guid.is_some() && provider.kind.is_some() {
+                return Err(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "provider[{i}]: 'kind' applies to name-based providers only - remove 'kind' when specifying a 'guid'"
+                    ),
+                });
             }
         }
 
@@ -906,6 +954,7 @@ mod tests {
         ProviderConfig {
             name: None,
             guid: Some(guid.to_string()),
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }
@@ -915,6 +964,7 @@ mod tests {
         ProviderConfig {
             name: Some(name.to_string()),
             guid: None,
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }
@@ -954,11 +1004,51 @@ mod tests {
         );
     }
 
+    /// Scenario: A provider config supplies both a `guid` and a `kind`.
+    /// Guarantees: `Config::validate` rejects the config, so `kind` (a
+    /// name-resolution strategy) is never silently ignored when a GUID is used
+    /// verbatim.
+    #[test]
+    fn validate_rejects_kind_with_guid() {
+        // `kind` selects a name-resolution strategy; combining it with a GUID
+        // (used verbatim) is a config error rather than a silently ignored field.
+        let cfg = make_config(vec![ProviderConfig {
+            name: None,
+            guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: Some(ProviderKind::Manifest),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        let err = cfg.validate().unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("'kind' applies to name-based providers only"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Scenario: A name-based provider supplies an explicit `kind` and no
+    /// `guid`.
+    /// Guarantees: `Config::validate` accepts the config, so specifying a
+    /// resolution strategy for a named provider is a supported configuration.
+    #[test]
+    fn validate_accepts_name_with_explicit_kind() {
+        let cfg = make_config(vec![ProviderConfig {
+            name: Some("My-Custom-EventSource".to_string()),
+            guid: None,
+            kind: Some(ProviderKind::Tracelogging),
+            level: TraceLevel::default(),
+            keywords: None,
+        }]);
+        assert!(cfg.validate().is_ok());
+    }
+
     #[test]
     fn validate_rejects_both_name_and_guid() {
         let cfg = make_config(vec![ProviderConfig {
             name: Some("SomeProvider".to_string()),
             guid: Some("22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716".to_string()),
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }]);
@@ -975,6 +1065,7 @@ mod tests {
         let cfg = make_config(vec![ProviderConfig {
             name: None,
             guid: None,
+            kind: None,
             level: TraceLevel::default(),
             keywords: None,
         }]);
@@ -993,6 +1084,7 @@ mod tests {
             ProviderConfig {
                 name: None,
                 guid: None,
+                kind: None,
                 level: TraceLevel::default(),
                 keywords: None,
             },
