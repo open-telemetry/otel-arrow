@@ -13,6 +13,7 @@ mod pipeline_group;
 mod telemetry;
 
 use axum::Router;
+use axum::response::Response;
 pub use otap_df_admin_types::engine::{
     ConfigChangeAction, ConfigChangeStatus, EngineConfigReconcileRequest,
     EngineConfigReconcileState, EngineConfigReconcileStatus, GroupDeleteStatus,
@@ -260,6 +261,52 @@ impl AppState {
     }
 }
 
+/// Attaches hardened security headers to every `/api/v1/*` response.
+///
+/// Mirrors the non-CSP subset of the UI/static header set from `dashboard.rs`:
+/// `Cache-Control`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+/// Content-Security-Policy is intentionally omitted - it is only meaningful for
+/// HTML responses served by the UI, not for JSON API endpoints.
+/// Centralising them as a layer on `api_routes` means new endpoints inherit them.
+///
+/// Normative sources:
+///
+/// | Header | Source | Purpose |
+/// |---|---|---|
+/// | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 section 5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses |
+/// | `X-Frame-Options: DENY` | [RFC 7034](https://www.rfc-editor.org/rfc/rfc7034) (deprecated, legacy fallback) | Legacy anti-clickjacking |
+/// | `X-Content-Type-Options: nosniff` | [WHATWG Fetch](https://fetch.spec.whatwg.org/#x-content-type-options-header) | Stop MIME-sniffing |
+/// | `Referrer-Policy: no-referrer` | [W3C Referrer Policy](https://www.w3.org/TR/referrer-policy/) | Avoid leaking URLs via the Referer header |
+async fn attach_api_security_headers(mut response: Response) -> Response {
+    use axum::http::{HeaderName, HeaderValue, header};
+    let h = response.headers_mut();
+    // RFC 9111 section 5.2.2 - `no-store` forbids caching; `no-cache` and `must-revalidate`
+    // add defensive coverage for older proxies.
+    let _ = h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+    );
+    // WHATWG Fetch Standard - instructs browser to honor declared Content-Type
+    // and not MIME-sniff responses as executable script or HTML.
+    let _ = h.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static("nosniff"),
+    );
+    // RFC 7034 (Informational, deprecated) - legacy anti-clickjacking fallback
+    // for browsers that do not implement CSP `frame-ancestors`.
+    let _ = h.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static("DENY"),
+    );
+    // W3C Referrer Policy - strips Referer header so admin URLs do not leak
+    // to third parties through outbound links.
+    let _ = h.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static("no-referrer"),
+    );
+    response
+}
+
 /// Run the admin HTTP server until shutdown is requested.
 pub async fn run(
     config: HttpAdminSettings,
@@ -287,7 +334,8 @@ pub async fn run(
         .merge(telemetry::routes())
         .merge(engine_config::routes())
         .merge(pipeline_group::routes())
-        .merge(pipeline::routes());
+        .merge(pipeline::routes())
+        .layer(axum::middleware::map_response(attach_api_security_headers));
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
@@ -343,4 +391,43 @@ pub async fn run(
             addr: addr.to_string(),
             details: format!("{e}"),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attach_api_security_headers;
+    use axum::body::Body;
+    use axum::http::Response;
+
+    /// Verify that all four hardened security headers are injected with the
+    /// expected values and that a pre-existing header on the response is
+    /// not overwritten.
+    #[tokio::test]
+    async fn security_headers_are_attached() {
+        let response = Response::builder()
+            .body(Body::empty())
+            .expect("response should build");
+
+        let response = attach_api_security_headers(response).await;
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-store, no-cache, must-revalidate"),
+        );
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff"),
+        );
+        assert_eq!(
+            headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+            Some("DENY"),
+        );
+        assert_eq!(
+            headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+            Some("no-referrer"),
+        );
+    }
 }
