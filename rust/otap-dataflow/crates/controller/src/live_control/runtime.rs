@@ -6,7 +6,10 @@
 //! This module owns the boundary between controller state and actual pipeline
 //! threads. It registers launched instances, reconciles early exits, sends
 //! shutdown control messages, waits for readiness/exit transitions, and exposes
-//! global runtime shutdown/error helpers used by controller teardown.
+//! global runtime shutdown/error helpers used by controller teardown. Automatic
+//! recovery is scoped to one logical core: it fences one worker per core, gives
+//! every replacement a pipeline-wide unique generation, and yields to explicit
+//! rollout or shutdown operations.
 
 use super::*;
 
@@ -39,6 +42,10 @@ fn deployed_instance_label(deployed_key: &DeployedPipelineKey) -> String {
     )
 }
 
+/// Computes capped exponential backoff for a one-based restart attempt.
+///
+/// Saturating arithmetic keeps even a corrupted or extreme attempt count from
+/// wrapping into a short retry delay.
 fn runtime_recovery_backoff(policy: &RuntimeRecoveryPolicy, attempt: usize) -> Duration {
     let exponent = attempt.saturating_sub(1).min(u32::MAX as usize) as u32;
     let multiplier = 2_u32.checked_pow(exponent).unwrap_or(u32::MAX);
@@ -49,6 +56,10 @@ fn runtime_recovery_backoff(policy: &RuntimeRecoveryPolicy, attempt: usize) -> D
         .min(policy.max_backoff)
 }
 
+/// Returns whether a ready replacement ran long enough to earn a fresh budget.
+///
+/// The reset is evaluated lazily on the next failure, avoiding a timer whose
+/// only purpose would be to mutate an otherwise idle recovery record.
 fn runtime_recovery_streak_expired(
     ready_since: Option<Instant>,
     reset_after: Duration,
@@ -236,6 +247,9 @@ impl<
             if state.active_rollouts.contains_key(&pipeline_key)
                 || state.active_engine_operation.is_some()
             {
+                // The explicit operation already owns this runtime transition and
+                // will observe the failed instance itself. Starting recovery here
+                // would race its candidate or rollback generations.
                 return;
             }
             state.logical_pipelines.get(&pipeline_key).cloned()
@@ -296,10 +310,14 @@ impl<
                     cancel_requested: false,
                 });
             if recovery.worker_id.is_some() {
+                // Multiple exit notifications must not create concurrent workers
+                // that spend the same core's restart budget independently.
                 self.state_changed.notify_all();
                 return;
             }
             if recovery.serving_generation != failed_key.deployment_generation {
+                // This is a late exit from an instance that has already been
+                // superseded. Only the selected serving generation may recover.
                 return;
             }
             if runtime_recovery_streak_expired(
@@ -309,10 +327,14 @@ impl<
             ) {
                 recovery.restart_count = 0;
             }
+            // Clear readiness when the serving runtime fails. A failed candidate
+            // must never inherit time accrued by its predecessor.
             recovery.ready_since = None;
             recovery.cancel_requested = false;
 
             let restart_count = recovery.restart_count;
+            // worker_id is a fencing token. Cleanup from an older worker is only
+            // allowed while it still owns this core's recovery record.
             let worker_id = state.next_recovery_id;
             state.next_recovery_id += 1;
             state
@@ -418,6 +440,9 @@ impl<
         mut last_error: String,
     ) {
         loop {
+            // Budget charging and generation reservation happen together under
+            // the state lock. No launch occurs unless this worker still owns the
+            // core and no explicit controller operation has taken precedence.
             let attempt =
                 self.prepare_runtime_recovery_attempt(&pipeline_key, core_id, worker_id, &policy);
             let attempt = match attempt {
@@ -485,6 +510,9 @@ impl<
                 ready_deadline,
             ) {
                 Ok(()) => {
+                    // Readiness is observed outside the controller mutex and can
+                    // race an exit or cancellation. Promotion therefore rechecks
+                    // worker ownership and runtime liveness atomically.
                     let promoted = {
                         let mut state = self
                             .state
@@ -557,6 +585,9 @@ impl<
                         continue;
                     }
 
+                    // Publish the serving overlay only after controller state has
+                    // accepted the candidate. Until then, status continues to
+                    // select the failed generation rather than an unready runtime.
                     self.observed_state_store.set_pipeline_serving_generation(
                         pipeline_key.clone(),
                         core_id,
@@ -612,6 +643,9 @@ impl<
         let Some(recovery) = state.runtime_recoveries.get(&recovery_key) else {
             return RuntimeRecoveryAttemptDecision::Cancelled;
         };
+        // Explicit operations always outrank automatic recovery. Relinquishing
+        // ownership while holding the mutex also lets cancellation waiters know
+        // that this worker can no longer publish a candidate.
         if recovery.worker_id != Some(worker_id)
             || recovery.cancel_requested
             || state.global_shutdown_requested
@@ -648,6 +682,9 @@ impl<
             recovery.restart_count
         };
         let target_generation = {
+            // Recovery and rollouts share this counter. Generations must remain
+            // unique across core-local replacements and full-pipeline changes
+            // because both are keyed by DeployedPipelineKey.
             let counter = state
                 .generation_counters
                 .entry(pipeline_key.clone())
@@ -690,6 +727,8 @@ impl<
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         loop {
+            // Use the condition variable instead of sleeping so rollout, shutdown,
+            // or engine reconciliation can interrupt a long recovery backoff.
             let active = state
                 .runtime_recoveries
                 .get(&recovery_key)
@@ -751,6 +790,9 @@ impl<
                 && let Some(instance) =
                     status.instance_status(target_key.core_id, target_key.deployment_generation)
             {
+                // Ready and accepted are necessary but not sufficient for
+                // promotion. run_runtime_recovery rechecks controller liveness
+                // under the state lock after this observation succeeds.
                 let accepted = instance.accepted_condition().status == ConditionStatus::True;
                 let ready = instance.ready_condition().status == ConditionStatus::True;
                 if accepted && ready {
@@ -790,6 +832,9 @@ impl<
     }
 
     /// Cancels and joins active recovery workers for one logical pipeline.
+    ///
+    /// Waiting for each worker to release its fencing token prevents an explicit
+    /// rollout or shutdown from overlapping a recovery candidate.
     pub(super) fn cancel_runtime_recoveries_for_pipeline(&self, pipeline_key: &PipelineKey) {
         let mut state = self
             .state
@@ -814,6 +859,9 @@ impl<
     }
 
     /// Cancels and joins every active runtime recovery worker.
+    ///
+    /// Global shutdown uses this barrier before collecting instances so no new
+    /// recovery candidate can appear after the shutdown snapshot.
     fn cancel_all_runtime_recoveries(&self) {
         let mut state = self
             .state
@@ -918,6 +966,8 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // Preserve the first fatal cause before requesting asynchronous
+            // shutdown; controller teardown uses it as the process-level error.
             if state.first_error.is_none() {
                 state.first_error = Some(fatal_message.clone());
             }

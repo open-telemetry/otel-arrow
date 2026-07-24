@@ -449,6 +449,7 @@ pub(super) struct RuntimeRecoveryState {
 /// Committed logical pipeline config plus the active deployment generation.
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
+    /// Pipeline-wide config generation; recovered cores may serve newer generations.
     pub(super) active_generation: u64,
 }
 

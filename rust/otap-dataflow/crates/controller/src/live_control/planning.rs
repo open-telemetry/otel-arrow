@@ -150,6 +150,10 @@ impl<
         let serving_generations = active_generations
             .into_iter()
             .filter_map(|(core_id, generations)| {
+                // Prefer the controller's recovery selection when that runtime is
+                // still active. Otherwise use the committed generation, falling
+                // back to the newest live generation only for partially observed
+                // or legacy state without an explicit selection.
                 let recovered_generation = state
                     .runtime_recoveries
                     .get(&(pipeline_key.clone(), core_id))
