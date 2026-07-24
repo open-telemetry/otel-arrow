@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: ETW receiver now accepts provider names in addition to GUIDs. Manifest-based and classic (MOF) providers are resolved via the Windows TdhEnumerateProviders API, and TraceLogging/EventSource providers fall back to the standard name-hash convention. An optional per-provider `kind` (auto, manifest, tracelogging) selects the resolution strategy.
+note: ETW receiver now accepts provider names in addition to GUIDs.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [2783]

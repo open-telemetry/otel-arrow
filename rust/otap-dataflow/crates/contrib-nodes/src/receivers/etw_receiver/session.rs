@@ -64,13 +64,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use one_collect::Guid;
 use one_collect::etw::tdh::TdhDecoder;
-use one_collect::etw::{self, EtwSession};
+use one_collect::etw::{self, EtwSession, RegisteredProvider, registered_providers};
 use otap_df_engine::error::Error;
 use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use tokio::sync::mpsc;
-use windows_sys::Win32::System::Diagnostics::Etw::{
-    PROVIDER_ENUMERATION_INFO, TRACE_PROVIDER_INFO, TdhEnumerateProviders,
-};
 
 use super::{Config, ProviderConfig, ProviderKind, TraceLevel};
 
@@ -371,13 +368,14 @@ fn resolve_provider_guid(
 
 /// Lazily enumerate the OS provider database and return the shared cache.
 ///
-/// The first call performs the `TdhEnumerateProviders` pass and memoizes the
-/// resulting map in `cache`; subsequent calls return the memoized map.
+/// The first call performs the `TdhEnumerateProviders` pass (via
+/// [`one_collect::etw::registered_providers`]) and memoizes the resulting map
+/// in `cache`; subsequent calls return the memoized map.
 fn registered_database(
     cache: &mut Option<HashMap<String, RegisteredProvider>>,
 ) -> Result<&HashMap<String, RegisteredProvider>, Error> {
     if cache.is_none() {
-        *cache = Some(enumerate_registered_providers()?);
+        *cache = Some(registered_providers().map_err(tdh_enumerate_error)?);
     }
     Ok(cache.as_ref().expect("cache populated above"))
 }
@@ -435,155 +433,13 @@ fn eventsource_guid_from_name(name: &str) -> Guid {
 }
 
 // ── Registered provider lookup (TDH) ─────────────────────────────────────────
-
-/// A provider found in the OS-registered provider database.
-#[derive(Clone, Copy)]
-struct RegisteredProvider {
-    /// Control GUID of the registered provider.
-    guid: Guid,
-    /// TDH schema source: `0` = XML manifest, `1` = classic WMI/MOF. Retained
-    /// so resolution can report which decoding model a matched provider uses.
-    schema_source: u32,
-}
-
-/// Convert a Win32 `GUID` (from `windows-sys`) into a [`one_collect::Guid`].
-///
-/// Both types are `#[repr(C)]` with identical `data1/2/3/4` fields, so this is
-/// a straight field copy.
-fn win32_guid_to_guid(g: &windows_sys::core::GUID) -> Guid {
-    Guid {
-        data1: g.data1,
-        data2: g.data2,
-        data3: g.data3,
-        data4: g.data4,
-    }
-}
-
-/// Enumerate every provider registered in the system provider database via the
-/// Windows TDH `TdhEnumerateProviders` API, returning a case-insensitive
-/// `lowercased-name -> RegisteredProvider` map.
-///
-/// The whole database is read **once**; the caller memoizes the result so
-/// resolving N configured names costs a single enumeration rather than N.
-/// Includes both manifest-based providers (`SchemaSource == 0`) and classic MOF
-/// providers (`SchemaSource == 1`). On a duplicate name the first entry wins.
-///
-/// # Errors
-///
-/// Returns [`Error::ConfigError`] only when the TDH API itself fails
-/// unexpectedly, so a genuine lookup failure is never silently misresolved.
-#[allow(unsafe_code)]
-fn enumerate_registered_providers() -> Result<HashMap<String, RegisteredProvider>, Error> {
-    const ERROR_SUCCESS: u32 = 0;
-    const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
-
-    // First call with a null buffer to discover the required size.
-    let mut buffer_size: u32 = 0;
-    // SAFETY: The documented size-probe form; TDH writes only through
-    // `p_buffer_size` when the buffer pointer is null.
-    let status = unsafe { TdhEnumerateProviders(std::ptr::null_mut(), &mut buffer_size) };
-    if status != ERROR_INSUFFICIENT_BUFFER && status != ERROR_SUCCESS {
-        return Err(tdh_enumerate_error(status));
-    }
-    if (buffer_size as usize) < size_of::<PROVIDER_ENUMERATION_INFO>() {
-        // Empty or header-less result: nothing to enumerate.
-        return Ok(HashMap::new());
-    }
-
-    // Allocate a `u32`-aligned buffer: `PROVIDER_ENUMERATION_INFO` and
-    // `TRACE_PROVIDER_INFO` both have 4-byte alignment (`u32` / `GUID` fields),
-    // which a `Vec<u32>` satisfies. `Vec<u8>` would only be byte-aligned, which
-    // is undefined behaviour to reinterpret as these structs.
-    let elem_count = (buffer_size as usize).div_ceil(size_of::<u32>());
-    let mut buffer: Vec<u32> = vec![0u32; elem_count];
-    let byte_len = buffer.len() * size_of::<u32>();
-
-    // SAFETY: `buffer` is at least `buffer_size` bytes and 4-byte aligned; TDH
-    // fills it with a `PROVIDER_ENUMERATION_INFO` header followed by the
-    // provider array.
-    let status = unsafe {
-        TdhEnumerateProviders(
-            buffer.as_mut_ptr() as *mut PROVIDER_ENUMERATION_INFO,
-            &mut buffer_size,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        // A second `ERROR_INSUFFICIENT_BUFFER` can happen if providers were
-        // registered between the two calls; treat any non-success as a lookup
-        // failure so we never read a partially populated buffer.
-        return Err(tdh_enumerate_error(status));
-    }
-
-    // Byte view for reading UTF-16 provider names by their buffer offset.
-    // SAFETY: `buffer` owns `byte_len` valid, initialized bytes.
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, byte_len) };
-
-    // SAFETY: the buffer starts with a valid `PROVIDER_ENUMERATION_INFO`
-    // (guaranteed at least header-sized above) and is 4-byte aligned.
-    let header = unsafe { &*(buffer.as_ptr() as *const PROVIDER_ENUMERATION_INFO) };
-    let count = header.NumberOfProviders as usize;
-
-    // Defensive bound: the provider array must fit within the buffer TDH
-    // reported. `count` comes from the OS-populated header; clamp it to what
-    // the buffer can actually hold so the `array_ptr.add(i)` reads below stay
-    // in-bounds even if the header and buffer size were ever inconsistent.
-    let array_offset =
-        size_of::<PROVIDER_ENUMERATION_INFO>().saturating_sub(size_of::<TRACE_PROVIDER_INFO>());
-    let max_entries = byte_len.saturating_sub(array_offset) / size_of::<TRACE_PROVIDER_INFO>();
-    let count = count.min(max_entries);
-
-    // Base pointer of the trailing flexible `TRACE_PROVIDER_INFO` array. The
-    // binding types it as `[_; 1]`; take a raw pointer to the field and index
-    // from it rather than materializing an out-of-bounds `&[_; 1]`. Forming a
-    // raw pointer to a place is safe; the later dereferences below are not.
-    let array_ptr = (&raw const header.TraceProviderInfoArray).cast::<TRACE_PROVIDER_INFO>();
-
-    let mut map: HashMap<String, RegisteredProvider> = HashMap::with_capacity(count);
-    for i in 0..count {
-        // SAFETY: `i < count == NumberOfProviders`, so element `i` lies within
-        // the buffer TDH populated.
-        let info = unsafe { &*array_ptr.add(i) };
-        let name_offset = info.ProviderNameOffset as usize;
-        // A zero or out-of-range offset means the entry has no usable name.
-        if name_offset == 0 || name_offset >= byte_len {
-            continue;
-        }
-        let Some(provider_name) = read_utf16z(bytes, name_offset) else {
-            continue;
-        };
-        let provider = RegisteredProvider {
-            guid: win32_guid_to_guid(&info.ProviderGuid),
-            schema_source: info.SchemaSource,
-        };
-        // First entry wins on duplicate names.
-        let _ = map
-            .entry(provider_name.to_ascii_lowercase())
-            .or_insert(provider);
-    }
-
-    Ok(map)
-}
-
-/// Read a null-terminated UTF-16 (little-endian) string starting at
-/// `byte_offset` within `bytes`, stopping at the terminator or the end of the
-/// buffer. Returns `None` if the offset leaves no room for even one code unit.
-fn read_utf16z(bytes: &[u8], byte_offset: usize) -> Option<String> {
-    if byte_offset + 1 >= bytes.len() {
-        return None;
-    }
-    let mut units = Vec::new();
-    let mut i = byte_offset;
-    while i + 1 < bytes.len() {
-        let unit = u16::from_le_bytes([bytes[i], bytes[i + 1]]);
-        if unit == 0 {
-            break;
-        }
-        units.push(unit);
-        i += 2;
-    }
-    Some(String::from_utf16_lossy(&units))
-}
+//
+// The `TdhEnumerateProviders` enumeration itself lives in `one_collect`
+// alongside the rest of the TDH code, exposed as
+// [`one_collect::etw::registered_providers`] returning a
+// `lowercased-name -> RegisteredProvider` map.  Only the receiver-specific
+// resolution policy (kind branching, name-hash fallback, config diagnostics)
+// stays here.
 
 /// Build the error returned when a `kind: manifest` provider name is not in the
 /// registered provider database.
@@ -599,13 +455,16 @@ fn manifest_not_registered_error(name: &str) -> Error {
     }))
 }
 
-/// Build the error returned when `TdhEnumerateProviders` fails unexpectedly.
-fn tdh_enumerate_error(status: u32) -> Error {
+/// Build the error returned when [`registered_providers`] fails unexpectedly.
+///
+/// Accepts any `Display` source (the underlying `one_collect` error) so the
+/// receiver does not need to depend on `anyhow` directly.
+fn tdh_enumerate_error(source: impl std::fmt::Display) -> Error {
     Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
         error: format!(
-            "failed to enumerate registered ETW providers: TdhEnumerateProviders \
-             returned status {status}. Specify a GUID directly, or set kind to \
-             'tracelogging' for EventSource/TraceLogging providers."
+            "failed to enumerate registered ETW providers: {source}. Specify a \
+             GUID directly, or set kind to 'tracelogging' for \
+             EventSource/TraceLogging providers."
         ),
     }))
 }
@@ -1693,70 +1552,6 @@ mod tests {
         );
     }
 
-    /// Scenario: A null-terminated UTF-16LE name (as returned in the TDH
-    /// enumeration buffer) is read from a byte offset.
-    /// Guarantees: The reader stops at the NUL terminator and decodes the
-    /// preceding code units, so provider-name matching sees the exact
-    /// registered name.
-    #[test]
-    fn read_utf16z_stops_at_terminator() {
-        // "Hi" as UTF-16LE followed by a NUL and trailing garbage.
-        let bytes: Vec<u8> = [
-            0x48u16, 0x69, 0x00, // 'H', 'i', NUL
-            0x41, 0x42, // trailing 'A','B' that must be ignored
-        ]
-        .iter()
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
-        assert_eq!(read_utf16z(&bytes, 0).as_deref(), Some("Hi"));
-    }
-
-    /// Scenario: A name offset points at or past the end of the enumeration
-    /// buffer.
-    /// Guarantees: The reader returns `None` instead of reading out of bounds,
-    /// so a malformed offset skips the entry rather than corrupting resolution.
-    #[test]
-    fn read_utf16z_out_of_range_offset_is_none() {
-        let bytes = [0x48u8, 0x00];
-        assert_eq!(read_utf16z(&bytes, 2), None);
-        assert_eq!(read_utf16z(&bytes, 100), None);
-    }
-
-    /// Scenario: A manifest-based provider that is always registered on Windows
-    /// (`Microsoft-Windows-Kernel-Process`) is enumerated from the provider
-    /// database.
-    /// Guarantees: The enumeration returns the provider's real control GUID
-    /// (`22fb2cd6-...`), which is deliberately NOT the hash of its name, and
-    /// reports it as a manifest source (`schema_source == 0`) -- proving the
-    /// registered-database path resolves manifest providers correctly.
-    #[test]
-    fn enumerate_finds_registered_kernel_process_provider() {
-        let map = enumerate_registered_providers().expect("TdhEnumerateProviders should succeed");
-        let provider = map
-            .get("microsoft-windows-kernel-process")
-            .expect("kernel process provider is always registered on Windows");
-        let expected = Guid::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
-        assert_eq!(
-            provider.guid.to_bytes(),
-            expected.to_bytes(),
-            "kernel process provider must resolve to its registered GUID, not the name hash"
-        );
-        assert_eq!(
-            provider.schema_source, 0,
-            "kernel process is a manifest (XML) provider, not classic MOF"
-        );
-    }
-
-    /// Scenario: A provider name that is not present in the system provider
-    /// database is looked up in the enumerated map.
-    /// Guarantees: The map has no entry, so `Auto` resolution will fall back to
-    /// the name hash rather than matching an unrelated provider.
-    #[test]
-    fn enumerate_omits_unregistered_provider() {
-        let map = enumerate_registered_providers().expect("TdhEnumerateProviders should succeed");
-        assert!(!map.contains_key("otelarrow-nonexistent-provider-name-for-test-0xdeadbeef"));
-    }
-
     /// Builds a name-based provider config with an explicit resolution kind.
     fn name_provider(name: &str, kind: ProviderKind) -> ProviderConfig {
         ProviderConfig {
@@ -1899,34 +1694,6 @@ mod tests {
                 "memoized cache must be reused verbatim, not re-enumerated"
             );
         }
-    }
-
-    /// Scenario: A Win32 `GUID` from the TDH enumeration buffer is converted to
-    /// a `one_collect::Guid`.
-    /// Guarantees: All four fields are copied verbatim, so a matched provider's
-    /// GUID is preserved exactly when it crosses the FFI boundary.
-    #[test]
-    fn win32_guid_to_guid_preserves_fields() {
-        let g = windows_sys::core::GUID {
-            data1: 0x22fb_2cd6,
-            data2: 0x0e7b,
-            data3: 0x422b,
-            data4: [0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16],
-        };
-        let out = win32_guid_to_guid(&g);
-        let expected = Guid::from_u128(0x22fb2cd6_0e7b_422b_a0c7_2fad1fd0e716);
-        assert_eq!(out.to_bytes(), expected.to_bytes());
-    }
-
-    /// Scenario: A UTF-16LE name whose backing bytes end on an odd boundary (a
-    /// dangling half code unit with no terminator) is read.
-    /// Guarantees: The reader stops at the last whole code unit and drops the
-    /// trailing odd byte instead of reading past the buffer.
-    #[test]
-    fn read_utf16z_ignores_trailing_odd_byte() {
-        // "Hi" as UTF-16LE, then a single stray byte (no NUL terminator).
-        let bytes = [0x48u8, 0x00, 0x69, 0x00, 0x41];
-        assert_eq!(read_utf16z(&bytes, 0).as_deref(), Some("Hi"));
     }
 
     // ── Field value interpretation ───────────────────
