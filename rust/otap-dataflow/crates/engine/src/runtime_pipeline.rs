@@ -6,7 +6,10 @@
 use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
-use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
+use crate::channel_metrics::{
+    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics,
+    ProducedMetrics,
+};
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
 };
@@ -36,7 +39,7 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -60,7 +63,7 @@ const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_se
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MetricSet<ProducedMetrics>> {
+) -> Vec<MeasurementMetricSet<ProducedMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -68,7 +71,30 @@ fn make_produced_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key)
+                    ProducedMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Build optional produced-item metric sets indexed by sorted output port name.
+fn make_produced_item_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MeasurementMetricSet<ProducedItemMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    ProducedItemMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
                 })
                 .collect()
         })
@@ -79,18 +105,34 @@ fn make_produced_metrics(
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+/// - `item_counts_enabled`: whether to register the optional item metric sets.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
+    item_counts_enabled: bool,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
-            .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key))
+            .map(|key| {
+                ConsumedMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
+            })
+    } else {
+        None
+    };
+    let consumed_items = if item_counts_enabled && has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| {
+                ConsumedItemMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(key),
+                )
+            })
     } else {
         None
     };
@@ -99,10 +141,17 @@ fn make_node_metric_handles(
     } else {
         Vec::new()
     };
+    let produced_items = if item_counts_enabled && has_outputs {
+        make_produced_item_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
         input: consumed,
+        input_items: consumed_items,
         outputs: produced,
+        output_items: produced_items,
         completion_emission,
     }
 }
@@ -321,7 +370,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let RuntimePipeline {
-            config: _config,
+            config: pipeline_config,
             receivers,
             processors,
             exporters,
@@ -332,7 +381,19 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let node_interests = Interests::from_metric_level(metric_level);
+        let base_node_interests = Interests::from_metric_level(metric_level);
+        // Nodes opting in via `node.policies.telemetry.item_counts`
+        // get the counts without requiring the `detailed` metric level.
+        let item_count_optin: HashSet<&str> = pipeline_config
+            .node_iter()
+            .filter(|(_, cfg)| {
+                cfg.policies
+                    .as_ref()
+                    .and_then(|policies| policies.telemetry.as_ref())
+                    .is_some_and(|telemetry| telemetry.item_counts)
+            })
+            .map(|(node_id, _)| node_id.as_ref())
+            .collect();
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
@@ -414,7 +475,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
         let mut node_telemetry_guards: Vec<NodeTelemetryGuard> = Vec::new();
 
-        // Build a name→index map from NodeDefs so we can resolve flow_metric
+        // Build a name->index map from NodeDefs so we can resolve flow_metric
         // config before processors are spawned.
         let node_name_to_index: HashMap<String, usize> = _nodes
             .iter()
@@ -432,7 +493,8 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         // Build edge list from pipeline connections for flow metric
         // interleaving detection.
-        let pipeline_connections = connection_edges(_config.connection_iter(), &node_name_to_index);
+        let pipeline_connections =
+            connection_edges(pipeline_config.connection_iter(), &node_name_to_index);
 
         // Build flow_metric state and per-node role assignments up front.
         let flow_metric_state = build_flow_metric_state(
@@ -447,6 +509,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -466,6 +533,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     false,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -521,6 +589,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -540,6 +613,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -628,6 +702,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
@@ -640,7 +719,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true, None),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    false,
+                    true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    None,
+                ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();

@@ -154,6 +154,15 @@ pub struct PipelineContext {
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
 }
 
+/// Registrar that binds generated metric-set registration to an existing entity.
+///
+/// Channel-owned metric sets use this when their scope is an input or output
+/// channel rather than the node entity selected by [`PipelineContext`] itself.
+pub struct EntityMetricSetRegistrar<'a> {
+    pipeline_context: &'a PipelineContext,
+    entity_key: EntityKey,
+}
+
 impl ControllerContext {
     /// Creates a new `ControllerContext`.
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
@@ -417,10 +426,40 @@ impl PipelineContext {
         metrics
     }
 
+    /// Registers a measurement metric set for the given entity key and tracks it in node telemetry if present.
+    #[must_use]
+    pub fn register_measurement_metric_set_for_entity<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        entity_key: EntityKey,
+    ) -> MeasurementMetricSet<T> {
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    /// Returns a registrar for metric sets scoped to an existing entity.
+    #[must_use]
+    pub const fn metric_set_registrar_for_entity(
+        &self,
+        entity_key: EntityKey,
+    ) -> EntityMetricSetRegistrar<'_> {
+        EntityMetricSetRegistrar {
+            pipeline_context: self,
+            entity_key,
+        }
+    }
+
     /// Shared entity-resolution skeleton for the `register_*_metrics` family.
     ///
-    /// Resolves the current node's telemetry scope in priority order — active node
-    /// telemetry handle, then ambient node entity key — and registers the metric set
+    /// Resolves the current node's telemetry scope in priority order -- active node
+    /// telemetry handle, then ambient node entity key -- and registers the metric set
     /// via `for_entity`. When registering against an active node handle, the resulting
     /// metric-set key (obtained through `metric_set_key`) is tracked so the set is
     /// unregistered as part of node cleanup.
@@ -446,6 +485,7 @@ impl PipelineContext {
             {
                 with_scope(self, handle)
             }
+
             #[cfg(not(feature = "test-utils"))]
             {
                 let _ = with_scope;
@@ -669,6 +709,60 @@ impl PipelineContext {
     }
 }
 
+impl MetricSetRegistrar for EntityMetricSetRegistrar<'_> {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.pipeline_context
+            .register_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M> {
+        self.pipeline_context
+            .register_measurement_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+}
+
 impl MetricSetRegistrar for PipelineContext {
     fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
@@ -861,7 +955,7 @@ impl ExtensionContext {
     /// Registers a metric set for the given entity key.
     ///
     /// Unlike [`PipelineContext::register_metric_set_for_entity`], this does
-    /// not hook into any ambient node telemetry — extension entities own their
+    /// not hook into any ambient node telemetry -- extension entities own their
     /// own lifecycle via the per-variant `EntityTelemetryGuard`.
     #[must_use]
     pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(

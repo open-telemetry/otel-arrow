@@ -40,10 +40,10 @@
 //!
 //! ```text
 //! wal/
-//! ├── quiver.wal           # Active WAL file (append target)
-//! ├── quiver.wal.1         # Rotated file (oldest)
-//! ├── quiver.wal.2         # Rotated file
-//! └── quiver.wal.cursor    # Consumer progress (24 bytes, CRC-protected)
+//! +-- quiver.wal           # Active WAL file (append target)
+//! +-- quiver.wal.1         # Rotated file (oldest)
+//! +-- quiver.wal.2         # Rotated file
+//! +-- quiver.wal.cursor    # Consumer progress (24 bytes, CRC-protected)
 //! ```
 //!
 //! # Key Concepts
@@ -89,11 +89,11 @@ pub(crate) use cursor_sidecar::CursorSidecar;
 #[cfg(test)]
 pub(crate) use cursor_sidecar::CURSOR_SIDECAR_FILENAME;
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // WAL Format Constants
 //
-// See ARCHITECTURE.md § "Write-Ahead Log" for the full on-disk layout.
-// ─────────────────────────────────────────────────────────────────────────────
+// See ARCHITECTURE.md sec. "Write-Ahead Log" for the full on-disk layout.
+// -----------------------------------------------------------------------------
 
 /// Magic bytes identifying a Quiver WAL file.
 ///
@@ -111,7 +111,7 @@ pub(crate) const ENTRY_TYPE_RECORD_BUNDLE: u8 = 0;
 /// Size of the entry header in bytes: `entry_type(1) + timestamp(8) + sequence(8) + bitmap(8)`.
 ///
 /// Layout: `{ u8 entry_type, i64 ingestion_ts_nanos, u64 per_core_sequence, u64 slot_bitmap }`
-/// See ARCHITECTURE.md § "Framed entries" for the complete entry structure.
+/// See ARCHITECTURE.md sec. "Framed entries" for the complete entry structure.
 pub(crate) const ENTRY_HEADER_LEN: usize = 1 + 8 + 8 + 8;
 
 /// Size of a schema fingerprint (BLAKE3 truncated to 256 bits).
@@ -120,7 +120,7 @@ pub(crate) const SCHEMA_FINGERPRINT_LEN: usize = 32;
 /// Size of per-slot metadata: `payload_type_id(2) + fingerprint(32) + row_count(4) + payload_len(4)`.
 ///
 /// Layout: `{ u16 payload_type_id, [u8;32] schema_fingerprint, u32 row_count, u32 payload_len }`
-/// See ARCHITECTURE.md § "Framed entries" → SlotMeta block.
+/// See ARCHITECTURE.md sec. "Framed entries" -> SlotMeta block.
 pub(crate) const SLOT_HEADER_LEN: usize = 2 + SCHEMA_FINGERPRINT_LEN + 4 + 4;
 
 /// Maximum allowed rotation target size (256 MiB).
@@ -214,7 +214,7 @@ pub enum WalError {
 impl WalError {
     /// Returns `true` if this is a capacity/backpressure error.
     ///
-    /// WAL capacity errors are recoverable—the caller should wait for
+    /// WAL capacity errors are recoverable--the caller should wait for
     /// segment finalization to advance the cursor and reclaim space.
     #[must_use]
     pub const fn is_at_capacity(&self) -> bool {

@@ -13,29 +13,29 @@
 //!
 //! ```text
 //!   ingest thread                               wal writer
-//! ───────────────────────────────────────────────────────────────────────────
+//! ---------------------------------------------------------------------------
 //!   RecordBundle -> encode slots -> entry header -> fs writes -> fsync
 //!                                      |                     |
 //!                                      v                     v
-//!                              consumer cursor <── sidecar flush
+//!                              consumer cursor <-- sidecar flush
 //! ```
 //!
-//! * **Append path** – Every [`RecordBundle`] is serialized slot-by-slot into an
+//! * **Append path** - Every [`RecordBundle`] is serialized slot-by-slot into an
 //!   in-memory buffer, hashed (CRC32), and written as one atomic entry. We track
 //!   [`WalOffset`] so readers can correlate persisted bytes back to sequences.
-//! * **Flush loop** – `flush_interval` and `max_unflushed_bytes` control when we
+//! * **Flush loop** - `flush_interval` and `max_unflushed_bytes` control when we
 //!   call `flush()`/`sync_data()`. Tests can inspect thread-local flags to assert
 //!   that durability barriers occurred.
-//! * **Rotation** – When `rotation_target_bytes` is exceeded the active WAL file
+//! * **Rotation** - When `rotation_target_bytes` is exceeded the active WAL file
 //!   is renamed to `wal.n` (oldest files slide toward higher numbers) and a new
 //!   header is seeded in-place. [`RotatedWalFile`] metadata keeps track of logical
 //!   data ranges so stale files can be deleted after the cursor advances.
-//! * **Cursor + sidecar** – Readers compute `WalConsumerCursor` values. The
+//! * **Cursor + sidecar** - Readers compute `WalConsumerCursor` values. The
 //!   writer validates cursor boundaries, updates the cursor sidecar on disk,
 //!   and relies on file rotation to eventually drop fully consumed bytes. The
 //!   sidecar survives crashes so restarts resume from the last known safe offset
 //!   even if a rotation has not run yet.
-//! * **Global cap enforcement** – `max_wal_size` is measured across the active
+//! * **Global cap enforcement** - `max_wal_size` is measured across the active
 //!   file plus rotated files. Exceeding the cap yields `WalAtCapacity` errors
 //!   until downstream consumers free space.
 //!
@@ -71,12 +71,12 @@
 //!
 //! ## Internal structure
 //!
-//! * [`WalWriter`] – the façade exposed to call sites. It orchestrates appends,
+//! * [`WalWriter`] - the facade exposed to call sites. It orchestrates appends,
 //!   compaction, and recovery by delegating to the pieces below.
-//! * [`ActiveWalFile`] – owns the on-disk file handle plus the transient payload
+//! * [`ActiveWalFile`] - owns the on-disk file handle plus the transient payload
 //!   buffer. All direct I/O (seek, write, flush/fsync) flows through this type
 //!   so we only mutate the OS file descriptor in one place.
-//! * [`WalCoordinator`] – tracks policy decisions (rotation, global caps, and
+//! * [`WalCoordinator`] - tracks policy decisions (rotation, global caps, and
 //!   cursor sidecar state). It never touches raw I/O directly; instead it
 //!   inspects `ActiveWalFile` lengths and requests actions.
 //!
@@ -88,10 +88,10 @@
 //!
 //! On [`WalWriter::open`]:
 //!
-//! 1. Read `quiver.wal.cursor` sidecar → recover `wal_position`.
+//! 1. Read `quiver.wal.cursor` sidecar -> recover `wal_position`.
 //! 2. Scan for rotated files (`wal.N`) and rebuild the `rotated_files` queue
 //!    with WAL positions, sorted by rotation id (oldest first).
-//! 3. Convert `wal_position` → per-file offset inside the active WAL.
+//! 3. Convert `wal_position` -> per-file offset inside the active WAL.
 //! 4. Detect the highest sequence number across all files; resume from
 //!    `highest + 1`.
 //! 5. Position the file cursor at EOF and accept new appends.
@@ -137,12 +137,12 @@ use super::{
 // Default configuration constants
 //
 // These defaults balance durability, I/O efficiency, and recovery time. See
-// ARCHITECTURE.md § "Configuration defaults and rationale" for background.
+// ARCHITECTURE.md sec. "Configuration defaults and rationale" for background.
 // ---------------------------------------------------------------------------
 
 /// Default maximum aggregate size of active + rotated WAL files.
 ///
-/// `u64::MAX` means unlimited—backpressure is only applied by
+/// `u64::MAX` means unlimited--backpressure is only applied by
 /// `max_rotated_files`.
 pub const DEFAULT_MAX_WAL_SIZE: u64 = u64::MAX;
 
@@ -236,7 +236,7 @@ pub(crate) struct WalWriterOptions {
     ///
     /// When `true` (the default), rotated WAL files are `chmod`-ed to `0o440`
     /// (Unix) or marked read-only (other platforms) to prevent accidental
-    /// corruption.  When `false`, the permission change is skipped — this is
+    /// corruption.  When `false`, the permission change is skipped -- this is
     /// necessary on filesystems that do not support `chmod` (e.g., SMB/CIFS
     /// mounts, certain Kubernetes volumeMounts).
     pub enforce_file_readonly: bool,
@@ -784,9 +784,9 @@ impl ActiveWalFile {
     ///
     /// Entry layout:
     /// ```text
-    /// ┌──────────┬──────────────┬─────────────────┬──────────┐
-    /// │ u32 len  │ entry header │  payload bytes  │ u32 crc  │
-    /// └──────────┴──────────────┴─────────────────┴──────────┘
+    /// +----------+--------------+-----------------+----------+
+    /// | u32 len  | entry header |  payload bytes  | u32 crc  |
+    /// +----------+--------------+-----------------+----------+
     /// ```
     ///
     /// Builds the complete entry in `entry_buffer` and writes with a single syscall.
@@ -848,7 +848,7 @@ impl ActiveWalFile {
         let target = self.entry_high_water.saturating_add(SHRINK_HEADROOM);
 
         // Only shrink if:
-        // - Capacity significantly exceeds the target (2× headroom)
+        // - Capacity significantly exceeds the target (2x headroom)
         // - Buffer is large enough to bother (> SHRINK_THRESHOLD)
         if capacity > target.saturating_mul(2) && capacity > SHRINK_THRESHOLD {
             self.entry_buffer.shrink_to(target);
@@ -939,7 +939,7 @@ impl ActiveWalFile {
     /// 3. Shrink if capacity > 2 * high_water + SHRINK_HEADROOM and capacity > SHRINK_THRESHOLD
     ///
     /// The decay ensures we eventually reclaim memory if usage drops permanently.
-    /// The 2× threshold and headroom prevent thrashing on minor fluctuations.
+    /// The 2x threshold and headroom prevent thrashing on minor fluctuations.
     fn maybe_shrink_payload_buffer(&mut self, used_len: usize) {
         // Update high-water with current usage
         self.payload_high_water = self.payload_high_water.max(used_len);
@@ -952,7 +952,7 @@ impl ActiveWalFile {
         let target = self.payload_high_water.saturating_add(SHRINK_HEADROOM);
 
         // Only shrink if:
-        // - Capacity significantly exceeds the target (2× headroom)
+        // - Capacity significantly exceeds the target (2x headroom)
         // - Buffer is large enough to bother (> SHRINK_THRESHOLD)
         if capacity > target.saturating_mul(2) && capacity > SHRINK_THRESHOLD {
             self.payload_buffer.shrink_to(target);
@@ -1055,7 +1055,7 @@ impl WalCoordinator {
         // at most ~65,000 entries per active file. A threshold of 100,000 indicates either:
         // - Very small bundles with a large rotation target, or
         // - The consumer cursor is not advancing (entries aren't being pruned)
-        // Memory impact: 100,000 entries × 8 bytes = 800KB (modest but worth monitoring)
+        // Memory impact: 100,000 entries x 8 bytes = 800KB (modest but worth monitoring)
         const ENTRY_BOUNDARIES_WARNING_THRESHOLD: usize = 100_000;
         if self.entry_boundaries.len() == ENTRY_BOUNDARIES_WARNING_THRESHOLD {
             otel_warn!(
@@ -1234,9 +1234,9 @@ impl WalCoordinator {
         })
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------------
     // Async methods
-    // ─────────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------------
 
     /// Determines the next sequence number and last valid offset in the active file.
     /// Also populates `entry_boundaries` with all entry end offsets for cursor validation.

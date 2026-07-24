@@ -10,8 +10,8 @@
 //!
 
 use arrow::array::{
-    Array, BooleanArray, DictionaryArray, Float64Array, Int64Array, StringArray, UInt8Array,
-    UInt16Array,
+    Array, BinaryArray, BooleanArray, DictionaryArray, Float64Array, Int64Array, StringArray,
+    UInt8Array, UInt16Array,
 };
 use arrow::datatypes::{UInt8Type, UInt16Type};
 use async_trait::async_trait;
@@ -162,13 +162,6 @@ pub struct CondenseAttributesProcessor {
     compute_duration: ComputeDuration,
 }
 
-enum CachedAttributeValue {
-    Str(String),
-    Int(i64),
-    Double(f64),
-    Bool(bool),
-}
-
 fn engine_err(msg: &str) -> Error {
     Error::PdataConversionError {
         error: msg.to_string(),
@@ -273,6 +266,8 @@ impl CondenseAttributesProcessor {
         let int_col = rb.column_by_name(consts::ATTRIBUTE_INT);
         let double_col = rb.column_by_name(consts::ATTRIBUTE_DOUBLE);
         let bool_col = rb.column_by_name(consts::ATTRIBUTE_BOOL);
+        let bytes_col = rb.column_by_name(consts::ATTRIBUTE_BYTES);
+        let ser_col = rb.column_by_name(consts::ATTRIBUTE_SER);
         let delimiter_str = self.config.delimiter.to_string();
 
         // Pre-extract key arrays
@@ -360,7 +355,9 @@ impl CondenseAttributesProcessor {
                     })
                     .map(|v| v.to_string())
                 }),
-                // If needed, add handling for Map, Slice, and Bytes?
+                // Future support could serialize arrays and maps as compact JSON, bytes as base64,
+                // and empty values as `null`. Preserve these values unchanged until that format is
+                // explicitly configured and documented.
                 _ => None,
             }
         };
@@ -368,8 +365,7 @@ impl CondenseAttributesProcessor {
         // parent_to_attrs uses borrowed &str keys from Arrow arrays, so cannot be easily reused across calls.
         // TODO: is reusing a HashMap<u16, Vec<(String, String)>> worth it?
         let mut parent_to_attrs: HashMap<u16, Vec<(&str, String)>> = HashMap::new();
-        let mut preserved_attrs: Vec<(u16, &str, CachedAttributeValue)> =
-            Vec::with_capacity(num_rows);
+        let mut preserved_rows = Vec::with_capacity(num_rows);
         let mut removed_existing_destination = false;
         let mut removed_existing_destination_count = 0u64;
 
@@ -398,60 +394,19 @@ impl CondenseAttributesProcessor {
                 (None, None) => true,
             };
 
-            if !should_condense {
-                if type_arr.is_null(i) {
-                    continue;
-                }
-
-                let value_type = type_arr.value(i);
-                if let Ok(value_type_enum) = AttributeValueType::try_from(value_type) {
-                    let cached_value = match value_type_enum {
-                        AttributeValueType::Str => str_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &StringArray, index| {
-                                arr.value(index).to_string()
-                            })
-                            .map(CachedAttributeValue::Str)
-                        }),
-                        AttributeValueType::Int => int_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &Int64Array, index| {
-                                arr.value(index)
-                            })
-                            .map(CachedAttributeValue::Int)
-                        }),
-                        AttributeValueType::Double => double_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &Float64Array, index| {
-                                arr.value(index)
-                            })
-                            .map(CachedAttributeValue::Double)
-                        }),
-                        AttributeValueType::Bool => bool_col.and_then(|col| {
-                            Self::extract_value_from_column(col, i, |arr: &BooleanArray, index| {
-                                arr.value(index)
-                            })
-                            .map(CachedAttributeValue::Bool)
-                        }),
-                        _ => None,
-                    };
-
-                    if let Some(cached_value) = cached_value {
-                        preserved_attrs.push((parent_id, key, cached_value));
-                    }
-                }
-
-                continue;
-            }
-
             if type_arr.is_null(i) {
                 continue;
             }
             let value_type = type_arr.value(i);
 
             if let Ok(value_type_enum) = AttributeValueType::try_from(value_type) {
-                if let Some(val) = get_value_str(value_type_enum, i) {
+                if should_condense && let Some(val) = get_value_str(value_type_enum, i) {
                     parent_to_attrs
                         .entry(parent_id)
                         .or_default()
                         .push((key, val));
+                } else {
+                    preserved_rows.push(i);
                 }
             }
         }
@@ -505,36 +460,96 @@ impl CondenseAttributesProcessor {
             }
         }
 
-        // Add preserved attributes
-        for (parent_id, key, value) in preserved_attrs {
-            builder.append_parent_id(&parent_id);
-            builder.append_key(key);
+        // Re-read preserved rows so their Arrow-backed values can be appended without temporary copies.
+        for i in preserved_rows {
+            let parent_id = parent_id_arr.value(i);
+            let key = get_key(i).expect("key was validated as non-null");
+            let value_type =
+                AttributeValueType::try_from(type_arr.value(i)).expect("type was validated");
 
-            match value {
-                CachedAttributeValue::Str(val) => {
-                    builder.any_values_builder.append_str(val.as_bytes());
+            match value_type {
+                AttributeValueType::Str => {
+                    if let Some(col) = str_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &StringArray, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder
+                                    .any_values_builder
+                                    .append_str(arr.value(index).as_bytes());
+                            });
+                    }
                 }
-                CachedAttributeValue::Int(val) => {
-                    builder.any_values_builder.append_int(val);
+                AttributeValueType::Int => {
+                    if let Some(col) = int_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &Int64Array, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder.any_values_builder.append_int(arr.value(index));
+                            });
+                    }
                 }
-                CachedAttributeValue::Double(val) => {
-                    builder.any_values_builder.append_double(val);
+                AttributeValueType::Double => {
+                    if let Some(col) = double_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &Float64Array, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder.any_values_builder.append_double(arr.value(index));
+                            });
+                    }
                 }
-                CachedAttributeValue::Bool(val) => {
-                    builder.any_values_builder.append_bool(val);
+                AttributeValueType::Bool => {
+                    if let Some(col) = bool_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &BooleanArray, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder.any_values_builder.append_bool(arr.value(index));
+                            });
+                    }
+                }
+                AttributeValueType::Bytes => {
+                    if let Some(col) = bytes_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &BinaryArray, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder.any_values_builder.append_bytes(arr.value(index));
+                            });
+                    }
+                }
+                AttributeValueType::Slice => {
+                    if let Some(col) = ser_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &BinaryArray, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder.any_values_builder.append_slice(arr.value(index));
+                            });
+                    }
+                }
+                AttributeValueType::Map => {
+                    if let Some(col) = ser_col {
+                        let _ =
+                            Self::extract_value_from_column(col, i, |arr: &BinaryArray, index| {
+                                builder.append_parent_id(&parent_id);
+                                builder.append_key(key);
+                                builder.any_values_builder.append_map(arr.value(index));
+                            });
+                    }
+                }
+                AttributeValueType::Empty => {
+                    builder.append_parent_id(&parent_id);
+                    builder.append_key(key);
+                    builder.any_values_builder.append_empty();
                 }
             }
         }
 
-        // TODO: This rebuild path is copy-heavy.
-        // `RecordBatch` is immutable, so true in-place mutation is not possible today.
-        // A more efficient approach could be:
-        // - filter/delete condensed source rows from the existing batch,
-        // - append computed condensed rows,
-        // - concatenate/reconcile schemas as needed.
-        // Note: `transform.rs` insert only supports predefined literal values; condense requires
-        // per-parent computed values, so we cannot reuse that insert path directly.
-        // Follow-up optimization tracked in https://github.com/open-telemetry/otel-arrow/issues/1694
+        // Arrow RecordBatches are immutable, so filtering and concatenating them performs
+        // two materializations and is slower than reconstructing this single output batch.
         let new_batch = builder.finish().map_err(|e| {
             engine_err(&format!(
                 "Failed to build condensed attributes batch: {}",
@@ -547,14 +562,20 @@ impl CondenseAttributesProcessor {
         Ok(condensed_count)
     }
 
+    #[cfg(feature = "condense-attributes-processor-bench")]
+    #[doc(hidden)]
+    pub fn condense_for_benchmark(&self, records: &mut OtapArrowRecords) -> Result<u64, Error> {
+        self.condense(records)
+    }
+
     fn extract_value_from_column<T, PlainArr, F>(
         col: &Arc<dyn Array>,
         i: usize,
-        extract_plain: F,
+        mut extract_plain: F,
     ) -> Option<T>
     where
         PlainArr: Array + 'static,
-        F: Fn(&PlainArr, usize) -> T,
+        F: FnMut(&PlainArr, usize) -> T,
     {
         if let Some(arr) = col.as_any().downcast_ref::<PlainArr>() {
             if arr.is_null(i) {
@@ -845,6 +866,83 @@ mod condense_tests {
         let expected_attrs = vec![
             KeyValue::new("condensed", AnyValue::new_string("attr2=42;attr3=true")),
             KeyValue::new("attr1", AnyValue::new_string("value1")),
+        ];
+
+        test_condense_single_log(input, cfg, expected_attrs);
+    }
+
+    /// Scenario: Condensing selected scalar values alongside selected non-scalar OTLP AnyValues.
+    /// Guarantees: Values that cannot be represented in the condensed string remain unchanged.
+    #[test]
+    fn test_condense_preserves_non_scalar_attributes() {
+        let input = build_log_with_attrs(vec![
+            KeyValue::new("condense_me", AnyValue::new_string("value")),
+            KeyValue::new("bytes", AnyValue::new_bytes(b"bytes")),
+            KeyValue::new(
+                "array",
+                AnyValue::new_array(vec![AnyValue::new_int(1), AnyValue::new_bool(true)]),
+            ),
+            KeyValue::new(
+                "map",
+                AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_double(1.5))]),
+            ),
+            KeyValue::new("empty", AnyValue::default()),
+        ]);
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";",
+            "source_keys": ["condense_me", "bytes", "array", "map", "empty"]
+        });
+        let expected_attrs = vec![
+            KeyValue::new("condensed", AnyValue::new_string("condense_me=value")),
+            KeyValue::new("bytes", AnyValue::new_bytes(b"bytes")),
+            KeyValue::new(
+                "array",
+                AnyValue::new_array(vec![AnyValue::new_int(1), AnyValue::new_bool(true)]),
+            ),
+            KeyValue::new(
+                "map",
+                AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_double(1.5))]),
+            ),
+            KeyValue::new("empty", AnyValue::default()),
+        ];
+
+        test_condense_single_log(input, cfg, expected_attrs);
+    }
+
+    /// Scenario: Condensing all attributes in a log containing scalar and non-scalar OTLP values.
+    /// Guarantees: Non-scalar values remain separate when no source or exclude key filter is set.
+    #[test]
+    fn test_condense_all_preserves_non_scalar_attributes() {
+        let input = build_log_with_attrs(vec![
+            KeyValue::new("condense_me", AnyValue::new_string("value")),
+            KeyValue::new("bytes", AnyValue::new_bytes(b"bytes")),
+            KeyValue::new(
+                "array",
+                AnyValue::new_array(vec![AnyValue::new_int(1), AnyValue::new_bool(true)]),
+            ),
+            KeyValue::new(
+                "map",
+                AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_double(1.5))]),
+            ),
+            KeyValue::new("empty", AnyValue::default()),
+        ]);
+        let cfg = json!({
+            "destination_key": "condensed",
+            "delimiter": ";"
+        });
+        let expected_attrs = vec![
+            KeyValue::new("condensed", AnyValue::new_string("condense_me=value")),
+            KeyValue::new("bytes", AnyValue::new_bytes(b"bytes")),
+            KeyValue::new(
+                "array",
+                AnyValue::new_array(vec![AnyValue::new_int(1), AnyValue::new_bool(true)]),
+            ),
+            KeyValue::new(
+                "map",
+                AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_double(1.5))]),
+            ),
+            KeyValue::new("empty", AnyValue::default()),
         ];
 
         test_condense_single_log(input, cfg, expected_attrs);

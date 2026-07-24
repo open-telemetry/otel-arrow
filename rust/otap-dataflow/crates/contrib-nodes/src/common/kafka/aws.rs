@@ -67,7 +67,7 @@ impl ClientContext for AwsMskAuthClientContext {
 /// (`ExporterFutureProducer<ProducerClientContext>`) regardless of whether
 /// authentication is configured.
 pub enum ProducerClientContext {
-    /// No special authentication — uses the default rdkafka client context.
+    /// No special authentication -- uses the default rdkafka client context.
     Default(DefaultClientContext),
     /// AWS MSK IAM OAUTHBEARER authentication.
     AwsMsk(AwsMskAuthClientContext),

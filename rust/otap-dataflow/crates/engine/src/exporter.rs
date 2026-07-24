@@ -1191,7 +1191,7 @@ mod tests {
             "should deliver control message during draining when accept_pdata=false"
         );
 
-        // Now call with accept_pdata=true — should drain the buffered pdata
+        // Now call with accept_pdata=true -- should drain the buffered pdata
         let msg = channel.recv_when(true).await.unwrap();
         assert!(matches!(msg, Message::PData(ref s) if s == "pdata1"));
 
@@ -1257,7 +1257,7 @@ mod tests {
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
 
-        // recv_when(false) should not return pdata — use a timeout to prove it blocks
+        // recv_when(false) should not return pdata -- use a timeout to prove it blocks
         let result =
             tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
         assert!(result.is_err(), "recv_when(false) should not return pdata");
@@ -1312,7 +1312,7 @@ mod tests {
         let (_control_tx, pdata_tx, mut channel) = make_processor_chan();
 
         pdata_tx.send_async("pdata1".to_owned()).await.unwrap();
-        // Close the channel — data is still buffered
+        // Close the channel -- data is still buffered
         drop(pdata_tx);
 
         // recv_when(false) should NOT trigger shutdown because there's
@@ -1322,7 +1322,7 @@ mod tests {
             tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
         assert!(
             result.is_err(),
-            "should block — pdata has data, no control available"
+            "should block \u{2014} pdata has data, no control available"
         );
 
         // Now drain the data with recv_when(true)
@@ -1366,7 +1366,7 @@ mod tests {
         let (_control_tx, _pdata_tx, mut channel) = make_shared_chan();
 
         // Channel is empty but sender is alive.
-        // recv_when(false) should block waiting for control — NOT return a shutdown.
+        // recv_when(false) should block waiting for control -- NOT return a shutdown.
         let result =
             tokio::time::timeout(Duration::from_millis(50), channel.recv_when(false)).await;
         assert!(
