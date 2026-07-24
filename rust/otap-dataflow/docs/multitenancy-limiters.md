@@ -315,8 +315,8 @@ configurable behaviors:
 Limiters record a primary observability signal with the declared units,
 exposing the current value of the limiter.
 
-- For rate limiters, an OpenTelemetry Counter named `otelcol.rate_limiter.accepted` measuring the accepted weight
-- For resource limiters, an OpenTelemetry UpDownCounter named `otelcol.resource_limiter.admitted` measuring the currently admitted weight
+- For rate limiters, an OpenTelemetry Counter named `otap.rate_limiter.accepted` measuring the accepted weight
+- For resource limiters, an OpenTelemetry UpDownCounter named `otap.resource_limiter.admitted` measuring the currently admitted weight
 
 Each of these uses the following dimensions:
 

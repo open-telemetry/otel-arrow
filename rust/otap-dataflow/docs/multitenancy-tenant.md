@@ -51,7 +51,7 @@ of condition entries defined in the engine. Later in the pipeline,
 these precomputed table-lookup keys will be used to evaluate limiter
 conditions in **O(1)** time.
 
-To evaluate which limiter bucket a given request falls in to, the
+To evaluate which limiter bucket a given request falls into, the
 sequence of conditions is applied in order. For a context to match a
 condition, all its entries must match for all tenant token values
 to qualify.
@@ -294,7 +294,7 @@ consumer.
 The dataflow engine is required to support reconfiguration of tenant
 token extractors and limiter conditions. As these two aspects of
 multitenancy are coupled, they will be reconfigured atomically. Tenant
-tokens will carry the identify of the matching condition set.
+tokens will carry the identity of the matching condition set.
 
 Specific details about reconfiguring tenant token extractors and
 limiter conditions and potential limitations are outside the scope

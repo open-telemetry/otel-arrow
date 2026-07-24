@@ -43,7 +43,7 @@ and global rate limits).
 ## CPU limit policies
 
 CPU limits are provided through built-in integration with the
-operating system through such mechanisms as Linux Container Groups
+operating system through such mechanisms as Linux control groups
 (a.k.a. `cgroups`) and Windows Job Objects. The dataflow engine is
 required to support both absolute maximum and relative CPU limits,
 under `resources.cpu_limiter` configuration.
@@ -61,7 +61,7 @@ limit, either in absolute or in relative terms.
   in the configuration.
 
 As an example, the following dataflow engine configuration allows the
-dataflow engine to consume 10% of one CPU per CPU.
+dataflow engine to consume 10% of one CPU.
 
 ```
 policies:

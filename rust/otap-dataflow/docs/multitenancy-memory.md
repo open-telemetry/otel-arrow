@@ -20,9 +20,9 @@ never reaching its own memory limit.
 The dataflow engine is required to implement a system of **memory
 regulation** over its primary data structures. Users of memory are
 registered inside the dataflow engine and required to use dedicated
-interfaces. Significant data structure and reserves of non-request
+interfaces. Significant data structures and reserves of non-request
 memory allocated within the dataflow engine are accounted for,
-including associated with tenant identity(ies), using a fallible
+including those associated with tenant identities, using a fallible
 request pattern.
 
 Among its first principles, a dataflow engine must ensure it can start
