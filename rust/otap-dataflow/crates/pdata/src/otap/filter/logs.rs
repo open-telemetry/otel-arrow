@@ -103,6 +103,24 @@ impl LogFilter {
         }
     }
 
+    /// Returns true when an include match configuration is present.
+    ///
+    /// This reflects configuration only ("an include path is configured"),
+    /// not whether any record actually matched the include rule.
+    #[must_use]
+    pub const fn has_include(&self) -> bool {
+        self.include.is_some()
+    }
+
+    /// Returns true when an exclude match configuration is present.
+    ///
+    /// This reflects configuration only ("an exclude path is configured"),
+    /// not whether any record actually matched the exclude rule.
+    #[must_use]
+    pub const fn has_exclude(&self) -> bool {
+        self.exclude.is_some()
+    }
+
     /// take a logs payload and return the filtered result
     ///
     /// returns tuple of (filtered batch, logs_consumed, logs_filtered)
@@ -145,7 +163,8 @@ impl LogFilter {
         {
             include_config.create_filters(&logs_payload, false)?
         } else {
-            // both include and exclude is none
+            // both include and exclude is none: pass the payload through
+            // untouched. Every row is forwarded, so nothing is filtered out.
             let num_rows = logs_payload
                 .get(ArrowPayloadType::Logs)
                 // Safety: We check at the top of this function whether the
@@ -153,7 +172,7 @@ impl LogFilter {
                 // root record batch is present.
                 .expect("Logs payload has a root record")
                 .num_rows() as u64;
-            return Ok((logs_payload, num_rows, num_rows));
+            return Ok((logs_payload, num_rows, 0));
         };
 
         let (log_record_filter, child_record_batch_filters) = self.sync_up_filters(
@@ -599,6 +618,49 @@ mod test {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
                     log_records: log_records[0..2].to_vec(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }));
+
+        assert_equivalent(&[otap_to_otlp(&result)], &[otap_to_otlp(&expected)]);
+    }
+
+    #[test]
+    fn test_filter_pass_through_reports_nothing_filtered() {
+        // No include/exclude configured: the payload passes through untouched.
+        // Every record is forwarded, so logs_filtered must be 0 (regression
+        // test: the pass-through branch previously reported all rows filtered).
+        let filter = LogFilter::new(None, None, Vec::new());
+
+        let log_records = vec![
+            LogRecord::build().severity_text("WARN").finish(),
+            LogRecord::build().severity_text("INFO").finish(),
+            LogRecord::build().severity_text("ERROR").finish(),
+            LogRecord::build().severity_text("DEBUG").finish(),
+        ];
+
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: log_records.clone(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let input = otlp_to_otap(&OtlpProtoMessage::Logs(logs_data));
+
+        let (result, logs_consumed, logs_filtered) = filter.filter(input).unwrap();
+        assert_eq!(logs_consumed, 4);
+        assert_eq!(logs_filtered, 0);
+
+        let expected = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records,
                     ..Default::default()
                 }],
                 ..Default::default()
