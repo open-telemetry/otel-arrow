@@ -553,7 +553,8 @@ Memory limiter configuration:
 - If configured, `mode` must be explicitly set to `enforce` or `observe_only`.
 - The policy is supported only at top-level `policies.resources`.
   Group, pipeline, and observability-pipeline resource placements are rejected.
-- In Phase 1, `Soft` remains informational; `Hard` is the ingress-shedding
+- `Soft` is informational by default (`soft_action: observe`); `soft_action: shed`
+  makes `Soft` shed ingress like `Hard`. `Hard` is the always-on ingress-shedding
   threshold.
 - Detailed runtime behavior and rollout guidance are documented in
   [memory-limiter-phase1.md](memory-limiter-phase1.md).

@@ -1,0 +1,34 @@
+# Use this template to create a new changelog entry.
+# Save this file to the `.chloggen/` directory in the repository root.
+# Example: `.chloggen/my-feature.yaml`
+
+# (Required) - Type of change. Allowed values are:
+#   breaking: A change that breaks backwards compatibility.
+#   deprecation: A change that deprecates a feature or component.
+#   new_component: A change that introduces a new component.
+#   enhancement: A change that introduces a new feature or enhancement.
+#   bug_fix: A change that fixes a bug.
+change_type: enhancement
+
+# (Required) - The component(s) affected by this change.
+# See the `config.yaml` file in this directory for a list of allowed components.
+component: engine
+
+# (Required) - A brief note explaining the change.
+# Example: "Add support for OTLP 1.0"
+note: Add a `soft_action` option to the memory limiter policy so operators can choose to shed ingress under Soft pressure instead of waiting for Hard.
+
+# (Required) - Issue number(s) addressed by this change.
+# Example: [123, 456]
+issues: [2425]
+
+# (Optional) - User(s) who contributed to this change.
+# Omit if this change was authored by one of the project's core maintainers.
+# Note that this only applies to the top-level CHANGELOG, since we use
+# GitHub's auto-generated changelog for releases.
+# Example: [user1, user2]
+# subtext: "Thanks to @user1 and @user2 for this contribution!"
+subtext: |
+  The default (`observe`) preserves existing behavior — Soft pressure stays
+  advisory and only Hard sheds. Set `soft_action: shed` to reject ingress as
+  soon as Soft pressure is reached.

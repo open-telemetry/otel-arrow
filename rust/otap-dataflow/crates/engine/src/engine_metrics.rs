@@ -278,6 +278,7 @@ mod tests {
             retry_after_secs: 1,
             fail_readiness_on_hard: true,
             mode: otap_df_config::policy::MemoryLimiterMode::Enforce,
+            soft_action: otap_df_config::policy::SoftAction::Observe,
         });
         state.set_sample_for_tests(
             crate::memory_limiter::MemoryPressureLevel::Soft,

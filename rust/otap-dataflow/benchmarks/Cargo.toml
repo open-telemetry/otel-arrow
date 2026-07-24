@@ -61,6 +61,10 @@ name = "control_channel"
 harness = false
 
 [[bench]]
+name = "memory_admission"
+harness = false
+
+[[bench]]
 name = "exporter"
 harness = false
 

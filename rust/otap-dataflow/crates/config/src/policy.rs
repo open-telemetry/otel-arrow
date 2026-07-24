@@ -403,6 +403,11 @@ pub struct ResourcesPolicy {
 pub struct MemoryLimiterPolicy {
     /// Runtime behavior applied when the limiter classifies `Hard` pressure.
     pub mode: MemoryLimiterMode,
+    /// Graduated response applied when the limiter classifies `Soft` pressure.
+    /// Defaults to `observe` (Soft stays advisory); `shed` makes Soft reject
+    /// ingress exactly like `Hard`.
+    #[serde(default)]
+    pub soft_action: SoftAction,
     /// Preferred memory source used by the limiter.
     #[serde(default)]
     pub source: MemoryLimiterSource,
@@ -423,7 +428,9 @@ pub struct MemoryLimiterPolicy {
     #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
     #[schemars(with = "Option<String>")]
     pub hard_limit: Option<u64>,
-    /// Bytes below the soft limit required to leave `Soft` pressure.
+    /// Bytes below the soft limit required to leave `Soft` pressure. When
+    /// omitted, defaults to `min(hard_limit - soft_limit, soft_limit / 10)` --
+    /// a small recovery band below the soft limit.
     #[serde(default, deserialize_with = "byte_units::deserialize_u64")]
     #[schemars(with = "Option<String>")]
     pub hysteresis: Option<u64>,
@@ -456,6 +463,32 @@ pub enum MemoryLimiterMode {
     Enforce,
     /// Update metrics/logs only; `Hard` remains advisory.
     ObserveOnly,
+}
+
+/// Graduated response applied when the limiter classifies `Soft` pressure
+/// (above the soft limit, below the hard limit).
+///
+/// Only the variants the engine can actually honor today are offered. Richer
+/// strategies (throttle / priority-aware shedding) are intentionally omitted:
+/// they require a rate-limiting primitive and an authenticated priority model
+/// that do not yet exist in the data plane. Unknown values (e.g. `throttle`)
+/// are rejected at config load with an "unknown variant" error.
+///
+/// Scope: this is a process-wide control. The memory limiter is the global
+/// backstop over total process memory; its usage accounting and shed decision
+/// are not attributed to, and do not select by, individual clients. Selective
+/// shedding by client/receiver/ingress identity (rejecting only an over-limit
+/// origin while others keep flowing) would require a separate attribution and
+/// limiting layer above this backstop, not a behavior of `soft_action`.
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+#[repr(u8)]
+pub enum SoftAction {
+    /// `Soft` pressure is advisory only; ingress continues to flow (default).
+    #[default]
+    Observe = 0,
+    /// `Soft` pressure sheds ingress exactly like `Hard`.
+    Shed = 1,
 }
 
 const fn default_memory_limiter_check_interval() -> Duration {
@@ -711,7 +744,9 @@ const fn default_pdata_channel_capacity() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, Policies};
+    use super::{
+        MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, Policies, SoftAction,
+    };
     use std::time::Duration;
 
     #[test]
@@ -997,6 +1032,7 @@ mod tests {
                 core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
+                    soft_action: SoftAction::Observe,
                     source: MemoryLimiterSource::Auto,
                     check_interval: Duration::from_millis(50),
                     soft_limit: Some(200),
@@ -1025,6 +1061,7 @@ mod tests {
                 core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
+                    soft_action: SoftAction::Observe,
                     source: MemoryLimiterSource::Rss,
                     check_interval: Duration::from_secs(1),
                     soft_limit: Some(100),
@@ -1051,6 +1088,7 @@ mod tests {
                 core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
+                    soft_action: SoftAction::Observe,
                     source: MemoryLimiterSource::Rss,
                     check_interval: Duration::from_secs(1),
                     soft_limit: Some(0),
@@ -1077,6 +1115,7 @@ mod tests {
                 core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
+                    soft_action: SoftAction::Observe,
                     source: MemoryLimiterSource::Rss,
                     check_interval: Duration::from_secs(1),
                     soft_limit: None,
@@ -1103,6 +1142,7 @@ mod tests {
                 core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
+                    soft_action: SoftAction::Observe,
                     source: MemoryLimiterSource::Auto,
                     check_interval: Duration::from_secs(1),
                     soft_limit: Some(100),
@@ -1129,6 +1169,7 @@ mod tests {
                 core_allocation: super::CoreAllocation::all_cores(),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
+                    soft_action: SoftAction::Observe,
                     source: MemoryLimiterSource::Auto,
                     check_interval: Duration::from_secs(1),
                     soft_limit: Some(100),
@@ -1290,5 +1331,33 @@ mod tests {
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("resources.core_allocation"));
         assert!(errors[0].contains("'count' is required"));
+    }
+
+    #[test]
+    fn memory_limiter_soft_action_serde_default_and_rejects_unknown() {
+        // Omitted -> Observe (default-preserving upgrade path).
+        let p: MemoryLimiterPolicy =
+            serde_json::from_str(r#"{"mode":"enforce"}"#).expect("defaults apply");
+        assert_eq!(p.soft_action, SoftAction::Observe);
+        // Explicit shed parses.
+        let p2: MemoryLimiterPolicy =
+            serde_json::from_str(r#"{"mode":"enforce","soft_action":"shed"}"#)
+                .expect("shed parses");
+        assert_eq!(p2.soft_action, SoftAction::Shed);
+        // Unbacked variants are rejected at config load (no silent no-op).
+        assert!(
+            serde_json::from_str::<MemoryLimiterPolicy>(
+                r#"{"mode":"enforce","soft_action":"throttle"}"#
+            )
+            .is_err(),
+            "throttle must be rejected (no backing mechanism yet)"
+        );
+        assert!(
+            serde_json::from_str::<MemoryLimiterPolicy>(
+                r#"{"mode":"enforce","soft_action":"shed_low_priority"}"#
+            )
+            .is_err(),
+            "shed_low_priority must be rejected (no priority model)"
+        );
     }
 }
