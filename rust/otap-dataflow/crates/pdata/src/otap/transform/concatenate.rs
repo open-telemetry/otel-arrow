@@ -1079,24 +1079,50 @@ mod schema_tests {
         RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
     }
 
+    fn expected_fsb_16(value: u64) -> [u8; 16] {
+        let mut expected = [0; 16];
+        expected[..8].copy_from_slice(&value.to_le_bytes());
+        expected[8..].copy_from_slice(&value.to_le_bytes());
+        expected
+    }
+
+    fn assert_overlapping_fsb_values(array: &ArrayRef, count: usize, overlap: usize) {
+        let array = array
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .expect("plain FixedSizeBinary array");
+
+        for (row, value) in [
+            (0, 0),
+            (count - 1, count - 1),
+            (count, overlap),
+            (2 * count - 1, overlap + count - 1),
+        ] {
+            assert_eq!(array.value(row), expected_fsb_16(value as u64).as_slice());
+        }
+    }
+
     /// Scenario: Two FixedSizeBinary dictionaries overlap enough for their distinct
     /// values to fit u16, but their summed physical value arrays exceed the u16 limit.
     /// Guarantees: Concatenation falls back to plain values instead of overflowing
     /// Arrow's dictionary keys or panicking.
     #[test]
     fn test_overlapping_fsb_dictionaries_fall_back_to_plain() {
-        let batch1 = create_fsb_dictionary_batch(0, 40_000);
-        let batch2 = create_fsb_dictionary_batch(20_000, 40_000);
+        let count = (MAX_U16_CARDINALITY / 2) + 1;
+        let overlap = count / 2;
+        let batch1 = create_fsb_dictionary_batch(0, count);
+        let batch2 = create_fsb_dictionary_batch(overlap, count);
         let mut batches = vec![[Some(batch1)], [Some(batch2)]];
 
         let result = concatenate::<1>(&mut batches).unwrap();
         let batch = result[0].as_ref().expect("concatenated batch");
 
-        assert_eq!(batch.num_rows(), 80_000);
+        assert_eq!(batch.num_rows(), 2 * count);
         assert_eq!(
             batch.schema().field(0).data_type(),
             &DataType::FixedSizeBinary(16)
         );
+        assert_overlapping_fsb_values(batch.column(0), count, overlap);
     }
 
     /// Scenario: A FixedSizeBinary dictionary nested in a supported struct has
@@ -1105,8 +1131,10 @@ mod schema_tests {
     /// concatenation produces a plain nested field without panicking.
     #[test]
     fn test_nested_overlapping_fsb_dictionaries_fall_back_to_plain() {
-        let batch1 = create_struct_fsb_dictionary_batch(0, 40_000);
-        let batch2 = create_struct_fsb_dictionary_batch(20_000, 40_000);
+        let count = (MAX_U16_CARDINALITY / 2) + 1;
+        let overlap = count / 2;
+        let batch1 = create_struct_fsb_dictionary_batch(0, count);
+        let batch2 = create_struct_fsb_dictionary_batch(overlap, count);
         let mut batches = vec![[Some(batch1)], [Some(batch2)]];
 
         let result = concatenate::<1>(&mut batches).unwrap();
@@ -1116,17 +1144,26 @@ mod schema_tests {
             panic!("expected struct field");
         };
 
-        assert_eq!(batch.num_rows(), 80_000);
+        assert_eq!(batch.num_rows(), 2 * count);
         assert_eq!(fields[0].data_type(), &DataType::FixedSizeBinary(16));
+        let struct_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("struct array");
+        assert_overlapping_fsb_values(struct_array.column(0), count, overlap);
     }
 
-    /// Scenario: Dictionary value arrays contain 256 physical slots but only 255
-    /// non-null values because one slot is null.
+    /// Scenario: Dictionary value arrays contain one more physical slot than the
+    /// u8 limit, but only that limit's number of non-null values.
     /// Guarantees: Key selection counts the null slot and selects u16 rather than
     /// underestimating the physical dictionary length as fitting u8.
     #[test]
     fn test_dictionary_physical_bound_includes_null_slots() {
-        let raw1 = (0..128)
+        let physical_count = MAX_U8_CARDINALITY + 1;
+        let first_count = physical_count / 2;
+        let second_count = physical_count - first_count;
+        let raw1 = (0..first_count)
             .map(|i| (i as u64).to_le_bytes())
             .collect::<Vec<_>>();
         let values1 = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
@@ -1136,21 +1173,22 @@ mod schema_tests {
             8,
         )
         .unwrap();
-        let raw2 = (128..256)
+        let raw2 = (first_count..physical_count)
             .map(|i| (i as u64).to_le_bytes())
             .collect::<Vec<_>>();
         let values2 =
             FixedSizeBinaryArray::try_from_iter(raw2.iter().map(|value| value.as_slice())).unwrap();
-        let keys = UInt8Array::from((0..128).map(|i| i as u8).collect::<Vec<_>>());
+        let keys1 = UInt8Array::from((0..first_count).map(|i| i as u8).collect::<Vec<_>>());
+        let keys2 = UInt8Array::from((0..second_count).map(|i| i as u8).collect::<Vec<_>>());
         let batch1 = create_dict_batch(
             "data",
-            keys.clone(),
+            keys1,
             Arc::new(values1),
             DataType::FixedSizeBinary(8),
         );
         let batch2 = create_dict_batch(
             "data",
-            keys,
+            keys2,
             Arc::new(values2),
             DataType::FixedSizeBinary(8),
         );
