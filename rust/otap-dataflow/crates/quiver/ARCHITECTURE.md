@@ -831,6 +831,9 @@ future versions to extend the footer without breaking backwards compatibility:
 |    - directory_length: u32                                              |
 |    - manifest_offset: u64                                               |
 |    - manifest_length: u32                                               |
+|  Version 2 (50 bytes):                                                  |
+|    - all version 1 fields                                               |
+|    - idempotency_key: UUIDv7 (16 bytes)                                 |
 |  (Future versions may add fields here)                                  |
 +-------------------------------------------------------------------------+
 |                         Trailer (fixed 16 bytes)                        |
@@ -849,6 +852,10 @@ future versions to extend the footer without breaking backwards compatibility:
 4. Seek back `footer_size` bytes, read the variable-size footer
 5. Parse version from footer to determine how to interpret remaining fields
 6. Use directory/manifest offsets to locate metadata sections
+
+Writers emit version 2 segments. Readers accept both versions; version 1
+segments have no idempotency key. A version 2 key is assigned on the first
+successful append, using that bundle's ingestion timestamp for its UUIDv7 time.
 
 #### Segment File Naming
 

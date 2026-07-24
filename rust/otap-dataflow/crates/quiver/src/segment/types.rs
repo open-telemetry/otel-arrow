@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use arrow_array::types::UInt32Type;
+use uuid::{Uuid, Variant};
 
 use crate::record_bundle::{ArrowPrimitive, SchemaFingerprint, SlotId};
 
@@ -22,8 +23,14 @@ use super::error::SegmentError;
 /// Magic bytes identifying a Quiver segment file.
 pub(super) const SEGMENT_MAGIC: &[u8; 8] = b"QUIVER\0S";
 
+/// Segment file format version without a durable idempotency key.
+pub(super) const SEGMENT_VERSION_V1: u16 = 1;
+
+/// Segment file format version with a durable UUIDv7 idempotency key.
+pub(super) const SEGMENT_VERSION_V2: u16 = 2;
+
 /// Current segment file format version.
-pub(super) const SEGMENT_VERSION: u16 = 1;
+pub(super) const SEGMENT_VERSION: u16 = SEGMENT_VERSION_V2;
 
 /// Size of the fixed trailer at the end of the segment file.
 /// Layout: footer_size (4) + magic (8) + crc32 (4) = 16 bytes
@@ -34,6 +41,10 @@ pub(super) const TRAILER_SIZE: usize = 16;
 ///         directory_offset (8) + directory_length (4) +
 ///         manifest_offset (8) + manifest_length (4) = 34 bytes
 pub(super) const FOOTER_V1_SIZE: usize = 34;
+
+/// Size of the footer for version 2.
+/// Layout: version 1 fields (34) + idempotency_key (16) = 50 bytes
+pub(super) const FOOTER_V2_SIZE: usize = FOOTER_V1_SIZE + 16;
 
 // -----------------------------------------------------------------------------
 // Segment Limits
@@ -427,13 +438,13 @@ impl std::fmt::Display for SegmentSeq {
 // Footer
 // -----------------------------------------------------------------------------
 
-/// Segment file footer structure (version 1).
+/// Segment file footer structure.
 ///
 /// The footer contains metadata needed to locate and interpret the segment's
-/// stream directory and batch manifest. Future versions may add additional
-/// fields; the trailer's `footer_size` field allows readers to handle
-/// variable-sized footers.
-#[derive(Debug, Clone)]
+/// stream directory and batch manifest. Version 2 adds a durable UUIDv7
+/// idempotency key. Future versions may add fields; the trailer's `footer_size`
+/// field allows readers to handle variable-sized footers.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Footer {
     pub version: u16,
     pub stream_count: u32,
@@ -442,12 +453,46 @@ pub(super) struct Footer {
     pub directory_length: u32,
     pub manifest_offset: u64,
     pub manifest_length: u32,
+    /// Durable segment idempotency key. Absent only for version 1 segments.
+    pub idempotency_key: Option<Uuid>,
 }
 
 impl Footer {
     /// Encodes the footer to bytes.
-    pub fn encode(&self) -> Vec<u8> {
-        let mut buf = vec![0u8; FOOTER_V1_SIZE];
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the version is unsupported or its idempotency key
+    /// does not satisfy the version contract.
+    pub fn encode(&self) -> Result<Vec<u8>, SegmentError> {
+        let footer_size = match (self.version, self.idempotency_key) {
+            (SEGMENT_VERSION_V1, None) => FOOTER_V1_SIZE,
+            (SEGMENT_VERSION_V1, Some(_)) => {
+                return Err(SegmentError::InvalidFormat {
+                    message: "version 1 footer cannot contain an idempotency key".to_string(),
+                });
+            }
+            (SEGMENT_VERSION_V2, Some(idempotency_key)) => {
+                if !is_uuid_v7(idempotency_key) {
+                    return Err(SegmentError::InvalidFormat {
+                        message: "version 2 footer idempotency key must be UUIDv7".to_string(),
+                    });
+                }
+                FOOTER_V2_SIZE
+            }
+            (SEGMENT_VERSION_V2, None) => {
+                return Err(SegmentError::InvalidFormat {
+                    message: "version 2 footer requires an idempotency key".to_string(),
+                });
+            }
+            (version, _) => {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!("unsupported segment version: {}", version),
+                });
+            }
+        };
+
+        let mut buf = vec![0u8; footer_size];
         let mut pos = 0;
 
         // Version (2 bytes)
@@ -476,11 +521,16 @@ impl Footer {
 
         // Manifest length (4 bytes)
         buf[pos..pos + 4].copy_from_slice(&self.manifest_length.to_le_bytes());
+        pos += 4;
 
-        buf
+        if let Some(idempotency_key) = self.idempotency_key {
+            buf[pos..pos + 16].copy_from_slice(idempotency_key.as_bytes());
+        }
+
+        Ok(buf)
     }
 
-    /// Decodes a version 1 footer from bytes.
+    /// Decodes a supported footer from bytes.
     ///
     /// # Errors
     ///
@@ -493,17 +543,22 @@ impl Footer {
         }
 
         let version = u16::from_le_bytes([buf[0], buf[1]]);
-        if version != SEGMENT_VERSION {
-            return Err(SegmentError::InvalidFormat {
-                message: format!("unsupported segment version: {}", version),
-            });
-        }
+        let expected_size = match version {
+            SEGMENT_VERSION_V1 => FOOTER_V1_SIZE,
+            SEGMENT_VERSION_V2 => FOOTER_V2_SIZE,
+            _ => {
+                return Err(SegmentError::InvalidFormat {
+                    message: format!("unsupported segment version: {}", version),
+                });
+            }
+        };
 
-        if buf.len() < FOOTER_V1_SIZE {
+        if buf.len() < expected_size {
             return Err(SegmentError::InvalidFormat {
                 message: format!(
-                    "footer too short for version 1: expected {} bytes, got {}",
-                    FOOTER_V1_SIZE,
+                    "footer too short for version {}: expected {} bytes, got {}",
+                    version,
+                    expected_size,
                     buf.len()
                 ),
             });
@@ -553,6 +608,25 @@ impl Footer {
         // Manifest length (4 bytes)
         let manifest_length =
             u32::from_le_bytes([buf[pos], buf[pos + 1], buf[pos + 2], buf[pos + 3]]);
+        pos += 4;
+
+        let idempotency_key = if version == SEGMENT_VERSION_V2 {
+            let id_bytes: [u8; 16] =
+                buf[pos..pos + 16]
+                    .try_into()
+                    .map_err(|_| SegmentError::InvalidFormat {
+                        message: "version 2 footer has an invalid idempotency key".to_string(),
+                    })?;
+            let idempotency_key = Uuid::from_bytes(id_bytes);
+            if !is_uuid_v7(idempotency_key) {
+                return Err(SegmentError::InvalidFormat {
+                    message: "version 2 footer idempotency key must be UUIDv7".to_string(),
+                });
+            }
+            Some(idempotency_key)
+        } else {
+            None
+        };
 
         Ok(Footer {
             version,
@@ -562,8 +636,14 @@ impl Footer {
             directory_length,
             manifest_offset,
             manifest_length,
+            idempotency_key,
         })
     }
+}
+
+/// Returns whether a UUID satisfies the RFC 9562 UUIDv7 format contract.
+fn is_uuid_v7(value: Uuid) -> bool {
+    value.get_version_num() == 7 && value.get_variant() == Variant::RFC4122
 }
 
 // -----------------------------------------------------------------------------

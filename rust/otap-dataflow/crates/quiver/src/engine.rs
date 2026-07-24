@@ -4990,6 +4990,8 @@ mod tests {
     // WAL Replay Tests
     // -----------------------------------------------------------------------------
 
+    /// Scenario: Unfinalized bundles are rebuilt from the WAL after a restart.
+    /// Guarantees: Replay restores the bundles and their first-ingestion UUIDv7 timestamp.
     #[tokio::test]
     async fn wal_replay_recovers_bundles_not_finalized_to_segments() {
         let dir = tempdir().expect("tempdir");
@@ -5009,13 +5011,15 @@ mod tests {
 
         // First run: ingest some bundles (they go to WAL + open segment, but NOT finalized)
         let bundles_ingested = 5;
+        let ingestion_time =
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(456);
         {
             let engine = QuiverEngine::open(config.clone(), test_budget())
                 .await
                 .expect("engine");
 
             for _ in 0..bundles_ingested {
-                let bundle = DummyBundle::with_rows(10);
+                let bundle = TimestampedBundle::with_rows_and_time(10, ingestion_time);
                 engine.ingest(&bundle).await.expect("ingest");
             }
 
@@ -5075,11 +5079,21 @@ mod tests {
             );
 
             // Check open segment has our replayed bundles
-            let open_segment_bundles = engine.open_segment.lock().bundle_count();
+            let open_segment = engine.open_segment.lock();
+            let open_segment_bundles = open_segment.bundle_count();
             assert_eq!(
                 open_segment_bundles, bundles_ingested,
                 "open segment should have {} replayed bundles after recovery, got {}",
                 bundles_ingested, open_segment_bundles
+            );
+            assert_eq!(
+                open_segment
+                    .idempotency_key()
+                    .expect("replayed segment key")
+                    .get_timestamp()
+                    .expect("UUIDv7 timestamp")
+                    .to_unix(),
+                (1_700_000_000, 456_000_000)
             );
         }
     }

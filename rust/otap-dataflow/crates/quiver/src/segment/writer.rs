@@ -35,6 +35,7 @@
 //! |  - Directory length: u32                                                |
 //! |  - Manifest offset: u64                                                 |
 //! |  - Manifest length: u32                                                 |
+//! |  - Idempotency key: UUIDv7 (16 bytes, version 2+)                        |
 //! |  - (Future versions may add more fields here)                           |
 //! +-------------------------------------------------------------------------+
 //! |                         Trailer (fixed 16 bytes)                        |
@@ -81,6 +82,7 @@ use arrow_array::builder::{
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Fields, Schema};
 use crc32fast::Hasher;
+use uuid::Uuid;
 
 use super::error::SegmentError;
 use super::types::{
@@ -181,7 +183,7 @@ impl SegmentWriter {
         segment: super::OpenSegment,
     ) -> Result<(u64, u32), SegmentError> {
         let path = path.as_ref().to_path_buf();
-        let (accumulators, manifest) = segment.into_parts()?;
+        let (accumulators, manifest, idempotency_key) = segment.into_parts()?;
 
         // Create the file asynchronously, then convert to std::fs::File for Arrow IPC.
         let async_file = tokio::fs::File::create(&path)
@@ -198,7 +200,13 @@ impl SegmentWriter {
             move || -> Result<(File, (u64, u32)), SegmentError> {
                 let mut writer = BufWriter::new(std_file);
 
-                let result = Self::write_streaming(&mut writer, accumulators, manifest, &path)?;
+                let result = Self::write_streaming(
+                    &mut writer,
+                    accumulators,
+                    manifest,
+                    idempotency_key,
+                    &path,
+                )?;
 
                 // Extract the underlying file for fsync
                 let file = writer
@@ -266,6 +274,7 @@ impl SegmentWriter {
         writer: &mut W,
         accumulators: Vec<super::StreamAccumulator>,
         manifest: Vec<ManifestEntry>,
+        idempotency_key: Uuid,
         path: &Path,
     ) -> Result<(u64, u32), SegmentError> {
         // Validate limits before writing to prevent creating unreadable segments
@@ -351,9 +360,10 @@ impl SegmentWriter {
             directory_length,
             manifest_offset,
             manifest_length,
+            idempotency_key: Some(idempotency_key),
         };
 
-        let footer_bytes = footer.encode();
+        let footer_bytes = footer.encode()?;
         writer
             .write_all(&footer_bytes)
             .map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
@@ -627,7 +637,10 @@ mod tests {
     use super::*;
     use crate::record_bundle::SlotId;
     use crate::segment::test_utils::{make_batch, test_schema};
-    use crate::segment::types::{ChunkIndex, FOOTER_V1_SIZE, SEGMENT_MAGIC, StreamId};
+    use crate::segment::types::{
+        ChunkIndex, FOOTER_V1_SIZE, FOOTER_V2_SIZE, SEGMENT_MAGIC, SEGMENT_VERSION_V1,
+        SEGMENT_VERSION_V2, StreamId,
+    };
 
     #[tokio::test]
     async fn write_empty_segment_fails() {
@@ -783,6 +796,8 @@ mod tests {
         }
     }
 
+    /// Scenario: A segment is written through the streaming finalization path.
+    /// Guarantees: The v2 result carries a UUIDv7 idempotency key into reconstructed bundles.
     #[tokio::test]
     async fn write_segment_streaming_produces_readable_file() {
         use crate::segment::test_utils::{TestBundle, slot_descriptors, test_fingerprint};
@@ -803,6 +818,9 @@ mod tests {
             batch.clone(),
         );
         let _ = open_segment.append(&bundle).unwrap();
+        let expected_idempotency_key = open_segment
+            .idempotency_key()
+            .expect("first append assigns key");
 
         // Write using the streaming API
         let writer = SegmentWriter::new(SegmentSeq::new(42), true);
@@ -815,38 +833,160 @@ mod tests {
         let reader = SegmentReader::open(&path).unwrap();
         assert_eq!(reader.bundle_count(), 1);
         assert_eq!(reader.stream_count(), 1);
+        let idempotency_key = reader
+            .idempotency_key()
+            .expect("version 2 segment has an idempotency key");
+        assert_eq!(idempotency_key.get_version_num(), 7);
+        assert_eq!(idempotency_key, expected_idempotency_key);
 
         // Read back the bundle
         let manifest = reader.manifest();
         let reconstructed = reader.read_bundle(&manifest[0]).unwrap();
+        assert_eq!(reconstructed.idempotency_key(), Some(idempotency_key));
         let payload = reconstructed.payload(SlotId::new(0)).unwrap();
         assert_eq!(payload.num_rows(), 3);
     }
 
+    /// Scenario: A version 2 footer contains its required UUIDv7 idempotency key.
+    /// Guarantees: Encoding and decoding preserve the exact durable key.
     #[test]
-    fn footer_encode_decode_roundtrip() {
+    fn footer_v2_encode_decode_roundtrip() {
+        let idempotency_key =
+            Uuid::parse_str("01890f12-3456-789a-8bcd-ef0123456789").expect("valid UUIDv7");
         let footer = Footer {
-            version: SEGMENT_VERSION,
+            version: SEGMENT_VERSION_V2,
             stream_count: 5,
             bundle_count: 100,
             directory_offset: 12345678,
             directory_length: 1024,
             manifest_offset: 12346702,
             manifest_length: 2048,
+            idempotency_key: Some(idempotency_key),
         };
 
-        let encoded = footer.encode();
-        assert_eq!(encoded.len(), FOOTER_V1_SIZE);
+        let encoded = footer.encode().expect("encode footer");
+        assert_eq!(encoded.len(), FOOTER_V2_SIZE);
 
         let decoded = Footer::decode(&encoded).unwrap();
 
-        assert_eq!(decoded.version, footer.version);
-        assert_eq!(decoded.stream_count, footer.stream_count);
-        assert_eq!(decoded.bundle_count, footer.bundle_count);
-        assert_eq!(decoded.directory_offset, footer.directory_offset);
-        assert_eq!(decoded.directory_length, footer.directory_length);
-        assert_eq!(decoded.manifest_offset, footer.manifest_offset);
-        assert_eq!(decoded.manifest_length, footer.manifest_length);
+        assert_eq!(decoded, footer);
+    }
+
+    /// Scenario: A version 1 footer predates durable idempotency keys.
+    /// Guarantees: Its 34-byte representation still decodes with no idempotency key.
+    #[test]
+    fn footer_v1_encode_decode_roundtrip() {
+        let footer = Footer {
+            version: SEGMENT_VERSION_V1,
+            stream_count: 5,
+            bundle_count: 100,
+            directory_offset: 12345678,
+            directory_length: 1024,
+            manifest_offset: 12346702,
+            manifest_length: 2048,
+            idempotency_key: None,
+        };
+
+        let encoded = footer.encode().expect("encode footer");
+        assert_eq!(encoded.len(), FOOTER_V1_SIZE);
+        assert_eq!(Footer::decode(&encoded).unwrap(), footer);
+    }
+
+    /// Scenario: Version 2 extends the version 1 footer with an idempotency key.
+    /// Guarantees: The common 34-byte metadata prefix is unchanged apart from the version field.
+    #[test]
+    fn footer_v2_preserves_v1_common_fields() {
+        let v1 = Footer {
+            version: SEGMENT_VERSION_V1,
+            stream_count: 5,
+            bundle_count: 100,
+            directory_offset: 12345678,
+            directory_length: 1024,
+            manifest_offset: 12346702,
+            manifest_length: 2048,
+            idempotency_key: None,
+        };
+        let v2 = Footer {
+            version: SEGMENT_VERSION_V2,
+            idempotency_key: Some(Uuid::parse_str("01890f12-3456-789a-8bcd-ef0123456789").unwrap()),
+            ..v1.clone()
+        };
+
+        let v1_bytes = v1.encode().expect("encode v1 footer");
+        let v2_bytes = v2.encode().expect("encode v2 footer");
+
+        assert_eq!(&v2_bytes[2..FOOTER_V1_SIZE], &v1_bytes[2..]);
+        assert_eq!(u16::from_le_bytes([v2_bytes[0], v2_bytes[1]]), 2);
+    }
+
+    /// Scenario: A version 2 footer is given a non-v7 idempotency key.
+    /// Guarantees: The writer rejects keys that violate the UUIDv7 format contract.
+    #[test]
+    fn footer_v2_rejects_non_v7_idempotency_key() {
+        let footer = Footer {
+            version: SEGMENT_VERSION_V2,
+            stream_count: 1,
+            bundle_count: 1,
+            directory_offset: 0,
+            directory_length: 0,
+            manifest_offset: 0,
+            manifest_length: 0,
+            idempotency_key: Some(Uuid::nil()),
+        };
+
+        let result = footer.encode();
+
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("must be UUIDv7"))
+        );
+    }
+
+    /// Scenario: A key has version 7 bits but not the RFC 9562 UUID variant.
+    /// Guarantees: Version 2 rejects values that are not structurally valid UUIDv7 keys.
+    #[test]
+    fn footer_v2_rejects_non_rfc_uuid_variant() {
+        let mut key_bytes = *Uuid::parse_str("01890f12-3456-789a-8bcd-ef0123456789")
+            .expect("valid UUIDv7")
+            .as_bytes();
+        key_bytes[8] = 0x00;
+        let footer = Footer {
+            version: SEGMENT_VERSION_V2,
+            stream_count: 1,
+            bundle_count: 1,
+            directory_offset: 0,
+            directory_length: 0,
+            manifest_offset: 0,
+            manifest_length: 0,
+            idempotency_key: Some(Uuid::from_bytes(key_bytes)),
+        };
+
+        let result = footer.encode();
+
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("must be UUIDv7"))
+        );
+    }
+
+    /// Scenario: A version 2 footer is encoded without an idempotency key.
+    /// Guarantees: Version 2 cannot produce a segment that lacks its required durable key.
+    #[test]
+    fn footer_v2_requires_idempotency_key() {
+        let footer = Footer {
+            version: SEGMENT_VERSION_V2,
+            stream_count: 1,
+            bundle_count: 1,
+            directory_offset: 0,
+            directory_length: 0,
+            manifest_offset: 0,
+            manifest_length: 0,
+            idempotency_key: None,
+        };
+
+        let result = footer.encode();
+
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("requires an idempotency key"))
+        );
     }
 
     #[test]
@@ -960,11 +1100,14 @@ mod tests {
         assert_eq!(writer.segment_seq(), SegmentSeq::new(42));
     }
 
+    /// Scenario: Segment format constants define the on-disk v1 and v2 layouts.
+    /// Guarantees: Version, magic, trailer size, and both footer sizes remain stable.
     #[test]
     fn segment_constants_have_expected_values() {
         assert_eq!(SEGMENT_MAGIC, b"QUIVER\0S");
-        assert_eq!(SEGMENT_VERSION, 1);
+        assert_eq!(SEGMENT_VERSION, 2);
         assert_eq!(TRAILER_SIZE, 16);
         assert_eq!(FOOTER_V1_SIZE, 34);
+        assert_eq!(FOOTER_V2_SIZE, 50);
     }
 }

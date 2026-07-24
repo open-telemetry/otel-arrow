@@ -21,9 +21,10 @@
 //! [`SegmentWriter::write_segment`]: super::SegmentWriter::write_segment
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Instant, UNIX_EPOCH};
 
 use arrow_schema::SchemaRef;
+use uuid::{NoContext, Timestamp, Uuid};
 
 use super::error::SegmentError;
 use super::stream_accumulator::StreamAccumulator;
@@ -48,6 +49,8 @@ pub struct OpenSegment {
     finalized: bool,
     /// Timestamp when the first bundle was appended (None if empty).
     opened_at: Option<Instant>,
+    /// Durable UUIDv7 assigned from the first bundle's ingestion timestamp.
+    idempotency_key: Option<Uuid>,
 }
 
 impl OpenSegment {
@@ -60,6 +63,7 @@ impl OpenSegment {
             manifest: Vec::new(),
             finalized: false,
             opened_at: None,
+            idempotency_key: None,
         }
     }
 
@@ -93,6 +97,12 @@ impl OpenSegment {
     #[must_use]
     pub const fn opened_at(&self) -> Option<Instant> {
         self.opened_at
+    }
+
+    /// Returns the segment idempotency key, if the segment contains data.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<Uuid> {
+        self.idempotency_key
     }
 
     /// Subtracts `offset` from `opened_at`, making the segment appear
@@ -157,6 +167,23 @@ impl OpenSegment {
             });
         }
 
+        let first_idempotency_key = if self.idempotency_key.is_none() {
+            let ingestion_time =
+                bundle
+                    .ingestion_time()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| SegmentError::InvalidFormat {
+                        message: "bundle ingestion timestamp predates Unix epoch".to_string(),
+                    })?;
+            Some(Uuid::new_v7(Timestamp::from_unix(
+                NoContext,
+                ingestion_time.as_secs(),
+                ingestion_time.subsec_nanos(),
+            )))
+        } else {
+            None
+        };
+
         // Track when the first bundle was appended for time-based finalization
         if self.opened_at.is_none() {
             self.opened_at = Some(Instant::now());
@@ -196,6 +223,9 @@ impl OpenSegment {
             }
         }
 
+        if let Some(idempotency_key) = first_idempotency_key {
+            self.idempotency_key = Some(idempotency_key);
+        }
         self.manifest.push(entry.clone());
         Ok(entry)
     }
@@ -221,7 +251,7 @@ impl OpenSegment {
 
     /// Consumes the segment, returning components for streaming finalization.
     ///
-    /// Returns the stream accumulators (sorted by stream ID) and the manifest.
+    /// Returns the stream accumulators (sorted by stream ID), manifest, and key.
     /// This is used by [`SegmentWriter::write_segment`](super::SegmentWriter::write_segment)
     /// to stream IPC data directly to disk without buffering in memory.
     ///
@@ -231,7 +261,7 @@ impl OpenSegment {
     /// Returns [`SegmentError::EmptySegment`] if no bundles were appended.
     pub(super) fn into_parts(
         mut self,
-    ) -> Result<(Vec<StreamAccumulator>, Vec<ManifestEntry>), SegmentError> {
+    ) -> Result<(Vec<StreamAccumulator>, Vec<ManifestEntry>, Uuid), SegmentError> {
         if self.finalized {
             return Err(SegmentError::AccumulatorFinalized);
         }
@@ -239,13 +269,18 @@ impl OpenSegment {
             return Err(SegmentError::EmptySegment);
         }
         self.finalized = true;
+        let idempotency_key = self
+            .idempotency_key
+            .ok_or_else(|| SegmentError::InvalidFormat {
+                message: "non-empty segment has no idempotency key".to_string(),
+            })?;
 
         // Sort by stream ID for deterministic output order
         let mut stream_entries: Vec<_> = self.streams.into_iter().collect();
         stream_entries.sort_by_key(|(_, acc)| acc.stream_id());
 
         let accumulators = stream_entries.into_iter().map(|(_, acc)| acc).collect();
-        Ok((accumulators, self.manifest))
+        Ok((accumulators, self.manifest, idempotency_key))
     }
 
     /// Returns an iterator over the manifest entries.
@@ -300,6 +335,7 @@ impl std::fmt::Debug for OpenSegment {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    use std::time::{Duration, UNIX_EPOCH};
 
     use arrow_ipc::reader::FileReader;
 
@@ -308,6 +344,8 @@ mod tests {
     use crate::segment::ChunkIndex;
     use crate::segment::test_utils::{TestBundle, make_batch, slot_descriptors, test_schema};
 
+    /// Scenario: A newly allocated segment has not accepted a bundle.
+    /// Guarantees: It has no streams, timing state, or idempotency key.
     #[test]
     fn new_segment_is_empty() {
         let seg = OpenSegment::new();
@@ -316,24 +354,40 @@ mod tests {
         assert_eq!(seg.stream_count(), 0);
         assert!(!seg.is_finalized());
         assert!(seg.opened_at().is_none());
+        assert!(seg.idempotency_key().is_none());
     }
 
+    /// Scenario: The first bundle appended to an empty segment has a known ingestion timestamp.
+    /// Guarantees: The segment UUIDv7 uses that timestamp and remains stable across later appends.
     #[test]
     fn opened_at_is_set_on_first_append() {
         let mut seg = OpenSegment::new();
         let schema = test_schema();
         let batch = make_batch(&schema, &[1], &["a"]);
         let fp = [0x11u8; 32];
+        let ingestion_time =
+            UNIX_EPOCH + Duration::from_secs(1_700_000_000) + Duration::from_millis(123);
 
         // Before append, opened_at should be None
         assert!(seg.opened_at().is_none());
+        assert!(seg.idempotency_key().is_none());
 
-        let bundle = TestBundle::new(slot_descriptors()).with_payload(SlotId::new(0), fp, batch);
+        let bundle = TestBundle::new(slot_descriptors())
+            .with_ingestion_time(ingestion_time)
+            .with_payload(SlotId::new(0), fp, batch);
         let _ = seg.append(&bundle).expect("append succeeds");
 
         // After append, opened_at should be set
         assert!(seg.opened_at().is_some());
         let opened_at = seg.opened_at().unwrap();
+        let idempotency_key = seg.idempotency_key().expect("first append assigns key");
+        assert_eq!(
+            idempotency_key
+                .get_timestamp()
+                .expect("UUIDv7 timestamp")
+                .to_unix(),
+            (1_700_000_000, 123_000_000)
+        );
 
         // A second append should not change opened_at
         let batch2 = make_batch(&test_schema(), &[2], &["b"]);
@@ -345,6 +399,7 @@ mod tests {
             opened_at,
             "opened_at should not change after first bundle"
         );
+        assert_eq!(seg.idempotency_key(), Some(idempotency_key));
     }
 
     #[test]
@@ -462,6 +517,8 @@ mod tests {
         assert_ne!(stream_id1, stream_id2);
     }
 
+    /// Scenario: A populated open segment is consumed for streaming serialization.
+    /// Guarantees: Its streams, manifest, and first-append idempotency key are preserved.
     #[test]
     fn into_parts_produces_valid_accumulators() {
         let mut seg = OpenSegment::new();
@@ -484,11 +541,14 @@ mod tests {
 
         let _ = seg.append(&bundle1).unwrap();
         let _ = seg.append(&bundle2).unwrap();
+        let expected_idempotency_key = seg.idempotency_key().expect("populated segment key");
 
-        let (mut accumulators, manifest) = seg.into_parts().expect("into_parts should succeed");
+        let (mut accumulators, manifest, idempotency_key) =
+            seg.into_parts().expect("into_parts should succeed");
 
         assert_eq!(accumulators.len(), 2);
         assert_eq!(manifest.len(), 2);
+        assert_eq!(idempotency_key, expected_idempotency_key);
 
         // Pop accumulators in reverse order (sorted by stream_id)
         let acc_1 = accumulators.pop().unwrap();

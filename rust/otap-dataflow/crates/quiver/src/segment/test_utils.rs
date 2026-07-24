@@ -92,6 +92,7 @@ pub fn slot_descriptors() -> Vec<SlotDescriptor> {
 pub struct TestBundle {
     descriptor: BundleDescriptor,
     payloads: HashMap<SlotId, (SchemaFingerprint, RecordBatch)>,
+    ingestion_time: SystemTime,
 }
 
 impl TestBundle {
@@ -101,7 +102,15 @@ impl TestBundle {
         Self {
             descriptor: BundleDescriptor::new(slots),
             payloads: HashMap::new(),
+            ingestion_time: SystemTime::now(),
         }
+    }
+
+    /// Sets the bundle ingestion timestamp.
+    #[must_use]
+    pub fn with_ingestion_time(mut self, ingestion_time: SystemTime) -> Self {
+        self.ingestion_time = ingestion_time;
+        self
     }
 
     /// Adds a payload to the bundle for the specified slot.
@@ -123,7 +132,7 @@ impl RecordBundle for TestBundle {
     }
 
     fn ingestion_time(&self) -> SystemTime {
-        SystemTime::now()
+        self.ingestion_time
     }
 
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {

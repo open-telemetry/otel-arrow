@@ -50,6 +50,7 @@ use arrow_ipc::convert::fb_to_schema;
 use arrow_ipc::reader::{FileDecoder, read_footer_length};
 use arrow_ipc::{Block, root_as_footer};
 use crc32fast::Hasher;
+use uuid::Uuid;
 
 use super::error::SegmentError;
 use super::types::{
@@ -76,6 +77,8 @@ use crate::record_bundle::{ArrowPrimitive, SlotId};
 pub struct ReconstructedBundle {
     /// The bundle index from the manifest.
     bundle_index: u32,
+    /// Durable idempotency key of the segment containing this bundle.
+    idempotency_key: Option<Uuid>,
     /// Payload batches by slot ID.
     payloads: HashMap<SlotId, RecordBatch>,
     /// Keeps the backing buffer alive (may be mmap or heap allocation).
@@ -89,6 +92,7 @@ impl ReconstructedBundle {
     pub fn empty() -> Self {
         Self {
             bundle_index: 0,
+            idempotency_key: None,
             payloads: HashMap::new(),
             _backing: Arc::new(Buffer::from_vec(Vec::<u8>::new())),
         }
@@ -98,6 +102,14 @@ impl ReconstructedBundle {
     #[must_use]
     pub const fn bundle_index(&self) -> u32 {
         self.bundle_index
+    }
+
+    /// Returns the durable idempotency key of the containing segment.
+    ///
+    /// Returns `None` only for version 1 segments.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<Uuid> {
+        self.idempotency_key
     }
 
     /// Returns the payload batches by slot ID.
@@ -548,6 +560,14 @@ impl SegmentReader {
         self.footer.version
     }
 
+    /// Returns the durable idempotency key of this segment.
+    ///
+    /// Returns `None` only for version 1 segments.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<Uuid> {
+        self.footer.idempotency_key
+    }
+
     /// Returns the total file size in bytes.
     #[must_use]
     pub fn file_size(&self) -> usize {
@@ -636,6 +656,7 @@ impl SegmentReader {
 
         Ok(ReconstructedBundle {
             bundle_index: entry.bundle_index,
+            idempotency_key: self.footer.idempotency_key,
             payloads,
             _backing: Arc::clone(&self.buffer),
         })
@@ -1101,7 +1122,9 @@ mod tests {
     use super::*;
     use crate::record_bundle::SlotDescriptor;
     use crate::segment::test_utils::{TestBundle, make_batch, slot_descriptors, test_schema};
-    use crate::segment::types::FOOTER_V1_SIZE;
+    use crate::segment::types::{
+        FOOTER_V1_SIZE, SEGMENT_VERSION, SEGMENT_VERSION_V1, SEGMENT_VERSION_V2,
+    };
     use crate::segment::{OpenSegment, SegmentSeq, SegmentWriter};
 
     /// Test helper that creates a segment file in a temporary directory.
@@ -1158,6 +1181,45 @@ mod tests {
         }
     }
 
+    /// Writes a copy of a segment using the legacy 34-byte footer.
+    fn write_legacy_footer_copy(source: &Path, target: &Path) {
+        let bytes = std::fs::read(source).expect("read source segment");
+        let trailer_start = bytes.len() - TRAILER_SIZE;
+        let trailer_bytes: &[u8; TRAILER_SIZE] = bytes[trailer_start..]
+            .try_into()
+            .expect("fixed-size trailer");
+        let (trailer, _) = Trailer::decode(trailer_bytes).expect("decode trailer");
+        let footer_start = trailer_start - trailer.footer_size as usize;
+        let footer =
+            Footer::decode(&bytes[footer_start..trailer_start]).expect("decode source footer");
+        let legacy_footer = Footer {
+            version: SEGMENT_VERSION_V1,
+            idempotency_key: None,
+            ..footer
+        }
+        .encode()
+        .expect("encode legacy footer");
+        assert_eq!(legacy_footer.len(), FOOTER_V1_SIZE);
+
+        let mut legacy_bytes = bytes[..footer_start].to_vec();
+        legacy_bytes.extend_from_slice(&legacy_footer);
+        legacy_bytes.extend_from_slice(
+            &Trailer {
+                footer_size: legacy_footer.len() as u32,
+            }
+            .encode(),
+        );
+
+        let mut hasher = Hasher::new();
+        hasher.update(&legacy_bytes[..legacy_bytes.len() - 4]);
+        let crc = hasher.finalize();
+        let crc_start = legacy_bytes.len() - 4;
+        legacy_bytes[crc_start..].copy_from_slice(&crc.to_le_bytes());
+        std::fs::write(target, legacy_bytes).expect("write legacy segment");
+    }
+
+    /// Scenario: A newly finalized segment is opened by the reader.
+    /// Guarantees: The segment uses format version 2 and contains a UUIDv7 idempotency key.
     #[tokio::test]
     async fn reader_opens_valid_segment() {
         let seg = TestSegment::new().await;
@@ -1166,7 +1228,51 @@ mod tests {
 
         assert_eq!(reader.stream_count(), seg.stream_count);
         assert_eq!(reader.bundle_count(), seg.bundle_count);
-        assert_eq!(reader.version(), 1);
+        assert_eq!(reader.version(), SEGMENT_VERSION);
+        assert_eq!(
+            reader
+                .idempotency_key()
+                .expect("version 2 segment has an idempotency key")
+                .get_version_num(),
+            7
+        );
+    }
+
+    /// Scenario: A persisted segment is closed and reopened.
+    /// Guarantees: Its UUIDv7 idempotency key is read from disk and remains unchanged.
+    #[tokio::test]
+    async fn reader_preserves_idempotency_key_across_reopens() {
+        let seg = TestSegment::new().await;
+
+        let first_key = SegmentReader::open(&seg.path)
+            .expect("first open")
+            .idempotency_key()
+            .expect("version 2 segment has an idempotency key");
+        let second_key = SegmentReader::open(&seg.path)
+            .expect("second open")
+            .idempotency_key()
+            .expect("reopened segment has an idempotency key");
+
+        assert_eq!(second_key, first_key);
+    }
+
+    /// Scenario: A legacy segment has the original 34-byte version 1 footer.
+    /// Guarantees: The reader accepts it and reports no durable idempotency key.
+    #[tokio::test]
+    async fn reader_opens_v1_footer_without_idempotency_key() {
+        let seg = TestSegment::new().await;
+        let legacy_path = seg.dir.path().join("legacy.qseg");
+        write_legacy_footer_copy(&seg.path, &legacy_path);
+
+        let reader = SegmentReader::open(&legacy_path).expect("open legacy segment");
+
+        assert_eq!(reader.version(), SEGMENT_VERSION_V1);
+        assert_eq!(reader.idempotency_key(), None);
+        let bundle = reader
+            .read_bundle(&reader.manifest()[0])
+            .expect("read legacy bundle");
+        assert_eq!(bundle.idempotency_key(), None);
+        assert_eq!(bundle.slot_count(), 1);
     }
 
     #[tokio::test]
@@ -1194,6 +1300,8 @@ mod tests {
         assert_eq!(manifest[1].bundle_index, 1);
     }
 
+    /// Scenario: A bundle is reconstructed from a segment carrying a UUIDv7 idempotency key.
+    /// Guarantees: The reconstructed bundle exposes the same durable idempotency key.
     #[tokio::test]
     async fn reader_reads_bundle() {
         let seg = TestSegment::new().await;
@@ -1204,6 +1312,7 @@ mod tests {
         let bundle = reader.read_bundle(&entry).expect("read_bundle");
 
         assert_eq!(bundle.bundle_index(), 0);
+        assert_eq!(bundle.idempotency_key(), reader.idempotency_key());
         assert_eq!(bundle.slot_count(), 1);
         assert!(bundle.payload(SlotId::new(0)).is_some());
         assert_eq!(
@@ -1305,6 +1414,20 @@ mod tests {
 
         assert!(
             matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("footer too short for version 1"))
+        );
+    }
+
+    /// Scenario: A footer declares version 2 but contains only the version 1 fields.
+    /// Guarantees: The reader rejects version 2 segments missing their idempotency key.
+    #[test]
+    fn footer_decode_rejects_buffer_too_short_for_v2() {
+        let mut buf = [0u8; FOOTER_V1_SIZE];
+        buf[0..2].copy_from_slice(&SEGMENT_VERSION_V2.to_le_bytes());
+
+        let result = Footer::decode(&buf);
+
+        assert!(
+            matches!(result, Err(SegmentError::InvalidFormat { message }) if message.contains("footer too short for version 2"))
         );
     }
 
@@ -1411,6 +1534,8 @@ mod tests {
         assert_eq!(dict_col.len(), 5);
     }
 
+    /// Scenario: A byte in the persisted UUIDv7 idempotency key is corrupted.
+    /// Guarantees: The segment CRC rejects the modified key.
     #[tokio::test]
     async fn reader_detects_checksum_mismatch() {
         let seg = TestSegment::new().await;
@@ -1433,9 +1558,10 @@ mod tests {
             std::fs::set_permissions(&seg.path, permissions).expect("set permissions");
         }
 
-        // Corrupt a byte in the footer
+        // Corrupt the final byte of the idempotency key without changing its
+        // version bits, so footer parsing reaches CRC validation.
         let mut bytes = std::fs::read(&seg.path).expect("read");
-        let footer_pos = bytes.len() - 20; // Somewhere in footer
+        let footer_pos = bytes.len() - TRAILER_SIZE - 1;
         bytes[footer_pos] ^= 0xFF;
         std::fs::write(&seg.path, &bytes).expect("write");
 
