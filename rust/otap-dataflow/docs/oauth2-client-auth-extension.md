@@ -17,7 +17,7 @@
 This document describes the design of the **OAuth 2.0 Client Auth extension**
 (`oauth2_client_auth`) for the OTAP dataflow engine. The extension acquires and
 refreshes OAuth 2.0 access tokens using the **client-credentials** grant
-(RFC 6749 §4.4, 2-legged) and the **JWT-bearer** grant (RFC 7523), and exposes
+(RFC 6749 section 4.4, 2-legged) and the **JWT-bearer** grant (RFC 7523), and exposes
 them to data-path nodes through the `BearerTokenProvider` capability. It is the
 generic, provider-neutral counterpart to the Azure-specific
 [Azure Identity Auth extension](azure-identity-auth-extension.md), modeled on the
@@ -97,7 +97,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523, signed client assertion). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
-| Transport security | Per-instance TLS config (CA / client cert / insecure) for the token endpoint; a `timeout` bounds each token request. |
+| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override); TLS is on by default and a plaintext `token_url` requires an explicit `insecure` opt-in. A `timeout` bounds each request. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
 
@@ -107,16 +107,21 @@ The extension implements `BearerTokenProvider` unchanged - the same
 `get_token()` / `token_stream()` trait, `BearerToken` data type, and
 `CapabilityError` semantics defined in the
 [Azure Identity Auth extension](azure-identity-auth-extension.md#capability-bearertokenprovider).
-Because both extensions expose the same capability, a consumer binds either one
-interchangeably; the choice is a configuration concern, not a code change. This
-document therefore covers only what differs: the OAuth 2.0 token source, its
-configuration, and its refresh behavior.
+It lives in the engine at `capability::auth::bearer_token_provider` and is the
+**outbound token provider** - distinct from the sibling inbound
+`capability::auth::bearer_token_authorizer` (`BearerTokenAuthorizer`), which
+*admits* tokens presented on inbound requests (a receiver-side concern this
+extension has no part in). Because both bearer-token *providers* expose the same
+capability, a consumer binds this extension or the Azure one interchangeably; the
+choice is a configuration concern, not a code change. This document therefore
+covers only what differs: the OAuth 2.0 token source, its configuration, and its
+refresh behavior.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    IDP[OAuth 2.0 token endpoint<br/>RFC 6749 §4.4 / RFC 7523]
+    IDP[OAuth 2.0 token endpoint<br/>RFC 6749 section 4.4 / RFC 7523]
     subgraph PIPE[pipeline instance per core]
         subgraph EXT[oauth2_client_auth extension<br/>Active + Shared, Arc&lt;Inner&gt;]
             AUTH[Auth<br/>oauth2 client + grant + scopes]
@@ -226,7 +231,7 @@ groups:
 | `endpoint_params` | `map<string,string>` | `{}` | Extra parameters sent to the token endpoint (e.g. `audience`). |
 | `expiry_buffer` | duration | `5m` | Refresh this far ahead of `expires_on`. Must be non-zero. |
 | `timeout` | duration? | *none* (no timeout) | Per-request timeout on the token client. |
-| `tls` | object? | *none* | TLS settings for the token client (`ca_file`, `cert_file`, `key_file`, `insecure`). |
+| `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otap_df_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
 | `startup_timeout` | duration | `30s` | How long the engine holds data-path startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Must be non-zero. |
 
 For `grant_type: jwt-bearer` (RFC 7523), the extension signs a client assertion
@@ -247,6 +252,34 @@ factory's `validate_config` hook before the pipeline starts. Validation rejects
 an empty `token_url`, a zero `expiry_buffer`/`startup_timeout`, a missing
 client identifier, a missing secret/signing key for the selected grant, and any
 grant-specific field that does not apply to the selected `grant_type`.
+
+### Token-endpoint TLS
+
+The token endpoint carries the client secret (or signed assertion) and returns
+bearer tokens, so it must be reached over TLS - OAuth 2.0 requires it
+(RFC 6749 section 3.2). The extension invents no TLS knobs of its own: the `tls`
+field is the engine's shared `otap_df_config::tls::TlsClientConfig` - the same
+type the OTLP/HTTP exporters use - so behavior and validation match the rest of
+the collector.
+
+TLS is **on by default and effectively mandatory**, enforced by convention rather
+than hard-coded: an `https://` `token_url` uses TLS, while a plaintext `http://`
+`token_url` is rejected at config time unless `tls.insecure: true` is set
+explicitly (local/testing only). Running without TLS is therefore a deliberate,
+visible choice, not an accident. `TlsClientConfig` also provides:
+
+- **Custom trust** - `ca_file` / `ca_pem` to trust a private or enterprise CA,
+  plus `include_system_ca_certs_pool` (default `true`) for the system store.
+- **Mutual TLS** - `cert_file` / `key_file` present a client certificate, so the
+  extension can authenticate to endpoints requiring mTLS client auth
+  (RFC 8705) in addition to, or instead of, a client secret.
+- **SNI override** - `server_name` when connecting by IP or to a name that does
+  not match the server certificate.
+
+`insecure_skip_verify` (TLS enabled but certificate verification skipped) is
+**not supported** by the Rust stack today; setting it fails fast at startup
+rather than silently weakening verification. TLS relies on the process-wide
+`rustls` crypto provider described under [Cargo features](#cargo-features).
 
 ## Refresh Loop
 
@@ -289,9 +322,12 @@ Tuning constants:
 
 ### Expiry handling
 
-The token endpoint returns a relative `expires_in`; the extension anchors it to a
-monotonic `Instant` (`Instant::now() + expires_in`) once, so the schedule is
-immune to wall-clock jumps thereafter. A response without expiry pushes the next
+The token endpoint returns a relative `expires_in`; the extension computes the
+absolute expiry (`now + expires_in`) and hands it to the engine's
+`capability::auth::BearerToken` constructor, which centralizes the
+absolute-to-monotonic `Instant` conversion (the same path the Azure extension
+uses via `BearerToken::from_absolute_expiry`). After that single conversion the
+schedule is immune to wall-clock jumps. A response without expiry pushes the next
 refresh far into the future; the loop is still woken by control messages.
 
 ## Consumer Integration
@@ -300,10 +336,20 @@ A consumer binds `bearer_token_provider` to an `oauth2_client_auth` instance and
 resolves it once at factory time - exactly the mechanism described in the
 [Azure extension's Consumer Integration](azure-identity-auth-extension.md#consumer-integration).
 Nothing on the consumer side is OAuth-specific; a node cannot tell which provider
-backs the capability. The primary consumers are the **OTLP gRPC and HTTP
-exporters**, which inject a fresh `Authorization: Bearer <token>` on outgoing
-requests by reading the cached token via `get_token()` (replacing today's static
-header). Any other `BearerTokenProvider` consumer works unchanged.
+backs the capability, and can consume it two ways: a cached fast-path read via
+`get_token()`, or a subscription to `token_stream()` that pushes each refreshed
+token.
+
+The primary consumers are the **OTLP HTTP and gRPC exporters**. The OTLP HTTP
+exporter (integration in progress) subscribes to `token_stream()` and caches a
+pre-built `Authorization: Bearer <token>` header that it clones onto each
+outgoing request, so credential work stays off the export hot path and tokens
+rotate without a restart. The refreshed bearer **overrides** any statically
+configured `authorization` header, and the cached token is marked **sensitive**
+(redacted in `Debug`, excluded from HPACK indexing). Until a token is available
+(startup or an auth outage) the exporter withholds export rather than sending
+unauthenticated data. The OTLP gRPC exporter integration follows the same pattern
+and is planned. Any other `BearerTokenProvider` consumer works unchanged.
 
 ## Telemetry
 
@@ -371,11 +417,20 @@ hot-swappable config is possible future work (see [Open Questions](#open-questio
 ```toml
 [features]
 contrib-extensions = ["oauth2-client-auth-extension"]
-oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest"]
+oauth2-client-auth-extension = [
+    "dep:oauth2",
+    "dep:reqwest",
+    "dep:humantime-serde",
+    "dep:rand",
+]
 
 [dependencies]
 oauth2 = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["rustls-tls"] }
+# Human-readable durations for `expiry_buffer` / `timeout` / `startup_timeout`.
+humantime-serde = { workspace = true, optional = true }
+# Jitter for the refresh schedule and exponential-backoff retry.
+rand = { workspace = true, optional = true }
 ```
 
 **Crypto provider prerequisite.** The `reqwest`/`rustls` HTTP client requires a
@@ -417,9 +472,10 @@ effect.
 - **Secret sourcing.** Prefer the `*_file` fields over inline secrets so
   credentials are not embedded in pipeline config and can be rotated by updating
   the file; the extension re-reads them on each acquisition.
-- **Transport security.** The token endpoint is contacted over TLS by default;
-  `tls.insecure` is offered only for local testing and is discouraged. A
-  `timeout` bounds each token request so a hung endpoint cannot stall refresh.
+- **Transport security.** TLS protects the client secret in transit and the
+  returned token; it is on by default, with `insecure` as a deliberate local-only
+  opt-out (see [Token-endpoint TLS](#token-endpoint-tls)). A `timeout` bounds each
+  token request so a hung endpoint cannot stall refresh.
 - **Endpoint protection.** Slow-path fetch coalescing (`fetch_lock`) prevents
   request stampedes against the token endpoint on cache misses.
 - **Least privilege.** The extension requests exactly the configured `scopes`.
@@ -493,8 +549,6 @@ OAuth-specific coverage:
 
 ## Future Work
 
-- **mTLS-only clients.** Support token endpoints requiring client-certificate
-  authentication as a first-class grant, beyond the `jwt-bearer` assertion.
 - **Broader extension scope.** Hoist to group/engine scope (Phase 2) for genuine
   cross-core token-cache sharing (see
   [Extension Scopes](extension-requirements.md#extension-scopes)).
@@ -513,5 +567,5 @@ OAuth-specific coverage:
 - [Architecture](architecture.md)
 - [URN Format](urns.md)
 - [Go collector `oauth2clientauthextension`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/oauth2clientauthextension/README.md)
-- [RFC 6749 §4.4 - Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
+- [RFC 6749 section 4.4 - Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
 - [RFC 7523 - JWT Profile for OAuth 2.0 Client Authentication](https://datatracker.ietf.org/doc/html/rfc7523)
