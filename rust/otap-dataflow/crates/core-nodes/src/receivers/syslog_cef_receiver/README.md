@@ -85,6 +85,17 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
 defaults to `100`, and `batch.max_size` defaults to `100`.
 
+The receiver supports pressure-aware `messages/second` rate limiting when the
+engine-level memory limiter is configured. UDP counts one datagram as one
+message. TCP normally counts one newline-framed line as one message; if a line
+exceeds `MAX_MESSAGE_SIZE` and is emitted as multiple bounded-read fragments,
+each emitted fragment is counted separately. Over-limit UDP datagrams are
+dropped; over-limit TCP messages are dropped while the connection remains open.
+If an oversized TCP fragment is over limit, remaining fragments from that same
+oversized line are discarded through the newline.
+TCP rate-limit drops are silent because plain syslog TCP has no per-message
+acknowledgement or retry hint.
+
 ## Transport Protocols
 
 ### UDP
@@ -431,6 +442,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.syslog_cef.tcp_connections_active` | `{conn}` | Number of active TCP connections. |
 | `receiver.syslog_cef.tls_handshake_failures` | `{error}` | Number of TLS handshake failures. |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | `{item}` | Number of log records dropped due to process-wide memory pressure. |
+| `receiver.syslog_cef.received_logs_refused_rate_limit` | `{item}` | Number of log records refused by message-rate throttling. |
+| `receiver.syslog_cef.received_logs_would_refuse_rate_limit` | `{item}` | Number of log records that would be refused by observe-only message-rate throttling. |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | `{conn}` | Number of TCP connections rejected or closed due to process-wide memory pressure. |
 
 ### Events
@@ -444,6 +457,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `syslog_cef_receiver.tls.handshake.failed` | `warn` | TLS handshake failed and the connection was closed. |
 | `syslog_cef_receiver.arrow_records.build_failed` | `warn` | Arrow records could not be built from a parsed batch; the batch was dropped. |
 | `syslog_cef_receiver.memory_pressure.disconnect` | `warn` | A TCP connection was closed because process-wide memory pressure was active. |
+| `syslog_cef_receiver.rate_limit.drop` | `warn` | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 
 <!-- markdownlint-enable MD013 -->
 

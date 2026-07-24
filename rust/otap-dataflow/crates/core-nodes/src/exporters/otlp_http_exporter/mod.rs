@@ -938,6 +938,7 @@ mod test {
                 Arc::new(Mutex::new(server_metrics)),
                 otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
                 None,
+                None,
                 server_cancellation_token,
             )
             .await
@@ -1265,6 +1266,7 @@ mod test {
                 ack_registry,
                 Arc::new(Mutex::new(server_metrics)),
                 otap_df_engine::memory_limiter::SharedReceiverAdmissionState::default(),
+                None,
                 None,
                 server_cancellation_token,
             )

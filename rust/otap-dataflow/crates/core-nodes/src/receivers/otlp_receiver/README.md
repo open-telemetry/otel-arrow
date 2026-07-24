@@ -102,6 +102,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
 
+#### `receiver.otlp.rate_limit`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.rate_limit.would_refuse` | `{request}` | `signal`, `protocol` | Number of requests admitted in observe-only mode that would be refused if rate limiting were enforced. |
+
 #### `receiver.otlp.acknowledgements`
 
 | Metric | Unit | Attributes | Description |
@@ -117,7 +123,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 `protocol` is `grpc` or `http`; `outcome` is `success`, `failure`, or
 `refused`; and `error.type` is `memory_pressure`, `concurrency_limit`,
-`payload_too_large`, `invalid_request`, or `internal`.
+`rate_limit`, `payload_too_large`, `invalid_request`, or `internal`.
 
 ### Events
 

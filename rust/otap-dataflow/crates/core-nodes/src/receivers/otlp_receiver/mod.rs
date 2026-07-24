@@ -46,6 +46,8 @@ use otap_df_otap::otap_grpc::common::AckRegistry;
 use otap_df_otap::otap_grpc::server_settings::GrpcServerSettings;
 use otap_df_otap::otlp_http::HttpServerSettings;
 use otap_df_otap::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
+use otap_df_otap::rate_limit_layer::RateLimitLayer;
+use otap_df_otap::rate_limiter::RateLimiter;
 use otap_df_otap::shared_concurrency::SharedConcurrencyLayer;
 use otap_df_telemetry::common_attributes::Outcome;
 use parking_lot::Mutex;
@@ -184,6 +186,7 @@ pub struct OTLPReceiver {
     // Arc<Mutex<...>> so we can share metrics with the gRPC services which are `Send` due to
     // tonic requirements.
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    rate_limiter: Option<RateLimiter>,
     admission_state: SharedReceiverAdmissionState,
     // Global concurrency cap derived from downstream capacity. When both gRPC and HTTP are
     // enabled, this prevents combined ingress from exceeding what the pipeline can absorb.
@@ -201,6 +204,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
+        receiver.configure_rate_limiter(receiver_config.rate_limit.clone());
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
         Ok(ReceiverWrapper::shared(
@@ -211,6 +215,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    supported_rate_units: &[otap_df_config::policy::RateLimitUnit::RequestBytesPerSecond],
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
@@ -267,8 +272,14 @@ impl OTLPReceiver {
             admission_state: SharedReceiverAdmissionState::from_process_state(
                 &pipeline_ctx.memory_pressure_state(),
             ),
+            rate_limiter: None,
             global_max_concurrent_requests: None,
         })
+    }
+
+    fn configure_rate_limiter(&mut self, policy: Option<otap_df_config::policy::RateLimitPolicy>) {
+        self.rate_limiter =
+            policy.map(|policy| RateLimiter::new(policy, self.admission_state.clone()));
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
@@ -336,18 +347,21 @@ impl OTLPReceiver {
                     effect_handler.clone(),
                     settings,
                     self.metrics.clone(),
+                    self.rate_limiter.clone(),
                     grpc_wait.then(|| logs_slot.clone()).flatten(),
                 )),
                 Some(MetricsServiceServer::new(
                     effect_handler.clone(),
                     settings,
                     self.metrics.clone(),
+                    self.rate_limiter.clone(),
                     grpc_wait.then(|| metrics_slot.clone()).flatten(),
                 )),
                 Some(TraceServiceServer::new(
                     effect_handler.clone(),
                     settings,
                     self.metrics.clone(),
+                    self.rate_limiter.clone(),
                     grpc_wait.then(|| traces_slot.clone()).flatten(),
                 )),
             )
@@ -542,6 +556,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                             self.admission_state.clone(),
                             self.metrics.clone(),
                         ))
+                        .layer(RateLimitLayer::new(
+                            self.rate_limiter.clone(),
+                            self.metrics.clone(),
+                        ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max))
                         .layer(SharedConcurrencyLayer::new(global)),
                 )
@@ -550,6 +568,10 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     ServiceBuilder::new()
                         .layer(MemoryPressureLayer::with_otlp_metrics(
                             self.admission_state.clone(),
+                            self.metrics.clone(),
+                        ))
+                        .layer(RateLimitLayer::new(
+                            self.rate_limiter.clone(),
                             self.metrics.clone(),
                         ))
                         .layer(GlobalConcurrencyLimitLayer::new(grpc_max)),
@@ -612,6 +634,7 @@ impl shared::Receiver<OtapPdata> for OTLPReceiver {
                     ack_registry.clone(),
                     self.metrics.clone(),
                     self.admission_state.clone(),
+                    self.rate_limiter.clone(),
                     global_semaphore.clone(),
                     http_shutdown.clone(),
                 )))
@@ -829,6 +852,10 @@ mod tests {
 
     use otap_df_channel::error::RecvError;
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::policy::{
+        MemoryLimiterMode, RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure,
+        RateLimitUnit,
+    };
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
     };
@@ -852,6 +879,7 @@ mod tests {
     use otap_df_otap::compression::CompressionMethod;
     use otap_df_otap::otap_grpc::otlp::server_new::AckSlot;
     use otap_df_otap::otlp_http::RpcStatus;
+    use otap_df_otap::rate_limiter::RateLimiter;
     use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
@@ -1054,6 +1082,7 @@ mod tests {
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
                 ),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
             };
             receiver.tune_max_concurrent_requests(16);
@@ -1867,6 +1896,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -1913,6 +1943,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2004,6 +2035,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2102,6 +2134,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2163,6 +2196,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2233,6 +2267,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2322,6 +2357,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2385,6 +2421,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2447,6 +2484,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2549,6 +2587,7 @@ mod tests {
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
                 ),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -2631,6 +2670,7 @@ mod tests {
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
                 ),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
             },
             test_node(test_runtime.config().name.clone()),
@@ -2725,6 +2765,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2804,6 +2845,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2867,6 +2909,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2931,6 +2974,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -2986,6 +3030,90 @@ mod tests {
             .run_validation_concurrent(nack_validation);
     }
 
+    /// Scenario: an OTLP gRPC request exceeds the receiver-local rate bucket during soft pressure.
+    /// Guarantees: tonic clients observe ResourceExhausted with retry pushback metadata.
+    #[test]
+    fn test_otlp_grpc_rate_limit_rejection() {
+        let test_runtime = TestRuntime::new();
+
+        let grpc_addr = "127.0.0.1";
+        let grpc_port = otap_df_test_net::pick_unused_loopback_tcp_port();
+        let grpc_endpoint = format!("http://{grpc_addr}:{grpc_port}");
+        let addr: SocketAddr = format!("{grpc_addr}:{grpc_port}").parse().unwrap();
+
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(OTLP_RECEIVER_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let memory_pressure_state = pipeline_ctx.memory_pressure_state();
+        memory_pressure_state
+            .set_level_for_tests(otap_df_engine::memory_limiter::MemoryPressureLevel::Soft);
+        memory_pressure_state.configure(
+            otap_df_engine::memory_limiter::MemoryPressureBehaviorConfig {
+                retry_after_secs: 7,
+                fail_readiness_on_hard: true,
+                mode: MemoryLimiterMode::Enforce,
+            },
+        );
+        let admission_state =
+            SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
+        let rate_limiter = RateLimiter::new(
+            RateLimitPolicy {
+                mode: RateLimitMode::Enforce,
+                aggregation: RateLimitAggregation::ReceiverInstance,
+                unit: RateLimitUnit::RequestBytesPerSecond,
+                allow: 1,
+                interval: Duration::from_secs(1),
+                burst: Some(1),
+                pressure: RateLimitPressure::Soft,
+            },
+            admission_state.clone(),
+        );
+
+        let receiver = ReceiverWrapper::shared(
+            OTLPReceiver {
+                config: test_config(addr),
+                metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: Some(rate_limiter),
+                global_max_concurrent_requests: None,
+                admission_state,
+            },
+            test_node(test_runtime.config().name.clone()),
+            node_config,
+            test_runtime.config(),
+        );
+
+        let scenario = move |ctx: TestContext<OtapPdata>| {
+            Box::pin(async move {
+                let mut logs_client = LogsServiceClient::connect(grpc_endpoint.clone())
+                    .await
+                    .expect("Failed to connect to server");
+
+                let status = logs_client
+                    .export(create_logs_service_request())
+                    .await
+                    .expect_err("rate limit should reject request");
+
+                assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+                assert_eq!(status.message(), "rate limit");
+                assert_eq!(
+                    status
+                        .metadata()
+                        .get("grpc-retry-pushback-ms")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("7000")
+                );
+
+                ctx.send_shutdown(Instant::now(), "Test complete")
+                    .await
+                    .expect("Failed to send shutdown");
+            }) as Pin<Box<dyn Future<Output = ()>>>
+        };
+
+        _ = test_runtime.set_receiver(receiver).run_test(scenario);
+    }
+
     #[test]
     fn test_otlp_http_receiver_nack() {
         let test_runtime = TestRuntime::new();
@@ -3018,6 +3146,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3118,6 +3247,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3199,6 +3329,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3288,6 +3419,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3343,6 +3475,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3403,6 +3536,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3523,6 +3657,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: Some(1),
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3684,6 +3819,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3796,6 +3932,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -3911,6 +4048,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config(addr),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -4016,6 +4154,7 @@ mod tests {
             OTLPReceiver {
                 config,
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),
@@ -4109,6 +4248,7 @@ mod tests {
             OTLPReceiver {
                 config: test_config_http_only(http_listen),
                 metrics: Arc::new(Mutex::new(OtlpReceiverMetrics::register(&pipeline_ctx))),
+                rate_limiter: None,
                 global_max_concurrent_requests: None,
                 admission_state: SharedReceiverAdmissionState::from_process_state(
                     &pipeline_ctx.memory_pressure_state(),

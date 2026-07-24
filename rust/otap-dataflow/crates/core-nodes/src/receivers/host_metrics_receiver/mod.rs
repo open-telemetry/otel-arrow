@@ -147,6 +147,7 @@ pub static HOST_METRICS_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         create_host_metrics_receiver(pipeline, node, node_config, receiver_config)
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
+    supported_rate_units: &[],
     validate_config: validate_host_metrics_config,
 };
 

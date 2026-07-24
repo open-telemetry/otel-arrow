@@ -82,6 +82,18 @@ pub struct OtlpRejectionMetrics {
     pub requests: Counter<u64>,
 }
 
+/// Observe-only rate-limit decisions for admitted OTLP requests.
+#[metric_set(
+    name = "receiver.otlp.rate_limit",
+    measurement_attributes = OtlpRequestAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct OtlpRateLimitMetrics {
+    /// Number of requests that would be refused if rate limiting were enforced.
+    #[metric(unit = "{request}")]
+    pub would_refuse: Counter<u64>,
+}
+
 /// Downstream acknowledgement routing results.
 #[metric_set(
     name = "receiver.otlp.acknowledgements",
@@ -111,6 +123,7 @@ pub struct OtlpTransportMetrics {
 pub struct OtlpReceiverMetrics {
     requests: MeasurementMetricSet<OtlpRequestMetrics>,
     rejections: MeasurementMetricSet<OtlpRejectionMetrics>,
+    rate_limit: MeasurementMetricSet<OtlpRateLimitMetrics>,
     acknowledgements: MeasurementMetricSet<OtlpAcknowledgementMetrics>,
     transport: MeasurementMetricSet<OtlpTransportMetrics>,
 }
@@ -122,6 +135,7 @@ impl OtlpReceiverMetrics {
         Self {
             requests: OtlpRequestMetrics::register(pipeline_ctx),
             rejections: OtlpRejectionMetrics::register(pipeline_ctx),
+            rate_limit: OtlpRateLimitMetrics::register(pipeline_ctx),
             acknowledgements: OtlpAcknowledgementMetrics::register(pipeline_ctx),
             transport: OtlpTransportMetrics::register(pipeline_ctx),
         }
@@ -166,6 +180,14 @@ impl OtlpReceiverMetrics {
             .inc();
     }
 
+    /// Records an observe-only decision that would reject the request in enforce mode.
+    pub fn record_would_refuse_rate_limit(&mut self, signal: SignalType, protocol: OtlpProtocol) {
+        self.rate_limit
+            .with(OtlpRequestAttributes { signal, protocol })
+            .would_refuse
+            .inc();
+    }
+
     /// Records the outcome of routing an acknowledgement response.
     pub fn record_acknowledgement(&mut self, signal: SignalType, outcome: Outcome) {
         self.acknowledgements
@@ -202,6 +224,17 @@ impl OtlpReceiverMetrics {
         })
     }
 
+    /// Returns an observe-only rate-limit bucket for inspection without marking it for export.
+    #[must_use]
+    pub fn rate_limit_for(
+        &self,
+        signal: SignalType,
+        protocol: OtlpProtocol,
+    ) -> &OtlpRateLimitMetrics {
+        self.rate_limit
+            .get(OtlpRequestAttributes { signal, protocol })
+    }
+
     /// Returns an acknowledgement bucket for inspection without marking it for export.
     #[must_use]
     pub fn acknowledgements_for(
@@ -223,6 +256,7 @@ impl OtlpReceiverMetrics {
     pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), TelemetryError> {
         reporter.report_measurement(&mut self.requests)?;
         reporter.report_measurement(&mut self.rejections)?;
+        reporter.report_measurement(&mut self.rate_limit)?;
         reporter.report_measurement(&mut self.acknowledgements)?;
         reporter.report_measurement(&mut self.transport)
     }
@@ -231,6 +265,7 @@ impl OtlpReceiverMetrics {
     pub fn terminal_snapshots(&mut self) -> Vec<MetricSetSnapshot> {
         let mut snapshots = self.requests.terminal_snapshots();
         snapshots.extend(self.rejections.terminal_snapshots());
+        snapshots.extend(self.rate_limit.terminal_snapshots());
         snapshots.extend(self.acknowledgements.terminal_snapshots());
         snapshots.extend(self.transport.terminal_snapshots());
         snapshots
@@ -262,6 +297,7 @@ mod tests {
             OtlpProtocol::Http,
             ReceiverRejectionErrorType::InvalidRequest,
         );
+        metrics.record_would_refuse_rate_limit(SignalType::Metrics, OtlpProtocol::Http);
         metrics.record_acknowledgement(SignalType::Logs, Outcome::Refused);
         metrics.record_transport_error(OtlpProtocol::Grpc);
 
@@ -283,6 +319,13 @@ mod tests {
                     ReceiverRejectionErrorType::InvalidRequest,
                 )
                 .requests
+                .get(),
+            1
+        );
+        assert_eq!(
+            metrics
+                .rate_limit_for(SignalType::Metrics, OtlpProtocol::Http)
+                .would_refuse
                 .get(),
             1
         );
@@ -318,9 +361,10 @@ mod tests {
             OtlpProtocol::Grpc,
             ReceiverRejectionErrorType::MemoryPressure,
         );
+        metrics.record_would_refuse_rate_limit(SignalType::Traces, OtlpProtocol::Grpc);
 
         let snapshots = metrics.terminal_snapshots();
-        assert_eq!(snapshots.len(), 2);
+        assert_eq!(snapshots.len(), 3);
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.descriptor().name == "receiver.otlp.requests"
                 && snapshot.measurement_attribute_value("signal") == Some("metrics")
@@ -330,6 +374,11 @@ mod tests {
             snapshot.descriptor().name == "receiver.otlp.rejections"
                 && snapshot.measurement_attribute_value("protocol") == Some("grpc")
                 && snapshot.measurement_attribute_value("error.type") == Some("memory_pressure")
+        }));
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot.descriptor().name == "receiver.otlp.rate_limit"
+                && snapshot.measurement_attribute_value("signal") == Some("traces")
+                && snapshot.measurement_attribute_value("protocol") == Some("grpc")
         }));
         assert!(metrics.terminal_snapshots().is_empty());
     }

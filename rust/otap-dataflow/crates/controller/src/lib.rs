@@ -56,7 +56,7 @@ use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
-    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, TelemetryPolicy,
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimitPolicy, TelemetryPolicy,
 };
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
@@ -1207,6 +1207,15 @@ impl<
         run_mode: RunMode,
         options: ControllerRunOptions,
     ) -> Result<(), Error> {
+        engine_config.validate().map_err(|error| match error {
+            otap_df_config::error::Error::InvalidConfiguration { errors } => {
+                Error::InvalidConfiguration { errors }
+            }
+            other => Error::InvalidConfiguration {
+                errors: vec![other],
+            },
+        })?;
+
         let num_pipeline_groups = engine_config.groups.len();
         let resolved_config = engine_config.resolve();
         let (mut engine, pipelines, observability_pipeline) = resolved_config.into_parts();
@@ -1584,6 +1593,7 @@ impl<
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.transport_headers.clone(),
+                    pipeline_entry.policies.rate_limit.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -2058,6 +2068,7 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limit_policy: Option<RateLimitPolicy>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2116,6 +2127,7 @@ impl<
                         channel_capacity_policy,
                         telemetry_policy,
                         transport_headers_policy,
+                        rate_limit_policy,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2200,6 +2212,7 @@ impl<
             channel_capacity_policy,
             telemetry_policy,
             None,
+            None,
             controller_ctx.clone(),
             metrics_reporter.clone(),
             engine_evt_reporter.clone(),
@@ -2249,6 +2262,7 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limit_policy: Option<RateLimitPolicy>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2307,6 +2321,7 @@ impl<
                     channel_capacity_policy,
                     telemetry_policy,
                     transport_headers_policy,
+                    rate_limit_policy,
                     internal_telemetry_settings,
                 )
                 .map_err(|e| {
@@ -2529,6 +2544,7 @@ connections:
         name: "urn:otel:receiver:internal_telemetry",
         create: create_test_observability_receiver,
         wiring_contract: WiringContract::UNRESTRICTED,
+        supported_rate_units: &[],
         validate_config: accept_any_test_config,
     }];
 
@@ -2828,6 +2844,38 @@ groups: {{}}
                 .lock()
                 .expect("observed order mutex should not be poisoned"),
             vec!["alpha".to_owned(), "beta".to_owned()]
+        );
+    }
+
+    /// Scenario: an embedder deserializes a config directly and starts the controller.
+    /// Guarantees: controller execution still rejects rate limiting without a memory pressure source.
+    #[test]
+    fn controller_run_validates_rate_limit_requires_memory_source() {
+        let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
+            "version": otap_df_config::engine::ENGINE_CONFIG_VERSION_V1,
+            "policies": {
+                "rate_limit": {
+                    "mode": "enforce",
+                    "aggregation": "receiver_instance",
+                    "unit": "request_bytes/second",
+                    "allow": 1000,
+                    "interval": "1s",
+                    "burst": 1000,
+                    "pressure": "soft"
+                }
+            },
+            "groups": {}
+        }))
+        .expect("directly deserialized config should parse");
+
+        let err = Controller::new(test_pipeline_factory())
+            .run_till_shutdown(config)
+            .expect_err("controller run should reject invalid semantic config");
+
+        assert!(
+            err.to_string()
+                .contains("rate_limit policy requires policies.resources.memory_limiter"),
+            "unexpected error: {err}"
         );
     }
 

@@ -37,7 +37,7 @@ use otap_df_config::{
     engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{ChannelCapacityPolicy, TelemetryPolicy},
+    policy::{ChannelCapacityPolicy, RateLimitPolicy, RateLimitUnit, TelemetryPolicy},
     transport_headers_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
@@ -124,6 +124,8 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
+    /// Rate-limit units this receiver can measure at its admission point.
+    pub supported_rate_units: &'static [RateLimitUnit],
     /// Validates the node-specific config statically, without creating the component.
     ///
     /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
@@ -139,6 +141,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
+            supported_rate_units: self.supported_rate_units,
             validate_config: self.validate_config,
         }
     }
@@ -725,6 +728,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
+        rate_limit_policy: Option<RateLimitPolicy>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -951,6 +955,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
                                 &transport_headers_policy,
+                                rate_limit_policy.clone(),
                                 node_capabilities,
                             )
                         },
@@ -1788,6 +1793,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
         transport_headers_policy: &Option<TransportHeadersPolicy>,
+        rate_limit_policy: Option<RateLimitPolicy>,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -1813,14 +1819,31 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let factory = self
             .get_receiver_factory_map()
             .get(normalized.as_str())
-            .ok_or(Error::UnknownReceiver {
-                plugin_urn: normalized,
+            .ok_or_else(|| Error::UnknownReceiver {
+                plugin_urn: normalized.clone(),
             })?;
+        if let Some(rate_limit) = &rate_limit_policy
+            && !factory.supported_rate_units.contains(&rate_limit.unit)
+        {
+            return Err(Error::ConfigError(Box::new(
+                otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {}",
+                        normalized,
+                        pipeline_group_id.as_ref(),
+                        pipeline_id.as_ref(),
+                        name.as_ref(),
+                        rate_limit.unit.as_str()
+                    ),
+                },
+            )));
+        }
         let runtime_config = ReceiverConfig::with_channel_capacities(
             name.clone(),
             control_channel_capacity,
             pdata_channel_capacity,
-        );
+        )
+        .with_rate_limit(rate_limit_policy);
         let create = factory.create;
 
         let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
@@ -2527,6 +2550,7 @@ mod test {
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
+    use std::time::Duration;
 
     #[test]
     fn test_interests() {
@@ -2610,6 +2634,74 @@ mod test {
 
         let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
         assert!(policy.is_none());
+    }
+
+    fn no_op_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
+        Ok(())
+    }
+
+    fn unreachable_receiver_create(
+        _: PipelineContext,
+        _: NodeId,
+        _: Arc<NodeUserConfig>,
+        _: &ReceiverConfig,
+        _: &capability::registry::Capabilities,
+    ) -> Result<ReceiverWrapper<testing::TestMsg>, otap_df_config::error::Error> {
+        panic!("receiver factory should not be called for unsupported rate-limit units");
+    }
+
+    static RATE_LIMIT_TEST_RECEIVERS: &[ReceiverFactory<testing::TestMsg>] = &[ReceiverFactory {
+        name: "urn:otel:receiver:rate_limit_test",
+        create: unreachable_receiver_create,
+        wiring_contract: wiring_contract::WiringContract::UNRESTRICTED,
+        supported_rate_units: &[RateLimitUnit::MessagesPerSecond],
+        validate_config: no_op_validate,
+    }];
+
+    static RATE_LIMIT_TEST_FACTORY: PipelineFactory<testing::TestMsg> =
+        PipelineFactory::new(RATE_LIMIT_TEST_RECEIVERS, &[], &[], &[]);
+
+    /// Scenario: an embedder builds a receiver directly through the engine with an unsupported rate unit.
+    /// Guarantees: engine construction rejects the policy before invoking the receiver factory.
+    #[test]
+    fn create_receiver_rejects_unsupported_rate_unit() {
+        use otap_df_config::policy::{
+            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+        };
+
+        let (pipeline_ctx, _) = testing::test_pipeline_ctx();
+        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
+            "urn:otel:receiver:rate_limit_test",
+        ));
+        let node_id = testing::test_node("rate_limit_test");
+        let rate_limit = RateLimitPolicy {
+            mode: RateLimitMode::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit: RateLimitUnit::RequestBytesPerSecond,
+            allow: 1024,
+            interval: Duration::from_secs(1),
+            burst: Some(1024),
+            pressure: RateLimitPressure::Soft,
+        };
+
+        let result = RATE_LIMIT_TEST_FACTORY.create_receiver(
+            &pipeline_ctx,
+            node_id,
+            node_config,
+            8,
+            8,
+            &None,
+            Some(rate_limit),
+            &capability::registry::Capabilities::empty(),
+        );
+        let Err(err) = result else {
+            panic!("unsupported rate unit should fail at engine build");
+        };
+
+        assert!(
+            err.to_string().contains("does not support rate_limit unit"),
+            "unexpected error: {err}"
+        );
     }
 
     // -- resolve_propagation_policy tests -------------------------------------

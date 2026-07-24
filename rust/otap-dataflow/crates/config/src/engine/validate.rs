@@ -115,6 +115,31 @@ impl OtelDataflowSpec {
             }
         }
 
+        let any_regular_rate_limit = self.policies.rate_limit.is_some()
+            || self.groups.values().any(|pipeline_group| {
+                pipeline_group
+                    .policies
+                    .as_ref()
+                    .is_some_and(|policies| policies.rate_limit.is_some())
+                    || pipeline_group.pipelines.values().any(|pipeline| {
+                        pipeline
+                            .policies()
+                            .is_some_and(|policies| policies.rate_limit.is_some())
+                    })
+            });
+        if any_regular_rate_limit
+            && self
+                .policies
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.memory_limiter.as_ref())
+                .is_none()
+        {
+            errors.push(Error::InvalidUserConfig {
+                error: "rate_limit policy requires policies.resources.memory_limiter so receivers have a process pressure source".to_owned(),
+            });
+        }
+
         for (pipeline_group_id, pipeline_group) in &self.groups {
             if pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID {
                 errors.push(Error::InvalidUserConfig {

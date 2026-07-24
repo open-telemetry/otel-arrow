@@ -38,7 +38,8 @@ Implementation note:
 
 - Sample process memory on a configurable interval
 - Classify pressure as `Normal`, `Soft`, or `Hard`
-- Keep `Soft` informational - requests continue flowing
+- Keep `Soft` informational for the memory limiter itself; optional receiver
+  admission policies may use it as an input signal
 - Shed ingress at the receiver boundary only under `Hard` (in `enforce` mode)
 - Optionally fail the readiness probe under `Hard` (in `enforce` mode)
 - Optionally run in `observe_only` mode for metrics and logs without
@@ -251,7 +252,7 @@ The limiter maintains a three-level pressure state:
 | Level | Meaning | Receiver behavior |
 | --- | --- | --- |
 | `Normal` | Below `soft_limit` | No action |
-| `Soft` | Above `soft_limit` | Informational only; requests continue flowing |
+| `Soft` | Above `soft_limit` | Observed; receiver policies may react |
 | `Hard` | Above `hard_limit` | Ingress shedding enabled (`enforce` mode only) |
 
 When `mode: observe_only` is configured, the same state transitions still
@@ -307,13 +308,34 @@ receivers continue accepting requests regardless of pressure level.
 | Syslog / CEF UDP | Drop incoming datagrams |
 <!-- markdownlint-enable MD013 -->
 
-**Soft pressure:** all receivers continue operating normally - no requests are
-rejected and no receiver-level rejection counters increment. The engine-level
-`memory_pressure_state` metric reflects `1` (Soft) and
-`process_memory_usage_bytes` reflects the elevated usage. A
-`process_memory_limiter.transition` log event is emitted at `info` level on
-entry to `Soft`. The behaviors in the table above apply only at `Hard` in
-`enforce` mode.
+**Soft pressure:** the memory limiter does not reject requests solely because
+the process is above the soft limit. The engine-level `memory_pressure_state`
+metric reflects `1` (Soft) and `process_memory_usage_bytes` reflects the
+elevated usage. A `process_memory_limiter.transition` log event is emitted at
+`info` level on entry to `Soft`. Optional receiver admission policies, such as
+pressure-aware rate throttling, may use `Soft` as their activation signal. The
+behaviors in the table above apply only at `Hard` in `enforce` mode.
+
+For the v1 pressure-aware rate policy, OTLP `request_bytes/second` is measured
+as decompressed OTLP payload bytes at the receiver admission point. Syslog / CEF
+supports `messages/second`, measured as one UDP datagram or one emitted TCP
+record before parsing. A normal TCP line is one record; a line that exceeds
+`MAX_MESSAGE_SIZE` may be emitted as multiple bounded-read fragments, and each
+emitted fragment is counted separately. The current policy does not measure wire
+bytes. Because one effective rate policy applies to every receiver in a resolved
+pipeline, mixed receiver deployments should scope the policy to the pipeline that
+uses the matching unit. For example, an engine-wide
+`request_bytes/second` default will fail startup for a pipeline whose receiver
+only supports `messages/second`.
+
+The rate state is receiver-local and lock-free. It uses a token-bucket-equivalent
+GCRA state machine with bounded debt, so each receiver instance can continue
+tracking over-limit traffic while memory is normal and apply that state when
+soft pressure begins. OTLP keeps decompressed-byte accounting as the
+authoritative charge, but it also performs a non-charging exhausted-bucket check
+before body collection or gRPC message assembly. That early check avoids repeated
+decode and allocation work once the bucket is already exhausted under active
+rate-limit enforcement.
 
 **Syslog / CEF client behavior under Hard pressure:**
 
@@ -329,6 +351,18 @@ entry to `Soft`. The behaviors in the table above apply only at `Hard` in
   indication to the sending client. Operators relying on UDP syslog should treat
   Hard pressure as a potential data-loss event and monitor
   `received_logs_rejected_memory_pressure` to detect it.
+
+**Syslog / CEF behavior under pressure-aware rate throttling:**
+
+- **TCP:** Over-limit framed messages are dropped while the connection remains
+  open. This is a silent message drop: plain syslog TCP has no per-message
+  acknowledgement or retry hint, so the client does not know which line was
+  dropped. If an oversized TCP fragment is over limit, remaining fragments from
+  that oversized line are discarded through the newline. Hard memory pressure
+  still closes active connections.
+- **UDP:** Over-limit datagrams are silently dropped. UDP senders receive no
+  feedback, so operators should monitor `received_logs_refused_rate_limit` and
+  `received_logs_would_refuse_rate_limit`.
 
 **Design rationale:** explicit rejection is preferred over transport-level
 stalling. For TCP, holding large numbers of stalled open connections under
@@ -370,10 +404,14 @@ All engine metrics are registered under the `engine` metric-set.
 | Metric | Receiver | Description |
 | --- | --- | --- |
 | `receiver.otlp.rejections.requests{error.type="memory_pressure"}` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure, partitioned by `protocol` |
+| `receiver.otlp.rejections.requests{error.type="rate_limit"}` | OTLP (gRPC + HTTP) | Requests refused by rate throttling, partitioned by `protocol` |
+| `receiver.otlp.rate_limit.would_refuse` | OTLP (gRPC + HTTP) | Requests admitted in observe-only mode that would be refused if rate throttling were enforced, partitioned by `signal` and `protocol` |
 | `receiver.otap.refused_memory_pressure` | OTAP gRPC | Requests rejected due to memory pressure |
 | `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | Syslog / CEF | Log records dropped under pressure |
+| `receiver.syslog_cef.received_logs_refused_rate_limit` | Syslog / CEF | Log records refused by rate throttling |
+| `receiver.syslog_cef.received_logs_would_refuse_rate_limit` | Syslog / CEF | Log records that would be refused by observe-only rate throttling |
 <!-- markdownlint-enable MD013 -->
 
 ### Structured log events
@@ -387,6 +425,7 @@ All engine metrics are registered under the `engine` metric-set.
 | `process_memory_limiter.purge_unavailable` | warn | Emitted at startup when `purge_on_hard` is enabled but no allocator purge backend is available in this build. |
 | `process_memory_limiter.sample_failed` | warn | Emitted when a periodic memory sample fails. |
 | `process_memory_limiter.observe_only_ignored_setting` | warn | Emitted at startup when `purge_on_hard: true` is set with `mode: observe_only` (purge is suppressed in that mode). |
+| `syslog_cef_receiver.rate_limit.drop` | warn | Emitted once per TCP connection when pressure-aware rate throttling first drops an over-limit message on that connection. |
 <!-- markdownlint-enable MD013 -->
 
 ## Tradeoffs

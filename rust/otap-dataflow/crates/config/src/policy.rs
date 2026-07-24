@@ -7,6 +7,8 @@ use crate::byte_units;
 use crate::health::HealthPolicy;
 use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
+use serde::Deserializer;
+use serde::de;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -47,6 +49,11 @@ pub struct Policies {
     /// (the feature is entirely opt-in).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) transport_headers: Option<TransportHeadersPolicy>,
+    /// Pressure-aware receiver admission rate limit.
+    ///
+    /// When absent, no scoped rate gate is applied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rate_limit: Option<RateLimitPolicy>,
 }
 
 impl Policies {
@@ -69,6 +76,7 @@ impl Policies {
         let mut telemetry = None;
         let mut resources = None;
         let mut transport_headers = None;
+        let mut rate_limit = None;
         for scope in scopes {
             if channel_capacity.is_none() {
                 channel_capacity = scope.channel_capacity.as_ref();
@@ -85,6 +93,9 @@ impl Policies {
             if transport_headers.is_none() {
                 transport_headers = scope.transport_headers.as_ref();
             }
+            if rate_limit.is_none() {
+                rate_limit = scope.rate_limit.as_ref();
+            }
         }
         ResolvedPolicies {
             channel_capacity: channel_capacity.cloned().unwrap_or_default(),
@@ -92,6 +103,7 @@ impl Policies {
             telemetry: telemetry.cloned().unwrap_or_default(),
             resources: resources.cloned().unwrap_or_default(),
             transport_headers: transport_headers.cloned(),
+            rate_limit: rate_limit.cloned(),
         }
     }
 
@@ -190,6 +202,9 @@ impl Policies {
                 ));
             }
         }
+        if let Some(rate_limit) = &self.rate_limit {
+            errors.extend(rate_limit.validation_errors(&format!("{path_prefix}.rate_limit")));
+        }
         errors
     }
 }
@@ -209,6 +224,8 @@ pub struct ResolvedPolicies {
     /// Transport headers policy. `None` when the feature is not configured
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
+    /// Pressure-aware receiver admission rate limit.
+    pub rate_limit: Option<RateLimitPolicy>,
 }
 
 impl ResolvedPolicies {
@@ -222,6 +239,7 @@ impl ResolvedPolicies {
             telemetry: self_telemetry,
             resources: _,
             transport_headers: self_transport_headers,
+            rate_limit: self_rate_limit,
         } = self;
         let Self {
             channel_capacity: other_channel_capacity,
@@ -229,12 +247,207 @@ impl ResolvedPolicies {
             telemetry: other_telemetry,
             resources: _,
             transport_headers: other_transport_headers,
+            rate_limit: other_rate_limit,
         } = other;
 
         self_channel_capacity == other_channel_capacity
             && self_health == other_health
             && self_telemetry == other_telemetry
             && self_transport_headers == other_transport_headers
+            && self_rate_limit == other_rate_limit
+    }
+}
+
+/// Pressure-aware receiver admission rate limit policy.
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RateLimitPolicy {
+    /// Runtime behavior applied when the scoped rate gate would throttle.
+    pub mode: RateLimitMode,
+    /// Runtime aggregation scope. V1 supports only `receiver_instance`.
+    pub aggregation: RateLimitAggregation,
+    /// Rate unit measured by the receiver admission point, such as OTLP request
+    /// bytes or Syslog/CEF messages.
+    pub unit: RateLimitUnit,
+    /// Number of configured units allowed per interval.
+    #[schemars(with = "U64OrString")]
+    pub allow: u64,
+    /// Token refill interval for `allow`.
+    #[serde(with = "humantime_serde")]
+    #[schemars(with = "String")]
+    pub interval: Duration,
+    /// Burst capacity in configured units. Defaults to `allow`.
+    #[schemars(with = "Option<U64OrString>")]
+    pub burst: Option<u64>,
+    /// Process pressure gate. V1 supports only `soft`.
+    pub pressure: RateLimitPressure,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+#[allow(dead_code)]
+enum U64OrString {
+    Number(u64),
+    String(String),
+}
+
+impl U64OrString {
+    fn parse_for_unit<E>(self, field: &str, unit: RateLimitUnit) -> Result<u64, E>
+    where
+        E: de::Error,
+    {
+        match self {
+            Self::Number(value) => Ok(value),
+            Self::String(text) => match unit {
+                RateLimitUnit::RequestBytesPerSecond => parse_byte_count_string(&text),
+                RateLimitUnit::MessagesPerSecond => text.trim().parse::<u64>().map_err(|_| {
+                    E::custom(format!(
+                        "{field} for messages/second must be a number without byte units"
+                    ))
+                }),
+            },
+        }
+    }
+}
+
+fn parse_byte_count_string<E>(text: &str) -> Result<u64, E>
+where
+    E: de::Error,
+{
+    if let Ok(value) = text.trim().parse::<u64>() {
+        return Ok(value);
+    }
+    text.parse::<byte_unit::Byte>()
+        .map(|byte| byte.as_u64())
+        .map_err(|err| E::custom(err.to_string()))
+}
+
+impl<'de> Deserialize<'de> for RateLimitPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawRateLimitPolicy {
+            mode: RateLimitMode,
+            aggregation: RateLimitAggregation,
+            unit: RateLimitUnit,
+            allow: U64OrString,
+            #[serde(with = "humantime_serde")]
+            interval: Duration,
+            #[serde(default)]
+            burst: Option<U64OrString>,
+            pressure: RateLimitPressure,
+        }
+
+        let raw = RawRateLimitPolicy::deserialize(deserializer)?;
+        Ok(Self {
+            mode: raw.mode,
+            aggregation: raw.aggregation,
+            unit: raw.unit,
+            allow: raw.allow.parse_for_unit("allow", raw.unit)?,
+            interval: raw.interval,
+            burst: raw
+                .burst
+                .map(|burst| burst.parse_for_unit("burst", raw.unit))
+                .transpose()?,
+            pressure: raw.pressure,
+        })
+    }
+}
+
+impl RateLimitPolicy {
+    /// Returns validation errors for explicitly configured rate-limit fields.
+    #[must_use]
+    pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.allow == 0 {
+            errors.push(format!("{path_prefix}.allow must be greater than 0"));
+        }
+        if self.interval.is_zero() {
+            errors.push(format!("{path_prefix}.interval must be greater than 0"));
+        } else if self.interval != Duration::from_secs(1) {
+            errors.push(format!(
+                "{path_prefix}.interval must be 1s for per-second rate units"
+            ));
+        }
+        if matches!(self.burst, Some(0)) {
+            errors.push(format!("{path_prefix}.burst must be greater than 0"));
+        }
+        errors
+    }
+
+    /// Returns the configured burst capacity, defaulting to `allow`.
+    #[must_use]
+    pub fn burst_or_allow(&self) -> u64 {
+        self.burst.unwrap_or(self.allow).max(1)
+    }
+}
+
+/// Enforcement behavior for scoped rate throttling.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitMode {
+    /// Reject scoped traffic while process pressure is active and the bucket is over limit.
+    Enforce,
+    /// Record would-throttle decisions but continue admitting traffic.
+    ObserveOnly,
+}
+
+/// Runtime aggregation scope for rate-limit state.
+///
+/// Future versions may add broader shared scopes or keyed partitions, such as
+/// tenant-aware limits, after their config and hot-path implementation are
+/// designed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitAggregation {
+    /// Rate state is local to one receiver instance.
+    ReceiverInstance,
+}
+
+/// Units supported by receiver rate-limit policies.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub enum RateLimitUnit {
+    /// Request body bytes per interval.
+    #[serde(rename = "request_bytes/second")]
+    RequestBytesPerSecond,
+    /// Framed messages per interval.
+    #[serde(rename = "messages/second")]
+    MessagesPerSecond,
+}
+
+impl RateLimitUnit {
+    /// Returns the configuration spelling for this rate-limit unit.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RequestBytesPerSecond => "request_bytes/second",
+            Self::MessagesPerSecond => "messages/second",
+        }
+    }
+}
+
+/// Process pressure threshold that activates the scoped gate.
+///
+/// V1 supports `soft`, which activates at soft pressure and remains active at
+/// harder levels. Future versions may add additional thresholds after their
+/// interaction with memory-pressure recovery is designed.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitPressure {
+    /// Activate at soft pressure and remain active at harder levels.
+    Soft,
+}
+
+impl RateLimitPressure {
+    /// Returns the configuration spelling for this pressure threshold.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Soft => "soft",
+        }
     }
 }
 /// instrumentation overhead.
@@ -789,6 +1002,113 @@ mod tests {
         assert!(errors.iter().any(|e| e.contains("control.pipeline")));
         assert!(errors.iter().any(|e| e.contains("control.completion")));
         assert!(errors.iter().any(|e| e.contains(".pdata")));
+    }
+
+    /// Scenario: rate-limit allow and burst are provided as numeric YAML scalars.
+    /// Guarantees: the config parser accepts the same number-or-string shape exposed by the schema.
+    #[test]
+    fn rate_limit_accepts_numeric_allow_and_burst() {
+        let yaml = r#"
+mode: enforce
+aggregation: receiver_instance
+unit: messages/second
+allow: 1000
+interval: 1s
+burst: 2000
+pressure: soft
+"#;
+        let policy: super::RateLimitPolicy =
+            serde_yaml::from_str(yaml).expect("numeric rate-limit values should parse");
+
+        assert_eq!(policy.allow, 1000);
+        assert_eq!(policy.burst, Some(2000));
+    }
+
+    /// Scenario: a message-rate policy uses byte-unit suffixes for count fields.
+    /// Guarantees: dimensional byte units are rejected for `messages/second` limits.
+    #[test]
+    fn rate_limit_rejects_byte_units_for_message_counts() {
+        let yaml = r#"
+mode: enforce
+aggregation: receiver_instance
+unit: messages/second
+allow: "1 KiB"
+interval: 1s
+burst: "2 KiB"
+pressure: soft
+"#;
+        let err = serde_yaml::from_str::<super::RateLimitPolicy>(yaml)
+            .expect_err("byte units should not parse for message counts");
+
+        assert!(
+            err.to_string().contains("without byte units"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Scenario: a byte-rate policy uses byte-unit suffixes for count fields.
+    /// Guarantees: byte units remain accepted for `request_bytes/second` limits.
+    #[test]
+    fn rate_limit_accepts_byte_units_for_request_bytes() {
+        let yaml = r#"
+mode: enforce
+aggregation: receiver_instance
+unit: request_bytes/second
+allow: "1 KiB"
+interval: 1s
+burst: "2 KiB"
+pressure: soft
+"#;
+        let policy: super::RateLimitPolicy =
+            serde_yaml::from_str(yaml).expect("byte units should parse for byte limits");
+
+        assert_eq!(policy.allow, 1024);
+        assert_eq!(policy.burst, Some(2048));
+    }
+
+    /// Scenario: the rate-limit schema is generated for fields parsed by byte-unit helpers.
+    /// Guarantees: CRD validation permits both numeric and string values for allow and burst.
+    #[test]
+    fn rate_limit_schema_exposes_allow_and_burst_as_number_or_string() {
+        let schema = schemars::schema_for!(super::RateLimitPolicy);
+        let json = serde_json::to_value(schema).expect("schema should serialize");
+
+        let allow_schema = json["$defs"]["U64OrString"].to_string();
+        assert!(
+            allow_schema.contains("integer") && allow_schema.contains("string"),
+            "allow should allow integer or string values: {allow_schema}"
+        );
+
+        let burst_schema = json["properties"]["burst"].to_string();
+        assert!(
+            burst_schema.contains("U64OrString"),
+            "burst should reference the number-or-string schema: {burst_schema}"
+        );
+    }
+
+    /// Scenario: a per-second rate-limit unit is configured with a longer refill interval.
+    /// Guarantees: validation rejects intervals that would make `/second` unit names misleading.
+    #[test]
+    fn validates_rate_limit_requires_one_second_interval() {
+        let policies = Policies {
+            rate_limit: Some(super::RateLimitPolicy {
+                mode: super::RateLimitMode::Enforce,
+                aggregation: super::RateLimitAggregation::ReceiverInstance,
+                unit: super::RateLimitUnit::MessagesPerSecond,
+                allow: 100,
+                interval: Duration::from_secs(10),
+                burst: Some(100),
+                pressure: super::RateLimitPressure::Soft,
+            }),
+            ..Policies::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("interval must be 1s"),
+            "unexpected validation error: {errors:?}"
+        );
     }
 
     #[test]
