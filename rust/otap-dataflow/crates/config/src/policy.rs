@@ -40,6 +40,12 @@ pub struct Policies {
     /// applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) resources: Option<ResourcesPolicy>,
+    /// Controller-managed recovery policy for failed regular pipeline runtimes.
+    ///
+    /// When absent, a parent scope's runtime recovery policy or the built-in
+    /// default applies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) runtime_recovery: Option<RuntimeRecoveryPolicy>,
     /// Transport headers policy controlling header capture at receivers
     /// and propagation at exporters.
     ///
@@ -66,6 +72,7 @@ impl Policies {
     pub fn resolve<'a>(scopes: impl IntoIterator<Item = &'a Policies>) -> ResolvedPolicies {
         let mut channel_capacity = None;
         let mut health = None;
+        let mut runtime_recovery = None;
         let mut telemetry = None;
         let mut resources = None;
         let mut transport_headers = None;
@@ -75,6 +82,9 @@ impl Policies {
             }
             if health.is_none() {
                 health = scope.health.as_ref();
+            }
+            if runtime_recovery.is_none() {
+                runtime_recovery = scope.runtime_recovery.as_ref();
             }
             if telemetry.is_none() {
                 telemetry = scope.telemetry.as_ref();
@@ -89,6 +99,7 @@ impl Policies {
         ResolvedPolicies {
             channel_capacity: channel_capacity.cloned().unwrap_or_default(),
             health: health.cloned().unwrap_or_default(),
+            runtime_recovery: runtime_recovery.cloned().unwrap_or_default(),
             telemetry: telemetry.cloned().unwrap_or_default(),
             resources: resources.cloned().unwrap_or_default(),
             transport_headers: transport_headers.cloned(),
@@ -180,6 +191,11 @@ impl Policies {
                 errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
             }
         }
+        if let Some(runtime_recovery) = &self.runtime_recovery {
+            errors.extend(
+                runtime_recovery.validation_errors(&format!("{path_prefix}.runtime_recovery")),
+            );
+        }
         if let Some(telemetry) = &self.telemetry {
             errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
         }
@@ -204,6 +220,8 @@ pub struct ResolvedPolicies {
     pub health: HealthPolicy,
     /// Runtime telemetry policy.
     pub telemetry: TelemetryPolicy,
+    /// Controller-managed runtime recovery policy.
+    pub runtime_recovery: RuntimeRecoveryPolicy,
     /// Resources policy.
     pub resources: ResourcesPolicy,
     /// Transport headers policy. `None` when the feature is not configured
@@ -220,6 +238,7 @@ impl ResolvedPolicies {
             channel_capacity: self_channel_capacity,
             health: self_health,
             telemetry: self_telemetry,
+            runtime_recovery: self_runtime_recovery,
             resources: _,
             transport_headers: self_transport_headers,
         } = self;
@@ -227,6 +246,7 @@ impl ResolvedPolicies {
             channel_capacity: other_channel_capacity,
             health: other_health,
             telemetry: other_telemetry,
+            runtime_recovery: other_runtime_recovery,
             resources: _,
             transport_headers: other_transport_headers,
         } = other;
@@ -234,8 +254,115 @@ impl ResolvedPolicies {
         self_channel_capacity == other_channel_capacity
             && self_health == other_health
             && self_telemetry == other_telemetry
+            && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
     }
+}
+
+/// Controller-managed recovery policy for failed regular pipeline runtimes.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeRecoveryPolicy {
+    /// Whether unexpected runtime failures are recovered in-process.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Maximum replacement launches allowed in one failure streak.
+    #[serde(default = "default_runtime_recovery_max_restarts")]
+    pub max_restarts: usize,
+    /// Delay before the first replacement attempt.
+    #[serde(
+        default = "default_runtime_recovery_initial_backoff",
+        with = "humantime_serde"
+    )]
+    #[schemars(with = "String")]
+    pub initial_backoff: Duration,
+    /// Upper bound for exponential replacement backoff.
+    #[serde(
+        default = "default_runtime_recovery_max_backoff",
+        with = "humantime_serde"
+    )]
+    #[schemars(with = "String")]
+    pub max_backoff: Duration,
+    /// Maximum time a replacement may take to report admitted and ready.
+    #[serde(
+        default = "default_runtime_recovery_startup_timeout",
+        with = "humantime_serde"
+    )]
+    #[schemars(with = "String")]
+    pub startup_timeout: Duration,
+    /// Ready-runtime duration after which the restart streak resets.
+    #[serde(
+        default = "default_runtime_recovery_reset_after",
+        with = "humantime_serde"
+    )]
+    #[schemars(with = "String")]
+    pub reset_after: Duration,
+}
+
+impl Default for RuntimeRecoveryPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_restarts: default_runtime_recovery_max_restarts(),
+            initial_backoff: default_runtime_recovery_initial_backoff(),
+            max_backoff: default_runtime_recovery_max_backoff(),
+            startup_timeout: default_runtime_recovery_startup_timeout(),
+            reset_after: default_runtime_recovery_reset_after(),
+        }
+    }
+}
+
+impl RuntimeRecoveryPolicy {
+    /// Returns validation errors for the recovery policy.
+    #[must_use]
+    pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.max_restarts == 0 {
+            errors.push(format!("{path_prefix}.max_restarts must be greater than 0"));
+        }
+        if self.initial_backoff.is_zero() {
+            errors.push(format!(
+                "{path_prefix}.initial_backoff must be greater than 0"
+            ));
+        }
+        if self.max_backoff.is_zero() {
+            errors.push(format!("{path_prefix}.max_backoff must be greater than 0"));
+        }
+        if self.initial_backoff > self.max_backoff {
+            errors.push(format!(
+                "{path_prefix}.initial_backoff must not exceed {path_prefix}.max_backoff"
+            ));
+        }
+        if self.startup_timeout.is_zero() {
+            errors.push(format!(
+                "{path_prefix}.startup_timeout must be greater than 0"
+            ));
+        }
+        if self.reset_after.is_zero() {
+            errors.push(format!("{path_prefix}.reset_after must be greater than 0"));
+        }
+        errors
+    }
+}
+
+const fn default_runtime_recovery_max_restarts() -> usize {
+    5
+}
+
+const fn default_runtime_recovery_initial_backoff() -> Duration {
+    Duration::from_millis(250)
+}
+
+const fn default_runtime_recovery_max_backoff() -> Duration {
+    Duration::from_secs(30)
+}
+
+const fn default_runtime_recovery_startup_timeout() -> Duration {
+    Duration::from_secs(30)
+}
+
+const fn default_runtime_recovery_reset_after() -> Duration {
+    Duration::from_secs(60)
 }
 /// instrumentation overhead.
 #[derive(
@@ -711,7 +838,10 @@ const fn default_pdata_channel_capacity() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, Policies};
+    use super::{
+        MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, Policies,
+        RuntimeRecoveryPolicy,
+    };
     use std::time::Duration;
 
     #[test]
@@ -749,6 +879,8 @@ mod tests {
         assert!(!current.eq_ignoring_resources(&candidate));
     }
 
+    /// Scenario: all policy families are omitted from configuration.
+    /// Guarantees: runtime recovery defaults to five enabled attempts with balanced timing.
     #[test]
     fn defaults_match_expected_values() {
         let defaults = Policies::resolve([&Policies::default()]);
@@ -767,6 +899,108 @@ mod tests {
             super::CoreAllocation::all_cores()
         );
         assert_eq!(defaults.health, crate::health::HealthPolicy::default());
+        assert_eq!(
+            defaults.runtime_recovery,
+            RuntimeRecoveryPolicy {
+                enabled: true,
+                max_restarts: 5,
+                initial_backoff: Duration::from_millis(250),
+                max_backoff: Duration::from_secs(30),
+                startup_timeout: Duration::from_secs(30),
+                reset_after: Duration::from_secs(60),
+            }
+        );
+    }
+
+    /// Scenario: pipeline and parent scopes specify different runtime recovery policies.
+    /// Guarantees: policy resolution selects the complete lower-scope policy family.
+    #[test]
+    fn runtime_recovery_policy_resolves_by_scope_precedence() {
+        let parent = Policies {
+            runtime_recovery: Some(RuntimeRecoveryPolicy::default()),
+            ..Policies::default()
+        };
+        let child_policy = RuntimeRecoveryPolicy {
+            enabled: false,
+            max_restarts: 2,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(2),
+            startup_timeout: Duration::from_secs(3),
+            reset_after: Duration::from_secs(4),
+        };
+        let child = Policies {
+            runtime_recovery: Some(child_policy.clone()),
+            ..Policies::default()
+        };
+
+        let resolved = Policies::resolve([&child, &parent]);
+
+        assert_eq!(resolved.runtime_recovery, child_policy);
+    }
+
+    /// Scenario: a runtime recovery policy uses human-readable duration values.
+    /// Guarantees: YAML parsing accepts every public recovery field with exact values.
+    #[test]
+    fn runtime_recovery_policy_parses_human_readable_durations() {
+        let policy: RuntimeRecoveryPolicy = serde_yaml::from_str(
+            r#"
+enabled: false
+max_restarts: 7
+initial_backoff: 125ms
+max_backoff: 12s
+startup_timeout: 45s
+reset_after: 2m
+"#,
+        )
+        .expect("runtime recovery policy should parse");
+
+        assert!(!policy.enabled);
+        assert_eq!(policy.max_restarts, 7);
+        assert_eq!(policy.initial_backoff, Duration::from_millis(125));
+        assert_eq!(policy.max_backoff, Duration::from_secs(12));
+        assert_eq!(policy.startup_timeout, Duration::from_secs(45));
+        assert_eq!(policy.reset_after, Duration::from_secs(120));
+    }
+
+    /// Scenario: a runtime recovery policy contains an unsupported field.
+    /// Guarantees: strict deserialization rejects typos instead of silently ignoring them.
+    #[test]
+    fn runtime_recovery_policy_rejects_unknown_fields() {
+        let error = serde_yaml::from_str::<RuntimeRecoveryPolicy>(
+            r#"
+max_restarts: 5
+unknown_recovery_option: true
+"#,
+        )
+        .expect_err("unknown runtime recovery fields should be rejected");
+
+        assert!(error.to_string().contains("unknown_recovery_option"));
+    }
+
+    /// Scenario: every bounded recovery duration and count is invalid.
+    /// Guarantees: validation reports all unsafe zero values and inverted backoff bounds.
+    #[test]
+    fn runtime_recovery_policy_validates_bounds() {
+        let policies = Policies {
+            runtime_recovery: Some(RuntimeRecoveryPolicy {
+                enabled: true,
+                max_restarts: 0,
+                initial_backoff: Duration::from_secs(2),
+                max_backoff: Duration::ZERO,
+                startup_timeout: Duration::ZERO,
+                reset_after: Duration::ZERO,
+            }),
+            ..Policies::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+
+        assert_eq!(errors.len(), 5);
+        assert!(errors.iter().any(|error| error.contains("max_restarts")));
+        assert!(errors.iter().any(|error| error.contains("max_backoff")));
+        assert!(errors.iter().any(|error| error.contains("must not exceed")));
+        assert!(errors.iter().any(|error| error.contains("startup_timeout")));
+        assert!(errors.iter().any(|error| error.contains("reset_after")));
     }
 
     #[test]

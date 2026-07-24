@@ -429,6 +429,23 @@ pub(crate) enum RuntimeInstanceExit {
 }
 
 #[derive(Debug, Clone)]
+/// Controller state for one logical pipeline core's recovery streak.
+pub(super) struct RuntimeRecoveryState {
+    /// Generation currently selected to serve this logical core.
+    pub(super) serving_generation: u64,
+    /// Replacement launches consumed in the current failure streak.
+    pub(super) restart_count: usize,
+    /// Time at which the current serving replacement reported ready.
+    pub(super) ready_since: Option<Instant>,
+    /// Active recovery worker id, if a worker currently owns this core.
+    pub(super) worker_id: Option<u64>,
+    /// Candidate generation currently being launched or observed.
+    pub(super) candidate_generation: Option<u64>,
+    /// Whether an explicit controller operation has cancelled this worker.
+    pub(super) cancel_requested: bool,
+}
+
+#[derive(Debug, Clone)]
 /// Committed logical pipeline config plus the active deployment generation.
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
@@ -455,6 +472,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
+    /// Per-core restart streak and active recovery-worker state.
+    pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
     // A pipeline thread can finish before register_launched_instance() publishes it as Active.
     // We park that exit here and reconcile it during registration instead of leaving stale
     // liveness behind.
@@ -489,6 +508,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_shutdown_id: u64,
     /// Monotonic logical runtime-thread id used for diagnostics.
     pub(super) next_thread_id: usize,
+    /// Monotonic recovery-worker id used to reject stale workers.
+    pub(super) next_recovery_id: u64,
     /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
 }
@@ -514,6 +535,8 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) current_assigned_cores: Vec<usize>,
     /// Core allocation requested by the candidate config.
     pub(super) target_assigned_cores: Vec<usize>,
+    /// Active serving generation observed for each core before the rollout.
+    pub(super) current_serving_generations: HashMap<usize, u64>,
     /// Cores present in both current and target assignments.
     pub(super) common_assigned_cores: Vec<usize>,
     /// Cores present only in the target assignment.
@@ -547,12 +570,14 @@ pub(super) struct CandidateShutdownPlan {
     pub(super) timeout_secs: u64,
 }
 
-/// Snapshot of active cores for the current committed generation.
+/// Snapshot of active runtime generations for a logical pipeline.
 pub(super) struct ActiveRuntimeCoreState {
     /// Active cores still running the committed generation.
     pub(super) current_generation_cores: Vec<usize>,
     /// Whether another active generation exists for the same logical pipeline.
     pub(super) has_foreign_active_generations: bool,
+    /// Selected active serving generation for each core.
+    pub(super) serving_generations: HashMap<usize, u64>,
 }
 
 /// Returns a fresh RFC3339 timestamp for externally visible status updates.

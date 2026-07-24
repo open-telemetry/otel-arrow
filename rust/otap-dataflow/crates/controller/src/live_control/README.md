@@ -11,7 +11,10 @@ tracks the mutable controller state required to execute those API requests.
 - Accept per-pipeline rollout and shutdown requests without restarting the
   whole engine.
 - Keep controller state consistent across asynchronous pipeline-thread exits,
-  rollout workers, shutdown workers, and observed-state updates.
+  recovery workers, rollout workers, shutdown workers, and observed-state
+  updates.
+- Recover failed regular pipeline cores independently while preserving healthy
+  sibling cores.
 - Preserve useful recent operation snapshots while bounding in-memory
   retention.
 - Keep old runtime instances visible only while active controller work still
@@ -25,16 +28,16 @@ The module is split by responsibility:
   adapter, startup registration, shared pruning helpers, and the
   `ControlPlane` implementation.
 - `state.rs` defines the in-memory state model: rollout/shutdown records,
-  runtime-instance records, candidate plans, panic/error reports, and retention
-  constants.
+  runtime-instance and recovery records, candidate plans, panic/error reports,
+  and retention constants.
 - `planning.rs` validates requests, classifies rollout actions, prepares
   candidate rollout/shutdown plans, records accepted operations, updates status
   snapshots, and spawns background workers.
 - `execution.rs` runs rollout and shutdown workers. It handles create, resize,
   replace, rollback, panic cleanup, and per-core progress updates.
 - `runtime.rs` launches pipeline threads, registers instances, records exits,
-  sends shutdown requests, waits for readiness/exit, and exposes global runtime
-  shutdown/error helpers.
+  supervises bounded per-core recovery, sends shutdown requests, waits for
+  readiness/exit, and exposes global runtime shutdown/error helpers.
 
 `ControllerRuntime` is the shared owner. It is held behind an `Arc` by the
 admin control-plane adapter and by detached rollout/shutdown workers. Pipeline
@@ -84,6 +87,14 @@ all active instances.
 - Runtime exit reporting is race-tolerant. A pipeline thread can exit before
   `register_launched_instance()` publishes it as active; such exits are parked
   in `pending_instance_exits` and reconciled during registration.
+- Unexpected runtime errors are recovered per logical core. A ready replacement
+  uses a newer generation and becomes the serving generation only for that
+  core, so healthy siblings do not restart.
+- Recovery is bounded by the resolved `runtime_recovery` policy. Exhaustion or
+  disabled recovery records a fatal controller error and starts coordinated
+  engine shutdown. Clean exits are never recovered.
+- Explicit rollout, shutdown, and engine-level operations cancel active
+  recovery workers before they take lifecycle ownership.
 - Worker panic handling is unwind-safe. Panic cleanup records terminal failure,
   clears active-operation conflict state, and reports concise public failure
   reasons plus detailed internal diagnostics.
@@ -93,8 +104,8 @@ all active instances.
 
 ## Current Limits
 
-- Rollout and shutdown workers are detached OS threads. They are supervised by
-  panic cleanup, but there is no bounded worker pool or join-handle supervisor.
+- Recovery, rollout, and shutdown workers are detached OS threads. They are
+  supervised by panic cleanup, but there is no bounded worker pool.
 - Topic declaration changes are intentionally rejected. Supporting them would
   require a separate broker migration model.
 - Operation history is in-memory only. It is bounded and useful for recent

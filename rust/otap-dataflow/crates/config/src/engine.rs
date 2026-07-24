@@ -434,6 +434,7 @@ impl EngineObservabilityPolicies {
             health: self.health,
             telemetry: self.telemetry,
             resources: None,
+            runtime_recovery: None,
             transport_headers: None,
         }
     }
