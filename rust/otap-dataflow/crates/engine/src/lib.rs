@@ -61,6 +61,7 @@ pub mod exporter;
 pub mod extension;
 mod extension_lifecycle;
 mod extension_monitor;
+pub mod inventory;
 pub mod message;
 pub mod processor;
 pub mod receiver;
