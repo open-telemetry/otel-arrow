@@ -223,7 +223,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 // Record the drop flow-metric. A no-op unless this node is
                 // a decision node in a flow that enables `dropped.items`.
                 // `signals_filtered` is the dropped count.
-                effect_handler.record_flow_dropped_items(signals_filtered);
+                effect_handler.record_flow_dropped_items(signal, signals_filtered);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(

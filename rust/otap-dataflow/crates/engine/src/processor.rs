@@ -34,9 +34,9 @@ use crate::shared::processor as shared;
 use crate::terminal_state::TerminalMetricsDeadline;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
-use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_config::{PortName, SignalType};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,11 +58,11 @@ pub trait FlowMetricEffectHandler {
     fn take_elapsed_since_send_marker_ns(&self) -> u64;
     /// Record a complete flow_metric transit total (nanoseconds) into the
     /// stop node's local accumulator.
-    fn record_flow_duration(&self, total: u64);
+    fn record_flow_duration(&self, signal: SignalType, total: u64);
     /// Record consumed items into the start node's local accumulator.
-    fn record_flow_consumed_items(&self, items: u64);
+    fn record_flow_consumed_items(&self, signal: SignalType, items: u64);
     /// Record produced items into the stop node's local accumulator.
-    fn record_flow_produced_items(&self, items: u64);
+    fn record_flow_produced_items(&self, signal: SignalType, items: u64);
 }
 
 /// Per-`PData` hooks straddling a processor's `process()` call: an
@@ -602,10 +602,10 @@ impl<PData> ProcessorWrapper<PData> {
         completion_emission_metrics: Option<CompletionEmissionMetricsHandle>,
         flow_is_start: bool,
         flow_is_end: bool,
-        flow_consumed_items_metric: Option<MetricSet<FlowConsumedItemsMetrics>>,
-        flow_duration_metric: Option<MetricSet<FlowDurationMetrics>>,
-        flow_produced_items_metric: Option<MetricSet<FlowProducedItemsMetrics>>,
-        flow_dropped_items_metric: Option<MetricSet<FlowDroppedItemsMetrics>>,
+        flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>,
+        flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>>,
+        flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>>,
+        flow_dropped_items_metric: Option<MeasurementMetricSet<FlowDroppedItemsMetrics>>,
         flow_metrics_active: bool,
         flow_needs_timing: bool,
         terminal_metrics_deadline: TerminalMetricsDeadline,
@@ -636,10 +636,10 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler.set_flow_roles(
                     flow_is_start,
                     flow_is_end,
-                    flow_consumed_items_metric.clone(),
-                    flow_duration_metric.clone(),
-                    flow_produced_items_metric.clone(),
-                    flow_dropped_items_metric.clone(),
+                    flow_consumed_items_metric,
+                    flow_duration_metric,
+                    flow_produced_items_metric,
+                    flow_dropped_items_metric,
                     flow_metrics_active,
                     flow_needs_timing,
                 );
@@ -720,10 +720,10 @@ impl<PData> ProcessorWrapper<PData> {
                 effect_handler.set_flow_roles(
                     flow_is_start,
                     flow_is_end,
-                    flow_consumed_items_metric.clone(),
-                    flow_duration_metric.clone(),
-                    flow_produced_items_metric.clone(),
-                    flow_dropped_items_metric.clone(),
+                    flow_consumed_items_metric,
+                    flow_duration_metric,
+                    flow_produced_items_metric,
+                    flow_dropped_items_metric,
                     flow_metrics_active,
                     flow_needs_timing,
                 );
@@ -959,7 +959,7 @@ mod tests {
     use crate::testing::processor::{TestContext, ValidateContext};
     use crate::testing::{CtrlMsgCounters, TestMsg, test_node};
     use async_trait::async_trait;
-    use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::{SignalType, node::NodeUserConfig};
     use otap_df_telemetry::metrics::MetricValue;
     use serde_json::Value;
     use std::ops::Add;
@@ -1206,8 +1206,8 @@ mod tests {
                 .saturating_add(handler.take_elapsed_since_send_marker_ns());
 
             if handler.is_flow_end() && self.flow_metric_active && self.flow_compute_ns > 0 {
-                handler.record_flow_duration(self.flow_compute_ns);
-                handler.record_flow_produced_items(1);
+                handler.record_flow_duration(SignalType::Logs, self.flow_compute_ns);
+                handler.record_flow_produced_items(SignalType::Logs, 1);
                 self.flow_compute_ns = 0;
                 self.flow_metric_active = false;
             }
@@ -1218,7 +1218,7 @@ mod tests {
             handler: &H,
         ) {
             if handler.is_flow_start() {
-                handler.record_flow_consumed_items(1);
+                handler.record_flow_consumed_items(SignalType::Logs, 1);
             }
         }
     }
@@ -1256,9 +1256,9 @@ mod tests {
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let incoming_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowConsumedItemsMetrics>(entity_key);
+        let incoming_metric = FlowConsumedItemsMetrics::register(
+            &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
+        );
         let (metrics_rx, metrics_reporter) =
             otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
@@ -1278,9 +1278,9 @@ mod tests {
             false,
         );
 
-        handler.record_flow_consumed_items(3);
-        handler.record_flow_duration(10);
-        handler.record_flow_produced_items(4);
+        handler.record_flow_consumed_items(SignalType::Logs, 3);
+        handler.record_flow_duration(SignalType::Logs, 10);
+        handler.record_flow_produced_items(SignalType::Logs, 4);
         handler.report_flow_metrics();
 
         let snapshot = metrics_rx
@@ -1301,12 +1301,9 @@ mod tests {
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let duration_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let produced_items_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowProducedItemsMetrics>(entity_key);
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
+        let duration_metric = FlowDurationMetrics::register(&registrar);
+        let produced_items_metric = FlowProducedItemsMetrics::register(&registrar);
         let (metrics_rx, metrics_reporter) =
             otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
@@ -1326,9 +1323,9 @@ mod tests {
             true,
         );
 
-        handler.record_flow_consumed_items(3);
-        handler.record_flow_duration(10);
-        handler.record_flow_produced_items(4);
+        handler.record_flow_consumed_items(SignalType::Logs, 3);
+        handler.record_flow_duration(SignalType::Logs, 10);
+        handler.record_flow_produced_items(SignalType::Logs, 4);
         handler.report_flow_metrics();
 
         let duration_snapshot = metrics_rx
@@ -1354,9 +1351,9 @@ mod tests {
         let entity_key = pipeline_ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let dropped_metric = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDroppedItemsMetrics>(entity_key);
+        let dropped_metric = FlowDroppedItemsMetrics::register(
+            &pipeline_ctx.metric_set_registrar_for_entity(entity_key),
+        );
         let (metrics_rx, metrics_reporter) =
             otap_df_telemetry::reporter::MetricsReporter::create_new_and_receiver(4);
         let mut handler = local::EffectHandler::<TestMsg>::new(
@@ -1379,10 +1376,10 @@ mod tests {
         );
         assert!(handler.is_flow_decision());
 
-        handler.record_flow_dropped_items(3);
+        handler.record_flow_dropped_items(SignalType::Logs, 3);
         // Recording consumed/produced items here must be a no-op (not a start/end node).
-        handler.record_flow_consumed_items(99);
-        handler.record_flow_produced_items(99);
+        handler.record_flow_consumed_items(SignalType::Logs, 99);
+        handler.record_flow_produced_items(SignalType::Logs, 99);
         handler.report_flow_metrics();
 
         let dropped_snapshot = metrics_rx.try_recv().expect("dropped metric should report");
@@ -1405,15 +1402,10 @@ mod tests {
             pipeline_attrs: pipeline_ctx.pipeline_attribute_set(),
         };
         let entity_key = pipeline_ctx.metrics_registry().register_entity(attrs);
-        let start_metric_set = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowConsumedItemsMetrics>(entity_key);
-        let duration_metric_set = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let outgoing_metric_set = pipeline_ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowProducedItemsMetrics>(entity_key);
+        let registrar = pipeline_ctx.metric_set_registrar_for_entity(entity_key);
+        let start_metric_set = FlowConsumedItemsMetrics::register(&registrar);
+        let duration_metric_set = FlowDurationMetrics::register(&registrar);
+        let outgoing_metric_set = FlowProducedItemsMetrics::register(&registrar);
 
         let config = crate::config::ProcessorConfig::new("auto_measure_processor");
         let node_id = test_node(config.name.clone());

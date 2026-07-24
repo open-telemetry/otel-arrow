@@ -39,7 +39,7 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -497,7 +497,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             connection_edges(pipeline_config.connection_iter(), &node_name_to_index);
 
         // Build flow_metric state and per-node role assignments up front.
-        let flow_metric_state = build_flow_metric_state(
+        let mut flow_metric_state = build_flow_metric_state(
             &telemetry_policy,
             &node_name_to_index,
             &processor_indices,
@@ -625,36 +625,37 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             // Extract flow metric roles for this processor node.
             let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
             let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
-            let flow_consumed_items_metric: Option<MetricSet<FlowConsumedItemsMetrics>> =
+            let flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>> =
                 flow_metric_state
                     .start_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.consumed_items_metrics[id].clone());
-            let flow_duration_metric: Option<MetricSet<FlowDurationMetrics>> = flow_metric_state
-                .end_nodes
-                .get(&node_id.index)
-                .and_then(|&id| flow_metric_state.duration_metrics[id].clone());
-            let flow_produced_items_metric: Option<MetricSet<FlowProducedItemsMetrics>> =
+                    .and_then(|&id| flow_metric_state.consumed_items_metrics[id].take());
+            let flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>> =
                 flow_metric_state
                     .end_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.produced_items_metrics[id].clone());
+                    .and_then(|&id| flow_metric_state.duration_metrics[id].take());
+            let flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>> =
+                flow_metric_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.produced_items_metrics[id].take());
             // Register per-node drop decision metric set when this
             // processor declares the drop capability and lies within a
             // flow that enables dropped. Each decision node gets its own
             // entity tagged with `flow.node.decision` = this node's name.
-            let mut flow_dropped_items_metric: Option<MetricSet<FlowDroppedItemsMetrics>> = None;
+            let mut flow_dropped_items_metric: Option<
+                MeasurementMetricSet<FlowDroppedItemsMetrics>,
+            > = None;
             if processor.runtime_requirements().makes_drop_decisions
                 && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
             {
                 let mut attrs = candidate.attrs.clone();
                 attrs.decision = std::borrow::Cow::Owned(node_id.name.to_string());
                 let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
-                flow_dropped_items_metric = Some(
-                    pipeline_context
-                        .metrics_registry()
-                        .register_metric_set_for_entity::<FlowDroppedItemsMetrics>(entity_key),
-                );
+                flow_dropped_items_metric = Some(FlowDroppedItemsMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(entity_key),
+                ));
             }
             let flow_active = flow_metric_state.is_active();
             let flow_needs_timing = flow_metric_state.needs_timing();

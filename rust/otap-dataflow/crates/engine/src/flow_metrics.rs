@@ -19,16 +19,18 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use otap_df_telemetry::common_attributes::SignalAttributes;
 use otap_df_telemetry::instrument::{Counter, Mmsc};
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry_macros::{attribute_set, metric_set};
 
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
+use otap_df_config::SignalType;
 use otap_df_config::policy::{FlowMetric, TelemetryPolicy};
 
 /// Metric set emitted by the start node of a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowConsumedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points)
@@ -38,7 +40,7 @@ pub struct FlowConsumedItemsMetrics {
 }
 
 /// Duration metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowDurationMetrics {
     /// Sum of per-node compute durations (nanoseconds) for messages traversing the flow range.
@@ -47,7 +49,7 @@ pub struct FlowDurationMetrics {
 }
 
 /// Outgoing signal metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowProducedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) leaving the flow range.
@@ -56,7 +58,7 @@ pub struct FlowProducedItemsMetrics {
 }
 
 /// Dropped signal metric set emitted by a decision node within a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowDroppedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) a
@@ -108,6 +110,22 @@ pub struct FlowAttributeSet {
 /// Index of a flow_metric within the pipeline's flow_metric table.
 pub type FlowMetricId = usize;
 
+pub(crate) const FLOW_SIGNAL_COUNT: usize = 3;
+pub(crate) type FlowItemAccumulator = [u64; FLOW_SIGNAL_COUNT];
+pub(crate) type FlowDurationAccumulator = [Mmsc; FLOW_SIGNAL_COUNT];
+
+#[must_use]
+pub(crate) const fn flow_signal_index(signal: SignalType) -> usize {
+    match signal {
+        SignalType::Traces => 0,
+        SignalType::Metrics => 1,
+        SignalType::Logs => 2,
+    }
+}
+
+pub(crate) const FLOW_SIGNALS: [SignalType; FLOW_SIGNAL_COUNT] =
+    [SignalType::Traces, SignalType::Metrics, SignalType::Logs];
+
 /// Per-pipeline flow_metric state.
 ///
 /// Holds the start/stop node lookup tables used during processor wiring.
@@ -116,11 +134,11 @@ pub type FlowMetricId = usize;
 /// telemetry path, not from this state.
 pub(crate) struct PipelineFlowMetricState {
     /// Consumed item metric sets indexed by internal flow index.
-    pub consumed_items_metrics: Vec<Option<MetricSet<FlowConsumedItemsMetrics>>>,
+    pub consumed_items_metrics: Vec<Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>>,
     /// Duration metric sets indexed by internal flow index.
-    pub duration_metrics: Vec<Option<MetricSet<FlowDurationMetrics>>>,
+    pub duration_metrics: Vec<Option<MeasurementMetricSet<FlowDurationMetrics>>>,
     /// Produced item metric sets indexed by internal flow index.
-    pub produced_items_metrics: Vec<Option<MetricSet<FlowProducedItemsMetrics>>>,
+    pub produced_items_metrics: Vec<Option<MeasurementMetricSet<FlowProducedItemsMetrics>>>,
     /// Mapping from node index -> flow metric index where this node is the end node.
     pub end_nodes: HashMap<usize, usize>,
     /// Mapping from node index -> flow metric index where this node is the start node.
@@ -153,7 +171,10 @@ pub(crate) struct DecisionCandidate {
 #[derive(Clone)]
 pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
     /// Consumed item measurement, if enabled for this flow.
-    pub consumed_items: Option<(MetricSet<FlowConsumedItemsMetrics>, ItemAccumulator)>,
+    pub consumed_items: Option<(
+        MeasurementMetricSet<FlowConsumedItemsMetrics>,
+        ItemAccumulator,
+    )>,
 }
 
 /// Stop-side measurements for a node that terminates a flow_metric range.
@@ -164,9 +185,15 @@ pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
 #[derive(Clone)]
 pub(crate) struct EndFlowMetrics<DurationAccumulator, ItemAccumulator> {
     /// Duration measurement, if enabled for this flow.
-    pub duration: Option<(MetricSet<FlowDurationMetrics>, DurationAccumulator)>,
+    pub duration: Option<(
+        MeasurementMetricSet<FlowDurationMetrics>,
+        DurationAccumulator,
+    )>,
     /// Produced item measurement, if enabled for this flow.
-    pub produced_items: Option<(MetricSet<FlowProducedItemsMetrics>, ItemAccumulator)>,
+    pub produced_items: Option<(
+        MeasurementMetricSet<FlowProducedItemsMetrics>,
+        ItemAccumulator,
+    )>,
 }
 
 /// Decision-side measurements for a node that records drop decisions
@@ -179,7 +206,10 @@ pub(crate) struct EndFlowMetrics<DurationAccumulator, ItemAccumulator> {
 pub(crate) struct DecisionFlowMetrics<ItemAccumulator> {
     /// Dropped item measurement, if enabled for this flow and this node is a
     /// decision node.
-    pub dropped_items: Option<(MetricSet<FlowDroppedItemsMetrics>, ItemAccumulator)>,
+    pub dropped_items: Option<(
+        MeasurementMetricSet<FlowDroppedItemsMetrics>,
+        ItemAccumulator,
+    )>,
 }
 
 /// Per-`EffectHandler` flow_metric state.
@@ -236,13 +266,19 @@ pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> 
 }
 
 /// Concrete `FlowMetricState` for the local (`!Send`) `EffectHandler`.
-pub(crate) type LocalFlowMetricState =
-    FlowMetricState<Rc<Cell<Option<Instant>>>, Cell<Mmsc>, Cell<u64>>;
+pub(crate) type LocalFlowMetricState = FlowMetricState<
+    Rc<Cell<Option<Instant>>>,
+    Cell<FlowDurationAccumulator>,
+    Cell<FlowItemAccumulator>,
+>;
 
 /// Concrete `FlowMetricState` for the shared (`Send + Sync`)
 /// `EffectHandler`.
-pub(crate) type SharedFlowMetricState =
-    FlowMetricState<Arc<Mutex<Option<Instant>>>, Arc<Mutex<Mmsc>>, Arc<Mutex<u64>>>;
+pub(crate) type SharedFlowMetricState = FlowMetricState<
+    Arc<Mutex<Option<Instant>>>,
+    Arc<Mutex<FlowDurationAccumulator>>,
+    Arc<Mutex<FlowItemAccumulator>>,
+>;
 
 impl Default for LocalFlowMetricState {
     fn default() -> Self {
@@ -375,19 +411,19 @@ pub(crate) fn build_flow_metric_state(
             .metrics_registry()
             .register_entity(attrs.clone());
         let consumed_items_metric = flow_config.has(FlowMetric::ConsumedItems).then(|| {
-            pipeline_context
-                .metrics_registry()
-                .register_metric_set_for_entity::<FlowConsumedItemsMetrics>(entity_key)
+            FlowConsumedItemsMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
         });
         let duration_metric = flow_config.has(FlowMetric::ComputeDuration).then(|| {
-            pipeline_context
-                .metrics_registry()
-                .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key)
+            FlowDurationMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
         });
         let produced_items_metric = flow_config.has(FlowMetric::ProducedItems).then(|| {
-            pipeline_context
-                .metrics_registry()
-                .register_metric_set_for_entity::<FlowProducedItemsMetrics>(entity_key)
+            FlowProducedItemsMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
         });
 
         // Register drop decision candidates for every processor node
@@ -601,15 +637,10 @@ mod tests {
         let entity_key = ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let consumed_items_metric = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowConsumedItemsMetrics>(entity_key);
-        let duration_metric = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let produced_items_metric = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowProducedItemsMetrics>(entity_key);
+        let registrar = ctx.metric_set_registrar_for_entity(entity_key);
+        let consumed_items_metric = FlowConsumedItemsMetrics::register(&registrar);
+        let duration_metric = FlowDurationMetrics::register(&registrar);
+        let produced_items_metric = FlowProducedItemsMetrics::register(&registrar);
         PipelineFlowMetricState {
             consumed_items_metrics: vec![Some(consumed_items_metric)],
             duration_metrics: vec![Some(duration_metric)],
@@ -638,17 +669,26 @@ mod tests {
         state.duration_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .compute_duration
             .record(100.0);
         state.duration_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .compute_duration
             .record(200.0);
 
         let snap = state.duration_metrics[0]
             .as_mut()
             .unwrap()
+            .get(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .compute_duration
             .get();
         assert_eq!(snap.count, 2);
@@ -663,27 +703,42 @@ mod tests {
         state.consumed_items_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .consumed_items
             .add(10);
         state.consumed_items_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .consumed_items
             .add(20);
         state.produced_items_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .produced_items
             .add(7);
         state.produced_items_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .produced_items
             .add(8);
 
         let consumed = state.consumed_items_metrics[0]
             .as_mut()
             .unwrap()
+            .get(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .consumed_items
             .get();
         assert_eq!(consumed, 30);
@@ -691,6 +746,9 @@ mod tests {
         let produced = state.produced_items_metrics[0]
             .as_mut()
             .unwrap()
+            .get(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .produced_items
             .get();
         assert_eq!(produced, 15);

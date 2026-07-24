@@ -201,6 +201,7 @@ impl TransformProcessor {
     async fn handle_exec_result(
         &mut self,
         inbound_context: Context,
+        signal: SignalType,
         pipeline_result: Result<OtapArrowRecords, EngineError>,
         counters: ExecutionCounters,
         effect_handler: &mut EffectHandler<OtapPdata>,
@@ -229,7 +230,7 @@ impl TransformProcessor {
         };
 
         // Record flow metrics from the engine's per-batch execution counters
-        effect_handler.record_flow_dropped_items(counters.filtered as u64);
+        effect_handler.record_flow_dropped_items(signal, counters.filtered as u64);
 
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
@@ -544,8 +545,14 @@ impl Processor<OtapPdata> for TransformProcessor {
                     // Hand the engine's per-batch counters to the result handler,
                     // which records the corresponding flow metrics.
                     let counters = self.execution_state.counters();
-                    self.handle_exec_result(context, result, counters, effect_handler)
-                        .await?;
+                    self.handle_exec_result(
+                        context,
+                        pdata_signal_type,
+                        result,
+                        counters,
+                        effect_handler,
+                    )
+                    .await?;
                 } else {
                     // safety: payload is initialized to Some, and only modified if any transforms
                     // are applied. In this location, we know no transforms were applied so we can

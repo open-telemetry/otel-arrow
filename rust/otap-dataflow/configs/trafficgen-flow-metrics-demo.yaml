@@ -6,12 +6,52 @@
 # `dropped.items` tagged with a `flow.node.decision` attribute of their node
 # name.
 #
-# Query metrics while running:
+# Inspect scope attributes while running:
 #   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
 #     | jq '[.metric_sets[] | select(.name == "flow")]'
+#
+# The detailed ITS debug output also displays the `signal` datapoint attribute.
 
 version: otel_dataflow/v1
-engine: {}
+engine:
+  telemetry:
+    reporting_interval: 1s
+  observability:
+    pipeline:
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+        flow_metrics_filter:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - consumed.items
+                  - compute.duration
+                  - produced.items
+                  - dropped.items
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: detailed
+            mode: batch
+            signals: [metrics]
+        noop:
+          type: exporter:noop
+          config: {}
+      connections:
+        - from: telemetry
+          to: flow_metrics_filter
+        - from: flow_metrics_filter
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
 groups:
   default:
     pipelines:

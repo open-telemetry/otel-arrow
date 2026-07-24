@@ -905,7 +905,7 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
     data.add_flow_compute(delta_ns);
     if is_end {
         if let Some(total) = data.take_flow_compute() {
-            handler.record_flow_duration(total);
+            handler.record_flow_duration(data.signal_type(), total);
         }
         // num_items() is only called at flow_metric boundaries to keep
         // overhead off the per-node hot path. At the end node this
@@ -913,7 +913,7 @@ fn flow_accumulate<H: FlowMetricEffectHandler>(handler: &H, data: &mut OtapPdata
         // the flow_metric range. The hook records every traversal,
         // including zero-item batches, although a zero-delta counter is
         // omitted from exported snapshots.
-        handler.record_flow_produced_items(data.num_items() as u64);
+        handler.record_flow_produced_items(data.signal_type(), data.num_items() as u64);
     }
 }
 
@@ -930,7 +930,7 @@ impl FlowMetricHook for OtapPdata {
     /// counter is omitted from exported snapshots.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, handler: &H) {
         if handler.is_flow_start() {
-            handler.record_flow_consumed_items(self.num_items() as u64);
+            handler.record_flow_consumed_items(self.signal_type(), self.num_items() as u64);
         }
     }
 }
@@ -1140,18 +1140,18 @@ mod test {
             self.elapsed_ns
         }
 
-        fn record_flow_duration(&self, total: u64) {
+        fn record_flow_duration(&self, _signal: SignalType, total: u64) {
             self.stop_total.set(total);
             self.stop_total_calls.set(self.stop_total_calls.get() + 1);
         }
 
-        fn record_flow_consumed_items(&self, items: u64) {
+        fn record_flow_consumed_items(&self, _signal: SignalType, items: u64) {
             self.start_signals.set(items);
             self.start_signals_calls
                 .set(self.start_signals_calls.get() + 1);
         }
 
-        fn record_flow_produced_items(&self, items: u64) {
+        fn record_flow_produced_items(&self, _signal: SignalType, items: u64) {
             self.stop_signals.set(items);
             self.stop_signals_calls
                 .set(self.stop_signals_calls.get() + 1);

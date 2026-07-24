@@ -156,7 +156,7 @@ impl LogSamplingProcessor {
 
         // Record the drop flow-metric. A no-op unless this node is a
         // decision node in a flow that enables `dropped.items`.
-        effect_handler.record_flow_dropped_items(dropped as u64);
+        effect_handler.record_flow_dropped_items(SignalType::Logs, dropped as u64);
 
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
         if kept == 0 {

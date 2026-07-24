@@ -174,7 +174,7 @@ impl RecordsetKqlProcessor {
 
                 // No-op unless this node is a decision node in a flow that
                 // enables `dropped.items`.
-                effect_handler.record_flow_dropped_items(counters.dropped as u64);
+                effect_handler.record_flow_dropped_items(signal, counters.dropped as u64);
 
                 let processed_data = OtapPdata::new(ctx, payload);
 
