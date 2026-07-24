@@ -155,8 +155,8 @@ impl LogSamplingProcessor {
         self.metrics.log_signals_dropped.add(dropped as u64);
 
         // Record the drop flow-metric. A no-op unless this node is a
-        // decision node in a flow that enables `signals.dropped`.
-        effect_handler.record_flow_signals_dropped(dropped as u64);
+        // decision node in a flow that enables `dropped.items`.
+        effect_handler.record_flow_dropped_items(dropped as u64);
 
         let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(filtered));
         if kept == 0 {
@@ -173,7 +173,7 @@ impl LogSamplingProcessor {
 impl local::Processor<OtapPdata> for LogSamplingProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         // The log sampling processor drops log records, so it records
-        // `signals.dropped` when it lies within a flow that enables it.
+        // `dropped.items` when it lies within a flow that enables it.
         ProcessorRuntimeRequirements::none().with_drop_decisions()
     }
 

@@ -173,8 +173,8 @@ impl RecordsetKqlProcessor {
                 );
 
                 // No-op unless this node is a decision node in a flow that
-                // enables `signals.dropped`.
-                effect_handler.record_flow_signals_dropped(counters.dropped as u64);
+                // enables `dropped.items`.
+                effect_handler.record_flow_dropped_items(counters.dropped as u64);
 
                 let processed_data = OtapPdata::new(ctx, payload);
 
@@ -1138,7 +1138,7 @@ mod tests {
     }
 
     /// The processor always declares drop decisions (correct for every query
-    /// shape) so the `signals.dropped` flow metric can be wired.
+    /// shape) so the `dropped.items` flow metric can be wired.
     #[test]
     fn test_declares_drop_decisions() {
         fn declares_drops(query: &str) -> bool {

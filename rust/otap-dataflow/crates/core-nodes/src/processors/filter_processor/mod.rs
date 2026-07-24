@@ -121,7 +121,7 @@ impl FilterProcessor {
 impl local::Processor<OtapPdata> for FilterProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         // The filter processor drops signal items, so it records
-        // `signals.dropped` when it lies within a flow that enables it.
+        // `dropped.items` when it lies within a flow that enables it.
         ProcessorRuntimeRequirements::none().with_drop_decisions()
     }
 
@@ -221,9 +221,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 }
 
                 // Record the drop flow-metric. A no-op unless this node is
-                // a decision node in a flow that enables `signals.dropped`.
+                // a decision node in a flow that enables `dropped.items`.
                 // `signals_filtered` is the dropped count.
-                effect_handler.record_flow_signals_dropped(signals_filtered);
+                effect_handler.record_flow_dropped_items(signals_filtered);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(

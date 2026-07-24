@@ -229,7 +229,7 @@ impl TransformProcessor {
         };
 
         // Record flow metrics from the engine's per-batch execution counters
-        effect_handler.record_flow_signals_dropped(counters.filtered as u64);
+        effect_handler.record_flow_dropped_items(counters.filtered as u64);
 
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
@@ -408,7 +408,7 @@ pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 impl Processor<OtapPdata> for TransformProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         // The transform processor can drop signal items via filtering (e.g. a
-        // KQL `where`), so it records `signals.dropped` when it lies within a
+        // KQL `where`), so it records `dropped.items` when it lies within a
         // flow that enables it.
         ProcessorRuntimeRequirements::none().with_drop_decisions()
     }
@@ -704,7 +704,7 @@ mod test {
     fn test_declares_drop_decisions() {
         // The transform processor filters records (e.g. via a KQL `where`), so
         // it must declare the drop-decision capability; otherwise the engine
-        // never wires its `signals.dropped` flow metric.
+        // never wires its `dropped.items` flow metric.
         let runtime = TestRuntime::<OtapPdata>::new();
         let telemetry_registry_handle = runtime.metrics_registry();
         let controller_context = ControllerContext::new(telemetry_registry_handle);
@@ -723,7 +723,7 @@ mod test {
 
         assert!(
             processor.runtime_requirements().makes_drop_decisions,
-            "transform processor must declare drop decisions so signals.dropped is wired"
+            "transform processor must declare drop decisions so dropped.items is wired"
         );
     }
 
