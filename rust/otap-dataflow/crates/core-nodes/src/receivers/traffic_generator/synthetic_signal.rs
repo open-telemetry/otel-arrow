@@ -421,7 +421,7 @@ const THREAD_NAMES: &[&str] = &[
 ];
 
 /// Realistic attribute value pools for generic string attributes.
-/// Each pool entry is 20–120 chars, resembling real observability values like
+/// Each pool entry is 20-120 chars, resembling real observability values like
 /// paths, IDs, hostnames, URLs, error descriptions, and user agents.
 const ATTR_VALUE_POOL: &[&str] = &[
     // URL paths
@@ -1073,7 +1073,7 @@ fn build_body_pool(size_bytes: Option<usize>) -> Vec<String> {
 /// - **Body**: cycles through 50 distinct templates
 /// - **Attributes**: values drawn from a pool of realistic strings (keys stay fixed)
 /// - **Severity**: rotates through a realistic distribution
-///   (≈80% INFO, ≈15% WARN, ≈5% ERROR)
+///   (~=80% INFO, ~=15% WARN, ~=5% ERROR)
 /// - **TraceID / SpanID**: unique random IDs per record (when `use_trace_context` is true)
 ///
 /// When `log_body_size_bytes` or `num_log_attributes` are `None`, the

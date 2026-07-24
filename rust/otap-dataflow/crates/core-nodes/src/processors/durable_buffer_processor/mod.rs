@@ -11,10 +11,10 @@
 //! # Architecture
 //!
 //! ```text
-//! Upstream → DurableBuffer → Downstream
-//!                    ↓
+//! Upstream -> DurableBuffer -> Downstream
+//!                    v
 //!              StorageEngine
-//!                    ↓
+//!                    v
 //!            WAL + Segments
 //! ```
 //!
@@ -30,10 +30,10 @@
 //!
 //! | Strategy | Behavior | Recommendation |
 //! |----------|----------|----------------|
-//! | `RoundRobin` | Data distributed across cores, each persists its share | ✅ **Recommended** |
-//! | `Random` | Similar to round-robin | ✅ OK |
-//! | `LeastLoaded` | Similar to round-robin | ✅ OK |
-//! | `Broadcast` | Same data persisted N times (once per core) | ⚠️ **Avoid** - causes N× storage and duplicates |
+//! | `RoundRobin` | Data distributed across cores, each persists its share | [x] **Recommended** |
+//! | `Random` | Similar to round-robin | [x] OK |
+//! | `LeastLoaded` | Similar to round-robin | [x] OK |
+//! | `Broadcast` | Same data persisted N times (once per core) | (!) **Avoid** - causes Nx storage and duplicates |
 //!
 //! For the outgoing edge (to exporters), any dispatch strategy is valid.
 //!
@@ -42,7 +42,7 @@
 //! - `Message::Data`: Ingested to storage, ACK sent upstream after durable write
 //! - `TimerTick`: Poll storage for bundles, send downstream
 //! - `Ack`: Extract BundleRef from calldata, call handle.ack()
-//! - `Nack (permanent)`: Call handle.reject() — no retry
+//! - `Nack (permanent)`: Call handle.reject() -- no retry
 //! - `Nack (transient)`: Call handle.defer() and schedule retry via a wakeup
 //! - `Shutdown`: Flush storage engine
 //!
@@ -142,9 +142,9 @@ const WARN_RATE_LIMIT: Duration = Duration::from_secs(10);
 /// Subscriber ID used by this processor.
 const SUBSCRIBER_ID: &str = "durable-buffer";
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // BundleRef CallData Encoding
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Encode a BundleRef into CallData for ACK/NACK tracking.
 ///
@@ -169,9 +169,9 @@ fn decode_bundle_ref(calldata: &CallData) -> Option<BundleRef> {
     })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Pending Bundle Tracking
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// State for tracking a pending downstream delivery.
 ///
@@ -202,9 +202,9 @@ enum ProcessBundleResult {
     Error(Error),
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // DurableBuffer
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Type alias for the bundle handle with our callback type.
 type QuiverBundleHandle = BundleHandle<RegistryCallback<SegmentStore>>;
@@ -235,7 +235,7 @@ enum RetryResumeOutcome {
 /// Cached per-segment signal classification for queued-item gauge computation.
 ///
 /// Populated once per segment (on first access after finalization) and never
-/// invalidated — segments are immutable after finalization.  Evicted when the
+/// invalidated -- segments are immutable after finalization.  Evicted when the
 /// segment is no longer tracked by the subscriber.
 struct SegmentMetricsSummary {
     /// Per-bundle `(item_count, signal_type)`, ordered by bundle index.
@@ -260,7 +260,7 @@ struct CachedSegmentMetrics {
 /// maintains a `segment_cache` that maps finalized segment sequences to their
 /// pre-computed per-bundle signal classification.  Because segments are
 /// **immutable** after finalization, the cache entry for a given segment
-/// never needs invalidation — only eviction when the segment is cleaned up.
+/// never needs invalidation -- only eviction when the segment is cleaned up.
 pub struct DurableBuffer {
     /// The Quiver engine state (lazy initialized on first message).
     engine_state: EngineState,
@@ -608,9 +608,9 @@ impl DurableBuffer {
     ///
     /// # Lock budget
     ///
-    /// 1. `pending_segment_progress` — subscriber read-lock (brief clone).
-    /// 2. Per cache-miss: `bundle_metadata` — segment-store read-lock.
-    /// 3. `open_segment_metrics` — engine open-segment lock (brief snapshot).
+    /// 1. `pending_segment_progress` -- subscriber read-lock (brief clone).
+    /// 2. Per cache-miss: `bundle_metadata` -- segment-store read-lock.
+    /// 3. `open_segment_metrics` -- engine open-segment lock (brief snapshot).
     ///
     /// After snapshots are taken, all iteration is lock-free.
     fn recompute_metrics(&mut self, engine: &QuiverEngine, subscriber_id: &SubscriberId) {
@@ -707,7 +707,7 @@ impl DurableBuffer {
             let mut seg_metrics = 0;
             let mut seg_spans = 0;
 
-            // Fast path: no bundles resolved → use precomputed totals.
+            // Fast path: no bundles resolved -> use precomputed totals.
             if progress.resolved_count() == 0 {
                 seg_logs = summary.total_logs;
                 seg_metrics = summary.total_metrics;
@@ -935,7 +935,7 @@ impl DurableBuffer {
     ///
     /// # Data Flow
     ///
-    /// 1. Data is written to Quiver's durable storage (WAL → segment finalization)
+    /// 1. Data is written to Quiver's durable storage (WAL -> segment finalization)
     /// 2. Upstream is ACK'd after successful durable write
     /// 3. Data becomes visible to subscribers after segment finalization
     /// 4. Timer tick polls for finalized bundles and forwards downstream
@@ -1716,9 +1716,9 @@ impl DurableBuffer {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Processor Trait Implementation
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 #[async_trait(?Send)]
 impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
@@ -1869,9 +1869,9 @@ impl otap_df_engine::local::processor::Processor<OtapPdata> for DurableBuffer {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Factory Registration
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Factory function to create a DurableBuffer.
 pub fn create_durable_buffer(
@@ -2536,7 +2536,7 @@ mod tests {
     ///
     /// The `queued_log_records` (and siblings) gauge tracks items ingested but
     /// not yet resolved (ACKed or rejected). When a bundle is permanently
-    /// NACKed, it must be decremented just like an ACK — otherwise the gauge
+    /// NACKed, it must be decremented just like an ACK -- otherwise the gauge
     /// drifts upward, giving operators a false picture of backlog.
     #[test]
     fn test_permanent_nack_decrements_queued_gauge() {

@@ -9,13 +9,13 @@
 //!
 //! **Metrics**
 //! - `memory_rss` (`ObserveUpDownCounter<u64>`, `{By}`):
-//!   Process-wide Resident Set Size — physical memory currently held in RAM.
+//!   Process-wide Resident Set Size -- physical memory currently held in RAM.
 //!   Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
 //!
 //! - `cpu_utilization` (`Gauge<f64>`, `{1}`):
 //!   Process-wide CPU utilization as a ratio in `[0, 1]`, normalized across **all
 //!   logical CPU cores on the system** (not just the cores assigned to the engine).
-//!   Computed as `cpu_delta / (wall_delta × num_system_cores)` over the last
+//!   Computed as `cpu_delta / (wall_delta x num_system_cores)` over the last
 //!   measurement interval. A value of `1.0` means 100% of all system cores are
 //!   in use; `0.5` on an 8-core machine corresponds to 4 fully loaded cores.
 //!   Aligned with the OTel semantic convention `process.cpu.utilization`.
@@ -47,7 +47,7 @@ use std::time::Instant;
 #[metric_set(name = "engine")]
 #[derive(Debug, Default, Clone)]
 pub struct EngineMetrics {
-    /// Process-wide Resident Set Size — physical RAM currently used by the process.
+    /// Process-wide Resident Set Size -- physical RAM currently used by the process.
     /// Matches what external tools report (e.g. `kubectl top pod`, `htop`, `ps rss`).
     #[metric(unit = "{By}")]
     pub memory_rss: ObserveUpDownCounter<u64>,

@@ -32,7 +32,7 @@ pub struct ScopedIdMask {
 impl ScopedExpr {
     /// Produce an `IdMask` (bitmap of IDs that matched).
     ///
-    /// Used when the consumer only needs membership information — e.g., for row filtering,
+    /// Used when the consumer only needs membership information -- e.g., for row filtering,
     /// or as input to a boolean combination (`BitmapAnd`/`BitmapOr`/`BitmapNot`).
     #[allow(dead_code)]
     pub(crate) fn execute_as_id_mask(

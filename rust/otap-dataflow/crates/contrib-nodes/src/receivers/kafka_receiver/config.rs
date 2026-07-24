@@ -1826,7 +1826,7 @@ mod tests {
             client_config.get("max.partition.fetch.bytes"),
             Some("1048576")
         );
-        // Default mode is manual — auto offset store should be disabled
+        // Default mode is manual -- auto offset store should be disabled
         assert_eq!(client_config.get("enable.auto.offset.store"), Some("false"));
     }
 

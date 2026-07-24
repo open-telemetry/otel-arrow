@@ -7,20 +7,20 @@
 //! reservation. It tracks what Quiver has written and deleted, providing
 //! two thresholds:
 //!
-//! - **`soft_cap`** — gates ingest. When `used > soft_cap`, the engine
+//! - **`soft_cap`** -- gates ingest. When `used > soft_cap`, the engine
 //!   should stop accepting new data (backpressure or drop-oldest).
-//! - **`hard_cap`** — the ceiling that `used` never exceeds under normal
+//! - **`hard_cap`** -- the ceiling that `used` never exceeds under normal
 //!   operation. Because `soft_cap = hard_cap - segment_headroom`, the
 //!   maximum overshoot from a single segment finalization stays within
 //!   `hard_cap`.
 //!
 //! # Operations
 //!
-//! - **`add(bytes)`** — records bytes written to disk (WAL appends,
+//! - **`add(bytes)`** -- records bytes written to disk (WAL appends,
 //!   segment writes, files discovered at startup).
-//! - **`remove(bytes)`** — records bytes deleted from disk (WAL purge,
+//! - **`remove(bytes)`** -- records bytes deleted from disk (WAL purge,
 //!   segment deletion). Saturates at zero.
-//! - **`is_over_soft_cap()`** — returns `true` when ingest should be
+//! - **`is_over_soft_cap()`** -- returns `true` when ingest should be
 //!   gated.
 //!
 //! # Soft Cap as a Best-Effort Gate
@@ -34,8 +34,8 @@
 //!   added one at a time.
 //! - Segment finalization is serialized (`Mutex<OpenSegment>`), so at
 //!   most one segment is written to disk at a time.
-//! - Individual WAL entries are typically a few KB — far smaller than
-//!   `segment_target_size` — so the transient overshoot from racing
+//! - Individual WAL entries are typically a few KB -- far smaller than
+//!   `segment_target_size` -- so the transient overshoot from racing
 //!   callers is well within the `hard_cap - soft_cap` headroom.
 //!
 //! The `hard_cap` may therefore be *temporarily* exceeded by a small
@@ -144,12 +144,12 @@ impl DiskBudget {
     ///
     /// # Arguments
     ///
-    /// * `hard_cap` — Maximum bytes allowed on disk. Use `u64::MAX` for
+    /// * `hard_cap` -- Maximum bytes allowed on disk. Use `u64::MAX` for
     ///   effectively unlimited.
-    /// * `segment_headroom` — Space reserved for one segment finalization.
+    /// * `segment_headroom` -- Space reserved for one segment finalization.
     ///   Typically `segment_target_size`. The soft cap is computed as
     ///   `hard_cap - segment_headroom`.
-    /// * `policy` — Retention policy when the soft cap is exceeded.
+    /// * `policy` -- Retention policy when the soft cap is exceeded.
     #[must_use]
     pub fn new(hard_cap: u64, segment_headroom: u64, policy: RetentionPolicy) -> Self {
         Self {
@@ -184,9 +184,9 @@ impl DiskBudget {
     ///
     /// # Arguments
     ///
-    /// * `hard_cap` — Maximum bytes allowed on disk.
-    /// * `config` — The engine configuration (segment and WAL sizes are read from this).
-    /// * `policy` — Retention policy when the soft cap is exceeded.
+    /// * `hard_cap` -- Maximum bytes allowed on disk.
+    /// * `config` -- The engine configuration (segment and WAL sizes are read from this).
+    /// * `policy` -- Retention policy when the soft cap is exceeded.
     ///
     /// # Errors
     ///
@@ -281,7 +281,7 @@ impl DiskBudget {
     ///
     /// Called after WAL appends, segment writes, or when discovering
     /// existing files at startup. May push `used` above `soft_cap`
-    /// (that's expected — finalization overshoot is bounded by
+    /// (that's expected -- finalization overshoot is bounded by
     /// `segment_headroom`).
     pub fn add(&self, bytes: u64) {
         let _ = self.used.fetch_add(bytes, Ordering::Release);
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn add_can_exceed_hard_cap() {
-        // add() doesn't gate — it reflects reality
+        // add() doesn't gate -- it reflects reality
         let budget = DiskBudget::new(1000, 200, RetentionPolicy::Backpressure);
         budget.add(1500);
         assert_eq!(budget.used(), 1500);
@@ -376,7 +376,7 @@ mod tests {
     fn finalization_stays_within_hard_cap() {
         // Simulates: WAL at max (128), segments use soft_cap - 128 = 672.
         // Finalization adds one segment (200 = segment_headroom).
-        // Total: 672 + 128 + 200 = 1000 = hard_cap. ✓
+        // Total: 672 + 128 + 200 = 1000 = hard_cap. [x]
         let budget = DiskBudget::new(1000, 200, RetentionPolicy::Backpressure);
 
         // WAL bytes
@@ -400,7 +400,7 @@ mod tests {
 
     #[test]
     fn finalization_without_double_charge() {
-        // Simulates the finalization flow: WAL bytes → segment bytes → WAL purge.
+        // Simulates the finalization flow: WAL bytes -> segment bytes -> WAL purge.
         let budget = DiskBudget::new(1000, 200, RetentionPolicy::Backpressure);
 
         // WAL has 400 bytes

@@ -56,7 +56,7 @@ impl ScopedExpr {
     /// Returns `None` when the expression's input data is absent (e.g., missing attributes or
     /// optional columns) propagating nulls.
     ///
-    /// Primarily used when the consumer needs actual values — e.g., for assignment to a column,
+    /// Primarily used when the consumer needs actual values -- e.g., for assignment to a column,
     /// as input to arithmetic, or as an argument to a function call.
     pub(crate) fn execute_as_value(
         &mut self,
@@ -363,7 +363,7 @@ fn coerce_nulls_for_predicate(
 ///
 /// Evaluates both children as IdMasks (staying in bitmap space), intersects them, then
 /// materializes the combined result to a root-aligned BooleanArray once. This avoids
-/// aligning each child independently which would do duplicate parent_id → root mappings.
+/// aligning each child independently which would do duplicate parent_id -> root mappings.
 fn execute_bitmap_and_as_value(
     left: &mut Box<ScopedExpr>,
     right: &mut Box<ScopedExpr>,
@@ -386,7 +386,7 @@ fn execute_bitmap_and_as_value(
 
 /// Execute a `BitmapOr` node as a value.
 ///
-/// Same strategy as `BitmapAnd` — stays in IdMask space and materializes once at the end.
+/// Same strategy as `BitmapAnd` -- stays in IdMask space and materializes once at the end.
 fn execute_bitmap_or_as_value(
     left: &mut Box<ScopedExpr>,
     right: &mut Box<ScopedExpr>,
@@ -597,7 +597,7 @@ fn materialize_id_mask_to_value(
             match id_col {
                 Some(id_col) => {
                     // For NotSome masks, a null ID means "no attributes exist for this row",
-                    // which means the row is NOT in the bitmap — so it passes.
+                    // which means the row is NOT in the bitmap -- so it passes.
                     // For Some masks, null ID means no match.
                     let null_id_passes = matches!(mask, IdMask::NotSome(_));
 

@@ -22,7 +22,7 @@ use otap_df_pdata_views::views::trace::{
 };
 use otap_df_pdata_views::{SpanId, TraceId};
 
-/* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
+/* ----------------------------- VIEW WRAPPERS (zero-alloc) -------------- */
 
 /// A wrapper for `ResourceSpans`.
 pub type ObjResourceSpans<'a> = GenericObj<'a, ResourceSpans>;
@@ -42,7 +42,7 @@ pub type ObjEvent<'a> = GenericObj<'a, Event>;
 /// A wrapper for `Link`.
 pub type ObjLink<'a> = GenericObj<'a, Link>;
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// An iterator for `ObjResourceSpans`; it consumes a slice iterator of `ResourceSpans`
 pub type ResourceIter<'a> = GenericIterator<'a, ResourceSpans, ObjResourceSpans<'a>>;
@@ -59,7 +59,7 @@ pub type EventIter<'a> = GenericIterator<'a, Event, ObjEvent<'a>>;
 /// An iterator for `ObjLink`; it consumes a slice iterator of `Link`
 pub type LinkIter<'a> = GenericIterator<'a, Link, ObjLink<'a>>;
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl TracesView for TracesData {
     type ResourceSpans<'a>

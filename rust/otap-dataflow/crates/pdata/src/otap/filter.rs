@@ -216,7 +216,7 @@ impl IdBitmap {
                         }
                     }
                     _ => {
-                        // No corresponding page in other — zero this page
+                        // No corresponding page in other -- zero this page
                         sp.words.fill(0);
                     }
                 }
@@ -354,7 +354,7 @@ impl Iterator for IdBitmapIter<'_> {
                     }
                 }
 
-                // No more words in this page (or page was None) — advance to the next page
+                // No more words in this page (or page was None) -- advance to the next page
                 self.page_idx += 1;
                 self.word_idx = 0;
 
@@ -1438,7 +1438,7 @@ fn get_attr_filter(
 }
 
 // ---------------------------------------------------------------------------
-// OTAP batch filtering — applies a BooleanArray selection to the root record
+// OTAP batch filtering -- applies a BooleanArray selection to the root record
 // batch and propagates the filter to all child batches using IdBitmap.
 // ---------------------------------------------------------------------------
 
@@ -1575,7 +1575,7 @@ where
     let parent_rb = match parent_rb {
         Some(rb) => rb,
         None => {
-            // Parent was fully filtered out — no child rows can survive.
+            // Parent was fully filtered out -- no child rows can survive.
             return Ok(());
         }
     };
@@ -1634,12 +1634,12 @@ pub fn filter_otap_batch(
         None => return Ok(otap_batch.clone()),
     };
 
-    // Fast path: nothing filtered — cheap clone (Arc-backed record batches)
+    // Fast path: nothing filtered -- cheap clone (Arc-backed record batches)
     if selection_vec.true_count() == root_batch.num_rows() {
         return Ok(otap_batch.clone());
     }
 
-    // Fast path: everything filtered — return empty storage
+    // Fast path: everything filtered -- return empty storage
     if selection_vec.false_count() == root_batch.num_rows() {
         return Ok(match otap_batch.root_payload_type() {
             ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
@@ -2190,7 +2190,7 @@ mod tests {
 
     #[test]
     fn test_id_bitmap_union_with_extends() {
-        // other is longer than self — self should grow
+        // other is longer than self -- self should grow
         let mut a = bitmap_from(&[1]);
         let b = bitmap_from(&[1000]);
         a.union_with(&b);
@@ -2445,7 +2445,7 @@ mod tests {
             bitmap.clear();
         }
 
-        // The pages vec should have been trimmed — no trailing None slots
+        // The pages vec should have been trimmed -- no trailing None slots
         assert!(
             bitmap.pages.is_empty() || bitmap.pages.last().unwrap().is_some(),
             "trailing None slots should be trimmed"
