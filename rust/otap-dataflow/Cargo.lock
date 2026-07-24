@@ -7205,7 +7205,6 @@ dependencies = [
  "tracing-subscriber",
  "urlencoding",
  "uuid",
- "windows-sys 0.59.0",
  "wiremock",
  "xxhash-rust",
 ]

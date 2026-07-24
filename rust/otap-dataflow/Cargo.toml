@@ -235,7 +235,6 @@ clickhouse-ext-arrow = "0.1.0"
 cpu-time = "1.0.0"
 
 one_collect = "0.1.34811"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_Etw"] }
 
 # TODO: un-pin these dependencies as soon as Arc support is available in a released version: https://github.com/open-telemetry/otel-arrow/issues/3551
 azure_core = { git = "https://github.com/Azure/azure-sdk-for-rust.git", rev = "fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00", default-features = false }
