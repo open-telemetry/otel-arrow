@@ -241,7 +241,7 @@ impl EtwArrowRecordsBuilder {
             AttrValue::Str(Cow::Borrowed(provider_guid)),
         );
 
-        // Activity ID — only emit when non-zero (provider set a correlation ID)
+        // Activity ID -- only emit when non-zero (provider set a correlation ID)
         if !event.activity_id.is_zero() {
             let activity = format_guid(&event.activity_id);
             // safety: `format_guid` only writes ASCII hex digits and '-'.
@@ -575,7 +575,7 @@ mod tests {
 
         // `Guid::from_u128` maps the u128's big-endian bits into the GUID
         // fields, so `CanonicalGuid::from` yields exactly the u128's
-        // big-endian bytes — the canonical display order.
+        // big-endian bytes -- the canonical display order.
         let guid = CanonicalGuid::from(Guid::from_u128(0x1c95126e_7eea_49a9_a3fe_a378b03ddb4d));
         let formatted = format_guid(&guid);
         let s = core::str::from_utf8(&formatted).expect("format_guid emits ASCII");
