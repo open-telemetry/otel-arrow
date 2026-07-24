@@ -284,25 +284,25 @@ async fn attach_api_security_headers(mut response: Response) -> Response {
     // add defensive coverage for older proxies.
     let _ = h.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, no-cache, must-revalidate"),
+        HeaderValue::from_static(dashboard::CACHE_CONTROL_NO_STORE),
     );
     // WHATWG Fetch Standard - instructs browser to honor declared Content-Type
     // and not MIME-sniff responses as executable script or HTML.
     let _ = h.insert(
         HeaderName::from_static("x-content-type-options"),
-        HeaderValue::from_static("nosniff"),
+        HeaderValue::from_static(dashboard::X_CONTENT_TYPE_OPTIONS_NO_SNIFF),
     );
     // RFC 7034 (Informational, deprecated) - legacy anti-clickjacking fallback
     // for browsers that do not implement CSP `frame-ancestors`.
     let _ = h.insert(
         HeaderName::from_static("x-frame-options"),
-        HeaderValue::from_static("DENY"),
+        HeaderValue::from_static(dashboard::X_FRAME_OPTIONS_DENY),
     );
     // W3C Referrer Policy - strips Referer header so admin URLs do not leak
     // to third parties through outbound links.
     let _ = h.insert(
         HeaderName::from_static("referrer-policy"),
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static(dashboard::REFERRER_POLICY_NO_REFERRER),
     );
     response
 }
