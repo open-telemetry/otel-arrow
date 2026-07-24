@@ -24,7 +24,7 @@ use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 /// Shared handle to the metrics tracker.
 ///
 /// The exporter runs on a single-threaded runtime (`#[async_trait(?Send)]`),
-/// so `Rc<RefCell<…>>` is sufficient—no `Arc`/`Mutex` overhead needed.
+/// so `Rc<RefCell<...>>` is sufficient--no `Arc`/`Mutex` overhead needed.
 pub type AzureMonitorExporterMetricsRc = Rc<RefCell<AzureMonitorExporterMetricsTracker>>;
 
 /// Metrics without bounded item dimensions.

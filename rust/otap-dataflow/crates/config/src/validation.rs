@@ -6,7 +6,7 @@
 //! These helpers are intended for use with the `validate_config` field on
 //! factory structs ([`ReceiverFactory`], [`ProcessorFactory`], [`ExporterFactory`]).
 //!
-//! **Scope:** `validate_config` performs *static* validation only — it checks
+//! **Scope:** `validate_config` performs *static* validation only -- it checks
 //! that the config value can be deserialized into the expected type. It does
 //! **not** detect runtime issues such as port conflicts, unreachable endpoints,
 //! missing files, or other conditions that only manifest when the engine starts.

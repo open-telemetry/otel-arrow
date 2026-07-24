@@ -204,7 +204,7 @@ pub(super) fn draw_command_palette_overlay(
         )));
     } else {
         for (index, entry) in visible {
-            let prefix = if index == selected { "▶ " } else { "  " };
+            let prefix = if index == selected { "\u{25B6} " } else { "  " };
             let label_style = if !entry.enabled {
                 muted_style(app.color_enabled)
             } else if index == selected {
@@ -277,7 +277,11 @@ pub(super) fn draw_action_menu_overlay(
     ];
 
     for (index, entry) in menu.entries.iter().enumerate() {
-        let prefix = if index == menu.selected { "▶ " } else { "  " };
+        let prefix = if index == menu.selected {
+            "\u{25B6} "
+        } else {
+            "  "
+        };
         let label_style = if entry.enabled {
             if index == menu.selected {
                 selected_style(app.color_enabled)

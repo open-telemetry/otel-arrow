@@ -756,11 +756,11 @@ where
     }
 }
 
-// ── Extension Control Messages ──────────────────────────────────────────────
+// -- Extension Control Messages ----------------------------------------------
 
 /// Control messages sent to extensions.
 ///
-/// This is a PData-free subset of [`NodeControlMsg`] — extensions never process
+/// This is a PData-free subset of [`NodeControlMsg`] -- extensions never process
 /// pipeline data, so they have no `Ack`, `Nack`, or `DelayedData` variants.
 #[derive(Debug, Clone)]
 pub enum ExtensionControlMsg {

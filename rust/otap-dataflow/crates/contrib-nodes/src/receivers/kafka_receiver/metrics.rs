@@ -10,7 +10,7 @@ use otap_df_telemetry_macros::metric_set;
 #[metric_set(name = "receiver.kafka")]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaReceiverMetrics {
-    // ── Message Counters ────────────────────────────────────
+    // -- Message Counters ------------------------------------
     /// Total messages received from Kafka across all signal types
     #[metric(unit = "{msg}")]
     pub messages_received: Counter<u64>,
@@ -27,7 +27,7 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{msg}")]
     pub trace_msgs_received: Counter<u64>,
 
-    // ── Pipeline Feedback ───────────────────────────────────
+    // -- Pipeline Feedback -----------------------------------
     /// Number of acks received from downstream
     #[metric(unit = "{ack}")]
     pub acks_received: Counter<u64>,
@@ -35,7 +35,7 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{nack}")]
     pub nacks_received: Counter<u64>,
 
-    // ── Error Tracking ──────────────────────────────────────
+    // -- Error Tracking --------------------------------------
     /// Number of messages that failed processing and were skipped
     #[metric(unit = "{msg}")]
     pub processing_errors: Counter<u64>,
@@ -58,11 +58,11 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{error}")]
     pub transport_errors: Counter<u64>,
 
-    // ── Consumer Health ─────────────────────────────────────
+    // -- Consumer Health -------------------------------------
     /// Number of offset commits acknowledged by the broker.
     ///
     /// Populated from the consumer commit callback (not at commit-issue time),
-    /// so it counts commits the broker actually accepted — covering both the
+    /// so it counts commits the broker actually accepted -- covering both the
     /// receiver's asynchronous steady-state commits and the synchronous
     /// pre-rebalance commit-before-revoke.
     #[metric(unit = "{commit}")]
@@ -79,7 +79,7 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{msg}")]
     pub topic_id_exhausted: Counter<u64>,
 
-    // ── Consumer-group Rebalances ───────────────────────────
+    // -- Consumer-group Rebalances ---------------------------
     /// Partitions newly acquired by this consumer across rebalances
     /// (retained partitions are not re-counted)
     #[metric(unit = "{partition}")]

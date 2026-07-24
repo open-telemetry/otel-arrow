@@ -23,7 +23,7 @@ pub mod _private {
     /// `otel_event!` macros.
     ///
     /// Event names must be short, stable identifiers (e.g.
-    /// `receiver.start`, `channel.full`) — not free-form sentences. This
+    /// `receiver.start`, `channel.full`) -- not free-form sentences. This
     /// function is called from a `const` context so any violation surfaces
     /// as a compile error at the macro call site, not at runtime.
     ///
