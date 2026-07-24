@@ -1801,7 +1801,18 @@ impl<
                 move |cancellation_token| {
                     let task = task_factory(cancellation_token);
                     async move {
-                        match task.await {
+                        // Run the extension future as a local task so a panic is
+                        // reported as a JoinError instead of unwinding past the
+                        // fail-fast handling below (which would otherwise leave
+                        // run_forever parked with a dead extension).
+                        let task_result = match tokio::task::spawn_local(task).await {
+                            Ok(result) => result,
+                            Err(join_error) if join_error.is_panic() => {
+                                Err(format!("controller extension panicked: {join_error}").into())
+                            }
+                            Err(join_error) => Err(Box::new(join_error) as ControllerExtensionError),
+                        };
+                        match task_result {
                             Ok(()) => Ok(()),
                             Err(source) => {
                                 let error = source.to_string();
@@ -3058,6 +3069,63 @@ groups: {{}}
 
         assert!(err.contains("Controller extension `failing` failed"));
         assert!(err.contains("simulated controller extension failure"));
+    }
+
+    #[test]
+    fn controller_extension_panic_stops_parked_controller() {
+        const PANICKING_CONTROLLER_EXTENSION_URN: &str = "urn:test:extension:panicking";
+
+        let engine_config = OtelDataflowSpec::from_yaml(&format!(
+            r#"
+version: otel_dataflow/v1
+engine:
+  http_admin:
+    bind_address: "127.0.0.1:0"
+  controller:
+    extensions:
+      panicking:
+        type: "{}"
+groups: {{}}
+        "#,
+            PANICKING_CONTROLLER_EXTENSION_URN
+        ))
+        .expect("panicking controller extension config should parse");
+
+        let mut registry = ControllerExtensionRegistry::empty();
+        registry.register(
+            PANICKING_CONTROLLER_EXTENSION_URN.into(),
+            |_context| {
+                Ok(Box::new(|_cancellation_token| {
+                    Box::pin(async { panic!("boom") })
+                }))
+            },
+            otap_df_config::validation::no_config,
+        );
+
+        // run_forever parks the main thread, so drive it off-thread and bound the
+        // wait: a panicking extension must fail the engine, not hang it forever.
+        let (result_tx, result_rx) = std_mpsc::channel();
+        let controller_thread = thread::spawn(move || {
+            let result = Controller::new(empty_pipeline_factory())
+                .run_forever_with_options(
+                    engine_config,
+                    ControllerRunOptions {
+                        extensions: registry,
+                    },
+                )
+                .map_err(|err| err.to_string());
+            let _ = result_tx.send(result);
+        });
+
+        let err = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("panicking extension must unpark run_forever instead of hanging")
+            .expect_err("controller should fail when an extension panics");
+        controller_thread
+            .join()
+            .expect("controller thread should not panic");
+
+        assert!(err.contains("panicking"), "unexpected error: {err}");
     }
 
     #[test]
