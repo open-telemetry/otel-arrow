@@ -6,7 +6,7 @@
 
 - Type: `receiver:kafka` (`urn:otel:receiver:kafka`)
 - Feature gate: `kafka-receiver` (also enabled by `contrib-receivers`)
-- Stability: Experimental (pending performance optimization)
+- Stability: experimental
 
 ## Overview
 
@@ -902,6 +902,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ## Limits
 
+- This receiver is functional but still pending performance optimization.
 - AWS MSK IAM authentication (`AWS_MSK_IAM_OAUTHBEARER`) requires the `aws`
   feature to be enabled at build time.
 - The engine supports one periodic timer per node; the commit interval

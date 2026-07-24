@@ -6,7 +6,7 @@
 
 - Type: `processor:temporal_reaggregation` (`urn:otel:processor:temporal_reaggregation`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

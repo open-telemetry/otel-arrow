@@ -6,7 +6,7 @@
 
 - Type: `processor:filter` (`urn:otel:processor:filter`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

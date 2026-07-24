@@ -26,9 +26,10 @@ Each node page follows the same general shape:
 
 Contrib nodes are enabled through individual feature gates or aggregate feature
 gates such as `contrib-receivers`, `contrib-processors`, and
-`contrib-exporters`. A node documented as `Experimental`, `Alpha`, or `WIP` has
-no stable compatibility guarantee yet, and its behavior or configuration can
-change between releases.
+`contrib-exporters`. The `Stability` column uses the levels defined in
+[`docs/node-stability.md`](../../docs/node-stability.md). A node documented as
+`experimental` or `alpha` has no stable compatibility guarantee yet, and its
+behavior or configuration can change between releases.
 
 ## Node Type Syntax
 
@@ -51,30 +52,31 @@ For the canonical node URN format, see [`docs/urns.md`](../../docs/urns.md).
 
 Receivers ingest data into a pipeline.
 
-| Type                                                                                | Feature                | Stability    | Description                                      |
-| ----------------------------------------------------------------------------------- | ---------------------- | ------------ | ------------------------------------------------ |
-| [`receiver:kafka`](src/receivers/kafka_receiver/README.md)                          | `kafka-receiver`       | Experimental | Consumes traces, metrics, and logs from Kafka.   |
-| [`receiver:user_events`](src/receivers/user_events_receiver/README.md)              | `user_events-receiver` | Experimental | Ingests Linux `user_events` tracepoints as logs. |
+| Type                                                                   | Feature                | Stability    | Description                                      |
+| ---------------------------------------------------------------------- | ---------------------- | ------------ | ------------------------------------------------ |
+| [`receiver:kafka`](src/receivers/kafka_receiver/README.md)             | `kafka-receiver`       | experimental | Consumes traces, metrics, and logs from Kafka.   |
+| [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user_events-receiver` | experimental | Ingests Linux `user_events` tracepoints as logs. |
 
 ## Processors
 
 Processors transform or validate data already moving through a pipeline.
 
-| Type                                                                                                 | Feature                         | Stability    | Description                                                  |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------- | ------------ | ------------------------------------------------------------ |
-| [`processor:condense_attributes`](src/processors/condense_attributes_processor/README.md)            | `condense-attributes-processor` | WIP          | Condenses multiple log attributes into one string attribute. |
-| [`urn:microsoft:processor:recordset_kql`](src/processors/recordset_kql_processor/README.md)          | `recordset-kql-processor`       | Experimental | Runs KQL expressions over OTAP data in an opinionated shape. |
-| [`processor:resource_validator`](src/processors/resource_validator_processor/README.md)              | `resource-validator-processor`  | Experimental | NACKs data missing required resource attribute values.       |
+| Type                                                                                        | Feature                         | Stability    | Description                                                  |
+| ------------------------------------------------------------------------------------------- | ------------------------------- | ------------ | ------------------------------------------------------------ |
+| [`processor:condense_attributes`](src/processors/condense_attributes_processor/README.md)   | `condense-attributes-processor` | experimental | Condenses multiple log attributes into one string attribute. |
+| [`urn:microsoft:processor:recordset_kql`](src/processors/recordset_kql_processor/README.md) | `recordset-kql-processor`       | experimental | Runs KQL expressions over OTAP data in an opinionated shape. |
+| [`processor:resource_validator`](src/processors/resource_validator_processor/README.md)     | `resource-validator-processor`  | experimental | NACKs data missing required resource attribute values.       |
 
 ## Exporters
 
 Exporters send data out of a pipeline.
 
-| Type                                                                                              | Feature                  | Stability               | Description                                      |
-| ------------------------------------------------------------------------------------------------- | ------------------------ | ----------------------- | ------------------------------------------------ |
-| [`urn:microsoft:exporter:azure_monitor`](src/exporters/azure_monitor_exporter/README.md)          | `azure-monitor-exporter` | Alpha; supports logs    | Sends OpenTelemetry logs to Azure Monitor.       |
-| [`urn:microsoft:exporter:geneva`](src/exporters/geneva_exporter/README.md)                        | `geneva-exporter`        | Alpha; logs and traces  | Sends telemetry to Microsoft's Geneva backend.   |
-| [`exporter:kafka`](src/exporters/kafka_exporter/README.md)                                        | `kafka-exporter`         | Experimental            | Produces traces, metrics, and logs to Kafka.     |
+| Type                                                                                     | Feature                  | Stability    | Description                                             |
+| ---------------------------------------------------------------------------------------- | ------------------------ | ------------ | ------------------------------------------------------- |
+| [`urn:microsoft:exporter:azure_monitor`](src/exporters/azure_monitor_exporter/README.md) | `azure-monitor-exporter` | alpha        | Sends OpenTelemetry logs to Azure Monitor.              |
+| [`exporter:clickhouse`](src/exporters/clickhouse_exporter/README.md)                     | `clickhouse-exporter`    | experimental | Inserts OTAP logs and traces into ClickHouse over HTTP. |
+| [`urn:microsoft:exporter:geneva`](src/exporters/geneva_exporter/README.md)               | `geneva-exporter`        | alpha        | Sends telemetry to Microsoft's Geneva backend.          |
+| [`exporter:kafka`](src/exporters/kafka_exporter/README.md)                               | `kafka-exporter`         | experimental | Produces traces, metrics, and logs to Kafka.            |
 
 ## Feature Aggregates
 

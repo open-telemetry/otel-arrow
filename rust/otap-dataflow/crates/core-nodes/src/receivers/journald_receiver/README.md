@@ -6,7 +6,7 @@
 
 - Type: `receiver:journald` (`urn:otel:receiver:journald`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

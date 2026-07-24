@@ -6,7 +6,7 @@
 
 - Type: `exporter:noop` (`urn:otel:exporter:noop`)
 - Feature gate: Default
-- Stability: Experimental
+- Stability: experimental
 
 ## Overview
 

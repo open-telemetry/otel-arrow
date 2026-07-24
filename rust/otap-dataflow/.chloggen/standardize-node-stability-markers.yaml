@@ -1,0 +1,9 @@
+change_type: enhancement
+component: pipeline
+note: Standardize node stability markers on a single lowercase enum (experimental, alpha, beta, stable, deprecated) defined in docs/node-stability.md, and align every node README and catalog table to it.
+issues: [3242]
+subtext: |
+  Replaces ad-hoc markers (WIP, mixed casing, and level+caveat strings such as
+  "Alpha; supports logs only") with a single documented level per node. The
+  clickhouse exporter, which had no marker, now declares one. Signal-coverage
+  and performance caveats move from the stability marker into node prose.

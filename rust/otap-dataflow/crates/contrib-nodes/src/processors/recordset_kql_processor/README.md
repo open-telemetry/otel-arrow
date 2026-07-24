@@ -4,7 +4,7 @@
 
 - Type: `urn:microsoft:processor:recordset_kql`
 - Feature gate: `recordset-kql-processor`
-- Stability: Experimental
+- Stability: experimental
 
 An OTAP-Dataflow processor that filters and transforms OpenTelemetry data using
 Kusto Query Language (KQL) expressions over OpenTelemetry data in an opinionated
