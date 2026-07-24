@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="730" viewBox="0 0 1180 730" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <style>
+      .title { font-weight:700; font-size:21px; fill:#1f2733; }
+      .sub   { font-weight:400; font-size:13px; fill:#5b6470; }
+      .stage { font-weight:700; font-size:15px; fill:#1f2733; }
+      .body  { font-weight:400; font-size:12px; fill:#3a4250; }
+      .small { font-weight:400; font-size:11px; fill:#5b6470; }
+      .ital  { font-style:italic; font-weight:400; font-size:11.5px; fill:#5b6470; }
+      .mono  { font-family:Consolas,'SF Mono',Menlo,monospace; font-size:11.5px; }
+      .segval{ font-family:Consolas,'SF Mono',Menlo,monospace; font-size:11px; font-weight:700; }
+      .limlab{ font-weight:700; font-size:12px; }
+      .axlab { font-family:Consolas,'SF Mono',Menlo,monospace; font-size:10.5px; fill:#7a8494; }
+    </style>
+    <pattern id="hatch" width="9" height="9" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <rect width="9" height="9" fill="#e9edf2"/>
+      <line x1="0" y1="0" x2="0" y2="9" stroke="#9aa4b0" stroke-width="3.2"/>
+    </pattern>
+  </defs>
+<rect x="0" y="0" width="1180" height="730" fill="#ffffff"/>
+<text x="40" y="44" class="title">Regulated Memory Accounting Across NUMA Regions</text>
+<line x1="150" y1="650.0" x2="820" y2="650.0" stroke="#eef1f5" stroke-width="1"/>
+<text x="140" y="653.5" text-anchor="end" class="axlab">0</text>
+<line x1="150" y1="520.0" x2="820" y2="520.0" stroke="#eef1f5" stroke-width="1"/>
+<text x="140" y="523.5" text-anchor="end" class="axlab">256</text>
+<line x1="150" y1="390.0" x2="820" y2="390.0" stroke="#eef1f5" stroke-width="1"/>
+<text x="140" y="393.5" text-anchor="end" class="axlab">512</text>
+<line x1="150" y1="260.0" x2="820" y2="260.0" stroke="#eef1f5" stroke-width="1"/>
+<text x="140" y="263.5" text-anchor="end" class="axlab">768</text>
+<line x1="150" y1="130.0" x2="820" y2="130.0" stroke="#eef1f5" stroke-width="1"/>
+<text x="140" y="133.5" text-anchor="end" class="axlab">1024</text>
+<line x1="150" y1="650.0" x2="150" y2="130.0" stroke="#c6cdd6" stroke-width="1.2"/>
+<text x="112" y="390.0" transform="rotate(-90 112 390.0)" text-anchor="middle" class="small">memory  (MiB per region)</text>
+<rect x="340" y="130.0" width="160" height="520.0" rx="3" fill="#eef1f5" stroke="#d5dbe2" stroke-width="1"/>
+<text x="420.0" y="108" text-anchor="middle" class="stage">NUMA 0</text>
+<text x="420.0" y="124" text-anchor="middle" class="small">CPU 0 · CPU 1</text>
+<rect x="340" y="523.0" width="160" height="127.0" fill="#4E79A7" stroke="#ffffff" stroke-width="1"/>
+<text x="420.0" y="590.5" text-anchor="middle" class="segval" fill="#ffffff">250</text>
+<rect x="340" y="424.0" width="160" height="99.0" fill="#59A14F" stroke="#ffffff" stroke-width="1"/>
+<text x="420.0" y="477.5" text-anchor="middle" class="segval" fill="#ffffff">195</text>
+<rect x="340" y="352.9" width="160" height="71.1" fill="#E15759" stroke="#ffffff" stroke-width="1"/>
+<text x="420.0" y="392.5" text-anchor="middle" class="segval" fill="#ffffff">140</text>
+<rect x="340" y="297.1" width="160" height="55.9" fill="#F28E2B" stroke="#ffffff" stroke-width="1"/>
+<text x="420.0" y="329.0" text-anchor="middle" class="segval" fill="#20262e">110</text>
+<rect x="340" y="259.0" width="160" height="38.1" fill="#B07AA1" stroke="#ffffff" stroke-width="1"/>
+<text x="420.0" y="282.0" text-anchor="middle" class="segval" fill="#ffffff">75</text>
+<rect x="340" y="228.5" width="160" height="30.5" fill="url(#hatch)" stroke="#9aa4b0" stroke-width="1" stroke-dasharray="2 2"/>
+<text x="420.0" y="247.8" text-anchor="middle" class="segval" fill="#5b6470">60</text>
+<text x="420.0" y="672.0" text-anchor="middle" class="small">accounted 770 + unacct 60 = 830 MiB</text>
+<rect x="580" y="130.0" width="160" height="520.0" rx="3" fill="#eef1f5" stroke="#d5dbe2" stroke-width="1"/>
+<text x="660.0" y="108" text-anchor="middle" class="stage">NUMA 1</text>
+<text x="660.0" y="124" text-anchor="middle" class="small">CPU 2 · CPU 3</text>
+<rect x="580" y="528.1" width="160" height="121.9" fill="#4E79A7" stroke="#ffffff" stroke-width="1"/>
+<text x="660.0" y="593.1" text-anchor="middle" class="segval" fill="#ffffff">240</text>
+<rect x="580" y="426.6" width="160" height="101.6" fill="#59A14F" stroke="#ffffff" stroke-width="1"/>
+<text x="660.0" y="481.3" text-anchor="middle" class="segval" fill="#ffffff">200</text>
+<rect x="580" y="350.4" width="160" height="76.2" fill="#E15759" stroke="#ffffff" stroke-width="1"/>
+<text x="660.0" y="392.5" text-anchor="middle" class="segval" fill="#ffffff">150</text>
+<rect x="580" y="299.6" width="160" height="50.8" fill="#F28E2B" stroke="#ffffff" stroke-width="1"/>
+<text x="660.0" y="329.0" text-anchor="middle" class="segval" fill="#20262e">100</text>
+<rect x="580" y="264.1" width="160" height="35.5" fill="#B07AA1" stroke="#ffffff" stroke-width="1"/>
+<text x="660.0" y="285.8" text-anchor="middle" class="segval" fill="#ffffff">70</text>
+<rect x="580" y="231.1" width="160" height="33.0" fill="url(#hatch)" stroke="#9aa4b0" stroke-width="1" stroke-dasharray="2 2"/>
+<text x="660.0" y="251.6" text-anchor="middle" class="segval" fill="#5b6470">65</text>
+<text x="660.0" y="672.0" text-anchor="middle" class="small">accounted 760 + unacct 65 = 825 MiB</text>
+<line x1="210" y1="130.0" x2="820" y2="130.0" stroke="#94a3b8" stroke-width="1.8" stroke-dasharray="0"/>
+<text x="832" y="134.0"><tspan class="limlab" fill="#94a3b8">physical</tspan><tspan class="small" dx="7">1 GiB/region  (2 GiB total)</tspan></text>
+<line x1="210" y1="167.6" x2="820" y2="167.6" stroke="#b3261e" stroke-width="1.8" stroke-dasharray="7 4"/>
+<text x="832" y="171.6"><tspan class="limlab" fill="#b3261e">hard_limit</tspan><tspan class="small" dx="7">950 MiB/region  (1.9 GiB total)</tspan></text>
+<line x1="210" y1="205.7" x2="820" y2="205.7" stroke="#c77d00" stroke-width="1.8" stroke-dasharray="7 4"/>
+<text x="832" y="209.7"><tspan class="limlab" fill="#c77d00">soft_limit</tspan><tspan class="small" dx="7">875 MiB/region  (1.75 GiB total)</tspan></text>
+<line x1="210" y1="243.8" x2="820" y2="243.8" stroke="#6b3fa0" stroke-width="1.8" stroke-dasharray="7 4"/>
+<text x="832" y="247.8"><tspan class="limlab" fill="#6b3fa0">regular_limit</tspan><tspan class="small" dx="7">800 MiB/region  (1.6 GiB total)</tspan></text>
+<text x="40" y="696" class="stage">Legend</text>
+<rect x="40" y="701" width="14" height="14" rx="2" fill="#4E79A7"/>
+<text x="60" y="712" class="body">Tenant A</text>
+<rect x="158" y="701" width="14" height="14" rx="2" fill="#59A14F"/>
+<text x="178" y="712" class="body">Tenant B</text>
+<rect x="276" y="701" width="14" height="14" rx="2" fill="#E15759"/>
+<text x="296" y="712" class="body">Tenant C</text>
+<rect x="394" y="701" width="14" height="14" rx="2" fill="#F28E2B"/>
+<text x="414" y="712" class="body">Tenant D</text>
+<rect x="512" y="701" width="14" height="14" rx="2" fill="#B07AA1"/>
+<text x="532" y="712" class="body">Tenant E</text>
+<rect x="630" y="701" width="14" height="14" rx="2" fill="url(#hatch)" stroke="#9aa4b0" stroke-width="1"/>
+<text x="650" y="712" class="body">unaccounted memory</text>
+</svg>
