@@ -8,7 +8,7 @@
 
 **Capability exposed:** `BearerTokenAuthorizer`
 
-**Execution model:** Passive + Shared
+**Execution model:** Passive (Shared + Local variants)
 
 **Target crate:** `crates/contrib-extensions`
 
@@ -80,17 +80,39 @@ its first production implementation.
 
 The extension registers into `OTAP_EXTENSION_FACTORIES` via `linkme` when the
 `k8s-sat-token-authorizer-extension` feature is enabled, and advertises the
-`bearer_token_authorizer` capability on its **shared** (`Send`) variant:
+`bearer_token_authorizer` capability as a **dual variant** -- a `Send` shared
+variant and a `!Send` local variant -- sharing one common implementation:
 
 ```rust
 extension_capabilities!(
-    shared: K8sSatTokenAuthorizerExtension => [BearerTokenAuthorizer]
+    (shared: SharedK8sSatTokenAuthorizer, local: LocalK8sSatTokenAuthorizer)
+        => [BearerTokenAuthorizer]
 )
 ```
 
-It is a **Passive + Shared** extension: it runs no event loop. Every consumer
-receives a clone that shares the same `Arc<Inner>` state, so they share one
-Kubernetes client and one decision cache.
+It is a **Passive** extension: it runs no event loop. Both variants live side by
+side in `authorizer.rs` and are thin wrappers over one shared implementation
+(`core`, `cache`, `config`, `reviewer`). The **entire request flow lives once**
+in `Core::authorize`; each wrapper only chooses how per-clone state is held and
+delegates in a single line, so the two cannot drift in logic:
+
+- **Shared variant** (`SharedK8sSatTokenAuthorizer`): state shared across clones
+  lives behind an `Arc` (required by the shared instance factory's `Send` bound)
+  and the decision cache is guarded by a `std::sync::Mutex`. Served to `Send`
+  consumers, and to local consumers only when no local variant exists (the
+  `SharedAsLocal` fallback).
+- **Local variant** (`LocalK8sSatTokenAuthorizer`): state lives behind an `Rc`
+  (the local instance factory has no `Send` bound) and the cache is a `RefCell`
+  rather than a `Mutex`. Thread-per-core (local) consumers therefore hit the
+  cache **lock-free** with no cross-core contention. Each core gets its own
+  instance and hence its own cache -- a shared-nothing, per-core memoization
+  consistent with the engine's thread-per-core model.
+
+The only per-variant difference is the interior-mutability strategy, injected
+into `Core::authorize` through the `DecisionStore` trait (implemented for
+`Mutex<DecisionCache>` and `RefCell<DecisionCache>`). Registering a native local
+variant means local consumers use this lock-free path instead of adapting the
+shared, `Mutex`-guarded instance via `SharedAsLocal`.
 
 The Kubernetes client is built **lazily on the first `authorize()` call**, not
 up front. `kube::Client::try_default()` is async (it reads the projected
