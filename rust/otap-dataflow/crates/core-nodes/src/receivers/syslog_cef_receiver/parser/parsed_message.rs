@@ -728,7 +728,7 @@ mod tests {
 
     #[test]
     fn test_cef_with_rfc3164_priority_no_hostname() {
-        // CEF message with priority but no timestamp or hostname — the RFC 3164
+        // CEF message with priority but no timestamp or hostname -- the RFC 3164
         // parser should fall through to the tag/content path directly.
         let input = b"<34>CEF:0|Security|threatmanager|1.0|100|worm stopped|10|src=10.0.0.1";
         let result = parse(input).unwrap();

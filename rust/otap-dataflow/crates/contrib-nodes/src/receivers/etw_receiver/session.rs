@@ -71,7 +71,7 @@ use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, ProviderKind, TraceLevel};
 
-// ── QPC → Unix epoch conversion ──────────────────────────────────────────────
+// -- QPC -> Unix epoch conversion ----------------------------------------------
 
 /// Reference point captured once at session start to convert QPC ticks to
 /// Unix epoch nanoseconds.  All three values are sampled on the session
@@ -141,7 +141,7 @@ impl QpcReference {
 /// next event continues to the following core (no retry on another core).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-// ── Event data transferred across the channel ────────────────────────────────
+// -- Event data transferred across the channel --------------------------------
 
 /// Typed value of a single TDH-decoded ETW field.
 ///
@@ -230,7 +230,7 @@ pub struct EtwEventData {
     pub decoded_fields: Vec<DecodedField>,
 }
 
-// ── GUID parsing ─────────────────────────────────────────────────────────────
+// -- GUID parsing -------------------------------------------------------------
 
 /// Parse a GUID string in the standard `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 /// format into a [`one_collect::Guid`].
@@ -513,7 +513,7 @@ fn tdh_enumerate_error(source: impl std::fmt::Display) -> Error {
     }))
 }
 
-// ── TDH field extraction ─────────────────────────────────────────────────────
+// -- TDH field extraction -----------------------------------------------------
 
 /// Number of 100-nanosecond ticks between the Windows `FILETIME` epoch
 /// (1601-01-01 UTC) and the Unix epoch (1970-01-01 UTC).
@@ -730,7 +730,7 @@ fn extract_decoded_fields(
         .collect()
 }
 
-// ── Per-session telemetry bridge ─────────────────────────────────────────────
+// -- Per-session telemetry bridge ---------------------------------------------
 
 /// Counters written by the `!Send` `ProcessTrace` callback and read by the
 /// async per-core receivers.
@@ -777,7 +777,7 @@ pub(super) struct SessionWideMetrics {
     pub kernel_buffers_written: AtomicU64,
 }
 
-// ── Per-session state ────────────────────────────────────────────────────────
+// -- Per-session state --------------------------------------------------------
 
 /// State for a single ETW session keyed by `session_name`.
 struct SessionEntry {
@@ -929,7 +929,7 @@ fn run_trace_stats_poller_loop<F>(
 ///   `InvalidUserConfig` error instead of silently sharing or failing with
 ///   a misleading "pool exhausted" message.
 ///
-/// We use `Mutex<HashMap<…>>` rather than `OnceLock` / `LazyLock` because:
+/// We use `Mutex<HashMap<...>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
 static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None);
@@ -1268,7 +1268,7 @@ fn spawn_etw_session(
     Ok(())
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// -- Public API ---------------------------------------------------------------
 
 /// Acquire one consumer channel from the ETW session for the given
 /// `session_name`.
@@ -1419,7 +1419,7 @@ mod tests {
         }
     }
 
-    // ── Session registry ─────────────────────────────
+    // -- Session registry -----------------------------
 
     #[test]
     fn subscribe_rejects_exhausted_session_name() {
@@ -1532,7 +1532,7 @@ mod tests {
         );
     }
 
-    // ── GUID parsing ─────────────────────────────────
+    // -- GUID parsing ---------------------------------
 
     #[test]
     fn parse_guid_standard_format() {
@@ -1893,7 +1893,7 @@ mod tests {
             interpret_field_value("filetime", &FILETIME_TICKS_TO_UNIX_EPOCH.to_ne_bytes()),
             EtwAttributeValue::Int(0)
         );
-        // One second (10,000,000 ticks) past the Unix epoch → 1e9 ns.
+        // One second (10,000,000 ticks) past the Unix epoch -> 1e9 ns.
         let one_sec_after = FILETIME_TICKS_TO_UNIX_EPOCH + 10_000_000;
         assert_eq!(
             interpret_field_value("filetime", &one_sec_after.to_ne_bytes()),
@@ -1935,7 +1935,7 @@ mod tests {
         );
     }
 
-    // ── Trace level mapping ──────────────────────────
+    // -- Trace level mapping --------------------------
 
     #[test]
     fn trace_level_mapping() {
@@ -1952,7 +1952,7 @@ mod tests {
         assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
     }
 
-    // ── Single-pass field extraction ─────────────────
+    // -- Single-pass field extraction -----------------
 
     /// Builds an all-fixed-size `u32` schema with the given field names.
     fn u32_schema(names: &[&str]) -> one_collect::event::EventFormat {
@@ -2038,7 +2038,7 @@ mod tests {
         assert_eq!(fields[1].value, EtwAttributeValue::Int(123));
     }
 
-    // ── Trace-stats poller edge cases ──────────────
+    // -- Trace-stats poller edge cases --------------
 
     #[test]
     fn trace_stats_first_poll_after_start_publishes_full_sample() {

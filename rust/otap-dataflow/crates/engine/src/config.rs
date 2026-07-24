@@ -4,7 +4,7 @@
 //! Set of system configuration structures used by the engine, for example, to define channel sizes.
 //!
 //! Note: This type of system configuration is distinct from the pipeline configuration, which
-//! focuses instead on defining the interconnection of nodes within the DAG and each node’s specific
+//! focuses instead on defining the interconnection of nodes within the DAG and each node's specific
 //! settings.
 
 use otap_df_config::ExtensionId;
@@ -66,7 +66,7 @@ pub struct ExporterConfig {
 
 /// Runtime configuration for an extension.
 ///
-/// Extensions only have a control channel — they do not process pipeline data.
+/// Extensions only have a control channel -- they do not process pipeline data.
 #[derive(Clone, Debug)]
 pub struct ExtensionConfig {
     /// Name of the extension.

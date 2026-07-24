@@ -32,7 +32,7 @@ pub struct ExecutionState {
 /// Engine-level counters accumulated while a pipeline executes.
 ///
 /// This is the home for any per-execution count the engine wants to expose to
-/// its caller — tracked by the engine itself rather than inferred from batch
+/// its caller -- tracked by the engine itself rather than inferred from batch
 /// sizes. Callers read these after execution (e.g. to emit telemetry) and reset
 /// them between batches when the `ExecutionState` is reused. Add new fields here
 /// as the engine gains more to report; keep each counter distinct so callers can

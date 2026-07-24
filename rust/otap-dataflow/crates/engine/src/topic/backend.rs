@@ -7,11 +7,11 @@
 //!
 //! ```text
 //!   TopicBackend<T>              -- topic-level factory (one per create_topic call)
-//!        │ creates
-//!        ▼
+//!        | creates
+//!        v
 //!   TopicState<T>                -- per-topic shared state (in Arc, many handles)
-//!        │ creates
-//!        ▼
+//!        | creates
+//!        v
 //!   SubscriptionBackend<T>       -- per-subscription owned state (one per subscriber)
 //! ```
 //!

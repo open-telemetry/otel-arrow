@@ -25,7 +25,7 @@ use std::time::{Duration, Instant, SystemTime};
 /// cheap refcount bump that shares one plaintext allocation rather than copying
 /// the secret bytes.
 ///
-/// `expires_on` is a monotonic [`Instant`] — an absolute wall-clock expiry is
+/// `expires_on` is a monotonic [`Instant`] -- an absolute wall-clock expiry is
 /// converted to an `Instant` once, so the value is immune to wall-clock jumps
 /// thereafter. `None` means no known expiry. The token secret is opaque to this
 /// type: an expiry is only ever what a caller supplies from the issuer's
@@ -93,7 +93,7 @@ impl BearerToken {
     /// expiry.
     ///
     /// Strips a leading, case-insensitive `Bearer ` scheme prefix when present
-    /// (e.g. `"Bearer eyJ…"` → `"eyJ…"`), and otherwise treats the trimmed
+    /// (e.g. `"Bearer eyJ..."` -> `"eyJ..."`), and otherwise treats the trimmed
     /// value as the token verbatim. Surrounding whitespace is trimmed either
     /// way. A caller that already has the bare token should use
     /// [`without_expiry`](Self::without_expiry).
