@@ -226,10 +226,16 @@ growth.
   records a terminal failed shutdown and clears the active-operation conflict,
   so later operations for the same logical pipeline are not blocked until
   restart.
-- Runtime thread panic or error: runtime instance failures are reported back
-  into observed state with a concise operator message and diagnostic source
-  detail. The instance is marked exited so controller liveness accounting can
-  progress.
+- Runtime thread panic or error: a failed serving core in a regular pipeline is
+  reported into observed state, then recovered on a newer generation according
+  to the inherited `policies.runtime_recovery` limits. Healthy sibling cores
+  remain on their current generations. Exhausting the restart budget, or
+  disabling recovery, records a fatal controller error and requests coordinated
+  engine shutdown.
+- Runtime recovery ownership: explicit rollout, shutdown, and engine-level
+  operations cancel any in-flight per-core recovery before taking ownership of
+  the affected lifecycle. This prevents a delayed replacement from launching
+  after an operator action has started.
 - Launch and exit races: a runtime thread can exit before its launch
   registration is visible to the controller. The controller records early exits
   and reconciles them during registration, avoiding stale active-instance

@@ -473,17 +473,16 @@ impl<
         self: &Arc<Self>,
         plan: &CandidateRolloutPlan,
     ) -> Result<(), RolloutExecutionError> {
-        let Some(previous) = plan.current_record.as_ref() else {
+        let Some(_previous) = plan.current_record.as_ref() else {
             return Err(RolloutExecutionError::Failed(
                 "internal error: replace rollout missing current record".to_owned(),
             ));
         };
-        let previous_generation = previous.active_generation;
-        for core_id in &plan.current_assigned_cores {
+        for (core_id, generation) in &plan.current_serving_generations {
             self.observed_state_store.set_pipeline_serving_generation(
                 plan.pipeline_key.clone(),
                 *core_id,
-                previous_generation,
+                *generation,
             );
         }
 
@@ -604,23 +603,32 @@ impl<
                 None,
             );
 
-            let old_key = DeployedPipelineKey {
-                pipeline_group_id: plan.pipeline_group_id.clone(),
-                pipeline_id: plan.pipeline_id.clone(),
-                core_id: *core_id,
-                deployment_generation: previous_generation,
-            };
-            if let Err(reason) =
-                self.shutdown_instance(&old_key, plan.drain_timeout_secs, "rolling cutover drain")
+            if let Some(previous_generation) =
+                plan.current_serving_generations.get(core_id).copied()
             {
-                let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
-                return self.rollback_replace_rollout(
-                    plan,
-                    &switched_common_cores,
-                    &activated_added_cores,
-                    &retired_removed_cores,
-                    reason,
-                );
+                let old_key = DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: previous_generation,
+                };
+                if let Err(reason) = self.shutdown_instance(
+                    &old_key,
+                    plan.drain_timeout_secs,
+                    "rolling cutover drain",
+                ) {
+                    let _ = self.shutdown_instances(&[new_key], plan.drain_timeout_secs);
+                    return self.rollback_replace_rollout(
+                        plan,
+                        &switched_common_cores,
+                        &activated_added_cores,
+                        &retired_removed_cores,
+                        reason,
+                    );
+                }
+                switched_common_cores.push(*core_id);
+            } else {
+                activated_added_cores.push(*core_id);
             }
 
             self.observed_state_store.set_pipeline_serving_generation(
@@ -628,7 +636,6 @@ impl<
                 *core_id,
                 plan.target_generation,
             );
-            switched_common_cores.push(*core_id);
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
@@ -647,29 +654,33 @@ impl<
                 None,
             );
 
-            let old_key = DeployedPipelineKey {
-                pipeline_group_id: plan.pipeline_group_id.clone(),
-                pipeline_id: plan.pipeline_id.clone(),
-                core_id: *core_id,
-                deployment_generation: previous_generation,
-            };
-            if let Err(reason) = self.shutdown_instance(
-                &old_key,
-                plan.drain_timeout_secs,
-                "resource policy rollout drain",
-            ) {
-                return self.rollback_replace_rollout(
-                    plan,
-                    &switched_common_cores,
-                    &activated_added_cores,
-                    &retired_removed_cores,
-                    reason,
-                );
+            if let Some(previous_generation) =
+                plan.current_serving_generations.get(core_id).copied()
+            {
+                let old_key = DeployedPipelineKey {
+                    pipeline_group_id: plan.pipeline_group_id.clone(),
+                    pipeline_id: plan.pipeline_id.clone(),
+                    core_id: *core_id,
+                    deployment_generation: previous_generation,
+                };
+                if let Err(reason) = self.shutdown_instance(
+                    &old_key,
+                    plan.drain_timeout_secs,
+                    "resource policy rollout drain",
+                ) {
+                    return self.rollback_replace_rollout(
+                        plan,
+                        &switched_common_cores,
+                        &activated_added_cores,
+                        &retired_removed_cores,
+                        reason,
+                    );
+                }
+                retired_removed_cores.push(*core_id);
             }
 
             self.observed_state_store
                 .clear_pipeline_serving_generation(plan.pipeline_key.clone(), *core_id);
-            retired_removed_cores.push(*core_id);
             self.update_rollout_core_state(
                 &plan.pipeline_key,
                 &plan.rollout.rollout_id,
@@ -787,8 +798,6 @@ impl<
                 "internal error: replace rollback missing current record".to_owned(),
             ));
         };
-        let previous_generation = previous.active_generation;
-
         for core_id in retired_removed_cores.iter().rev() {
             self.update_rollout_core_state(
                 &plan.pipeline_key,
@@ -798,6 +807,15 @@ impl<
                 None,
             );
 
+            let previous_generation = plan
+                .current_serving_generations
+                .get(core_id)
+                .copied()
+                .ok_or_else(|| {
+                    RolloutExecutionError::RollbackFailed(format!(
+                        "missing previous serving generation for retired core {core_id}"
+                    ))
+                })?;
             let old_key = self
                 .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;
@@ -827,6 +845,15 @@ impl<
                 None,
             );
 
+            let previous_generation = plan
+                .current_serving_generations
+                .get(core_id)
+                .copied()
+                .ok_or_else(|| {
+                    RolloutExecutionError::RollbackFailed(format!(
+                        "missing previous serving generation for switched core {core_id}"
+                    ))
+                })?;
             let old_key = self
                 .launch_regular_pipeline_instance(&previous.resolved, *core_id, previous_generation)
                 .map_err(|err| RolloutExecutionError::RollbackFailed(err.to_string()))?;

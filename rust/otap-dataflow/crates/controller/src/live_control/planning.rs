@@ -124,6 +124,7 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut current_generation_cores = Vec::new();
         let mut has_foreign_active_generations = false;
+        let mut active_generations: HashMap<usize, Vec<u64>> = HashMap::new();
 
         for (deployed_key, instance) in &state.runtime_instances {
             if deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
@@ -138,12 +139,36 @@ impl<
             } else {
                 has_foreign_active_generations = true;
             }
+            active_generations
+                .entry(deployed_key.core_id)
+                .or_default()
+                .push(deployed_key.deployment_generation);
         }
 
         current_generation_cores.sort_unstable();
+        current_generation_cores.dedup();
+        let serving_generations = active_generations
+            .into_iter()
+            .filter_map(|(core_id, generations)| {
+                let recovered_generation = state
+                    .runtime_recoveries
+                    .get(&(pipeline_key.clone(), core_id))
+                    .map(|recovery| recovery.serving_generation)
+                    .filter(|generation| generations.contains(generation));
+                let generation = recovered_generation
+                    .or_else(|| {
+                        generations
+                            .contains(&active_generation)
+                            .then_some(active_generation)
+                    })
+                    .or_else(|| generations.into_iter().max())?;
+                Some((core_id, generation))
+            })
+            .collect();
         ActiveRuntimeCoreState {
             current_generation_cores,
             has_foreign_active_generations,
+            serving_generations,
         }
     }
 
@@ -345,6 +370,7 @@ impl<
             Vec::new()
         };
         let target_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        self.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
         let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
         let active_runtime_state = current_record
@@ -353,6 +379,7 @@ impl<
             .unwrap_or(ActiveRuntimeCoreState {
                 current_generation_cores: Vec::new(),
                 has_foreign_active_generations: false,
+                serving_generations: HashMap::new(),
             });
         let active_core_set: HashSet<_> = active_runtime_state
             .current_generation_cores
@@ -475,18 +502,12 @@ impl<
                 core_id,
                 previous_generation: match action {
                     RolloutAction::Create => None,
-                    RolloutAction::NoOp => active_core_set
-                        .contains(&core_id)
-                        .then_some(previous_generation)
-                        .flatten(),
-                    RolloutAction::Replace => current_core_set
-                        .contains(&core_id)
-                        .then_some(previous_generation)
-                        .flatten(),
-                    RolloutAction::Resize => active_core_set
-                        .contains(&core_id)
-                        .then_some(previous_generation)
-                        .flatten(),
+                    RolloutAction::NoOp | RolloutAction::Replace | RolloutAction::Resize => {
+                        active_runtime_state
+                            .serving_generations
+                            .get(&core_id)
+                            .copied()
+                    }
                 },
                 target_generation,
                 state: "pending".to_owned(),
@@ -518,6 +539,7 @@ impl<
             current_record,
             current_assigned_cores,
             target_assigned_cores,
+            current_serving_generations: active_runtime_state.serving_generations,
             common_assigned_cores,
             added_assigned_cores,
             removed_assigned_cores,
@@ -695,6 +717,9 @@ impl<
                     active_generation,
                 },
             );
+            state
+                .runtime_recoveries
+                .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
@@ -1127,6 +1152,9 @@ impl<
             }
             let _ = state.logical_pipelines.remove(pipeline_key);
             let _ = state.generation_counters.remove(pipeline_key);
+            state
+                .runtime_recoveries
+                .retain(|(key, _), _| key != pipeline_key);
             state.runtime_instances.retain(|deployed_key, _| {
                 deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
                     || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
