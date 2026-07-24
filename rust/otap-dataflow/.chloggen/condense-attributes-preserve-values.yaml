@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: pipeline
+note: Preserve bytes, arrays, maps, and empty values that cannot be condensed by the Condense Attributes processor.
+issues: [1694]
