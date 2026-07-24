@@ -356,12 +356,12 @@ and is planned. Any other `BearerTokenProvider` consumer works unchanged.
 Metrics are recorded in the background refresh loop and the slow-path
 `get_token()` branch, and flushed via `ExtensionControlMsg::CollectTelemetry`.
 
-| Metric (set: `extension.oauth2_client_auth`) | Type      | Description                                             |
-|-----------------------------------------------|-----------|---------------------------------------------------------|
-| `auth_successes`                              | Counter   | Successful token acquisitions.                          |
-| `auth_failures`                               | Counter   | Failed token acquisitions.                              |
-| `auth_token_publish`                          | Counter   | Tokens published to consumers via the watch channel.    |
-| `auth_success_latency`                        | Mmsc (ms) | Latency of successful acquisitions (min/max/sum/count). |
+| Metric (set: `extension.oauth2_client_auth`) | Type | Description |
+| --- | --- | --- |
+| `auth_successes` | Counter | Successful token acquisitions. |
+| `auth_failures` | Counter | Failed token acquisitions. |
+| `auth_token_publish` | Counter | Tokens published to consumers via the watch channel. |
+| `auth_success_latency` | Mmsc (ms) | Latency of successful acquisitions (min/max/sum/count). |
 
 ## Lifecycle
 
