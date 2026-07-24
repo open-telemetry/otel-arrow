@@ -10,7 +10,7 @@ use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
-use super::config::{Config, normalize_service_account};
+use super::config::{Config, ResourceAttributesConfig, normalize_service_account};
 use super::extension::K8sSatTokenAuthorizerExtension;
 use super::*;
 
@@ -395,5 +395,202 @@ fn cache_respects_max_entries() {
     assert!(
         ext.cache_len_for_test() <= 2,
         "cache must not exceed its max_entries bound"
+    );
+}
+
+// ── Live-cluster integration tests ─────────────────────────
+//
+// These are #[ignore]d: they require a reachable Kubernetes cluster (via the
+// ambient kubeconfig/in-cluster config) and a valid projected service-account
+// token supplied through the environment. Run them explicitly with, e.g.:
+//
+//   K8S_SAT_TOKEN="$(kubectl create token sat-tester -n sat-authz-test \
+//     --audience=https://sat-authz-test.example)" \
+//   cargo test -p otap-df-contrib-extensions \
+//     --features k8s-sat-token-authorizer-extension \
+//     k8s_sat_token_authorizer -- --ignored --nocapture
+//
+// The cluster is expected to have the fixtures from the extension's test setup:
+// namespace `sat-authz-test`, service account `sat-tester`, and a Role granting
+// `get`/`list` on `pods` in that namespace. Apply `testdata/integration-fixtures.yaml`
+// to create them.
+
+/// Default audience the test token is minted for; override with `K8S_SAT_AUDIENCE`.
+fn it_audience() -> String {
+    std::env::var("K8S_SAT_AUDIENCE")
+        .unwrap_or_else(|_| "https://sat-authz-test.example".to_string())
+}
+
+/// The expected authenticated subject; override with `K8S_SAT_SUBJECT`.
+fn it_subject() -> String {
+    std::env::var("K8S_SAT_SUBJECT")
+        .unwrap_or_else(|_| "system:serviceaccount:sat-authz-test:sat-tester".to_string())
+}
+
+/// Namespace used for RBAC checks; override with `K8S_SAT_NAMESPACE`.
+fn it_namespace() -> String {
+    std::env::var("K8S_SAT_NAMESPACE").unwrap_or_else(|_| "sat-authz-test".to_string())
+}
+
+/// Returns the token under test, or `None` when `K8S_SAT_TOKEN` is unset (so the
+/// ignored test no-ops instead of failing when run without a configured token).
+fn it_token() -> Option<String> {
+    std::env::var("K8S_SAT_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+}
+
+fn it_extension(
+    allowed: Option<HashSet<String>>,
+    resource_attributes: Option<ResourceAttributesConfig>,
+) -> K8sSatTokenAuthorizerExtension {
+    K8sSatTokenAuthorizerExtension::new(
+        "it-authorizer",
+        vec![it_audience()],
+        allowed,
+        resource_attributes,
+        Duration::from_secs(300),
+        1024,
+    )
+}
+
+/// Scenario: a valid projected service-account token is authorized with no
+/// admission policy (audience-only) against a live cluster.
+/// Guarantees: `TokenReview` authenticates the token and the request is admitted
+/// with the authenticated service-account subject.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster and K8S_SAT_TOKEN"]
+async fn it_valid_token_is_admitted_audience_only() {
+    let Some(token) = it_token() else {
+        eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
+        return;
+    };
+    let ext = it_extension(None, None);
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token))
+        .await
+        .expect("TokenReview must reach a decision");
+    assert!(decision.is_allowed(), "valid token must be admitted");
+    assert_eq!(
+        decision.identity().and_then(|i| i.subject()),
+        Some(it_subject().as_str()),
+        "identity subject must be the authenticated service account"
+    );
+}
+
+/// Scenario: a syntactically-bogus bearer token is submitted to a live cluster.
+/// Guarantees: `TokenReview` reaches a verdict (not an error) and the request is
+/// denied as an invalid credential.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster"]
+async fn it_bogus_token_is_denied_invalid() {
+    // This test needs a cluster but not a real token; gate it on the same env so
+    // it only runs as part of a configured integration run.
+    if it_token().is_none() {
+        eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
+        return;
+    }
+    let ext = it_extension(None, None);
+    let decision = ext
+        .authorize(&BearerToken::without_expiry("not.a.real.token".to_string()))
+        .await
+        .expect("TokenReview must reach a decision, not error");
+    assert!(!decision.is_allowed(), "a bogus token must not be admitted");
+    assert!(
+        matches!(
+            decision,
+            AuthzDecision::Deny {
+                reason: DenyReason::InvalidCredential,
+                ..
+            }
+        ),
+        "a bogus token must be denied as an invalid credential, got {decision:?}"
+    );
+}
+
+/// Scenario: allow-list admission against a live cluster, both with the
+/// authenticated subject present and absent.
+/// Guarantees: the matching subject is admitted and a non-matching allow-list
+/// denies with `NotPermitted` after successful authentication.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster and K8S_SAT_TOKEN"]
+async fn it_allow_list_admits_and_denies() {
+    let Some(token) = it_token() else {
+        eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
+        return;
+    };
+
+    let permitted: HashSet<String> = [it_subject()].into_iter().collect();
+    let ext = it_extension(Some(permitted), None);
+    assert!(
+        ext.authorize(&BearerToken::without_expiry(token.clone()))
+            .await
+            .expect("decision")
+            .is_allowed(),
+        "subject in the allow-list must be admitted"
+    );
+
+    let other: HashSet<String> = ["system:serviceaccount:sat-authz-test:someone-else".to_string()]
+        .into_iter()
+        .collect();
+    let ext = it_extension(Some(other), None);
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token))
+        .await
+        .expect("decision");
+    assert!(
+        !decision.is_allowed(),
+        "subject absent from the allow-list must be denied"
+    );
+}
+
+/// Scenario: RBAC admission via `SubjectAccessReview` against a live cluster for
+/// a permitted verb (`get pods`) and an unpermitted verb (`delete pods`).
+/// Guarantees: the permitted action is admitted and the unpermitted action is
+/// denied with `NotPermitted`, exercising the real SubjectAccessReview path.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster, K8S_SAT_TOKEN, and the RBAC fixtures"]
+async fn it_rbac_allows_permitted_and_denies_unpermitted() {
+    let Some(token) = it_token() else {
+        eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
+        return;
+    };
+    let namespace = it_namespace();
+
+    let permitted = ResourceAttributesConfig {
+        group: None,
+        version: None,
+        resource: "pods".to_string(),
+        verb: "get".to_string(),
+        namespace: Some(namespace.clone()),
+        name: None,
+        subresource: None,
+    };
+    let ext = it_extension(None, Some(permitted));
+    assert!(
+        ext.authorize(&BearerToken::without_expiry(token.clone()))
+            .await
+            .expect("SubjectAccessReview must reach a decision")
+            .is_allowed(),
+        "RBAC must admit a permitted verb (get pods)"
+    );
+
+    let unpermitted = ResourceAttributesConfig {
+        group: None,
+        version: None,
+        resource: "pods".to_string(),
+        verb: "delete".to_string(),
+        namespace: Some(namespace),
+        name: None,
+        subresource: None,
+    };
+    let ext = it_extension(None, Some(unpermitted));
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token))
+        .await
+        .expect("SubjectAccessReview must reach a decision");
+    assert!(
+        !decision.is_allowed(),
+        "RBAC must deny an unpermitted verb (delete pods)"
     );
 }
