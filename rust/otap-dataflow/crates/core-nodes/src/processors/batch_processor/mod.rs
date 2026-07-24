@@ -1644,11 +1644,6 @@ mod tests {
         (telemetry_registry, metrics_reporter, phase)
     }
 
-    /// Helper to verify that batch counters were incremented to the expected
-    /// values. `expected_counts` is `(consumed_batches, produced_batches)` --
-    /// i.e. the number of input requests consumed by the processor and the
-    /// number of output batches it produced.
-
     fn mmsc_metric_count(
         telemetry_registry: &TelemetryRegistryHandle,
         set_name: &str,
