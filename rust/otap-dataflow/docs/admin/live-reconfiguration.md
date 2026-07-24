@@ -383,11 +383,25 @@ Behavior:
 - The desired full config is validated before any live work starts.
 - Desired pipelines are created, replaced, resized, or treated as `noop` using
   the same rollout machinery as `PUT /groups/{group}/pipelines/{id}`.
+- Placement-sensitive rollouts are planned before they start. Desired
+  `core_set` pipelines are considered before desired `core_count` pipelines so
+  controller-selected `core_count` placements avoid explicit core requests.
+- `core_count` placements avoid both committed `core_set` cores and other
+  committed or in-flight `core_count` cores. Explicit `core_set` pipelines may
+  still overlap other explicit `core_set` pipelines as operator intent.
+- Reconciliation rejects placement changes that would require another live
+  pipeline to vacate cores first. Stage those transitions manually, for example
+  by resizing or deleting the conflicting pipeline before reconciling the full
+  config. This includes cores held by pipelines that are omitted from the
+  desired config, because `deleteMissing` deletes them after desired rollouts.
 - When `deleteMissing=true`, live pipelines and groups omitted from the desired
   config are gracefully deleted.
 - When `deleteMissing=false`, omitted live pipelines and groups are preserved.
 - Engine-level and group-level metadata is committed only after the
   reconciliation succeeds.
+- Reconciliation is not atomic across pipelines. Pipeline rollouts that
+  succeeded before a later rollout failure remain applied and are reflected in
+  the committed live config.
 - Runtime topic profile mutation is rejected with `422 Unprocessable Entity`.
 
 Response body is an `EngineConfigReconcileStatus` with:
@@ -581,7 +595,7 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/rollouts/$ROLLOUT_ID" | jq .
 
 ### Example: Pure resource-policy resize
 
-This example changes only `coreAllocation.count` from `1` to `2`. The
+This example changes only `core_allocation.count` from `1` to `2`. The
 controller detects that the runtime shape is otherwise unchanged and executes a
 `resize` rollout instead of a full replace.
 
@@ -593,7 +607,7 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE" \
         stepTimeoutSecs: 60,
         drainTimeoutSecs: 60
       }
-      | .pipeline.policies.resources.coreAllocation.count = 2
+      | .pipeline.policies.resources.core_allocation.count = 2
     ' \
   > /tmp/tenant_c_pipeline-scale-up.json
 ```
@@ -618,7 +632,7 @@ curl -s "$BASE/groups/$GROUP/pipelines/$PIPE/status" \
   | jq '{totalCores, runningCores, activeGeneration, servingGenerations, rollout}'
 ```
 
-Scale back down by setting `coreAllocation.count = 1` in the same request body
+Scale back down by setting `core_allocation.count = 1` in the same request body
 pattern.
 
 ### Example: Full-config and lifecycle endpoints

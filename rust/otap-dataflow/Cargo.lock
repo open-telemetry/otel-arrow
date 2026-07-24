@@ -7444,6 +7444,7 @@ dependencies = [
  "serde_yaml",
  "smallvec",
  "socket2",
+ "tempfile",
  "thiserror 2.0.19",
  "tikv-jemalloc-ctl",
  "tikv-jemalloc-sys",

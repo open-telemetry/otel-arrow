@@ -1,0 +1,26 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: breaking
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: engine
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Add NUMA-aware topology discovery, controller-owned non-overlapping core_count placement, and listener-group placement metadata.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [1837]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  core_count placement no longer clamps to the available core count; over-sized requests now fail validation.
+  core_count placement is now planned globally by the controller, so multiple core_count pipelines no longer overlap on the first visible cores.
+  Startup and live updates now fail when controller-selected placement cannot find an unreserved core set, including core_count: 0 when no unreserved cores remain.
+  Explicit core_set placement now fails when any requested core is hidden by process affinity or cgroup CPU constraints.
+  Full-config reconcile now preflights placement conflicts before starting rollouts and rejects transitions that require another live pipeline to vacate cores first.
+  Listener-group placement metadata is groundwork only; this change does not bind sockets, enable SO_REUSEPORT coordination, or attach eBPF selectors.
+  Placement discovery and planning run in startup and live-control paths only; the per-record data path is unchanged.

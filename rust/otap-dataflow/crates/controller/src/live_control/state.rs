@@ -241,9 +241,13 @@ pub(super) struct RolloutRecord {
     pub(super) previous_generation: Option<u64>,
     /// Drain timeout requested with the rollout, reused for panic cleanup.
     pub(super) drain_timeout_secs: u64,
+    /// Target core-allocation strategy, used to mirror startup reservation semantics.
+    pub(super) target_core_allocation_strategy: CoreAllocationStrategy,
     pub(super) started_at: String,
     pub(super) updated_at: String,
     pub(super) failure_reason: Option<String>,
+    /// Full target placement reserved by this rollout while it is active.
+    pub(super) target_placement: PipelinePlacement,
     pub(super) cores: Vec<RolloutCoreProgress>,
     pub(super) completed_at: Option<Instant>,
 }
@@ -258,6 +262,8 @@ impl RolloutRecord {
         target_generation: u64,
         previous_generation: Option<u64>,
         drain_timeout_secs: u64,
+        target_core_allocation_strategy: CoreAllocationStrategy,
+        target_placement: PipelinePlacement,
         cores: Vec<RolloutCoreProgress>,
     ) -> Self {
         let now = timestamp_now();
@@ -270,9 +276,11 @@ impl RolloutRecord {
             target_generation,
             previous_generation,
             drain_timeout_secs,
+            target_core_allocation_strategy,
             started_at: now.clone(),
             updated_at: now,
             failure_reason: None,
+            target_placement,
             cores,
             completed_at: None,
         }
@@ -433,6 +441,26 @@ pub(crate) enum RuntimeInstanceExit {
 pub(super) struct LogicalPipelineRecord {
     pub(super) resolved: ResolvedPipelineConfig,
     pub(super) active_generation: u64,
+    pub(super) placement: PipelinePlacement,
+    pub(super) placement_generation: u64,
+}
+
+#[derive(Debug, Clone)]
+/// Controller-resolved placement metadata used when launching live-control instances.
+pub(super) struct LivePipelinePlacement {
+    pub(super) placement: PipelinePlacement,
+    pub(super) listener_group_snapshot: Arc<ListenerGroupSnapshot>,
+}
+
+impl LivePipelinePlacement {
+    /// Returns placement metadata for one worker core.
+    pub(super) fn core(&self, core_id: usize) -> Option<CorePlacement> {
+        self.placement
+            .cores
+            .iter()
+            .copied()
+            .find(|core| core.core_id.id == core_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,6 +479,8 @@ pub(super) struct TopicRuntimeProfile {
 pub(super) struct ControllerRuntimeState {
     /// Latest accepted full engine config, including committed live changes.
     pub(super) live_config: OtelDataflowSpec,
+    /// Monotonic revision for committed logical config changes.
+    pub(super) config_revision: u64,
     /// Committed logical pipelines keyed by group/pipeline id.
     pub(super) logical_pipelines: HashMap<PipelineKey, LogicalPipelineRecord>,
     /// Deployed runtime instances keyed by group/pipeline/core/generation.
@@ -487,6 +517,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_rollout_id: u64,
     /// Monotonic shutdown id suffix.
     pub(super) next_shutdown_id: u64,
+    /// Monotonic placement metadata generation for live-control launches.
+    pub(super) next_placement_generation: u64,
     /// Monotonic logical runtime-thread id used for diagnostics.
     pub(super) next_thread_id: usize,
     /// First runtime failure surfaced to global controller shutdown handling.
@@ -508,8 +540,14 @@ pub(super) struct CandidateRolloutPlan {
     pub(super) action: RolloutAction,
     /// Resolved target pipeline config after applying the request.
     pub(super) resolved_pipeline: ResolvedPipelineConfig,
+    /// Runtime config revision used to build this plan.
+    pub(super) base_config_revision: u64,
     /// Current committed record, absent for create rollouts.
     pub(super) current_record: Option<LogicalPipelineRecord>,
+    /// Placement metadata for the committed record, used by rollback launches.
+    pub(super) current_placement: Option<LivePipelinePlacement>,
+    /// Placement metadata for target launches.
+    pub(super) target_placement: LivePipelinePlacement,
     /// Core allocation from the committed record.
     pub(super) current_assigned_cores: Vec<usize>,
     /// Core allocation requested by the candidate config.

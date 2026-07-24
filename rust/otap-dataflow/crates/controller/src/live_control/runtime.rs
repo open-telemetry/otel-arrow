@@ -29,16 +29,23 @@ impl<
     pub(super) fn launch_regular_pipeline_instance(
         self: &Arc<Self>,
         resolved_pipeline: &ResolvedPipelineConfig,
+        placement: &LivePipelinePlacement,
         core_id: usize,
         deployment_generation: u64,
     ) -> Result<DeployedPipelineKey, Error> {
         let thread_id = self.next_thread_id();
-        let num_cores = self
-            .assigned_cores_for_resolved(resolved_pipeline)
-            .map_err(|err| Error::PipelineRuntimeError {
-                source: Box::new(io::Error::other(format!("{err:?}"))),
-            })?
-            .len();
+        let core_placement =
+            placement
+                .core(core_id)
+                .ok_or_else(|| Error::PipelineRuntimeError {
+                    source: Box::new(io::Error::other(format!(
+                        "core {core_id} is not present in resolved placement for {}:{}",
+                        resolved_pipeline.pipeline_group_id.as_ref(),
+                        resolved_pipeline.pipeline_id.as_ref()
+                    ))),
+                })?;
+        let num_cores = placement.placement.core_count();
+        let live_config = self.engine_config_snapshot();
         let deployed_key = DeployedPipelineKey {
             pipeline_group_id: resolved_pipeline.pipeline_group_id.clone(),
             pipeline_id: resolved_pipeline.pipeline_id.clone(),
@@ -49,6 +56,8 @@ impl<
             self.pipeline_factory,
             deployed_key.clone(),
             CoreId { id: core_id },
+            core_placement.numa_node_id,
+            Arc::clone(&placement.listener_group_snapshot),
             num_cores,
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
@@ -60,11 +69,7 @@ impl<
             self.engine_tracing_setup.clone(),
             self.telemetry_reporting_interval,
             self.memory_pressure_tx.clone(),
-            &self
-                .state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .live_config,
+            &live_config,
             &self.declared_topics,
             Arc::downgrade(self),
             thread_id,
