@@ -1,4 +1,4 @@
-# Agent Multitenancy Tenant Identity
+# Multitenancy Tenant Identity
 
 **Status:** Draft
 
@@ -205,11 +205,11 @@ requests with these resource token extractors are:
   requests will not match conditions and take the default limit.
 
 Routing and batching by tenant token based on resource attributes
-generalizes in useful ways. Telemetry collection agents are sometimes
-required to aggregate by both tenant-token property and
-sub-characteristic such as metric name or TraceId. In general, the
-engine must add support splitting requests in these ways to enable
-routing, shuffling, grouping and load balancing by tenant token.
+generalizes in useful ways. Telemetry configurations sometimes
+aggregate by both tenant-token property and sub-characteristic such as
+metric name or TraceId. In general, the dataflow engine must add
+support splitting requests in these ways to enable routing, shuffling,
+grouping and load balancing by tenant token among other characteristics.
 
 ### Tenant trust
 
@@ -350,14 +350,12 @@ for a request:
   key for each reachable condition that references it. A token
   that never reaches 0 is unresolved for this request.
 
-### Limiter lookup step
+### Algorithm Analysis
 
 The context value carries, for each resolved token, a precomputed
 lookup key per reachable condition. When a request arrives, each
 limiter scans its conditions and performs one table lookup per
 condition, per bound token, using the precomputed keys.
-
-### Algorithm Analysis
 
 Let `D_recv` be the number of tokens in the node, `C_reachable`
 the reachable limiter conditions from that node, `H` the header count,

@@ -17,8 +17,7 @@ keep our concepts close to theirs.
 As the dataflow engine can be deployed to perform in a wide range of
 application scenarios, there is no single definition of or data model
 for a tenant. Multitenancy describes a set of features for managing
-tenancy requirements, not a specific aspect of the unified telemetry
-collection agent.
+tenancy requirements, not a specific aspect of the dataflow engine.
 
 Tenancy requirements depend on the use-case, covering what resources
 are being shared, what needs to be isolated, and the acceptable level
@@ -62,7 +61,7 @@ limit, either in absolute or in relative terms.
   in the configuration.
 
 As an example, the following dataflow engine configuration allows the
-agent to consume 10% of one CPU per CPU.
+dataflow engine to consume 10% of one CPU per CPU.
 
 ```
 policies:
