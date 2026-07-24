@@ -160,7 +160,7 @@ fn run_structure_step(
 fn format_all(
     mut diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
 ) -> anyhow::Result<()> {
-    println!("🚀 Formatting workspace with cargo fmt...");
+    println!("\u{1F680} Formatting workspace with cargo fmt...");
     let start = Instant::now();
     let result = run("cargo", &["fmt", "--all"]);
     let duration = start.elapsed();
@@ -176,7 +176,7 @@ fn format_all(
     }
 
     result?;
-    println!("✅ Formatting completed successfully.\n");
+    println!("\u{2705} Formatting completed successfully.\n");
     Ok(())
 }
 
@@ -184,7 +184,7 @@ fn clippy_all(
     options: CheckOptions,
     diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
 ) -> anyhow::Result<()> {
-    println!("🚀 Linting workspace with cargo clippy...");
+    println!("\u{1F680} Linting workspace with cargo clippy...");
     let mut args = vec![
         "clippy".to_owned(),
         "--workspace".to_owned(),
@@ -233,12 +233,12 @@ fn clippy_all(
     };
 
     result?;
-    println!("✅ Clippy linting passed without warnings.\n");
+    println!("\u{2705} Clippy linting passed without warnings.\n");
     Ok(())
 }
 
 fn clippy_quick() -> anyhow::Result<()> {
-    println!("🚀 Linting workspace targets for fast developer checks...");
+    println!("\u{1F680} Linting workspace targets for fast developer checks...");
     run(
         "cargo",
         &[
@@ -252,17 +252,17 @@ fn clippy_quick() -> anyhow::Result<()> {
             "warnings",
         ],
     )?;
-    println!("✅ Fast clippy linting passed without warnings.\n");
+    println!("\u{2705} Fast clippy linting passed without warnings.\n");
     Ok(())
 }
 
 fn clippy_benches() -> anyhow::Result<()> {
-    println!("🚀 Linting workspace bench targets with cargo clippy...");
+    println!("\u{1F680} Linting workspace bench targets with cargo clippy...");
     run(
         "cargo",
         &["clippy", "--workspace", "--benches", "--", "-D", "warnings"],
     )?;
-    println!("✅ Bench clippy linting passed without warnings.\n");
+    println!("\u{2705} Bench clippy linting passed without warnings.\n");
     Ok(())
 }
 
@@ -270,7 +270,7 @@ fn test_all(
     options: CheckOptions,
     diagnostics: Option<&mut diagnostics::DiagnosticsCollector>,
 ) -> anyhow::Result<()> {
-    println!("🚀 Running workspace tests with cargo test...");
+    println!("\u{1F680} Running workspace tests with cargo test...");
     let mut args = vec!["test".to_owned(), "--workspace".to_owned()];
     if options.diagnostics {
         args.push("--timings".to_owned());
@@ -301,12 +301,12 @@ fn test_all(
     };
 
     result?;
-    println!("✅ All tests passed successfully.\n");
+    println!("\u{2705} All tests passed successfully.\n");
     Ok(())
 }
 
 fn test_quick() -> anyhow::Result<()> {
-    println!("🚀 Compiling fast workspace test targets (no benches/examples/doctests)...");
+    println!("\u{1F680} Compiling fast workspace test targets (no benches/examples/doctests)...");
     run(
         "cargo",
         &[
@@ -318,14 +318,14 @@ fn test_quick() -> anyhow::Result<()> {
             "--no-run",
         ],
     )?;
-    println!("✅ Fast workspace test targets compiled successfully.\n");
+    println!("\u{2705} Fast workspace test targets compiled successfully.\n");
     Ok(())
 }
 
 fn compile_benches() -> anyhow::Result<()> {
-    println!("🚀 Compiling workspace bench targets with cargo check...");
+    println!("\u{1F680} Compiling workspace bench targets with cargo check...");
     run("cargo", &["check", "--workspace", "--benches"])?;
-    println!("✅ Bench targets compiled successfully.\n");
+    println!("\u{2705} Bench targets compiled successfully.\n");
     Ok(())
 }
 

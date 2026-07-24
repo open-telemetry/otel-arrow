@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Testing helpers for the telemetry SDK.
+//! Testing helpers for the internal telemetry system.
 
 use crate::attributes::{AttributeSetHandler, AttributeValue};
 use crate::descriptor::AttributesDescriptor;

@@ -541,7 +541,7 @@ mod tests {
         };
         let dt = DataType::Struct(&SUB);
 
-        // "x" is required but contains a null — should be rejected.
+        // "x" is required but contains a null -- should be rejected.
         let struct_array: ArrayRef = Arc::new(StructArray::new(
             Fields::from(vec![
                 ArrowField::new("x", ArrowDT::Int32, true),
@@ -579,7 +579,7 @@ mod tests {
         };
         let dt = DataType::Struct(&SUB);
 
-        // "x" is optional and contains a null — should be accepted.
+        // "x" is optional and contains a null -- should be accepted.
         let struct_array: ArrayRef = Arc::new(StructArray::new(
             Fields::from(vec![
                 ArrowField::new("x", ArrowDT::Int32, true),

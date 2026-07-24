@@ -31,8 +31,10 @@ use context::NodeNameIndex;
 use context::PipelineContext;
 pub use linkme::distributed_slice;
 use otap_df_config::MetricLevel;
+use otap_df_config::SignalType;
 use otap_df_config::{
     PipelineGroupId, PipelineId, PortName,
+    engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
     policy::{ChannelCapacityPolicy, TelemetryPolicy},
@@ -40,7 +42,6 @@ use otap_df_config::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
 };
-use otap_df_telemetry::INTERNAL_TELEMETRY_RECEIVER_URN;
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::{otel_debug, otel_debug_span, otel_info, otel_warn};
 use std::borrow::Cow;
@@ -239,7 +240,7 @@ impl<PData> NamedFactory for ExporterFactory<PData> {
 
 /// A factory for creating extensions.
 ///
-/// Extension factories are NOT generic over PData — extensions never process
+/// Extension factories are NOT generic over PData -- extensions never process
 /// pipeline data. This makes them fully decoupled from the data-plane type.
 #[derive(Clone)]
 pub struct ExtensionFactory {
@@ -253,7 +254,7 @@ pub struct ExtensionFactory {
     ///
     /// `Some(caps)` for active or passive extensions (caps lists are
     /// non-empty by macro construction). `None` marks a Background
-    /// extension — engine-driven event loop with no capabilities
+    /// extension -- engine-driven event loop with no capabilities
     /// exposed to nodes; `register_into` skips capability registration.
     pub capabilities: Option<capability::ExtensionCapabilities>,
     /// A function that creates a new extension instance.
@@ -290,11 +291,11 @@ where
 }
 
 bitflags::bitflags! {
-/// An 8-bit flags struct intended to store various intents describing
+/// A 16-bit flags struct intended to store various intents describing
 /// callers in a pipeline, e.g., detail about whether Ack and/or
 /// Nack should be delivered.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Interests: u8 {
+pub struct Interests: u16 {
     /// Acks interest
     const ACKS   = 1 << 0;
 
@@ -322,9 +323,12 @@ pub struct Interests: u8 {
     const SOURCE_TAGGING = 1 << 6;
 
     /// Process-duration timing requested for processors.
-    // NOTE: this is the last available bit in u8. Adding another flag
-    // requires widening the repr to u16.
     const PROCESS_DURATION = 1 << 7;
+
+    /// Per-signal produced/consumed item counts requested. Opt-in (counting
+    /// items is expensive for OTLP payloads): enabled at the `Detailed` metric
+    /// level, or per node via `policies.telemetry.item_counts`.
+    const PRODUCED_CONSUMED_ITEM_COUNTS = 1 << 8;
 
     /// Pipeline-metrics is either CONSUMER_METRICS or PRODUCER_METRICS.
     const PIPELINE_METRICS = Self::CONSUMER_METRICS.bits() | Self::PRODUCER_METRICS.bits();
@@ -337,14 +341,18 @@ impl Interests {
     /// None:     empty()
     /// Basic:    empty() with only channel metrics, no use of Context
     /// Normal:   CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
-    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION | ENTRY_TIMESTAMP
+    /// Detailed: CONSUMER_METRICS | PRODUCER_METRICS | PROCESS_DURATION
+    ///           | ENTRY_TIMESTAMP | PRODUCED_CONSUMED_ITEM_COUNTS
     #[must_use]
     pub fn from_metric_level(level: MetricLevel) -> Self {
         match level {
             MetricLevel::None | MetricLevel::Basic => Self::empty(),
             MetricLevel::Normal => Self::PIPELINE_METRICS | Self::PROCESS_DURATION,
             MetricLevel::Detailed => {
-                Self::PIPELINE_METRICS | Self::PROCESS_DURATION | Self::ENTRY_TIMESTAMP
+                Self::PIPELINE_METRICS
+                    | Self::PROCESS_DURATION
+                    | Self::ENTRY_TIMESTAMP
+                    | Self::PRODUCED_CONSUMED_ITEM_COUNTS
             }
         }
     }
@@ -361,6 +369,17 @@ pub trait Unwindable {
     /// Remove and return the top frame.
     fn pop_frame(&mut self) -> Option<control::Frame>;
 
+    /// Signal type of the payload, used to attribute per-signal produced /
+    /// consumed item counts during unwinding. Returns `None` when unknown or
+    /// not applicable.
+    ///
+    /// Signal is a property of the whole pdata batch (a batch is homogeneous),
+    /// so it is stored once on the pdata context rather than per frame. It is
+    /// captured on the forward path while the payload is live and survives
+    /// [`Unwindable::drop_payload`], so it remains readable throughout
+    /// unwinding.
+    fn signal(&self) -> Option<SignalType>;
+
     /// Drop the retained payload unless RETURN_DATA is set.
     fn drop_payload(&mut self);
 }
@@ -372,6 +391,9 @@ impl Unwindable for () {
     fn pop_frame(&mut self) -> Option<control::Frame> {
         None
     }
+    fn signal(&self) -> Option<SignalType> {
+        None
+    }
     fn drop_payload(&mut self) {}
 }
 
@@ -380,6 +402,9 @@ impl Unwindable for String {
         false
     }
     fn pop_frame(&mut self) -> Option<control::Frame> {
+        None
+    }
+    fn signal(&self) -> Option<SignalType> {
         None
     }
     fn drop_payload(&mut self) {}
@@ -746,7 +771,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             );
         }
 
-        // If every node was removed, the pipeline config is broken — fail early.
+        // If every node was removed, the pipeline config is broken -- fail early.
         if config.nodes().is_empty() {
             return Err(Error::EmptyPipeline);
         }
@@ -796,13 +821,13 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         );
         pipeline_ctx.set_node_names(node_names);
 
-        // ── Extension instantiation + capability registry build ─────────────
+        // -- Extension instantiation + capability registry build -------------
         //
         // Run before node-wrapper creation so resolve_bindings can validate
         // each node's `node_config.capabilities` against the populated
         // registry, and so factories that call `require_local::<C>()` /
         // `require_shared::<C>()` see a fully-populated `Capabilities`.
-        // Capabilities are resolved EAGERLY at build time — node create()
+        // Capabilities are resolved EAGERLY at build time -- node create()
         // bodies run inside this same `build` call, so extension `start()`
         // side effects (which happen later, in `run_forever`) cannot be
         // observed by capability construction.
@@ -811,7 +836,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let mut capability_registry = capability::registry::CapabilityRegistry::new();
         // Each entry tracks (extension id, bundle, is_background). The
         // `is_background` flag is captured here while we still have the
-        // factory in hand — Background extensions register zero
+        // factory in hand -- Background extensions register zero
         // capabilities (`factory.capabilities == None`), and the
         // post-build pruning step uses this flag to keep them
         // unconditionally (they are engine-driven and do not need a
@@ -980,12 +1005,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
-        // ── Decide which extension variants to keep ────────────────────
+        // -- Decide which extension variants to keep --------------------
         //
         // Three categories of extension-level decision are handled here.
         // Per-variant decisions (drop a single local or shared variant
         // because nothing consumes it while the other variant *is*
-        // consumed) are made silently — no warning, since the extension
+        // consumed) are made silently -- no warning, since the extension
         // as a whole is serving its purpose.
         //
         //   1. **Background extension** (`factory.capabilities == None`):
@@ -999,7 +1024,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         //   2. **Defined but unbound** (no node references this extension
         //      from `node_config.capabilities`): warn + drop the entire
         //      bundle. The author wrote an extension into the pipeline
-        //      config but no node references it — keeping it would
+        //      config but no node references it -- keeping it would
         //      waste the resources of an active lifecycle (or hold
         //      passive state) for nothing. The warning helps debug
         //      "why isn't my extension running?" by surfacing the
@@ -1019,7 +1044,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         //       wanted that path), not an error condition.
         //
         // A bundle's two variants (local + shared) are evaluated
-        // independently in 3/3a — a SharedAsLocal-fallback bundle
+        // independently in 3/3a -- a SharedAsLocal-fallback bundle
         // (shared-only) only ever populates the consumed_shared set,
         // so the local check naturally fails for it (and the bundle's
         // missing local variant is dropped accordingly).
@@ -1032,7 +1057,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // capabilities it exposes for that variant was bound by some
         // node. Tracking presence-of-consumed (rather than
         // presence-of-unconsumed) is required because an extension may
-        // expose multiple capabilities of the same variant — under the
+        // expose multiple capabilities of the same variant -- under the
         // unconsumed view, a single unbound capability would mask the
         // bound ones and the whole variant would be incorrectly dropped.
         let consumed_local: HashSet<otap_df_config::ExtensionId> =
@@ -1050,7 +1075,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     otap_df_telemetry::registry::EntityKey,
                 )> = Vec::new();
 
-                // Category 1: Background — always kept, no warning.
+                // Category 1: Background -- always kept, no warning.
                 if is_background {
                     if let Some(local) = bundle.take_local() {
                         kept.push((
@@ -1095,7 +1120,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 let local_consumed = local_present && consumed_local.contains(&ext_id);
                 let shared_consumed = shared_present && consumed_shared.contains(&ext_id);
 
-                // Category 3: bound but no variant consumed → warn + drop.
+                // Category 3: bound but no variant consumed -> warn + drop.
                 if !local_consumed && !shared_consumed {
                     otel_warn!(
                         "extension.unconsumed",
@@ -1109,7 +1134,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 }
 
                 // Category 3a: at least one variant consumed. Keep the
-                // consumed variant(s); silently drop the unused one — no
+                // consumed variant(s); silently drop the unused one -- no
                 // warning, since the extension as a whole is in use.
                 if let Some(local) = bundle.take_local()
                     && local_consumed

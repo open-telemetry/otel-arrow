@@ -188,12 +188,12 @@ async fn handle_execute(Json(req): Json<ExecuteRequest>) -> Json<ExecuteResponse
 /// Core pipeline execution logic, returning a structured response or an error
 /// message.
 async fn execute_pipeline(req: ExecuteRequest) -> Result<ExecuteResponse, String> {
-    // 1. Decode base64 → protobuf bytes.
+    // 1. Decode base64 -> protobuf bytes.
     let proto_bytes = BASE64
         .decode(&req.data)
         .map_err(|e| format!("base64 decode error: {e}"))?;
 
-    // 2. Decode protobuf → OTLP message.
+    // 2. Decode protobuf -> OTLP message.
     let otlp_msg = match req.signal_type.as_str() {
         "logs" => {
             let data = LogsData::decode(proto_bytes.as_slice())
@@ -213,7 +213,7 @@ async fn execute_pipeline(req: ExecuteRequest) -> Result<ExecuteResponse, String
         other => return Err(format!("unknown signal_type: {other:?}")),
     };
 
-    // 3. Convert OTLP → OTAP columnar format.
+    // 3. Convert OTLP -> OTAP columnar format.
     let otap_batch = otlp_to_otap(&otlp_msg);
 
     // 4. Parse the OPL query.

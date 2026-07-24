@@ -809,6 +809,27 @@ impl<
         }
     }
 
+    /// Blocks until all non-observability runtime instances have exited.
+    ///
+    /// The system observability pipeline is deliberately excluded because it
+    /// must remain alive to consume terminal telemetry from those producers.
+    pub(crate) fn wait_until_all_producer_instances_exit(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        while state.runtime_instances.iter().any(|(key, instance)| {
+            matches!(instance.lifecycle, RuntimeInstanceLifecycle::Active)
+                && !(key.pipeline_group_id.as_ref() == SYSTEM_PIPELINE_GROUP_ID
+                    && key.pipeline_id.as_ref() == SYSTEM_OBSERVABILITY_PIPELINE_ID)
+        }) {
+            state = self
+                .state_changed
+                .wait(state)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+        }
+    }
+
     /// Blocks until every runtime instance exits or the timeout elapses.
     pub(crate) fn wait_until_all_instances_exit_for(&self, timeout: Duration) -> bool {
         let deadline = Instant::now() + timeout;

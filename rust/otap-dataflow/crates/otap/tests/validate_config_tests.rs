@@ -30,7 +30,7 @@ fn all_receiver_validators_reject_invalid_config() {
     let factory_map = OTAP_PIPELINE_FACTORY.get_receiver_factory_map();
     assert!(
         !factory_map.is_empty(),
-        "No receiver factories registered — test is misconfigured"
+        "No receiver factories registered \u{2014} test is misconfigured"
     );
 
     for (urn, factory) in factory_map {
@@ -47,7 +47,7 @@ fn all_processor_validators_reject_invalid_config() {
     let factory_map = OTAP_PIPELINE_FACTORY.get_processor_factory_map();
     assert!(
         !factory_map.is_empty(),
-        "No processor factories registered — test is misconfigured"
+        "No processor factories registered \u{2014} test is misconfigured"
     );
 
     for (urn, factory) in factory_map {
@@ -64,7 +64,7 @@ fn all_exporter_validators_reject_invalid_config() {
     let factory_map = OTAP_PIPELINE_FACTORY.get_exporter_factory_map();
     assert!(
         !factory_map.is_empty(),
-        "No exporter factories registered — test is misconfigured"
+        "No exporter factories registered \u{2014} test is misconfigured"
     );
 
     for (urn, factory) in factory_map {

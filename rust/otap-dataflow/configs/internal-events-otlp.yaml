@@ -51,7 +51,10 @@ engine:
       nodes:
         itr:
           type: "urn:otel:receiver:internal_telemetry"
-          config: {}
+          config:
+            # This job validates internal events only. Keep registry-backed
+            # metrics out of Weaver's event-focused live-check report.
+            signals: [logs]
         otlp_out:
           type: "urn:otel:exporter:otlp_grpc"
           config:
