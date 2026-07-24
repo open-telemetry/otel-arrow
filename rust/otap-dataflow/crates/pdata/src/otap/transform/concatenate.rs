@@ -59,8 +59,8 @@ const MAX_U16_CARDINALITY: usize = 65535;
 ///   2. Selecting a common schema and converting every record batch to that
 ///      schema. This includes several steps:
 ///         * Indexing all fields for the same ArrowPayloadType across every batch
-///         * Estimating the cardinality for each dictionary field and selecting
-///           the key type.
+///         * Selecting a safe key type for each dictionary field from the
+///           physical number of dictionary values that Arrow may concatenate.
 ///         * Determining nullability for each field in the final batch
 ///   3. Casting every record batch to the final schema, including casting individual
 ///      arrays as well as reordering the columns to match the schema.
@@ -147,7 +147,9 @@ fn concatenate_with_def<const N: usize>(
             // schema.
             let converted = RecordBatch::try_new(new_schema.clone(), converted_columns)
                 .expect("Valid construction");
-            batcher.push_batch(converted).expect("Compatible schemas");
+            batcher
+                .push_batch(converted)
+                .map_err(|source| Error::Batching { source })?;
         }
 
         batcher
@@ -341,6 +343,9 @@ pub struct FieldInfo<'a> {
     total_element_count: usize,
     // The total number of values, excluding nulls
     total_value_count: usize,
+    // The total number of values, including nulls. This bounds the number of
+    // dictionary entries that Arrow may append while coalescing batches.
+    total_physical_value_count: usize,
     // The size of the largest individual array in values
     largest_value_count: usize,
     // The values arrays for the type, some of these may come from dictionary array values.
@@ -356,6 +361,7 @@ impl<'a> FieldInfo<'a> {
             struct_index: None,
             total_element_count: array.len(),
             total_value_count: array.len() - array.null_count(),
+            total_physical_value_count: array.len(),
             largest_value_count: array.len(),
             values: vec![Arc::clone(array)],
         }
@@ -448,6 +454,7 @@ fn index_fields<'a>(
                     total_element_count: data.len(),
                     largest_value_count: values_count,
                     total_value_count: values_count,
+                    total_physical_value_count: array.len(),
                     values: vec![array.clone()],
                 },
             );
@@ -544,6 +551,7 @@ fn index_fields<'a>(
         existing.nullable = existing.nullable || data.null_count() > 0;
         existing.total_element_count += data.len();
         existing.total_value_count += values_count;
+        existing.total_physical_value_count += values.len();
         existing.largest_value_count = existing.largest_value_count.max(values_count);
     }
 
@@ -602,23 +610,15 @@ fn select_dictionary_type<'a>(
         None => None,
     };
 
-    // If the lower bound is above u16::MAX, then cardinality is too large to dictionary encode.
-    if info.largest_value_count > MAX_U16_CARDINALITY {
-        return Ok(info.value_type.clone());
-    }
-
-    // Compute the cardinality-based key type
-    let cardinality = if info.total_value_count <= MAX_U8_CARDINALITY {
-        // Upper bound is below u8::MAX, so cardinality fits in u8
+    // Arrow does not deduplicate all dictionary value types while coalescing,
+    // and its merge path does not guarantee unique output values. The summed
+    // physical values length is therefore the safe upper bound for both paths.
+    let cardinality = if info.total_physical_value_count <= MAX_U8_CARDINALITY {
         Cardinality::WithinU8
-    } else if info.total_value_count <= MAX_U16_CARDINALITY
-        && info.largest_value_count > MAX_U8_CARDINALITY
-    {
-        // Between (u8, u16]
+    } else if info.total_physical_value_count <= MAX_U16_CARDINALITY {
         Cardinality::WithinU16
     } else {
-        // Do a full estimate
-        estimate_cardinality(info)
+        Cardinality::GreaterThanU16
     };
 
     let mut dict_key_size = match cardinality {
@@ -912,7 +912,8 @@ mod schema_tests {
         SimpleType,
     };
     use arrow::array::{
-        Array, DictionaryArray, Int64Array, PrimitiveArray, StringArray, UInt8Array, UInt16Array,
+        Array, DictionaryArray, FixedSizeBinaryArray, Int64Array, PrimitiveArray, StringArray,
+        UInt8Array, UInt16Array,
     };
     use arrow::datatypes::DataType;
     use rand::RngExt;
@@ -1055,6 +1056,116 @@ mod schema_tests {
             true,
         )]));
         RecordBatch::try_new(schema, vec![Arc::new(dict_array)]).unwrap()
+    }
+
+    fn create_fsb_dictionary_batch(start: usize, count: usize) -> RecordBatch {
+        let keys = UInt16Array::from((0..count).map(|i| i as u16).collect::<Vec<_>>());
+        let values = generate_values_for_type(start, count, &DataType::FixedSizeBinary(16));
+        create_dict_batch("data", keys, values, DataType::FixedSizeBinary(16))
+    }
+
+    fn create_struct_fsb_dictionary_batch(start: usize, count: usize) -> RecordBatch {
+        let batch = create_fsb_dictionary_batch(start, count);
+        let dict_field = batch.schema().field(0).clone();
+        let struct_array = StructArray::from(vec![(
+            Arc::new(dict_field.clone()),
+            Arc::clone(batch.column(0)),
+        )]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "parent",
+            DataType::Struct(vec![dict_field].into()),
+            false,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).unwrap()
+    }
+
+    /// Scenario: Two FixedSizeBinary dictionaries overlap enough for their distinct
+    /// values to fit u16, but their summed physical value arrays exceed the u16 limit.
+    /// Guarantees: Concatenation falls back to plain values instead of overflowing
+    /// Arrow's dictionary keys or panicking.
+    #[test]
+    fn test_overlapping_fsb_dictionaries_fall_back_to_plain() {
+        let batch1 = create_fsb_dictionary_batch(0, 40_000);
+        let batch2 = create_fsb_dictionary_batch(20_000, 40_000);
+        let mut batches = vec![[Some(batch1)], [Some(batch2)]];
+
+        let result = concatenate::<1>(&mut batches).unwrap();
+        let batch = result[0].as_ref().expect("concatenated batch");
+
+        assert_eq!(batch.num_rows(), 80_000);
+        assert_eq!(
+            batch.schema().field(0).data_type(),
+            &DataType::FixedSizeBinary(16)
+        );
+    }
+
+    /// Scenario: A FixedSizeBinary dictionary nested in a supported struct has
+    /// overlapping values whose summed physical length exceeds the u16 limit.
+    /// Guarantees: Nested dictionary selection uses the same physical bound and
+    /// concatenation produces a plain nested field without panicking.
+    #[test]
+    fn test_nested_overlapping_fsb_dictionaries_fall_back_to_plain() {
+        let batch1 = create_struct_fsb_dictionary_batch(0, 40_000);
+        let batch2 = create_struct_fsb_dictionary_batch(20_000, 40_000);
+        let mut batches = vec![[Some(batch1)], [Some(batch2)]];
+
+        let result = concatenate::<1>(&mut batches).unwrap();
+        let batch = result[0].as_ref().expect("concatenated batch");
+        let schema = batch.schema();
+        let DataType::Struct(fields) = schema.field(0).data_type() else {
+            panic!("expected struct field");
+        };
+
+        assert_eq!(batch.num_rows(), 80_000);
+        assert_eq!(fields[0].data_type(), &DataType::FixedSizeBinary(16));
+    }
+
+    /// Scenario: Dictionary value arrays contain 256 physical slots but only 255
+    /// non-null values because one slot is null.
+    /// Guarantees: Key selection counts the null slot and selects u16 rather than
+    /// underestimating the physical dictionary length as fitting u8.
+    #[test]
+    fn test_dictionary_physical_bound_includes_null_slots() {
+        let raw1 = (0..128)
+            .map(|i| (i as u64).to_le_bytes())
+            .collect::<Vec<_>>();
+        let values1 = FixedSizeBinaryArray::try_from_sparse_iter_with_size(
+            raw1.iter()
+                .enumerate()
+                .map(|(i, value)| (i != 0).then_some(value.as_slice())),
+            8,
+        )
+        .unwrap();
+        let raw2 = (128..256)
+            .map(|i| (i as u64).to_le_bytes())
+            .collect::<Vec<_>>();
+        let values2 =
+            FixedSizeBinaryArray::try_from_iter(raw2.iter().map(|value| value.as_slice())).unwrap();
+        let keys = UInt8Array::from((0..128).map(|i| i as u8).collect::<Vec<_>>());
+        let batch1 = create_dict_batch(
+            "data",
+            keys.clone(),
+            Arc::new(values1),
+            DataType::FixedSizeBinary(8),
+        );
+        let batch2 = create_dict_batch(
+            "data",
+            keys,
+            Arc::new(values2),
+            DataType::FixedSizeBinary(8),
+        );
+
+        let records = vec![Some(&batch1), Some(&batch2)];
+        let index = index_records(records.into_iter()).unwrap();
+        let schema = select_schema(&index, &TEST_DATA_DEF).unwrap();
+
+        assert_eq!(
+            schema.field(0).data_type(),
+            &DataType::Dictionary(
+                Box::new(DataType::UInt16),
+                Box::new(DataType::FixedSizeBinary(8))
+            )
+        );
     }
 
     fn validate_schema(actual: &Schema, expected: &Schema) {
