@@ -776,7 +776,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             return Err(Error::EmptyPipeline);
         }
 
-        self.validate_connection_wiring_contracts(&config)?;
+        self.validate_wiring_contracts(&config)?;
 
         let channel_metrics_enabled = telemetry_policy.runtime_metrics >= MetricLevel::Basic;
 
@@ -1200,9 +1200,12 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         Ok(pipeline)
     }
 
-    fn validate_connection_wiring_contracts(&self, config: &PipelineConfig) -> Result<(), Error> {
-        let mut contracts_by_node: HashMap<NodeName, wiring_contract::WiringContract> =
-            HashMap::new();
+    /// Validates the pipeline topology against each node factory's wiring contract.
+    pub fn validate_wiring_contracts(&self, config: &PipelineConfig) -> Result<(), Error> {
+        let mut contracts_by_node: HashMap<
+            NodeName,
+            (wiring_contract::WiringContract, Vec<PortName>),
+        > = HashMap::new();
 
         for (node_name, node_config) in config.node_iter() {
             let contract = match node_config.kind() {
@@ -1252,7 +1255,10 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 }
             };
 
-            _ = contracts_by_node.insert(node_name.as_ref().to_string().into(), contract);
+            _ = contracts_by_node.insert(
+                node_name.as_ref().to_string().into(),
+                (contract, node_config.outputs.clone()),
+            );
         }
 
         let mut destinations_by_source_output: HashMap<(NodeName, PortName), HashSet<NodeName>> =
@@ -1279,10 +1285,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             }
         }
 
+        let mut validated_sources = HashSet::new();
         for ((source, output), destination_set) in destinations_by_source_output {
-            let Some(contract) = contracts_by_node.get(&source) else {
+            let Some((contract, declared_outputs)) = contracts_by_node.get(&source) else {
                 return Err(Error::UnknownNode { node: source });
             };
+            if validated_sources.insert(source.clone()) {
+                contract.validate_declared_outputs(&source, declared_outputs)?;
+            }
             let mut destinations: Vec<NodeName> = destination_set.into_iter().collect();
             destinations.sort_unstable_by(|left, right| left.as_ref().cmp(right.as_ref()));
             contract.validate_output_destinations(&source, &output, &destinations)?;

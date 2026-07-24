@@ -456,6 +456,50 @@ connections:
         assert!(err.to_string().contains("Unknown receiver component"));
     }
 
+    /// Scenario: a signal type router is connected without any declared output ports.
+    /// Guarantees: startup validation rejects the config before runtime pipeline construction.
+    #[test]
+    fn validate_type_router_requires_declared_outputs() {
+        use otap_df_config::pipeline::PipelineConfig;
+        use otap_df_config::{PipelineGroupId, PipelineId};
+
+        let pipeline_group_id: PipelineGroupId = "test_group".into();
+        let pipeline_id: PipelineId = "test_pipeline".into();
+        let yaml = r#"
+nodes:
+  receiver:
+    type: receiver:internal_telemetry
+    config: {}
+  router:
+    type: processor:type_router
+    config: {}
+  exporter:
+    type: exporter:noop
+    config: {}
+connections:
+  - from: receiver
+    to: router
+  - from: router
+    to: exporter
+"#;
+
+        let pipeline_cfg =
+            PipelineConfig::from_yaml(pipeline_group_id.clone(), pipeline_id.clone(), yaml)
+                .expect("pipeline YAML should parse");
+
+        let err = startup::validate_pipeline_components(
+            &pipeline_group_id,
+            &pipeline_id,
+            &pipeline_cfg,
+            &OTAP_PIPELINE_FACTORY,
+        )
+        .expect_err("type router without declared outputs should fail validation");
+        assert!(
+            err.to_string()
+                .contains("requires at least 1 declared output")
+        );
+    }
+
     #[test]
     fn parse_license_flag() {
         let args = Args::parse_from(["df_engine", "--license"]);
