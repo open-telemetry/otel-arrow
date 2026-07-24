@@ -319,6 +319,7 @@ impl RetryProcessorMetrics {
 
 /// OTAP RetryProcessor
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(otap_df_otap::OTAP_PROCESSOR_FACTORIES)]
 pub static RETRY_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: RETRY_PROCESSOR_URN,

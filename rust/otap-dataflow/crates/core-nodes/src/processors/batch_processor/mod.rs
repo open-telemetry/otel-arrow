@@ -1576,6 +1576,7 @@ where
 
 /// Register factory for OTAP batch processor
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static OTAP_BATCH_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

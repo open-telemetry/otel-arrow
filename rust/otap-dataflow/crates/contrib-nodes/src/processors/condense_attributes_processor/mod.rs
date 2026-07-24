@@ -189,6 +189,7 @@ pub fn create_condense_attributes_processor(
 
 /// Register CondenseAttributesProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static CONDENSE_ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

@@ -69,6 +69,7 @@ pub fn create_filter_processor(
 
 /// Register FilterProcessor as an OTAP processor factory
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static FILTER_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

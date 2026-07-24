@@ -64,6 +64,7 @@ fn create_partition_processor(
 }
 
 /// Register partition processor
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorFactory {
     name: PARTITION_PROCESSOR_URN,

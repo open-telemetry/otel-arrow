@@ -160,6 +160,7 @@ pub struct KafkaExporter {
 
 /// Factory registration for the Kafka exporter.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Exporter)]
 #[distributed_slice(OTAP_EXPORTER_FACTORIES)]
 pub static KAFKA_EXPORTER_FACTORY: ExporterFactory<OtapPdata> = ExporterFactory {
     name: KAFKA_EXPORTER_URN,

@@ -747,6 +747,7 @@ impl EtwReceiver {
 
 /// Register the ETW receiver in the pipeline factory.
 #[allow(unsafe_code)]
+#[otap_df_engine::component_inventory(category = Receiver)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     name: ETW_RECEIVER_URN,

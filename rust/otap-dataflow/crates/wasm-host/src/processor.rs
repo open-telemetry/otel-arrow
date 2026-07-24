@@ -332,6 +332,7 @@ mod tests {
 }
 
 /// Register [`WasmProcessor`] as an OTAP processor factory.
+#[otap_df_engine::component_inventory(category = Processor)]
 #[distributed_slice(OTAP_PROCESSOR_FACTORIES)]
 pub static WASM_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPdata> =
     otap_df_engine::ProcessorFactory {

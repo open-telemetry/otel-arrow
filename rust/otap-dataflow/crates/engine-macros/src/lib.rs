@@ -7,9 +7,10 @@
 //! for factory registries and distributed slices in the pipeline engine.
 
 use proc_macro::TokenStream;
-use syn::{ItemStatic, ItemTrait, parse_macro_input};
+use syn::{Item, ItemStatic, ItemTrait, parse_macro_input};
 
 mod capability;
+mod component_inventory;
 mod pipeline_factory;
 
 /// Attribute macro to generate distributed slices and initialize a factory registry.
@@ -139,4 +140,50 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(args as capability::CapabilityArgs);
     let trait_item = parse_macro_input!(input as ItemTrait);
     capability::expand_capability(args, trait_item).into()
+}
+
+/// Attribute macro that records a security-relevant component in the engine's
+/// component inventory (RFC 0001).
+///
+/// Apply it to a factory `static` (the common case) or, for non-factory
+/// components, to a `struct`/`enum`/`fn`. The macro re-emits the annotated item
+/// unchanged and appends one `ComponentMeta` entry into the
+/// `otap_df_engine::inventory::COMPONENT_INVENTORY` distributed slice at link
+/// time, mirroring the `#[capability]` -> `KNOWN_CAPABILITIES` mechanism. It is
+/// zero-cost: the data is read only by offline tooling
+/// (`cargo xtask component-inventory`), never at runtime.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// use otap_df_engine_macros::component_inventory;
+///
+/// // Factory static: `id` is derived from the factory's `name` (URN) field.
+/// #[component_inventory(
+///     category = Receiver,
+///     description = "OTLP unary gRPC receiver on port 4317",
+///     attributes(port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
+/// )]
+/// #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
+/// pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
+///     name: OTLP_RECEIVER_URN,
+///     // ...
+/// };
+/// ```
+///
+/// For non-factory items an explicit URN-shaped `id` is required:
+///
+/// ```rust,ignore
+/// #[component_inventory(id = "urn:otel:admin:http_server", category = Extension)]
+/// pub struct AdminServer { /* ... */ }
+/// ```
+///
+/// `category` is a bare identifier validated at compile time (a misspelling is
+/// a compile error). Unlike `#[capability]`, this macro can be invoked from any
+/// crate: it emits fully-qualified `::otap_df_engine::inventory::*` paths.
+#[proc_macro_attribute]
+pub fn component_inventory(args: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as otap_df_engine_inventory_syntax::ComponentInventoryArgs);
+    let item = parse_macro_input!(input as Item);
+    component_inventory::expand_component_inventory(args, item).into()
 }
