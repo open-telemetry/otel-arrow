@@ -370,8 +370,8 @@ All engine metrics are registered under the `engine` metric-set.
 | Metric | Receiver | Description |
 | --- | --- | --- |
 | `receiver.otlp.rejections.requests{error.type="memory_pressure"}` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure, partitioned by `protocol` |
-| `receiver.otap.refused_memory_pressure` | OTAP gRPC | Requests rejected due to memory pressure |
-| `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
+| `receiver.otap.rejections.streams{error.type="memory_pressure"}` | OTAP gRPC | Streaming RPCs rejected due to memory pressure |
+| `receiver.otap.rejections.batches{error.type="memory_pressure"}` | OTAP gRPC | Batches rejected due to memory pressure after stream admission |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | Syslog / CEF | Log records dropped under pressure |
 <!-- markdownlint-enable MD013 -->

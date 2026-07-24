@@ -17,12 +17,17 @@ use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 
 /// Records request rejections before they enter the pipeline.
 pub trait ReceiverRejectionMetrics: Send + Sync {
-    /// Records one request rejected before entering the pipeline.
-    fn record_rejection(&self);
+    /// Records one transport request or stream rejected before entering the pipeline.
+    fn record_rejection(&self, error_type: ReceiverRejectionErrorType);
+
+    /// Records one item within a streaming request rejected before entering the pipeline.
+    fn record_item_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.record_rejection(error_type);
+    }
 
     /// Records one request rejected before entering the pipeline due to hard memory pressure.
     fn record_memory_pressure_rejection(&self) {
-        self.record_rejection();
+        self.record_rejection(ReceiverRejectionErrorType::MemoryPressure);
     }
 }
 
@@ -42,18 +47,8 @@ pub fn grpc_memory_pressure_status(state: &SharedReceiverAdmissionState) -> Stat
 }
 
 impl ReceiverRejectionMetrics for Mutex<OtlpReceiverMetrics> {
-    fn record_rejection(&self) {
-        self.lock().record_rejection(
-            OtlpProtocol::Grpc,
-            ReceiverRejectionErrorType::ConcurrencyLimit,
-        );
-    }
-
-    fn record_memory_pressure_rejection(&self) {
-        self.lock().record_rejection(
-            OtlpProtocol::Grpc,
-            ReceiverRejectionErrorType::MemoryPressure,
-        );
+    fn record_rejection(&self, error_type: ReceiverRejectionErrorType) {
+        self.lock().record_rejection(OtlpProtocol::Grpc, error_type);
     }
 }
 

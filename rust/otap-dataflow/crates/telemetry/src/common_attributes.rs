@@ -87,6 +87,15 @@ pub struct SignalOutcomeAttributes {
     pub outcome: Outcome,
 }
 
+/// Error type dimension shared by receiver rejection metrics.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ReceiverRejectionAttributes {
+    /// Reason the receiver rejected the request or batch.
+    #[attribute_key = "error.type"]
+    pub error_type: ReceiverRejectionErrorType,
+}
+
 /// Result category for an HTTP request attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
 pub enum HttpResponse {

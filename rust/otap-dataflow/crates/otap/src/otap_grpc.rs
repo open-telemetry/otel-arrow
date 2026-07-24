@@ -47,6 +47,7 @@ use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressur
 use crate::otap_grpc::common::peer_addr_from_extensions;
 use crate::otap_grpc::otlp::server::SharedState;
 pub use client_settings::GrpcClientSettings;
+use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 pub use server_settings::GrpcServerSettings;
 
 /// Common settings for OTLP receivers.
@@ -425,7 +426,7 @@ where
     let batch_id = batch.batch_id;
     if admission_state.should_shed_ingress() {
         if let Some(metrics) = rejection_metrics {
-            metrics.record_memory_pressure_rejection();
+            metrics.record_item_rejection(ReceiverRejectionErrorType::MemoryPressure);
         }
 
         otel_warn!(
@@ -447,10 +448,16 @@ where
     }
 
     let batch = consumer.consume_bar(&mut batch).map_err(|e| {
+        if let Some(metrics) = rejection_metrics {
+            metrics.record_item_rejection(ReceiverRejectionErrorType::InvalidRequest);
+        }
         otel_error!("otap.batch.decode_failed", error = ?e, message = "Error decoding OTAP Batch. Closing stream");
     })?;
 
     let batch = from_record_messages::<T>(batch).map_err(|e| {
+        if let Some(metrics) = rejection_metrics {
+            metrics.record_item_rejection(ReceiverRejectionErrorType::InvalidRequest);
+        }
         otel_error!("otap.batch.validation_failed", error = ?e, message = "Invalid OTAP batch. Closing stream");
     })?;
     let otap_batch_as_otap_arrow_records = otap_batch(batch);
@@ -480,7 +487,7 @@ where
                     message = "Too many concurrent requests"
                 );
                 if let Some(metrics) = rejection_metrics {
-                    metrics.record_rejection();
+                    metrics.record_item_rejection(ReceiverRejectionErrorType::ConcurrencyLimit);
                 }
 
                 // Send backpressure response
@@ -608,7 +615,7 @@ mod tests {
     }
 
     impl ReceiverRejectionMetrics for CountingReceiverRejectionMetrics {
-        fn record_rejection(&self) {
+        fn record_rejection(&self, _error_type: ReceiverRejectionErrorType) {
             let _ = self.calls.fetch_add(1, Ordering::Relaxed);
         }
     }
