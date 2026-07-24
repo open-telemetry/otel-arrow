@@ -4,6 +4,7 @@ members = [
     "parser-abstractions",
     "kql-parser",
     "engine-recordset",
+    "engine-columnar",
 ]
 resolver = "2"
 
