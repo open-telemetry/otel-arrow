@@ -373,7 +373,10 @@ pub(super) fn draw_detail_header(frame: &mut Frame<'_>, area: Rect, app: &AppSta
             Line::from(vec![
                 Span::styled(app.current_detail_title(), header_style(app.color_enabled)),
                 Span::styled(TAB_SEPARATOR, separator_style(app.color_enabled)),
-                Span::styled("Loading current selection…", muted_style(app.color_enabled)),
+                Span::styled(
+                    "Loading current selection\u{2026}",
+                    muted_style(app.color_enabled),
+                ),
             ]),
             None,
             0,

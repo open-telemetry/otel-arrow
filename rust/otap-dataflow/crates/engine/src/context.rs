@@ -458,8 +458,8 @@ impl PipelineContext {
 
     /// Shared entity-resolution skeleton for the `register_*_metrics` family.
     ///
-    /// Resolves the current node's telemetry scope in priority order — active node
-    /// telemetry handle, then ambient node entity key — and registers the metric set
+    /// Resolves the current node's telemetry scope in priority order -- active node
+    /// telemetry handle, then ambient node entity key -- and registers the metric set
     /// via `for_entity`. When registering against an active node handle, the resulting
     /// metric-set key (obtained through `metric_set_key`) is tracked so the set is
     /// unregistered as part of node cleanup.
@@ -955,7 +955,7 @@ impl ExtensionContext {
     /// Registers a metric set for the given entity key.
     ///
     /// Unlike [`PipelineContext::register_metric_set_for_entity`], this does
-    /// not hook into any ambient node telemetry — extension entities own their
+    /// not hook into any ambient node telemetry -- extension entities own their
     /// own lifecycle via the per-variant `EntityTelemetryGuard`.
     #[must_use]
     pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(

@@ -54,7 +54,7 @@ pub trait BearerTokenProvider {
     /// The fast path reads a cached token; on a cache miss the provider
     /// performs a credential call. A provider that shares its cache and
     /// refresh state across cloned instances can coalesce concurrent
-    /// misses into a single call — but that is a provider implementation
+    /// misses into a single call -- but that is a provider implementation
     /// detail, not a guarantee of this trait. Returns a
     /// [`CapabilityError`] if no valid token can be produced.
     ///

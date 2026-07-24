@@ -72,7 +72,7 @@ pub trait FlowMetricEffectHandler {
 /// effect handler forwards a message to the output router.
 ///
 /// The send-side hook covers **both** the plain `send_message[_to]`
-/// family and the `send_message_with_source_node[_to]` family — every
+/// family and the `send_message_with_source_node[_to]` family -- every
 /// send method on every processor handler invokes it exactly once.
 /// Both methods default to no-ops; PData types with bookkeeping needs
 /// (e.g. flow_metric accumulation on `OtapPdata`) override one or both.
@@ -98,7 +98,7 @@ pub trait FlowMetricHook: Sized {
 
     /// Invoked once per `Message::PData` immediately after it is dequeued
     /// by a processor's run loop and before `process()` runs. Lets PData
-    /// types observe the *pre-process* state of the data — e.g. counting
+    /// types observe the *pre-process* state of the data -- e.g. counting
     /// items entering a flow_metric start node before any filter or drop
     /// inside `process()`. Default impl is a no-op.
     fn after_processor_receive<H: FlowMetricEffectHandler>(&mut self, _handler: &H) {}

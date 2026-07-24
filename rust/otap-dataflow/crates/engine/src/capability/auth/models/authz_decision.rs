@@ -20,7 +20,7 @@ pub enum AuthzDecision {
     },
     /// The request is denied.
     Deny {
-        /// Coarse, low-cardinality category — safe to use as a metric label.
+        /// Coarse, low-cardinality category -- safe to use as a metric label.
         reason: DenyReason,
         /// Optional human-readable detail for logs only; never use as a metric
         /// label. Safe to surface to operators, but do not leak policy
@@ -56,7 +56,7 @@ impl AuthzDecision {
     }
 
     /// Constructs a [`Deny`](AuthzDecision::Deny) with a coarse `reason` and a
-    /// human-readable `detail` (for logs only — never a metric label).
+    /// human-readable `detail` (for logs only -- never a metric label).
     #[must_use]
     pub fn deny_with_detail(reason: DenyReason, detail: impl Into<String>) -> Self {
         Self::Deny {

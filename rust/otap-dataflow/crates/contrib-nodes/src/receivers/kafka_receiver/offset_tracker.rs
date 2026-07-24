@@ -11,7 +11,7 @@
 //! Maintains an internal [`TopicPartitionList`] that is updated in-place on
 //! each commit cycle, avoiding repeated allocation and FFI construction.
 //!
-//! Designed for single-threaded use on a `LocalSet` runtime — no internal
+//! Designed for single-threaded use on a `LocalSet` runtime -- no internal
 //! synchronization.
 
 use rdkafka::Offset;
@@ -71,7 +71,7 @@ impl PartitionTracker {
     /// warranted.
     fn acknowledge(&mut self, offset: i64) -> bool {
         if !self.pending.remove(&offset) {
-            // Offset was never tracked (or already acked) — no-op.
+            // Offset was never tracked (or already acked) -- no-op.
             return false;
         }
 
@@ -136,7 +136,7 @@ impl PartitionTracker {
 /// The nested `HashMap` structure allows lookups via `&str` without
 /// allocating an owned `String` on every call.
 ///
-/// Single-threaded — no internal synchronization required.
+/// Single-threaded -- no internal synchronization required.
 pub struct OffsetTracker {
     partitions: HashMap<String, HashMap<i32, PartitionTracker>>,
     /// Persistent TPL reused across commits. Its partition membership is kept
@@ -167,17 +167,17 @@ impl OffsetTracker {
     /// subsequent calls for the same topic use `&str` lookups.
     pub fn track(&mut self, topic: &str, partition: i32, offset: i64, generation: u64) {
         if let Some(partitions) = self.partitions.get_mut(topic) {
-            // Known topic — zero allocation.
+            // Known topic -- zero allocation.
             let entry = partitions.entry(partition);
             if matches!(&entry, std::collections::hash_map::Entry::Vacant(_)) {
-                // First sight of this partition — register it in the TPL.
+                // First sight of this partition -- register it in the TPL.
                 let _ = self.tpl.add_partition(topic, partition);
             }
             entry
                 .or_insert_with(|| PartitionTracker::new(generation))
                 .track(offset, generation);
         } else {
-            // New topic — allocate once and register the partition in the TPL.
+            // New topic -- allocate once and register the partition in the TPL.
             let _ = self.tpl.add_partition(topic, partition);
             let mut tracker = PartitionTracker::new(generation);
             tracker.track(offset, generation);
@@ -217,7 +217,7 @@ impl OffsetTracker {
                 self.revoke(topic, partition);
                 true
             }
-            // Not tracked — nothing to revoke.
+            // Not tracked -- nothing to revoke.
             None => false,
         }
     }
@@ -236,11 +236,11 @@ impl OffsetTracker {
     /// offsets in place.
     pub fn revoke(&mut self, topic: &str, partition: i32) {
         let Some(partitions) = self.partitions.get_mut(topic) else {
-            // Unknown topic — nothing tracked, TPL already excludes it.
+            // Unknown topic -- nothing tracked, TPL already excludes it.
             return;
         };
         if partitions.remove(&partition).is_none() {
-            // Unknown partition — TPL already excludes it.
+            // Unknown partition -- TPL already excludes it.
             return;
         }
         if partitions.is_empty() {
@@ -394,7 +394,7 @@ mod tests {
         assert_eq!(pt.pending_count(), 3);
         assert_eq!(pt.lowest_pending(), Some(100));
 
-        // Ack the lowest — should advance.
+        // Ack the lowest -- should advance.
         assert!(pt.acknowledge(100));
         assert_eq!(pt.pending_count(), 2);
         assert_eq!(pt.lowest_pending(), Some(101));
@@ -411,20 +411,20 @@ mod tests {
         pt.track(103, 0);
         pt.track(104, 0);
 
-        // Ack 102, 104 — lowest stays at 100.
+        // Ack 102, 104 -- lowest stays at 100.
         assert!(!pt.acknowledge(102));
         assert!(!pt.acknowledge(104));
         assert_eq!(pt.lowest_pending(), Some(100));
 
-        // Ack 100 — lowest moves to 101.
+        // Ack 100 -- lowest moves to 101.
         assert!(pt.acknowledge(100));
         assert_eq!(pt.lowest_pending(), Some(101));
 
-        // Ack 101 — lowest moves to 103 (102 already acked).
+        // Ack 101 -- lowest moves to 103 (102 already acked).
         assert!(pt.acknowledge(101));
         assert_eq!(pt.lowest_pending(), Some(103));
 
-        // Ack 103 — all clear.
+        // Ack 103 -- all clear.
         assert!(pt.acknowledge(103));
         assert_eq!(pt.lowest_pending(), None);
         assert_eq!(pt.pending_count(), 0);
@@ -449,7 +449,7 @@ mod tests {
         let mut pt = PartitionTracker::new(0);
 
         pt.track(100, 0);
-        // Ack a non-existent offset — nothing should change.
+        // Ack a non-existent offset -- nothing should change.
         assert!(!pt.acknowledge(999));
         assert_eq!(pt.pending_count(), 1);
         assert_eq!(pt.lowest_pending(), Some(100));
@@ -490,7 +490,7 @@ mod tests {
         assert_eq!(offsets.len(), 1);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 100));
 
-        // Ack lowest — should advance.
+        // Ack lowest -- should advance.
         assert!(tracker.acknowledge("traces", 0, 100));
         let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 101));
@@ -504,17 +504,17 @@ mod tests {
         tracker.track("traces", 0, 101, 0);
         tracker.track("traces", 0, 102, 0);
 
-        // Ack 102 first — should NOT advance (100 still pending).
+        // Ack 102 first -- should NOT advance (100 still pending).
         assert!(!tracker.acknowledge("traces", 0, 102));
         let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 100));
 
-        // Ack 100 — advances to 101.
+        // Ack 100 -- advances to 101.
         assert!(tracker.acknowledge("traces", 0, 100));
         let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 101));
 
-        // Ack 101 — all acked, commits hwm + 1.
+        // Ack 101 -- all acked, commits hwm + 1.
         assert!(tracker.acknowledge("traces", 0, 101));
         let offsets = committable_sorted(&tracker);
         assert_eq!(offsets[0], ("traces".to_string(), 0, 103)); // hwm=102, commit 103
@@ -663,13 +663,13 @@ mod tests {
         let map = tpl.to_topic_map();
         assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(100));
 
-        // Ack 100 → committable advances to 101.
+        // Ack 100 -> committable advances to 101.
         let _ = tracker.acknowledge("traces", 0, 100);
         let tpl = tracker.committable_tpl();
         let map = tpl.to_topic_map();
         assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(101));
 
-        // Ack 101 → all acked, committable is hwm + 1 = 102.
+        // Ack 101 -> all acked, committable is hwm + 1 = 102.
         let _ = tracker.acknowledge("traces", 0, 101);
         let tpl = tracker.committable_tpl();
         let map = tpl.to_topic_map();
@@ -800,7 +800,7 @@ mod tests {
             Offset::Offset(100)
         );
 
-        // Ack 100 → committable advances to 101, same TPL updated in place.
+        // Ack 100 -> committable advances to 101, same TPL updated in place.
         let _ = tracker.acknowledge("traces", 0, 100);
         let map = tracker.committable_tpl().to_topic_map();
         assert_eq!(map[&("traces".to_string(), 0)], Offset::Offset(101));
@@ -891,7 +891,7 @@ mod tests {
         tracker.track("traces", 0, 100, 0);
         tracker.track("traces", 0, 101, 0);
 
-        // Ack both → hwm = 101
+        // Ack both -> hwm = 101
         let _ = tracker.acknowledge("traces", 0, 100);
         let _ = tracker.acknowledge("traces", 0, 101);
 

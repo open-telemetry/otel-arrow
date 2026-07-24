@@ -78,7 +78,7 @@ impl ComputeDuration {
     /// timing on the EffectHandler.
     ///
     /// The closure-based API structurally prevents the timer from
-    /// being held across `.await` — the closure is `FnOnce`, not
+    /// being held across `.await` -- the closure is `FnOnce`, not
     /// async, so the compiler enforces that only synchronous work is
     /// measured.
     #[inline]

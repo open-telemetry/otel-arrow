@@ -90,7 +90,7 @@ pub fn partition_key_for_signal(
     None
 }
 
-// TODO: Explore `partition_by_trace_id` — partition traces by hex-encoded trace ID.
+// TODO: Explore `partition_by_trace_id` -- partition traces by hex-encoded trace ID.
 //   Trace IDs are 16-byte FixedSizeBinary values in the OTAP Arrow Spans schema.
 //   A single OTAP batch can contain spans with different trace IDs, so implementing
 //   this requires splitting the batch into sub-batches grouped by trace ID (returning
@@ -267,7 +267,7 @@ mod tests {
 
         assert_eq!(
             key, expected,
-            "partition key no longer matches the documented hash pipeline — \
+            "partition key no longer matches the documented hash pipeline \u{2014} \
              this will cause a Kafka partition rebalance"
         );
         assert_eq!(key.len(), 16);

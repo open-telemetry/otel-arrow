@@ -1028,7 +1028,7 @@ impl FieldRanges for ExemplarFieldRanges {
     }
 }
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// Iterator of ResourceMetrics - produces implementation of [`ResourceMetricsView`] from byte
 /// array containing serialized `MetricsData` message
@@ -1204,7 +1204,7 @@ where
     }
 }
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl MetricsView for RawMetricsData<'_> {
     type ResourceMetrics<'res>

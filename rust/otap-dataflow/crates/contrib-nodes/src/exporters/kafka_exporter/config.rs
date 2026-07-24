@@ -61,7 +61,7 @@ pub struct SignalConfig {
     ///
     /// The lookup matches on the header's normalized logical name. Captured
     /// transport headers are lowercased on ingress, so this value is lowercased
-    /// during config validation ([`KafkaExporterConfig::try_from`]) to match —
+    /// during config validation ([`KafkaExporterConfig::try_from`]) to match --
     /// e.g., `"X-Target-Topic"` is stored as `"x-target-topic"`. If a capture
     /// policy stores the header under a custom `store_as` name, this value must
     /// equal that stored name.
@@ -140,7 +140,7 @@ impl SignalConfig {
 pub enum RequiredAcks {
     /// No acknowledgment (acks=0). Fastest, but no delivery guarantee.
     None,
-    /// Leader acknowledgment (acks=1). Default — the leader writes and acks
+    /// Leader acknowledgment (acks=1). Default -- the leader writes and acks
     /// without waiting for followers.
     One,
     /// All in-sync replicas must acknowledge (acks=-1). Strongest durability
@@ -167,7 +167,7 @@ impl RequiredAcks {
 /// to configure settings, then convert to a validated [`KafkaExporterConfig`]
 /// via [`TryFrom`] / [`TryInto`].
 ///
-/// This type is also the serde deserialization target — the validated
+/// This type is also the serde deserialization target -- the validated
 /// [`KafkaExporterConfig`] uses `#[serde(try_from)]` to run validation
 /// automatically during deserialization.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
