@@ -82,6 +82,9 @@ pub struct KafkaReceiverMetrics {
     // ── Consumer-group Rebalances ───────────────────────────
     /// Total number of consumer-group rebalance (assign) events observed by
     /// this consumer.
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
     #[metric(unit = "{rebalance}")]
     pub rebalances_total: Counter<u64>,
     /// Current number of partitions owned by this consumer.
@@ -90,28 +93,42 @@ pub struct KafkaReceiverMetrics {
     /// refreshed after each rebalance. Contrast with [`partition_assignments`]
     /// (cumulative acquisitions) and [`partition_revocations`] (cumulative
     /// revocations).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
     #[metric(unit = "{partition}")]
     pub partitions_assigned: Gauge<u64>,
     /// Cumulative count of partitions newly acquired by this consumer across
     /// rebalances (retained partitions are not re-counted).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
     #[metric(unit = "{partition}")]
     pub partition_assignments: Counter<u64>,
     /// Cumulative count of genuinely-owned partitions revoked from this consumer
     /// across rebalances (a revoke reported for a partition this consumer did
     /// not own is not counted).
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
     #[metric(unit = "{partition}")]
     pub partition_revocations: Counter<u64>,
-    /// Average consumer lag across owned partitions, computed as
-    /// `mean(high_watermark - committed_offset)` over the partitions this
-    /// consumer owns.
+    /// Mean consumer-group lag across owned partitions, in records.
     ///
-    /// Reports `0` when no partitions are owned or when lag refresh is disabled
-    /// (see the `lag_refresh_interval_ms` receiver config, which is off by
-    /// default). Refreshed off the receive loop via a periodic broker watermark
-    /// query so the hot path never blocks.
+    /// Per partition, `max(0, high_watermark - broker_committed_offset)`, using
+    /// the offsets Kafka has acknowledged for this consumer group. It reflects
+    /// how far behind the group's committed position is, not the receiver's local
+    /// progress.
+    ///
+    /// Manual commit mode only and opt-in via `lag_refresh_interval_ms`;
+    /// otherwise stays `0`. On a failed refresh the previous value is kept rather
+    /// than reset.
     #[metric(unit = "{message}")]
     pub consumer_lag: Gauge<f64>,
-    /// Offset commit failures during pre-rebalance revoke
+    /// Offset commit failures during pre-rebalance revoke.
+    ///
+    /// Manual commit mode only (`commit.mode: manual`); stays `0` under
+    /// auto-commit.
     #[metric(unit = "{error}")]
     pub rebalance_commit_errors: Counter<u64>,
     /// Acks/nacks skipped because the partition was no longer assigned

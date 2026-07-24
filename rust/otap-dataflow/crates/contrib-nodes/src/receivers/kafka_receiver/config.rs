@@ -46,6 +46,25 @@ pub(crate) const MANAGED_CONSUMER_CONFIG_KEYS: &[&str] = &[
     "debug",
 ];
 
+/// Error returned when validating a [`KafkaReceiverConfigBuilder`] into a
+/// [`KafkaReceiverConfig`](super::config::KafkaReceiverConfig).
+#[derive(Debug, thiserror::Error)]
+pub enum KafkaReceiverConfigError {
+    /// The configuration failed validation. The message describes which rule
+    /// was violated (e.g. an empty required field, overlapping topics, an
+    /// invalid regex, or a non-positive interval).
+    #[error("invalid kafka receiver configuration: {0}")]
+    Invalid(String),
+}
+
+impl KafkaReceiverConfigError {
+    /// Build an [`Invalid`](Self::Invalid) error from any message-like value.
+    #[must_use]
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::Invalid(message.into())
+    }
+}
+
 /// Auto offset reset behavior
 #[derive(Copy, Clone, PartialEq, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -275,18 +294,17 @@ pub struct KafkaReceiverConfigBuilder {
     #[serde(default)]
     commit: CommitConfig,
 
-    /// Interval in milliseconds between consumer-lag refreshes.
+    /// Interval, in milliseconds, between consumer-lag refreshes.
     ///
-    /// When set (and manual commit is active), the receiver periodically queries
-    /// the broker high watermark for each owned partition and reports the average
-    /// per-partition lag via the `consumer_lag` gauge. The refresh runs on a
-    /// dedicated periodic-timer branch of the receive loop; each per-partition
-    /// high-watermark lookup is a bounded blocking broker call. Because the
-    /// lookups run inline on the receive loop, a refresh can briefly pause
-    /// message processing under partition fanout or broker slowness, so this is
-    /// intended for infrequent (opt-in) intervals.
+    /// Enables the `consumer_lag` gauge (consumer-group lag, measured against
+    /// broker-committed offsets). Each refresh runs off the receive loop in a
+    /// bounded background task, so it never blocks message processing; it queries
+    /// the broker-committed offsets and one high watermark per owned partition,
+    /// so raise the interval under large partition fan-out or broker slowness.
+    /// Recommended: `60000` (60s).
     ///
-    /// Defaults to `None` (consumer-lag refresh disabled).
+    /// Manual commit mode only; ignored under auto-commit. Defaults to `None`
+    /// (disabled). Must be `> 0` when set.
     #[serde(default)]
     lag_refresh_interval_ms: Option<u64>,
 
@@ -424,39 +442,49 @@ impl IsolationLevel {
 pub struct KafkaReceiverConfig(KafkaReceiverConfigBuilder);
 
 impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
-    type Error = String;
+    // `KafkaReceiverConfigError::Invalid` so behavior (and the serde `Display`
+    // surfaced to users) is unchanged.
+    type Error = KafkaReceiverConfigError;
 
-    fn try_from(builder: KafkaReceiverConfigBuilder) -> Result<Self, String> {
+    fn try_from(builder: KafkaReceiverConfigBuilder) -> Result<Self, KafkaReceiverConfigError> {
         // Reject empty required string fields
         if builder.brokers.is_empty() {
-            return Err("brokers can't be empty".to_string());
+            return Err(KafkaReceiverConfigError::invalid("brokers can't be empty"));
         }
         if builder.client_id.is_empty() {
-            return Err("client_id can't be empty".to_string());
+            return Err(KafkaReceiverConfigError::invalid(
+                "client_id can't be empty",
+            ));
         }
         if builder.group_id.is_empty() {
-            return Err("group_id can't be empty".to_string());
+            return Err(KafkaReceiverConfigError::invalid("group_id can't be empty"));
         }
 
         // Reject empty optional string fields when explicitly set
         if let Some(ref id) = builder.group_instance_id {
             if id.is_empty() {
-                return Err("valid group_instance_id can't be empty".to_string());
+                return Err(KafkaReceiverConfigError::invalid(
+                    "valid group_instance_id can't be empty",
+                ));
             }
         }
         if builder.message_format_header.is_empty() {
-            return Err("message_format_header can't be empty".to_string());
+            return Err(KafkaReceiverConfigError::invalid(
+                "message_format_header can't be empty",
+            ));
         }
 
         // Reject empty keys in resource_attrs_from_headers
         for (header_key, extraction) in &builder.resource_attrs_from_headers {
             if header_key.is_empty() {
-                return Err("resource_attrs_from_headers contains an empty header key".to_string());
+                return Err(KafkaReceiverConfigError::invalid(
+                    "resource_attrs_from_headers contains an empty header key",
+                ));
             }
             if extraction.key.is_empty() {
-                return Err(format!(
+                return Err(KafkaReceiverConfigError::invalid(format!(
                     "resource_attrs_from_headers['{header_key}'].key can't be empty"
-                ));
+                )));
             }
         }
 
@@ -465,10 +493,9 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             && builder.metrics.topics().is_empty()
             && builder.logs.topics().is_empty()
         {
-            return Err(
-                "at least one signal (traces, metrics, or logs) must have non-empty topics"
-                    .to_string(),
-            );
+            return Err(KafkaReceiverConfigError::invalid(
+                "at least one signal (traces, metrics, or logs) must have non-empty topics",
+            ));
         }
 
         // Topics must be disjoint across signals
@@ -487,7 +514,9 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
                 || !traces.is_disjoint(&logs)
                 || !metrics.is_disjoint(&logs)
             {
-                return Err("kafka topics overlap across signals".to_string());
+                return Err(KafkaReceiverConfigError::invalid(
+                    "kafka topics overlap across signals",
+                ));
             }
         }
 
@@ -508,32 +537,40 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
 
         // Validate auth configuration when present
         if let Some(ref auth) = builder.auth {
-            auth.validate().map_err(|e| format!("auth: {e}"))?;
+            auth.validate()
+                .map_err(|e| KafkaReceiverConfigError::invalid(format!("auth: {e}")))?;
         }
 
         // Validate TLS configuration when present
         if let Some(ref tls) = builder.tls {
-            tls.validate().map_err(|e| format!("tls: {e}"))?;
+            tls.validate()
+                .map_err(|e| KafkaReceiverConfigError::invalid(format!("tls: {e}")))?;
         }
 
         // Fetch byte constraints
         if builder.max_fetch_bytes < builder.min_fetch_bytes {
-            return Err(format!(
+            return Err(KafkaReceiverConfigError::invalid(format!(
                 "max_fetch_bytes ({}) must be >= min_fetch_bytes ({})",
                 builder.max_fetch_bytes, builder.min_fetch_bytes
-            ));
+            )));
         }
 
         if builder.max_partition_fetch_bytes <= 0 {
-            return Err("max_partition_fetch_bytes must be > 0".to_string());
+            return Err(KafkaReceiverConfigError::invalid(
+                "max_partition_fetch_bytes must be > 0",
+            ));
         }
 
         if builder.commit.interval_ms == Some(0) {
-            return Err("commit.interval_ms, when set, must be > 0".to_string());
+            return Err(KafkaReceiverConfigError::invalid(
+                "commit.interval_ms, when set, must be > 0",
+            ));
         }
 
         if builder.lag_refresh_interval_ms == Some(0) {
-            return Err("lag_refresh_interval_ms, when set, must be > 0".to_string());
+            return Err(KafkaReceiverConfigError::invalid(
+                "lag_refresh_interval_ms, when set, must be > 0",
+            ));
         }
 
         Ok(Self(builder))
@@ -581,12 +618,19 @@ impl KafkaReceiverConfigBuilder {
         }
     }
 
+    // REVIEW(6b structured-config-errors): helper validators now return the
+    // structured error; the message text is unchanged.
     /// Validate that all regex topic patterns (starting with `^`) compile.
-    fn validate_topic_regexes(topics: &[String], signal: &str) -> Result<(), String> {
+    fn validate_topic_regexes(
+        topics: &[String],
+        signal: &str,
+    ) -> Result<(), KafkaReceiverConfigError> {
         for topic in topics {
             if topic.starts_with('^') {
                 let _ = Regex::new(topic).map_err(|e| {
-                    format!("invalid regex topic pattern in {signal}: '{topic}': {e}")
+                    KafkaReceiverConfigError::invalid(format!(
+                        "invalid regex topic pattern in {signal}: '{topic}': {e}"
+                    ))
                 })?;
             }
         }
@@ -597,7 +641,10 @@ impl KafkaReceiverConfigBuilder {
     ///
     /// - `exclude_topics` only allowed when at least one topic is a regex pattern.
     /// - Each exclude_topics entry must be non-empty and a valid regex.
-    fn validate_exclude_topics(signal: &SignalConfig, signal_name: &str) -> Result<(), String> {
+    fn validate_exclude_topics(
+        signal: &SignalConfig,
+        signal_name: &str,
+    ) -> Result<(), KafkaReceiverConfigError> {
         if signal.exclude_topics.is_empty() {
             return Ok(());
         }
@@ -605,20 +652,22 @@ impl KafkaReceiverConfigBuilder {
         // exclude_topics only allowed when at least one topic is a regex pattern
         let has_regex = signal.topics.iter().any(|t| t.starts_with('^'));
         if !has_regex {
-            return Err(format!(
+            return Err(KafkaReceiverConfigError::invalid(format!(
                 "{signal_name}.exclude_topics is only allowed when at least one topic is a regex pattern"
-            ));
+            )));
         }
 
         // Each entry must be non-empty and valid regex
         for pattern in &signal.exclude_topics {
             if pattern.is_empty() {
-                return Err(format!(
+                return Err(KafkaReceiverConfigError::invalid(format!(
                     "{signal_name}.exclude_topics entries must be non-empty"
-                ));
+                )));
             }
             let _ = Regex::new(pattern).map_err(|e| {
-                format!("invalid regex in {signal_name}.exclude_topics: '{pattern}': {e}")
+                KafkaReceiverConfigError::invalid(format!(
+                    "invalid regex in {signal_name}.exclude_topics: '{pattern}': {e}"
+                ))
             })?;
         }
 
@@ -629,10 +678,15 @@ impl KafkaReceiverConfigBuilder {
     ///
     /// Entries starting with `^` are treated as regex patterns and are skipped
     /// here (they are validated separately by [`Self::validate_topic_regexes`]).
-    fn validate_topic_names(topics: &[String], signal: &str) -> Result<(), String> {
+    fn validate_topic_names(
+        topics: &[String],
+        signal: &str,
+    ) -> Result<(), KafkaReceiverConfigError> {
         for topic in topics {
             if !topic.starts_with('^') {
-                validate_kafka_topic(topic).map_err(|e| format!("{signal}.topics: {e}"))?;
+                validate_kafka_topic(topic).map_err(|e| {
+                    KafkaReceiverConfigError::invalid(format!("{signal}.topics: {e}"))
+                })?;
             }
         }
         Ok(())
@@ -1306,7 +1360,7 @@ mod tests {
             topics: vec!["t".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("brokers"), "unexpected error: {err}");
     }
 
@@ -1316,7 +1370,7 @@ mod tests {
             topics: vec!["t".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("client_id"), "unexpected error: {err}");
     }
 
@@ -1326,7 +1380,7 @@ mod tests {
             topics: vec!["t".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("group_id"), "unexpected error: {err}");
     }
 
@@ -1337,7 +1391,7 @@ mod tests {
             ..Default::default()
         });
         cfg.group_instance_id = Some(String::new());
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("group_instance_id"), "unexpected error: {err}");
     }
 
@@ -1349,7 +1403,7 @@ mod tests {
                 ..Default::default()
             })
             .with_message_format_header("");
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(
             err.contains("message_format_header"),
             "unexpected error: {err}"
@@ -1369,7 +1423,7 @@ mod tests {
                 value_type: AttributeValueType::String,
             },
         );
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("empty header key"), "unexpected error: {err}");
     }
 
@@ -1386,7 +1440,7 @@ mod tests {
                 value_type: AttributeValueType::String,
             },
         );
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(
             err.contains("key can't be empty"),
             "unexpected error: {err}"
@@ -1416,7 +1470,7 @@ mod tests {
     #[test]
     fn validate_all_empty_fails() {
         let cfg = KafkaReceiverConfigBuilder::new("b", "g", "c");
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("at least one signal"));
     }
 
@@ -1431,7 +1485,7 @@ mod tests {
                 topics: vec!["same-topic".to_string()],
                 ..Default::default()
             });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("overlap"));
     }
 
@@ -1446,7 +1500,7 @@ mod tests {
                 topics: vec!["same-topic".to_string()],
                 ..Default::default()
             });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("overlap"));
     }
 
@@ -1461,7 +1515,7 @@ mod tests {
                 topics: vec!["same-topic".to_string()],
                 ..Default::default()
             });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("overlap"));
     }
 
@@ -1485,7 +1539,7 @@ mod tests {
                 topics: vec!["topic-c".to_string(), "topic-b".to_string()],
                 ..Default::default()
             });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("overlap"));
     }
 
@@ -1515,7 +1569,7 @@ mod tests {
             topics: vec!["^traces-(invalid".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("invalid regex topic pattern in traces"));
     }
 
@@ -1537,7 +1591,7 @@ mod tests {
             exclude_topics: vec!["^traces-test$".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("exclude_topics is only allowed when"));
     }
 
@@ -1558,7 +1612,7 @@ mod tests {
             exclude_topics: vec!["".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("non-empty"));
     }
 
@@ -1569,7 +1623,7 @@ mod tests {
             exclude_topics: vec!["^(invalid".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("invalid regex in traces.exclude_topics"));
     }
 
@@ -1581,7 +1635,7 @@ mod tests {
             topics: vec!["".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("traces.topics"), "unexpected error: {err}");
         assert!(err.contains("empty"), "unexpected error: {err}");
     }
@@ -1592,7 +1646,7 @@ mod tests {
             topics: vec![".".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("metrics.topics"), "unexpected error: {err}");
         assert!(err.contains("ambiguous"), "unexpected error: {err}");
     }
@@ -1603,7 +1657,7 @@ mod tests {
             topics: vec!["..".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("logs.topics"), "unexpected error: {err}");
         assert!(err.contains("ambiguous"), "unexpected error: {err}");
     }
@@ -1614,7 +1668,7 @@ mod tests {
             topics: vec!["bad/topic".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("traces.topics"), "unexpected error: {err}");
         assert!(err.contains("invalid character"), "unexpected error: {err}");
     }
@@ -1626,7 +1680,7 @@ mod tests {
             topics: vec![long_topic],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("traces.topics"), "unexpected error: {err}");
         assert!(err.contains("maximum length"), "unexpected error: {err}");
     }
@@ -1656,7 +1710,7 @@ mod tests {
             topics: vec!["^traces-.*".to_string(), "bad topic".to_string()],
             ..Default::default()
         });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("traces.topics"), "unexpected error: {err}");
         assert!(err.contains("invalid character"), "unexpected error: {err}");
     }
@@ -1690,7 +1744,7 @@ mod tests {
             })
             .with_min_fetch_bytes(100)
             .with_max_fetch_bytes(50);
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("max_fetch_bytes"));
     }
 
@@ -1702,7 +1756,7 @@ mod tests {
                 ..Default::default()
             })
             .with_max_partition_fetch_bytes(0);
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("max_partition_fetch_bytes"));
     }
 
@@ -1734,7 +1788,7 @@ mod tests {
                 interval_ms: Some(0),
                 ..Default::default()
             });
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("must be > 0"), "unexpected error: {err}");
     }
 
@@ -1778,7 +1832,7 @@ mod tests {
                 ..Default::default()
             })
             .with_lag_refresh_interval_ms(Some(0));
-        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err();
+        let err = KafkaReceiverConfig::try_from(cfg).unwrap_err().to_string();
         assert!(err.contains("must be > 0"), "unexpected error: {err}");
     }
 

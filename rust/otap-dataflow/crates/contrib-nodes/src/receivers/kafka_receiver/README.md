@@ -49,7 +49,7 @@ config:
 | `logs` | object | `{}` | Per-signal config for logs. |
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
-| `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. When set (manual commit only), the receiver periodically queries broker high watermarks and reports the average per-partition lag via the `consumer_lag` metric. Off by default; must be > 0 when set. See [Metric Sets](#metric-sets). |
+| `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables the `consumer_lag` gauge (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. |
 | `min_fetch_bytes` | integer | `1` | Minimum number of bytes to fetch. |
@@ -263,9 +263,15 @@ log events. (Header values can still be surfaced via
 ##### Telemetry differences
 
 The Go receiver exposes an opt-in `telemetry.metrics.kafka_receiver_records_delay`
-gauge (consumer lag/delay) and per-metric enable toggles. This receiver emits
-always-on counters only (see [Metric Sets](#metric-sets)) -- there is no
-consumer-lag/delay gauge, no histograms, and no per-metric toggles.
+gauge (consumer lag/delay) and per-metric enable toggles. This receiver exposes
+an opt-in `consumer_lag` gauge -- consumer-group lag measured against
+broker-committed offsets (see [Metric Sets](#metric-sets)) -- enabled via
+`lag_refresh_interval_ms` (manual commit only), plus always-on counters; it has
+no histograms and no per-metric toggles. The consumer-group rebalance metrics
+and the `consumer_lag` gauge are emitted only in manual commit mode
+(`commit.mode: manual`) -- under auto-commit librdkafka owns offset management
+and rebalance handling, so those instruments and the `kafka.rebalance.*` /
+`kafka.consumer_group.*` events stay silent.
 
 ##### Defaults and required fields
 
@@ -866,6 +872,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `receiver.kafka`
 
+> **Note:** The consumer-group rebalance metrics (`rebalances_total`,
+> `partitions_assigned`, `partition_assignments`, `partition_revocations`,
+> `rebalance_commit_errors`) and the `consumer_lag` gauge are emitted only in
+> manual commit mode (`commit.mode: manual`). Under `commit.mode: auto` they
+> stay at zero because librdkafka owns offset management and rebalance handling.
+
 | Metric | Unit | Description |
 | --- | --- | --- |
 | `receiver.kafka.messages_received` | `{msg}` | Total messages received from Kafka across all signal types. |
@@ -886,12 +898,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.kafka.offset_commit_errors` | `{error}` | Number of offset commit failures. |
 | `receiver.kafka.idempotent_skips` | `{msg}` | Messages skipped due to idempotency check (duplicate detection). |
 | `receiver.kafka.topic_id_exhausted` | `{msg}` | Messages dropped because the topic ID space was exhausted (overflow guard). |
-| `receiver.kafka.rebalances_total` | `{rebalance}` | Total consumer-group rebalance (assign) events observed by this consumer. |
-| `receiver.kafka.partitions_assigned` | `{partition}` | Current number of partitions owned by this consumer (point-in-time gauge). |
-| `receiver.kafka.partition_assignments` | `{partition}` | Cumulative partitions newly acquired across rebalances (retained partitions not re-counted). |
-| `receiver.kafka.partition_revocations` | `{partition}` | Cumulative genuinely-owned partitions revoked across rebalances. |
-| `receiver.kafka.consumer_lag` | `{message}` | Average per-partition lag across owned partitions; 0 when none owned or lag refresh disabled. |
-| `receiver.kafka.rebalance_commit_errors` | `{error}` | Offset commit failures during the pre-rebalance revoke. |
+| `receiver.kafka.rebalances_total` | `{rebalance}` | Total consumer-group rebalance (assign) events observed by this consumer. Manual commit mode only. |
+| `receiver.kafka.partitions_assigned` | `{partition}` | Current number of partitions owned by this consumer (point-in-time gauge). Manual commit mode only. |
+| `receiver.kafka.partition_assignments` | `{partition}` | Cumulative partitions newly acquired across rebalances (retained partitions not re-counted). Manual commit mode only. |
+| `receiver.kafka.partition_revocations` | `{partition}` | Cumulative genuinely-owned partitions revoked across rebalances. Manual commit mode only. |
+| `receiver.kafka.consumer_lag` | `{message}` | Mean consumer-group lag across owned partitions: `max(0, high_watermark - broker_committed_offset)`, using offsets Kafka has acknowledged for this group. Manual commit mode only and opt-in via `lag_refresh_interval_ms`; previous value retained on a failed refresh. |
+| `receiver.kafka.rebalance_commit_errors` | `{error}` | Offset commit failures during the pre-rebalance revoke. Manual commit mode only. |
 | `receiver.kafka.acks_for_revoked_partition` | `{ack}` | Acks/nacks skipped because the partition was no longer assigned. |
 
 ### Events
@@ -919,6 +931,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `kafka.consumer_group.joined` | `info` | Consumer transitioned from zero owned partitions to a non-empty assignment. |
 | `kafka.consumer_group.left` | `info` | Consumer's assignment dropped back to zero owned partitions. |
 | `kafka.lag.fetch_watermarks_failed` | `error` | Broker high-watermark lookup for a partition failed during consumer-lag refresh. |
+| `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh did not complete for every attempted partition (partial/total lookup failure or total-deadline overrun); the previous `consumer_lag` value is retained and failed partitions are counted as `transport_errors`. |
+| `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `consumer_lag` value is retained. |
 | `kafka.header.attribute.parse_bool_failed` | `error` | A Kafka header value could not be parsed as a boolean attribute. |
 | `kafka.header.attribute.parse_float_failed` | `error` | A Kafka header value could not be parsed as a float attribute. |
 | `kafka.header.attribute.parse_int_failed` | `error` | A Kafka header value could not be parsed as an integer attribute. |

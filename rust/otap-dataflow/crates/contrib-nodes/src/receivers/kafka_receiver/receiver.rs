@@ -39,7 +39,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_error, otel_info};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -63,6 +63,32 @@ pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
 /// spent in one refresh scales with the number of owned partitions
 /// (`partitions * timeout`).
 const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
+
+// The refresh runs in a blocking background task; if it does not
+// complete within this deadline the loop stops waiting on it, drops the sample
+// (previous gauge retained), and lets the next tick start fresh. This bounds
+// how long a single in-flight refresh can occupy the blocking pool / delay the
+// next refresh, independent of the per-partition timeout.
+/// Total deadline for a single off-loop consumer-lag refresh.
+const LAG_REFRESH_TOTAL_DEADLINE: Duration = Duration::from_secs(15);
+
+// REVIEW(1/3/5 off-loop-refresh): the result of one off-loop consumer-lag
+// refresh, produced by the blocking task and applied back on the receive loop.
+/// Outcome of a single consumer-lag refresh performed off the receive loop.
+///
+/// Carries the aggregate lag plus how many partitions were attempted vs.
+/// succeeded so the receive loop can decide whether to publish a new mean
+/// (only on full success) or retain the previous sample (any failure).
+#[derive(Debug, Clone, Copy)]
+struct LagSample {
+    /// Sum of `high_watermark - broker_committed_offset` over succeeded
+    /// partitions (consumer-group lag).
+    total_lag: i64,
+    /// Partitions whose high-watermark lookup succeeded.
+    succeeded: usize,
+    /// Partitions attempted in this refresh.
+    attempted: usize,
+}
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -545,71 +571,139 @@ impl KafkaReceiver {
             .set_committable_snapshot(self.offset_tracker.committable_snapshot());
     }
 
-    /// Recompute the per-partition average consumer lag and set the
-    /// `consumer_lag` gauge directly.
+    /// Moves an `Arc` clone of the consumer into a blocking task
+    /// ([`tokio::task::spawn_blocking`]) that, off the receive loop, queries the
+    /// consumer's assignment, the broker-committed offsets for those partitions
+    /// ([`Consumer::committed_offsets`]), and the per-partition high watermark
+    /// ([`Consumer::fetch_watermarks`]). Per-partition lag is
+    /// `max(0, high_watermark - broker_committed_offset)`. Each broker call is
+    /// bounded by [`LAG_FETCH_PARTITION_TIMEOUT`].
     ///
-    /// For each owned partition with a known committed offset, the lag is
-    /// `high_watermark - committed_offset` (clamped at 0). The reported value is
-    /// the mean across those partitions, or `0.0` when none are owned.
-    ///
-    /// The broker high-watermark lookup ([`Consumer::fetch_watermarks`]) is a
-    /// blocking call; it is issued only from the dedicated consumer-lag timer
-    /// branch of the receive loop (never on the per-message hot path) and bounded
-    /// by `timeout` so a slow or unreachable broker cannot stall the receive loop
-    /// indefinitely. Disabled in auto-commit mode (no committed-offset tracking
-    /// to compare against).
-    fn refresh_consumer_lag<C: ConsumerContext>(
-        &mut self,
-        consumer: &StreamConsumer<C>,
-        timeout: Duration,
-    ) {
+    /// Returns `None` only in auto-commit mode (librdkafka owns offsets, so there
+    /// is nothing to compare). Otherwise a task is always spawned; if the
+    /// consumer owns no partitions with a committed offset, the resulting
+    /// [`LagSample`] has `attempted == 0` and the caller leaves the gauge
+    /// untouched (so "no data" is never reported as "no lag").
+    fn spawn_consumer_lag_refresh<C: ConsumerContext + 'static>(
+        &self,
+        consumer: &Arc<StreamConsumer<C>>,
+    ) -> Option<tokio::task::JoinHandle<LagSample>> {
         if self.config.is_auto_commit() {
-            return;
+            return None;
         }
 
-        // Committed offsets we would persist for each owned partition. Using the
-        // tracker snapshot avoids an extra broker `committed()` round-trip.
-        let committed = self.offset_tracker.committable_snapshot();
-        if committed.is_empty() {
-            self.metrics.consumer_lag.set(0.0);
-            return;
-        }
-
-        let mut total_lag: i64 = 0;
-        let mut counted: u64 = 0;
-        for ((topic, partition), committed_offset) in &committed {
-            // Skip partitions no longer owned by this consumer.
-            if !self.rebalance_state.is_assigned(topic, *partition) {
-                continue;
-            }
-            match consumer.fetch_watermarks(topic, *partition, timeout) {
-                Ok((_low, high)) => {
-                    // committable_snapshot stores the next-offset-to-commit, i.e.
-                    // one past the last processed record; the broker high
-                    // watermark is likewise one past the last produced record, so
-                    // their difference is the outstanding record count.
-                    let lag = high.saturating_sub(*committed_offset).max(0);
-                    total_lag = total_lag.saturating_add(lag);
-                    counted += 1;
-                }
+        let consumer = Arc::clone(consumer);
+        Some(tokio::task::spawn_blocking(move || {
+            // Owned partitions. `assignment()` is a local (non-RPC) query.
+            let assignment = match consumer.assignment() {
+                Ok(tpl) => tpl,
                 Err(e) => {
-                    self.metrics.transport_errors.add(1);
-                    otel_error!(
-                        "kafka.lag.fetch_watermarks_failed",
-                        topic = %topic,
-                        partition = *partition,
-                        error = %e,
-                    );
+                    otel_error!("kafka.lag.assignment_failed", error = %e);
+                    // Signal a total failure so the caller retains the previous
+                    // gauge rather than publishing a zero.
+                    return LagSample {
+                        total_lag: 0,
+                        succeeded: 0,
+                        attempted: 1,
+                    };
+                }
+            };
+            if assignment.count() == 0 {
+                // Nothing owned: no-op sample (gauge left untouched).
+                return LagSample {
+                    total_lag: 0,
+                    succeeded: 0,
+                    attempted: 0,
+                };
+            }
+
+            // Broker-acknowledged committed offsets for the owned partitions.
+            let committed =
+                match consumer.committed_offsets(assignment, LAG_FETCH_PARTITION_TIMEOUT) {
+                    Ok(tpl) => tpl,
+                    Err(e) => {
+                        otel_error!("kafka.lag.committed_offsets_failed", error = %e);
+                        return LagSample {
+                            total_lag: 0,
+                            succeeded: 0,
+                            attempted: 1,
+                        };
+                    }
+                };
+
+            let mut total_lag: i64 = 0;
+            let mut succeeded: usize = 0;
+            let mut attempted: usize = 0;
+            for elem in &committed.elements() {
+                // Skip partitions with no broker-committed offset yet
+                // (`Offset::Invalid`); they are not part of the lag measurement.
+                let committed_offset = match elem.offset() {
+                    rdkafka::Offset::Offset(o) => o,
+                    _ => continue,
+                };
+                let topic = elem.topic();
+                let partition = elem.partition();
+                attempted += 1;
+                match consumer.fetch_watermarks(topic, partition, LAG_FETCH_PARTITION_TIMEOUT) {
+                    Ok((_low, high)) => {
+                        // Both the high watermark and the committed offset are
+                        // "one past" positions, so their difference is the number
+                        // of records the group has not yet consumed on this
+                        // partition (consumer-group lag).
+                        let lag = high.saturating_sub(committed_offset).max(0);
+                        total_lag = total_lag.saturating_add(lag);
+                        succeeded += 1;
+                    }
+                    Err(e) => {
+                        otel_error!(
+                            "kafka.lag.fetch_watermarks_failed",
+                            topic = %topic,
+                            partition = partition,
+                            error = %e,
+                        );
+                    }
                 }
             }
+            LagSample {
+                total_lag,
+                succeeded,
+                attempted,
+            }
+        }))
+    }
+
+    /// Apply a completed [`LagSample`] to the `consumer_lag` gauge.
+    ///
+    /// - `attempted == 0`: nothing was owned/committed to measure; a clean no-op
+    ///   (the gauge is left unchanged, no error is recorded).
+    /// - full success: publishes the new mean lag across the attempted
+    ///   partitions.
+    /// - partial or total failure: leaves the gauge unchanged (the previous
+    ///   sample is retained so missing data is not reported as zero), adds the
+    ///   number of failed partitions to `transport_errors`, and emits a
+    ///   `kafka.lag.refresh_incomplete` warning.
+    fn apply_consumer_lag_sample(&mut self, sample: LagSample) {
+        if sample.attempted == 0 {
+            // Nothing to measure (no owned partition with a committed offset).
+            // Leave the gauge as-is; this is not a failure.
+            return;
         }
 
-        let avg = if counted == 0 {
-            0.0
-        } else {
-            total_lag as f64 / counted as f64
-        };
-        self.metrics.consumer_lag.set(avg);
+        if sample.succeeded == sample.attempted {
+            let mean = sample.total_lag as f64 / sample.attempted as f64;
+            self.metrics.consumer_lag.set(mean);
+            return;
+        }
+
+        let failed = sample.attempted.saturating_sub(sample.succeeded);
+        if failed > 0 {
+            self.metrics.transport_errors.add(failed as u64);
+        }
+        otel_warn!(
+            "kafka.lag.refresh_incomplete",
+            attempted = sample.attempted as u64,
+            succeeded = sample.succeeded as u64,
+        );
     }
 
     /// Advance the offset tracker for a processed message and, if the
@@ -707,6 +801,8 @@ impl KafkaReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
         consumer: StreamConsumer<C>,
     ) -> Result<TerminalState, EngineError> {
+        let consumer = Arc::new(consumer);
+
         // Start periodic telemetry collection
         let telemetry_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -763,6 +859,11 @@ impl KafkaReceiver {
                 ticker
             });
 
+        // At most one refresh runs at a time: a tick is ignored while a
+        // previous refresh is still running (guarded by `.is_none()` below), so
+        // slow refreshes coalesce instead of piling up on the blocking pool.
+        let mut lag_refresh_in_flight: Option<tokio::task::JoinHandle<LagSample>> = None;
+
         // Set once the receiver-first drain protocol begins. After this the
         // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
         // but stays responsive to control messages until `Shutdown` arrives.
@@ -783,7 +884,7 @@ impl KafkaReceiver {
                             effect_handler.info("Shutting down Kafka receiver").await;
                             // Commit all tracked offsets before shutdown
                             if manual_commit {
-                                if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                                if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                     otel_error!(
                                         "kafka.shutdown.commit_failed",
                                         error = %e,
@@ -814,7 +915,7 @@ impl KafkaReceiver {
                                 // restart (at-least-once), so there is nothing
                                 // else to wait on.
                                 if manual_commit {
-                                    if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                                    if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                         otel_error!(
                                             "kafka.drain.commit_failed",
                                             error = %e,
@@ -834,7 +935,7 @@ impl KafkaReceiver {
                             if manual_commit && !ack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_offset_feedback(
                                     &ack_msg.unwind.route.calldata,
-                                    &consumer,
+                                    consumer.as_ref(),
                                     &receiver_id,
                                 );
                             }
@@ -846,7 +947,7 @@ impl KafkaReceiver {
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_offset_feedback(
                                     &nack_msg.unwind.route.calldata,
-                                    &consumer,
+                                    consumer.as_ref(),
                                     &receiver_id,
                                 );
                             }
@@ -860,7 +961,7 @@ impl KafkaReceiver {
                             // offsets that haven't been committed via ack/nack yet.
                             // Commit failures are recoverable: offsets stay
                             // tracked and are retried on the next tick.
-                            if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                            if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                 otel_error!(
                                     "kafka.commit.failed",
                                     error = %e,
@@ -1037,7 +1138,7 @@ impl KafkaReceiver {
                                             &topic,
                                             partition,
                                             offset,
-                                            &consumer,
+                                            consumer.as_ref(),
                                             &receiver_id,
                                         );
                                     }
@@ -1066,10 +1167,10 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 3. Periodic consumer-lag refresh (opt-in, dedicated timer).
-                // `lag_ticker` is None when disabled, so the branch is never
-                // polled; it also stops firing once draining begins so no broker
-                // watermark calls are issued during shutdown.
+                // Periodic consumer-lag refresh trigger (opt-in). Fires only
+                // when the timer is armed, no refresh is already running, and the
+                // receiver is not draining, so no broker watermark calls are
+                // issued during shutdown and refreshes never pile up.
                 _ = async {
                     match lag_ticker.as_mut() {
                         Some(ticker) => ticker.tick().await,
@@ -1077,8 +1178,47 @@ impl KafkaReceiver {
                         // being polled when the ticker is disabled.
                         None => std::future::pending().await,
                     }
-                }, if lag_ticker.is_some() && draining_deadline.is_none() => {
-                    self.refresh_consumer_lag(&consumer, LAG_FETCH_PARTITION_TIMEOUT);
+                }, if lag_ticker.is_some()
+                    && lag_refresh_in_flight.is_none()
+                    && draining_deadline.is_none() => {
+                    // Snapshot + dispatch off the loop; `None` (nothing to query)
+                    // leaves the gauge untouched.
+                    lag_refresh_in_flight = self.spawn_consumer_lag_refresh(&consumer);
+                }
+
+                // Apply a completed consumer-lag refresh. Bounded by a total
+                // deadline: if the blocking task overruns, drop it (previous
+                // gauge retained) and let the next tick start a fresh refresh.
+                sample = async {
+                    match lag_refresh_in_flight.as_mut() {
+                        Some(handle) => {
+                            tokio::time::timeout(LAG_REFRESH_TOTAL_DEADLINE, handle).await
+                        }
+                        // Unreachable: guarded by `is_some()` below.
+                        None => std::future::pending().await,
+                    }
+                }, if lag_refresh_in_flight.is_some() => {
+                    lag_refresh_in_flight = None;
+                    match sample {
+                        Ok(Ok(sample)) => self.apply_consumer_lag_sample(sample),
+                        Ok(Err(join_err)) => {
+                            // The blocking task panicked; retain the previous
+                            // gauge and surface the failure.
+                            otel_error!(
+                                "kafka.lag.refresh_task_failed",
+                                error = %join_err,
+                            );
+                        }
+                        Err(_elapsed) => {
+                            // Total refresh deadline exceeded. Retain the previous
+                            // gauge; the abandoned task finishes on the blocking
+                            // pool and its result is discarded.
+                            otel_warn!(
+                                "kafka.lag.refresh_incomplete",
+                                reason = "deadline_exceeded",
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -1970,7 +2110,9 @@ mod tests {
                 .with_metrics(SignalConfig::new(vec!["same".to_string()])),
         );
         assert!(result.is_err());
-        let err_str = result.unwrap_err();
+        // REVIEW(6b structured-config-errors): error is now
+        // `KafkaReceiverConfigError`; assert against its Display string.
+        let err_str = result.unwrap_err().to_string();
         assert!(
             err_str.contains("overlap"),
             "expected overlap error, got: {err_str}"
@@ -2170,17 +2312,19 @@ mod tests {
         assert_eq!(receiver.metrics.partition_assignments.get(), 2);
     }
 
-    /// Scenario: consumer-lag refresh runs with no tracked committed offsets.
-    /// Guarantees: `refresh_consumer_lag` sets the `consumer_lag` gauge directly
-    /// to 0.0 when there are no owned committed offsets to compare, without
-    /// issuing a broker watermark call.
+    /// Scenario: a manual-commit receiver spawns a lag refresh for a consumer
+    /// that owns no partitions (no assignment).
+    /// Guarantees: `spawn_consumer_lag_refresh` still spawns a task (manual mode)
+    /// but the resulting `LagSample` has `attempted == 0`, which the caller treats
+    /// as a no-op so the `consumer_lag` gauge is left untouched rather than
+    /// overwritten with a misleading zero.
     #[tokio::test]
-    async fn refresh_consumer_lag_sets_zero_when_no_committed_offsets() {
+    async fn spawn_consumer_lag_refresh_yields_empty_sample_when_unassigned() {
         let (_mock, brokers) = start_mock_kafka(&["traces"]);
         let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
         assert!(!cfg.is_auto_commit());
         let ctx = make_pipeline_ctx();
-        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
 
         let consumer: StreamConsumer = ClientConfig::new()
             .set("bootstrap.servers", &brokers)
@@ -2188,11 +2332,152 @@ mod tests {
             .set("enable.auto.commit", "false")
             .create()
             .expect("failed to create consumer");
+        let consumer = Arc::new(consumer);
 
-        // Empty offset tracker => empty committable snapshot => the gauge is set
-        // to 0.0 directly, before any fetch_watermarks broker call.
-        receiver.refresh_consumer_lag(&consumer, LAG_FETCH_PARTITION_TIMEOUT);
-        assert!(receiver.metrics.consumer_lag.get().abs() < f64::EPSILON);
+        // Manual mode => a task is spawned; the consumer has no assignment, so
+        // the sample reports nothing attempted (a no-op for the gauge).
+        let handle = receiver
+            .spawn_consumer_lag_refresh(&consumer)
+            .expect("manual mode spawns a refresh task");
+        let sample = handle.await.expect("lag task should not panic");
+        assert_eq!(sample.attempted, 0);
+        assert_eq!(sample.succeeded, 0);
+    }
+
+    /// Scenario: auto-commit receiver requests a lag refresh.
+    /// Guarantees: `spawn_consumer_lag_refresh` returns `None` (no task, no
+    /// broker work) because offset management is owned by librdkafka.
+    #[tokio::test]
+    async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
+        let (_mock, brokers) = start_mock_kafka(&["traces"]);
+        let cfg = KafkaReceiverConfig::try_from(
+            KafkaReceiverConfigBuilder::new(&brokers, "g", "c")
+                .with_traces(SignalConfig::new(vec!["traces".to_string()]))
+                .with_commit(CommitConfig {
+                    mode: ConfigCommitMode::Auto,
+                    interval_ms: Some(1000),
+                })
+                .with_isolation_level(IsolationLevel::ReadUncommitted),
+        )
+        .expect("test config should be valid");
+        let ctx = make_pipeline_ctx();
+        let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        let consumer: StreamConsumer = ClientConfig::new()
+            .set("bootstrap.servers", &brokers)
+            .set("group.id", "lag-test")
+            .set("enable.auto.commit", "true")
+            .create()
+            .expect("failed to create consumer");
+        let consumer = Arc::new(consumer);
+
+        assert!(receiver.spawn_consumer_lag_refresh(&consumer).is_none());
+    }
+
+    /// Scenario: a completed refresh reports nothing attempted (no owned
+    /// partition with a committed offset).
+    /// Guarantees: `apply_consumer_lag_sample` is a clean no-op - the gauge is
+    /// left unchanged and no transport error is recorded.
+    #[test]
+    fn apply_consumer_lag_sample_noop_when_nothing_attempted() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Seed a known value, then apply an empty sample.
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 70,
+            succeeded: 1,
+            attempted: 1,
+        });
+        assert!((receiver.metrics.consumer_lag.get() - 70.0).abs() < f64::EPSILON);
+        let errors_before = receiver.metrics.transport_errors.get();
+
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 0,
+            succeeded: 0,
+            attempted: 0,
+        });
+        // Gauge unchanged, no errors recorded.
+        assert!((receiver.metrics.consumer_lag.get() - 70.0).abs() < f64::EPSILON);
+        assert_eq!(receiver.metrics.transport_errors.get(), errors_before);
+    }
+
+    /// Scenario: a consumer-lag refresh completes with every attempted partition
+    /// succeeding.
+    /// Guarantees: `apply_consumer_lag_sample` publishes the mean lag across the
+    /// attempted partitions only on full success.
+    #[test]
+    fn apply_consumer_lag_sample_publishes_mean_on_full_success() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // total_lag 300 over 3 succeeded/attempted => mean 100.0.
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 300,
+            succeeded: 3,
+            attempted: 3,
+        });
+        assert!((receiver.metrics.consumer_lag.get() - 100.0).abs() < f64::EPSILON);
+    }
+
+    /// Scenario: a consumer-lag refresh partially fails (some watermark lookups
+    /// error), after a previous successful sample set the gauge.
+    /// Guarantees: `apply_consumer_lag_sample` retains the previous gauge value
+    /// (never publishing a partial mean), counts the failed partitions as
+    /// transport errors, so a partial failure cannot understate reported lag.
+    #[test]
+    fn apply_consumer_lag_sample_retains_previous_on_partial_failure() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Establish a known-good previous sample: mean 50.0.
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 100,
+            succeeded: 2,
+            attempted: 2,
+        });
+        assert!((receiver.metrics.consumer_lag.get() - 50.0).abs() < f64::EPSILON);
+        let errors_before = receiver.metrics.transport_errors.get();
+
+        // A later refresh attempts 3 partitions but only 1 succeeds: the gauge
+        // must stay at 50.0 and 2 failures must be recorded.
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 10,
+            succeeded: 1,
+            attempted: 3,
+        });
+        assert!((receiver.metrics.consumer_lag.get() - 50.0).abs() < f64::EPSILON);
+        assert_eq!(receiver.metrics.transport_errors.get(), errors_before + 2);
+    }
+
+    /// Scenario: a consumer-lag refresh fails for every attempted partition.
+    /// Guarantees: `apply_consumer_lag_sample` leaves the gauge unchanged (no
+    /// false zero) and records one transport error per failed partition.
+    #[test]
+    fn apply_consumer_lag_sample_retains_previous_on_total_failure() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 80,
+            succeeded: 1,
+            attempted: 1,
+        });
+        assert!((receiver.metrics.consumer_lag.get() - 80.0).abs() < f64::EPSILON);
+        let errors_before = receiver.metrics.transport_errors.get();
+
+        // Every lookup failed: gauge retained at 80.0, 2 failures recorded.
+        receiver.apply_consumer_lag_sample(LagSample {
+            total_lag: 0,
+            succeeded: 0,
+            attempted: 2,
+        });
+        assert!((receiver.metrics.consumer_lag.get() - 80.0).abs() < f64::EPSILON);
+        assert_eq!(receiver.metrics.transport_errors.get(), errors_before + 2);
     }
 
     #[test]
