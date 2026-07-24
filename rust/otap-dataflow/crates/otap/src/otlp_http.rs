@@ -95,9 +95,9 @@ pub struct HttpServerSettings {
     /// - Compressed bodies: BOTH the compressed wire size AND decompressed size
     ///
     /// Example scenarios with `max_request_body_size = 4MiB`:
-    /// - 5MiB compressed payload → rejected during collection (wire size > 4MiB)
-    /// - 2MiB compressed payload expanding to 10MiB → rejected during decompression
-    /// - 2MiB compressed payload expanding to 3MiB → accepted
+    /// - 5MiB compressed payload -> rejected during collection (wire size > 4MiB)
+    /// - 2MiB compressed payload expanding to 10MiB -> rejected during decompression
+    /// - 2MiB compressed payload expanding to 3MiB -> accepted
     ///
     /// This dual enforcement provides defense-in-depth against both bandwidth abuse
     /// and decompression bombs (zip bombs).

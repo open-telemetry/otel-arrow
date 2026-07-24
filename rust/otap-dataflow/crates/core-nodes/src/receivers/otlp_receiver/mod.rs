@@ -4116,7 +4116,7 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        // Note: no `.with_capture_policy()` call — policy is None by default.
+        // Note: no `.with_capture_policy()` call -- policy is None by default.
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario)

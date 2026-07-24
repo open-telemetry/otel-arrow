@@ -69,7 +69,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 /// Given the input above, the macro generates (conceptually):
 ///
 /// ```rust,ignore
-/// // 1. Local trait — !Send, used by local pipeline nodes.
+/// // 1. Local trait -- !Send, used by local pipeline nodes.
 /// pub mod local {
 ///     #[async_trait(?Send)]
 ///     pub trait BearerTokenProvider {
@@ -78,7 +78,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     }
 /// }
 ///
-/// // 2. Shared trait — Send, used by shared pipeline nodes.
+/// // 2. Shared trait -- Send, used by shared pipeline nodes.
 /// pub mod shared {
 ///     #[async_trait]
 ///     pub trait BearerTokenProvider: Send {
@@ -87,17 +87,17 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     }
 /// }
 ///
-/// // 3. SharedAsLocal adapter — delegates local::Trait to a shared impl.
+/// // 3. SharedAsLocal adapter -- delegates local::Trait to a shared impl.
 /// //    Used internally by the engine for shared-only extensions that need
 /// //    to serve local consumers.
 /// struct SharedAsLocalBearerTokenProvider(Box<dyn shared::BearerTokenProvider>);
 /// impl local::BearerTokenProvider for SharedAsLocalBearerTokenProvider { /* delegates */ }
 ///
-/// // 4. Zero-sized registration struct — used as the type parameter in
+/// // 4. Zero-sized registration struct -- used as the type parameter in
 /// //    require_local::<BearerTokenProvider>() / require_shared::<BearerTokenProvider>().
 /// pub struct BearerTokenProvider;
 ///
-/// // 5. Sealed trait impls — prevents external crates from adding capabilities.
+/// // 5. Sealed trait impls -- prevents external crates from adding capabilities.
 /// impl CapabilitySealed for BearerTokenProvider {}
 /// impl ExtensionCapability for BearerTokenProvider {
 ///     const NAME: &'static str = "bearer_token_provider";
@@ -106,7 +106,7 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 ///     fn wrap_shared_as_local(...) -> Box<Self::Local> { /* wraps in adapter */ }
 /// }
 ///
-/// // 6. KNOWN_CAPABILITIES entry — link-time registration for config validation.
+/// // 6. KNOWN_CAPABILITIES entry -- link-time registration for config validation.
 /// #[distributed_slice(KNOWN_CAPABILITIES)]
 /// static _KNOWN_CAP_BEARER_TOKEN_PROVIDER: KnownCapability = KnownCapability {
 ///     name: "bearer_token_provider",
@@ -121,10 +121,10 @@ pub fn pipeline_factory(args: TokenStream, input: TokenStream) -> TokenStream {
 /// registration struct:
 ///
 /// ```rust,ignore
-/// // Local consumer — returns Box<dyn local::BearerTokenProvider>
+/// // Local consumer -- returns Box<dyn local::BearerTokenProvider>
 /// let auth = capabilities.require_local::<BearerTokenProvider>()?;
 ///
-/// // Shared consumer — returns Box<dyn shared::BearerTokenProvider>
+/// // Shared consumer -- returns Box<dyn shared::BearerTokenProvider>
 /// let auth = capabilities.require_shared::<BearerTokenProvider>()?;
 /// ```
 ///

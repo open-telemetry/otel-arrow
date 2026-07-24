@@ -8,7 +8,7 @@
 //! It is NOT an end-to-end receiver benchmark: after decode, the receiver still
 //! copies each kept field into the Arrow builders, which this does not measure.
 //!
-//! ## Reference result — decode-only `MESSAGE`-clone removal (#3403)
+//! ## Reference result -- decode-only `MESSAGE`-clone removal (#3403)
 //!
 //! One-time local comparison (Linux, `CARGO_PROFILE_BENCH_LTO=off`) that
 //! justified storing the log body as an index into `fields` instead of a second

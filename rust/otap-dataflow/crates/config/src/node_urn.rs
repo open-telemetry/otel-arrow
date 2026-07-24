@@ -7,7 +7,7 @@
 //! `<kind>` is one of `receiver`, `processor`, or `exporter`. The shortcut
 //! `<kind>:<id>` (no scheme/namespace) expands to `urn:otel:<kind>:<id>`.
 //!
-//! Extensions deliberately do NOT use this type — they have a separate
+//! Extensions deliberately do NOT use this type -- they have a separate
 //! [`crate::extension_urn::ExtensionUrn`] type so the rest of the codebase
 //! cannot accidentally treat extensions as nodes. The underlying parsing
 //! primitives are shared via the private [`crate::urn`] module.

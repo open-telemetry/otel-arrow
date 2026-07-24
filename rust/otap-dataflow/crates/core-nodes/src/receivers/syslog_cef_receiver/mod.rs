@@ -166,10 +166,10 @@ enum BoundedReadResult {
 }
 
 /// Reads bytes from `reader` into `buf` until one of:
-/// - A newline (`\n`) is found → returns [`BoundedReadResult::Complete`]
-/// - `buf` reaches `max_size` bytes without a newline → returns
+/// - A newline (`\n`) is found -> returns [`BoundedReadResult::Complete`]
+/// - `buf` reaches `max_size` bytes without a newline -> returns
 ///   [`BoundedReadResult::Truncated`]
-/// - EOF is reached → returns [`BoundedReadResult::Eof`]
+/// - EOF is reached -> returns [`BoundedReadResult::Eof`]
 ///
 /// This prevents unbounded memory growth from malicious or misbehaving clients
 /// that send data without newline delimiters.
@@ -910,7 +910,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // truncated by the OS (the actual message may have been larger).
                                     // A message exactly MAX_MESSAGE_SIZE bytes would also trigger
                                     // this, but there is no way to distinguish the two cases with
-                                    // UDP — this heuristic is the best we can do.
+                                    // UDP -- this heuristic is the best we can do.
                                     if n == buf.len() {
                                         self.metrics.borrow_mut().received_logs_truncated.inc();
                                     }
@@ -1043,7 +1043,7 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of log records whose raw message exceeded [`MAX_MESSAGE_SIZE`] and
     /// were truncated before parsing. For TCP, truncation is detected precisely
     /// when a newline-delimited message exceeds the size limit. For UDP, it is
-    /// a heuristic — a datagram that fills the entire receive buffer is assumed
+    /// a heuristic -- a datagram that fills the entire receive buffer is assumed
     /// truncated, though a message exactly [`MAX_MESSAGE_SIZE`] bytes would also
     /// trigger this.
     #[metric(unit = "{item}")]
@@ -1604,7 +1604,7 @@ mod tests {
     }
 
     /// Test closure that sends a message exceeding MAX_MESSAGE_SIZE to verify
-    /// truncation handling — the receiver must not crash or exhaust memory.
+    /// truncation handling -- the receiver must not crash or exhaust memory.
     fn tcp_truncation_scenario(
         listening_addr: SocketAddr,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -1653,9 +1653,9 @@ mod tests {
     /// Validation for the TCP truncation test.
     ///
     /// The oversized message is split into two reads by `read_line_bounded`:
-    /// 1. The truncated head (first `MAX_MESSAGE_SIZE` bytes) — contains the
+    /// 1. The truncated head (first `MAX_MESSAGE_SIZE` bytes) -- contains the
     ///    valid syslog header and parses successfully.
-    /// 2. The tail (remaining 500 bytes of padding + `\n`) — parsed as an
+    /// 2. The tail (remaining 500 bytes of padding + `\n`) -- parsed as an
     ///    RFC 3164 content-only message (the parser accepts any non-empty input).
     /// 3. The normal-sized message sent afterward.
     ///
@@ -1784,7 +1784,7 @@ mod read_line_bounded_tests {
 
     #[tokio::test]
     async fn eof_with_partial_data() {
-        // 10 bytes, no newline, then stream closes — under the limit
+        // 10 bytes, no newline, then stream closes -- under the limit
         let mut reader = make_reader(b"partial").await;
         let mut buf = Vec::new();
         let result = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
@@ -1845,7 +1845,7 @@ mod read_line_bounded_tests {
 
     #[tokio::test]
     async fn pre_filled_buf_at_limit_returns_truncated_immediately() {
-        // buf is already at max_size — should return Truncated without reading
+        // buf is already at max_size -- should return Truncated without reading
         let mut reader = make_reader(b"should not be read\n").await;
         let mut buf = vec![b'X'; 64];
         let result = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
@@ -1968,7 +1968,7 @@ mod config_tests {
     #[test]
     fn both_protocols_rejected() {
         // The Protocol enum is externally tagged, so specifying both tcp and udp
-        // in the same config must be rejected — only one protocol per instance.
+        // in the same config must be rejected -- only one protocol per instance.
         let json = serde_json::json!({
             "protocol": {
                 "tcp": {

@@ -483,7 +483,7 @@ async fn wal_writer_reopens_with_matching_header() {
         file.flush().expect("flush");
     }
 
-    // Reopen with the same hash—should succeed and preserve the header.
+    // Reopen with the same hash--should succeed and preserve the header.
     let options = WalWriterOptions::new(wal_path.clone(), original_hash, FlushPolicy::Immediate);
     let _writer = WalWriter::open(options).await.expect("open succeeds");
     drop(_writer);
@@ -2790,7 +2790,7 @@ async fn wal_buffer_decay_rate_affects_shrinking_behavior() {
     );
 
     // Write small bundles; with 50% decay the high-water mark drops fast
-    // After ~10 appends: high_water ≈ initial * (1/2)^10 ≈ 0.1% of initial
+    // After ~10 appends: high_water ~= initial * (1/2)^10 ~= 0.1% of initial
     for _ in 0..20 {
         let small_slot = FixtureSlot::new(SlotId::new(0), 0x02, &[1, 2, 3]);
         let small_bundle = FixtureBundle::new(descriptor.clone(), vec![small_slot]);
@@ -2808,9 +2808,9 @@ async fn wal_buffer_decay_rate_affects_shrinking_behavior() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // WAL Position Coordinate System Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Verifies that WAL positions remain stable across WAL file rotations.
 /// After a rotation, new entries should receive positions that continue from
@@ -3170,9 +3170,9 @@ async fn wal_error_is_at_capacity_returns_false_for_other_errors() {
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // MultiFileWalReader Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 use super::MultiFileWalReader;
 

@@ -5,7 +5,7 @@
 //!
 //! These tests verify the end-to-end behavior of the durable buffer,
 //! including:
-//! - Data flow through the processor (ingest → wal + segment → downstream)
+//! - Data flow through the processor (ingest -> wal + segment -> downstream)
 //! - Recovery from finalized segments on restart
 //! - Retry behavior with exponential backoff when downstream NACKs
 //!
@@ -48,7 +48,7 @@ use tempfile::tempdir;
 /// Initialize a tracing subscriber so `otel_warn!`/`otel_error!` events from
 /// the pipeline are visible in test output (`cargo test -- --nocapture`).
 /// Respects `RUST_LOG` env var; defaults to `warn` level.
-/// Safe to call from multiple tests — only the first call takes effect.
+/// Safe to call from multiple tests -- only the first call takes effect.
 fn init_test_tracing() {
     use std::sync::Once;
     static INIT: Once = Once::new();
@@ -59,9 +59,9 @@ fn init_test_tracing() {
     });
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // CI Timing Constants
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Generous timeout for `wait_for_condition` in flip threads.
 ///
@@ -80,9 +80,9 @@ const FLIP_CONDITION_TIMEOUT: Duration = Duration::from_secs(30);
 /// ceiling for extremely slow CI.
 const PIPELINE_MAX_DURATION: Duration = Duration::from_secs(60);
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Test Configuration Builder
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Builder for durable buffer test configurations.
 ///
@@ -283,9 +283,9 @@ impl TestConfigBuilder {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Test Runner Helper
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Run a pipeline with an optional early shutdown condition.
 ///
@@ -578,9 +578,9 @@ where
     CollectedMetrics::from_snapshots(&snapshots)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Test Helpers
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Return true when pipeline shutdown completed cleanly or hit an expected
 /// shutdown-time channel close race.
@@ -682,9 +682,9 @@ fn count_manifest_items_in_segments(segments_dir: &std::path::Path) -> u64 {
         .unwrap_or(0)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Metrics Capture
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Capture durable-buffer metrics from the telemetry registry.
 ///
@@ -865,9 +865,9 @@ where
     snapshot
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Integration Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Test retry behavior when downstream NACKs.
 ///
@@ -879,7 +879,7 @@ where
 /// Use the exporter's deterministic auto-flip: NACK the first 5 batches, then
 /// atomically flip to ACK mode in the same task that processes inbound PData.
 /// This makes recovery data-driven and removes the cross-thread race between
-/// detecting NACKs and the retry processor's elapsed-time budget — see issue
+/// detecting NACKs and the retry processor's elapsed-time budget -- see issue
 /// #2720 for the same race observed in core-node liveness tests.
 #[test]
 fn test_durable_buffer_retries_on_nack() {
@@ -1476,7 +1476,7 @@ fn test_durable_buffer_convert_to_arrow_mode_mixed_signals() {
 /// 3. Shutdown should flush open segment and drain remaining bundles
 /// 4. Pipeline terminates cleanly (no channel errors)
 ///
-/// The shutdown handler performs: flush → drain loop → engine shutdown.
+/// The shutdown handler performs: flush -> drain loop -> engine shutdown.
 /// This test exercises that path by ensuring the pipeline is actively
 /// processing when shutdown is triggered, then verifying clean termination
 /// and that at least the threshold amount of data was delivered.
@@ -1607,18 +1607,18 @@ fn test_durable_buffer_high_volume_throughput() {
 ///
 /// This is a two-phase test that validates the end-to-end item counting pipeline:
 ///
-/// **Phase 1** (error exporter — all NACKs):
+/// **Phase 1** (error exporter -- all NACKs):
 ///   Generates a mix of OTLP logs, traces, and metrics (roughly equal weights).
 ///   The durable buffer ingests them, downstream NACKs everything.
 ///   After shutdown, segment files contain bundles with item_count in the manifest.
 ///
-/// **Between phases** — manifest validation:
+/// **Between phases** -- manifest validation:
 ///   Opens segment files directly and classifies each bundle by its OTLP slot ID
 ///   (60=logs, 61=traces, 62=metrics). Asserts:
 ///   - Every signal type has at least one bundle with non-zero item_count
 ///   - The total item_count across all signals equals the number generated
 ///
-/// **Phase 2** (counting exporter — all ACKs):
+/// **Phase 2** (counting exporter -- all ACKs):
 ///   Restarts pipeline against the same buffer directory. Recovered bundles from
 ///   Phase 1 are re-delivered along with new data. The counting exporter verifies
 ///   the total item count equals Phase 1 + Phase 2 data.
@@ -1642,15 +1642,15 @@ fn test_durable_buffer_otlp_item_count_metrics() {
 
     // The traffic generator sends signals in order (metrics, traces, logs) per
     // iteration. Using equal weights with max_batch_size=30 ensures exactly 10 of
-    // each signal type per iteration (30 total). No rate limit — the budget is
+    // each signal type per iteration (30 total). No rate limit -- the budget is
     // governed entirely by max_signal_count.
     let phase1_signals = 30u64;
 
-    // ── Phase 1: Ingest mixed signals, all NACKs (data persists in segments) ─
+    // -- Phase 1: Ingest mixed signals, all NACKs (data persists in segments) -
     let config = TestConfigBuilder::new(buffer_path.clone())
         .max_signal_count(Some(phase1_signals))
         .max_batch_size(30)
-        .signals_per_second(None) // No rate limit — budget governed by max_signal_count
+        .signals_per_second(None) // No rate limit -- budget governed by max_signal_count
         .signal_weights(1, 1, 1) // Equal distribution: 10 metrics + 10 traces + 10 logs
         .use_error_exporter()
         .otlp_handling("pass_through") // OTLP pass-through: exercises wire-format scanning
@@ -1676,7 +1676,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
         }),
     );
 
-    // ── Between phases: verify per-signal item_count in segment manifests ────
+    // -- Between phases: verify per-signal item_count in segment manifests ----
     assert!(
         segments_dir.exists(),
         "Segments directory should exist after Phase 1"
@@ -1740,7 +1740,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
          logs={log_items}, traces={trace_items}, metrics={metric_items})"
     );
 
-    // ── Phase 2: Recovery run with counting exporter + metrics capture ──
+    // -- Phase 2: Recovery run with counting exporter + metrics capture --
     let phase2_signals = 12u64;
     let counter = Arc::new(AtomicU64::new(0));
     let test_id = "item_count_metrics";
@@ -1777,13 +1777,13 @@ fn test_durable_buffer_otlp_item_count_metrics() {
          ({phase1_signals} recovered + {phase2_signals} new), got {delivered}"
     );
 
-    // ── Validate durable buffer telemetry metrics ───────────────────────
+    // -- Validate durable buffer telemetry metrics -----------------------
     // The metrics were captured after at least one CollectTelemetry cycle
     // completed, so counters and gauges should reflect the pipeline's activity.
     eprintln!("Durable buffer metrics snapshot: {metrics_snapshot:?}");
 
     // Consumed counters count items ingested in THIS pipeline run only (Phase 2).
-    // Phase 2 generates phase2_signals with equal weights → phase2_signals/3 each.
+    // Phase 2 generates phase2_signals with equal weights -> phase2_signals/3 each.
     let phase2_per_signal = phase2_signals / 3;
     assert_eq!(
         metrics_snapshot.item_operation("logs", "consumed"),
@@ -1816,7 +1816,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
 
     // All bundles ACKed, none NACKed (counting exporter always succeeds).
     // The exact bundle count depends on internal batching decisions (how many
-    // items get grouped per bundle), but there must be at least 3 — one per
+    // items get grouped per bundle), but there must be at least 3 -- one per
     // signal type (logs, traces, metrics).
     assert!(metrics_snapshot.bundle_outcome("acked") >= 3);
     assert_eq!(metrics_snapshot.bundle_outcome("deferred"), 0);
@@ -1825,7 +1825,7 @@ fn test_durable_buffer_otlp_item_count_metrics() {
     // No errors, drops, or expirations in a clean run.
     assert_eq!(metrics_snapshot.operational("read.errors"), 0);
 
-    // No NACKs → no requeues, and all data drained → queued gauges at zero.
+    // No NACKs -> no requeues, and all data drained -> queued gauges at zero.
     assert_eq!(metrics_snapshot.item_operation("logs", "requeued"), 0);
     assert_eq!(metrics_snapshot.item_operation("metrics", "requeued"), 0);
     assert_eq!(metrics_snapshot.item_operation("traces", "requeued"), 0);
@@ -1938,7 +1938,7 @@ fn test_durable_buffer_permanent_nack_rejects_without_retry() {
         .max_batch_size(5)
         .signals_per_second(Some(50))
         // Mix of traces (50%) and logs (50%) to exercise all queued gauge decrements.
-        // No metrics (pdata metrics view not yet implemented — see payload.rs:290).
+        // No metrics (pdata metrics view not yet implemented -- see payload.rs:290).
         .signal_weights(0, 50, 50)
         .use_flaky_exporter()
         .exporter_id(test_id)
