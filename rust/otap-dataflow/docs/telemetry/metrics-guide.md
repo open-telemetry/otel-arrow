@@ -48,7 +48,7 @@ Metrics are for entity behavior, not request identity.
 ## Metric and metric set
 
 *Metrics* in this project use the instrument types supported by our internal
-telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
+telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for details):
 
 - Counter: monotonic counts of events or outcomes, recorded as deltas.
 - UpDownCounter: signed deltas that can increase or decrease over time.

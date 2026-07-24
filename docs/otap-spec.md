@@ -926,7 +926,7 @@ hashing, too few client connections can pin traffic to a single backend core.
 
 For a detailed treatment of challenges, solution techniques (client-side and
 server-side), and recommended baseline configurations, see
-[Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
+[Load Balancing: Challenges & Solutions](../rust/otap-dataflow/docs/load-balancing.md).
 
 ---
 
