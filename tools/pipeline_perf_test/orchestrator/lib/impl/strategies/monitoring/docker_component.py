@@ -283,6 +283,15 @@ def monitor(
         "{cpu}",
         "Number of CPU cores allocated to the application running in the container",
     )
+    cpu_time_gauge = meter.create_gauge(
+        "container.cpu.time",
+        "s",
+        "Cumulative CPU time consumed by the container since start, in seconds. "
+        "Sourced from cgroup CPU accounting (docker stats total_usage). Unlike "
+        "container.cpu.usage (an instantaneous utilization ratio), this is an "
+        "absolute work measure; the report derives per-window CPU-seconds "
+        "(cpu_seconds) from it.",
+    )
     memory_usage_gauge = meter.create_gauge(
         "container.memory.usage", "By", "Memory usage of the container."
     )
@@ -331,6 +340,11 @@ def monitor(
                 # CPU usage calculation
                 cpu_stats = stat_data["cpu_stats"]
                 precpu_stats = stat_data["precpu_stats"]
+                # Cumulative CPU time (nanoseconds -> seconds). Monotonic; the
+                # report derives per-window CPU-seconds as MAX - MIN. Available
+                # on every runner (no perf/PMU needed), so it works on
+                # GitHub-hosted runners as well as dedicated hardware.
+                cpu_time_gauge.set(cpu_stats["cpu_usage"]["total_usage"] / 1e9, labels)
                 cpu_delta = (
                     cpu_stats["cpu_usage"]["total_usage"]
                     - precpu_stats["cpu_usage"]["total_usage"]

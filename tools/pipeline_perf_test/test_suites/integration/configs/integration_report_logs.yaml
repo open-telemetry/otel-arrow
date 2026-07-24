@@ -85,6 +85,24 @@ queries:
           with_rate AS wr
           ON wr.timestamp BETWEEN ow.start_ts AND ow.stop_ts
         GROUP BY component_name, metric_name
+  - name: Component CPU Time
+    sql: |
+      CREATE TABLE component_cpu_time AS
+        WITH metrics_filtered AS (
+          SELECT
+            "metric_attributes.component_name" AS component_name,
+            timestamp,
+            value
+          FROM metrics
+          WHERE metric_name = 'container.cpu.time'
+        )
+        SELECT
+          m.component_name,
+          MAX(m.value) - MIN(m.value) AS cpu_seconds
+        FROM observation_window AS ow
+        JOIN metrics_filtered AS m
+          ON m.timestamp BETWEEN ow.start_ts AND ow.stop_ts
+        GROUP BY m.component_name;
   - name: Component Metric Rates By Core ID
     sql: |
       CREATE TABLE send_receive_rates_by_core AS WITH
@@ -358,6 +376,14 @@ queries:
 
           UNION ALL
 
+          SELECT 'cpu_seconds' AS name, 's' AS unit, cpu_seconds AS value,
+                metadata_row."test.suite" || '/' || metadata_row."test.name" || ' - CPU Seconds' AS extra
+          FROM component_cpu_time
+          CROSS JOIN metadata_row
+          WHERE component_name IN ('go-collector', 'df-engine')
+
+          UNION ALL
+
           SELECT 'uncompressed_bytes_per_log' AS name, 'bytes/log' AS unit,
                 CASE WHEN logs.total_increase > 0
                   THEN bytes.total_increase / logs.total_increase
@@ -379,6 +405,8 @@ result_tables:
     description: Cumulative increase and average rate of various send / receive metrics
   - name: component_resource_metrics
     description: CPU and Memory metrics for the components in the Test Suite during the test.
+  - name: component_cpu_time
+    description: CPU-seconds consumed per component during the observation window (cgroup accounting).
   - name: log_loss
     description: Lost logs (failed or sent but not received) total and as a percentage
   - name: log_throughput_rates
