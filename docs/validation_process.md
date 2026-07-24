@@ -42,7 +42,7 @@ resilience of the decoding process to invalid data. The decoding layer must be
 able to handle any invalid data and return appropriate error messages without
 crashing.
 
-![Decoding of invalid data](./img/OTEL%20-%20Chaos%20Engineering.png)
+![Decoding of invalid data](./img/OTEL%20-%20Chaos%20engineering.png)
 
 ## Collector validation
 
