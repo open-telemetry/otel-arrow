@@ -13,7 +13,7 @@ arrow.workspace = true
 tokio.workspace = true
 serde_json.workspace = true
 otap-df-core-nodes = { workspace = true, features = ["dev-tools", "bench"] }
-otap-df-otap = { workspace = true }
+otap-df-otap = { workspace = true, features = ["test-utils"] }
 
 [dev-dependencies]
 criterion = { workspace = true, features = ["html_reports", "async_tokio"] }
@@ -23,7 +23,7 @@ prost = { workspace = true }
 otap-df-control-channel = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-channel = { workspace = true }
-otap-df-engine = { workspace = true }
+otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
@@ -32,7 +32,6 @@ otap-df-pdata-views = { workspace = true }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["registry"] }
 
-fluke-hpack.workspace = true
 futures-channel.workspace = true
 futures.workspace = true
 flume.workspace = true
