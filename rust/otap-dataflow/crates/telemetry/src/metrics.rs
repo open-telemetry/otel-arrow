@@ -54,18 +54,9 @@ pub const fn check_cardinality(cardinality: usize) {
     );
 }
 
-/// Numeric metric value — a scalar integer or float, a pre-aggregated MMSC
-/// summary, or a full [`Distribution`] aggregation.
-///
-/// The `Distribution` variant boxes its aggregation and is not `Copy`; carry
-/// values by reference or clone explicitly. The scalar and `Mmsc` variants are
-/// small and cheap to clone.
-///
-/// A `Distribution` serializes to (and deserializes from) the OTel
-/// exponential-histogram point form via [`DistributionValue`]. The variant is
-/// declared before `Mmsc` so that, under `#[serde(untagged)]`, an
-/// exponential-histogram point object is not mis-parsed as an `Mmsc` summary.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Metric value -- a scalar integer or float, or a pre-aggregated
+/// histogram or min-max-sum-count.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for scalars/boxed distribution; acceptable for internal telemetry.
 pub enum MetricValue {
@@ -518,6 +509,17 @@ pub struct MeasurementMetricSet<M: MeasurementMetricSetHandler> {
     pub(crate) entity_key: EntityKey,
     pub(crate) buckets: Vec<M>,
     pub(crate) touched: Vec<u64>,
+}
+
+impl<M: MeasurementMetricSetHandler + Clone> Clone for MeasurementMetricSet<M> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            entity_key: self.entity_key,
+            buckets: self.buckets.clone(),
+            touched: self.touched.clone(),
+        }
+    }
 }
 
 impl<M: MeasurementMetricSetHandler + Debug> Debug for MeasurementMetricSet<M> {

@@ -136,9 +136,9 @@ pub struct QuiverEngine {
     set_permissions_supported: bool,
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // QuiverEngineBuilder
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Builder for creating a [`QuiverEngine`] with customizable options.
 ///
@@ -607,7 +607,7 @@ impl QuiverEngine {
         self.metrics.record_ingest_attempt();
 
         // Step 0: Check budget watermark before doing any work.
-        // This is a best-effort gate — see "Budget gating" in the doc comment.
+        // This is a best-effort gate -- see "Budget gating" in the doc comment.
         // If usage exceeds the soft cap, attempt cleanup before rejecting.
         if self.budget.is_over_soft_cap() {
             // Try cleaning up fully-consumed segments first (no data loss)
@@ -865,7 +865,7 @@ impl QuiverEngine {
                 }
             };
 
-            // Skip WAL entries that are older than max_age — replaying them
+            // Skip WAL entries that are older than max_age -- replaying them
             // would effectively reset their age to zero and cause them to be
             // retained longer than intended.
             //
@@ -1005,7 +1005,7 @@ impl QuiverEngine {
     /// Flushes the current open segment to disk, making all ingested data
     /// available to subscribers.
     ///
-    /// This is a checkpoint operation—the engine remains fully operational
+    /// This is a checkpoint operation--the engine remains fully operational
     /// and can continue accepting new bundles. Use this when you need to
     /// ensure all ingested data is durable and visible to subscribers without
     /// shutting down.
@@ -1184,9 +1184,9 @@ impl QuiverEngine {
         Ok(())
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Subscriber API
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /// Registers a new subscriber with the given ID.
     ///
@@ -1296,9 +1296,9 @@ impl QuiverEngine {
         self.registry.claim_bundle(id, bundle_ref)
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Maintenance API
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /// Deletes segment files that have been fully processed by all subscribers.
     ///
@@ -1576,9 +1576,9 @@ impl QuiverEngine {
         })
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Accessors
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /// Returns a reference to the underlying segment store.
     ///
@@ -1665,7 +1665,7 @@ fn probe_set_permissions_support(dir: &Path) -> bool {
 
     // Create a temporary probe file. If this fails (disk full, quota exceeded,
     // directory missing, etc.) we cannot probe permissions at all. Treat this as
-    // a setup error rather than evidence that permissions are unsupported —
+    // a setup error rather than evidence that permissions are unsupported --
     // default to `true` so we don't silently disable readonly enforcement.
     let file_created = match fs::File::create(&probe_path) {
         Ok(_file) => true,
@@ -1757,7 +1757,7 @@ fn probe_set_permissions_support(dir: &Path) -> bool {
 
 const fn segment_cfg_hash(_config: &QuiverConfig) -> [u8; 16] {
     // Placeholder: the segment_cfg_hash should be derived from adapter-owned
-    // layout contracts (slot id → payload mappings, per-slot ordering, checksum
+    // layout contracts (slot id -> payload mappings, per-slot ordering, checksum
     // policy toggles) once available. Operational knobs like segment.target_size,
     // flush cadence, or retention caps are intentionally excluded so that tuning
     // never invalidates an otherwise healthy WAL.
@@ -2120,7 +2120,7 @@ mod tests {
         assert!(bundle.payload(SlotId::new(10)).is_none());
     }
 
-    /// End-to-end test validating the full ingest → segment → WAL cursor flow.
+    /// End-to-end test validating the full ingest -> segment -> WAL cursor flow.
     ///
     /// This test verifies:
     /// 1. Bundles are appended to the WAL
@@ -3460,7 +3460,7 @@ mod tests {
 
         // Cleanup should reclaim completed segments and free budget space.
         // (With the watermark design, cleanup is called inline during ingest
-        // when the soft cap is exceeded — this test verifies the mechanism works.)
+        // when the soft cap is exceeded -- this test verifies the mechanism works.)
     }
 
     #[tokio::test]
@@ -3841,9 +3841,9 @@ mod tests {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Async API tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /// Helper to create an engine and ingest data asynchronously.
     async fn setup_engine_with_data(dir: &Path, bundle_count: usize) -> Arc<QuiverEngine> {
@@ -4967,7 +4967,7 @@ mod tests {
 
         assert_eq!(engine.segment_store().segment_count(), 0);
 
-        // Ingest new data — new segments should have sequence numbers
+        // Ingest new data -- new segments should have sequence numbers
         // that don't overlap with the deleted ones
         let bundle = DummyBundle::with_rows(50);
         engine.ingest(&bundle).await.expect("ingest");
@@ -4986,9 +4986,9 @@ mod tests {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------------
     // WAL Replay Tests
-    // ─────────────────────────────────────────────────────────────────────────────
+    // -----------------------------------------------------------------------------
 
     #[tokio::test]
     async fn wal_replay_recovers_bundles_not_finalized_to_segments() {
@@ -5712,7 +5712,7 @@ mod tests {
             let total = engine.open_segment.lock().bundle_count();
             assert_eq!(total, old_bundles + fresh_bundles);
 
-            // Drop engine without flushing — simulates crash
+            // Drop engine without flushing -- simulates crash
         }
 
         // Phase 2: Reopen with max_age enabled. WAL replay should skip
@@ -5785,7 +5785,7 @@ mod tests {
             }
 
             assert_eq!(engine.open_segment.lock().bundle_count(), total_bundles);
-            // Drop without flush — simulates crash
+            // Drop without flush -- simulates crash
         }
 
         // Phase 2: Reopen with max_age. All entries should be skipped.
@@ -5806,7 +5806,7 @@ mod tests {
                 .await
                 .expect("engine");
 
-            // Open segment should be empty — nothing was replayed
+            // Open segment should be empty -- nothing was replayed
             assert_eq!(
                 engine.open_segment.lock().bundle_count(),
                 0,
@@ -5820,7 +5820,7 @@ mod tests {
             );
         }
 
-        // Phase 3: Reopen again to verify cursor was persisted — the engine
+        // Phase 3: Reopen again to verify cursor was persisted -- the engine
         // should not re-process the expired entries (expired_bundles stays 0
         // on this open because everything was already consumed).
         {
@@ -5849,7 +5849,7 @@ mod tests {
             assert_eq!(
                 engine.expired_bundles(),
                 0,
-                "expired_bundles should be 0 — cursor was persisted, no re-processing"
+                "expired_bundles should be 0 \u{2014} cursor was persisted, no re-processing"
             );
         }
     }
@@ -5861,7 +5861,7 @@ mod tests {
             probe_set_permissions_support(dir.path()),
             "set_permissions should succeed on a normal tmpdir filesystem"
         );
-        // Probe file should be cleaned up — no leftover files with the probe prefix
+        // Probe file should be cleaned up -- no leftover files with the probe prefix
         let leftover: Vec<_> = fs::read_dir(dir.path())
             .unwrap()
             .filter_map(|e| e.ok())
@@ -5929,7 +5929,7 @@ mod tests {
         // We want some segments finalized on disk AND some un-finalized WAL
         // entries that will trigger finalization during replay.
         //
-        // Each bundle of 50 rows ≈ 1–2 KB.  With target = 4 KB we need
+        // Each bundle of 50 rows ~= 1-2 KB.  With target = 4 KB we need
         // ~3-4 bundles to trigger finalization. Ingesting 12 bundles should
         // produce ~2-3 segments and leave a tail of un-finalized entries.
         let generous_budget = Arc::new(DiskBudget::new(
@@ -5981,7 +5981,7 @@ mod tests {
         // Set hard_cap = exact disk usage (or the minimum required by validation).
         // At startup, both WAL bytes and segment bytes are recorded via
         // `budget.add()`. The watermark design ensures finalization always
-        // proceeds — budget.add() is called after writing, and the
+        // proceeds -- budget.add() is called after writing, and the
         // `hard_cap >= wal_max + 2 * segment_size` validation ensures
         // there is structural room for at least one finalization.
         let disk_total = disk_segment_bytes + disk_wal_bytes;

@@ -87,7 +87,7 @@ use std::time::Duration;
 /// URN for the ETW receiver.
 pub const ETW_RECEIVER_URN: &str = "urn:otel:receiver:etw";
 
-// ── Defaults ─────────────────────────────────────────────────────────────────
+// -- Defaults -----------------------------------------------------------------
 
 // 512 is non-zero, so `unwrap()` never panics (evaluated at compile time).
 const DEFAULT_BATCH_MAX_SIZE: NonZeroU16 = NonZeroU16::new(512).unwrap();
@@ -100,7 +100,7 @@ const DEFAULT_BATCH_MAX_DURATION: Duration = Duration::from_millis(100);
 /// stall shutdown while a busy provider keeps producing events.
 const MAX_DRAIN_BUDGET: Duration = Duration::from_secs(1);
 
-// ── Configuration ────────────────────────────────────────────────────────────
+// -- Configuration ------------------------------------------------------------
 
 /// Trace level filter for ETW providers, matching the standard five ETW levels.
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
@@ -247,7 +247,7 @@ const fn default_batch_max_duration() -> Duration {
     DEFAULT_BATCH_MAX_DURATION
 }
 
-// ── Receiver struct ──────────────────────────────────────────────────────────
+// -- Receiver struct ----------------------------------------------------------
 
 /// ETW receiver that subscribes to Windows ETW trace sessions and converts
 /// events into OTAP Arrow log records.
@@ -311,7 +311,7 @@ impl EtwReceiver {
     }
 }
 
-// ── Batch flush helpers ──────────────────────────────────────────────────────
+// -- Batch flush helpers ------------------------------------------------------
 
 /// Build the pending Arrow batch from `builder`, recording the failure metric
 /// on error.
@@ -440,7 +440,7 @@ fn try_flush_batch(
     Ok(())
 }
 
-// ── Producer-side atomic folding ─────────────────────────────────────────────
+// -- Producer-side atomic folding ---------------------------------------------
 
 /// The per-session producer-side deltas claimed by a single `swap(0)` pass over
 /// the shared [`session::SessionWideMetrics`] atomics.
@@ -544,7 +544,7 @@ fn take_event_counts(telemetry: &session::SessionWideMetrics) -> EventCountsDelt
     }
 }
 
-// ── Event processing loop ────────────────────────────────────────────────────
+// -- Event processing loop ----------------------------------------------------
 
 impl EtwReceiver {
     /// Fold the per-session atomic counters - written by the `!Send`
@@ -743,7 +743,7 @@ impl EtwReceiver {
     }
 }
 
-// ── Factory registration ─────────────────────────────────────────────────────
+// -- Factory registration -----------------------------------------------------
 
 /// Register the ETW receiver in the pipeline factory.
 #[allow(unsafe_code)]
@@ -766,7 +766,7 @@ pub static ETW_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
-// ── Receiver trait implementation ────────────────────────────────────────────
+// -- Receiver trait implementation --------------------------------------------
 
 #[async_trait(?Send)]
 impl local::Receiver<OtapPdata> for EtwReceiver {
@@ -793,7 +793,7 @@ impl local::Receiver<OtapPdata> for EtwReceiver {
     }
 }
 
-// ── Telemetry ────────────────────────────────────────────────────────────────
+// -- Telemetry ----------------------------------------------------------------
 
 /// Receiver-level metrics for the ETW receiver.
 ///
@@ -1030,7 +1030,7 @@ mod tests {
         assert_eq!(cfg.max_duration, DEFAULT_BATCH_MAX_DURATION);
     }
 
-    // ── Producer-side atomic folding boundary cases ──────────────────
+    // -- Producer-side atomic folding boundary cases ------------------
     //
     // These exercise the "first core drains the whole delta" design of
     // `take_event_counts` / `EventCountsDelta::apply` without needing a

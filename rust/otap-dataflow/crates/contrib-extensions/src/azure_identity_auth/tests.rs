@@ -22,7 +22,7 @@ use super::extension::AzureIdentityAuthExtension;
 use super::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
 use super::*;
 
-// ── Config tests ───────────────────────────────────────────
+// -- Config tests -------------------------------------------
 
 fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
@@ -137,7 +137,7 @@ fn factory_is_registered_with_capability() {
     );
 }
 
-// ── Credential construction tests ──────────────────────────────
+// -- Credential construction tests ------------------------------
 
 #[test]
 fn managed_identity_system_assigned_credential_constructs() {
@@ -185,7 +185,7 @@ fn workload_identity_credential_construct_is_attempted() {
     }
 }
 
-// ── Token acquisition / cache tests ───────────────────────────
+// -- Token acquisition / cache tests ---------------------------
 
 #[derive(Debug)]
 struct MockCredential {
@@ -338,7 +338,7 @@ async fn clones_share_one_token_cache() {
     assert_eq!(streamed.expose_token(), "shared");
 }
 
-// ── Metrics tracker tests ─────────────────────────────────────
+// -- Metrics tracker tests -------------------------------------
 
 #[test]
 fn metrics_tracker_records_snapshots_and_reports() {
@@ -441,7 +441,7 @@ async fn token_stream_skips_initial_none() {
     assert_eq!(published.expose_token(), "streamed");
 }
 
-// ── schedule_next timing tests ────────────────────────────────
+// -- schedule_next timing tests --------------------------------
 
 /// Scenario: schedule the next refresh for a token expiring in ~1 hour.
 /// Guarantees: the refresh is scheduled TOKEN_EXPIRY_BUFFER_SECS before expiry
@@ -504,7 +504,7 @@ async fn schedule_next_pushes_non_expiring_far_out() {
     );
 }
 
-// ── retry backoff tests ───────────────────────────────────────
+// -- retry backoff tests ---------------------------------------
 
 #[test]
 fn retry_backoff_grows_exponentially_and_caps() {
@@ -522,7 +522,7 @@ fn retry_backoff_grows_exponentially_and_caps() {
     assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
 }
 
-// ── jitter_refresh tests ──────────────────────────────────────
+// -- jitter_refresh tests --------------------------------------
 
 #[tokio::test]
 async fn jitter_refresh_preserves_min_interval_floor() {

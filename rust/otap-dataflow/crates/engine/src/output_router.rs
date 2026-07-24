@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Generic output port router shared by all processor and receiver
-//! `EffectHandler` variants (local/shared × processor/receiver).
+//! `EffectHandler` variants (local/shared x processor/receiver).
 
 use crate::StampOutputPort;
 use crate::error::{Error, TypedError};
