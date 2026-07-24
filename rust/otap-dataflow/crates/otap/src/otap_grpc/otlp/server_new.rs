@@ -314,7 +314,12 @@ impl Decoder for OtlpBytesDecoder {
         let len = src.remaining();
         if let Some(rate_limiter) = &self.rate_limiter {
             match rate_limiter.check_units(len as u64) {
-                RateAdmissionDecision::Admit | RateAdmissionDecision::WouldThrottle => {}
+                RateAdmissionDecision::Admit => {}
+                RateAdmissionDecision::WouldThrottle => {
+                    self.metrics
+                        .lock()
+                        .record_would_refuse_rate_limit(self.signal, OtlpProtocol::Grpc);
+                }
                 RateAdmissionDecision::Reject => {
                     self.metrics.lock().record_rejection(
                         OtlpProtocol::Grpc,

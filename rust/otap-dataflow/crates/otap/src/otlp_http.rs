@@ -603,9 +603,7 @@ impl HttpHandler {
                 && rate_limiter.is_exhausted()
             {
                 self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                return Err(rate_limit_unavailable(
-                    self.admission_state.retry_after_secs(),
-                ));
+                return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));
             }
 
             // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
@@ -687,6 +685,13 @@ impl HttpHandler {
                 ));
             }
 
+            if let Some(rate_limiter) = &self.rate_limiter
+                && rate_limiter.is_exhausted()
+            {
+                self.record_rejection(ReceiverRejectionErrorType::RateLimit);
+                return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));
+            }
+
             let max_len = self.settings.max_request_body_size as usize;
 
             let (parts, body) = req.into_parts();
@@ -742,7 +747,12 @@ impl HttpHandler {
             let payload_bytes = body.len() as u64;
             if let Some(rate_limiter) = &self.rate_limiter {
                 match rate_limiter.check_units(payload_bytes) {
-                    RateAdmissionDecision::Admit | RateAdmissionDecision::WouldThrottle => {}
+                    RateAdmissionDecision::Admit => {}
+                    RateAdmissionDecision::WouldThrottle => {
+                        self.metrics
+                            .lock()
+                            .record_would_refuse_rate_limit(signal, OtlpProtocol::Http);
+                    }
                     RateAdmissionDecision::Reject => {
                         self.record_rejection(ReceiverRejectionErrorType::RateLimit);
                         return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));

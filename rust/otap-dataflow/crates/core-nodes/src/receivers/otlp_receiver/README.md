@@ -102,6 +102,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
 
+#### `receiver.otlp.rate_limit`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `receiver.otlp.rate_limit.would_refuse` | `{request}` | `signal`, `protocol` | Number of requests admitted in observe-only mode that would be refused if rate limiting were enforced. |
+
 #### `receiver.otlp.acknowledgements`
 
 | Metric | Unit | Attributes | Description |
