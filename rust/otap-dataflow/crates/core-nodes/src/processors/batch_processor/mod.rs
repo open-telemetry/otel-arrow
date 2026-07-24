@@ -1863,12 +1863,9 @@ mod tests {
             })
             .collect();
 
-        let _signal = inputs_otlp[0].signal_type();
         let input_item_count: usize = inputs_otlp.iter().map(|m| m.num_items()).sum();
         let num_inputs = inputs_otlp.len();
         let total_events = events.len();
-        let _produced_total = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let produced_total_inner = _produced_total.clone();
 
         phase
             .run_test(move |mut ctx| async move {
@@ -2040,15 +2037,11 @@ mod tests {
 
                 // Test-specific validation.
                 (verify_outputs)(&event_outputs);
-
-                // Publish the produced batch count for the validate closure.
-                produced_total_inner.store(total_outputs, std::sync::atomic::Ordering::SeqCst);
             })
             .validate(move |_| async move {
                 // TODO: Not clear why, but this sleep is necessary (probably flaky)
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                let _produced = _produced_total.load(std::sync::atomic::Ordering::SeqCst);
             });
     }
 
