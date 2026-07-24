@@ -488,6 +488,17 @@ pub struct MeasurementMetricSet<M: MeasurementMetricSetHandler> {
     pub(crate) touched: Vec<u64>,
 }
 
+impl<M: MeasurementMetricSetHandler + Clone> Clone for MeasurementMetricSet<M> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            entity_key: self.entity_key,
+            buckets: self.buckets.clone(),
+            touched: self.touched.clone(),
+        }
+    }
+}
+
 impl<M: MeasurementMetricSetHandler + Debug> Debug for MeasurementMetricSet<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MeasurementMetricSet")

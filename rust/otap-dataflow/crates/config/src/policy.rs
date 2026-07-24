@@ -455,12 +455,12 @@ pub struct FlowBounds {
 pub enum FlowMetric {
     /// Aggregate processor compute duration across the flow.
     ComputeDuration,
-    /// Signal item count entering the flow.
-    SignalsIncoming,
-    /// Signal item count leaving the flow.
-    SignalsOutgoing,
-    /// Signal item count a decision node chose to drop.
-    SignalsDropped,
+    /// Item count consumed at the start of the flow.
+    ConsumedItems,
+    /// Item count produced at the end of the flow.
+    ProducedItems,
+    /// Item count a decision node chose to drop.
+    DroppedItems,
 }
 
 impl TelemetryPolicy {
@@ -1120,9 +1120,9 @@ unknown_recovery_option: true
         let flow = &policy.flow_metrics[0];
         assert!(flow.metrics.is_none());
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(flow.has(super::FlowMetric::SignalsIncoming));
-        assert!(flow.has(super::FlowMetric::SignalsOutgoing));
-        assert!(flow.has(super::FlowMetric::SignalsDropped));
+        assert!(flow.has(super::FlowMetric::ConsumedItems));
+        assert!(flow.has(super::FlowMetric::ProducedItems));
+        assert!(flow.has(super::FlowMetric::DroppedItems));
     }
 
     #[test]
@@ -1136,9 +1136,9 @@ unknown_recovery_option: true
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_metrics[0];
         assert!(flow.has(super::FlowMetric::ComputeDuration));
-        assert!(!flow.has(super::FlowMetric::SignalsIncoming));
-        assert!(!flow.has(super::FlowMetric::SignalsOutgoing));
-        assert!(!flow.has(super::FlowMetric::SignalsDropped));
+        assert!(!flow.has(super::FlowMetric::ConsumedItems));
+        assert!(!flow.has(super::FlowMetric::ProducedItems));
+        assert!(!flow.has(super::FlowMetric::DroppedItems));
     }
 
     #[test]
@@ -1147,11 +1147,11 @@ unknown_recovery_option: true
             flow_metrics:
               - id: flow1
                 bounds: { start_node: a, end_node: b }
-                metrics: [signals_dropped]
+                metrics: [dropped_items]
         "#;
         let policy: super::TelemetryPolicy = serde_yaml::from_str(yaml).expect("parse");
         let flow = &policy.flow_metrics[0];
-        assert!(flow.has(super::FlowMetric::SignalsDropped));
+        assert!(flow.has(super::FlowMetric::DroppedItems));
         assert!(!flow.has(super::FlowMetric::ComputeDuration));
     }
 
