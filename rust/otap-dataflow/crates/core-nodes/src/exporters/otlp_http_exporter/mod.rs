@@ -228,6 +228,11 @@ struct CompletedExport {
     context: Context,
     saved_payload: OtapPayload,
     signal_type: SignalType,
+    /// Generation of the bearer token stamped on this request (`None` when no
+    /// provider is bound). Echoed back so a 401 invalidates exactly the token
+    /// that was used, not a newer one already cached (see
+    /// [`BearerAuth::invalidate`]).
+    token_generation: Option<u64>,
 }
 
 #[async_trait(?Send)]
@@ -361,21 +366,19 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                 // which would otherwise busy-loop.
                 completed = inflight_exports.next_completion(), if !inflight_exports.is_empty() => {
                     if let Some(completed) = completed {
-                        let auth_rejected = finalize_completed_export(
+                        let rejected_generation = finalize_completed_export(
                             completed,
                             &effect_handler,
                             &mut self.pdata_metrics,
                             auth_bound,
                         )
                         .await;
-                        if auth_rejected {
-                            // Server rejected the current token (401); drop it so
-                            // intake back-pressures until `token_stream` delivers a
-                            // fresh one, and the retry never reuses the rejected token.
-                            if let Some(a) = auth.as_mut() {
-                                a.invalidate();
-                            }
-                        }
+                        // Server rejected the token this request used (401); drop
+                        // exactly that generation so intake back-pressures until
+                        // `token_stream` delivers a fresh one, and the retry never
+                        // reuses the rejected token. A stale 401 (a newer token was
+                        // already cached) is ignored by the generation guard.
+                        apply_auth_rejection(&mut auth, rejected_generation);
                     }
                     continue;
                 }
@@ -394,13 +397,16 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     otel_info!("otlp.exporter.http.shutdown", reason = reason);
                     while !inflight_exports.is_empty() {
                         if let Some(completed) = inflight_exports.next_completion().await {
-                            let _ = finalize_completed_export(
+                            let rejected_generation = finalize_completed_export(
                                 completed,
                                 &effect_handler,
                                 &mut self.pdata_metrics,
                                 auth_bound,
                             )
                             .await;
+                            // Honor a 401 even while draining, so a later
+                            // force-drained request cannot reuse the rejected token.
+                            apply_auth_rejection(&mut auth, rejected_generation);
                         }
                     }
                     return Ok(TerminalState::new(
@@ -439,9 +445,16 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                         }
                     }
 
-                    // The cached bearer header, cloned per request, takes
-                    // precedence over any statically configured `authorization`.
-                    let auth_header = auth.as_ref().and_then(BearerAuth::header);
+                    // The cached bearer header, together with the generation of the
+                    // token it was built from, cloned per request. It takes
+                    // precedence over any statically configured `authorization`; the
+                    // generation is echoed back on completion so a 401 can be matched
+                    // to the exact token used and a stale rejection ignored.
+                    let (auth_header, token_generation) =
+                        match auth.as_ref().and_then(BearerAuth::header) {
+                            Some((header, generation)) => (Some(header), Some(generation)),
+                            None => (None, None),
+                        };
 
                     // For the OtapArrowRecords path we keep the uncompressed bytes in
                     // `proto_buffer` rather than materializing them into a `Bytes` up front: when
@@ -558,13 +571,16 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                     while inflight_exports.len() >= max_in_flight {
                         match inflight_exports.next_completion().await {
                             Some(completed) => {
-                                let _ = finalize_completed_export(
+                                let rejected_generation = finalize_completed_export(
                                     completed,
                                     &effect_handler,
                                     &mut self.pdata_metrics,
                                     auth_bound,
                                 )
                                 .await;
+                                // Honor a 401 here too, so the next force-drained
+                                // request does not reuse the rejected token.
+                                apply_auth_rejection(&mut auth, rejected_generation);
                             }
                             None => break,
                         }
@@ -598,6 +614,7 @@ impl Exporter<OtapPdata> for OtlpHttpExporter {
                             context,
                             saved_payload,
                             signal_type,
+                            token_generation,
                         }
                     })
                 }
@@ -805,24 +822,37 @@ async fn collect_body(response: Response, max_len: usize) -> Result<Bytes, Servi
     Ok(buf.freeze())
 }
 
+/// Applies a 401 rejection reported by [`finalize_completed_export`] to the
+/// bearer adapter: drops the rejected token generation so a retry waits for a
+/// fresh token instead of reusing the rejected one. A no-op when no provider is
+/// bound (`rejected_generation` is `None`) or the rejection is stale (a newer
+/// token was already cached), per [`BearerAuth::invalidate`]'s generation guard.
+fn apply_auth_rejection(auth: &mut Option<BearerAuth>, rejected_generation: Option<u64>) {
+    if let (Some(generation), Some(adapter)) = (rejected_generation, auth.as_mut()) {
+        adapter.invalidate(generation);
+    }
+}
+
 async fn finalize_completed_export(
     completed: CompletedExport,
     effect_handler: &EffectHandler<OtapPdata>,
     pdata_metrics: &mut MeasurementMetricSet<ExporterPDataExportMetrics>,
     auth_bound: bool,
-) -> bool {
+) -> Option<u64> {
     let CompletedExport {
         result,
         context,
         saved_payload,
         signal_type,
+        token_generation,
     } = completed;
 
     let pdata = OtapPdata::new(context, saved_payload);
 
-    // Set when the server rejected the current bearer token (401), so the caller
-    // can invalidate it before the batch is retried.
-    let mut auth_rejected = false;
+    // Set to the rejected token's generation when the server rejected the token
+    // this request used (401), so the caller can invalidate exactly that
+    // generation before the batch is retried.
+    let mut rejected_generation = None;
     let err = match result {
         Ok(service_resp) => service_resp.partial_success.and_then(|partial_success| {
             // As per OTLP HTTP spec, the server may use partial success to convey information
@@ -851,10 +881,13 @@ async fn finalize_completed_export(
         }),
         Err(e) => {
             // With a bearer token provider bound, a 401 usually means the cached
-            // token lapsed or a refresh raced, so retry rather than drop; flag it
-            // so the caller invalidates the rejected token before the retry.
+            // token lapsed or a refresh raced, so retry rather than drop; record
+            // the rejected generation so the caller invalidates exactly the token
+            // that was used before the retry.
             let auth_failure = auth_bound && e.is_auth_failure();
-            auth_rejected = auth_failure;
+            if auth_failure {
+                rejected_generation = token_generation;
+            }
             let retryable = e.is_retryable() || auth_failure;
             Some((e.to_string(), retryable))
         }
@@ -888,7 +921,7 @@ async fn finalize_completed_export(
         .messages
         .inc();
 
-    auth_rejected
+    rejected_generation
 }
 
 /// A simple pool of HTTP clients to allow for concurrent exports.
@@ -2498,6 +2531,7 @@ mod test {
             context: Context::default(),
             saved_payload: OtlpProtoBytes::ExportLogsRequest(Bytes::new()).into(),
             signal_type: SignalType::Logs,
+            token_generation: None,
         };
 
         let _ = Runtime::new().unwrap().block_on(finalize_completed_export(

@@ -44,6 +44,11 @@ pub(crate) struct BearerAuth {
     cached_header: Option<HeaderValue>,
     /// Expiry of the token behind `cached_header` (`None` = non-expiring).
     cached_expiry: Option<Instant>,
+    /// Monotonically increasing id of the currently cached token, bumped on each
+    /// successful refresh (starts at 0, meaning "no token yet"). Stamped onto
+    /// each request so a later 401 can be matched to the exact token generation
+    /// it used, letting a rejection for an already-replaced token be ignored.
+    generation: u64,
 }
 
 impl BearerAuth {
@@ -57,6 +62,7 @@ impl BearerAuth {
             stream_active: true,
             cached_header: None,
             cached_expiry: None,
+            generation: 0,
         }
     }
 
@@ -87,11 +93,14 @@ impl BearerAuth {
         }
     }
 
-    /// The cached `Authorization` header to stamp on a request, cloned for the
-    /// per-request send (a cheap refcount bump). `None` when no token is cached;
-    /// callers should gate on [`is_ready`](Self::is_ready) first.
-    pub(crate) fn header(&self) -> Option<HeaderValue> {
-        self.cached_header.clone()
+    /// The cached `Authorization` header to stamp on a request, together with the
+    /// generation of the token it was built from, cloned for the per-request send
+    /// (a cheap refcount bump). `None` when no token is cached; callers
+    /// should gate on [`is_ready`](Self::is_ready) first.
+    pub(crate) fn header(&self) -> Option<(HeaderValue, u64)> {
+        self.cached_header
+            .clone()
+            .map(|header| (header, self.generation))
     }
 
     /// The instant at which a currently-usable, expiring token crosses the
@@ -107,13 +116,20 @@ impl BearerAuth {
             .and_then(|expires_on| expires_on.checked_sub(TOKEN_USABLE_MARGIN))
     }
 
-    /// Drops the cached token so [`is_ready`](Self::is_ready) returns false until
-    /// the next refresh delivers a new one. Called when the server rejects the
-    /// current token (HTTP 401) so a retry waits for a fresh token rather than
-    /// reusing the rejected one.
-    pub(crate) fn invalidate(&mut self) {
-        self.cached_header = None;
-        self.cached_expiry = None;
+    /// Drops the cached token *if* `generation` is still the one currently cached,
+    /// so [`is_ready`](Self::is_ready) returns false until the next refresh
+    /// delivers a new one. Called when the server rejects a token (HTTP 401) so a
+    /// retry waits for a fresh token rather than reusing the rejected one.
+    ///
+    /// The generation guard makes a stale 401 harmless: if a newer token was
+    /// cached (or the rejected token already cleared) after the failing request
+    /// was sent, `generation` no longer matches the current one and the
+    /// still-valid token is kept, avoiding a needless back-pressure stall.
+    pub(crate) fn invalidate(&mut self, generation: u64) {
+        if generation == self.generation && self.cached_header.is_some() {
+            self.cached_header = None;
+            self.cached_expiry = None;
+        }
     }
 
     /// Awaits the next published token and refreshes the cache. Only meaningful
@@ -129,6 +145,9 @@ impl BearerAuth {
                         value.set_sensitive(true);
                         self.cached_header = Some(value);
                         self.cached_expiry = token.expires_on();
+                        // A new cached token starts a new generation, so a 401 for
+                        // an earlier token no longer matches and is ignored.
+                        self.generation = self.generation.wrapping_add(1);
                     }
                     Err(e) => {
                         // Malformed token: keep the previous cached token (if any).
@@ -148,5 +167,55 @@ impl BearerAuth {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::stream;
+
+    /// Builds an adapter holding a usable, non-expiring token at `generation`,
+    /// with an inert (empty) stream so only `invalidate` behavior is exercised.
+    fn auth_with_cached_token(generation: u64) -> BearerAuth {
+        BearerAuth {
+            stream: stream::empty().boxed_local(),
+            stream_active: false,
+            cached_header: Some(HeaderValue::from_static("Bearer test-token")),
+            cached_expiry: None,
+            generation,
+        }
+    }
+
+    // Scenario: a 401 names the token generation currently cached.
+    // Guarantees: the rejected token is dropped so intake back-pressures until a
+    // fresh token arrives, instead of the retry reusing the rejected token.
+    #[test]
+    fn invalidate_drops_the_matching_generation() {
+        let mut auth = auth_with_cached_token(7);
+        assert!(auth.is_ready());
+
+        auth.invalidate(7);
+
+        assert!(
+            !auth.is_ready(),
+            "a 401 for the cached generation must clear the token"
+        );
+    }
+
+    // Scenario: a 401 names an older generation than the one now cached, i.e. a
+    // newer token was published after the failing request was sent.
+    // Guarantees: the still-valid current token is kept, so a stale rejection
+    // does not stall exports until an unnecessary extra refresh.
+    #[test]
+    fn invalidate_ignores_a_stale_generation() {
+        let mut auth = auth_with_cached_token(7);
+
+        auth.invalidate(6);
+
+        assert!(
+            auth.is_ready(),
+            "a 401 for a superseded generation must not clear the newer token"
+        );
     }
 }
