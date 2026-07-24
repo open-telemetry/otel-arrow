@@ -97,7 +97,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523, signed client assertion). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
-| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override); TLS is on by default and a plaintext `token_url` requires an explicit `insecure` opt-in. A `timeout` bounds each request. |
+| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override). Production uses an `https://` `token_url`; `http://` (no TLS) is for local testing only. A `timeout` bounds each request. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
 
@@ -262,19 +262,21 @@ field is the engine's shared `otap_df_config::tls::TlsClientConfig` - the same
 type the OTLP/HTTP exporters use - so behavior and validation match the rest of
 the collector.
 
-TLS is **on by default and effectively mandatory**, enforced by convention rather
-than hard-coded: an `https://` `token_url` uses TLS, while a plaintext `http://`
-`token_url` is rejected at config time unless `tls.insecure: true` is set
-explicitly (local/testing only). Running without TLS is therefore a deliberate,
-visible choice, not an accident. `TlsClientConfig` also provides:
+TLS usage follows the `token_url` scheme: an `https://` endpoint is served over
+TLS (configured by the `tls` block), while a plaintext `http://` endpoint uses no
+TLS and is intended only for local development or testing. Production deployments
+must therefore use `https://` - OAuth 2.0 requires the token endpoint to be
+TLS-protected. The scheme is an explicit operator choice; the extension does not
+silently upgrade or downgrade it. `TlsClientConfig` configures how the TLS
+connection is made:
 
 - **Custom trust** - `ca_file` / `ca_pem` to trust a private or enterprise CA,
   plus `include_system_ca_certs_pool` (default `true`) for the system store.
 - **Mutual TLS** - `cert_file` / `key_file` present a client certificate, so the
   extension can authenticate to endpoints requiring mTLS client auth
   (RFC 8705) in addition to, or instead of, a client secret.
-- **SNI override** - `server_name` when connecting by IP or to a name that does
-  not match the server certificate.
+- **SNI override** - `server_name_override` when connecting by IP or to a name
+  that does not match the server certificate.
 
 `insecure_skip_verify` (TLS enabled but certificate verification skipped) is
 **not supported** by the Rust stack today; setting it fails fast at startup
@@ -473,9 +475,10 @@ effect.
   credentials are not embedded in pipeline config and can be rotated by updating
   the file; the extension re-reads them on each acquisition.
 - **Transport security.** TLS protects the client secret in transit and the
-  returned token; it is on by default, with `insecure` as a deliberate local-only
-  opt-out (see [Token-endpoint TLS](#token-endpoint-tls)). A `timeout` bounds each
-  token request so a hung endpoint cannot stall refresh.
+  returned token; production must use an `https://` `token_url`, with plaintext
+  `http://` reserved for local testing (see
+  [Token-endpoint TLS](#token-endpoint-tls)). A `timeout` bounds each token
+  request so a hung endpoint cannot stall refresh.
 - **Endpoint protection.** Slow-path fetch coalescing (`fetch_lock`) prevents
   request stampedes against the token endpoint on cache misses.
 - **Least privilege.** The extension requests exactly the configured `scopes`.
