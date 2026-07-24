@@ -92,7 +92,7 @@ jobs:
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-arg FEATURES=clickhouse-exporter --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Install dependencies
@@ -100,45 +100,17 @@ jobs:
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-      - name: Run pipeline performance test suite
+      - name: Run ClickHouse performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
+          python orchestrator/run_orchestrator.py --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml
 
-      - name: Run saturation/scaling performance test suite
+      - name: Upload ClickHouse benchmark results
         if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
-            | tee saturation-scaling-report.txt
-          echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Run single-core saturation max throughput test (OTLP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput.yaml
-
-      - name: Run single-core saturation max throughput test (OTAP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput-otap.yaml
-
-      - name: Run passthrough performance test (OTLP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
-
-      - name: Run passthrough performance test (OTAP)
-        if: ${{ !cancelled() }}
-        run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough-otap.yaml
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clickhouse-pipeline-perf-results
+          path: tools/pipeline_perf_test/results/clickhouse/gh-actions-benchmark/*.json
 
       - name: Post-run disk usage diagnostics
         if: always()
@@ -155,7 +127,8 @@ jobs:
       - name: Clean up Docker artifacts created by this job
         if: always()
         run: |
-          docker rmi -f df_engine 2>/dev/null || true
+          docker rm -f load-generator df-engine clickhouse 2>/dev/null || true
+          docker rmi -f df_engine clickhouse/clickhouse-server:25.6 2>/dev/null || true
           # Prune dangling (unused) build cache and images only.
           docker builder prune -f 2>/dev/null || true
           docker image prune -f 2>/dev/null || true

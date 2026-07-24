@@ -1,0 +1,196 @@
+load_tables:
+  clickhouse_validation:
+    path_template: 'results/clickhouse/validation/{{ metadata["test.name"] }}.csv'
+    format: csv
+
+queries:
+  - name: Calculate observation window
+    sql: |
+      CREATE TABLE observation_window AS
+      WITH event_times AS (
+        SELECT
+          "attributes.test.name" AS test_name,
+          name AS event_name,
+          TO_TIMESTAMP(timestamp / 1000000000.0) AS timestamp
+        FROM events
+        WHERE name IN ('observation_start', 'observation_stop')
+      )
+      SELECT
+        start.test_name,
+        start.timestamp AS start_ts,
+        stop.timestamp AS stop_ts
+      FROM metadata_row
+      JOIN event_times start
+        ON metadata_row."test.name" = start.test_name
+      JOIN event_times stop ON start.test_name = stop.test_name
+      WHERE start.event_name = 'observation_start'
+        AND stop.event_name = 'observation_stop'
+        AND start.timestamp < stop.timestamp;
+
+  - name: Calculate telemetry rates
+    sql: |
+      CREATE TABLE telemetry_rates AS
+      WITH filtered AS (
+        SELECT
+          timestamp,
+          metric_name,
+          "metric_attributes.component_name" AS component_name,
+          value
+        FROM metrics
+        WHERE metric_name IN ('logs_produced', 'log_rows_written', 'failed')
+      ),
+      deltas AS (
+        SELECT
+          *,
+          value - LAG(value) OVER (
+            PARTITION BY metric_name, component_name ORDER BY timestamp
+          ) AS delta,
+          EXTRACT(EPOCH FROM timestamp - LAG(timestamp) OVER (
+            PARTITION BY metric_name, component_name ORDER BY timestamp
+          )) AS elapsed
+        FROM filtered
+      )
+      SELECT
+        component_name,
+        metric_name,
+        SUM(delta) AS total_increase,
+        SUM(delta) / NULLIF(SUM(elapsed), 0) AS average_rate
+      FROM deltas
+      CROSS JOIN observation_window
+      WHERE timestamp BETWEEN start_ts AND stop_ts
+      GROUP BY component_name, metric_name;
+
+  - name: Calculate component resources
+    sql: |
+      CREATE TABLE component_resources AS
+      SELECT
+        "metric_attributes.component_name" AS component_name,
+        metric_name,
+        AVG(value) AS avg_value,
+        MAX(value) AS max_value
+      FROM metrics
+      CROSS JOIN observation_window
+      WHERE metric_name IN (
+        'container.cpu.usage',
+        'container.memory.usage',
+        'container.network.rx',
+        'container.network.tx'
+      )
+        AND timestamp BETWEEN start_ts AND stop_ts
+      GROUP BY "metric_attributes.component_name", metric_name;
+
+  - name: Calculate component core counts
+    sql: |
+      CREATE TABLE component_core_counts AS
+      SELECT
+        "metric_attributes.component_name" AS component_name,
+        MAX(value) AS core_count
+      FROM metrics
+      WHERE metric_name = 'container.cpu.allocated'
+      GROUP BY "metric_attributes.component_name";
+
+  - name: Calculate persisted log loss
+    sql: |
+      CREATE TABLE log_loss AS
+      WITH final_produced AS (
+        SELECT SUM(final_value) AS logs_produced
+        FROM (
+          SELECT
+            COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
+            MAX(value) AS final_value
+          FROM metrics
+          CROSS JOIN metadata_row
+          WHERE metric_name = 'logs_produced'
+            AND "metric_attributes.component_name" = 'load-generator'
+            AND timestamp >= CAST("test.start" AS TIMESTAMP WITH TIME ZONE)
+          GROUP BY core_id
+        )
+      )
+      SELECT
+        final_produced.logs_produced,
+        clickhouse_validation.logs_persisted_final,
+        final_produced.logs_produced -
+          clickhouse_validation.logs_persisted_final AS logs_lost,
+        CASE
+          WHEN final_produced.logs_produced > 0 THEN
+            (final_produced.logs_produced -
+              clickhouse_validation.logs_persisted_final) * 1.0 /
+              final_produced.logs_produced
+          ELSE NULL
+        END AS logs_lost_pct
+      FROM final_produced
+      CROSS JOIN clickhouse_validation;
+
+  - name: Create GitHub Actions benchmark data
+    sql: |
+      CREATE TABLE gh_actions_benchmark AS
+      SELECT
+        'dropped_logs_percentage' AS name,
+        '%' AS unit,
+        CAST(logs_lost_pct AS FLOAT) * 100 AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - Dropped Logs %' AS extra
+      FROM log_loss
+      CROSS JOIN metadata_row
+
+      UNION ALL
+
+      SELECT
+        metric_name || '_rate' AS name,
+        'rows/sec' AS unit,
+        average_rate AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ' || metric_name AS extra
+      FROM telemetry_rates
+      CROSS JOIN metadata_row
+      WHERE metric_name IN ('logs_produced', 'log_rows_written')
+
+      UNION ALL
+
+      SELECT
+        component_resources.component_name || '_cpu_percentage_normalized_avg' AS name,
+        '%' AS unit,
+        (avg_value / COALESCE(core_count, 1)) * 100 AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ' || component_resources.component_name || ' CPU' AS extra
+      FROM component_resources
+      LEFT JOIN component_core_counts USING (component_name)
+      CROSS JOIN metadata_row
+      WHERE metric_name = 'container.cpu.usage'
+        AND component_resources.component_name IN ('df-engine', 'clickhouse')
+
+      UNION ALL
+
+      SELECT
+        component_name || '_ram_mib_max' AS name,
+        'MiB' AS unit,
+        max_value / 1024 / 1024 AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - ' || component_name || ' RAM' AS extra
+      FROM component_resources
+      CROSS JOIN metadata_row
+      WHERE metric_name = 'container.memory.usage'
+        AND component_name IN ('df-engine', 'clickhouse')
+
+      UNION ALL
+
+      SELECT
+        'test_duration' AS name,
+        'seconds' AS unit,
+        EXTRACT(EPOCH FROM (stop_ts - start_ts)) AS value,
+        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
+          ' - Test Duration' AS extra
+      FROM observation_window
+      CROSS JOIN metadata_row;
+
+result_tables:
+  - name: telemetry_rates
+    description: Produced and ClickHouse-written log rates during the observation window.
+  - name: component_resources
+    description: Dataflow engine and ClickHouse resource usage.
+  - name: component_core_counts
+    description: Allocated CPU cores used to normalize component CPU utilization.
+  - name: log_loss
+    description: Terminal generated and final post-drain ClickHouse-persisted rows.
+  - name: gh_actions_benchmark
+    description: Metrics formatted for github-action-benchmark.
