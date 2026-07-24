@@ -96,7 +96,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers - and the background refresh - share one in-flight token request. |
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523, signed client assertion). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
-| Refresh tuning | `expiry_buffer` is user-configurable; the min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
+| Refresh tuning | `expiry_buffer` is user-configurable; the usability margin, min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
 | Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override). While `http://` endpoints are allowed, it is strongly recommended to use an `https://` `token_url`. Extension will throw a warning when `http://` endpoints are used. A `timeout` bounds each request. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
@@ -149,13 +149,23 @@ flowchart LR
    schedules the next refresh `expiry_buffer` ahead of expiry. After the first
    successful publish it calls `signal_ready()`, releasing the engine's readiness
    gate so the data path starts with a warm cache.
-3. **Fast-path read.** `get_token()` first checks the `watch` cache; a token
-   outside the refresh window is returned immediately - no token round-trip, no
-   lock.
-4. **Slow-path read.** On a cache miss (before the first refresh, or after a
-   failed refresh), `get_token()` performs a single token request under the
-   `fetch_lock` with double-checked caching, so concurrent callers coalesce onto
-   one in-flight request.
+3. **Fast-path read.** `get_token()` first checks the `watch` cache and returns
+   the cached token immediately - no token round-trip, no lock - as long as it is
+   still *usable*: outside a small usability margin (`TOKEN_USABLE_MARGIN`, 30s)
+   before its expiry. This usability margin is deliberately separate from, and
+   much smaller than, the proactive `expiry_buffer` refresh window: the token is
+   refreshed ~5m early in the background, but a token that has entered that
+   refresh window while still comfortably valid is served as-is. So a stalled
+   background refresh (e.g. an IdP outage) does not stop export several minutes
+   before the token actually expires.
+4. **Slow-path read.** On a cache miss (before the first refresh, or once the
+   cached token has entered the usability margin), `get_token()` takes the
+   `fetch_lock` and double-checks the cache; if it is still a miss it performs a
+   single token request, so concurrent callers coalesce onto one in-flight
+   request. A negative cache guards this path: if the most recent acquisition
+   failed within the retry cooldown (`TOKEN_REFRESH_RETRY_SECS`), `get_token()`
+   returns a throttle error instead of hitting the token endpoint again, leaving
+   the background loop to keep retrying on its own backoff cadence.
 5. **Stream.** `token_stream()` subscribes to the `watch` channel and yields each
    subsequent published token; the initial `None` is filtered out.
 
@@ -172,6 +182,7 @@ struct Inner {
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
     cap_err: CapabilityErrorSource<BearerTokenProvider>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
+    last_failure: std::sync::Mutex<Option<Instant>>,  // negative cache: throttle slow-path retries
     metrics: std::sync::Mutex<OAuth2ClientAuthMetricsTracker>,
 }
 ```
@@ -295,30 +306,37 @@ the `expiry_buffer` source differ:
    in flight, so a shutdown arriving mid-acquisition cancels the in-progress
    token call rather than letting a slow request run past the shutdown deadline,
    and telemetry flushes are serviced without interrupting a refresh.
-2. **Refresh timer** (`sleep_until(next_refresh)`):
-   - On tick: take the `fetch_lock` (the same one the slow-path `get_token` uses)
-     and re-check the cache. Coalesce onto a concurrently-acquired token **only
-     if it is not yet due for refresh** (still outside the `expiry_buffer`
-     window); a token that is merely still valid but inside that window does not
-     count, so a scheduled early refresh is never deferred by a concurrent
-     cache-miss fetch. Otherwise, acquire a new token.
+2. **Refresh timer** (`sleep_until(next_refresh)`), which first fires
+   immediately on startup:
+   - On tick: note the current `watch` version, then take the `fetch_lock` (the
+     same one the slow-path `get_token` uses). Coalesce onto a concurrent
+     acquisition **only if a slow-path `get_token` published a new token while we
+     waited for the lock** (the `watch` version changed) and that token is still
+     usable; otherwise acquire a new token. A token that is merely still valid is
+     not reused here: the loop refreshes ~`expiry_buffer` before expiry while a
+     token stays usable until the much smaller usability margin, so reusing it
+     would defer the planned early refresh far too long.
    - On success: publish with `send_replace` (updates the cache regardless of
-     subscriber count), reset the consecutive-failure count, then compute
-     `next_refresh` from `expires_on` minus `expiry_buffer` (clamped to a minimum
-     cadence) with a small negative jitter so per-core extensions do not all
-     refresh on the same tick.
-   - On failure: log and reschedule using bounded exponential backoff with jitter
-     (from the base retry delay up to the cap), tracking consecutive failures;
-     keep retrying for the lifetime of the extension. The backoff spreads retries
-     across cores so a token-endpoint outage is not stampeded on a fixed cadence.
+     subscriber count), reset the consecutive-failure count, clear the
+     `last_failure` negative cache, then compute `next_refresh` from `expires_on`
+     minus `expiry_buffer` (clamped to a minimum cadence) with a small negative
+     jitter so per-core extensions do not all refresh on the same tick.
+   - On failure: log, record the failure instant (so the slow path throttles its
+     own retries during the cooldown), and reschedule using bounded exponential
+     backoff with equal jitter - each delay is drawn from `[base/2, base]`, where
+     `base` doubles per consecutive failure from the base retry delay up to the
+     cap - tracking consecutive failures; keep retrying for the lifetime of the
+     extension. The backoff spreads retries across cores so a token-endpoint
+     outage is not stampeded on a fixed cadence.
 
 Tuning constants:
 
 | Constant | Value | Purpose |
 | --- | --- | --- |
-| `expiry_buffer` (config) | `5m` default | Refresh this far before `expires_on`. |
+| `expiry_buffer` (config) | `5m` default | Background loop refreshes this far before `expires_on`. |
+| `TOKEN_USABLE_MARGIN` | 30s | Safety margin before actual expiry within which the fast path treats a cached token as no longer usable. Deliberately much smaller than `expiry_buffer`: the background loop refreshes ~5m early, but a still-valid token keeps being served while that refresh is failing, so an IdP outage does not stop export until the token is genuinely near expiry (and the slow path is not stampeded during a transient outage). |
 | `MIN_TOKEN_REFRESH_INTERVAL_SECS` | 10 | Floor between successful refreshes; also the earliest a jittered refresh may land. Avoids busy-looping on near-expired tokens. |
-| `TOKEN_REFRESH_RETRY_SECS` | 10 | Base reschedule delay after a failed acquisition; doubles per consecutive failure. |
+| `TOKEN_REFRESH_RETRY_SECS` | 10 | Base reschedule delay after a failed acquisition; doubles per consecutive failure. Also the slow-path negative-cache cooldown that throttles `get_token()` retries after a failure. |
 | `MAX_TOKEN_REFRESH_RETRY_SECS` | 300 (5m) | Ceiling for the exponential retry backoff. |
 | `REFRESH_JITTER_SECS` | 60 | Max negative jitter applied to a scheduled refresh (never pulling it below the min cadence), to de-correlate per-core refreshes. |
 
