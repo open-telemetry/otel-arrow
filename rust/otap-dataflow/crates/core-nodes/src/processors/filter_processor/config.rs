@@ -9,6 +9,7 @@ use otap_df_pdata::otap::filter::{logs::LogFilter, metrics::MetricFilter, traces
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "default_metric_filter")]
     metrics: MetricFilter,
@@ -67,5 +68,25 @@ impl Config {
     #[must_use]
     pub const fn trace_filters(&self) -> &TraceFilter {
         &self.traces
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Config;
+    use serde_json::json;
+
+    /// Scenario: filter processor configuration contains an unknown top-level field.
+    /// Guarantees: typed startup validation rejects the field and identifies it by name.
+    #[test]
+    fn rejects_unknown_top_level_field() {
+        let error =
+            otap_df_config::validation::validate_typed_config::<Config>(&json!({"__bogus__": 1}))
+                .expect_err("unknown filter processor fields must be rejected");
+
+        assert!(
+            error.to_string().contains("unknown field `__bogus__`"),
+            "unexpected validation error: {error}"
+        );
     }
 }
