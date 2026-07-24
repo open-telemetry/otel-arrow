@@ -222,6 +222,95 @@ impl<
         }
     }
 
+    /// Retains a runtime failure until an explicit lifecycle owner releases it.
+    fn defer_runtime_recovery_locked(
+        state: &mut ControllerRuntimeState,
+        failed_key: DeployedPipelineKey,
+        error: RuntimeInstanceError,
+    ) {
+        // Deployed keys are unique and operation overlap is bounded by assigned
+        // cores plus rollout candidates, so this queue cannot grow independently
+        // of controller-owned runtime state.
+        let _ = state.deferred_runtime_recoveries.insert(failed_key, error);
+    }
+
+    /// Restarts failures deferred for one pipeline after ownership handoff.
+    pub(super) fn resume_deferred_runtime_recoveries_for_pipeline(
+        self: &Arc<Self>,
+        pipeline_key: &PipelineKey,
+    ) {
+        let mut deferred = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.global_shutdown_requested
+                || state.active_engine_operation.is_some()
+                || state.active_rollouts.contains_key(pipeline_key)
+                || state.active_shutdowns.contains_key(pipeline_key)
+                || state
+                    .pipeline_operation_reservations
+                    .contains_key(pipeline_key)
+            {
+                return;
+            }
+
+            let keys = state
+                .deferred_runtime_recoveries
+                .keys()
+                .filter(|deployed_key| {
+                    deployed_key.pipeline_group_id == *pipeline_key.pipeline_group_id()
+                        && deployed_key.pipeline_id == *pipeline_key.pipeline_id()
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|deployed_key| {
+                    state
+                        .deferred_runtime_recoveries
+                        .remove(&deployed_key)
+                        .map(|error| (deployed_key, error))
+                })
+                .collect::<Vec<_>>()
+        };
+        deferred.sort_by_key(|(deployed_key, _)| {
+            (deployed_key.core_id, deployed_key.deployment_generation)
+        });
+        for (deployed_key, error) in deferred {
+            // schedule_runtime_recovery revalidates the committed serving
+            // generation, so failures for candidates retired by the operation
+            // are ignored while failures for its winner are restarted.
+            self.schedule_runtime_recovery(deployed_key, error);
+        }
+    }
+
+    /// Restarts every failure deferred by a completed engine-wide operation.
+    pub(super) fn resume_all_deferred_runtime_recoveries(self: &Arc<Self>) {
+        let pipeline_keys = {
+            let state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.global_shutdown_requested || state.active_engine_operation.is_some() {
+                return;
+            }
+            let mut pipeline_keys = Vec::new();
+            for deployed_key in state.deferred_runtime_recoveries.keys() {
+                let pipeline_key = PipelineKey::new(
+                    deployed_key.pipeline_group_id.clone(),
+                    deployed_key.pipeline_id.clone(),
+                );
+                if !pipeline_keys.contains(&pipeline_key) {
+                    pipeline_keys.push(pipeline_key);
+                }
+            }
+            pipeline_keys
+        };
+        for pipeline_key in pipeline_keys {
+            self.resume_deferred_runtime_recoveries_for_pipeline(&pipeline_key);
+        }
+    }
+
     /// Starts one supervised recovery worker for a failed serving core.
     fn schedule_runtime_recovery(
         self: &Arc<Self>,
@@ -237,7 +326,13 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.global_shutdown_requested || state.active_shutdowns.contains_key(&pipeline_key)
+            let reservation_kind = state
+                .pipeline_operation_reservations
+                .get(&pipeline_key)
+                .map(|reservation| reservation.kind);
+            if state.global_shutdown_requested
+                || state.active_shutdowns.contains_key(&pipeline_key)
+                || reservation_kind == Some(PipelineOperationKind::Shutdown)
             {
                 if state.first_error.is_none() {
                     state.first_error = Some(error.message);
@@ -246,10 +341,13 @@ impl<
             }
             if state.active_rollouts.contains_key(&pipeline_key)
                 || state.active_engine_operation.is_some()
+                || reservation_kind == Some(PipelineOperationKind::Rollout)
             {
-                // The explicit operation already owns this runtime transition and
-                // will observe the failed instance itself. Starting recovery here
-                // would race its candidate or rollback generations.
+                // Explicit operations own the generation transition, but a core
+                // can fail after its one-time readiness check. Retain the exit so
+                // ownership release can recover whichever generation ultimately
+                // remains serving.
+                Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
                 return;
             }
             state.logical_pipelines.get(&pipeline_key).cloned()
@@ -289,11 +387,24 @@ impl<
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let reservation_kind = state
+                .pipeline_operation_reservations
+                .get(&pipeline_key)
+                .map(|reservation| reservation.kind);
             if state.global_shutdown_requested
-                || state.active_rollouts.contains_key(&pipeline_key)
                 || state.active_shutdowns.contains_key(&pipeline_key)
-                || state.active_engine_operation.is_some()
+                || reservation_kind == Some(PipelineOperationKind::Shutdown)
             {
+                if state.first_error.is_none() {
+                    state.first_error = Some(error.message);
+                }
+                return;
+            }
+            if state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_engine_operation.is_some()
+                || reservation_kind == Some(PipelineOperationKind::Rollout)
+            {
+                Self::defer_runtime_recovery_locked(&mut state, failed_key, error);
                 return;
             }
 
@@ -446,7 +557,16 @@ impl<
             let attempt =
                 self.prepare_runtime_recovery_attempt(&pipeline_key, core_id, worker_id, &policy);
             let attempt = match attempt {
-                RuntimeRecoveryAttemptDecision::Cancelled => return,
+                RuntimeRecoveryAttemptDecision::Cancelled => {
+                    self.release_cancelled_runtime_recovery_worker(
+                        &pipeline_key,
+                        core_id,
+                        failed_generation,
+                        worker_id,
+                        last_error,
+                    );
+                    return;
+                }
                 RuntimeRecoveryAttemptDecision::Exhausted => {
                     let restart_count = self
                         .runtime_recovery_restart_count(&pipeline_key, core_id)
@@ -484,7 +604,13 @@ impl<
                 worker_id,
                 attempt.backoff,
             ) {
-                self.clear_runtime_recovery_worker(&pipeline_key, core_id, worker_id);
+                self.release_cancelled_runtime_recovery_worker(
+                    &pipeline_key,
+                    core_id,
+                    failed_generation,
+                    worker_id,
+                    last_error,
+                );
                 return;
             }
 
@@ -570,6 +696,9 @@ impl<
                                 || state.global_shutdown_requested
                                 || state.active_rollouts.contains_key(&pipeline_key)
                                 || state.active_shutdowns.contains_key(&pipeline_key)
+                                || state
+                                    .pipeline_operation_reservations
+                                    .contains_key(&pipeline_key)
                                 || state.active_engine_operation.is_some()
                         };
                         let _ = self.shutdown_instance(
@@ -578,7 +707,13 @@ impl<
                             "runtime recovery replacement was not promoted",
                         );
                         if cancelled {
-                            self.clear_runtime_recovery_worker(&pipeline_key, core_id, worker_id);
+                            self.release_cancelled_runtime_recovery_worker(
+                                &pipeline_key,
+                                core_id,
+                                failed_generation,
+                                worker_id,
+                                last_error,
+                            );
                             return;
                         }
                         self.clear_runtime_recovery_candidate(&pipeline_key, core_id, worker_id);
@@ -611,7 +746,13 @@ impl<
                         policy.startup_timeout.as_secs().max(1),
                         "runtime recovery cancelled",
                     );
-                    self.clear_runtime_recovery_worker(&pipeline_key, core_id, worker_id);
+                    self.release_cancelled_runtime_recovery_worker(
+                        &pipeline_key,
+                        core_id,
+                        failed_generation,
+                        worker_id,
+                        last_error,
+                    );
                     return;
                 }
                 Err(RecoveryReadyError::Failed(error)) => {
@@ -643,23 +784,19 @@ impl<
         let Some(recovery) = state.runtime_recoveries.get(&recovery_key) else {
             return RuntimeRecoveryAttemptDecision::Cancelled;
         };
-        // Explicit operations always outrank automatic recovery. Relinquishing
-        // ownership while holding the mutex also lets cancellation waiters know
-        // that this worker can no longer publish a candidate.
+        // Explicit operations always outrank automatic recovery. The worker
+        // releases its token in run_runtime_recovery so it can preserve the
+        // failed serving generation for post-operation handoff first.
         if recovery.worker_id != Some(worker_id)
             || recovery.cancel_requested
             || state.global_shutdown_requested
             || state.active_rollouts.contains_key(pipeline_key)
             || state.active_shutdowns.contains_key(pipeline_key)
+            || state
+                .pipeline_operation_reservations
+                .contains_key(pipeline_key)
             || state.active_engine_operation.is_some()
         {
-            if let Some(recovery) = state.runtime_recoveries.get_mut(&recovery_key)
-                && recovery.worker_id == Some(worker_id)
-            {
-                recovery.worker_id = None;
-                recovery.candidate_generation = None;
-            }
-            self.state_changed.notify_all();
             return RuntimeRecoveryAttemptDecision::Cancelled;
         }
         if recovery.restart_count >= policy.max_restarts {
@@ -738,6 +875,9 @@ impl<
                 && !state.global_shutdown_requested
                 && !state.active_rollouts.contains_key(pipeline_key)
                 && !state.active_shutdowns.contains_key(pipeline_key)
+                && !state
+                    .pipeline_operation_reservations
+                    .contains_key(pipeline_key)
                 && state.active_engine_operation.is_none();
             if !active {
                 return false;
@@ -780,6 +920,9 @@ impl<
                     || state.global_shutdown_requested
                     || state.active_rollouts.contains_key(pipeline_key)
                     || state.active_shutdowns.contains_key(pipeline_key)
+                    || state
+                        .pipeline_operation_reservations
+                        .contains_key(pipeline_key)
                     || state.active_engine_operation.is_some()
             };
             if cancelled {
@@ -901,6 +1044,60 @@ impl<
             .get_mut(&(pipeline_key.clone(), core_id))
             && recovery.worker_id == Some(worker_id)
         {
+            recovery.candidate_generation = None;
+        }
+        self.state_changed.notify_all();
+    }
+
+    /// Releases a cancelled worker and defers its failed serving generation.
+    fn release_cancelled_runtime_recovery_worker(
+        &self,
+        pipeline_key: &PipelineKey,
+        core_id: usize,
+        failed_generation: u64,
+        worker_id: u64,
+        error: String,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let recovery_key = (pipeline_key.clone(), core_id);
+        let owns_worker = state
+            .runtime_recoveries
+            .get(&recovery_key)
+            .is_some_and(|recovery| recovery.worker_id == Some(worker_id));
+        if !owns_worker {
+            return;
+        }
+
+        let reservation_kind = state
+            .pipeline_operation_reservations
+            .get(pipeline_key)
+            .map(|reservation| reservation.kind);
+        let should_defer = !state.global_shutdown_requested
+            && !state.active_shutdowns.contains_key(pipeline_key)
+            && reservation_kind != Some(PipelineOperationKind::Shutdown)
+            && (state.active_rollouts.contains_key(pipeline_key)
+                || state.active_engine_operation.is_some()
+                || reservation_kind == Some(PipelineOperationKind::Rollout));
+        if should_defer {
+            Self::defer_runtime_recovery_locked(
+                &mut state,
+                DeployedPipelineKey {
+                    pipeline_group_id: pipeline_key.pipeline_group_id().clone(),
+                    pipeline_id: pipeline_key.pipeline_id().clone(),
+                    core_id,
+                    deployment_generation: failed_generation,
+                },
+                RuntimeInstanceError::runtime(error),
+            );
+        }
+
+        if let Some(recovery) = state.runtime_recoveries.get_mut(&recovery_key)
+            && recovery.worker_id == Some(worker_id)
+        {
+            recovery.worker_id = None;
             recovery.candidate_generation = None;
         }
         self.state_changed.notify_all();
@@ -1605,6 +1802,16 @@ impl<
         pipeline_id: &str,
         timeout_secs: u64,
     ) -> Result<ShutdownStatus, ControlPlaneError> {
+        // Keep the reservation alive until active_shutdowns contains the
+        // accepted operation. A failure in the cancel-to-insert window is then
+        // treated as part of shutdown instead of starting a replacement.
+        let _reservation = self.begin_pipeline_operation_reservation(
+            PipelineKey::new(
+                pipeline_group_id.to_owned().into(),
+                pipeline_id.to_owned().into(),
+            ),
+            PipelineOperationKind::Shutdown,
+        )?;
         self.request_shutdown_pipeline_for_engine_operation(
             pipeline_group_id,
             pipeline_id,

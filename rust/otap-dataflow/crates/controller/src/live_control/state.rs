@@ -428,6 +428,24 @@ pub(crate) enum RuntimeInstanceExit {
     Error(RuntimeInstanceError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Explicit per-pipeline operation reserving lifecycle ownership.
+pub(super) enum PipelineOperationKind {
+    /// A create, resize, replace, or no-op rollout.
+    Rollout,
+    /// A graceful pipeline shutdown.
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Copy)]
+/// Planning-stage reservation that closes the cancel-to-insert ownership gap.
+pub(super) struct PipelineOperationReservationState {
+    /// Monotonic token used to reject cleanup from an older guard.
+    pub(super) reservation_id: u64,
+    /// Operation behavior used when a runtime fails during the reservation.
+    pub(super) kind: PipelineOperationKind,
+}
+
 #[derive(Debug, Clone)]
 /// Controller state for one logical pipeline core's recovery streak.
 pub(super) struct RuntimeRecoveryState {
@@ -475,6 +493,11 @@ pub(super) struct ControllerRuntimeState {
     pub(super) runtime_instances: HashMap<DeployedPipelineKey, RuntimeInstanceRecord>,
     /// Per-core restart streak and active recovery-worker state.
     pub(super) runtime_recoveries: HashMap<(PipelineKey, usize), RuntimeRecoveryState>,
+    /// Runtime failures held while an explicit operation owns their lifecycle.
+    pub(super) deferred_runtime_recoveries: HashMap<DeployedPipelineKey, RuntimeInstanceError>,
+    /// Planning-stage lifecycle reservations keyed by logical pipeline.
+    pub(super) pipeline_operation_reservations:
+        HashMap<PipelineKey, PipelineOperationReservationState>,
     // A pipeline thread can finish before register_launched_instance() publishes it as Active.
     // We park that exit here and reconcile it during registration instead of leaving stale
     // liveness behind.
@@ -511,6 +534,8 @@ pub(super) struct ControllerRuntimeState {
     pub(super) next_thread_id: usize,
     /// Monotonic recovery-worker id used to reject stale workers.
     pub(super) next_recovery_id: u64,
+    /// Monotonic pipeline-operation reservation id.
+    pub(super) next_pipeline_operation_reservation_id: u64,
     /// First runtime failure surfaced to global controller shutdown handling.
     pub(super) first_error: Option<String>,
 }

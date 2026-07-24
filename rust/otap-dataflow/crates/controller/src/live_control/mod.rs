@@ -44,11 +44,11 @@ mod state;
 use self::state::TERMINAL_OPERATION_RETENTION_TTL;
 use self::state::{
     ActiveRuntimeCoreState, CandidateRolloutPlan, CandidateShutdownPlan, ControllerRuntimeState,
-    LogicalPipelineRecord, RolloutAction, RolloutCoreProgress, RolloutExecutionError,
-    RolloutLifecycleState, RolloutRecord, RuntimeInstanceLifecycle, RuntimeInstanceRecord,
-    RuntimeRecoveryState, ShutdownCoreProgress, ShutdownLifecycleState, ShutdownRecord,
-    TERMINAL_ROLLOUT_RETENTION_LIMIT, TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile,
-    is_expired, timestamp_now,
+    LogicalPipelineRecord, PipelineOperationKind, PipelineOperationReservationState, RolloutAction,
+    RolloutCoreProgress, RolloutExecutionError, RolloutLifecycleState, RolloutRecord,
+    RuntimeInstanceLifecycle, RuntimeInstanceRecord, RuntimeRecoveryState, ShutdownCoreProgress,
+    ShutdownLifecycleState, ShutdownRecord, TERMINAL_ROLLOUT_RETENTION_LIMIT,
+    TERMINAL_SHUTDOWN_RETENTION_LIMIT, TopicRuntimeProfile, is_expired, timestamp_now,
 };
 pub(crate) use self::state::{PanicReport, RuntimeInstanceError, RuntimeInstanceExit};
 
@@ -148,6 +148,8 @@ impl<
                 logical_pipelines: HashMap::new(),
                 runtime_instances: HashMap::new(),
                 runtime_recoveries: HashMap::new(),
+                deferred_runtime_recoveries: HashMap::new(),
+                pipeline_operation_reservations: HashMap::new(),
                 pending_instance_exits: HashMap::new(),
                 rollouts: HashMap::new(),
                 active_rollouts: HashMap::new(),
@@ -163,6 +165,7 @@ impl<
                 next_shutdown_id: 0,
                 next_thread_id: 1,
                 next_recovery_id: 0,
+                next_pipeline_operation_reservation_id: 0,
                 first_error: None,
                 global_shutdown_requested: false,
                 global_shutdown_coordinators: 0,
@@ -227,13 +230,16 @@ impl<
         })
     }
 
-    /// Checks whether a logical pipeline still has an active rollout or shutdown.
+    /// Checks whether a logical pipeline still has an explicit or recovery owner.
     fn pipeline_has_active_operation_locked(
         state: &ControllerRuntimeState,
         pipeline_key: &PipelineKey,
     ) -> bool {
         state.active_rollouts.contains_key(pipeline_key)
             || state.active_shutdowns.contains_key(pipeline_key)
+            || state
+                .pipeline_operation_reservations
+                .contains_key(pipeline_key)
             || state
                 .runtime_recoveries
                 .iter()
@@ -477,10 +483,8 @@ impl<
         pipeline_id: &str,
         request: ReconfigureRequest,
     ) -> Result<RolloutStatus, ControlPlaneError> {
-        let plan = self
-            .runtime
-            .prepare_rollout_plan(pipeline_group_id, pipeline_id, &request)?;
-        self.runtime.spawn_rollout(plan)
+        self.runtime
+            .request_reconfigure_pipeline(pipeline_group_id, pipeline_id, &request)
     }
 
     fn pipeline_details(

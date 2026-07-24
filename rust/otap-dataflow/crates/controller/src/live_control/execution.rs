@@ -45,7 +45,7 @@ impl<
 
     /// Forces rollout terminal cleanup when the detached rollout worker panics.
     pub(super) fn handle_rollout_worker_panic(
-        &self,
+        self: &Arc<Self>,
         pipeline_key: &PipelineKey,
         rollout_id: &str,
         thread_name: String,
@@ -792,6 +792,40 @@ impl<
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
+    /// Restores the per-core serving view captured before a replace rollout.
+    fn restore_replace_rollback_serving_generations(
+        &self,
+        plan: &CandidateRolloutPlan,
+        committed_generation: u64,
+    ) {
+        let core_ids = plan
+            .current_assigned_cores
+            .iter()
+            .chain(plan.target_assigned_cores.iter())
+            .copied()
+            .collect::<HashSet<_>>();
+        for core_id in core_ids {
+            match plan.current_serving_generations.get(&core_id).copied() {
+                Some(generation) if generation != committed_generation => {
+                    // Recovery can place one core on a generation newer than the
+                    // pipeline-wide committed config. Keep that override after
+                    // rollback or status aggregation will silently omit the core.
+                    self.observed_state_store.set_pipeline_serving_generation(
+                        plan.pipeline_key.clone(),
+                        core_id,
+                        generation,
+                    );
+                }
+                Some(_) | None => {
+                    // The committed generation is selected without an overlay,
+                    // and target-only cores have no pre-rollout serving runtime.
+                    self.observed_state_store
+                        .clear_pipeline_serving_generation(plan.pipeline_key.clone(), core_id);
+                }
+            }
+        }
+    }
+
     /// Restores the previous serving generation after a replace rollout fails.
     pub(super) fn rollback_replace_rollout(
         self: &Arc<Self>,
@@ -928,13 +962,7 @@ impl<
                 None,
             );
         }
-        self.clear_pipeline_serving_generations(
-            &plan.pipeline_key,
-            plan.current_assigned_cores
-                .iter()
-                .chain(plan.target_assigned_cores.iter())
-                .copied(),
-        );
+        self.restore_replace_rollback_serving_generations(plan, previous.active_generation);
         Err(RolloutExecutionError::Failed(failure_reason))
     }
 
