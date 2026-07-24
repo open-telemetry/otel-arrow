@@ -8,10 +8,13 @@ use std::time::{Duration, Instant};
 
 use otap_df_config::error::Error as ConfigError;
 use otap_df_engine::capability::auth::{AuthzDecision, BearerToken, DenyReason};
+use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as LocalBearerTokenAuthorizer;
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
+use super::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
+use super::cache::DecisionCache;
 use super::config::{Config, ResourceAttributesConfig, normalize_service_account};
-use super::extension::K8sSatTokenAuthorizerExtension;
+use super::core::Core;
 use super::*;
 
 // ── Config tests ───────────────────────────────────────────
@@ -270,14 +273,14 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
 
 // ── Extension behavior tests ───────────────────────────────
 
-fn make_extension(allowed: Option<HashSet<String>>) -> K8sSatTokenAuthorizerExtension {
-    K8sSatTokenAuthorizerExtension::new(
+// ── Admission tests (Core) ─────────────────────────────────
+
+fn make_core(allowed: Option<HashSet<String>>) -> Core {
+    Core::new(
         "test-authorizer",
         vec!["my-service".to_string()],
         allowed,
         None,
-        Duration::from_secs(300),
-        1024,
     )
 }
 
@@ -286,8 +289,8 @@ fn make_extension(allowed: Option<HashSet<String>>) -> K8sSatTokenAuthorizerExte
 /// authenticated subject and the audience.
 #[test]
 fn admit_without_allow_list_allows_any_authenticated() {
-    let ext = make_extension(None);
-    let decision = ext.admit_for_test(
+    let core = make_core(None);
+    let decision = core.admit_for_test(
         Some("system:serviceaccount:default:my-sa".to_string()),
         vec!["my-service".to_string()],
     );
@@ -307,8 +310,8 @@ fn admit_allows_service_account_in_allow_list() {
     let allowed: HashSet<String> = ["system:serviceaccount:default:my-sa".to_string()]
         .into_iter()
         .collect();
-    let ext = make_extension(Some(allowed));
-    let decision = ext.admit_for_test(
+    let core = make_core(Some(allowed));
+    let decision = core.admit_for_test(
         Some("system:serviceaccount:default:my-sa".to_string()),
         vec!["my-service".to_string()],
     );
@@ -324,9 +327,9 @@ fn admit_denies_service_account_absent_from_allow_list() {
     let allowed: HashSet<String> = ["system:serviceaccount:default:allowed".to_string()]
         .into_iter()
         .collect();
-    let ext = make_extension(Some(allowed));
+    let core = make_core(Some(allowed));
 
-    let denied = ext.admit_for_test(
+    let denied = core.admit_for_test(
         Some("system:serviceaccount:default:other".to_string()),
         vec!["my-service".to_string()],
     );
@@ -339,20 +342,48 @@ fn admit_denies_service_account_absent_from_allow_list() {
         )
     );
 
-    let no_user = ext.admit_for_test(None, vec!["my-service".to_string()]);
+    let no_user = core.admit_for_test(None, vec!["my-service".to_string()]);
     assert!(!no_user.is_allowed());
 }
 
-/// Scenario: authorize an empty credential.
+/// Scenario: authorize an empty credential through the shared variant.
 /// Guarantees: it is denied with `MissingCredential` without contacting the API
-/// server (the reviewer is never initialized in this test).
+/// server (the client is never initialized in this test).
 #[tokio::test]
-async fn authorize_empty_credential_is_missing() {
-    let ext = make_extension(None);
-    let decision = ext
-        .authorize(&BearerToken::without_expiry(String::new()))
-        .await
-        .expect("empty credential yields a decision, not an error");
+async fn authorize_empty_credential_is_missing_shared() {
+    let ext = SharedK8sSatTokenAuthorizer::new(
+        "test-authorizer",
+        vec!["my-service".to_string()],
+        None,
+        None,
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision =
+        SharedBearerTokenAuthorizer::authorize(&ext, &BearerToken::without_expiry(String::new()))
+            .await
+            .expect("empty credential yields a decision, not an error");
+    assert_eq!(decision, AuthzDecision::deny(DenyReason::MissingCredential));
+}
+
+/// Scenario: authorize an empty credential through the local (lock-free)
+/// variant.
+/// Guarantees: the local variant is wired correctly and denies with
+/// `MissingCredential` without contacting the API server.
+#[tokio::test]
+async fn authorize_empty_credential_is_missing_local() {
+    let ext = LocalK8sSatTokenAuthorizer::new(
+        "test-authorizer",
+        vec!["my-service".to_string()],
+        None,
+        None,
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision =
+        LocalBearerTokenAuthorizer::authorize(&ext, &BearerToken::without_expiry(String::new()))
+            .await
+            .expect("empty credential yields a decision, not an error");
     assert_eq!(decision, AuthzDecision::deny(DenyReason::MissingCredential));
 }
 
@@ -364,36 +395,29 @@ async fn authorize_empty_credential_is_missing() {
 /// (forcing a fresh TokenReview).
 #[test]
 fn cache_returns_fresh_and_drops_expired() {
-    let ext = make_extension(None);
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
     let decision = AuthzDecision::allow_anonymous();
-    ext.cache_insert_for_test("tok", decision.clone(), now);
+    cache.insert("tok".to_string(), decision.clone(), now);
 
-    assert_eq!(ext.cache_get_for_test("tok", now), Some(decision));
+    assert_eq!(cache.get("tok", now), Some(decision));
     // Just past the 300s TTL the entry is gone.
     let later = now + Duration::from_secs(301);
-    assert_eq!(ext.cache_get_for_test("tok", later), None);
+    assert_eq!(cache.get("tok", later), None);
 }
 
 /// Scenario: insert more distinct tokens than the cache capacity allows, all
 /// unexpired.
-/// Guarantees: the cache never exceeds `cache_max_entries`, bounding memory.
+/// Guarantees: the cache never exceeds `max_entries`, bounding memory.
 #[test]
 fn cache_respects_max_entries() {
-    let ext = K8sSatTokenAuthorizerExtension::new(
-        "test-authorizer",
-        vec!["my-service".to_string()],
-        None,
-        None,
-        Duration::from_secs(300),
-        2,
-    );
+    let mut cache = DecisionCache::new(Duration::from_secs(300), 2);
     let now = Instant::now();
     for i in 0..10 {
-        ext.cache_insert_for_test(&format!("tok-{i}"), AuthzDecision::allow_anonymous(), now);
+        cache.insert(format!("tok-{i}"), AuthzDecision::allow_anonymous(), now);
     }
     assert!(
-        ext.cache_len_for_test() <= 2,
+        cache.len() <= 2,
         "cache must not exceed its max_entries bound"
     );
 }
@@ -443,8 +467,8 @@ fn it_token() -> Option<String> {
 fn it_extension(
     allowed: Option<HashSet<String>>,
     resource_attributes: Option<ResourceAttributesConfig>,
-) -> K8sSatTokenAuthorizerExtension {
-    K8sSatTokenAuthorizerExtension::new(
+) -> SharedK8sSatTokenAuthorizer {
+    SharedK8sSatTokenAuthorizer::new(
         "it-authorizer",
         vec![it_audience()],
         allowed,
@@ -475,6 +499,38 @@ async fn it_valid_token_is_admitted_audience_only() {
         decision.identity().and_then(|i| i.subject()),
         Some(it_subject().as_str()),
         "identity subject must be the authenticated service account"
+    );
+}
+
+/// Scenario: a valid token is authorized through the local (lock-free) variant
+/// against a live cluster.
+/// Guarantees: the local `!Send` variant reaches the same admit decision as the
+/// shared one, exercising the lock-free RefCell cache path end-to-end.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster and K8S_SAT_TOKEN"]
+async fn it_local_variant_admits_valid_token() {
+    let Some(token) = it_token() else {
+        eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
+        return;
+    };
+    let ext = LocalK8sSatTokenAuthorizer::new(
+        "it-local-authorizer",
+        vec![it_audience()],
+        None,
+        None,
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision = LocalBearerTokenAuthorizer::authorize(&ext, &BearerToken::without_expiry(token))
+        .await
+        .expect("TokenReview must reach a decision");
+    assert!(
+        decision.is_allowed(),
+        "valid token must be admitted by the local variant"
+    );
+    assert_eq!(
+        decision.identity().and_then(|i| i.subject()),
+        Some(it_subject().as_str()),
     );
 }
 
