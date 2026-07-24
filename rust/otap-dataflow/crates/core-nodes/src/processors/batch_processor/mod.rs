@@ -502,26 +502,6 @@ enum FlushReason {
 #[metric_set(name = "otap.processor.batch")]
 #[derive(Debug, Default, Clone)]
 pub struct BatchProcessorMetrics {
-    /// Total batches consumed for logs signal
-    #[metric(unit = "{item}")]
-    consumed_batches_logs: Counter<u64>,
-    /// Total batches consumed for metrics signal
-    #[metric(unit = "{item}")]
-    consumed_batches_metrics: Counter<u64>,
-    /// Total batches consumed for traces signal
-    #[metric(unit = "{item}")]
-    consumed_batches_traces: Counter<u64>,
-
-    /// Total batches produced for logs signal
-    #[metric(unit = "{item}")]
-    produced_batches_logs: Counter<u64>,
-    /// Total batches produced for metrics signal
-    #[metric(unit = "{item}")]
-    produced_batches_metrics: Counter<u64>,
-    /// Total batches produced for traces signal
-    #[metric(unit = "{item}")]
-    produced_batches_traces: Counter<u64>,
-
     /// Number of flushes triggered by size threshold (all signals)
     #[metric(unit = "{flush}")]
     flushes_size: Counter<u64>,
@@ -668,8 +648,8 @@ impl BatchProcessor {
         self.otap_signals
             .as_mut()
             .map(|signals| BatchProcessorFormat {
-                fmtcfg: &self.config.otap,
                 config: &self.config,
+                fmtcfg: &self.config.otap,
                 signals,
                 metrics: &mut self.metrics,
             })
@@ -679,8 +659,8 @@ impl BatchProcessor {
         self.otlp_signals
             .as_mut()
             .map(|signals| BatchProcessorFormat {
-                fmtcfg: &self.config.otlp,
                 config: &self.config,
+                fmtcfg: &self.config.otlp,
                 signals,
                 metrics: &mut self.metrics,
             })
@@ -716,11 +696,6 @@ impl BatchProcessor {
         request: OtapPdata,
     ) -> Result<(), EngineError> {
         let signal = request.signal_type();
-        match signal {
-            SignalType::Logs => self.metrics.consumed_batches_logs.add(1),
-            SignalType::Metrics => self.metrics.consumed_batches_metrics.add(1),
-            SignalType::Traces => self.metrics.consumed_batches_traces.add(1),
-        };
 
         let (ctx, payload) = request.into_parts();
 
@@ -1064,12 +1039,6 @@ where
             let weight = self.fmtcfg.sizer.batch_size(&records)?;
             let mut pdata = OtapPdata::new(Context::default(), records.into());
 
-            match self.signal {
-                SignalType::Logs => self.metrics.produced_batches_logs.add(1),
-                SignalType::Metrics => self.metrics.produced_batches_metrics.add(1),
-                SignalType::Traces => self.metrics.produced_batches_traces.add(1),
-            }
-
             // If any inputs in this batch require notification, get an
             // outbound slot and subscribe.
             let (routed_ctxs, merged_peer) = self.buffer.drain_context(weight, &mut input_context);
@@ -1247,7 +1216,8 @@ impl local::Processor<OtapPdata> for BatchProcessor {
                             EngineError::InternalError {
                                 message: e.to_string(),
                             }
-                        })
+                        })?;
+                        Ok(())
                     }
                     NodeControlMsg::Wakeup { slot, when, .. } => {
                         let Some((format, signal)) = signal_from_wakeup_slot(slot) else {
@@ -1678,46 +1648,6 @@ mod tests {
     /// values. `expected_counts` is `(consumed_batches, produced_batches)` --
     /// i.e. the number of input requests consumed by the processor and the
     /// number of output batches it produced.
-    fn verify_batch_metrics(
-        telemetry_registry: &TelemetryRegistryHandle,
-        signal: SignalType,
-        expected_counts: (usize, usize),
-    ) {
-        let mut consumed_batches = 0u64;
-        let mut produced_batches = 0u64;
-
-        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-            if desc.name == "otap.processor.batch" {
-                for (field, value) in iter {
-                    match (signal, field.name) {
-                        (SignalType::Logs, "consumed.batches.logs") => {
-                            consumed_batches = value.to_u64_lossy()
-                        }
-                        (SignalType::Logs, "produced.batches.logs") => {
-                            produced_batches = value.to_u64_lossy()
-                        }
-                        (SignalType::Traces, "consumed.batches.traces") => {
-                            consumed_batches = value.to_u64_lossy()
-                        }
-                        (SignalType::Traces, "produced.batches.traces") => {
-                            produced_batches = value.to_u64_lossy()
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        });
-
-        let (expected_consumed, expected_produced) = expected_counts;
-        assert_eq!(
-            consumed_batches, expected_consumed as u64,
-            "consumed_batches"
-        );
-        assert_eq!(
-            produced_batches, expected_produced as u64,
-            "produced_batches"
-        );
-    }
 
     fn mmsc_metric_count(
         telemetry_registry: &TelemetryRegistryHandle,
@@ -1921,7 +1851,7 @@ mod tests {
         F: FnOnce(&[EventOutputs]) + Send + 'static,
         P: Fn(usize, &OtapPdata) -> AckPolicy + Send + 'static,
     {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(config);
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(config);
 
         // Collect events and extract inputs for reference
         let events: Vec<TestEvent> = events.collect();
@@ -2119,7 +2049,6 @@ mod tests {
                 // for the NodeControlMsg::CollectTelemetry sent above to take effect.
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 let produced = produced_total.load(std::sync::atomic::Ordering::SeqCst);
-                verify_batch_metrics(&telemetry_registry, signal, (num_inputs, produced));
             });
     }
 
@@ -2281,7 +2210,7 @@ mod tests {
     // input later.
     #[test]
     fn test_timer_flush_ignores_stale_wakeup() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 5,
                 "max_size": 10,
@@ -2362,7 +2291,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 3 inputs consumed; 2 batches produced (one size flush after
                 // the second input, one timer flush after the third).
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (3, 2));
             });
     }
 
@@ -2425,7 +2353,6 @@ mod tests {
                 // 4 inputs consumed; 3 size-flushed batches produced (the
                 // first input only arms the timer; each subsequent input
                 // size-flushes one batch).
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (4, 3));
                 assert_eq!(
                     mmsc_metric_count(
                         &telemetry_registry,
@@ -2445,7 +2372,7 @@ mod tests {
     /// state, and the real/current wakeup still flushes the buffered input later.
     #[test]
     fn test_unknown_wakeup_slot_is_ignored_without_side_effects() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 5,
                 "max_size": 10,
@@ -2500,7 +2427,6 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 1 input consumed; 1 batch produced by the real wakeup.
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -2580,7 +2506,7 @@ mod tests {
     // rather than leaving correlated requests stuck.
     #[test]
     fn test_shutdown_flushes_buffered_input_and_releases_completion() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "otap": {
                 "min_size": 10,
                 "max_size": 10,
@@ -2656,7 +2582,6 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 1 input consumed; 1 batch produced by the shutdown flush.
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3125,7 +3050,7 @@ mod tests {
     /// configured threshold against pending bytes, not against log-record count.
     #[test]
     fn test_otlp_byte_min_size_triggers_size_flush() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otlp",
             "otlp": {
                 "min_size": 4,
@@ -3168,7 +3093,6 @@ mod tests {
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 1 input consumed; 1 batch produced by the byte-size flush.
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3176,7 +3100,7 @@ mod tests {
     /// batch buffer.
     #[test]
     fn test_otlp_zero_byte_request_acked_immediately() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otlp",
             "otlp": {
                 "min_size": 100,
@@ -3202,7 +3126,6 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 0));
             });
     }
 
@@ -3211,7 +3134,7 @@ mod tests {
     /// like any other input.
     #[test]
     fn test_otlp_empty_container_passes_through_batcher() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "otlp",
             "otlp": {
                 "min_size": 1,
@@ -3243,7 +3166,6 @@ mod tests {
             })
             .validate(move |_| async move {
                 tokio::time::sleep(Duration::from_millis(50)).await;
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (1, 1));
             });
     }
 
@@ -3251,7 +3173,7 @@ mod tests {
     /// arranges mixed-format inputs.
     #[test]
     fn test_preserve_mode_mixed_formats() {
-        let (telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
+        let (_telemetry_registry, metrics_reporter, phase) = setup_test_runtime(json!({
             "format": "preserve",
             "otap": {
                 "min_size": 100,  // Won't trigger size flush
@@ -3329,8 +3251,6 @@ mod tests {
                 let outputs: Vec<_> = outputs.iter().map(otap_pdata_to_message).collect();
 
                 assert_equivalent(&[logs1, logs2], &outputs);
-
-                // Collect telemetry for verify_batch_metrics.
                 ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
                     metrics_reporter,
                 }))
@@ -3341,7 +3261,6 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(50)).await;
                 // 2 inputs consumed (one OTLP, one OTAP); 2 batches produced
                 // (one per format, both flushed by their respective wakeups).
-                verify_batch_metrics(&telemetry_registry, SignalType::Logs, (2, 2));
             });
     }
 
