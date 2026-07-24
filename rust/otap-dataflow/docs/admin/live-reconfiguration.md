@@ -198,6 +198,52 @@ The query string also supports an overall client wait timeout:
   `rollback_failed` and the mixed state remains visible through status
   endpoints.
 
+### Runtime Recovery Flow
+
+The following flow applies when a serving core in a regular pipeline exits with
+a panic or runtime error. Recovery is scoped to the failed core; healthy sibling
+cores continue serving on their current generations.
+
+```mermaid
+flowchart TD
+    failed["Serving core exits with a panic or runtime error"]
+    owner{"Who owns the pipeline lifecycle?"}
+    shutdown["No replacement<br/>Shutdown continues and records the error"]
+    defer["Retain failed generation<br/>Cancel or fence recovery worker"]
+    release["Rollout or engine operation releases ownership"]
+    selected{"Is the failed generation still<br/>selected for this core?"}
+    discard["Discard the superseded failure"]
+    eligible{"Recovery enabled and<br/>restart budget available?"}
+    fatal["Record a fatal controller error<br/>Request coordinated engine shutdown"]
+    reserve["Fence one per-core worker<br/>Reserve the next generation"]
+    backoff["Wait exponential backoff"]
+    launch["Launch replacement candidate"]
+    ready{"Admitted and Ready<br/>before startup_timeout?"}
+    stop["Stop failed candidate<br/>Record attempt failure"]
+    owns{"Worker still owns the core<br/>and candidate is active?"}
+    promote["Promote candidate for this core only<br/>Healthy siblings keep serving"]
+    reset["After reset_after healthy time,<br/>the next failure starts a fresh streak"]
+
+    failed --> owner
+    owner -->|"Shutdown or global shutdown"| shutdown
+    owner -->|"Rollout or engine operation"| defer
+    owner -->|"No explicit owner"| eligible
+
+    defer --> release --> selected
+    selected -->|"No"| discard
+    selected -->|"Yes"| eligible
+
+    eligible -->|"No"| fatal
+    eligible -->|"Yes"| reserve --> backoff --> launch --> ready
+    ready -->|"No: launch, exit, or timeout"| stop --> eligible
+    ready -->|"Yes"| owns
+
+    owns -->|"Yes"| promote --> reset
+    owns -->|"No: candidate exited"| stop
+    owns -->|"No: shutdown took ownership"| shutdown
+    owns -->|"No: rollout or engine operation"| defer
+```
+
 ### Controller Safety Behaviors
 
 The controller treats live reconfiguration as a runtime lifecycle operation,
@@ -232,10 +278,11 @@ growth.
   remain on their current generations. Exhausting the restart budget, or
   disabling recovery, records a fatal controller error and requests coordinated
   engine shutdown.
-- Runtime recovery ownership: explicit rollout, shutdown, and engine-level
-  operations cancel any in-flight per-core recovery before taking ownership of
-  the affected lifecycle. This prevents a delayed replacement from launching
-  after an operator action has started.
+- Runtime recovery ownership: explicit rollout and engine-level operations
+  reserve lifecycle ownership before canceling any in-flight per-core recovery.
+  Failures retained during the operation are revalidated when ownership is
+  released, so only the generation that still serves the core is recovered.
+  Pipeline and global shutdown suppress replacement launches entirely.
 - Launch and exit races: a runtime thread can exit before its launch
   registration is visible to the controller. The controller records early exits
   and reconciles them during registration, avoiding stale active-instance
