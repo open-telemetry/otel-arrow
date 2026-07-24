@@ -719,31 +719,30 @@ where
     let mut curr_metric_id: u16 = 0;
 
     for resource_metric in metrics_view.resources() {
-        if let Some(resource) = resource_metric.resource() {
-            let metric_count = resource_metric
-                .scopes()
-                .map(|scope| scope.metrics().count())
-                .sum();
-            let schema_url = resource_metric.schema_url();
-            metrics
-                .resource
-                .append_schema_url_n(schema_url, metric_count);
-            metrics.resource.append_id_n(curr_resource_id, metric_count);
-            metrics.resource.append_dropped_attributes_count_n(
-                resource.dropped_attributes_count(),
-                metric_count,
-            );
+        let metric_count = resource_metric
+            .scopes()
+            .map(|scope| scope.metrics().count())
+            .sum();
+        let resource_dropped_attributes_count = if let Some(resource) = resource_metric.resource() {
             for kv in resource.attributes() {
                 resource_attrs.append_parent_id(&curr_resource_id);
                 append_attribute_value(&mut resource_attrs, &kv)?;
             }
-        }
+            resource.dropped_attributes_count()
+        } else {
+            0
+        };
+
+        metrics
+            .resource
+            .append_schema_url_n(resource_metric.schema_url(), metric_count);
+        metrics.resource.append_id_n(curr_resource_id, metric_count);
+        metrics
+            .resource
+            .append_dropped_attributes_count_n(resource_dropped_attributes_count, metric_count);
 
         for scope_metric in resource_metric.scopes() {
-            let metric_count = scope_metric.metrics().count();
             let scope_schema_url = scope_metric.schema_url();
-            metrics.append_scope_schema_url_n(scope_schema_url, metric_count);
-
             let scope = scope_metric.scope();
             let scope_name = scope.as_ref().and_then(|s| s.name());
             let scope_version = scope.as_ref().and_then(|s| s.version());
@@ -751,20 +750,24 @@ where
                 .as_ref()
                 .map(|s| s.dropped_attributes_count())
                 .unwrap_or(0);
-            metrics.scope.append_id_n(curr_scope_id, metric_count);
-            metrics.scope.append_name_n(scope_name, metric_count);
-            metrics.scope.append_version_n(scope_version, metric_count);
-            metrics
-                .scope
-                .append_dropped_attributes_count_n(scope_dropped_attributes_count, metric_count);
-            if let Some(scope) = scope {
-                for kv in scope.attributes() {
+            if let Some(ref scope_ref) = scope {
+                for kv in scope_ref.attributes() {
                     scope_attrs.append_parent_id(&curr_scope_id);
                     append_attribute_value(&mut scope_attrs, &kv)?;
                 }
             }
 
             for metric in scope_metric.metrics() {
+                // Append scope fields per metric so raw protobuf traversal stays single-pass and
+                // all columns stay aligned.
+                metrics.append_scope_schema_url(scope_schema_url);
+                metrics.scope.append_id(Some(curr_scope_id));
+                metrics.scope.append_name(scope_name);
+                metrics.scope.append_version(scope_version);
+                metrics
+                    .scope
+                    .append_dropped_attributes_count(scope_dropped_attributes_count);
+
                 metrics.append_id(curr_metric_id);
                 let data_obj = metric.data();
                 let data = data_obj.as_ref();
@@ -3264,6 +3267,111 @@ mod test {
             .map(|b| b.bucket_counts().collect())
             .unwrap_or_default();
         assert!(neg_counts.is_empty(), "expected no negative bucket counts");
+    }
+
+    /// Scenario: Metrics data mixes resource metrics with present and absent resource messages.
+    /// Guarantees: Encoding emits one correctly identified resource row per metric definition.
+    #[test]
+    fn test_metrics_with_mixed_resource_presence() {
+        use crate::proto::opentelemetry::metrics::v1::{
+            Gauge, Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+        };
+
+        let metric = |name| {
+            Metric::build()
+                .name(name)
+                .data_gauge(Gauge::new(vec![]))
+                .finish()
+        };
+        let metrics_data = MetricsData::new(vec![
+            ResourceMetrics {
+                resource: Some(Resource::build().dropped_attributes_count(7u32).finish()),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![metric("with-resource")],
+                    schema_url: String::new(),
+                }],
+                schema_url: "resource-schema".to_string(),
+            },
+            ResourceMetrics {
+                resource: None,
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![metric("without-resource")],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            },
+        ]);
+
+        let otap_batch = encode_metrics_otap_batch(&metrics_data).expect("encode metrics");
+        let metrics = otap_batch
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .expect("metrics definition batch");
+        assert_eq!(metrics.num_rows(), 2);
+
+        let resources = metrics
+            .column_by_name(consts::RESOURCE)
+            .expect("resource column")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("resource struct");
+        let resource_ids = resources
+            .column_by_name(consts::ID)
+            .expect("resource id column")
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .expect("resource ids");
+        let dropped_attributes_counts = resources
+            .column_by_name(consts::DROPPED_ATTRIBUTES_COUNT)
+            .expect("resource dropped attributes count column")
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("resource dropped attributes counts");
+
+        assert_eq!(resource_ids.values(), &[0, 1]);
+        assert_eq!(dropped_attributes_counts.values(), &[7, 0]);
+    }
+
+    /// Scenario: Serialized metrics contain two empty-schema rows before a non-empty scope schema.
+    /// Guarantees: Raw protobuf encoding emits one aligned scope schema value for every metric.
+    #[test]
+    fn test_metrics_proto_bytes_scope_schema_alignment() {
+        use crate::proto::opentelemetry::metrics::v1::{
+            Gauge, Metric, MetricsData, ResourceMetrics, ScopeMetrics,
+        };
+        use crate::views::otlp::bytes::metrics::RawMetricsData;
+
+        let metric = |name| {
+            Metric::build()
+                .name(name)
+                .data_gauge(Gauge::new(vec![]))
+                .finish()
+        };
+        let metrics_data = MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![
+                ScopeMetrics {
+                    scope: None,
+                    metrics: vec![metric("first"), metric("second")],
+                    schema_url: String::new(),
+                },
+                ScopeMetrics {
+                    scope: None,
+                    metrics: vec![metric("third")],
+                    schema_url: "scope-schema".to_string(),
+                },
+            ],
+        )]);
+
+        let bytes = metrics_data.encode_to_vec();
+        let metrics_view = RawMetricsData::new(&bytes);
+        let otap_batch = encode_metrics_otap_batch(&metrics_view).expect("encode metrics");
+        let metrics = otap_batch
+            .get(ArrowPayloadType::UnivariateMetrics)
+            .expect("metrics definition batch");
+
+        assert_eq!(metrics.num_rows(), 3);
     }
 
     #[test]
