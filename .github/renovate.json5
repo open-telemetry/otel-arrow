@@ -37,7 +37,7 @@
         "patch"
       ],
       "schedule": [
-        "before 8am every weekday"
+        "before 8am on Monday"
       ]
     },
     {
@@ -62,6 +62,9 @@
         "weaver_resolver",
         "weaver_semconv"
       ],
+      "schedule": [
+        "before 8am on Monday"
+      ]
     },
     {
       // group these dependencies that are tagged and released together
@@ -75,6 +78,9 @@
         "opentelemetry-prometheus",
         "opentelemetry-proto"
       ],
+      "schedule": [
+        "before 8am on Monday"
+      ]
     },
     {
       // group together all github action workflow changes
@@ -119,6 +125,9 @@
       "matchFileNames": [
         "tools/pipeline_perf_test/**/requirements.lock.txt",
         "tools/pipeline_perf_test/**/requirements.txt"
+      ],
+      "schedule": [
+        "before 8am on Monday"
       ]
     },
     {
