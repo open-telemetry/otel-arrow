@@ -2,7 +2,7 @@
 
 This extension lets the dataflow engine act as an OpAMP agent: it connects to a
 remote OpAMP server, receives engine configuration from it, and reports health
-and pipeline status back. See [`docs/opamp.md`](../../../../docs/opamp.md) for
+and pipeline status back. See [`docs/opamp.md`](../../../../../docs/opamp.md) for
 the design document.
 
 ## Testing locally against the opamp-go reference server
