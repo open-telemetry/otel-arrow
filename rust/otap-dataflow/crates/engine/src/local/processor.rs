@@ -1259,8 +1259,8 @@ mod tests {
         );
     }
 
-    /// When flow_metrics are active, `begin_process_timing` arms the marker and
-    /// `take_elapsed_since_send_marker_ns` reports a non-zero delta after work.
+    /// Scenario: an active flow tracks compute duration and performs work after timing starts.
+    /// Guarantees: the send marker reports a non-zero elapsed duration.
     #[test]
     fn flow_metric_marker_accumulates_after_begin_process_timing() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -1287,8 +1287,8 @@ mod tests {
         );
     }
 
-    /// Without `begin_process_timing`, `take_elapsed_since_send_marker_ns`
-    /// returns 0 (no marker armed).
+    /// Scenario: an active flow tracks compute duration but timing has not started.
+    /// Guarantees: the unarmed send marker reports zero elapsed duration.
     #[test]
     fn flow_metric_marker_returns_zero_when_unarmed() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
@@ -1298,9 +1298,8 @@ mod tests {
         assert_eq!(eh.take_elapsed_since_send_marker_ns(), 0);
     }
 
-    /// A flow that is active but does not track `compute.duration` (e.g. a
-    /// `dropped.items`-only flow) must not arm the send marker, so messages
-    /// pay no per-message `Instant::now()` timing cost.
+    /// Scenario: an active flow tracks no compute duration.
+    /// Guarantees: processing leaves the send marker unarmed and reports zero duration.
     #[test]
     fn flow_metric_marker_not_armed_when_timing_disabled() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);

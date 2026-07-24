@@ -1158,6 +1158,8 @@ mod test {
         }
     }
 
+    /// Scenario: PData traverses the start and end boundaries of an active flow.
+    /// Guarantees: the hooks record consumed and produced item totals at their boundaries.
     #[test]
     fn flow_hooks_record_start_and_end_signal_counts() {
         let mut pdata = create_test_pdata();

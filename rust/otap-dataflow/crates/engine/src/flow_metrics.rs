@@ -651,18 +651,24 @@ mod tests {
         }
     }
 
+    /// Scenario: a pipeline has no configured flow metric sets.
+    /// Guarantees: the flow metric state remains inactive.
     #[test]
     fn empty_state_is_inactive() {
         let state = PipelineFlowMetricState::empty();
         assert!(!state.is_active());
     }
 
+    /// Scenario: a pipeline has at least one configured flow metric set.
+    /// Guarantees: the flow metric state is active.
     #[test]
     fn nonempty_state_is_active() {
         let state = one_flow_metric_state();
         assert!(state.is_active());
     }
 
+    /// Scenario: compute-duration observations are recorded for one signal bucket.
+    /// Guarantees: the bucket retains the observation count, range, and sum.
     #[test]
     fn direct_record_increments_mmsc() {
         let mut state = one_flow_metric_state();
@@ -697,8 +703,10 @@ mod tests {
         assert!((snap.sum - 300.0).abs() < f64::EPSILON);
     }
 
+    /// Scenario: consumed and produced items are recorded for one signal bucket.
+    /// Guarantees: each counter accumulates its item total independently.
     #[test]
-    fn direct_record_increments_items_mmsc() {
+    fn direct_record_increments_items() {
         let mut state = one_flow_metric_state();
         state.consumed_items_metrics[0]
             .as_mut()

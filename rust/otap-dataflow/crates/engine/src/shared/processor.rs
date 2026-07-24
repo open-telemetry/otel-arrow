@@ -877,9 +877,8 @@ mod tests {
         );
     }
 
-    /// A flow that is active but does not track `compute.duration` (e.g. a
-    /// `dropped.items`-only flow) must not arm the send marker, so messages
-    /// pay no per-message `Instant::now()` timing cost.
+    /// Scenario: an active shared flow tracks no compute duration.
+    /// Guarantees: processing leaves the send marker unarmed and reports zero duration.
     #[test]
     fn flow_metric_marker_not_armed_when_timing_disabled_shared() {
         let (_metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
