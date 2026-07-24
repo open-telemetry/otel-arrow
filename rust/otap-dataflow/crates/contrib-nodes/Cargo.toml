@@ -80,10 +80,6 @@ rdkafka = { workspace = true, features = ["cmake-build", "curl-static"], optiona
 # which is not a valid Win32 executable (os error 193).
 [target.'cfg(target_os = "windows")'.dependencies]
 rdkafka = { workspace = true, features = ["cmake-build"], optional = true }
-# Typed Win32 TDH bindings used by the ETW receiver to resolve provider names
-# to GUIDs via `TdhEnumerateProviders`. Windows-only; already present in the
-# dependency graph transitively via `one_collect`.
-windows-sys = { workspace = true, optional = true }
 
 [target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 one_collect = { workspace = true, optional = true }
@@ -92,7 +88,7 @@ one_collect = { workspace = true, optional = true }
 tracepoint_decode = { workspace = true, optional = true }
 
 [features]
-etw-receiver = ["dep:one_collect", "dep:humantime-serde", "dep:windows-sys"]
+etw-receiver = ["dep:one_collect", "dep:humantime-serde"]
 kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",

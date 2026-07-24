@@ -1004,6 +1004,10 @@ mod tests {
         );
     }
 
+    /// Scenario: A provider config supplies both a `guid` and a `kind`.
+    /// Guarantees: `Config::validate` rejects the config, so `kind` (a
+    /// name-resolution strategy) is never silently ignored when a GUID is used
+    /// verbatim.
     #[test]
     fn validate_rejects_kind_with_guid() {
         // `kind` selects a name-resolution strategy; combining it with a GUID
@@ -1023,6 +1027,10 @@ mod tests {
         );
     }
 
+    /// Scenario: A name-based provider supplies an explicit `kind` and no
+    /// `guid`.
+    /// Guarantees: `Config::validate` accepts the config, so specifying a
+    /// resolution strategy for a named provider is a supported configuration.
     #[test]
     fn validate_accepts_name_with_explicit_kind() {
         let cfg = make_config(vec![ProviderConfig {
