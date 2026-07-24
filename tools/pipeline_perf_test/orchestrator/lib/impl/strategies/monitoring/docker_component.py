@@ -46,6 +46,7 @@ Note:
 
 import threading
 import time
+import subprocess
 from dataclasses import dataclass, field
 from logging import LoggerAdapter
 from typing import ClassVar, Literal, Optional, TYPE_CHECKING
@@ -65,12 +66,22 @@ from ..common.docker import (
 )
 from ....core.strategies.monitoring_strategy import MonitoringStrategy
 from ....runner.registry import monitoring_registry, PluginMeta
+from .perf_support import (
+    ensure_perf_binary,
+    perf_privilege_prefix,
+    read_perf_event_paranoid,
+)
 
 if TYPE_CHECKING:
     from ....impl.component.managed_component import ManagedComponent
 
 
 STRATEGY_NAME = "docker_component"
+
+# Guards a one-time, human-visible diagnostic when perf counter collection
+# fails, so CI logs surface the root cause without spamming every poll.
+_perf_failure_warned = False
+_perf_failure_lock = threading.Lock()
 
 
 @dataclass
@@ -114,6 +125,9 @@ class DockerComponentMonitoringConfig(MonitoringStrategyConfig):
 
     interval: Optional[float] = 1.0
     allocated_cores: Optional[int] = None  # Application-level CPU allocation (e.g., via --core-id-range), not Docker container limits
+    enable_perf_cycles: Optional[bool] = True
+    include_ref_cycles: Optional[bool] = True
+    include_instructions: Optional[bool] = True
 
 
 @monitoring_registry.register_class(STRATEGY_NAME)
@@ -191,6 +205,9 @@ components:
             "test_suite_context": test_suite_context,
             "interval": self.config.interval,
             "allocated_cores": self.config.allocated_cores,
+            "enable_perf_cycles": bool(self.config.enable_perf_cycles),
+            "include_ref_cycles": bool(self.config.include_ref_cycles),
+            "include_instructions": bool(self.config.include_instructions),
         }
         monitoring_runtime.thread = threading.Thread(
             target=monitor, kwargs=monitor_args, daemon=True
@@ -245,6 +262,9 @@ def monitor(
     test_suite_context: ScenarioContext,
     interval: float = 1.0,
     allocated_cores: Optional[int] = None,
+    enable_perf_cycles: bool = True,
+    include_ref_cycles: bool = True,
+    include_instructions: bool = True,
 ):
     """
     Periodically monitors a Docker container's CPU and memory usage, updating
@@ -292,6 +312,26 @@ def monitor(
     network_tx_gauge = meter.create_gauge(
         "container.network.tx", "By", "Transmitted network traffic in bytes"
     )
+    cpu_cycles_gauge = meter.create_gauge(
+        "container.cpu.cycles",
+        "{cycle}",
+        "CPU cycles consumed by the container process during the poll interval.",
+    )
+    cpu_ref_cycles_gauge = meter.create_gauge(
+        "container.cpu.ref_cycles",
+        "{cycle}",
+        "Reference CPU cycles consumed by the container process during the poll interval.",
+    )
+    cpu_instructions_gauge = meter.create_gauge(
+        "container.cpu.instructions",
+        "{instruction}",
+        "Instructions retired by the container process during the poll interval.",
+    )
+    cpu_perf_available_gauge = meter.create_gauge(
+        "container.cpu.perf_available",
+        "{bool}",
+        "1 if perf counters were collected successfully in the interval, else 0.",
+    )
     try:
         container = client.containers.get(container_id)
         container_name = container.name
@@ -311,6 +351,11 @@ def monitor(
                 "ctx.component_name": component_name,
             }
         )
+        perf_events = ["cycles"]
+        if include_ref_cycles:
+            perf_events.append("ref-cycles")
+        if include_instructions:
+            perf_events.append("instructions")
         while not stop_event.is_set():
             try:
                 start = time.time()
@@ -327,6 +372,28 @@ def monitor(
                 tx_bytes = sum(net["tx_bytes"] for net in networks.values())
                 network_rx_gauge.set(rx_bytes, labels)
                 network_tx_gauge.set(tx_bytes, labels)
+
+                if enable_perf_cycles:
+                    perf_metrics = _collect_container_perf_counters(
+                        container,
+                        interval,
+                        perf_events,
+                        logger,
+                    )
+                    if perf_metrics:
+                        cpu_perf_available_gauge.set(1.0, labels)
+                        if "cycles" in perf_metrics:
+                            cpu_cycles_gauge.set(perf_metrics["cycles"], labels)
+                        if "ref-cycles" in perf_metrics:
+                            cpu_ref_cycles_gauge.set(
+                                perf_metrics["ref-cycles"], labels
+                            )
+                        if "instructions" in perf_metrics:
+                            cpu_instructions_gauge.set(
+                                perf_metrics["instructions"], labels
+                            )
+                    else:
+                        cpu_perf_available_gauge.set(0.0, labels)
 
                 # CPU usage calculation
                 cpu_stats = stat_data["cpu_stats"]
@@ -373,3 +440,104 @@ def monitor(
                     f"Unexpected error while monitoring {container_name} ({container_id[:12]}): {e}"
                 )
                 break
+
+
+def _parse_perf_stat_output(stderr: str) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for raw_line in stderr.splitlines():
+        line = raw_line.strip()
+        if not line or ";" not in line:
+            continue
+        parts = [p.strip() for p in line.split(";")]
+        if len(parts) < 3:
+            continue
+
+        raw_value, event_name = parts[0], parts[2]
+        if raw_value.startswith("<"):
+            continue
+        try:
+            metrics[event_name] = float(raw_value.replace(",", ""))
+        except ValueError:
+            continue
+
+    return metrics
+
+
+def _collect_container_perf_counters(
+    container,
+    interval: float,
+    events: list[str],
+    logger: LoggerAdapter,
+) -> dict[str, float]:
+    perf_bin = ensure_perf_binary(logger)
+    if not perf_bin:
+        _warn_perf_unavailable_once(
+            logger, "perf binary is not available on PATH and could not be installed"
+        )
+        return {}
+
+    try:
+        container.reload()
+        pid = int(container.attrs.get("State", {}).get("Pid", 0))
+    except Exception as exc:
+        logger.debug("failed to resolve container pid for perf: %s", exc)
+        return {}
+
+    if pid <= 0:
+        return {}
+
+    command = [
+        *perf_privilege_prefix(),
+        perf_bin,
+        "stat",
+        "-x",
+        ";",
+        "--no-big-num",
+        "-e",
+        ",".join(events),
+        "-p",
+        str(pid),
+        "--",
+        "sleep",
+        str(interval),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(interval + 3.0, 5.0),
+        )
+    except Exception as exc:
+        logger.debug("failed running perf stat for pid %s: %s", pid, exc)
+        return {}
+
+    metrics = _parse_perf_stat_output(result.stderr)
+    if not metrics:
+        _warn_perf_unavailable_once(
+            logger,
+            "perf stat produced no counter values (rc=%s). "
+            "perf_event_paranoid=%s. stderr: %s"
+            % (
+                result.returncode,
+                read_perf_event_paranoid(),
+                (result.stderr or "").strip()[:500],
+            ),
+        )
+    return metrics
+
+
+def _warn_perf_unavailable_once(logger: LoggerAdapter, message: str) -> None:
+    """Emit a single human-visible warning explaining why perf failed.
+
+    Perf collection runs every poll interval, so repeated warnings would flood
+    the logs. This keeps exactly one diagnostic per process to aid CI triage.
+    """
+
+    global _perf_failure_warned
+    with _perf_failure_lock:
+        if _perf_failure_warned:
+            return
+        _perf_failure_warned = True
+    logger.warning("CPU cycle (perf) collection unavailable: %s", message)
