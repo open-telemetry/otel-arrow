@@ -297,7 +297,9 @@ mod tests {
             Err(ControlPlaneError::PipelineNotFound)
         }
 
-        fn engine_config_snapshot(&self) -> Result<otap_df_config::engine::OtelDataflowSpec, ControlPlaneError> {
+        fn engine_config_snapshot(
+            &self,
+        ) -> Result<otap_df_config::engine::OtelDataflowSpec, ControlPlaneError> {
             Ok(otap_df_config::engine::OtelDataflowSpec {
                 version: "1.0".to_string(),
                 policies: Default::default(),
