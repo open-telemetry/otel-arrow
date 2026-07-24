@@ -213,10 +213,24 @@ async fn shutdown_all_pipelines(
             );
         }
 
-        // Check if all pipelines have terminated
+        // Check if all pipelines have terminated. An empty snapshot means no
+        // pipelines were ever registered, which is itself a terminal state.
         let snapshot = state.observed_state_store.snapshot();
-        let all_terminated =
-            !snapshot.is_empty() && snapshot.values().all(|status| status.is_terminated());
+        let all_terminated = if !snapshot.is_empty() {
+            snapshot.values().all(|status| status.is_terminated())
+        } else {
+            // Snapshot is empty, but are there running pipelines in the controller?
+            match state.controller.engine_config_snapshot() {
+                Ok(config) => {
+                    let has_pipelines = config.groups.values().any(|g| !g.pipelines.is_empty());
+                    !has_pipelines
+                }
+                Err(err) => {
+                    otel_info!("shutdown.engine_config_check_failed", error = ?err);
+                    false // Assume not terminated to be safe
+                }
+            }
+        };
 
         if all_terminated {
             otel_info!(
@@ -281,6 +295,18 @@ mod tests {
             _request: ReconfigureRequest,
         ) -> Result<RolloutStatus, ControlPlaneError> {
             Err(ControlPlaneError::PipelineNotFound)
+        }
+
+        fn engine_config_snapshot(
+            &self,
+        ) -> Result<otap_df_config::engine::OtelDataflowSpec, ControlPlaneError> {
+            Ok(otap_df_config::engine::OtelDataflowSpec {
+                version: "1.0".to_string(),
+                policies: Default::default(),
+                topics: Default::default(),
+                engine: Default::default(),
+                groups: Default::default(),
+            })
         }
 
         fn pipeline_details(
@@ -636,6 +662,33 @@ mod tests {
         assert_eq!(
             status.failure_reason.as_deref(),
             Some("group delete failed")
+        );
+    }
+
+    /// Scenario: shutdown is requested with `wait=true` on a fresh engine
+    /// that has no pipelines registered (empty observed state store).
+    /// Guarantees: the handler treats an empty snapshot as all-terminated and
+    /// returns HTTP 200 immediately instead of polling until the timeout.
+    #[tokio::test]
+    async fn shutdown_returns_ok_immediately_when_snapshot_is_empty() {
+        let response = shutdown_all_pipelines(
+            State(test_app_state(stub(
+                Ok(None),
+                Ok(PipelineGroupConfig::new()),
+                Ok(delete_status("succeeded")),
+            ))),
+            Query(OperationOptions {
+                wait: true,
+                timeout_secs: 1,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "empty snapshot should satisfy shutdown immediately"
         );
     }
 }
