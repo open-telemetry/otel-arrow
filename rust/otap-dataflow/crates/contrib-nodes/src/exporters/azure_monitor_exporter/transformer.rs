@@ -13,16 +13,28 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use super::config::{Config, SchemaConfig};
+use super::config::{ATTRIBUTES_PASSTHROUGH_MARKER, Config, SchemaConfig};
 use super::error::Error;
 
 const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+
+/// The mandatory Log Analytics time column. When no mapping targets it, the
+/// exporter injects it from the log record's event time so a record carries its
+/// true event time rather than the ingestion arrival time Azure stamps on a
+/// missing `TimeGenerated`.
+const TIME_GENERATED_COLUMN: &str = "TimeGenerated";
+
+/// Pre-serialized JSON key for [`TIME_GENERATED_COLUMN`] (`"TimeGenerated":`).
+/// Fixed, so it is a const rather than a per-schema field.
+const TIME_GENERATED_KEY_JSON: &[u8] = b"\"TimeGenerated\":";
 
 /// Pre-parsed field mapping for a log record field
 #[derive(Debug, Clone)]
 struct FieldMapping {
     /// The source field name (e.g., "time_unix_nano", "body")
     source: LogRecordField,
+    /// Destination column name (e.g. `TimeGenerated`).
+    dest_name: String,
     /// Pre-serialized JSON key with quotes and colon, e.g. `"TimeGenerated":`
     dest_key_json: Vec<u8>,
 }
@@ -61,7 +73,6 @@ impl LogRecordField {
         } else if s.eq_ignore_ascii_case("body") {
             Some(Self::Body)
         } else if s.eq_ignore_ascii_case("event_name") {
-            // Add this
             Some(Self::EventName)
         } else {
             None
@@ -80,23 +91,66 @@ struct ParsedSchema {
     field_mappings: Vec<FieldMapping>,
     /// Pre-parsed attribute mappings (source attr -> pre-serialized JSON key)
     attribute_mapping: HashMap<String, Vec<u8>>,
+    /// When true (`attributes: passthrough`), every log record attribute is
+    /// emitted as-is as a top-level `"<key>": <value>` pair (the attribute key
+    /// becomes the column name).
+    attribute_passthrough: bool,
+    /// Whether to auto-inject the mandatory `TimeGenerated` column.
+    ///
+    /// Rule: **always inject `TimeGenerated` unless it is already mapped or
+    /// present.** This flag captures the config half of that rule -- it is
+    /// `true` when no configured mapping (resource, scope, field, or attribute)
+    /// targets the `TimeGenerated` column, computed once here at parse time so
+    /// the hot path is a single branch. The "present" half -- a runtime
+    /// passthrough attribute literally named `TimeGenerated` -- is detected at
+    /// emit time and also suppresses injection (innermost-wins).
+    ///
+    /// When injecting, the value is the record's event time (`time_unix_nano`,
+    /// falling back to `observed_time_unix_nano`, then now); see
+    /// [`Self::write_default_time_generated_value`].
+    default_time_generated: bool,
+    /// All destination column names produced by explicit mappings (resource,
+    /// scope, and log-record fields). Used only in attribute-passthrough mode to
+    /// detect when an attribute key collides with a mapped column, compared
+    /// against `attr.key()` bytes via `as_bytes()` (no allocation). Empty when no
+    /// explicit mappings are configured (e.g. pure passthrough). Kept as a small
+    /// `Vec` and gated by [`Self::reserved_len_mask`] so most attributes are
+    /// rejected on length alone, without a byte comparison.
+    reserved_columns: Vec<String>,
+    /// Bitmask of the byte-lengths present in `reserved_columns` (bit `n` set if
+    /// some reserved name has length `n`; lengths >= 63 map to bit 63). An
+    /// attribute whose key length is absent here cannot collide, so the byte
+    /// comparison is skipped entirely.
+    reserved_len_mask: u64,
 }
 
 impl ParsedSchema {
     fn from_config(schema: &SchemaConfig) -> Result<Self, Error> {
         let mut field_mappings = Vec::new();
         let mut attribute_mapping = HashMap::new();
+        let mut attribute_passthrough = false;
 
         for (key, value) in &schema.log_record_mapping {
             if key.eq_ignore_ascii_case("attributes") {
-                // Parse attribute mappings
-                if let Some(attr_map) = value.as_object() {
-                    for (attr_key, attr_dest) in attr_map {
-                        let dest = attr_dest
-                            .as_str()
-                            .map(String::from)
-                            .unwrap_or_else(|| attr_dest.to_string());
-                        _ = attribute_mapping.insert(attr_key.clone(), serialize_json_key(&dest));
+                match value {
+                    // `attributes: passthrough` emits every attribute as-is as a
+                    // top-level key/value pair.
+                    Value::String(s) if s == ATTRIBUTES_PASSTHROUGH_MARKER => {
+                        attribute_passthrough = true;
+                    }
+                    // `attributes: { key: Column, ... }` maps specific attributes.
+                    Value::Object(attr_map) => {
+                        for (attr_key, attr_dest) in attr_map {
+                            let dest = attr_dest
+                                .as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| attr_dest.to_string());
+                            _ = attribute_mapping
+                                .insert(attr_key.clone(), serialize_json_key(&dest));
+                        }
+                    }
+                    _ => {
+                        return Err(Error::InvalidFieldMapping { field: key.clone() });
                     }
                 }
             } else {
@@ -108,8 +162,54 @@ impl ParsedSchema {
                     .ok_or_else(|| Error::InvalidFieldMapping { field: key.clone() })?;
                 field_mappings.push(FieldMapping {
                     source,
+                    dest_name: dest.to_string(),
                     dest_key_json: serialize_json_key(dest),
                 });
+            }
+        }
+
+        let mut reserved_columns: Vec<String> = Vec::new();
+        let mut reserved_len_mask: u64 = 0;
+
+        // Inject the mandatory `TimeGenerated` column from the record's event
+        // time unless a mapping already targets it. Detection is done once here
+        // (cold path); an explicit resource/scope/field/attribute mapping to
+        // `TimeGenerated` (a runtime passthrough attribute named `TimeGenerated`
+        // is handled at emit time, innermost-wins) disables injection.
+        let time_generated_explicitly_mapped = schema
+            .resource_mapping
+            .values()
+            .any(|d| d == TIME_GENERATED_COLUMN)
+            || schema
+                .scope_mapping
+                .values()
+                .any(|d| d == TIME_GENERATED_COLUMN)
+            || field_mappings
+                .iter()
+                .any(|fm| fm.dest_name == TIME_GENERATED_COLUMN)
+            || attribute_mapping
+                .values()
+                .any(|k| k.as_slice() == TIME_GENERATED_KEY_JSON);
+        let default_time_generated = !time_generated_explicitly_mapped;
+
+        if attribute_passthrough {
+            let mut push = |name: &str| {
+                reserved_len_mask |= 1u64 << (name.len().min(63) as u64);
+                reserved_columns.push(name.to_string());
+            };
+            for dest in schema.resource_mapping.values() {
+                push(dest);
+            }
+            for dest in schema.scope_mapping.values() {
+                push(dest);
+            }
+            for fm in &field_mappings {
+                push(&fm.dest_name);
+            }
+            // So a runtime passthrough attribute named `TimeGenerated` is
+            // detected as a collision and wins over the injected default.
+            if default_time_generated {
+                push(TIME_GENERATED_COLUMN);
             }
         }
 
@@ -118,7 +218,22 @@ impl ParsedSchema {
             scope_mapping: schema.scope_mapping.clone(),
             field_mappings,
             attribute_mapping,
+            attribute_passthrough,
+            default_time_generated,
+            reserved_columns,
+            reserved_len_mask,
         })
+    }
+
+    /// Returns true if `key` matches a reserved (mapped) column name. Rejects most
+    /// keys on length alone via `reserved_len_mask` before any byte comparison.
+    #[inline]
+    fn is_reserved_column(&self, key: &[u8]) -> bool {
+        let bit = 1u64 << (key.len().min(63) as u64);
+        if self.reserved_len_mask & bit == 0 {
+            return false;
+        }
+        self.reserved_columns.iter().any(|c| c.as_bytes() == key)
     }
 }
 
@@ -146,10 +261,7 @@ impl Transformer {
     /// Panics if the schema configuration contains invalid field names
     #[must_use]
     pub fn new(config: &Config) -> Self {
-        Self {
-            schema: ParsedSchema::from_config(&config.api.schema)
-                .expect("Invalid schema configuration"),
-        }
+        Self::try_new(config).expect("Invalid schema configuration")
     }
 
     /// Create a new Transformer, returning an error if configuration is invalid
@@ -168,22 +280,26 @@ impl Transformer {
     // allowing the caller to feed records directly into GzipBatcher
     // without the intermediate Vec allocation and second iteration pass.
     pub fn convert_to_log_analytics<T: LogsDataView>(&self, logs_view: &T) -> Vec<Bytes> {
+        let schema = &self.schema;
         let mut results = Vec::with_capacity(1024);
         let mut buf = BytesMut::with_capacity(2048);
         let mut base_map = serde_json::Map::new();
         let mut record_buf = Vec::with_capacity(512);
+        // Reused scratch for the combined (passthrough + mappings) path.
+        let mut overridden: Vec<String> = Vec::new();
+        let mut scratch = Vec::new();
 
         for resource_logs in logs_view.resources() {
             base_map.clear();
             if let Some(r) = resource_logs.resource() {
-                self.apply_resource_mapping(&r, &mut base_map);
+                Self::apply_resource_mapping(schema, &r, &mut base_map);
             }
 
             for scope_logs in resource_logs.scopes() {
                 // Clone resource base once per ScopeLogs, add scope mappings
                 let mut scope_map = base_map.clone();
                 if let Some(s) = scope_logs.scope() {
-                    self.apply_scope_mapping(&s, &mut scope_map);
+                    Self::apply_scope_mapping(schema, &s, &mut scope_map);
                 }
 
                 // Pre-serialize resource+scope as JSON bytes (once per ScopeLogs)
@@ -193,29 +309,84 @@ impl Transformer {
                 // Strip trailing '}' to allow appending record fields
                 let base_prefix = &base_json[..base_json.len() - 1];
 
+                // Passthrough combined with explicit mappings needs collision
+                // handling (innermost/attributes win); pure passthrough and pure
+                // mapped records stay on the fast raw path. Records are built in a
+                // reused Vec and bulk-copied into `buf` — benchmarks show one
+                // amortized memcpy beats many small writes straight into BytesMut.
+                let combined =
+                    schema.attribute_passthrough && (has_base || !schema.field_mappings.is_empty());
+
                 for log_record in scope_logs.log_records() {
-                    record_buf.clear();
-
-                    let has_record = self.write_record_fields_json(&log_record, &mut record_buf);
-
                     buf.clear();
-                    match (has_base, has_record) {
-                        (true, true) => {
-                            buf.extend_from_slice(base_prefix);
-                            buf.put_u8(b',');
+
+                    if combined {
+                        record_buf.clear();
+                        overridden.clear();
+                        // Emit innermost-first: attributes, then fields; record
+                        // which mapped columns an attribute overrides.
+                        let has_record = Self::write_passthrough_record_inner(
+                            schema,
+                            &log_record,
+                            &mut record_buf,
+                            &mut overridden,
+                        );
+
+                        buf.put_u8(b'{');
+                        let mut has = has_record;
+                        if has_record {
                             buf.extend_from_slice(&record_buf);
-                            buf.put_u8(b'}');
                         }
-                        (true, false) => {
-                            buf.extend_from_slice(&base_json);
+                        // Append resource/scope columns, dropping any overridden
+                        // by an attribute so keys stay unique.
+                        if overridden.is_empty() {
+                            if has_base {
+                                if has {
+                                    buf.put_u8(b',');
+                                }
+                                // base_json inner content (strip both braces)
+                                buf.extend_from_slice(&base_json[1..base_json.len() - 1]);
+                            }
+                        } else {
+                            for (k, v) in &scope_map {
+                                if overridden.contains(k) {
+                                    continue;
+                                }
+                                if has {
+                                    buf.put_u8(b',');
+                                }
+                                has = true;
+                                scratch.clear();
+                                Self::write_json_string(k.as_bytes(), &mut scratch);
+                                scratch.push(b':');
+                                let _ = serde_json::to_writer(&mut scratch, v);
+                                buf.extend_from_slice(&scratch);
+                            }
                         }
-                        (false, true) => {
-                            buf.put_u8(b'{');
-                            buf.extend_from_slice(&record_buf);
-                            buf.put_u8(b'}');
-                        }
-                        (false, false) => {
-                            buf.extend_from_slice(b"{}");
+                        buf.put_u8(b'}');
+                    } else {
+                        record_buf.clear();
+                        let has_record =
+                            Self::write_record_fields_json(schema, &log_record, &mut record_buf);
+
+                        match (has_base, has_record) {
+                            (true, true) => {
+                                buf.extend_from_slice(base_prefix);
+                                buf.put_u8(b',');
+                                buf.extend_from_slice(&record_buf);
+                                buf.put_u8(b'}');
+                            }
+                            (true, false) => {
+                                buf.extend_from_slice(&base_json);
+                            }
+                            (false, true) => {
+                                buf.put_u8(b'{');
+                                buf.extend_from_slice(&record_buf);
+                                buf.put_u8(b'}');
+                            }
+                            (false, false) => {
+                                buf.extend_from_slice(b"{}");
+                            }
                         }
                     }
 
@@ -227,16 +398,78 @@ impl Transformer {
         results
     }
 
+    /// Combined passthrough emit: write log attributes (innermost) first, then the
+    /// mapped log-record fields, skipping any field whose column an attribute
+    /// already emitted. Records attribute keys that collide with a mapped column
+    /// (resource/scope/field) in `overridden` so the caller can drop those base
+    /// columns. Returns true if anything was written.
+    fn write_passthrough_record_inner<R: LogRecordView>(
+        schema: &ParsedSchema,
+        log_record: &R,
+        out: &mut Vec<u8>,
+        overridden: &mut Vec<String>,
+    ) -> bool {
+        let mut has = false;
+        let check_reserved = !schema.reserved_columns.is_empty();
+
+        for attr in log_record.attributes() {
+            if let Some(val) = attr.value() {
+                if has {
+                    out.push(b',');
+                }
+                has = true;
+                Self::write_json_string(attr.key(), out);
+                out.push(b':');
+                Self::write_any_value_json(&val, out);
+                // Reject most attribute keys on length alone (no hashing); only
+                // an actual collision (rare) materializes the key as a String.
+                if check_reserved && schema.is_reserved_column(attr.key()) {
+                    overridden.push(String::from_utf8_lossy(attr.key()).into_owned());
+                }
+            }
+        }
+
+        for fm in &schema.field_mappings {
+            if !overridden.is_empty() && overridden.contains(&fm.dest_name) {
+                continue;
+            }
+            if has {
+                out.push(b',');
+            }
+            has = true;
+            out.extend_from_slice(&fm.dest_key_json);
+            Self::write_field_value_json(fm.source, log_record, out);
+        }
+
+        // Inject TimeGenerated from event time, unless a passthrough attribute
+        // named `TimeGenerated` already emitted it (recorded in `overridden`,
+        // innermost-wins).
+        if schema.default_time_generated && !overridden.iter().any(|c| c == TIME_GENERATED_COLUMN) {
+            if has {
+                out.push(b',');
+            }
+            has = true;
+            out.extend_from_slice(TIME_GENERATED_KEY_JSON);
+            Self::write_default_time_generated_value(log_record, out);
+        }
+
+        has
+    }
+
     /// Write log record fields directly as JSON key:value pairs (no braces) to a byte buffer.
     /// Returns true if any fields were written.
     fn write_record_fields_json<R: LogRecordView>(
-        &self,
+        schema: &ParsedSchema,
         log_record: &R,
         out: &mut Vec<u8>,
     ) -> bool {
         let mut has_field = false;
+        // Track whether a passthrough attribute named `TimeGenerated` was
+        // emitted, so the injected default below is skipped (attribute wins).
+        let track_tg = schema.default_time_generated && schema.attribute_passthrough;
+        let mut tg_from_attr = false;
 
-        for fm in &self.schema.field_mappings {
+        for fm in &schema.field_mappings {
             if has_field {
                 out.push(b',');
             }
@@ -247,10 +480,10 @@ impl Transformer {
             Self::write_field_value_json(fm.source, log_record, out);
         }
 
-        if !self.schema.attribute_mapping.is_empty() {
+        if !schema.attribute_mapping.is_empty() {
             for attr in log_record.attributes() {
                 let attr_key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-                if let Some(dest) = self.schema.attribute_mapping.get(attr_key.as_ref()) {
+                if let Some(dest) = schema.attribute_mapping.get(attr_key.as_ref()) {
                     if let Some(val) = attr.value() {
                         if has_field {
                             out.push(b',');
@@ -263,7 +496,54 @@ impl Transformer {
             }
         }
 
+        // Attribute passthrough: emit every log attribute as-is as a top-level
+        // `"<key>": <value>` pair (the attribute key becomes the column name).
+        // Mutually exclusive with `attribute_mapping` (the `attributes` config is
+        // either the `passthrough` marker or an explicit mapping object).
+        if schema.attribute_passthrough {
+            for attr in log_record.attributes() {
+                if let Some(val) = attr.value() {
+                    if has_field {
+                        out.push(b',');
+                    }
+                    has_field = true;
+                    Self::write_json_string(attr.key(), out);
+                    out.push(b':');
+                    Self::write_any_value_json(&val, out);
+                    if track_tg && attr.key() == TIME_GENERATED_COLUMN.as_bytes() {
+                        tg_from_attr = true;
+                    }
+                }
+            }
+        }
+
+        // Inject TimeGenerated from event time, unless a passthrough attribute
+        // named `TimeGenerated` already emitted it (innermost-wins).
+        if schema.default_time_generated && !tg_from_attr {
+            if has_field {
+                out.push(b',');
+            }
+            has_field = true;
+            out.extend_from_slice(TIME_GENERATED_KEY_JSON);
+            Self::write_default_time_generated_value(log_record, out);
+        }
+
         has_field
+    }
+
+    /// Write the injected `TimeGenerated` value from the record's event time:
+    /// `time_unix_nano`, falling back to `observed_time_unix_nano`, then (both
+    /// unset) to the current time via [`Self::write_timestamp_json`]. This is the
+    /// last point in the pipeline that still holds the record's real event time;
+    /// omitting it would make Azure stamp `TimeGenerated` with the ingestion
+    /// arrival time instead.
+    #[inline]
+    fn write_default_time_generated_value<R: LogRecordView>(log_record: &R, out: &mut Vec<u8>) {
+        let ts = match log_record.time_unix_nano() {
+            Some(t) if t != 0 => t,
+            _ => log_record.observed_time_unix_nano().unwrap_or(0),
+        };
+        Self::write_timestamp_json(ts, out);
     }
 
     /// Write a field value directly to JSON bytes, avoiding intermediate Value allocation.
@@ -376,8 +656,10 @@ impl Transformer {
         out.push(b'"');
         let mut start = 0;
         for (i, &b) in s.iter().enumerate() {
-            let needs_escape =
-                b == b'"' || b == b'\\' || b == b'\n' || b == b'\r' || b == b'\t' || b < 0x20;
+            // `\n`, `\r`, `\t` are all `< 0x20`, so `b < 0x20` already covers them;
+            // only `"` and `\` need explicit checks. The escape arms below still
+            // emit the short `\n`/`\r`/`\t` forms, so output is unchanged.
+            let needs_escape = b == b'"' || b == b'\\' || b < 0x20;
             if needs_escape {
                 if start < i {
                     out.extend_from_slice(&s[start..i]);
@@ -407,7 +689,6 @@ impl Transformer {
     /// Write hex-encoded bytes as a JSON string directly.
     #[inline]
     fn write_json_hex(bytes: &[u8], out: &mut Vec<u8>) {
-        out.reserve(bytes.len() * 2 + 2);
         out.push(b'"');
         for &byte in bytes {
             out.push(HEX_CHARS[(byte >> 4) as usize]);
@@ -473,8 +754,6 @@ impl Transformer {
     /// Avoids String allocation since RFC3339 contains no JSON-special characters.
     #[inline]
     fn write_timestamp_json(time_unix_nano: u64, out: &mut Vec<u8>) {
-        out.reserve(32); // enough for full timestamp with quotes
-
         if time_unix_nano == 0 {
             let ts = chrono::Utc::now().to_rfc3339();
             Self::write_json_string(ts.as_bytes(), out);
@@ -519,13 +798,13 @@ impl Transformer {
 
     /// Apply resource mapping based on configuration
     fn apply_resource_mapping<R: ResourceView>(
-        &self,
+        schema: &ParsedSchema,
         resource: &R,
         map: &mut serde_json::Map<String, Value>,
     ) {
         for attr in resource.attributes() {
             let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-            if let Some(mapped_name) = self.schema.resource_mapping.get(key.as_ref()) {
+            if let Some(mapped_name) = schema.resource_mapping.get(key.as_ref()) {
                 if let Some(value) = attr.value() {
                     _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
                 }
@@ -535,13 +814,13 @@ impl Transformer {
 
     /// Apply scope mapping based on configuration
     fn apply_scope_mapping<S: InstrumentationScopeView>(
-        &self,
+        schema: &ParsedSchema,
         scope: &S,
         map: &mut serde_json::Map<String, Value>,
     ) {
         for attr in scope.attributes() {
             let key: Cow<'_, str> = String::from_utf8_lossy(attr.key());
-            if let Some(mapped_name) = self.schema.scope_mapping.get(key.as_ref()) {
+            if let Some(mapped_name) = schema.scope_mapping.get(key.as_ref()) {
                 if let Some(value) = attr.value() {
                     _ = map.insert(mapped_name.clone(), Self::convert_any_value(&value));
                 }
@@ -727,6 +1006,612 @@ mod tests {
         assert_eq!(json["Body"], "42");
         assert_eq!(json["Severity"], "INFO");
         assert_eq!(json["TestAttr"], true);
+    }
+
+    #[test]
+    fn test_passthrough_mode() {
+        let mut config = create_test_config();
+        // `attributes: passthrough` emits every log attribute as its own
+        // top-level column (one column per attribute key), with no
+        // resource/scope/field mappings.
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("my-service".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hello".into())),
+                        }),
+                        severity_text: "INFO".into(),
+                        attributes: vec![
+                            KeyValue {
+                                key: "user.id".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("abc".into())),
+                                }),
+                                ..Default::default()
+                            },
+                            KeyValue {
+                                key: "http.status".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::IntValue(200)),
+                                }),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // Each log attribute is emitted as its own top-level column, key verbatim.
+        assert_eq!(json["user.id"], "abc");
+        assert_eq!(json["http.status"], 200);
+        // Nothing else is emitted: no field/resource/scope mappings.
+        assert!(json.get("Attributes").is_none());
+        assert!(json.get("Body").is_none());
+        assert!(json.get("ServiceName").is_none());
+        // The mandatory TimeGenerated is injected from the record's event time.
+        assert!(json.get("TimeGenerated").is_some());
+        // The two attribute columns plus the injected TimeGenerated.
+        assert_eq!(json.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_passthrough_no_attributes_emits_only_injected_time_generated() {
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hi".into())),
+                        }),
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // No attributes and no mappings -> the row carries only the injected
+        // TimeGenerated (from the record's event time).
+        assert_eq!(json.as_object().unwrap().len(), 1);
+        assert_eq!(json["TimeGenerated"], "2023-11-14T22:13:20+00:00");
+    }
+
+    #[test]
+    fn test_passthrough_composed_with_mappings() {
+        // `attributes: passthrough` composes with resource, scope, and top-level
+        // field mappings: the mapped columns plus each attribute as its own
+        // top-level column are all emitted.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("service.name".into(), "ServiceName".into())]),
+            scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Body")),
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("svc".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "s".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("scp".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hello".into())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "user.id".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("abc".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        // Mapped columns.
+        assert_eq!(json["ServiceName"], "svc");
+        assert_eq!(json["ScopeName"], "scp");
+        assert_eq!(json["Body"], "hello");
+        // Log attribute emitted as its own top-level column.
+        assert_eq!(json["user.id"], "abc");
+        // Mapped columns + attribute + injected TimeGenerated.
+        assert!(json.get("TimeGenerated").is_some());
+        assert_eq!(json.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_passthrough_composed_multiple_records_reset_overridden() {
+        // Two log records share one scope in the combined (passthrough + base
+        // mapping) path. The first has an attribute that overrides the mapped
+        // resource column; the second does not. This exercises the per-record
+        // reset of the `overridden` scratch buffer: the base column must be
+        // suppressed for the first record and reappear for the second, with no
+        // state leaking between records.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("service.name".into(), "Shared".into())]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("from-resource".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![
+                        // Record 1: attribute "Shared" collides with the mapped
+                        // resource column -> attribute wins, base dropped.
+                        LogRecord {
+                            attributes: vec![KeyValue {
+                                key: "Shared".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                                }),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                        // Record 2: no collision -> base "Shared" reappears
+                        // alongside the passthrough attribute.
+                        LogRecord {
+                            attributes: vec![KeyValue {
+                                key: "other".into(),
+                                value: Some(AnyValue {
+                                    value: Some(OtelAnyValueEnum::StringValue("val".into())),
+                                }),
+                                ..Default::default()
+                            }],
+                            ..Default::default()
+                        },
+                    ],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 2);
+
+        // Record 1: attribute overrides the base column; the injected
+        // TimeGenerated is the only other key.
+        let json0: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json0["Shared"], "from-attr");
+        assert!(json0.get("TimeGenerated").is_some());
+        assert_eq!(json0.as_object().unwrap().len(), 2);
+
+        // Record 2: overridden reset -> base column reappears next to the attr.
+        let json1: Value = serde_json::from_slice(&result[1]).unwrap();
+        assert_eq!(json1["Shared"], "from-resource");
+        assert_eq!(json1["other"], "val");
+        assert!(json1.get("TimeGenerated").is_some());
+        assert_eq!(json1.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_passthrough_attribute_overrides_resource_column() {
+        // Innermost wins: a log attribute whose key equals a mapped resource
+        // column overrides it, and no duplicate key is emitted.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("service.name".into(), "Shared".into())]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("from-resource".into())),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "Shared".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Shared"], "from-attr");
+        // Injected TimeGenerated is the only other column.
+        assert!(json.get("TimeGenerated").is_some());
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_passthrough_attribute_overrides_scope_column() {
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::from([("scope.name".into(), "Shared".into())]),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "s".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.name".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-scope".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        attributes: vec![KeyValue {
+                            key: "Shared".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Shared"], "from-attr");
+        // Injected TimeGenerated is the only other column.
+        assert!(json.get("TimeGenerated").is_some());
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_passthrough_attribute_overrides_field_column() {
+        // A log attribute whose key equals a mapped top-level field column wins.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Body")),
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("from-field".into())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "Body".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("from-attr".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "from-attr");
+        // Injected TimeGenerated is the only other column.
+        assert!(json.get("TimeGenerated").is_some());
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_passthrough_multiple_collisions_and_survivor() {
+        // Multiple attributes override mapped columns at once, a mapped field is
+        // overridden, a non-colliding attribute is emitted, and a non-overridden
+        // resource column survives.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([
+                ("service.name".into(), "Svc".into()),
+                ("host.name".into(), "Keep".into()),
+            ]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Body")),
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let str_kv = |k: &str, v: &str| KeyValue {
+            key: k.into(),
+            value: Some(AnyValue {
+                value: Some(OtelAnyValueEnum::StringValue(v.into())),
+            }),
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![
+                        str_kv("service.name", "res-svc"),
+                        str_kv("host.name", "res-host"),
+                    ],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("res-body".into())),
+                        }),
+                        attributes: vec![
+                            str_kv("Svc", "attr-svc"),   // overrides resource column
+                            str_kv("Body", "attr-body"), // overrides field column
+                            str_kv("other", "z"),        // no collision
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Svc"], "attr-svc"); // attribute wins over resource
+        assert_eq!(json["Body"], "attr-body"); // attribute wins over field
+        assert_eq!(json["other"], "z"); // non-colliding attribute
+        assert_eq!(json["Keep"], "res-host"); // surviving resource column
+        assert!(json.get("TimeGenerated").is_some()); // injected
+        assert_eq!(json.as_object().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn test_passthrough_same_length_key_no_false_collision() {
+        // An attribute key with the same length as a mapped column but different
+        // bytes must not be treated as a collision (length bitmask passes, byte
+        // comparison rejects). Both columns are emitted.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([
+                ("body".into(), json!("Data")), // 4-byte column name
+                ("attributes".into(), json!("passthrough")),
+            ]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("body-val".into())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "meta".into(), // same length (4) as "Data", different bytes
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue("meta-val".into())),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Data"], "body-val"); // mapped field survives
+        assert_eq!(json["meta"], "meta-val"); // attribute emitted
+        assert!(json.get("TimeGenerated").is_some()); // injected
+        assert_eq!(json.as_object().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn test_passthrough_value_types() {
+        // Passthrough preserves value types (string, int, double, bool).
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+
+        let kv = |k: &str, v: OtelAnyValueEnum| KeyValue {
+            key: k.into(),
+            value: Some(AnyValue { value: Some(v) }),
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        attributes: vec![
+                            kv("s", OtelAnyValueEnum::StringValue("txt".into())),
+                            kv("i", OtelAnyValueEnum::IntValue(-7)),
+                            kv("d", OtelAnyValueEnum::DoubleValue(1.5)),
+                            kv("b", OtelAnyValueEnum::BoolValue(true)),
+                        ],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+
+        assert_eq!(result.len(), 1);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["s"], "txt");
+        assert_eq!(json["i"], -7);
+        assert_eq!(json["d"], 1.5);
+        assert_eq!(json["b"], true);
     }
 
     #[test]
@@ -994,7 +1879,10 @@ mod tests {
                 }),
                 scope_logs: vec![ScopeLogs {
                     scope: None,
-                    log_records: vec![LogRecord::default()],
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
                     schema_url: String::new(),
                 }],
                 schema_url: String::new(),
@@ -1007,8 +1895,312 @@ mod tests {
 
         assert_eq!(result.len(), 1);
         let json: Value = serde_json::from_slice(&result[0]).unwrap();
-        // Should be empty object since no mappings configured
-        assert_eq!(json, json!({}));
+        // No mappings configured, but the mandatory TimeGenerated is always
+        // injected from the record's event time.
+        assert_eq!(
+            json,
+            json!({ "TimeGenerated": "2023-11-14T22:13:20+00:00" })
+        );
+    }
+
+    // ── TimeGenerated auto-injection ───────────────────────────
+
+    /// Builds a single-record passthrough request with the given timestamps and
+    /// attributes, and returns the emitted JSON object.
+    fn passthrough_row(
+        time_unix_nano: u64,
+        observed_time_unix_nano: u64,
+        attrs: Vec<KeyValue>,
+    ) -> Value {
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("attributes".into(), json!("passthrough"))]),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano,
+                        observed_time_unix_nano,
+                        attributes: attrs,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        assert_eq!(result.len(), 1);
+        serde_json::from_slice(&result[0]).unwrap()
+    }
+
+    #[test]
+    fn test_time_generated_injected_from_event_time() {
+        // Unmapped TimeGenerated is injected from time_unix_nano (event time).
+        let json = passthrough_row(1_700_000_000_000_000_000, 0, vec![]);
+        assert_eq!(json["TimeGenerated"], "2023-11-14T22:13:20+00:00");
+    }
+
+    #[test]
+    fn test_time_generated_falls_back_to_observed_time() {
+        // time_unix_nano == 0 -> fall back to observed_time_unix_nano.
+        let json = passthrough_row(0, 1_600_000_000_000_000_000, vec![]);
+        assert_eq!(json["TimeGenerated"], "2020-09-13T12:26:40+00:00");
+    }
+
+    #[test]
+    fn test_passthrough_attribute_named_time_generated_wins() {
+        // A passthrough attribute literally named `TimeGenerated` wins over the
+        // injected default (innermost-wins), and is emitted exactly once.
+        let attrs = vec![KeyValue {
+            key: "TimeGenerated".into(),
+            value: Some(AnyValue {
+                value: Some(OtelAnyValueEnum::StringValue("2001-01-01T00:00:00Z".into())),
+            }),
+            ..Default::default()
+        }];
+        let json = passthrough_row(1_700_000_000_000_000_000, 0, attrs);
+        assert_eq!(json["TimeGenerated"], "2001-01-01T00:00:00Z");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_explicit_time_generated_mapping_not_double_injected() {
+        // Mapping a field to TimeGenerated disables injection: exactly one
+        // TimeGenerated, carrying the mapped field's value.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("time_unix_nano".into(), json!("TimeGenerated"))]),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TimeGenerated"], "2023-11-14T22:13:20+00:00");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_resource_mapping_to_time_generated_disables_injection() {
+        // A resource attribute mapped to TimeGenerated also disables injection.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::from([("host.time".into(), "TimeGenerated".into())]),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::new(),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "host.time".into(),
+                        value: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue(
+                                "2005-05-05T05:05:05Z".into(),
+                            )),
+                        }),
+                        ..Default::default()
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        // Event time present, but must be ignored: TimeGenerated
+                        // is explicitly mapped from the resource attribute.
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TimeGenerated"], "2005-05-05T05:05:05Z");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_time_generated_injected_on_mapped_only_record() {
+        // The common non-passthrough path: explicit field mappings, no mapping
+        // targeting TimeGenerated, so it is injected from the event time
+        // alongside the mapped columns.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([("body".into(), json!("Body"))]),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(OtelAnyValueEnum::StringValue("hi".into())),
+                        }),
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["Body"], "hi");
+        assert_eq!(json["TimeGenerated"], "2023-11-14T22:13:20+00:00");
+        assert_eq!(json.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_scope_mapping_to_time_generated_disables_injection() {
+        // A scope attribute mapped to TimeGenerated also disables injection.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::from([("scope.time".into(), "TimeGenerated".into())]),
+            log_record_mapping: HashMap::new(),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "s".into(),
+                        version: String::new(),
+                        attributes: vec![KeyValue {
+                            key: "scope.time".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue(
+                                    "2007-07-07T07:07:07Z".into(),
+                                )),
+                            }),
+                            ..Default::default()
+                        }],
+                        dropped_attributes_count: 0,
+                    }),
+                    log_records: vec![LogRecord {
+                        // Event time present, but ignored: TimeGenerated is
+                        // explicitly mapped from the scope attribute.
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TimeGenerated"], "2007-07-07T07:07:07Z");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_explicit_attribute_mapping_to_time_generated_disables_injection() {
+        // An explicit `attributes: { key: TimeGenerated }` mapping also disables
+        // injection: the mapped attribute supplies the value, once.
+        let mut config = create_test_config();
+        config.api.schema = SchemaConfig {
+            resource_mapping: HashMap::new(),
+            scope_mapping: HashMap::new(),
+            log_record_mapping: HashMap::from([(
+                "attributes".into(),
+                json!({ "event.time": "TimeGenerated" }),
+            )]),
+        };
+        let transformer = Transformer::new(&config);
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_000_000_000_000_000,
+                        attributes: vec![KeyValue {
+                            key: "event.time".into(),
+                            value: Some(AnyValue {
+                                value: Some(OtelAnyValueEnum::StringValue(
+                                    "2009-09-09T09:09:09Z".into(),
+                                )),
+                            }),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let bytes = request.encode_to_vec();
+        let logs_view = RawLogsData::new(&bytes);
+        let result = transformer.convert_to_log_analytics(&logs_view);
+        let json: Value = serde_json::from_slice(&result[0]).unwrap();
+        assert_eq!(json["TimeGenerated"], "2009-09-09T09:09:09Z");
+        assert_eq!(json.as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_time_generated_falls_back_to_now_when_both_timestamps_zero() {
+        // Neither time_unix_nano nor observed_time_unix_nano set: injection
+        // falls back to the current time, so TimeGenerated is still present and
+        // is a valid, recent RFC3339 timestamp.
+        let before = chrono::Utc::now();
+        let json = passthrough_row(0, 0, vec![]);
+        let after = chrono::Utc::now();
+
+        let ts = json["TimeGenerated"]
+            .as_str()
+            .expect("TimeGenerated present");
+        let parsed = chrono::DateTime::parse_from_rfc3339(ts)
+            .expect("TimeGenerated is valid RFC3339")
+            .with_timezone(&chrono::Utc);
+        assert!(
+            parsed >= before - chrono::Duration::seconds(1)
+                && parsed <= after + chrono::Duration::seconds(1),
+            "injected TimeGenerated {parsed} not within [{before}, {after}]"
+        );
     }
 
     #[test]
