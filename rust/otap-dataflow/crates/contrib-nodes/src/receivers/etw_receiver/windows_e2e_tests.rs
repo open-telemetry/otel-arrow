@@ -34,14 +34,14 @@ use std::time::{Duration, Instant};
 use tokio::time;
 use tracelogging_dynamic as tld;
 
-// Static `tracelogging` provider — must live at module scope since
+// Static `tracelogging` provider -- must live at module scope since
 // `define_provider!` declares a `static` symbol.
 tracelogging::define_provider!(STATIC_PROVIDER, "OtapEtwE2E.Static");
 
 const STATIC_PROVIDER_NAME: &str = "OtapEtwE2E.Static";
 const DYNAMIC_EVENT_NAME: &str = "E2eDynamicEvent";
 /// Must stay in sync with the string literal passed to `write_event!` in
-/// [`emit_static_event`] — the `tracelogging::write_event!` macro requires
+/// [`emit_static_event`] -- the `tracelogging::write_event!` macro requires
 /// the event name to be a compile-time string literal.
 const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 
@@ -49,7 +49,7 @@ const STATIC_EVENT_NAME: &str = "E2eStaticEvent";
 #[ignore = "requires Administrator privileges and creates a real ETW kernel session; run explicitly with `-- --ignored`"]
 fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     // Without Administrator rights, `StartTraceA` fails with
-    // ERROR_ACCESS_DENIED on a detached thread — `subscribe()` still
+    // ERROR_ACCESS_DENIED on a detached thread -- `subscribe()` still
     // returns Ok and the only symptom is that `provider.enabled(..)`
     // never flips true, looking like a generic timeout.
     assert!(
@@ -69,15 +69,15 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
     // Stop every leftover `OtapEtwE2E-*` session on the box.  We can't
     // narrow this to our own per-PID `session_name`: `EtwSession::new()`
     // in `one_collect` uses a fixed internal session GUID, so any
-    // session created by a previous run of this test — regardless of
-    // its name — occupies that GUID and makes `StartTraceW` fail with
+    // session created by a previous run of this test -- regardless of
+    // its name -- occupies that GUID and makes `StartTraceW` fail with
     // `ERROR_ALREADY_EXISTS` (183).  The same constraint means two
     // copies of this test physically cannot run concurrently on the
     // same machine, so the broad cleanup never disrupts a peer that
     // would otherwise have succeeded.
     cleanup_stale_otap_etw_sessions();
 
-    // Canonical TraceLogging GUIDs for both providers — the same hash
+    // Canonical TraceLogging GUIDs for both providers -- the same hash
     // ETW itself uses for manifest-free providers, so the kernel session
     // and the producers agree on the routing.
     let dynamic_guid_str = guid_string_from_name(&dynamic_provider_name);
@@ -113,7 +113,7 @@ fn etw_receiver_decodes_tracelogging_events_end_to_end() {
         .run_validation(producer_validation());
 }
 
-// ── Producer ────────────────────────────────────────────────────────────
+// -- Producer ------------------------------------------------------------
 
 /// Test scenario: register both providers, emit one event from each,
 /// then signal `DrainIngress` + `Shutdown` so the validation phase sees
@@ -148,7 +148,7 @@ fn producer_scenario(
 
             // `DrainIngress` first so the receiver flushes any in-flight
             // ETW events from its MPSC channel and the pending Arrow
-            // batch downstream — this is what the engine sends in
+            // batch downstream -- this is what the engine sends in
             // production before `Shutdown`.  A bare `Shutdown` would
             // cause the receiver to drop events that arrived but had
             // not yet been timer-flushed.  Ignore send errors (the
@@ -170,7 +170,7 @@ fn producer_scenario(
 }
 
 async fn run_producer_body(dynamic_provider_name: &str) {
-    // ── Dynamic provider (`tracelogging_dynamic`) ───────────────────────
+    // -- Dynamic provider (`tracelogging_dynamic`) -----------------------
     let dynamic_provider = Box::pin(tld::Provider::new(
         dynamic_provider_name,
         &tld::Provider::options(),
@@ -181,7 +181,7 @@ async fn run_producer_body(dynamic_provider_name: &str) {
     let r = unsafe { dynamic_provider.as_ref().register() };
     assert_eq!(r, 0, "dynamic Provider::register returned errno {r}");
 
-    // ── Static provider (`tracelogging`) ────────────────────────────────
+    // -- Static provider (`tracelogging`) --------------------------------
     // SAFETY: this is an EXE-style test binary; process exit triggers
     // `unregister` for any provider still registered.  We also call
     // `unregister()` at the end of this function on the happy path.
@@ -252,9 +252,9 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
         // Two distinct boolean encodings, exercised side by side so we lock
         // in both decoder mappings:
         //   * 4-byte Win32 `BOOL` / TraceLogging `Bool32` (`TDH_INTYPE_BOOLEAN`)
-        //     → one_collect maps it to `"u32"` → `Int(1)`.
+        //     -> one_collect maps it to `"u32"` -> `Int(1)`.
         //   * 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
-        //     → one_collect maps it to `"u8"` → `Int(1)`.
+        //     -> one_collect maps it to `"u8"` -> `Int(1)`.
         .add_bool32("MyBool32Flag", 1, tld::OutType::Boolean, 0)
         .add_u8("MyU8Flag", 1u8, tld::OutType::Boolean, 0)
         // UTF-8 and UTF-16 string fields.
@@ -268,8 +268,8 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
             tld::OutType::Default,
             0,
         )
-        // FILETIME and GUID — opaque scalar types with dedicated decoder
-        // paths (filetime → unix-epoch ns; guid → hex string).
+        // FILETIME and GUID -- opaque scalar types with dedicated decoder
+        // paths (filetime -> unix-epoch ns; guid -> hex string).
         .add_filetime(
             "MyFiletime",
             // 2024-01-01 00:00:00 UTC, as 100-ns ticks since 1601-01-01 UTC.
@@ -287,7 +287,7 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
         // a parent field; the next `field_count` `add_*` calls become
         // its children.  The one_collect TDH decoder flattens nested
         // fields into dotted names (`"MyNested.NestedAnswer"`,
-        // `"MyNested.NestedFlag"`) — see the `DecodedField::name` doc
+        // `"MyNested.NestedFlag"`) -- see the `DecodedField::name` doc
         // comment in `session.rs`.
         .add_struct("MyNested", 2, 0)
         .add_u32("NestedAnswer", 99u32, tld::OutType::Default, 0)
@@ -302,7 +302,7 @@ fn emit_dynamic_event(provider: &Pin<Box<tld::Provider>>) {
 }
 
 /// Emit a small event through the static `tracelogging` macro path.
-/// Coverage is intentionally minimal — the producer is what's being
+/// Coverage is intentionally minimal -- the producer is what's being
 /// exercised here; the receiver/decoder code path is the same as for
 /// the dynamic event.
 fn emit_static_event() {
@@ -318,8 +318,8 @@ fn emit_static_event() {
         u32("StaticAnswer", &answer),
         str8("StaticMessage", "hello-from-static".as_bytes()),
         // Two boolean encodings, mirroring the dynamic event:
-        //   * `bool8` is a 1-byte boolean (`U8` + `Boolean`) → decoded as "u8".
-        //   * `bool32` is a 4-byte Win32 `BOOL` (`Bool32`) → decoded as "u32".
+        //   * `bool8` is a 1-byte boolean (`U8` + `Boolean`) -> decoded as "u8".
+        //   * `bool32` is a 4-byte Win32 `BOOL` (`Bool32`) -> decoded as "u32".
         bool8("StaticFlag", &flag),
         bool32("StaticFlag32", &flag32),
         // Nested struct via the `struct("Name", { ... })` DSL.  The
@@ -332,7 +332,7 @@ fn emit_static_event() {
     assert_eq!(r, 0, "static write_event! returned errno {r}");
 }
 
-// ── Validation ──────────────────────────────────────────────────────────
+// -- Validation ----------------------------------------------------------
 
 /// Drain downstream pdata until we have batches containing BOTH events,
 /// then run comprehensive assertions on each.
@@ -438,7 +438,7 @@ fn find_event_row(records: &OtapArrowRecords, expected: &str, expected_pid: u32)
 }
 
 /// Field-by-field validation of the Logs/Resource/Scope columns and the
-/// receiver-injected `etw.*` attributes — the parts that are identical
+/// receiver-injected `etw.*` attributes -- the parts that are identical
 /// for every event regardless of how it was produced.
 fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: &str) {
     let logs_rb = records
@@ -448,7 +448,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
         .get(ArrowPayloadType::LogAttrs)
         .expect("LogAttrs payload should be present");
 
-    // ── Logs columns ────────────────────────────────────────────────────
+    // -- Logs columns ----------------------------------------------------
     let names = string_column(logs_rb, consts::EVENT_NAME);
     assert_eq!(
         names[row].as_deref(),
@@ -457,7 +457,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
         names[row]
     );
 
-    // body: ETW events have no body — encoder appends Null for every
+    // body: ETW events have no body -- encoder appends Null for every
     // row, and `LogsBodyBuilder::finish()` returns None when all rows
     // are null, so the column is omitted from the schema entirely.
     assert!(
@@ -514,14 +514,14 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     // ETW receiver does not populate these.  The optional UInt32
     // builder elides columns whose every row equals the default value
     // (0), so dropped_attributes_count may appear as `Some(0)` or be
-    // absent — both are semantically equivalent.
+    // absent -- both are semantically equivalent.
     assert_all_null_at(logs_rb, consts::TRACE_ID, row);
     assert_all_null_at(logs_rb, consts::SPAN_ID, row);
     assert_all_null_at(logs_rb, consts::FLAGS, row);
     assert_all_null_at(logs_rb, consts::SCHEMA_URL, row);
     assert_u32_zero_or_null(logs_rb, consts::DROPPED_ATTRIBUTES_COUNT, row);
 
-    // ── Resource & Scope structs ────────────────────────────────────────
+    // -- Resource & Scope structs ----------------------------------------
     // All defaulted fields; same elision behavior as above.
     let resource = struct_column(logs_rb, consts::RESOURCE);
     assert_u16_struct_field_zero_or_null(&resource, consts::ID, row);
@@ -543,7 +543,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     );
     assert_u32_struct_field_zero_or_null(&scope, consts::DROPPED_ATTRIBUTES_COUNT, row);
 
-    // ── Receiver-injected `etw.*` attributes ────────────────────────────
+    // -- Receiver-injected `etw.*` attributes ----------------------------
     let log_id =
         u16_column(logs_rb, consts::ID)[row].expect("log id must be present at the matched row");
     let attrs = collect_attributes(attrs_rb, log_id);
@@ -554,7 +554,7 @@ fn assert_log_record_common(records: &OtapArrowRecords, row: usize, event_name: 
     assert_attr_int(&attrs, "etw.version", 0);
     // TraceLogging unconditionally OR-s a high-bit metadata marker
     // (`0x8000_0000_0000_0000`) into the keyword mask alongside the
-    // application's bits.  The encoder saturates u64 → i64, so the
+    // application's bits.  The encoder saturates u64 -> i64, so the
     // value clamps to `i64::MAX` whenever bit 63 is set.
     assert_attr_keywords_includes_bit(&attrs, "etw.keywords", 0x1);
     assert_attr_int(&attrs, "etw.process.id", i64::from(std::process::id()));
@@ -591,23 +591,23 @@ fn assert_dynamic_user_attrs(records: &OtapArrowRecords, row: usize) {
     let attrs = collect_user_attrs(records, row);
 
     assert_attr_int(&attrs, "MyAnswer", 42);
-    // u64 → i64 (saturating; in range, so exact).
+    // u64 -> i64 (saturating; in range, so exact).
     assert_attr_int(&attrs, "MyBigCount", 1_000_000_000_001);
     assert_attr_int(&attrs, "MyDelta", -7);
     assert_attr_double(&attrs, "MyPi", core::f64::consts::PI);
     // Two boolean encodings, both surfacing as `Int(1)` but via distinct
     // decoder paths (see `session.rs::interpret_field_value`):
-    //   * `MyBool32Flag` — Win32 `BOOL` / TraceLogging `Bool32`
-    //     (`TDH_INTYPE_BOOLEAN`) → mapped to a 4-byte `"u32"`.
-    //   * `MyU8Flag` — 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
-    //     → mapped to `"u8"`.
+    //   * `MyBool32Flag` -- Win32 `BOOL` / TraceLogging `Bool32`
+    //     (`TDH_INTYPE_BOOLEAN`) -> mapped to a 4-byte `"u32"`.
+    //   * `MyU8Flag` -- 1-byte boolean (`TDH_INTYPE_UINT8` + `OutType::Boolean`)
+    //     -> mapped to `"u8"`.
     assert_attr_int(&attrs, "MyBool32Flag", 1);
     assert_attr_int(&attrs, "MyU8Flag", 1);
     assert_attr_str(&attrs, "MyMessage", "hello-from-test");
     assert_attr_str(&attrs, "MyWideMessage", "wide\u{2603}");
-    // FILETIME 2024-01-01 00:00:00 UTC → Unix-epoch ns.
+    // FILETIME 2024-01-01 00:00:00 UTC -> Unix-epoch ns.
     assert_attr_int(&attrs, "MyFiletime", 1_704_067_200_000_000_000);
-    // GUID is opaque to the TDH decoder → rendered by the encoder as a
+    // GUID is opaque to the TDH decoder -> rendered by the encoder as a
     // lowercase hex string (no dashes), length 2*16 = 32.
     let guid_hex = attr_str(&attrs, "MyGuid");
     assert_eq!(
@@ -632,9 +632,9 @@ fn assert_static_user_attrs(records: &OtapArrowRecords, row: usize) {
     assert_attr_str(&attrs, "StaticMessage", "hello-from-static");
     // Two boolean encodings, mirroring the dynamic event:
     //   * `StaticFlag` (`bool8`) is a 1-byte boolean (`TDH_INTYPE_UINT8`
-    //     + `OutType::Boolean`), which one_collect maps to `"u8"` → `Int(1)`.
+    //     + `OutType::Boolean`), which one_collect maps to `"u8"` -> `Int(1)`.
     //   * `StaticFlag32` (`bool32`) is a 4-byte Win32 `BOOL` / `Bool32`
-    //     (`TDH_INTYPE_BOOLEAN`), which one_collect maps to `"u32"` → `Int(1)`.
+    //     (`TDH_INTYPE_BOOLEAN`), which one_collect maps to `"u32"` -> `Int(1)`.
     assert_attr_int(&attrs, "StaticFlag", 1);
     assert_attr_int(&attrs, "StaticFlag32", 1);
     // Nested-struct children: same flattening as for the dynamic event.
@@ -658,7 +658,7 @@ fn collect_user_attrs(records: &OtapArrowRecords, row: usize) -> Vec<(String, At
         .collect()
 }
 
-// ── Attribute snapshot + collection ─────────────────────────────────────
+// -- Attribute snapshot + collection -------------------------------------
 
 /// Snapshot of a single attribute value, mapping the OTAP `type`
 /// discriminator to a typed Rust value so the assertion helpers can
@@ -794,7 +794,7 @@ fn assert_attr_str(attrs: &[(String, AttrSnapshot)], key: &str, expected: &str) 
 /// Assert that an `Int`-typed attribute exists and that *either* the
 /// raw `bit` is set in the value, *or* the value is `i64::MAX` (the
 /// saturating cast result produced when the original u64 had bit 63
-/// set — TraceLogging unconditionally ORs the metadata marker
+/// set -- TraceLogging unconditionally ORs the metadata marker
 /// `0x8000_0000_0000_0000` into the keyword mask).
 fn assert_attr_keywords_includes_bit(attrs: &[(String, AttrSnapshot)], key: &str, bit: i64) {
     match attrs.iter().find(|(k, _)| k == key).map(|(_, v)| v) {
@@ -814,7 +814,7 @@ fn assert_attr_keywords_includes_bit(attrs: &[(String, AttrSnapshot)], key: &str
     }
 }
 
-// ── Column-extraction helpers ───────────────────────────────────────────
+// -- Column-extraction helpers -------------------------------------------
 
 /// Read a UTF-8 / binary column as `Vec<Option<String>>`, transparently
 /// handling plain Utf8/Binary and `Dictionary(UInt8|UInt16, Utf8|Binary)`.
@@ -1072,7 +1072,7 @@ fn assert_all_null_at(rb: &arrow::array::RecordBatch, name: &str, row: usize) {
     );
 }
 
-// ── Struct-column helpers ───────────────────────────────────────────────
+// -- Struct-column helpers -----------------------------------------------
 
 fn struct_column(rb: &arrow::array::RecordBatch, name: &str) -> arrow::array::StructArray {
     let col = rb
@@ -1173,7 +1173,7 @@ fn struct_field_is_null(s: &arrow::array::StructArray, field: &str, row: usize) 
     }
 }
 
-// ── Diagnostic / privilege helpers ──────────────────────────────────────
+// -- Diagnostic / privilege helpers --------------------------------------
 
 /// Compute the canonical TraceLogging GUID string for `provider_name`
 /// (the same hash ETW uses for manifest-free providers).
@@ -1228,13 +1228,13 @@ fn print_running_etw_sessions() {
 
 /// Stop every `OtapEtwE2E-*` ETW session left behind by a previous
 /// run that died without unregistering.  ETW real-time sessions
-/// persist across process exits — Windows only cleans them up on
+/// persist across process exits -- Windows only cleans them up on
 /// reboot or via an explicit `ControlTrace(STOP)` call.
 ///
 /// We have to be broad rather than per-PID: `EtwSession::new()` in
 /// `one_collect` uses a fixed internal session GUID, so any leftover
-/// `OtapEtwE2E-*` session — regardless of the PID suffix in its name
-/// — occupies that GUID and makes `StartTraceW` fail with
+/// `OtapEtwE2E-*` session -- regardless of the PID suffix in its name
+/// -- occupies that GUID and makes `StartTraceW` fail with
 /// `ERROR_ALREADY_EXISTS` (183).  The same constraint means two copies
 /// of this test physically cannot run concurrently on the same
 /// machine, so this sweep never disrupts a peer that would otherwise
@@ -1269,7 +1269,7 @@ fn cleanup_stale_otap_etw_sessions() {
                 eprintln!("cleaned up stale ETW session {name}");
             }
             Ok(_) => {
-                // Session disappeared between query and stop — fine.
+                // Session disappeared between query and stop -- fine.
             }
             Err(e) => {
                 eprintln!("failed to invoke `logman stop {name}`: {e}");

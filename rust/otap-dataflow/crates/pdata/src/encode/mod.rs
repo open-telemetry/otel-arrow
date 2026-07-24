@@ -3258,7 +3258,7 @@ mod test {
         assert_eq!(positive.offset(), 2);
         let pos_counts: Vec<_> = positive.bucket_counts().collect();
         assert_eq!(pos_counts, vec![34, 45, 67]);
-        // No negative buckets were set — the view may return None or Some with empty counts
+        // No negative buckets were set -- the view may return None or Some with empty counts
         let neg_counts: Vec<_> = exp_dps[0]
             .negative()
             .map(|b| b.bucket_counts().collect())

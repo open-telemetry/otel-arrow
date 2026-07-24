@@ -510,7 +510,7 @@ mod tests {
             );
 
             // Encode through the full ITS path and parse via RawLogsData
-            // (the same path used by internal_telemetry_receiver → console
+            // (the same path used by internal_telemetry_receiver -> console
             // exporter).
             use crate::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
             use bytes::Bytes;

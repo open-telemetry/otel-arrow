@@ -164,7 +164,7 @@ impl TlsConfig {
     /// - `key_password` is set without `key_file`.
     /// - Any provided path string is empty.
     pub fn validate(&self) -> Result<(), String> {
-        // Reject empty strings — likely a config typo.
+        // Reject empty strings -- likely a config typo.
         if self.ca_file.as_deref() == Some("") {
             return Err("'ca_file' must not be empty".to_string());
         }
@@ -525,7 +525,7 @@ mod tests {
 
     #[test]
     fn validate_rejects_non_ascii() {
-        let err = validate_kafka_topic("topic-café").unwrap_err();
+        let err = validate_kafka_topic("topic-caf\u{E9}").unwrap_err();
         assert!(err.contains("invalid character"), "unexpected error: {err}");
     }
 

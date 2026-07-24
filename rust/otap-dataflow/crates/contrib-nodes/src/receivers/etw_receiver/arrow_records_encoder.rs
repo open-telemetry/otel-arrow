@@ -18,16 +18,16 @@ use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 use super::session::{CanonicalGuid, EtwAttributeValue, EtwEventData};
 
-// ── ETW level → OTel severity number mapping ─────────────────────────────────
+// -- ETW level -> OTel severity number mapping ---------------------------------
 
 /// Map an ETW event level to the closest OpenTelemetry severity number.
 ///
 /// ETW levels:
-/// - 1 = Critical  → OTEL FATAL  (21)
-/// - 2 = Error     → OTEL ERROR  (17)
-/// - 3 = Warning   → OTEL WARN   (13)
-/// - 4 = Info      → OTEL INFO   (9)
-/// - 5 = Verbose   → OTEL DEBUG  (5)
+/// - 1 = Critical  -> OTEL FATAL  (21)
+/// - 2 = Error     -> OTEL ERROR  (17)
+/// - 3 = Warning   -> OTEL WARN   (13)
+/// - 4 = Info      -> OTEL INFO   (9)
+/// - 5 = Verbose   -> OTEL DEBUG  (5)
 ///
 /// Unknown levels map to OTEL UNSPECIFIED (0).
 const fn etw_level_to_otel_severity(level: u8) -> i32 {
@@ -71,7 +71,7 @@ const fn etw_level_to_severity_text(level: u8) -> Option<&'static str> {
     }
 }
 
-// ── Decoded field → attribute value conversion ───────────────────────────────
+// -- Decoded field -> attribute value conversion -------------------------------
 
 /// Typed attribute value for Arrow encoding.
 enum AttrValue<'a> {
@@ -125,7 +125,7 @@ fn format_guid(guid: &CanonicalGuid) -> [u8; 36] {
 ///
 /// All type interpretation already happened in the decoder
 /// (`session::interpret_field_value`), so this is an exhaustive, allocation-free
-/// match — adding a new [`EtwAttributeValue`] variant is a compile error here.
+/// match -- adding a new [`EtwAttributeValue`] variant is a compile error here.
 fn decode_field_value(value: &EtwAttributeValue) -> AttrValue<'_> {
     match value {
         EtwAttributeValue::Str(s) => AttrValue::Str(Cow::Borrowed(s)),
@@ -136,7 +136,7 @@ fn decode_field_value(value: &EtwAttributeValue) -> AttrValue<'_> {
     }
 }
 
-// ── Arrow records builder ────────────────────────────────────────────────────
+// -- Arrow records builder ----------------------------------------------------
 
 /// Builder for creating Arrow record batches from ETW events.
 pub(super) struct EtwArrowRecordsBuilder {
@@ -539,7 +539,7 @@ mod tests {
             .expect("attrs batch present");
         // 8 header attributes (event_id, level, opcode, version, keywords,
         // process_id, thread_id, provider_id); event_name is carried in the
-        // OTAP `event_name` log-record column; activity_id is zero → omitted
+        // OTAP `event_name` log-record column; activity_id is zero -> omitted
         assert_eq!(attrs_rb.num_rows(), 8);
     }
 

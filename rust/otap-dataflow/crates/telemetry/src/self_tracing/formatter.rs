@@ -107,7 +107,7 @@ impl<'a> StyledBufWriter<'a> {
 
     /// Finish the current line by writing the trailing newline.
     ///
-    /// The reserved last byte guarantees that `\n` always fits — even when
+    /// The reserved last byte guarantees that `\n` always fits -- even when
     /// callers tried to write more content than the buffer holds.
     #[inline]
     pub fn finish_line(&mut self) {
