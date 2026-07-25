@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1784853586282,
+  "lastUpdate": 1784940161841,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6375,6 +6375,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-arm64-binary-size",
             "value": 98.78,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Laurent Quérel",
+            "username": "lquerel",
+            "email": "l.querel@f5.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "917ccb65a2197562fd338d3d07450d67fa83d03d",
+          "message": "fix(engine): recover failed pipeline runtimes (#3573)\n\n# Change Summary\n\nAdd bounded, per-core runtime recovery for regular pipelines. Failed\nserving cores restart on newer generations using configurable\nexponential backoff, while healthy sibling cores continue serving.\n\nRecovery now coordinates safely with rollouts, shutdowns, and\nengine-level operations, including deferred recovery handoffs and\nmixed-generation rollback. The runtime recovery flow is also documented\nwith a Mermaid diagram.\n\n## What issue does this PR close?\n\n* Closes #3567\n* Related to #3561\n\n## How are these changes tested?\n\n* Added regression tests for successful recovery, retry exhaustion,\ndisabled recovery, startup failures, generation promotion, reset\nwindows, and early-exit races.\n* Added tests for recovery ownership handoffs during rollouts and engine\noperations.\n* Added coverage for mixed-generation rollback and\ncancellation-to-operation races.\n* Added regression coverage proving cancelled recovery backoffs do not\nconsume restart budget.\n* `cargo xtask check`\n\n## Are there any user-facing changes?\n\nYes. Regular pipelines now automatically recover failed serving cores\naccording to the inherited `policies.runtime_recovery` configuration.\nRecovery can be enabled or disabled and configured with restart limits,\n  exponential backoff, startup timeout, and restart-streak reset timing.\n\n### Changelog\n\n* [x] Added a `.chloggen/*.yaml` entry\n* [ ] This PR is a `chore` (indicated in title)\n* [ ] This is a documentation-only PR.\n\n---------\n\nCo-authored-by: Lalit Kumar Bhasin <lalit_fin@yahoo.com>",
+          "timestamp": "2026-07-24T23:37:34Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/917ccb65a2197562fd338d3d07450d67fa83d03d"
+        },
+        "date": 1784940148969,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.42,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 98.91,
             "unit": "MB"
           }
         ]
