@@ -79,7 +79,7 @@ pub struct KafkaReceiverMetrics {
     #[metric(unit = "{msg}")]
     pub topic_id_exhausted: Counter<u64>,
 
-    // ── Consumer-group Rebalances ───────────────────────────
+    // -- Consumer-group Rebalances ---------------------------
     /// Total number of consumer-group rebalance (assign) events observed by
     /// this consumer.
     ///

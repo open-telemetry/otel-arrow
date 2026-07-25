@@ -930,8 +930,10 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `kafka.rebalance.error` | `warn` | librdkafka reported a rebalance error. |
 | `kafka.consumer_group.joined` | `info` | Consumer transitioned from zero owned partitions to a non-empty assignment. |
 | `kafka.consumer_group.left` | `info` | Consumer's assignment dropped back to zero owned partitions. |
+| `kafka.lag.assignment_failed` | `error` | Querying the consumer assignment during a consumer-lag refresh failed; the previous `consumer_lag` value is retained. |
+| `kafka.lag.committed_offsets_failed` | `error` | Querying broker-committed offsets during a consumer-lag refresh failed; the previous `consumer_lag` value is retained. |
 | `kafka.lag.fetch_watermarks_failed` | `error` | Broker high-watermark lookup for a partition failed during consumer-lag refresh. |
-| `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh did not complete for every attempted partition (partial/total lookup failure or total-deadline overrun); the previous `consumer_lag` value is retained and failed partitions are counted as `transport_errors`. |
+| `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh exceeded its total deadline before completing; the previous `consumer_lag` value is retained. |
 | `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `consumer_lag` value is retained. |
 | `kafka.header.attribute.parse_bool_failed` | `error` | A Kafka header value could not be parsed as a boolean attribute. |
 | `kafka.header.attribute.parse_float_failed` | `error` | A Kafka header value could not be parsed as a float attribute. |
