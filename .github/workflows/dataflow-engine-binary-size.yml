@@ -7,6 +7,12 @@ on:
   schedule:
     # Run daily at 00:00 UTC
     - cron: "0 0 * * *"
+  push:
+    branches: [main]
+    paths:
+      - 'rust/**'
+      - 'proto/**'
+      - '.github/workflows/dataflow-engine-binary-size.yml'
 
 jobs:
   build-multiarch:
@@ -75,9 +81,73 @@ jobs:
           name: size-report-${{ matrix.platform.name }}
           path: size-reports/${{ matrix.platform.name }}.json
 
+  bloat-multiarch:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux-amd64
+            runner: ubuntu-24.04
+            # target-cpu matches the docker build above, but without
+            # strip=symbols: cargo-bloat needs symbols to attribute crates
+            rustflags: "-C target-cpu=x86-64"
+          - name: linux-arm64
+            runner: ubuntu-24.04-arm
+            rustflags: "-C target-cpu=generic"
+    runs-on: ${{ matrix.platform.runner }}
+    env:
+      RUSTFLAGS: ${{ matrix.platform.rustflags }}
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: true
+
+      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: ./rust/otap-dataflow
+          cache-bin: false
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Install cargo-bloat
+        run: cargo install cargo-bloat --locked --version 0.12.1
+
+      - name: Measure .text size and top crate contributions
+        run: |
+          cd rust/otap-dataflow
+          cargo bloat --locked --release --bin df_engine --crates -n 10 \
+            --message-format json > "$RUNNER_TEMP/bloat.json"
+          cd ../..
+
+          mkdir -p size-reports
+          jq --arg platform "${{ matrix.platform.name }}" '
+            [{name: ($platform + "-text-size"), unit: "MB",
+              value: ((."text-section-size" / 1048576 * 100 | round) / 100)}]
+            + [.crates[] | {name: ($platform + "-crate-" + .name), unit: "MB",
+                value: ((.size / 1048576 * 100 | round) / 100)}]
+          ' "$RUNNER_TEMP/bloat.json" > size-reports/bloat-${{ matrix.platform.name }}.json
+
+          jq -r '.[] | "\(.name): \(.value) MB"' size-reports/bloat-${{ matrix.platform.name }}.json
+
+      - name: Upload bloat report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: size-report-bloat-${{ matrix.platform.name }}
+          path: size-reports/bloat-${{ matrix.platform.name }}.json
+
   summary:
     runs-on: ubuntu-24.04
-    needs: build-multiarch
+    needs: [build-multiarch, bloat-multiarch]
     if: always()
     permissions:
       # contents permission to update benchmark contents in gh-pages branch
@@ -95,16 +165,12 @@ jobs:
       - name: Consolidate and display results
         run: |
           # Merge all JSON files into a single array using jq
-          jq -s 'map(.[0])' all-reports/*.json > consolidated-sizes.json
+          jq -s 'add' all-reports/*.json > consolidated-sizes.json
 
           echo "## Dataflow Engine Binary Size"
-          echo "| Platform | Size |"
-          echo "|----------|------|"
-          for json in all-reports/*.json; do
-            PLATFORM=$(jq -r '.[0].name' "$json" | sed 's/-binary-size//')
-            SIZE_MB=$(jq -r '.[0].value' "$json")
-            echo "| $PLATFORM | ${SIZE_MB} MB |"
-          done
+          echo "| Metric | Size |"
+          echo "|--------|------|"
+          jq -r '.[] | "| \(.name) | \(.value) MB |"' consolidated-sizes.json
 
       - name: Update binary size benchmarks
         uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
@@ -114,6 +180,6 @@ jobs:
           gh-pages-branch: benchmarks
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/binary-size"
-          auto-push: ${{ github.event_name == 'schedule' }}
+          auto-push: ${{ github.event_name == 'schedule' || github.event_name == 'push' }}
           comment-on-alert: true
           alert-threshold: "110%"
