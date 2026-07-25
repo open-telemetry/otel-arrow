@@ -1,0 +1,5 @@
+change_type: breaking
+component: otap
+note: Assign a UUIDv7 idempotency key to each OTAP pdata batch and preserve it through Quiver WAL and segment replay.
+issues: [3587]
+subtext:

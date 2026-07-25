@@ -7527,6 +7527,7 @@ dependencies = [
  "tower-service",
  "tracing-subscriber",
  "url",
+ "uuid",
  "weaver_common",
  "wiremock",
  "zstd",

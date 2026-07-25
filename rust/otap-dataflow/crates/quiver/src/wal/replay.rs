@@ -14,7 +14,8 @@ use arrow_ipc::reader::StreamReader;
 
 use crate::logging::{otel_debug, otel_warn};
 use crate::record_bundle::{
-    BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
+    BundleDescriptor, IdempotencyKey, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor,
+    SlotId,
 };
 
 use super::reader::{DecodedWalSlot, WalRecordBundle};
@@ -28,6 +29,8 @@ pub(crate) struct ReplayBundle {
     descriptor: BundleDescriptor,
     /// The ingestion timestamp from the WAL entry.
     ingestion_time: SystemTime,
+    /// Stable idempotency key from the WAL entry, when available.
+    idempotency_key: Option<IdempotencyKey>,
     /// Decoded slots with their Arrow RecordBatch data.
     slots: Vec<ReplaySlot>,
 }
@@ -104,6 +107,7 @@ impl ReplayBundle {
         Some(Self {
             descriptor: BundleDescriptor::new(descriptors),
             ingestion_time,
+            idempotency_key: entry.idempotency_key,
             slots,
         })
     }
@@ -116,6 +120,10 @@ impl RecordBundle for ReplayBundle {
 
     fn ingestion_time(&self) -> SystemTime {
         self.ingestion_time
+    }
+
+    fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -209,6 +217,7 @@ mod tests {
             ingestion_ts_nanos,
             sequence,
             slot_bitmap,
+            idempotency_key: Some([0xA5; 16]),
             slots,
         }
     }
@@ -250,6 +259,8 @@ mod tests {
         assert!(batch.is_none(), "decode should fail on empty payload");
     }
 
+    /// Scenario: A keyed WAL entry with one slot is converted into a replay bundle.
+    /// Guarantees: Slot payload, schema fingerprint, and idempotency key remain available.
     #[test]
     fn replay_bundle_from_wal_entry_single_slot() {
         let slot = make_decoded_slot(0, 42, &[10, 20, 30]);
@@ -259,6 +270,7 @@ mod tests {
         assert!(bundle.is_some(), "should create bundle");
 
         let bundle = bundle.unwrap();
+        assert_eq!(bundle.idempotency_key(), Some([0xA5; 16]));
         assert_eq!(bundle.descriptor().slots.len(), 1);
         assert_eq!(bundle.descriptor().slots[0].id, SlotId::new(0));
 

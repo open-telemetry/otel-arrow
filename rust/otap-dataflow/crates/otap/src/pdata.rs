@@ -28,12 +28,15 @@ use otap_df_engine::{
     ProducerEffectHandlerExtension,
 };
 use otap_df_pdata::OtapPayload;
+use uuid::Uuid;
 
 use crate::transport_headers::TransportHeaders;
 
 /// Context for OTAP requests.
 ///
-/// Carries three independent concerns:
+/// Carries four independent concerns:
+/// - **Idempotency key**: UUIDv7 identity assigned when the context is created
+///   and preserved with the pdata batch through in-process pipeline operations.
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
 /// - **Transport headers**: Protocol-neutral request-scoped metadata captured
@@ -43,7 +46,7 @@ use crate::transport_headers::TransportHeaders;
 ///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
 ///   sourceless receivers (file-based, journald). Preserved across transport
 ///   boundaries.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
     /// Transport headers captured from inbound protocol metadata.
@@ -71,9 +74,37 @@ pub struct Context {
     /// while the payload is live whenever node message metrics are enabled and
     /// survives payload drop, so it stays readable throughout unwinding.
     signal: Option<SignalType>,
+    /// UUIDv7 identity of the pdata batch carrying this context.
+    idempotency_key: Uuid,
+}
+
+impl Default for Context {
+    fn default() -> Self {
+        Self {
+            stack: Vec::new(),
+            transport_headers: None,
+            peer_addr: None,
+            flow_compute_ns: None,
+            signal: None,
+            idempotency_key: Uuid::now_v7(),
+        }
+    }
 }
 
 impl Context {
+    /// Creates a context carrying an existing pdata idempotency key.
+    #[must_use]
+    pub fn with_idempotency_key(idempotency_key: Uuid) -> Self {
+        Self {
+            stack: Vec::new(),
+            transport_headers: None,
+            peer_addr: None,
+            flow_compute_ns: None,
+            signal: None,
+            idempotency_key,
+        }
+    }
+
     /// Create a context with reserved frame capacity to avoid reallocating
     /// when the first subscriber is pushed.
     #[must_use]
@@ -84,7 +115,14 @@ impl Context {
             peer_addr: None,
             flow_compute_ns: None,
             signal: None,
+            idempotency_key: Uuid::now_v7(),
         }
+    }
+
+    /// Returns the UUIDv7 identity of the pdata batch.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Uuid {
+        self.idempotency_key
     }
 
     /// Subscribe to a set of interests.
@@ -643,6 +681,7 @@ impl OtapPdata {
                 peer_addr: self.context.peer_addr,
                 flow_compute_ns: None,
                 signal: None,
+                idempotency_key: self.context.idempotency_key,
             },
             payload: self.payload.clone(),
         }
@@ -657,6 +696,12 @@ impl OtapPdata {
     /// Returns a mutable reference to the context.
     pub fn context_mut(&mut self) -> &mut Context {
         &mut self.context
+    }
+
+    /// Returns the UUIDv7 identity assigned to this pdata batch.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Uuid {
+        self.context.idempotency_key()
     }
 
     /// Returns the number of items of the primary signal (spans, data
@@ -1083,6 +1128,32 @@ mod test {
 
     fn create_test() -> (TestCallData, OtapPdata) {
         (TestCallData::default(), create_test_pdata())
+    }
+
+    /// Scenario: Two pdata batches are created with independent default contexts.
+    /// Guarantees: Each batch receives a distinct RFC 9562 UUIDv7 idempotency key.
+    #[test]
+    fn new_pdata_batches_have_unique_uuidv7_keys() {
+        let first = create_test_pdata().idempotency_key();
+        let second = create_test_pdata().idempotency_key();
+
+        assert_ne!(first, second);
+        for key in [first, second] {
+            assert_eq!(key.get_version_num(), 7);
+            assert_eq!(key.get_variant(), uuid::Variant::RFC4122);
+        }
+    }
+
+    /// Scenario: A processor consumes pdata into context and payload and rebuilds it unchanged.
+    /// Guarantees: The rebuilt pdata retains the original idempotency key.
+    #[test]
+    fn context_preserving_rebuild_retains_idempotency_key() {
+        let pdata = create_test_pdata();
+        let expected = pdata.idempotency_key();
+        let (context, payload) = pdata.into_parts();
+        let rebuilt = OtapPdata::new(context, payload);
+
+        assert_eq!(rebuilt.idempotency_key(), expected);
     }
 
     struct FakeFlowMetricHandler {
@@ -2109,6 +2180,8 @@ mod test {
         assert_eq!(ack_msg.accepted.num_items(), 1);
     }
 
+    /// Scenario: Pdata is cloned across a transport boundary that resets routing state.
+    /// Guarantees: Ack/Nack frames are cleared while the pdata idempotency key is preserved.
     #[test]
     fn test_clone_without_context_resets_ack_nack_routing_state() {
         let (test_data, pdata) = create_test();
@@ -2121,10 +2194,12 @@ mod test {
             .add_source_node(202);
         assert!(pdata.has_subscribers());
         assert_eq!(pdata.get_source_node(), Some(202));
+        let idempotency_key = pdata.idempotency_key();
 
         let cloned = pdata.clone_without_context();
         assert!(!cloned.has_subscribers());
         assert_eq!(cloned.get_source_node(), None);
+        assert_eq!(cloned.idempotency_key(), idempotency_key);
 
         let ack = AckMsg::new(cloned.clone());
         assert!(next_ack(ack).is_none(), "reset context must not route acks");

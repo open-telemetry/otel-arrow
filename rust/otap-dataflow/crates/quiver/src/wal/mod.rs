@@ -62,7 +62,7 @@ use std::io;
 use arrow_schema::ArrowError;
 use thiserror::Error;
 
-use crate::record_bundle::SlotId;
+use crate::record_bundle::{IDEMPOTENCY_KEY_LEN, SlotId};
 
 mod cursor_sidecar;
 mod header;
@@ -103,16 +103,21 @@ pub(crate) const WAL_MAGIC: &[u8; 10] = b"QUIVER\0WAL";
 
 /// Entry type marker for a serialized [`RecordBundle`].
 ///
-/// Currently the only defined entry type. Future versions may add additional
-/// types (e.g., for schema evolution or control records).
-/// See ARCHITECTURE.md: "Entry header (`u8 entry_type`, currently `0 = RecordBundle`)"
+/// This legacy entry type does not carry an idempotency key.
+/// See ARCHITECTURE.md: "Entry types".
 pub(crate) const ENTRY_TYPE_RECORD_BUNDLE: u8 = 0;
+/// Record bundle entry carrying a 128-bit idempotency key.
+pub(crate) const ENTRY_TYPE_RECORD_BUNDLE_V2: u8 = 1;
 
-/// Size of the entry header in bytes: `entry_type(1) + timestamp(8) + sequence(8) + bitmap(8)`.
+/// Size of the legacy entry header in bytes:
+/// `entry_type(1) + timestamp(8) + sequence(8) + bitmap(8)`.
 ///
 /// Layout: `{ u8 entry_type, i64 ingestion_ts_nanos, u64 per_core_sequence, u64 slot_bitmap }`
 /// See ARCHITECTURE.md sec. "Framed entries" for the complete entry structure.
 pub(crate) const ENTRY_HEADER_LEN: usize = 1 + 8 + 8 + 8;
+
+/// Size of a version 2 entry header, which appends a 128-bit idempotency key.
+pub(crate) const ENTRY_HEADER_V2_LEN: usize = ENTRY_HEADER_LEN + IDEMPOTENCY_KEY_LEN;
 
 /// Size of a schema fingerprint (BLAKE3 truncated to 256 bits).
 pub(crate) const SCHEMA_FINGERPRINT_LEN: usize = 32;

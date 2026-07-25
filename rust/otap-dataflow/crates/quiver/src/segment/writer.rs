@@ -87,7 +87,7 @@ use super::types::{
     ChunkIndex, Footer, MAX_BUNDLES_PER_SEGMENT, MAX_STREAMS_PER_SEGMENT, ManifestEntry,
     SEGMENT_VERSION, SegmentSeq, StreamId, StreamMetadata, TRAILER_SIZE, Trailer,
 };
-use crate::record_bundle::{ArrowPrimitive, SlotId};
+use crate::record_bundle::{ArrowPrimitive, IDEMPOTENCY_KEY_LEN, SlotId};
 
 /// Alignment boundary for stream data within a segment file (in bytes).
 ///
@@ -449,6 +449,8 @@ impl SegmentWriter {
     /// # Schema
     ///
     /// - `bundle_index`: UInt32 -- ordinal of the bundle within the segment
+    /// - `item_count`: UInt64 -- logical telemetry item count
+    /// - `idempotency_key`: nullable FixedSizeBinary(16) -- stable bundle identity
     /// - `slot_refs`: List<Struct<...>> -- references to stream chunks
     ///   - `slot_id`: UInt16 -- which payload slot this reference is for
     ///   - `stream_id`: UInt32 -- index into the stream directory
@@ -479,6 +481,11 @@ impl SegmentWriter {
             Field::new("bundle_index", DataType::UInt32, false),
             Field::new("item_count", DataType::UInt64, false),
             Field::new(
+                "idempotency_key",
+                DataType::FixedSizeBinary(IDEMPOTENCY_KEY_LEN as i32),
+                true,
+            ),
+            Field::new(
                 "slot_refs",
                 DataType::List(Arc::new(Field::new_struct(
                     "item",
@@ -491,6 +498,8 @@ impl SegmentWriter {
 
         let mut bundle_index_builder = UInt32Builder::with_capacity(entries.len());
         let mut item_count_builder = UInt64Builder::with_capacity(entries.len());
+        let mut idempotency_key_builder =
+            FixedSizeBinaryBuilder::with_capacity(entries.len(), IDEMPOTENCY_KEY_LEN as i32);
 
         // Create the list builder with a struct builder inside
         let struct_builder = StructBuilder::from_fields(
@@ -502,6 +511,13 @@ impl SegmentWriter {
         for entry in entries {
             bundle_index_builder.append_value(entry.bundle_index);
             item_count_builder.append_value(entry.item_count());
+            if let Some(key) = entry.idempotency_key() {
+                idempotency_key_builder
+                    .append_value(key)
+                    .map_err(|source| SegmentError::Arrow { source })?;
+            } else {
+                idempotency_key_builder.append_null();
+            }
 
             // Get the struct builder from the list builder
             let struct_builder = slot_refs_builder.values();
@@ -533,12 +549,20 @@ impl SegmentWriter {
             vec![
                 Arc::new(bundle_index_builder.finish()),
                 Arc::new(item_count_builder.finish()),
+                Arc::new(idempotency_key_builder.finish()),
                 Arc::new(slot_refs_builder.finish()),
             ],
         )
         .map_err(|e| SegmentError::Arrow { source: e })?;
 
         encode_as_ipc(&batch)
+    }
+
+    #[cfg(test)]
+    pub(super) fn encode_manifest_for_test(
+        entries: &[ManifestEntry],
+    ) -> Result<Vec<u8>, SegmentError> {
+        Self::encode_manifest(entries)
     }
 }
 
@@ -928,12 +952,14 @@ mod tests {
         assert_eq!(batches[0].num_rows(), 2);
     }
 
+    /// Scenario: Manifest entries with bundle identity are encoded as Arrow IPC.
+    /// Guarantees: The manifest remains readable and retains one row per bundle.
     #[test]
     fn encode_manifest_produces_valid_ipc() {
-        let mut entry0 = ManifestEntry::new(0, 10);
+        let mut entry0 = ManifestEntry::new_with_idempotency_key(0, 10, Some([0x11; 16]));
         entry0.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(0));
 
-        let mut entry1 = ManifestEntry::new(1, 20);
+        let mut entry1 = ManifestEntry::new_with_idempotency_key(1, 20, Some([0x22; 16]));
         entry1.add_slot(SlotId::new(0), StreamId::new(0), ChunkIndex::new(1));
         entry1.add_slot(SlotId::new(1), StreamId::new(1), ChunkIndex::new(0));
 
@@ -960,10 +986,12 @@ mod tests {
         assert_eq!(writer.segment_seq(), SegmentSeq::new(42));
     }
 
+    /// Scenario: Segment format constants are inspected after the v2 manifest change.
+    /// Guarantees: Magic, current version, trailer, and footer sizes remain explicit.
     #[test]
     fn segment_constants_have_expected_values() {
         assert_eq!(SEGMENT_MAGIC, b"QUIVER\0S");
-        assert_eq!(SEGMENT_VERSION, 1);
+        assert_eq!(SEGMENT_VERSION, 2);
         assert_eq!(TRAILER_SIZE, 16);
         assert_eq!(FOOTER_V1_SIZE, 34);
     }

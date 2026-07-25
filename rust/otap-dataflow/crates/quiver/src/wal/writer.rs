@@ -129,8 +129,8 @@ use super::cursor_sidecar::CursorSidecar;
 use super::header::{WAL_HEADER_MIN_LEN, WalHeader};
 use super::reader::WalReader;
 use super::{
-    ENTRY_HEADER_LEN, ENTRY_TYPE_RECORD_BUNDLE, MAX_ROTATION_TARGET_BYTES, WalConsumerCursor,
-    WalError, WalResult,
+    ENTRY_HEADER_LEN, ENTRY_HEADER_V2_LEN, ENTRY_TYPE_RECORD_BUNDLE, ENTRY_TYPE_RECORD_BUNDLE_V2,
+    MAX_ROTATION_TARGET_BYTES, WalConsumerCursor, WalError, WalResult,
 };
 
 // ---------------------------------------------------------------------------
@@ -589,17 +589,26 @@ impl WalWriter {
             }
         }
 
-        let mut entry_header = [0u8; ENTRY_HEADER_LEN];
-        let mut cursor = 0;
-        entry_header[cursor] = ENTRY_TYPE_RECORD_BUNDLE;
-        cursor += 1;
-        entry_header[cursor..cursor + 8].copy_from_slice(&ingestion_ts_nanos.to_le_bytes());
-        cursor += 8;
-        entry_header[cursor..cursor + 8].copy_from_slice(&sequence.to_le_bytes());
-        cursor += 8;
-        entry_header[cursor..cursor + 8].copy_from_slice(&slot_bitmap.to_le_bytes());
+        let idempotency_key = bundle.idempotency_key();
+        let header_len = if idempotency_key.is_some() {
+            ENTRY_HEADER_V2_LEN
+        } else {
+            ENTRY_HEADER_LEN
+        };
+        let mut entry_header = Vec::with_capacity(header_len);
+        entry_header.push(if idempotency_key.is_some() {
+            ENTRY_TYPE_RECORD_BUNDLE_V2
+        } else {
+            ENTRY_TYPE_RECORD_BUNDLE
+        });
+        entry_header.extend_from_slice(&ingestion_ts_nanos.to_le_bytes());
+        entry_header.extend_from_slice(&sequence.to_le_bytes());
+        entry_header.extend_from_slice(&slot_bitmap.to_le_bytes());
+        if let Some(key) = idempotency_key {
+            entry_header.extend_from_slice(&key);
+        }
 
-        let entry_body_len = ENTRY_HEADER_LEN + self.active_file.payload_buffer.len();
+        let entry_body_len = entry_header.len() + self.active_file.payload_buffer.len();
         let entry_len =
             u32::try_from(entry_body_len).map_err(|_| WalError::EntryTooLarge(entry_body_len))?;
 
@@ -795,7 +804,7 @@ impl ActiveWalFile {
     async fn write_entry(
         &mut self,
         entry_len: u32,
-        entry_header: &[u8; ENTRY_HEADER_LEN],
+        entry_header: &[u8],
         payload: &[u8],
         crc: u32,
     ) -> WalResult<u64> {
@@ -803,7 +812,7 @@ impl ActiveWalFile {
         let entry_start = self.current_len;
 
         // Calculate total entry size: 4 (len) + header + payload + 4 (crc)
-        let total_size = 4 + ENTRY_HEADER_LEN + payload.len() + 4;
+        let total_size = 4 + entry_header.len() + payload.len() + 4;
 
         // Reuse the buffer: clear sets len=0 but preserves capacity.
         // Only reserve additional capacity if needed (reserve is a no-op if

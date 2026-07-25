@@ -48,9 +48,11 @@ use arrow::array::{BinaryArray, RecordBatch};
 use arrow::buffer::{Buffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use quiver::record_bundle::{
-    BundleDescriptor, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor, SlotId,
+    BundleDescriptor, IdempotencyKey, PayloadRef, RecordBundle, SchemaFingerprint, SlotDescriptor,
+    SlotId,
 };
 use quiver::segment::ReconstructedBundle;
+use uuid::Uuid;
 
 use otap_df_config::SignalType;
 use otap_df_pdata::otap::schema::SchemaIdBuilder;
@@ -229,6 +231,8 @@ pub struct OtapRecordBundleAdapter {
     descriptor: BundleDescriptor,
     /// Ingestion timestamp
     ingestion_time: SystemTime,
+    /// Stable identity of the source pdata batch, when available.
+    idempotency_key: Option<IdempotencyKey>,
 }
 
 impl OtapRecordBundleAdapter {
@@ -246,7 +250,15 @@ impl OtapRecordBundleAdapter {
             signal_type,
             descriptor,
             ingestion_time: SystemTime::now(),
+            idempotency_key: None,
         }
+    }
+
+    /// Attaches the source pdata idempotency key to this bundle.
+    #[must_use]
+    pub fn with_idempotency_key(mut self, idempotency_key: Uuid) -> Self {
+        self.idempotency_key = Some(*idempotency_key.as_bytes());
+        self
     }
 
     /// Consume the adapter and return the original OtapArrowRecords.
@@ -283,6 +295,10 @@ impl RecordBundle for OtapRecordBundleAdapter {
 
     fn ingestion_time(&self) -> SystemTime {
         self.ingestion_time
+    }
+
+    fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -333,6 +349,8 @@ pub struct OtlpBytesAdapter {
     /// format without full deserialization, to avoid repeated O(n) scans
     /// on the hot path).
     cached_item_count: u64,
+    /// Stable identity of the source pdata batch, when available.
+    idempotency_key: Option<IdempotencyKey>,
 }
 
 impl OtlpBytesAdapter {
@@ -394,7 +412,15 @@ impl OtlpBytesAdapter {
             descriptor,
             ingestion_time: SystemTime::now(),
             cached_item_count,
+            idempotency_key: None,
         })
+    }
+
+    /// Attaches the source pdata idempotency key to this bundle.
+    #[must_use]
+    pub fn with_idempotency_key(mut self, idempotency_key: Uuid) -> Self {
+        self.idempotency_key = Some(*idempotency_key.as_bytes());
+        self
     }
 
     /// Consume the adapter and return the original OtlpProtoBytes.
@@ -420,6 +446,10 @@ impl RecordBundle for OtlpBytesAdapter {
 
     fn ingestion_time(&self) -> SystemTime {
         self.ingestion_time
+    }
+
+    fn idempotency_key(&self) -> Option<IdempotencyKey> {
+        self.idempotency_key
     }
 
     fn payload(&self, slot: SlotId) -> Option<PayloadRef<'_>> {
@@ -531,7 +561,8 @@ pub fn convert_bundle_to_pdata(
     if let Some((signal_type, batch)) = find_otlp_slot(payloads) {
         let otlp_bytes = extract_otlp_bytes(signal_type, batch)?;
         let payload = OtapPayload::OtlpBytes(otlp_bytes);
-        return Ok(OtapPdata::new(Context::default(), payload));
+        let context = context_from_bundle(bundle);
+        return Ok(OtapPdata::new(context, payload));
     }
 
     // Otherwise, it's an Arrow-format bundle
@@ -546,7 +577,15 @@ pub fn convert_bundle_to_pdata(
 
     // Wrap in OtapPayload and OtapPdata
     let payload = OtapPayload::OtapArrowRecords(records);
-    Ok(OtapPdata::new(Context::default(), payload))
+    Ok(OtapPdata::new(context_from_bundle(bundle), payload))
+}
+
+fn context_from_bundle(bundle: &ReconstructedBundle) -> Context {
+    bundle
+        .idempotency_key()
+        .map_or_else(Context::default, |key| {
+            Context::with_idempotency_key(Uuid::from_bytes(key))
+        })
 }
 
 fn create_records<T>(
@@ -584,6 +623,7 @@ mod tests {
     use super::*;
     use otap_df_pdata::otap::OtapBatchStore;
     use otap_df_pdata::{logs, metrics, record_batch, traces};
+    use quiver::segment::{OpenSegment, SegmentReader, SegmentSeq, SegmentWriter};
 
     /// Helper to extract a single batch from an OtapArrowRecords.
     fn extract_batch(records: &OtapArrowRecords, payload_type: ArrowPayloadType) -> RecordBatch {
@@ -1171,6 +1211,33 @@ mod tests {
         let adapter = OtapRecordBundleAdapter::new(records);
 
         assert_eq!(adapter.descriptor().slots.len(), 0);
+    }
+
+    /// Scenario: A keyed OTAP logs pdata is persisted to qseg and reconstructed.
+    /// Guarantees: The pdata payload and original UUIDv7 idempotency key survive the round trip.
+    #[tokio::test]
+    async fn pdata_idempotency_key_survives_qseg_roundtrip() {
+        let idempotency_key = Uuid::now_v7();
+        let records = OtapArrowRecords::Logs(logs!((Logs, ("id", UInt16, vec![0u16, 1]))));
+        let adapter = OtapRecordBundleAdapter::new(records).with_idempotency_key(idempotency_key);
+        let mut open_segment = OpenSegment::new();
+        let _ = open_segment.append(&adapter).expect("append bundle");
+
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("pdata-key-roundtrip.qseg");
+        let _ = SegmentWriter::new(SegmentSeq::new(1), false)
+            .write_segment(&path, open_segment)
+            .await
+            .expect("write segment");
+
+        let reader = SegmentReader::open(&path).expect("open segment");
+        let reconstructed = reader
+            .read_bundle(&reader.manifest()[0])
+            .expect("read bundle");
+        let pdata = convert_bundle_to_pdata(&reconstructed).expect("convert pdata");
+
+        assert_eq!(pdata.idempotency_key(), idempotency_key);
+        assert_eq!(pdata.signal_type(), SignalType::Logs);
     }
 
     #[test]

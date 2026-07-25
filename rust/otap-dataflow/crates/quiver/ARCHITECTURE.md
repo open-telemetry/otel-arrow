@@ -29,6 +29,9 @@ Each segment file:
  the per-slot Arrow streams they reference.
 - Supports many payload types and evolving schemas inside the same segment via
   a stream directory + batch manifest.
+- Stores a nullable 16-byte bundle idempotency key in the qseg v2 manifest.
+  Current readers also accept qseg v1 manifests, which reconstruct without a key.
+  Older readers reject qseg v2 at the footer version check.
 - Contains metadata: time ranges, signal type (via adapter), schema fingerprints,
   checksum, and per-stream statistics.
 - Supports zero-copy memory-mapped reads.
@@ -115,11 +118,13 @@ WAL entries belonging to:
 - **Framed entries**: every `RecordBundle` append writes a length-prefixed
   record:
   - 4-byte little-endian length of the entire entry (header + payloads)
-  - Entry header (`u8 entry_type`, currently `0 = RecordBundle`)
+  - Entry header (`u8 entry_type`; `0` is the legacy bundle format and `1`
+    carries a bundle idempotency key)
   - Ingestion timestamp (`i64` nanos UTC) and per-core sequence number
     (`u64`, monotonically increasing per WAL writer)
-  - Slot bitmap (currently a single `u64`) followed by `slot_count` metadata
-    blocks. Each block contains `payload_type_id: u16`,
+  - Slot bitmap (currently a single `u64`), followed by a 16-byte idempotency
+    key for entry type `1`, then `slot_count` metadata blocks. Each block
+    contains `payload_type_id: u16`,
     `schema_fingerprint: [u8;32]`, `row_count: u32`, and
     `payload_len: u32`.
   - The slot bitmap tracks which logical `RecordBundle` slots are populated;
@@ -133,10 +138,11 @@ WAL entries belonging to:
     // Little-endian, sequential on disk
     u32 entry_len;                   // prefix (covers header..payload)
     EntryHeader {
-        u8  entry_type;              // 0 = RecordBundle
+        u8  entry_type;              // 0 = legacy bundle, 1 = keyed bundle
         i64 ingestion_ts_nanos;
         u64 per_core_sequence;
         u64 slot_bitmap;             // current encoding fits <= 64 slots
+        [u8;16] idempotency_key;     // keyed bundles only
     }
     for slot in slots_present(slot_bitmap) {
         SlotMeta {
@@ -164,8 +170,8 @@ WAL entries belonging to:
     the leading length field and the checksum itself). Replay verifies the CRC
     before decoding Arrow IPC bytes; a mismatch marks the WAL as corrupted and
     triggers truncation back to the last known-good offset.
-  - Because the metadata describes the length of every blob, unknown entry
-    types (future versions) can be skipped using the recorded length.
+  - Readers reject unknown entry types. The recorded entry length keeps their
+    boundaries explicit for future readers or migration tools.
   - Each WAL append encodes the bundle's payload chunks once; crash replay
     decodes those IPC bytes back into `RecordBatch`es before reinserting them
     into the in-memory segment accumulators.
@@ -176,13 +182,12 @@ WAL entries belonging to:
   a crash mid-write) we truncate the file back to the last successful offset
   before continuing. Replay stops at the tail once the last partial segment is
   reconstituted.
-- **Versioning / evolvability**: because the header encodes a version, we can
-  introduce new entry types (e.g., periodic checkpoints) or swap serialization
-  without breaking older data; unknown entry types are skipped using the recorded
-  length. A checkpoint entry (`entry_type = 1`) would embed the current
-  open-segment manifest, `logical_offset`, and high-water sequence numbers so
-  recovery can jump directly to the latest checkpoint instead of replaying the
-  entire log.
+- **Versioning / evolvability**: entry type `0` remains readable and is still
+  written for bundles without identity. Entry type `1` adds the idempotency key;
+  readers that predate it reject the entry rather than silently losing identity.
+  A checkpoint entry (`entry_type = 2`) could embed the current open-segment
+  manifest, `logical_offset`, and high-water sequence numbers so recovery can
+  jump directly to the latest checkpoint instead of replaying the entire log.
 
 ##### Cursor persistence & rotation mechanics
 
@@ -637,7 +642,8 @@ interleaved backfill) while Quiver tracks completion accurately.
   schema fingerprint, byte offset, byte length, and statistics.
 - **Batch Manifest**: The ordered list of `RecordBundle` arrivals. Each entry
   lists the `(stream_id, chunk_index)` to read for every payload slot that was
-  present in the bundle.
+  present in the bundle. Qseg v2 also stores the bundle's optional 16-byte
+  idempotency key.
 - **Adapter**: A thin crate-specific shim that converts between the embedding
   project's structs (for OTAP: `OtapArrowRecords`) and Quiver's generic
   `RecordBundle` interface.

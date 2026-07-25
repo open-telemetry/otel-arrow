@@ -58,6 +58,7 @@ ipnet = { workspace = true }
 flate2 = { workspace = true }
 zstd = { workspace = true }
 url = { workspace = true }
+uuid.workspace = true
 
 # Azure feature dependencies (for object_store)
 azure_identity = { workspace = true, optional = true }
