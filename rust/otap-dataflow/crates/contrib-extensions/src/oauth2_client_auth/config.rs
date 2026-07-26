@@ -130,6 +130,18 @@ impl Config {
             return Err("`startup_timeout` must be greater than zero".to_string());
         }
 
+        // The reqwest/rustls token client (like the OTLP/HTTP exporter) cannot
+        // override the TLS SNI, so reject `server_name_override` at config time
+        // rather than silently connecting with the wrong server name.
+        if let Some(tls) = &self.tls {
+            if tls.server_name.is_some() {
+                return Err(
+                    "`tls.server_name_override` is not supported by the OAuth2 token client"
+                        .to_string(),
+                );
+            }
+        }
+
         // A client identifier is required for every grant; it may be supplied
         // inline or via a file that is re-read on each acquisition.
         if self.client_id.is_none() && self.client_id_file.is_none() {
