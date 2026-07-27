@@ -8,7 +8,7 @@ use otap_df_telemetry::error::Error;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
 use otap_df_telemetry::reporter::MetricsReporter;
-use otap_df_telemetry_macros::{attribute_set, metric_set, AttributeEnum};
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
 /// Actions performed on attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]

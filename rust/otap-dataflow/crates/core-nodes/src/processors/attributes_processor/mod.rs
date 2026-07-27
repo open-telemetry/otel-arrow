@@ -443,13 +443,22 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 // Update domain counters (count once per message when domains are enabled)
                 if self.has_resource_domain {
-                    self.metrics.domains_for(metrics::TargetDomain::Resource).applied.inc();
+                    self.metrics
+                        .domains_for(metrics::TargetDomain::Resource)
+                        .applied
+                        .inc();
                 }
                 if self.has_scope_domain {
-                    self.metrics.domains_for(metrics::TargetDomain::Scope).applied.inc();
+                    self.metrics
+                        .domains_for(metrics::TargetDomain::Scope)
+                        .applied
+                        .inc();
                 }
                 if self.has_signal_domain {
-                    self.metrics.domains_for(metrics::TargetDomain::Signal).applied.inc();
+                    self.metrics
+                        .domains_for(metrics::TargetDomain::Signal)
+                        .applied
+                        .inc();
                 }
                 // Apply transform across selected domains and collect exact stats.
                 let result = effect_handler.timed(&self.compute_duration, || {
@@ -465,22 +474,40 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         hashed_total,
                     )) => {
                         if deleted_total > 0 {
-                            self.metrics.modified_for(metrics::ActionType::Deleted).entries.add(deleted_total);
+                            self.metrics
+                                .modified_for(metrics::ActionType::Deleted)
+                                .entries
+                                .add(deleted_total);
                         }
                         if renamed_total > 0 {
-                            self.metrics.modified_for(metrics::ActionType::Renamed).entries.add(renamed_total);
+                            self.metrics
+                                .modified_for(metrics::ActionType::Renamed)
+                                .entries
+                                .add(renamed_total);
                         }
                         if inserted_total > 0 {
-                            self.metrics.modified_for(metrics::ActionType::Inserted).entries.add(inserted_total);
+                            self.metrics
+                                .modified_for(metrics::ActionType::Inserted)
+                                .entries
+                                .add(inserted_total);
                         }
                         if upserted_total > 0 {
-                            self.metrics.modified_for(metrics::ActionType::Upserted).entries.add(upserted_total);
+                            self.metrics
+                                .modified_for(metrics::ActionType::Upserted)
+                                .entries
+                                .add(upserted_total);
                         }
                         if updated_total > 0 {
-                            self.metrics.modified_for(metrics::ActionType::Updated).entries.add(updated_total);
+                            self.metrics
+                                .modified_for(metrics::ActionType::Updated)
+                                .entries
+                                .add(updated_total);
                         }
                         if hashed_total > 0 {
-                            self.metrics.modified_for(metrics::ActionType::Hashed).entries.add(hashed_total);
+                            self.metrics
+                                .modified_for(metrics::ActionType::Hashed)
+                                .entries
+                                .add(hashed_total);
                         }
                     }
                     Err(e) => {
