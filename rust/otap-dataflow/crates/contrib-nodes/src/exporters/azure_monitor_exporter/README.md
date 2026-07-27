@@ -190,7 +190,7 @@ groups:
 For the full extension configuration reference (including `scope` and
 `startup_timeout`), see the
 [`azure_identity_auth` extension README](../../../../contrib-extensions/src/azure_identity_auth/README.md)
-and its [design doc](../../../../../docs/azure-identity-auth-extension.md).
+and its [design doc](../../../../contrib-extensions/src/azure_identity_auth/design.md).
 
 ## Usage
 
