@@ -5,7 +5,7 @@
 //!
 //! Acquires and refreshes Azure access tokens and exposes them to data-path
 //! nodes through the `BearerTokenProvider` capability. See
-//! `../design.md` for the design.
+//! `design.md` for the design.
 
 mod auth;
 pub mod config;
