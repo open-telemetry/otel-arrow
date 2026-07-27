@@ -4,7 +4,35 @@
 //! Metrics for the AttributesProcessor node.
 
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{metric_set, AttributeEnum};
+
+/// Actions performed on attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum ActionType {
+    /// Attribute was renamed.
+    Renamed,
+    /// Attribute was deleted.
+    Deleted,
+    /// Attribute was inserted.
+    Inserted,
+    /// Attribute was upserted.
+    Upserted,
+    /// Attribute was updated.
+    Updated,
+    /// Attribute was hashed.
+    Hashed,
+}
+
+/// Target payload domain where transforms were applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum TargetDomain {
+    /// Transforms applied to signal-level payloads.
+    Signal,
+    /// Transforms applied to resource-level payloads.
+    Resource,
+    /// Transforms applied to scope-level payloads.
+    Scope,
+}
 
 /// Metrics for the AttributesProcessor node.
 #[metric_set(name = "processor.attributes")]
@@ -14,38 +42,11 @@ pub struct AttributesProcessorMetrics {
     #[metric(unit = "{op}")]
     pub transform_failed: Counter<u64>,
 
-    /// Total number of attribute entries actually renamed.
+    /// Total number of attribute entries modified, partitioned by action type.
     #[metric(unit = "{attr}")]
-    pub renamed_entries: Counter<u64>,
+    pub modified_entries: Counter<u64, ActionType>,
 
-    /// Total number of attribute entries actually deleted.
-    #[metric(unit = "{attr}")]
-    pub deleted_entries: Counter<u64>,
-
-    /// Total number of attribute entries actually inserted.
-    #[metric(unit = "{attr}")]
-    pub inserted_entries: Counter<u64>,
-
-    /// Total number of attribute entries actually upserted.
-    #[metric(unit = "{attr}")]
-    pub upserted_entries: Counter<u64>,
-
-    /// Total number of attribute entries actually updated.
-    #[metric(unit = "{attr}")]
-    pub updated_entries: Counter<u64>,
-    /// Total number of attribute entries actually hashed.
-    #[metric(unit = "{attr}")]
-    pub hashed_entries: Counter<u64>,
-
-    /// Number of times transforms were applied to signal-level payloads.
+    /// Number of times transforms were applied, partitioned by payload domain.
     #[metric(unit = "{apply}")]
-    pub domains_signal: Counter<u64>,
-
-    /// Number of times transforms were applied to resource-level payloads.
-    #[metric(unit = "{apply}")]
-    pub domains_resource: Counter<u64>,
-
-    /// Number of times transforms were applied to scope-level payloads.
-    #[metric(unit = "{apply}")]
-    pub domains_scope: Counter<u64>,
+    pub domains_applied: Counter<u64, TargetDomain>,
 }
