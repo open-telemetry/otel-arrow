@@ -272,7 +272,7 @@ tracepoint_decode = "0.5.0"
 tracelogging = "1.2.4"
 tracelogging_dynamic = "1.2.4"
 urlencoding = "2"
-geneva-uploader = { path = "C:/Users/rmarimuthu/source/repos/opentelemetry-rust-contrib/opentelemetry-exporter-geneva/geneva-uploader" }
+geneva-uploader = { git = "https://github.com/open-telemetry/opentelemetry-rust-contrib.git", rev = "98aa6dc8717b372ab34ebe3247262379d4e3379", default-features = false, features = ["tls-rustls"] }
 
 [patch."https://github.com/open-telemetry/otel-arrow"]
 otap-df-pdata = { path = "crates/pdata" }

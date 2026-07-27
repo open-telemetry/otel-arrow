@@ -1,11 +1,11 @@
-# Geneva Exporter with Custom Table Routing
+# Geneva Exporter with Custom Table Names
 #
-# This configuration routes logs to "Test1" table and spans to "Test2" table
-# in Geneva, using a type_router to split signals into separate processing
-# paths with dedicated attribute processors and transforms.
+# This configuration sets a custom default table (event name) for each signal:
+# logs go to "CustomLogTable" and spans go to "CustomSpanTable" in Geneva.
+# An OTLP/gRPC receiver forwards both signals directly to the Geneva exporter.
 #
 # Usage:
-#   ./df_engine --config otlp-geneva-custom-tables.yaml --num-cores 1
+#   ./df_engine --config otlp-geneva-set-table-name.yaml --num-cores 1
 #
 # Send data to this collector using:
 #   - OTLP/gRPC endpoint: localhost:4317
@@ -37,25 +37,25 @@ groups:
           geneva-exporter:
             type: "urn:microsoft:exporter:geneva"
             config:
-              endpoint: "https://gcs.ppe.monitoring.core.windows.net/"
-              environment: "test"
-              account: "PipelineAgent2Demo"
-              namespace: "PAdemo2"
-              region: "westus2"
-              config_major_version: 2
-              tenant: "PAdemo2"
-              role_name: "otlp-collector"
-              role_instance: "ragudevbox-collector-002"
+              endpoint: "endpoint"
+              environment: "environment"
+              account: "account"
+              namespace: "namespace"
+              region: "region"
+              config_major_version: 1
+              tenant: "tenant"
+              role_name: "role_name"
+              role_instance: "role_instance"
               auth:
                 type: "certificate"
-                path: "C:\\Official_New\\Cert\\pipelineagentkv-NSAonecert-20260520.pfx"
-                password: ""
+                path: "/path/to/your/certificate.p12"
+                password: "your-cert-password"
               max_buffer_size: 1000
               max_concurrent_uploads: 4
               logs:
-                default_event_name: "Test1"
+                default_event_name: "CustomLogTable"
               spans:
-                default_event_name: "Test2"
+                default_event_name: "CustomSpanTable"
 
         connections:
           # Shared receiver → type router

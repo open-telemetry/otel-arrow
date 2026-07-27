@@ -139,7 +139,7 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
                 let mut found_key: Option<String> = None;
                 let mut routing_value: Option<String> = None;
 
-                while let Some((key, value)) = map.next_entry::<String, String>()? {
+                while let Some(key) = map.next_key::<String>()? {
                     if found_key.is_some() {
                         return Err(de::Error::custom(
                             "routing_key must have exactly one field, found multiple fields",
@@ -148,19 +148,23 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
 
                     match key.as_str() {
                         "event_name" => {
+                            // The value for `event_name` is ignored; accept any
+                            // value (including null) so the map form behaves
+                            // consistently regardless of what the user supplies.
+                            let _ignored = map.next_value::<de::IgnoredAny>()?;
                             found_key = Some("event_name".to_string());
                         }
                         "resource_attribute" => {
+                            routing_value = Some(map.next_value::<String>()?);
                             found_key = Some("resource_attribute".to_string());
-                            routing_value = Some(value);
                         }
                         "scope_attribute" => {
+                            routing_value = Some(map.next_value::<String>()?);
                             found_key = Some("scope_attribute".to_string());
-                            routing_value = Some(value);
                         }
                         "log_record_attribute" => {
+                            routing_value = Some(map.next_value::<String>()?);
                             found_key = Some("log_record_attribute".to_string());
-                            routing_value = Some(value);
                         }
                         other => {
                             return Err(de::Error::unknown_field(
@@ -229,8 +233,29 @@ impl From<LogsEventNameRoutingKeyConfig> for LogsEventNameRoutingKey {
     }
 }
 
+/// Deserialize an optional event/table name, rejecting blank or whitespace-only
+/// values. A missing field yields `None`; an explicit empty/whitespace string is
+/// an error so it cannot silently override the uploader's default table name.
+fn deserialize_optional_non_empty_event_name<'de, D>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value: Option<String> = Option::deserialize(deserializer)?;
+    if let Some(ref name) = value {
+        if name.trim().is_empty() {
+            return Err(serde::de::Error::custom(
+                "'default_event_name' must be a non-empty table name",
+            ));
+        }
+    }
+    Ok(value)
+}
+
 /// Deserializable wrapper for LogsEventNameMapping
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct LogsEventNameMappingConfig {
     /// The routing key configuration (determines which attribute to route on)
     pub routing_key: LogsEventNameRoutingKeyConfig,
@@ -251,8 +276,13 @@ impl From<LogsEventNameMappingConfig> for LogsEventNameMapping {
 /// Log table configuration (wrapper for YAML deserialization)
 /// Deserializes to Geneva uploader's LogsConfig
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct LogsConfig {
     /// Default event name (table name) for logs sent to Geneva
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_empty_event_name"
+    )]
     pub default_event_name: Option<String>,
     /// Optional logs routing configuration for mapping records to different tables
     #[serde(default)]
@@ -353,6 +383,7 @@ impl<'de> Deserialize<'de> for SpansEventNameRoutingKeyConfig {
 
 /// Deserializable wrapper for SpanEventNameMapping
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct SpansEventNameMappingConfig {
     /// The routing key configuration (determines which attribute to route on)
     pub routing_key: SpansEventNameRoutingKeyConfig,
@@ -373,8 +404,13 @@ impl From<SpansEventNameMappingConfig> for SpanEventNameMapping {
 /// Span table configuration (wrapper for YAML deserialization)
 /// Deserializes to Geneva uploader's TracesConfig
 #[derive(Debug, Deserialize, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct TracesConfig {
     /// Default event name (table name) for spans sent to Geneva
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_empty_event_name"
+    )]
     pub default_event_name: Option<String>,
     /// Optional spans routing configuration for mapping records to different tables
     #[serde(default)]
@@ -2293,6 +2329,454 @@ mod tests {
         let parsed: Config = serde_json::from_value(config).unwrap();
         assert!(parsed.logs.is_none(), "logs should default to None");
         assert!(parsed.spans.is_none(), "spans should default to None");
+    }
+
+    /// Scenario: A `logs` block sets `default_event_name` to an empty string.
+    /// Guarantees: Deserialization fails so a blank table name can never silently
+    /// override the uploader's default table.
+    #[test]
+    fn test_logs_default_event_name_rejects_empty() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": ""
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject empty logs default_event_name"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("non-empty table name"),
+            "Error should mention non-empty table name requirement: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A `spans` block sets `default_event_name` to a whitespace-only
+    /// string.
+    /// Guarantees: Deserialization fails, so whitespace is treated as blank and
+    /// cannot override the uploader's default table.
+    #[test]
+    fn test_spans_default_event_name_rejects_whitespace() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "   "
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject whitespace-only spans default_event_name"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("non-empty table name"),
+            "Error should mention non-empty table name requirement: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A `logs` block contains a misspelled field
+    /// (`event_name_mappings`, plural) alongside valid fields.
+    /// Guarantees: `deny_unknown_fields` rejects the typo instead of silently
+    /// dropping the routing configuration.
+    #[test]
+    fn test_logs_config_rejects_unknown_field() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mappings": {
+                    "routing_key": "event_name",
+                    "events": { "test1": "Test1" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject unknown field in logs config"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("event_name_mappings") || error_msg.contains("unknown field"),
+            "Error should mention the unknown field: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A logs `event_name_mapping` block contains an unknown field
+    /// alongside the required `routing_key` and `events`.
+    /// Guarantees: `deny_unknown_fields` on the mapping wrapper rejects the typo.
+    #[test]
+    fn test_logs_event_name_mapping_rejects_unknown_field() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": "event_name",
+                    "events": { "test1": "Test1" },
+                    "unexpected": "value"
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject unknown field in logs event_name_mapping"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("unexpected") || error_msg.contains("unknown field"),
+            "Error should mention the unknown field: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A spans `event_name_mapping` block contains an unknown field
+    /// alongside the required `routing_key` and `events`.
+    /// Guarantees: `deny_unknown_fields` on the span mapping wrapper rejects the
+    /// typo.
+    #[test]
+    fn test_spans_event_name_mapping_rejects_unknown_field() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": { "span_attribute": "span.kind" },
+                    "events": { "SERVER": "ServerSpan" },
+                    "unexpected": "value"
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject unknown field in spans event_name_mapping"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("unexpected") || error_msg.contains("unknown field"),
+            "Error should mention the unknown field: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A logs `routing_key` map uses an unrecognized attribute-kind
+    /// name (`log_attribute` instead of `log_record_attribute`).
+    /// Guarantees: The custom deserializer reports it as an unknown field rather
+    /// than accepting it.
+    #[test]
+    fn test_logs_routing_key_rejects_unknown_kind() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "default_event_name": "Log",
+                "event_name_mapping": {
+                    "routing_key": { "log_attribute": "custom" },
+                    "events": { "test1": "Test1" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject unknown logs routing_key kind"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("unknown field") && error_msg.contains("log_attribute"),
+            "Error should name the unknown routing_key field: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A spans `routing_key` map uses an unrecognized attribute-kind
+    /// name (`log_record_attribute`, which is logs-only).
+    /// Guarantees: The custom deserializer reports it as an unknown field rather
+    /// than accepting it.
+    #[test]
+    fn test_spans_routing_key_rejects_unknown_kind() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "event_name_mapping": {
+                    "routing_key": { "log_record_attribute": "custom" },
+                    "events": { "test1": "Test1" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject unknown spans routing_key kind"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("unknown field") && error_msg.contains("log_record_attribute"),
+            "Error should name the unknown routing_key field: {}",
+            error_msg
+        );
+    }
+
+    /// Scenario: A logs `routing_key` uses the map form `{ event_name: <v> }`
+    /// with either a null or a string value.
+    /// Guarantees: Both forms deserialize consistently to the `EventName`
+    /// variant (the value is ignored) rather than one succeeding and the other
+    /// failing with a type-mismatch error.
+    #[test]
+    fn test_logs_routing_key_event_name_map_form_ignores_value() {
+        for value in [serde_json::Value::Null, serde_json::json!("anything")] {
+            let config = serde_json::json!({
+                "endpoint": "https://localhost",
+                "environment": "test",
+                "account": "test-account",
+                "namespace": "test-namespace",
+                "region": "test-region",
+                "config_major_version": 1,
+                "tenant": "test-tenant",
+                "role_name": "test-role",
+                "role_instance": "test-instance",
+                "logs": {
+                    "default_event_name": "Log",
+                    "event_name_mapping": {
+                        "routing_key": { "event_name": value },
+                        "events": { "test1": "Test1" }
+                    }
+                },
+                "auth": {
+                    "type": "certificate",
+                    "path": "/path/to/cert.p12",
+                    "password": "secret"
+                }
+            });
+
+            let parsed: Config = serde_json::from_value(config)
+                .expect("map-form event_name should parse regardless of value");
+            let mapping = parsed
+                .logs
+                .as_ref()
+                .and_then(|l| l.event_name_mapping.as_ref())
+                .expect("logs mapping should be configured");
+            assert!(
+                matches!(
+                    mapping.routing_key,
+                    LogsEventNameRoutingKeyConfig::EventName
+                ),
+                "Expected EventName variant for map-form event_name"
+            );
+        }
+    }
+
+    /// Scenario: `logs` and `spans` sections are present but empty (`{}`).
+    /// Guarantees: They deserialize to `Some(..)` with both `default_event_name`
+    /// and `event_name_mapping` defaulting to `None`, so an empty block is valid
+    /// and carries no routing configuration.
+    #[test]
+    fn test_logs_and_spans_empty_blocks_default_inner_fields_to_none() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {},
+            "spans": {},
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        let logs = parsed.logs.as_ref().expect("logs block should be present");
+        assert!(logs.default_event_name.is_none());
+        assert!(logs.event_name_mapping.is_none());
+        let spans = parsed
+            .spans
+            .as_ref()
+            .expect("spans block should be present");
+        assert!(spans.default_event_name.is_none());
+        assert!(spans.event_name_mapping.is_none());
+    }
+
+    /// Scenario: `logs`/`spans` set `default_event_name` explicitly to null.
+    /// Guarantees: The non-empty-name validator treats explicit null as absent,
+    /// yielding `None` (not an error), matching an omitted field.
+    #[test]
+    fn test_default_event_name_explicit_null_is_none() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": { "default_event_name": null },
+            "spans": { "default_event_name": null },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).unwrap();
+        assert!(parsed.logs.as_ref().unwrap().default_event_name.is_none());
+        assert!(parsed.spans.as_ref().unwrap().default_event_name.is_none());
+    }
+
+    /// Scenario: A `spans` block carries an unknown field directly (not inside
+    /// `event_name_mapping`).
+    /// Guarantees: `deny_unknown_fields` on `TracesConfig` rejects the typo
+    /// instead of silently discarding it.
+    #[test]
+    fn test_spans_config_rejects_unknown_field() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "default_event_name": "Span",
+                "default_event_names": "Span"
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "Should reject unknown field in spans config"
+        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("default_event_names") || error_msg.contains("unknown field"),
+            "Error should mention the unknown field: {}",
+            error_msg
+        );
     }
 
     // TODO: Add integration tests when we can mock GenevaClient:
