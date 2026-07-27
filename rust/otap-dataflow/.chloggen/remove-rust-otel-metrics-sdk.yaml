@@ -1,0 +1,23 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: breaking
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: observability
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Remove the direct OpenTelemetry client SDK metrics path and route internal metrics through the Internal Telemetry System observability pipeline.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [2409]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  The `engine.telemetry.metrics` reader and view configuration is no longer
+  supported. Configure periodic export and views on
+  `receiver:internal_telemetry`; the registry-backed admin metrics endpoint
+  remains available. See the [configuration migration guide](docs/configuration.md#migrating-internal-metrics-from-the-rust-opentelemetry-sdk).

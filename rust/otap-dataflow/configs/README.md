@@ -53,7 +53,8 @@ Demonstrates the batch processor:
 A basic pipeline with telemetry export enabled:
 
 - Generates synthetic traffic -> debug processor -> noop exporter
-- Includes `engine.telemetry` configuration with console metrics export
+- Routes internal metrics through the engine observability pipeline to an OTLP
+  gRPC exporter. Logs retain the default asynchronous console behavior.
 
 ### `trafficgen-filter-debug-noop.yaml`
 
@@ -67,6 +68,34 @@ Demonstrates metric-name filtering:
 
 - Generates synthetic metrics -> filter processor by metric name -> debug processor
   -> noop exporter
+
+### `trafficgen-per-signal-metrics-demo.yaml`
+
+Demonstrates the opt-in per-signal produced/consumed item counts a node can
+emit:
+
+- Generates a mix of logs, metrics and traces -> log-sampling processor -> noop
+  exporter
+- Only opted-in nodes report `node.producer.produced.items` and
+  `node.consumer.consumed.items`, each split by the `signal` datapoint attribute;
+  nodes that are not opted in omit these metrics
+  (per-node `policies.telemetry.item_counts: true`, or globally via
+  `runtime_metrics: detailed`); recording requires `runtime_metrics: normal` or
+  higher.
+- View metrics at:
+  `http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json`
+
+### `trafficgen-flow-metrics-demo.yaml`
+
+Demonstrates a flow range with multiple drop decision nodes:
+
+- Generates synthetic logs -> sampling, filtering, transform, and recordset KQL
+  processors -> noop exporter
+- Routes metrics-only internal telemetry through an explicit observability pipeline;
+  filters to native flow metric instrument names, and prints them with the detailed
+  debug processor
+- The debug processor displays the bounded `signal` datapoint attribute, while the
+  admin metrics endpoint displays flow scope attributes
 
 ### `trafficgen-transform-debug-noop.yaml`
 
@@ -219,7 +248,7 @@ echo "<134>$(date '+%b %d %H:%M:%S') testhost testtag: Test message" \
 ```
 
 For sustained load testing, see the
-[load generator](../../tools/pipeline_perf_test/load_generator/readme.md):
+[load generator](../../../tools/pipeline_perf_test/load_generator/readme.md):
 
 ```bash
 cd tools/pipeline_perf_test/load_generator

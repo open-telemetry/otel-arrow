@@ -10,16 +10,16 @@
 //! # Format (v1, 24 bytes, variable-width support)
 //!
 //! ```text
-//! ┌────────────┬─────────┬──────────┬─────────────────┬──────────┐
-//! │ magic (8)  │ ver (2) │ size (2) │ wal_position (8)│ crc (4)  │
-//! └────────────┴─────────┴──────────┴─────────────────┴──────────┘
+//! +------------+---------+----------+-----------------+----------+
+//! | magic (8)  | ver (2) | size (2) | wal_position (8)| crc (4)  |
+//! +------------+---------+----------+-----------------+----------+
 //! ```
 //!
 //! The `size` field stores the total encoded size, enabling future versions
 //! to add fields while maintaining backward compatibility. A v1 reader can
 //! safely skip unknown trailing bytes in a v2+ file by using the size field.
 //!
-//! Writes use atomic rename (`write_to` → `.tmp` → `rename`) plus parent
+//! Writes use atomic rename (`write_to` -> `.tmp` -> `rename`) plus parent
 //! directory fsync to ensure durability across power loss.
 
 use std::io::SeekFrom;

@@ -113,7 +113,7 @@ impl HostMetricsArrowBuilder {
         }
     }
 
-    // ── Metric openers ──────────────────────────────────────────────────────
+    // -- Metric openers ------------------------------------------------------
 
     /// Open a monotonic cumulative Sum metric (i64 data points).
     pub(crate) fn begin_counter_i64(&mut self, name: &str, unit: &str) -> MetricHandle {
@@ -171,7 +171,7 @@ impl HostMetricsArrowBuilder {
         MetricHandle(id)
     }
 
-    // ── Datapoint appenders ─────────────────────────────────────────────────
+    // -- Datapoint appenders -------------------------------------------------
 
     /// Append one i64 Sum data point.
     pub(crate) fn append_i64_sum_dp<F>(
@@ -287,7 +287,7 @@ impl HostMetricsArrowBuilder {
             .expect("dp_id overflow: more than u32::MAX datapoints in one batch");
     }
 
-    // ── Finalization ─────────────────────────────────────────────────────────
+    // -- Finalization ---------------------------------------------------------
 
     /// Finalize all builders and produce an `OtapArrowRecords::Metrics` batch.
     pub(crate) fn finish(mut self) -> Result<OtapArrowRecords, ArrowError> {

@@ -6,7 +6,10 @@
 use crate::Interests;
 use crate::ReceivedAtNode;
 use crate::Unwindable;
-use crate::channel_metrics::{ChannelMetricsHandle, ConsumedMetrics, ProducedMetrics};
+use crate::channel_metrics::{
+    ChannelMetricsHandle, ConsumedItemMetrics, ConsumedMetrics, ProducedItemMetrics,
+    ProducedMetrics,
+};
 use crate::completion_emission_metrics::{
     CompletionEmissionMetricsHandle, make_completion_emission_metrics,
 };
@@ -20,8 +23,8 @@ use crate::entity_context::{
 };
 use crate::error::{Error, TypedError};
 use crate::flow_metrics::{
-    FlowDurationMetrics, FlowSignalsDroppedMetrics, FlowSignalsIncomingMetrics,
-    FlowSignalsOutgoingMetrics, build_flow_metric_state,
+    FlowConsumedItemsMetrics, FlowDroppedItemsMetrics, FlowDurationMetrics,
+    FlowProducedItemsMetrics, build_flow_metric_state,
 };
 use crate::memory_limiter::MemoryPressureChanged;
 use crate::node::{Node, NodeDefs, NodeId, NodeType, NodeWithPDataReceiver, NodeWithPDataSender};
@@ -36,7 +39,7 @@ use otap_df_config::DeployedPipelineKey;
 use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::TelemetryPolicy;
 use otap_df_telemetry::event::ObservedEventReporter;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetSnapshot};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSetSnapshot};
 use otap_df_telemetry::reporter::{MetricsReporter, ReportOutcome};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -60,7 +63,7 @@ const EXTENSION_MONITOR_COLLECT_TELEMETRY_INTERVAL: Duration = Duration::from_se
 fn make_produced_metrics(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
-) -> Vec<MetricSet<ProducedMetrics>> {
+) -> Vec<MeasurementMetricSet<ProducedMetrics>> {
     telemetry_handle
         .as_ref()
         .map(|h| {
@@ -68,7 +71,30 @@ fn make_produced_metrics(
             keys.sort_by(|a, b| a.0.cmp(&b.0));
             keys.iter()
                 .map(|(_, key)| {
-                    pipeline_context.register_metric_set_for_entity::<ProducedMetrics>(*key)
+                    ProducedMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Build optional produced-item metric sets indexed by sorted output port name.
+fn make_produced_item_metrics(
+    telemetry_handle: &Option<NodeTelemetryHandle>,
+    pipeline_context: &PipelineContext,
+) -> Vec<MeasurementMetricSet<ProducedItemMetrics>> {
+    telemetry_handle
+        .as_ref()
+        .map(|h| {
+            let mut keys = h.output_channel_keys();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            keys.iter()
+                .map(|(_, key)| {
+                    ProducedItemMetrics::register(
+                        &pipeline_context.metric_set_registrar_for_entity(*key),
+                    )
                 })
                 .collect()
         })
@@ -79,18 +105,34 @@ fn make_produced_metrics(
 ///
 /// - `has_input`: whether to register consumed-request metrics (false for receivers).
 /// - `has_outputs`: whether to register produced-request metrics (false for exporters).
+/// - `item_counts_enabled`: whether to register the optional item metric sets.
 fn make_node_metric_handles(
     telemetry_handle: &Option<NodeTelemetryHandle>,
     pipeline_context: &PipelineContext,
     has_input: bool,
     has_outputs: bool,
+    item_counts_enabled: bool,
     completion_emission: Option<CompletionEmissionMetricsHandle>,
 ) -> NodeMetricHandles {
     let consumed = if has_input {
         telemetry_handle
             .as_ref()
             .and_then(|h| h.input_channel_key())
-            .map(|key| pipeline_context.register_metric_set_for_entity::<ConsumedMetrics>(key))
+            .map(|key| {
+                ConsumedMetrics::register(&pipeline_context.metric_set_registrar_for_entity(key))
+            })
+    } else {
+        None
+    };
+    let consumed_items = if item_counts_enabled && has_input {
+        telemetry_handle
+            .as_ref()
+            .and_then(|h| h.input_channel_key())
+            .map(|key| {
+                ConsumedItemMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(key),
+                )
+            })
     } else {
         None
     };
@@ -99,10 +141,17 @@ fn make_node_metric_handles(
     } else {
         Vec::new()
     };
+    let produced_items = if item_counts_enabled && has_outputs {
+        make_produced_item_metrics(telemetry_handle, pipeline_context)
+    } else {
+        Vec::new()
+    };
     NodeMetricHandles {
         registry: pipeline_context.metrics_registry(),
         input: consumed,
+        input_items: consumed_items,
         outputs: produced,
+        output_items: produced_items,
         completion_emission,
     }
 }
@@ -321,7 +370,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         use futures::stream::{FuturesUnordered, StreamExt};
 
         let RuntimePipeline {
-            config: _config,
+            config: pipeline_config,
             receivers,
             processors,
             exporters,
@@ -332,7 +381,19 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         } = self;
 
         let metric_level = telemetry_policy.runtime_metrics;
-        let node_interests = Interests::from_metric_level(metric_level);
+        let base_node_interests = Interests::from_metric_level(metric_level);
+        // Nodes opting in via `node.policies.telemetry.item_counts`
+        // get the counts without requiring the `detailed` metric level.
+        let item_count_optin: HashSet<&str> = pipeline_config
+            .node_iter()
+            .filter(|(_, cfg)| {
+                cfg.policies
+                    .as_ref()
+                    .and_then(|policies| policies.telemetry.as_ref())
+                    .is_some_and(|telemetry| telemetry.item_counts)
+            })
+            .map(|(node_id, _)| node_id.as_ref())
+            .collect();
 
         // Single-threaded runtime so we can drive !Send node tasks on the core thread.
         let rt = Builder::new_current_thread()
@@ -414,7 +475,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         let mut node_metric_entries: Vec<(usize, NodeMetricHandles)> = Vec::new();
         let mut node_telemetry_guards: Vec<NodeTelemetryGuard> = Vec::new();
 
-        // Build a name→index map from NodeDefs so we can resolve flow_metric
+        // Build a name->index map from NodeDefs so we can resolve flow_metric
         // config before processors are spawned.
         let node_name_to_index: HashMap<String, usize> = _nodes
             .iter()
@@ -432,10 +493,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
 
         // Build edge list from pipeline connections for flow metric
         // interleaving detection.
-        let pipeline_connections = connection_edges(_config.connection_iter(), &node_name_to_index);
+        let pipeline_connections =
+            connection_edges(pipeline_config.connection_iter(), &node_name_to_index);
 
         // Build flow_metric state and per-node role assignments up front.
-        let flow_metric_state = build_flow_metric_state(
+        let mut flow_metric_state = build_flow_metric_state(
             &telemetry_policy,
             &node_name_to_index,
             &processor_indices,
@@ -447,6 +509,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for exporter in exporters {
             let mut exporter = exporter;
             let node_id = exporter.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Exporter,
@@ -466,6 +533,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     false,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -521,6 +589,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for processor in processors {
             let mut processor = processor;
             let node_id = processor.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Processor,
@@ -540,6 +613,7 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                     &pipeline_context,
                     true,
                     true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
                     completion_emission_metrics.clone(),
                 ),
             ));
@@ -551,37 +625,37 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             // Extract flow metric roles for this processor node.
             let flow_is_start = flow_metric_state.start_nodes.contains_key(&node_id.index);
             let flow_is_end = flow_metric_state.end_nodes.contains_key(&node_id.index);
-            let flow_signals_incoming_metric: Option<MetricSet<FlowSignalsIncomingMetrics>> =
+            let flow_consumed_items_metric: Option<MeasurementMetricSet<FlowConsumedItemsMetrics>> =
                 flow_metric_state
                     .start_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.signals_incoming_metrics[id].clone());
-            let flow_duration_metric: Option<MetricSet<FlowDurationMetrics>> = flow_metric_state
-                .end_nodes
-                .get(&node_id.index)
-                .and_then(|&id| flow_metric_state.duration_metrics[id].clone());
-            let flow_signals_outgoing_metric: Option<MetricSet<FlowSignalsOutgoingMetrics>> =
+                    .and_then(|&id| flow_metric_state.consumed_items_metrics[id].take());
+            let flow_duration_metric: Option<MeasurementMetricSet<FlowDurationMetrics>> =
                 flow_metric_state
                     .end_nodes
                     .get(&node_id.index)
-                    .and_then(|&id| flow_metric_state.signals_outgoing_metrics[id].clone());
+                    .and_then(|&id| flow_metric_state.duration_metrics[id].take());
+            let flow_produced_items_metric: Option<MeasurementMetricSet<FlowProducedItemsMetrics>> =
+                flow_metric_state
+                    .end_nodes
+                    .get(&node_id.index)
+                    .and_then(|&id| flow_metric_state.produced_items_metrics[id].take());
             // Register per-node drop decision metric set when this
             // processor declares the drop capability and lies within a
             // flow that enables dropped. Each decision node gets its own
             // entity tagged with `flow.node.decision` = this node's name.
-            let mut flow_signals_dropped_metric: Option<MetricSet<FlowSignalsDroppedMetrics>> =
-                None;
+            let mut flow_dropped_items_metric: Option<
+                MeasurementMetricSet<FlowDroppedItemsMetrics>,
+            > = None;
             if processor.runtime_requirements().makes_drop_decisions
                 && let Some(candidate) = flow_metric_state.decision_candidates.get(&node_id.index)
             {
                 let mut attrs = candidate.attrs.clone();
                 attrs.decision = std::borrow::Cow::Owned(node_id.name.to_string());
                 let entity_key = pipeline_context.metrics_registry().register_entity(attrs);
-                flow_signals_dropped_metric = Some(
-                    pipeline_context
-                        .metrics_registry()
-                        .register_metric_set_for_entity::<FlowSignalsDroppedMetrics>(entity_key),
-                );
+                flow_dropped_items_metric = Some(FlowDroppedItemsMetrics::register(
+                    &pipeline_context.metric_set_registrar_for_entity(entity_key),
+                ));
             }
             let flow_active = flow_metric_state.is_active();
             let flow_needs_timing = flow_metric_state.needs_timing();
@@ -595,10 +669,10 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
                         completion_emission_metrics,
                         flow_is_start,
                         flow_is_end,
-                        flow_signals_incoming_metric,
+                        flow_consumed_items_metric,
                         flow_duration_metric,
-                        flow_signals_outgoing_metric,
-                        flow_signals_dropped_metric,
+                        flow_produced_items_metric,
+                        flow_dropped_items_metric,
                         flow_active,
                         flow_needs_timing,
                         processor_terminal_metrics_deadline.clone(),
@@ -628,6 +702,11 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
         for receiver in receivers {
             let mut receiver = receiver;
             let node_id = receiver.node_id();
+            let node_interests = if item_count_optin.contains(node_id.name.as_ref()) {
+                base_node_interests | Interests::PRODUCED_CONSUMED_ITEM_COUNTS
+            } else {
+                base_node_interests
+            };
             control_senders.register(
                 node_id.clone(),
                 NodeType::Receiver,
@@ -640,7 +719,14 @@ impl<PData: 'static + Debug + Clone + ReceivedAtNode + Unwindable + FlowMetricHo
             // Collect per-node metrics for the controller (receivers have no input data channel).
             node_metric_entries.push((
                 node_id.index,
-                make_node_metric_handles(&telemetry_handle, &pipeline_context, false, true, None),
+                make_node_metric_handles(
+                    &telemetry_handle,
+                    &pipeline_context,
+                    false,
+                    true,
+                    node_interests.contains(Interests::PRODUCED_CONSUMED_ITEM_COUNTS),
+                    None,
+                ),
             ));
             let runtime_ctrl_msg_tx = runtime_ctrl_msg_tx.clone();
             let pipeline_completion_msg_tx = pipeline_completion_msg_tx.clone();
@@ -980,22 +1066,18 @@ mod tests {
     use crate::entity_context::{NodeTelemetryGuard, NodeTelemetryHandle};
     use otap_df_config::observed_state::SendPolicy;
     use otap_df_config::pipeline::telemetry::TelemetryConfig;
-    use otap_df_config::pipeline::telemetry::metrics::{MetricsConfig, MetricsProvider};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use otap_df_telemetry::{InternalTelemetrySystem, LogContext};
 
+    /// Scenario: a pipeline has pending terminal metrics when telemetry cleanup starts.
+    /// Guarantees: the final snapshot reaches the registry before entity handles are released.
     #[tokio::test(flavor = "current_thread")]
     async fn terminal_snapshot_is_aggregated_before_telemetry_cleanup() {
         let registry = TelemetryRegistryHandle::new();
-        let config = TelemetryConfig {
-            metrics: MetricsConfig {
-                provider: MetricsProvider::Its,
-                ..MetricsConfig::default()
-            },
-            ..TelemetryConfig::default()
-        };
+        let config = TelemetryConfig::default();
         let metrics_system = InternalTelemetrySystem::new(
             &config,
+            config.reporting_interval,
             registry.clone(),
             None,
             SendPolicy::default(),

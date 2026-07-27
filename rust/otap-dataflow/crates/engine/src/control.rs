@@ -142,6 +142,14 @@ pub struct Frame {
     pub route: RouteData,
     /// The caller's node_id for routing.
     pub node_id: usize,
+    /// Number of signal items produced (emitted) by the node at send time.
+    /// Stamped only when the node has `PRODUCER_METRICS` interest. Saturates
+    /// at `u32::MAX`.
+    pub produced_items: u32,
+    /// Number of signal items consumed (received) by the node at receive time.
+    /// Stamped only when the node has `CONSUMER_METRICS` interest. Saturates
+    /// at `u32::MAX`.
+    pub consumed_items: u32,
 }
 
 /// The ACK message.
@@ -748,11 +756,11 @@ where
     }
 }
 
-// ── Extension Control Messages ──────────────────────────────────────────────
+// -- Extension Control Messages ----------------------------------------------
 
 /// Control messages sent to extensions.
 ///
-/// This is a PData-free subset of [`NodeControlMsg`] — extensions never process
+/// This is a PData-free subset of [`NodeControlMsg`] -- extensions never process
 /// pipeline data, so they have no `Ack`, `Nack`, or `DelayedData` variants.
 #[derive(Debug, Clone)]
 pub enum ExtensionControlMsg {

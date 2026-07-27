@@ -37,18 +37,18 @@
 //! These limitations are fundamental to the type-erased `HashMap<TypeId, Entry>`
 //! registry design and the `SharedAsLocal` adapter delegation pattern:
 //!
-//! - **Trait-level generics or lifetime parameters** — e.g.
+//! - **Trait-level generics or lifetime parameters** -- e.g.
 //!   `#[capability] trait Foo<T>` or `#[capability] trait Bar<'a>`.
 //!   Method-level lifetimes (one bullet up) *are* supported. Trait-level
 //!   parameters, by contrast, mean the trait isn't one type but a
-//!   *family* — `Foo<u32>`, `Foo<String>`, etc. — each with its own
+//!   *family* -- `Foo<u32>`, `Foo<String>`, etc. -- each with its own
 //!   `TypeId::of::<Foo<T>>()`. The registry keys entries by a single
 //!   `TypeId` per capability, so there is no monomorphized type for the
 //!   generated registration struct to advertise. Concretize the
 //!   parameter at the trait definition (e.g. work over `String` or a
 //!   sealed enum) or split the family into separate `#[capability]`
 //!   traits.
-//! - **Method-level generic type or const parameters** — e.g.
+//! - **Method-level generic type or const parameters** -- e.g.
 //!   `fn get<T>(&self, key: T) -> T` or `fn pad<const N: usize>(&self)`.
 //!   The macro generates `Box<dyn local::Trait>` / `Box<dyn shared::Trait>`
 //!   handles, and dyn-compatibility (object safety) forbids generic type
@@ -56,23 +56,23 @@
 //!   monomorphization would need its own vtable slot. Use a concrete type
 //!   (or a sealed enum) at the trait method signature instead. Method-level
 //!   *lifetime* parameters are accepted.
-//! - **Supertraits** (`trait Foo: Bar`) — the `SharedAsLocal` adapter only
+//! - **Supertraits** (`trait Foo: Bar`) -- the `SharedAsLocal` adapter only
 //!   delegates methods defined directly on the `#[capability]` trait. It cannot
 //!   auto-implement supertrait methods. Define all methods directly on the
 //!   capability trait instead.
-//! - **Associated types** — the type-erased `Box<dyn Any>` / downcast pattern
+//! - **Associated types** -- the type-erased `Box<dyn Any>` / downcast pattern
 //!   requires knowing the concrete associated type at compile time. Different
 //!   implementations could have different associated types, making a single
 //!   registry entry impossible.
-//! - **Associated constants** — same fundamental issue as associated types.
-//! - **Receiver shapes other than `&self` / `&mut self`** — rejected at the
+//! - **Associated constants** -- same fundamental issue as associated types.
+//! - **Receiver shapes other than `&self` / `&mut self`** -- rejected at the
 //!   macro level with a fail-fast diagnostic. Specifically:
-//!     - No `self` associated functions (`fn foo()`) — not dispatchable through
+//!     - No `self` associated functions (`fn foo()`) -- not dispatchable through
 //!       `dyn Trait`.
-//!     - Consuming `self` (`fn foo(self)`) — non-object-safe; the
+//!     - Consuming `self` (`fn foo(self)`) -- non-object-safe; the
 //!       `SharedAsLocal` adapter holds `Box<dyn shared::Trait>` and cannot
 //!       call methods that consume the trait object.
-//!     - Arbitrary self types (`self: Box<Self>`, `self: Arc<Self>`, …) — the
+//!     - Arbitrary self types (`self: Box<Self>`, `self: Arc<Self>`, ...) -- the
 //!       adapter delegates through a `Box<dyn shared::Trait>` field and only
 //!       knows how to forward `&self` / `&mut self` receivers.
 //!
@@ -205,7 +205,7 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                 //            explicit lifetime, e.g. `&'a self`).
                 // Rejected: no `self` associated functions, consuming
                 //           `self`, and arbitrary self types
-                //           (`self: Box<Self>`, `self: Arc<Self>`, …).
+                //           (`self: Box<Self>`, `self: Arc<Self>`, ...).
                 match f.sig.inputs.first() {
                     Some(FnArg::Receiver(recv)) => {
                         if recv.colon_token.is_some() {
@@ -234,7 +234,7 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                         }
                     }
                     _ => {
-                        // First input is not a receiver — either no inputs
+                        // First input is not a receiver -- either no inputs
                         // at all or `fn foo(arg: T)` style associated fn.
                         return Err(syn::Error::new_spanned(
                             &f.sig,
@@ -251,7 +251,7 @@ fn validate_trait(trait_item: &ItemTrait) -> Result<(), TokenStream> {
                 // The macro generates `Box<dyn local::Trait>` /
                 // `Box<dyn shared::Trait>` handles, and dyn-compatibility
                 // (object safety) forbids generic type or const parameters
-                // on dispatchable methods. Lifetimes are fine — they
+                // on dispatchable methods. Lifetimes are fine -- they
                 // don't affect dyn-compatibility.
                 for gp in &f.sig.generics.params {
                     match gp {
@@ -445,7 +445,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             }
         }
 
-        /// `SharedAsLocal` adapter — wraps a shared implementation and
+        /// `SharedAsLocal` adapter -- wraps a shared implementation and
         /// exposes it as a local trait object.
         struct #shared_as_local_name(::std::boxed::Box<dyn shared::#trait_name>);
 
@@ -480,7 +480,7 @@ pub(crate) fn expand_capability(args: CapabilityArgs, trait_item: ItemTrait) -> 
             /// The returned entry's produce closure calls the stored
             /// instance factory, downcasts the erased
             /// `Box<dyn Any + Send>` to `Box<E>`, and coerces to
-            /// `Box<dyn shared::#trait_name>` — under the double-box
+            /// `Box<dyn shared::#trait_name>` -- under the double-box
             /// envelope the registry expects.
             #[allow(non_snake_case, clippy::missing_errors_doc)]
             #vis fn shared_entry<E>(
@@ -714,7 +714,7 @@ mod tests {
     #[test]
     fn trait_level_generics_error_mentions_method_lifetimes() {
         // Regression for the previously misleading wording that just said
-        // "use method-level generics instead" — method-level type/const
+        // "use method-level generics instead" -- method-level type/const
         // generics are also rejected, so the error should clarify that
         // only method-level lifetimes are supported.
         let err = validate("trait Cap<T> { fn get(&self) -> T; }").expect("should reject");

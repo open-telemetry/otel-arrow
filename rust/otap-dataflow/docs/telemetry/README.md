@@ -252,7 +252,7 @@ telemetry:
 
 For implementation details of the telemetry SDK, including macros, schema
 handling, and the dataflow for metric collection, see the
-[telemetry implementation description](/crates/telemetry/README.md).
+[telemetry implementation description](../../crates/telemetry/README.md).
 
 Note: This SDK is internal to the project and optimized for our use cases. It is
 not intended for public use (at least not yet). It may change without notice.

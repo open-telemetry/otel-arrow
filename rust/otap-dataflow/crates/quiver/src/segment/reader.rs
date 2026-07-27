@@ -59,9 +59,9 @@ use super::types::{
 };
 use crate::record_bundle::{ArrowPrimitive, SlotId};
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // ReconstructedBundle
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// A reconstructed bundle with Arrow `RecordBatch`es for each payload slot.
 ///
@@ -125,9 +125,9 @@ impl ReconstructedBundle {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // StreamDecoder - decodes a single Arrow IPC stream from a buffer slice
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Decodes Arrow IPC batches from a buffer slice (zero-copy).
 struct StreamDecoder {
@@ -303,9 +303,9 @@ impl StreamDecoder {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // SegmentReader
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Reads segment files written by [`SegmentWriter`](super::SegmentWriter).
 ///
@@ -401,9 +401,9 @@ impl SegmentReader {
         let file = File::open(path).map_err(|e| SegmentError::io(path.to_path_buf(), e))?;
 
         // SAFETY: We use a shared read-only mapping.
-        // On Unix: MAP_SHARED | PROT_READ — pages are backed by the file and
+        // On Unix: MAP_SHARED | PROT_READ -- pages are backed by the file and
         // freely reclaimable by the kernel under memory pressure.
-        // On Windows: FILE_MAP_READ — pages are backed by the file and
+        // On Windows: FILE_MAP_READ -- pages are backed by the file and
         // reclaimable by the Windows memory manager.
         //
         // Segment files are immutable after finalization. Quiver never
@@ -438,7 +438,7 @@ impl SegmentReader {
         let reader = Self::from_buffer(buffer, Some(path.to_path_buf()))?;
 
         // CRC validation in from_buffer() faults in every page of the mapping.
-        // Advise the kernel that we don't need those pages right now — the
+        // Advise the kernel that we don't need those pages right now -- the
         // subscriber will re-fault only the specific pages it reads on demand.
         //
         // With MAP_SHARED this merely removes page-table entries; the data
@@ -571,7 +571,7 @@ impl SegmentReader {
         #[allow(unsafe_code)]
         // SAFETY: The buffer pointer and length describe a valid mapped region
         // created by open_mmap(). MADV_DONTNEED on a MAP_SHARED mapping is
-        // safe — it merely tells the kernel it may reclaim the pages.
+        // safe -- it merely tells the kernel it may reclaim the pages.
         let _ = unsafe {
             nix::sys::mman::madvise(
                 ptr,
@@ -684,9 +684,9 @@ impl SegmentReader {
             })
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Private helpers
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     /// Reads a chunk using cached stream decoders for efficiency.
     ///
@@ -1086,9 +1086,9 @@ impl SegmentReader {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Tests
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -21,11 +21,12 @@ Goal:
 
 ### Signals and data model
 
-| Area                 | Gap                                                     | Impact                                                   |
-|----------------------|---------------------------------------------------------|----------------------------------------------------------|
-| Metrics              | Histograms not supported yet                            | Limits latency and size distributions                    |
-| Multivariate metrics | OTLP and OTAP lack first-class multivariate metric sets | Limits protocol efficiency; some semantics may be lossy  |
-| Tracing              | Traces not implemented (draft only)                     | Limits end-to-end causality and latency debugging        |
+| Area                 | Gap                                                                                                                           | Impact                                                                           |
+|----------------------|-------------------------------------------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
+| Metrics              | Histograms not supported yet                                                                                                  | Limits latency and size distributions                                            |
+| Metric temporality   | [Consumer-selected downstream conversion is not implemented](https://github.com/open-telemetry/otel-arrow/issues/3543)        | Consumers receive the canonical low-memory temporality                           |
+| Multivariate metrics | OTLP and OTAP lack first-class multivariate metric sets                                                                       | Limits protocol efficiency; some semantics may be lossy                          |
+| Tracing              | Traces not implemented (draft only)                                                                                           | Limits end-to-end causality and latency debugging                                |
 
 ### Resource identity and entity attributes
 

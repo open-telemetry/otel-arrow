@@ -20,43 +20,12 @@ use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 ///
 /// The base filter comes from the `RUST_LOG` environment variable if set;
 /// otherwise it falls back to the level's
-/// [`RUST_LOG`-style directive string][env-filter]. The suppression directive
-/// described below is then appended unconditionally on top of that base, so it
-/// can override a conflicting user-supplied directive for the
-/// `opentelemetry-prometheus[{metric_description}]` target.
-///
-/// In all cases the filter suppresses one specific benign per-scrape warning
-/// from the `opentelemetry-prometheus` crate: the
-/// `MetricValidationFailed` event carrying a `metric_description` field. The
-/// Prometheus exporter flattens OpenTelemetry instrumentation scopes into a
-/// single namespace keyed by metric name (scope is exposed only as the
-/// `otel_scope_name` label, per the OTel/Prometheus interop spec). When two
-/// scopes emit the same metric name with different descriptions, the exporter
-/// keeps the first `# HELP` and logs this warning on every scrape. No data is
-/// lost (each scope remains a distinct time series), so it is pure noise.
-///
-/// The directive is field-scoped, so it is surgical: it caps *only* the
-/// description-conflict warning (which carries `metric_description`) at `ERROR`.
-/// The sibling type-conflict warning (which carries `metric_type` and *does*
-/// drop data) lacks that field, so it is left untouched and remains visible at
-/// `WARN`, as do all other diagnostics from the crate.
-/// See https://github.com/open-telemetry/otel-arrow/issues/2734 for more
-/// details.
+/// [`RUST_LOG`-style directive string][env-filter].
 ///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[must_use]
 pub fn create_env_filter(level: &LogLevel) -> EnvFilter {
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()));
-    // Target matches `env!("CARGO_PKG_NAME")` set by opentelemetry's `otel_warn!`.
-    // The `[{metric_description}]` field filter matches only the benign
-    // description-conflict `MetricValidationFailed` event, leaving the
-    // data-dropping type-conflict variant (field `metric_type`) visible.
-    filter.add_directive(
-        "opentelemetry-prometheus[{metric_description}]=error"
-            .parse()
-            .expect("valid tracing directive"),
-    )
+    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level.as_str()))
 }
 
 /// Combined tracing configuration for a thread.
@@ -272,36 +241,10 @@ mod tests {
         ]
     }
 
-    /// Counts how many events reach the subscriber after filtering.
-    fn count_events_through_filter<F>(emit: F) -> usize
-    where
-        F: FnOnce() + std::panic::UnwindSafe,
-    {
-        use std::sync::Arc;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        struct CountingLayer(Arc<AtomicUsize>);
-        impl<S: Subscriber> TracingLayer<S> for CountingLayer {
-            fn on_event(&self, _event: &Event<'_>, _ctx: Context<'_, S>) {
-                let _ = self.0.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-
-        let count = Arc::new(AtomicUsize::new(0));
-        crate::with_cleared_rust_log(|| {
-            let subscriber = Registry::default()
-                .with(create_env_filter(&level("info")))
-                .with(CountingLayer(count.clone()));
-            tracing::subscriber::with_default(subscriber, emit);
-        });
-        count.load(Ordering::SeqCst)
-    }
-
+    /// Scenario: each supported simple log level is used to construct an environment filter.
+    /// Guarantees: filter construction accepts every configured level without panicking.
     #[test]
     fn create_env_filter_parses_for_all_levels() {
-        // The embedded `opentelemetry-prometheus[{metric_description}]=error`
-        // directive must parse for every level (otherwise `create_env_filter`
-        // panics at startup via its `.expect`).
         crate::with_cleared_rust_log(|| {
             for l in all_simple_levels() {
                 let _ = create_env_filter(&l);
@@ -309,41 +252,8 @@ mod tests {
         });
     }
 
-    #[test]
-    fn prometheus_description_conflict_warning_is_suppressed() {
-        // Benign description-conflict warning (field `metric_description`): the
-        // field-scoped directive caps it at ERROR, so a WARN is dropped.
-        let count = count_events_through_filter(|| {
-            tracing::warn!(
-                target: "opentelemetry-prometheus",
-                metric_description = "conflict",
-                "Instrument description conflict, using existing"
-            );
-        });
-        assert_eq!(
-            count, 0,
-            "benign description-conflict warning should be suppressed"
-        );
-    }
-
-    #[test]
-    fn prometheus_type_conflict_warning_remains_visible() {
-        // Data-dropping type-conflict warning (field `metric_type`, not
-        // `metric_description`): the directive does not match it, so it stays
-        // visible at WARN.
-        let count = count_events_through_filter(|| {
-            tracing::warn!(
-                target: "opentelemetry-prometheus",
-                metric_type = "conflict",
-                "Instrument type conflict, using existing type definition"
-            );
-        });
-        assert_eq!(
-            count, 1,
-            "data-dropping type-conflict warning should remain visible"
-        );
-    }
-
+    /// Scenario: an info event is emitted through the no-op provider.
+    /// Guarantees: the no-op subscriber accepts the event without failing.
     #[test]
     fn noop_provider_runs() {
         crate::with_cleared_rust_log(|| {
@@ -354,6 +264,8 @@ mod tests {
         });
     }
 
+    /// Scenario: every log severity is emitted under each supported no-op provider level.
+    /// Guarantees: the no-op provider remains usable for every level and event severity.
     #[test]
     fn noop_provider_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -369,6 +281,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an info event is emitted through the direct console provider.
+    /// Guarantees: direct console subscriber setup and event handling complete successfully.
     #[test]
     fn console_direct_provider_runs() {
         crate::with_cleared_rust_log(|| {
@@ -379,6 +293,8 @@ mod tests {
         });
     }
 
+    /// Scenario: every log severity is emitted under each direct console provider level.
+    /// Guarantees: direct console logging remains usable across all supported levels.
     #[test]
     fn console_direct_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -394,6 +310,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an info event is emitted through the asynchronous internal provider.
+    /// Guarantees: the provider forwards the event to its observed-event channel as a log.
     #[test]
     fn console_async_provider_sends_logs() {
         crate::with_cleared_rust_log(|| {
@@ -413,6 +331,8 @@ mod tests {
         });
     }
 
+    /// Scenario: four event severities are emitted at each asynchronous provider level.
+    /// Guarantees: the channel receives exactly the number of events allowed by each level.
     #[test]
     fn console_async_all_levels() {
         crate::with_cleared_rust_log(|| {
@@ -441,6 +361,8 @@ mod tests {
         });
     }
 
+    /// Scenario: a debug event is emitted while the asynchronous provider is set to info.
+    /// Guarantees: debug events are excluded from the provider's output channel.
     #[test]
     fn log_level_filters_debug() {
         crate::with_cleared_rust_log(|| {
@@ -458,6 +380,8 @@ mod tests {
         });
     }
 
+    /// Scenario: debug, info, and warn events are emitted at the warn level.
+    /// Guarantees: only the warn event reaches the asynchronous provider's channel.
     #[test]
     fn log_level_warn_filters_lower() {
         crate::with_cleared_rust_log(|| {
@@ -477,6 +401,8 @@ mod tests {
         });
     }
 
+    /// Scenario: debug through error events are emitted at the error level.
+    /// Guarantees: only the error event reaches the asynchronous provider's channel.
     #[test]
     fn log_level_error_filters_lower() {
         crate::with_cleared_rust_log(|| {
@@ -496,6 +422,8 @@ mod tests {
         });
     }
 
+    /// Scenario: events of every severity are emitted while logging is off.
+    /// Guarantees: the asynchronous provider emits no events at the off level.
     #[test]
     fn log_level_off_filters_all() {
         crate::with_cleared_rust_log(|| {
@@ -513,6 +441,8 @@ mod tests {
         });
     }
 
+    /// Scenario: events of every severity are emitted at the debug level.
+    /// Guarantees: all four events reach the asynchronous provider's channel.
     #[test]
     fn log_level_debug_allows_all() {
         crate::with_cleared_rust_log(|| {
@@ -533,6 +463,8 @@ mod tests {
         });
     }
 
+    /// Scenario: oversized structured attributes overflow the inline log encoding buffer.
+    /// Guarantees: the dropped-attribute count survives ITS encoding and OTLP parsing.
     #[test]
     fn dropped_attributes_count_propagates() {
         // Regression test: when too many attributes are passed to overflow
@@ -578,7 +510,7 @@ mod tests {
             );
 
             // Encode through the full ITS path and parse via RawLogsData
-            // (the same path used by internal_telemetry_receiver → console
+            // (the same path used by internal_telemetry_receiver -> console
             // exporter).
             use crate::self_tracing::{ScopeToBytesMap, encode_export_logs_request};
             use bytes::Bytes;
@@ -612,6 +544,8 @@ mod tests {
         });
     }
 
+    /// Scenario: an asynchronous log event contains string and numeric fields.
+    /// Guarantees: the channel event preserves the event name and both structured fields.
     #[test]
     fn console_async_layer_with_fields() {
         crate::with_cleared_rust_log(|| {
@@ -631,6 +565,8 @@ mod tests {
         });
     }
 
+    /// Scenario: each provider variant installs a scoped subscriber and emits an event.
+    /// Guarantees: no-op, direct console, and asynchronous providers all support scoped use.
     #[test]
     fn provider_setup_with_subscriber_all_variants() {
         crate::with_cleared_rust_log(|| {
@@ -654,6 +590,8 @@ mod tests {
         });
     }
 
+    /// Scenario: debug through error events are emitted through ITS at the warn level.
+    /// Guarantees: ITS forwards exactly the warn and error events.
     #[test]
     fn its_provider_filters_correctly() {
         crate::with_cleared_rust_log(|| {
@@ -672,6 +610,8 @@ mod tests {
         });
     }
 
+    /// Scenario: one asynchronous subscriber is temporarily nested inside another.
+    /// Guarantees: inner events remain isolated while outer events return to the outer channel.
     #[test]
     fn nested_with_subscriber() {
         crate::with_cleared_rust_log(|| {

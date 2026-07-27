@@ -79,19 +79,15 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
-#### `exporter.pdata`
+Input PData message volume is reported by the engine through
+`channel.receiver.recv.count` on the PData input channel and is not duplicated
+by the exporter.
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.pdata.metrics_consumed` | `{msg}` | Number of pdata metrics consumed by this exporter. |
-| `exporter.pdata.metrics_exported` | `{msg}` | Number of pdata metrics successfully exported. |
-| `exporter.pdata.metrics_failed` | `{msg}` | Number of pdata metrics that failed to be exported. |
-| `exporter.pdata.logs_consumed` | `{msg}` | Number of pdata logs consumed by this exporter. |
-| `exporter.pdata.logs_exported` | `{msg}` | Number of pdata logs successfully exported. |
-| `exporter.pdata.logs_failed` | `{msg}` | Number of pdata logs that failed to be exported. |
-| `exporter.pdata.traces_consumed` | `{msg}` | Number of pdata traces consumed by this exporter. |
-| `exporter.pdata.traces_exported` | `{msg}` | Number of pdata traces successfully exported. |
-| `exporter.pdata.traces_failed` | `{msg}` | Number of pdata traces that failed to be exported. |
+#### `exporter.pdata.exports`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
 
 #### `otap.exporter.parquet`
 

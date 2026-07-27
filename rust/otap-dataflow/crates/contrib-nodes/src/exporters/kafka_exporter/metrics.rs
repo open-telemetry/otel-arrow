@@ -16,7 +16,7 @@ use otap_df_telemetry_macros::metric_set;
 ///
 /// Metric set name: `exporter.kafka`
 ///
-/// Individual metric names (after field name translation `_` → `.`):
+/// Individual metric names (after field name translation `_` -> `.`):
 /// - `logs.exported` / `logs.failed`
 /// - `metrics.exported` / `metrics.failed`
 /// - `traces.exported` / `traces.failed`

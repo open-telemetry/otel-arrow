@@ -284,9 +284,13 @@ impl SteadyStateStats {
         let seconds = elapsed.as_secs() % 60;
 
         println!();
-        println!("╔════════════════════════════════════════════════════════════╗");
-        println!("║           Steady-State Final Summary                       ║");
-        println!("╚════════════════════════════════════════════════════════════╝");
+        println!(
+            "\u{2554}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2557}"
+        );
+        println!("\u{2551}           Steady-State Final Summary                       \u{2551}");
+        println!(
+            "\u{255A}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{2550}\u{255D}"
+        );
         println!("Data directory: {}", data_dir);
         println!("Total runtime: {:02}:{:02}:{:02}", hours, minutes, seconds);
         println!("Total bundles ingested: {}", self.total_ingested);
@@ -338,12 +342,12 @@ impl SteadyStateStats {
         if growth > leak_threshold_mb {
             println!();
             println!(
-                "⚠️  Memory growth ({:.2} MB) exceeds threshold ({:.0} MB)",
+                "\u{26A0}\u{FE0F}  Memory growth ({:.2} MB) exceeds threshold ({:.0} MB)",
                 growth, leak_threshold_mb
             );
         } else {
             println!();
-            println!("✓ Memory growth within threshold");
+            println!("\u{2713} Memory growth within threshold");
         }
     }
 }

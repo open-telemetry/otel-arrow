@@ -346,6 +346,7 @@ macro_rules! handle_append {
         $self:ident,
         $method:ident ( $($arg:expr),* ),
         default_check = $default_check:expr,
+        prefix_count = $prefix_count:expr,
         retry = $retry:block
     ) => {
         match &mut $self.inner {
@@ -365,7 +366,7 @@ macro_rules! handle_append {
             }
             InnerBuilder::Uninitialized(prefix) => {
                 if $default_check {
-                    prefix.append_value();
+                    prefix.append_values($prefix_count);
                 } else {
                     let mut prefix = $self.initialize_inner().expect("can get prefix");
                     prefix.init_builder($self, $self.default_value.clone());
@@ -381,6 +382,7 @@ macro_rules! handle_append_checked {
         $self:ident,
         $method:ident ( $($arg:expr),* ),
         default_check = $default_check:expr,
+        prefix_count = $prefix_count:expr,
         retry = $retry:block
     ) => {
         paste! {
@@ -408,7 +410,7 @@ macro_rules! handle_append_checked {
                 }
                 InnerBuilder::Uninitialized(prefix) => {
                     if $default_check {
-                        prefix.append_value();
+                        prefix.append_values($prefix_count);
                         Ok(())
                     } else {
                         // safety: initialize_inner will return the prefix if the inner variant is
@@ -450,15 +452,20 @@ where
             self,
             append_value(value),
             default_check = Self::is_default_value(&self.default_value, value),
+            prefix_count = 1,
             retry = { self.append_value(value) }
         );
     }
 
     fn append_value_n(&mut self, value: &Self::Native, n: usize) {
+        if n == 0 {
+            return;
+        }
         handle_append!(
             self,
             append_value_n(value, n),
             default_check = Self::is_default_value(&self.default_value, value),
+            prefix_count = n,
             retry = { self.append_value_n(value, n) }
         );
     }
@@ -492,15 +499,20 @@ where
             self,
             append_str(value),
             default_check = Self::is_default_value(&self.default_value, &value),
+            prefix_count = 1,
             retry = { self.append_str(value) }
         );
     }
 
     fn append_str_n(&mut self, value: &str, n: usize) {
+        if n == 0 {
+            return;
+        }
         handle_append!(
             self,
             append_str_n(value, n),
             default_check = Self::is_default_value(&self.default_value, &value),
+            prefix_count = n,
             retry = { self.append_str_n(value, n) }
         );
     }
@@ -538,15 +550,20 @@ where
             self,
             append_slice(value),
             default_check = Self::is_default_value(&self.default_value, &value),
+            prefix_count = 1,
             retry = { self.append_slice(value) }
         )
     }
 
     fn append_slice_n(&mut self, value: &[Self::Native], n: usize) {
+        if n == 0 {
+            return;
+        }
         handle_append!(
             self,
             append_slice_n(value, n),
             default_check = Self::is_default_value(&self.default_value, &value),
+            prefix_count = n,
             retry = { self.append_slice_n(value, n) }
         )
     }
@@ -580,6 +597,7 @@ where
             self,
             append_value(value),
             default_check = Self::is_default_value(&self.default_value, value),
+            prefix_count = 1,
             retry = { self.append_value(value) }
         )
     }
@@ -619,15 +637,20 @@ where
             self,
             append_slice(value),
             default_check = Self::is_default_value(&self.default_value, &value),
+            prefix_count = 1,
             retry = { self.append_slice(value) }
         )
     }
 
     fn append_slice_n(&mut self, value: &[Self::Native], n: usize) -> Result<(), ArrowError> {
+        if n == 0 {
+            return Ok(());
+        }
         handle_append_checked!(
             self,
             append_slice_n(value, n),
             default_check = Self::is_default_value(&self.default_value, &value),
+            prefix_count = n,
             retry = { self.append_slice_n(value, n) }
         )
     }
@@ -723,7 +746,7 @@ pub type DurationNanosecondArrayBuilder = PrimitiveArrayBuilder<DurationNanoseco
 /// [`DictionaryArray`]s where the values are [`DataType::Binary`].
 ///
 /// If any value contains invalid UTF-8, the invalid byte sequences are replaced with the
-/// Unicode replacement character (U+FFFD `�`) using lossy conversion, ensuring that a single
+/// Unicode replacement character (U+FFFD `?`) using lossy conversion, ensuring that a single
 /// malformed value never causes the entire batch to fail.
 ///
 /// Returns an error if the passed source array does not contain binary data.
@@ -760,7 +783,7 @@ pub fn binary_to_utf8_array(src: &ArrayRef) -> Result<ArrayRef, ArrowError> {
 }
 
 /// Convert a [`BinaryArray`] to a [`StringArray`], replacing any invalid UTF-8 byte sequences
-/// with the Unicode replacement character (U+FFFD `�`).
+/// with the Unicode replacement character (U+FFFD `?`).
 ///
 /// Uses a fast path that attempts a zero-copy conversion first. If the entire values buffer is
 /// valid UTF-8, no additional allocation is needed. Only when invalid UTF-8 is encountered does
@@ -817,7 +840,9 @@ fn binary_dict_to_utf8_dict_array<K: ArrowDictionaryKeyType>(
 pub mod test {
     use super::*;
 
-    use arrow::array::{Array, DictionaryArray, FixedSizeBinaryArray, UInt8Array, UInt16Array};
+    use arrow::array::{
+        Array, DictionaryArray, FixedSizeBinaryArray, UInt8Array, UInt16Array, UInt32Array,
+    };
     use arrow::datatypes::{DataType, TimeUnit};
 
     fn test_array_builder_generic<T, TArgs, TN, TD8, TD16>(
@@ -1097,6 +1122,94 @@ pub mod test {
             vec![2, 1],
             DataType::Duration(TimeUnit::Nanosecond),
         );
+    }
+
+    /// Scenario: Adaptive builders receive multiple default values before a non-default value.
+    /// Guarantees: Every bulk API preserves the full default prefix when initializing its array.
+    #[test]
+    fn test_bulk_default_prefix_preserves_count() {
+        let options = || ArrayOptions {
+            optional: true,
+            dictionary_options: None,
+            ..Default::default()
+        };
+
+        let mut primitive = UInt32ArrayBuilder::new(options());
+        primitive.append_value_n(&0, 2);
+        primitive.append_value(&7);
+        let primitive = primitive.finish().expect("primitive array");
+        let primitive = primitive
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("u32 array");
+        assert_eq!(primitive.values(), &[0, 0, 7]);
+
+        let mut string = StringArrayBuilder::new(options());
+        string.append_str_n("", 2);
+        string.append_str("value");
+        let string = string.finish().expect("string array");
+        let string = string
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("string array");
+        assert_eq!(string.value(0), "");
+        assert_eq!(string.value(1), "");
+        assert_eq!(string.value(2), "value");
+
+        let mut binary = BinaryArrayBuilder::new(options());
+        binary.append_slice_n(b"", 2);
+        binary.append_slice(b"value");
+        let binary = binary.finish().expect("binary array");
+        let binary = binary
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .expect("binary array");
+        assert_eq!(binary.value(0), b"");
+        assert_eq!(binary.value(1), b"");
+        assert_eq!(binary.value(2), b"value");
+
+        let mut fixed = FixedSizeBinaryArrayBuilder::new_with_args(options(), 1);
+        fixed
+            .append_slice_n(b"\0", 2)
+            .expect("append default fixed-size values");
+        fixed.append_slice(b"a").expect("append fixed-size value");
+        let fixed = fixed.finish().expect("fixed-size binary array");
+        let fixed = fixed
+            .as_any()
+            .downcast_ref::<FixedSizeBinaryArray>()
+            .expect("fixed-size binary array");
+        assert_eq!(fixed.value(0), b"\0");
+        assert_eq!(fixed.value(1), b"\0");
+        assert_eq!(fixed.value(2), b"a");
+    }
+
+    /// Scenario: Adaptive builders receive a bulk append request with a zero count.
+    /// Guarantees: Zero-count bulk appends are no-ops and do not initialize optional arrays.
+    #[test]
+    fn test_zero_count_bulk_append_is_noop() {
+        let options = || ArrayOptions {
+            optional: true,
+            dictionary_options: None,
+            ..Default::default()
+        };
+
+        let mut primitive = UInt32ArrayBuilder::new(options());
+        primitive.append_value_n(&7, 0);
+        assert!(primitive.finish().is_none());
+
+        let mut string = StringArrayBuilder::new(options());
+        string.append_str_n("value", 0);
+        assert!(string.finish().is_none());
+
+        let mut binary = BinaryArrayBuilder::new(options());
+        binary.append_slice_n(b"value", 0);
+        assert!(binary.finish().is_none());
+
+        let mut fixed = FixedSizeBinaryArrayBuilder::new_with_args(options(), 1);
+        fixed
+            .append_slice_n(b"a", 0)
+            .expect("zero-count fixed-size append");
+        assert!(fixed.finish().is_none());
     }
 
     #[test]
@@ -1652,7 +1765,7 @@ pub mod test {
         let result = binary_to_utf8_array(&(Arc::new(input) as ArrayRef)).unwrap();
         let result = result.as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(result.value(0), "ab");
-        assert_eq!(result.value(1), "\u{FFFD}("); // invalid byte replaced with �
+        assert_eq!(result.value(1), "\u{FFFD}("); // invalid byte replaced with ?
 
         // check that invalid UTF-8 in dictionary values is also handled with lossy conversion
         let input = DictionaryArray::new(

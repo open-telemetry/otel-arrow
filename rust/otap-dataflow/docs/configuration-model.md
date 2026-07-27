@@ -136,7 +136,8 @@ cross-pipeline loops through topics are rejected early.
 
 The internal observability pipeline is configured under
 `engine.observability.pipeline`. It uses the same node and connection model as a
-regular pipeline, but it has constrained policy support.
+regular pipeline, but it has constrained policy support. The engine installs a
+default pipeline when the field is omitted, and the pipeline cannot be disabled.
 
 This makes internal telemetry routing explicit without treating observability as
 ordinary user dataflow. Resource policies are rejected there because the
@@ -360,67 +361,66 @@ Per-topic `topics.*.impl_selection` overrides this engine-wide default when set.
 ### Engine Telemetry
 
 Internal telemetry settings are declared at `engine.telemetry`. The
-`reporting_interval` controls how often internal metric snapshots are collected
-and, when ITS is selected, emitted to the observability pipeline.
+`reporting_interval` controls the metric-set snapshot cadence and supplies the
+internal telemetry receiver's default registry drain and export interval.
 
-`engine.telemetry.metrics.provider` selects the internal metrics export path:
+The internal telemetry receiver's `signals` field defaults to `[logs,
+metrics]`. A custom receiver may select either `[logs]` or `[metrics]`; logs
+must remain enabled whenever the global, engine, or admin log provider uses
+`its`. When metrics are selected, the optional `metrics.interval` overrides the
+receiver's cold-path interval, and `metrics.views` defines supported name and
+description transformations.
+When metrics are not selected, the receiver still drains their private ITS
+export accumulator without converting or emitting OTLP data. This preserves
+registry cleanup and does not consume the admin endpoint's metric view.
 
-- `opentelemetry` (default): export through OpenTelemetry SDK readers. The
-  `readers` and `views` fields are available only in this mode.
-- `its`: emit registry-backed metrics as OTLP through the engine observability
-  pipeline. This mode requires an observability pipeline containing exactly one
-  `receiver:internal_telemetry`; SDK `readers` and `views` are rejected.
-- `none`: disable periodic internal metric export. Registry-backed metrics
-  remain available to the admin metrics endpoint.
+The Prometheus replacement is the admin endpoint at `/api/v1/metrics`; its bind
+address comes from `engine.http_admin`. The path is fixed, receiver views are
+not applied, and reading it does not reset or consume snapshots waiting for ITS
+export.
 
-For example, this routes internal metrics into the observability pipeline:
-
-```yaml
-engine:
-  telemetry:
-    reporting_interval: 1s
-    metrics:
-      provider: its
-  observability:
-    pipeline:
-      nodes:
-        internal:
-          type: receiver:internal_telemetry
-          config: {}
-        console:
-          type: exporter:console
-          config: {}
-      connections:
-        - from: internal
-          to: console
-```
-
-The admin metrics endpoint uses an independent registry view, so reading or
-resetting that endpoint does not consume snapshots waiting for ITS export.
 The ITS bridge projects each multivariate metric set into standard univariate
 OTLP metrics, which normal OTLP and OTAP exporters can consume. This projection
 is transitional pending native multivariate metric-set support in OTAP.
 
 ### Observability Pipeline
 
-Internal telemetry pipeline wiring is declared at:
-`engine.observability.pipeline`.
+Engine observability pipeline wiring is declared at
+`engine.observability.pipeline`. The field cannot be null. When it is omitted,
+the engine installs the following topology: metrics are continuously consumed
+by the noop exporter, while logs explicitly configured to use ITS are rendered
+by the console exporter. The default `console_async` log path bypasses this
+pipeline.
 
 ```yaml
 engine:
   observability:
     pipeline:
       nodes:
-        itr:
+        internal:
           type: "urn:otel:receiver:internal_telemetry"
           config: {}
-        sink:
+        router:
+          type: "urn:otel:processor:type_router"
+          outputs: [logs, metrics]
+          config: {}
+        logs_console:
           type: "urn:otel:exporter:console"
           config: {}
+        metrics_noop:
+          type: "urn:otel:exporter:noop"
+          config: {}
       connections:
-        - from: itr
-          to: sink
+        - from: internal
+          to: router
+        - from: router["logs"]
+          to: logs_console
+        - from: router["metrics"]
+          to: metrics_noop
 ```
+
+A custom pipeline replaces this default and must retain exactly one connected
+`receiver:internal_telemetry`.
 
 Optional observability policies are supported at:
 `engine.observability.pipeline.policies` for:
@@ -489,7 +489,7 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, and transport headers:
+controls, runtime recovery, and transport headers:
 
 ```yaml
 policies:
@@ -513,6 +513,13 @@ policies:
       source: auto
       soft_limit: 7 GiB
       hard_limit: 8 GiB
+  runtime_recovery:
+    enabled: true
+    max_restarts: 5
+    initial_backoff: 250ms
+    max_backoff: 30s
+    startup_timeout: 30s
+    reset_after: 60s
   transport_headers:
     header_capture:
       headers:
@@ -545,7 +552,28 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `runtime_recovery.enabled = true`
+- `runtime_recovery.max_restarts = 5`
+- `runtime_recovery.initial_backoff = 250ms`
+- `runtime_recovery.max_backoff = 30s`
+- `runtime_recovery.startup_timeout = 30s`
+- `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
+
+Runtime recovery notes:
+
+- `runtime_recovery` applies to regular pipelines and inherits through the
+  pipeline, group, and top-level policy scopes. It is not supported by the
+  system observability pipeline.
+- A panic or ordinary runtime error on a serving core starts a per-core
+  recovery streak. Clean runtime exits are not restarted.
+- Replacements use newer deployment generations and exponential backoff capped
+  by `max_backoff`. A replacement must become admitted and ready within
+  `startup_timeout` before it can serve.
+- A healthy replacement keeps the streak count until it has remained ready for
+  `reset_after`. A later failure after that window starts a fresh streak.
+- Exhausting `max_restarts`, or setting `enabled: false`, converts the runtime
+  failure into a fatal engine error and requests coordinated process shutdown.
 
 Memory limiter configuration:
 

@@ -7,13 +7,13 @@
 //!
 //! System: Apple M4 Pro, 24 GB RAM, 12 cores
 //!
-//! | Logs | Zero-Copy View | OTAP→OTLP→Process | Direct Arrow |
+//! | Logs | Zero-Copy View | OTAP->OTLP->Process | Direct Arrow |
 //! |------|----------------|-------------------|--------------|
-//! |   10 |      1.48 µs   |      6.43 µs      |    24.41 ns  |
-//! |  100 |      9.86 µs   |     40.40 µs      |   233.67 ns  |
-//! | 1000 |    121.42 µs   |    383.11 µs      |     2.35 µs  |
+//! |   10 |      1.48 us   |      6.43 us      |    24.41 ns  |
+//! |  100 |      9.86 us   |     40.40 us      |   233.67 ns  |
+//! | 1000 |    121.42 us   |    383.11 us      |     2.35 us  |
 //!
-//! OTAP→OTLP→Process includes: OTAP→OTLP conversion + OTLP decode + iterate.
+//! OTAP->OTLP->Process includes: OTAP->OTLP conversion + OTLP decode + iterate.
 //! Direct Arrow is fastest but unrealistic (baseline only, no hierarchical access).
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};

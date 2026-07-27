@@ -117,13 +117,9 @@ impl TelemetryRegistryHandle {
         }
     }
 
-    pub(crate) fn configure_metrics_collector(
-        &self,
-        flusher: Option<MetricsFlushHandle>,
-        defer_dirty_unregistration: bool,
-    ) {
-        *self.metrics_flusher.lock() = flusher;
-        self.registry.lock().defer_dirty_metric_unregistration = defer_dirty_unregistration;
+    pub(crate) fn configure_metrics_collector(&self, flusher: MetricsFlushHandle) {
+        *self.metrics_flusher.lock() = Some(flusher);
+        self.registry.lock().defer_dirty_metric_unregistration = true;
     }
 
     /// Flushes snapshots accepted by the internal metrics collector, if one is configured.
@@ -387,7 +383,7 @@ impl TelemetryRegistryHandle {
     /// then resets the visited bucket to zero.
     ///
     /// The item attributes are empty for plain metric sets; the primary
-    /// consumer is the metrics dispatcher, which attaches them to the emitted
+    /// consumer is the OTLP metrics bridge, which attaches them to the emitted
     /// OpenTelemetry data points.
     pub fn visit_metrics_and_reset_with_item_attrs<F>(&self, f: F, keep_all_zeroes: bool)
     where
@@ -450,7 +446,7 @@ impl TelemetryRegistryHandle {
 
     /// Visits the admin metrics accumulator, then resets only that accumulator.
     ///
-    /// This does not consume data pending for ITS or the OpenTelemetry SDK.
+    /// This does not consume data pending for ITS export.
     pub fn visit_admin_metrics_and_reset<F>(&self, f: F)
     where
         for<'a> F:
