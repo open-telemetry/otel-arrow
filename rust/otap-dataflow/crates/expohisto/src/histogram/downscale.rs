@@ -86,14 +86,42 @@ impl<const N: usize> HistogramNN<N> {
             .fold(0u64, |acc, lanes| acc | lanes)
     }
 
-    /// Widens lanes in place until narrowing back by `change` steps
-    /// would leave every lane intact and no narrower than
-    /// `min_output_width`, or until widening is exhausted at
-    /// `Width::U64`.
+    /// OR-fold of the words that grouping by `steps` would produce,
+    /// without modifying data: each aligned run of `1 << steps`
+    /// consecutive words summed into one.
+    ///
+    /// Only meaningful at `Width::U64`, where a lane is a whole word;
+    /// `steps == 0` is then just [`Self::or_fold_words`].
+    fn or_fold_groups(&self, steps: u32) -> u64 {
+        let group = 1i32 << steps;
+        let mut acc = 0u64;
+        let mut gstart = self.word_start & !(group - 1);
+        while gstart <= self.word_end {
+            let mut sum = 0u64;
+            for g in 0..group {
+                let widx = gstart + g;
+                if widx >= self.word_start && widx <= self.word_end {
+                    sum += self.data[self.data_idx(widx)];
+                }
+            }
+            acc |= sum;
+            gstart += group;
+        }
+        acc
+    }
+
+    /// Narrowest width the output may take: what the widest lane needs
+    /// to survive, floored by the caller's `min_output_width`.
+    fn required_width(lanes_or: u64, min_output_width: Width) -> Width {
+        Width::from_max_value(lanes_or).max(min_output_width)
+    }
+
+    /// Widens lanes in place until `range_steps` levels sit above the
+    /// required width, or until widening is exhausted at `Width::U64`.
     ///
     /// Each widening step sums adjacent lanes, so it consumes one
-    /// scale step; the first `change` steps (as many as fit below
-    /// U64) are applied as a single pass. Reaching U64 is always
+    /// scale step; the levels the caller is known to need up front are
+    /// applied as a single pass. Reaching U64 is always
     /// affordable: each step also halves the bucket count, so the
     /// range-coverage invariant carries all the way down to
     /// `MIN_SCALE`, where the range is two buckets held by `N >= 2`
@@ -103,9 +131,12 @@ impl<const N: usize> HistogramNN<N> {
     /// level while at most doubling the largest lane, so the gap
     /// between the current and the required width never shrinks and
     /// U64 is the worst case.
-    fn widen_to_fit(&mut self, change: u32, min_output_width: Width) -> Widening {
+    fn widen_to_fit(&mut self, range_steps: u32, min_output_width: Width) -> Widening {
         let start = self.current.width;
-        let mut steps = change.min(start.to_u64_widen_steps());
+        // The caller's floor plus the requested range is the least
+        // widening that can possibly satisfy the loop below.
+        let wanted = min_output_width.subtract(start) as u32 + range_steps;
+        let mut steps = wanted.min(start.to_u64_widen_steps());
         let mut width = start.wider_by(steps).expect("capped at U64");
         let mut lanes_or = if steps == 0 {
             self.or_fold_words(width)
@@ -114,13 +145,10 @@ impl<const N: usize> HistogramNN<N> {
         };
 
         loop {
-            // Narrowest width the output may take: what the widest
-            // lane needs, floored by the caller's requirement.
-            let required = Width::from_max_value(lanes_or).max(min_output_width);
-            // Has widening bought the `change` levels that the narrow
-            // step will give back?
-            let satisfied = width.subtract(required) >= change as i32;
-            if satisfied || width == Width::U64 {
+            // The levels between the current and the required width
+            // are the range the narrow step will win back.
+            let required = Self::required_width(lanes_or, min_output_width);
+            if width.subtract(required) >= range_steps as i32 || width == Width::U64 {
                 return Widening {
                     width,
                     steps,
@@ -134,32 +162,32 @@ impl<const N: usize> HistogramNN<N> {
         }
     }
 
-    /// Downscales the histogram by at least `change` scale steps.
+    /// Relaxes the range the histogram covers by a factor of
+    /// `2^range_steps`, leaving the output width at least
+    /// `min_output_width`.
     ///
-    /// The output width will be at least `min_output_width`. This
-    /// prevents the narrow step from undoing widening that the caller
-    /// needs (e.g., the merge path needs counters wide enough for the
-    /// source data).
+    /// The two requests are independent. Range is won by narrowing:
+    /// each level a lane gives back doubles the buckets a word holds
+    /// while the scale stays put. Width is won by widening, which
+    /// halves the buckets and drops the scale by one, leaving the range
+    /// untouched. A caller that only needs wider counters (a counter
+    /// overflow) therefore passes `range_steps == 0`.
     ///
-    /// Returns the actual number of scale steps applied, which may
-    /// exceed `change` when bucket sums require a wider output width.
-    pub(super) fn do_downscale(&mut self, change: u32, min_output_width: Width) -> u32 {
-        debug_assert!(change != 0);
+    /// Returns the scale steps applied: the widening and grouping the
+    /// two requests together demanded, which exceeds `range_steps`
+    /// whenever the output ends up wider than the input.
+    pub(super) fn do_downscale(&mut self, range_steps: u32, min_output_width: Width) -> u32 {
         debug_assert!(!self.buckets_empty());
 
         let input_width = self.current.width;
+        debug_assert!(
+            min_output_width >= input_width,
+            "callers only ever widen: {min_output_width:?} is narrower than {input_width:?}",
+        );
 
-        // Scale steps remaining above MIN_SCALE. Both the requested
-        // `change` and the widening below are spent from it.
-        //
-        // Neither can exhaust it. By the range-coverage invariant
-        // (`Width::min_scale`, established by the builders and
-        // preserved by the narrowing cap below) two words at the
-        // current width hold no more buckets than the value range
-        // covers. Widening halves both the bucket count and the range
-        // per step, so it can always run to U64; and `change` is
-        // bounded by the same rule, since a caller cannot ask to
-        // downscale past a range that already fits in two words.
+        // We require N>=2 b/c MIN_SCALE results in 2 buckets at u64,
+        // so as a precondition we must be able to change scale at
+        // least as much as requested.
         let budget = self.current.scale.scale() - crate::mapping::MIN_SCALE;
         debug_assert!(
             input_width.to_u64_widen_steps() as i32 <= budget,
@@ -167,81 +195,61 @@ impl<const N: usize> HistogramNN<N> {
             input_width.to_u64_widen_steps(),
         );
         debug_assert!(
-            change as i32 <= budget,
-            "downscale by {change} requested, only {budget} steps left above MIN_SCALE",
+            range_steps as i32 <= budget,
+            "range relaxation of {range_steps} requested, only {budget} steps left above MIN_SCALE",
         );
 
         // Phase 1: Widen lanes in place, consuming one scale step per
-        // step, until they have room to be narrowed back by `change`.
+        // step, until they have room to be narrowed back by
+        // `range_steps`.
         let Widening {
             width: cur,
             steps: total_widen,
             lanes_or,
-        } = self.widen_to_fit(change, min_output_width);
+        } = self.widen_to_fit(range_steps, min_output_width);
 
-        // Phase 2: Determine cross-word grouping steps.
+        // Phase 2: Group consecutive words, standing in for the
+        // widening that the U64 ceiling denied.
         //
-        // If widening achieved gap >= change, no cross-word grouping
-        // is needed (cross_steps = 0). Otherwise we are at U64 and
-        // must sum consecutive words to make up the difference. Each
-        // doubling adds at most 1 bit to the max, so gap decreases by
-        // at most 1 per step while cross_steps increases by 1 -- the
-        // sum is non-decreasing and the loop always terminates, at
-        // `cross_steps == change` at the very latest, where
-        // `narrow_needed` is 0 and `scale_ok` holds.
+        // A lane cannot exceed a word, so once Phase 1 hits U64 the
+        // ladder continues by summing whole words: after `cross_steps`
+        // groupings a logical lane spans `64 << cross_steps` bits --
+        // U128, U256, and so on. Grouping is therefore considered only
+        // at U64.
         //
-        // The narrow cap from min_output_width relaxes the fit condition
-        // (gap >= capped narrow_steps), but we also need enough total
-        // scale steps (total_widen + cross_steps >= change).
-        let max_narrow = (cur as u32).saturating_sub(min_output_width.max(input_width) as u32);
+        // The loop stops by `cross_steps == range_steps` at the latest:
+        // `required` never exceeds U64, so the rule holds there.
         let mut cross_steps = 0u32;
 
         if cur == Width::U64 {
-            let required = Width::from_max_value(lanes_or);
-            let gap = cur.subtract(required) as u32;
-
-            let narrow_needed = change.min(max_narrow);
-            let scale_ok = total_widen >= change;
-            if !scale_ok || gap < narrow_needed {
-                loop {
-                    cross_steps += 1;
-                    let group_size = 1i32 << cross_steps;
-                    let aligned = self.word_start & !(group_size - 1);
-                    let mut or_sums = 0u64;
-                    let mut gstart = aligned;
-                    while gstart <= self.word_end {
-                        let mut sum = 0u64;
-                        for g in 0..group_size {
-                            let widx = gstart + g;
-                            if widx >= self.word_start && widx <= self.word_end {
-                                sum += self.data[self.data_idx(widx)];
-                            }
-                        }
-                        or_sums |= sum;
-                        gstart += group_size;
-                    }
-                    let required = Width::from_max_value(or_sums);
-                    let gap = Width::U64.subtract(required) as u32;
-                    let narrow_needed = (change - cross_steps).min(max_narrow);
-                    let scale_ok = total_widen + cross_steps >= change;
-                    if scale_ok && gap >= narrow_needed {
-                        break;
-                    }
+            // A lane is a whole word here, so `lanes_or` is already
+            // the zero-step grouping.
+            let mut grouped_or = lanes_or;
+            loop {
+                let effective = cur as i32 + cross_steps as i32;
+                let required = Self::required_width(grouped_or, min_output_width);
+                // Phase 1's rule on the extended ladder.
+                if effective - required as i32 >= range_steps as i32 {
+                    break;
                 }
+                cross_steps += 1;
+                grouped_or = self.or_fold_groups(cross_steps);
             }
         }
 
         debug_assert!(
             (total_widen + cross_steps) as i32 <= budget,
-            "consumed {} scale steps for a change of {change}, only {budget} available",
+            "consumed {} scale steps to relax the range by {range_steps}, only {budget} available",
             total_widen + cross_steps,
         );
 
         // Phase 3: Narrow and repack with two-pass clobber prevention.
         //
-        // narrow_steps is capped by max_narrow so that the output width
-        // never drops below min_output_width. word_shift is the actual
-        // word-level compression (may be < change when capped).
+        // Narrowing is what wins the range back, `range_steps` levels
+        // of it, less the groupings that already stood in for some.
+        // No floor cap is needed: Phases 1 and 2 stop only once that
+        // many levels sit above `required`, which already includes
+        // min_output_width.
         //
         // Narrowing is also capped by range coverage: each step
         // doubles the buckets a word holds, and two words must still
@@ -260,9 +268,10 @@ impl<const N: usize> HistogramNN<N> {
         let new_scale = self.current.scale.scale() - (total_widen + cross_steps) as i32;
         let coverage_cap =
             (new_scale - crate::mapping::MIN_SCALE - cur.to_u64_widen_steps() as i32).max(0) as u32;
-        let narrow_steps = (change - cross_steps).min(max_narrow).min(coverage_cap);
+        let narrow_steps = (range_steps - cross_steps).min(coverage_cap);
         let word_shift = cross_steps + narrow_steps;
         let output_width = ALL_WIDTHS[cur as usize - narrow_steps as usize];
+        debug_assert!(output_width >= min_output_width);
 
         let total_merge = 1i32 << word_shift;
         let new_word_base = self.word_base >> word_shift;

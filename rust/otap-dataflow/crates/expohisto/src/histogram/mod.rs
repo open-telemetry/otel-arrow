@@ -661,15 +661,16 @@ impl<const N: usize> HistogramNN<N> {
         self.downscale_by_min(change, self.current.width);
     }
 
-    /// Like `downscale_by` but guarantees the output width is at least
-    /// `min_output_width`. Used by merge to prevent the narrow step
-    /// from undoing the widening the merge path needs.
-    fn downscale_by_min(&mut self, change: u32, min_output_width: Width) {
-        if change == 0 {
+    /// Like `downscale_by` but also guarantees the output width is at
+    /// least `min_output_width`. The two requests are independent:
+    /// `range_steps` may be zero for a caller that only needs wider
+    /// counters.
+    fn downscale_by_min(&mut self, range_steps: u32, min_output_width: Width) {
+        if range_steps == 0 && min_output_width <= self.current.width {
             return;
         }
 
-        let actual = self.do_downscale(change, min_output_width);
+        let actual = self.do_downscale(range_steps, min_output_width);
         self.change_scale(actual);
     }
 
@@ -728,7 +729,6 @@ impl<const N: usize> HistogramNN<N> {
             IncrResult::Ok => Ok(true),
             IncrResult::CounterOverflow(total) => {
                 let new_width = Width::from_max_value(total);
-                let change = new_width.subtract(self.current.width) as u32;
                 if self.buckets_empty() {
                     // Empty histogram: no data to transform and the
                     // retry will place the first value fresh. Just
@@ -736,10 +736,10 @@ impl<const N: usize> HistogramNN<N> {
                     self.current.width = new_width;
                     self.debug_assert_range_coverage();
                 } else {
-                    // Route through do_downscale so the range-coverage
-                    // invariant is maintained (narrowing is capped to
-                    // leave room for future widening).
-                    self.downscale_by_min(change, new_width);
+                    // The value already fits the range; only the
+                    // counter is too small. Widening is a pure width
+                    // request, so no range relaxation is asked for.
+                    self.downscale_by_min(0, new_width);
                 }
                 Ok(false)
             }

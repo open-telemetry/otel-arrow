@@ -72,28 +72,29 @@ impl<const N: usize> HistogramNN<N> {
         let extra = word_hl.change_steps(N);
         let target_scale = min_scale - extra as i32;
 
+        // Two independent requests: relax the range down to
+        // `target_scale`, and hold counters at least as wide as the
+        // source needs.
         let range_change = (self.current.scale.scale() - target_scale).max(0) as u32;
-        let width_change = (merge_width as u32).saturating_sub(self.current.width as u32);
-        let self_change = range_change.max(width_change);
-        // Both terms are affordable under the range-coverage
+
+        // The range fix is affordable under the range-coverage
         // invariant: the range shrinks to two buckets at MIN_SCALE, so
-        // no range fix can demand more steps than remain, and widening
-        // to `merge_width` only shrinks the bucket count.
+        // no range fix can demand more steps than remain.
         debug_assert!(
-            self_change as i32 <= self.current.scale.scale() - crate::mapping::MIN_SCALE,
-            "merge needs {self_change} scale steps, only {} available",
+            range_change as i32 <= self.current.scale.scale() - crate::mapping::MIN_SCALE,
+            "merge needs {range_change} scale steps, only {} available",
             self.current.scale.scale() - crate::mapping::MIN_SCALE,
         );
 
         if self.buckets_empty() {
             // No data to transform -- just set scale and width.
-            let new_scale = self.current.scale.scale() - self_change as i32;
+            let new_scale = self.current.scale.scale() - range_change as i32;
             self.current.scale =
                 crate::mapping::Scale::new(new_scale).expect("bounded by MIN_SCALE");
             self.current.width = merge_width;
             self.debug_assert_range_coverage();
-        } else if self_change > 0 {
-            self.downscale_by_min(self_change, merge_width);
+        } else {
+            self.downscale_by_min(range_change, merge_width);
         }
 
         // Word-by-word merge with on-the-fly repacking.
