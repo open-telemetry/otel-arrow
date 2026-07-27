@@ -269,6 +269,17 @@ mod exporter_harness {
                 .expect("send shutdown to exporter");
         }
 
+        /// Pushes a `NodeControlMsg::Config` (live-reconfiguration) message to
+        /// the running exporter. Used to characterize the exporter's current
+        /// handling of `Config` (documented as ignored via the `Control(_)`
+        /// catch-all).
+        pub(crate) async fn send_config(&self, config: serde_json::Value) {
+            self.control_tx
+                .send(NodeControlMsg::Config { config })
+                .await
+                .expect("send config to exporter");
+        }
+
         /// Awaits the spawned exporter task's completion.
         ///
         /// # Panics
@@ -329,6 +340,7 @@ mod receiver_harness {
     use otap_df_channel::mpsc;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+    use otap_df_engine::control::NackMsg;
     use otap_df_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
     };
@@ -486,6 +498,19 @@ mod receiver_harness {
                 self.control_tx
                     .send(NodeControlMsg::Ack(ack))
                     .expect("send ack to receiver");
+            }
+        }
+
+        /// Negatively-acknowledges a consumed `pdata` with a permanent (terminal)
+        /// nack, folding `next_nack` + `NackMsg` + control-channel send. Mirrors
+        /// [`ack`](Self::ack); used to exercise the receiver's terminal-nack
+        /// contract (a Nack advances past the message).
+        pub(crate) fn nack_permanent(&self, reason: impl Into<String>, pdata: OtapPdata) {
+            if let Some((_node_id, nack)) = next_nack(NackMsg::new_permanent(reason.into(), pdata))
+            {
+                self.control_tx
+                    .send(NodeControlMsg::Nack(nack))
+                    .expect("send nack to receiver");
             }
         }
 
