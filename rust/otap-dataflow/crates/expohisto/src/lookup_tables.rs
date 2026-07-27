@@ -1,4 +1,4 @@
-// Auto-generated lookup tables at scale 8 (256 log buckets)
+// TODO: Make this auto-generated, see https://github.com/jmacd/rust-expohisto/tree/main/mapping-gen
 
 /// Maximum histogram scale supported by this lookup table.
 pub const TABLE_SCALE: i32 = 8;

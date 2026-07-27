@@ -6,25 +6,18 @@
 //! `HistogramNN<N>` stores everything in fixed struct fields plus a `[u64; N]`
 //! data pool used for bucket counters.
 
-use core::fmt;
-
-use crate::float64::{NAN_INF_BIASED, get_biased_exponent, get_significand, unbias_exponent};
-use crate::mapping::{Scale, ScaleError, table_scale};
-
 mod downscale;
 mod merge;
 mod swar;
+mod view;
 pub mod width;
 
-#[cfg(feature = "quantile")]
-mod quantile;
-#[cfg(feature = "quantile")]
-pub use quantile::{QuantileIter, QuantileValue};
-
-mod view;
+use crate::float64::{NAN_INF_BIASED, get_biased_exponent, get_significand, unbias_exponent};
+use crate::mapping::{Scale, ScaleError, range_buckets_at_min_scale, table_scale};
 pub use view::{BucketView, BucketsIter, HistogramView};
-
 pub use width::{SlotAddr, Width};
+
+use core::fmt;
 
 /// Compact histogram configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,8 +91,8 @@ impl Stats {
     pub const EMPTY: Self = Self {
         count: 0,
         sum: 0.0,
-        min: f64::INFINITY,
-        max: f64::NEG_INFINITY,
+        min: 0.0,
+        max: 0.0,
     };
 }
 
@@ -327,6 +320,10 @@ impl<const N: usize> HistogramNN<N> {
     /// value range covers at the current scale (see
     /// [`Width::min_scale`]). Equivalently, the scale can still pay
     /// for widening these counters to [`Width::U64`].
+    ///
+    /// The margin `scale - width.min_scale()` is the histogram's
+    /// slack: the range relaxation it can still absorb, which
+    /// `do_downscale` spends one step at a time.
     #[inline]
     pub(crate) fn debug_assert_range_coverage(&self) {
         debug_assert!(
@@ -385,28 +382,37 @@ impl<const N: usize> HistogramNN<N> {
         Ok(())
     }
 
+    /// Fewest words a histogram may hold.
+    ///
+    /// At `MIN_SCALE` the counters have widened to `Width::U64`, where
+    /// a word is a single bucket, so the window needs one word per
+    /// bucket the value range spans there. Below this the histogram
+    /// could run out of range before it runs out of scale.
+    pub const MIN_WORDS: usize = range_buckets_at_min_scale() as usize;
+
+    /// Most words a histogram may hold.
+    ///
+    /// This allows up to 16k single-bit buckets and limits the struct
+    /// to 2048 bytes, noting that the structure itself uses 6 u64.
+    /// Nothing breaks above this limit, only performance: the
+    /// algorithms here are designed for cache-line sized data.
+    pub const MAX_WORDS: usize = 250;
+
+    /// Compile-time bounds check on `N`, forced by `new`. A violation
+    /// is a compile error, not a runtime panic.
+    const CHECK_N: () = {
+        assert!(N >= Self::MIN_WORDS, "HistogramNN requires N >= MIN_WORDS");
+        assert!(N <= Self::MAX_WORDS, "HistogramNN requires N <= MAX_WORDS");
+    };
+
     /// Creates a new histogram at the maximum supported scale.
     ///
-    /// # Panics
-    ///
-    /// Panics if `N < 2` or `N > 250`. These are compile-time constant
-    /// constraints: `N >= 2` ensures the minimum scale covers the full
-    /// exponent range; `N <= 250` caps the struct at 2 KiB.
+    /// `N` is checked at compile time against [`Self::MIN_WORDS`] and
+    /// [`Self::MAX_WORDS`].
     #[inline]
     #[must_use]
     pub fn new() -> Self {
-        // The limit at 2 ensures MIN_SCALE is sufficient to cover the
-        // entire range.
-        assert!(N >= 2, "requires >= 2 u64 buckets");
-
-        // The limit at 250 allows up to 16k single-bit buckets and
-        // limits the histogram struct to 2048 bytes, noting that the
-        // structure itself uses 6 u64.
-        //
-        // Note that nothing breaks when we allow N to grow above this
-        // limit, just performance. The algorithms here are designed
-        // for cache-line sized data.
-        assert!(N <= 250, "requires <= 250 u64 buckets");
+        let () = Self::CHECK_N;
 
         let settings = Settings::new(
             Scale::new(table_scale()).expect("table scale is valid"),
@@ -572,12 +578,9 @@ impl<const N: usize> HistogramNN<N> {
                 } else if value.is_sign_negative() {
                     return Err(Error::Extreme);
                 } else {
-                    // Round subnormals into the first bucket that
-                    // contains normal values (just above MIN_VALUE).
-                    // significand = 1 avoids the power-of-two special
-                    // case (significand 0 = exact 2^exp boundary).
+                    // Round subnorms to MIN_VALUE
                     biased_exp = 1;
-                    significand = 1;
+                    significand = 0;
                 }
             }
             NAN_INF_BIASED => {
@@ -594,8 +597,13 @@ impl<const N: usize> HistogramNN<N> {
 
         let base2_exp = unbias_exponent(biased_exp);
 
-        self.stats.min = self.stats.min.min(value);
-        self.stats.max = self.stats.max.max(value);
+        if self.stats.count != 0 {
+            self.stats.min = self.stats.min.min(value);
+            self.stats.max = self.stats.max.max(value);
+        } else {
+            self.stats.min = value;
+            self.stats.max = value;
+        }
         self.update_decomposed(significand, base2_exp, incr)?;
         self.stats.sum += value * incr as f64;
         self.stats.count = new_count;
@@ -645,7 +653,8 @@ impl<const N: usize> HistogramNN<N> {
     /// `Width::U64`.
     ///
     /// The invariant is established by `with_max_scale`/`with_min_width`
-    /// and preserved by `do_downscale`, which caps how far it narrows.
+    /// and preserved by `do_downscale`, which spends exactly the slack
+    /// the requested range relaxation costs.
     pub(crate) fn change_scale(&mut self, decrease: u32) {
         let new_scale = self.current.scale.scale() - decrease as i32;
         debug_assert!(
@@ -752,9 +761,6 @@ impl<const N: usize> HistogramNN<N> {
         }
     }
 }
-
-/// Backward-compatible alias: `Histogram<N>` is `HistogramNN<N>`.
-pub type Histogram<const N: usize> = HistogramNN<N>;
 
 // Compile-time test that HistogramNN is Send + Sync
 const fn _assert_send_sync<T: Send + Sync>() {}

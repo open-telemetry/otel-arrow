@@ -1,33 +1,30 @@
 # otap-df-expohisto
 
-Allocation-free OpenTelemetry exponential histogram.
+An openTelemetry exponential histogram.
 
 ## Overview
 
 This crate implements the [OpenTelemetry exponential
 histogram](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponentialhistogram)
 using a fixed-size generic of `N` 64-bit words per instance
-(`Histogram<N>`).
+`HistogramNN<N>`. This structure does not allocate memory.
 
-Bucket index mapping is accelerated by a compile-time lookup table that is
-checked in as generated data (`src/lookup_tables.rs` and
-`src/inverse_factors.rs`), so the crate builds without any code-generation
-step.
+Bucket index mapping is accelerated by a compile-time lookup table
+that is checked in as generated data , so the crate builds without any
+code-generation step.
 
 ## Types
 
-- `HistogramNN<N>` (aliased as `Histogram<N>`): positive-only histogram;
-  negative values are rejected. Suited to non-negative measurements such as
-  latencies, sizes, and counts.
-- `HistogramPN<K, L>`: independent positive and negative bucket ranges with
-  synchronized scales, for values of any sign.
+- `HistogramNN<N>`: positive-only histogram; negative values are
+  rejected. Suited to non-negative measurements such as latencies,
+  sizes, and counts.
 
 ## Usage
 
 ```rust
-use otap_df_expohisto::Histogram;
+use otap_df_expohisto::HistogramNN;
 
-let mut hist: Histogram<16> = Histogram::new();
+let mut hist: HistogramNN<16> = HistogramNN::new();
 hist.update(1.5).unwrap();
 hist.update(2.7).unwrap();
 hist.update(100.0).unwrap();
@@ -40,7 +37,6 @@ assert_eq!(stats.count, 3);
 ## Features
 
 - `std` (default): enables `std::error::Error` impls. Disable for `no_std`.
-- `boundary` (default): bucket lower-boundary computation.
 - `quantile` (default): quantile estimation over the bucket distribution.
 
 ## Dependencies

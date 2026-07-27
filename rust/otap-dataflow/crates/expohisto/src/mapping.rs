@@ -35,7 +35,7 @@ use crate::lookup::BOUNDARIES;
 ///
 /// Saturates at `MIN_SCALE`, below which no scale exists.
 #[must_use]
-pub const fn min_scale_for(buckets: u64) -> i32 {
+pub(crate) const fn min_scale_for(buckets: u64) -> i32 {
     let log2_ceil = buckets.next_power_of_two().trailing_zeros() as i32;
     let scale = log2_ceil + MIN_SCALE - 1;
     if scale < MIN_SCALE { MIN_SCALE } else { scale }
@@ -44,6 +44,22 @@ pub const fn min_scale_for(buckets: u64) -> i32 {
 /// Minimum scale for the exponent mapping.
 /// At scale -10, values in (0, 1] map to bucket -1 and values in (1, MAX) map to bucket 0.
 pub const MIN_SCALE: i32 = -10;
+
+/// Buckets the normal IEEE 754 range spans at [`MIN_SCALE`], the
+/// bottom of the scale ladder.
+///
+/// This is the floor on a histogram's word count: at `MIN_SCALE` the
+/// counters have widened to `Width::U64`, where a word holds a single
+/// bucket, so the window can only cover the range with at least this
+/// many words. Derived by inverting [`min_scale_for`] rather than
+/// written down, so it tracks `MIN_SCALE`.
+pub(crate) const fn range_buckets_at_min_scale() -> u64 {
+    let mut buckets = 1;
+    while min_scale_for(buckets * 2) == MIN_SCALE {
+        buckets *= 2;
+    }
+    buckets
+}
 
 /// Error types for mapping operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,8 +214,7 @@ impl Scale {
     pub fn lower_boundary(&self, index: i32) -> Result<f64, ScaleError> {
         let scale = self.0 as i32;
         if scale <= 0 {
-            let shift = -scale;
-            return Self::pow2(index << shift, 0);
+            return Self::pow2(index << -scale, 0);
         }
 
         let offset = index >> scale;

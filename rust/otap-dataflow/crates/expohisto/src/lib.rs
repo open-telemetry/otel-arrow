@@ -29,15 +29,13 @@ pub mod mapping;
 pub mod lookup;
 
 pub use histogram::{
-    BucketView, BucketsIter, Error, Histogram, HistogramNN, HistogramView, Settings, Stats, Width,
+    BucketView, BucketsIter, Error, HistogramNN, HistogramView, Settings, Stats, Width,
 };
-#[cfg(feature = "quantile")]
-pub use histogram::{QuantileIter, QuantileValue};
 pub use mapping::{MIN_SCALE, Scale, ScaleError, table_scale};
 
 #[cfg(test)]
 mod tests {
-    use super::Histogram;
+    use super::HistogramNN;
 
     /// Scenario: A fresh positive-only histogram records several finite
     /// observations and exposes aggregate statistics through its view.
@@ -46,7 +44,7 @@ mod tests {
     /// lookup tables and bucket accounting are wired correctly.
     #[test]
     fn records_observations_and_reports_stats() {
-        let mut hist: Histogram<16> = Histogram::new();
+        let mut hist: HistogramNN<16> = HistogramNN::new();
         for v in [1.5_f64, 2.7, 100.0] {
             hist.update(v).expect("positive value is recordable");
         }
@@ -65,7 +63,7 @@ mod tests {
     /// silently mis-recording it, preserving the positive-only invariant.
     #[test]
     fn rejects_negative_values() {
-        let mut hist: Histogram<16> = Histogram::new();
+        let mut hist: HistogramNN<16> = HistogramNN::new();
         assert!(hist.update(-1.0).is_err());
     }
 }
