@@ -310,7 +310,7 @@ impl AttributesProcessor {
             has_resource_domain,
             has_scope_domain,
             has_signal_domain,
-            metrics: pipeline_ctx.register_metrics::<AttributesProcessorMetrics>(),
+            metrics: metrics::AttributesProcessorMetrics::new(pipeline_ctx),
             compute_duration: ComputeDuration::new(&pipeline_ctx),
         })
     }
@@ -420,7 +420,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    let _ = metrics_reporter.report(&mut self.metrics);
+                    let _ = self.metrics.report(metrics_reporter);
                     self.compute_duration.report(&mut metrics_reporter);
                     Ok(())
                 }
@@ -443,13 +443,13 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 // Update domain counters (count once per message when domains are enabled)
                 if self.has_resource_domain {
-                    self.metrics.domains_applied.inc(metrics::TargetDomain::Resource);
+                    self.metrics.domains_for(metrics::TargetDomain::Resource).applied.inc();
                 }
                 if self.has_scope_domain {
-                    self.metrics.domains_applied.inc(metrics::TargetDomain::Scope);
+                    self.metrics.domains_for(metrics::TargetDomain::Scope).applied.inc();
                 }
                 if self.has_signal_domain {
-                    self.metrics.domains_applied.inc(metrics::TargetDomain::Signal);
+                    self.metrics.domains_for(metrics::TargetDomain::Signal).applied.inc();
                 }
                 // Apply transform across selected domains and collect exact stats.
                 let result = effect_handler.timed(&self.compute_duration, || {
@@ -465,26 +465,26 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                         hashed_total,
                     )) => {
                         if deleted_total > 0 {
-                            self.metrics.modified_entries.add(deleted_total, metrics::ActionType::Deleted);
+                            self.metrics.modified_for(metrics::ActionType::Deleted).entries.add(deleted_total);
                         }
                         if renamed_total > 0 {
-                            self.metrics.modified_entries.add(renamed_total, metrics::ActionType::Renamed);
+                            self.metrics.modified_for(metrics::ActionType::Renamed).entries.add(renamed_total);
                         }
                         if inserted_total > 0 {
-                            self.metrics.modified_entries.add(inserted_total, metrics::ActionType::Inserted);
+                            self.metrics.modified_for(metrics::ActionType::Inserted).entries.add(inserted_total);
                         }
                         if upserted_total > 0 {
-                            self.metrics.modified_entries.add(upserted_total, metrics::ActionType::Upserted);
+                            self.metrics.modified_for(metrics::ActionType::Upserted).entries.add(upserted_total);
                         }
                         if updated_total > 0 {
-                            self.metrics.modified_entries.add(updated_total, metrics::ActionType::Updated);
+                            self.metrics.modified_for(metrics::ActionType::Updated).entries.add(updated_total);
                         }
                         if hashed_total > 0 {
-                            self.metrics.modified_entries.add(hashed_total, metrics::ActionType::Hashed);
+                            self.metrics.modified_for(metrics::ActionType::Hashed).entries.add(hashed_total);
                         }
                     }
                     Err(e) => {
-                        self.metrics.transform_failed.inc();
+                        self.metrics.operational_metrics.transform_failed.inc();
                         return Err(e);
                     }
                 }
