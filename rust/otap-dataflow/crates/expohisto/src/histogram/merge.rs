@@ -86,15 +86,15 @@ impl<const N: usize> HistogramNN<N> {
             self.current.scale.scale() - crate::mapping::MIN_SCALE,
         );
 
+        // Width first: the merge repacks source lanes into ours, so
+        // ours must be wide enough to hold them. Then the range fix,
+        // which narrows back no further than the width just set.
+        self.widen_to(merge_width);
         if self.buckets_empty() {
-            // No data to transform -- just set scale and width.
-            let new_scale = self.current.scale.scale() - range_change as i32;
-            self.current.scale =
-                crate::mapping::Scale::new(new_scale).expect("bounded by MIN_SCALE");
-            self.current.width = merge_width;
-            self.debug_assert_range_coverage();
+            // No data to transform -- the scale moves on its own.
+            self.change_scale(range_change);
         } else {
-            self.downscale_by_min(range_change, merge_width);
+            self.downscale_by(range_change);
         }
 
         // Word-by-word merge with on-the-fly repacking.
@@ -407,20 +407,5 @@ impl<const N: usize> HistogramNN<N> {
         } else {
             sums[0]
         })
-    }
-
-    /// Widen self to `new_width`, updating scale and all words.
-    ///
-    /// Callers must ensure range coverage: the merge prepare phase
-    /// pre-downscales so the widened buckets still fit within the
-    /// range at the resulting scale, guaranteeing `change_scale` stays
-    /// above `MIN_SCALE`.
-    fn widen_to(&mut self, new_width: Width) {
-        let old_width = self.current.width;
-        let change = new_width.subtract(old_width) as u32;
-        let _ = self.widen_words(old_width, new_width);
-        self.change_scale(change);
-        self.current.width = new_width;
-        self.debug_assert_range_coverage();
     }
 }

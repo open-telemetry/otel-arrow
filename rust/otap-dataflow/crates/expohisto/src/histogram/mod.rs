@@ -657,21 +657,32 @@ impl<const N: usize> HistogramNN<N> {
         self.current.scale = Scale::new(new_scale).expect("invariant: callers cap at MIN_SCALE");
     }
 
-    pub(crate) fn downscale_by(&mut self, change: u32) {
-        self.downscale_by_min(change, self.current.width);
-    }
-
-    /// Like `downscale_by` but also guarantees the output width is at
-    /// least `min_output_width`. The two requests are independent:
-    /// `range_steps` may be zero for a caller that only needs wider
-    /// counters.
-    fn downscale_by_min(&mut self, range_steps: u32, min_output_width: Width) {
-        if range_steps == 0 && min_output_width <= self.current.width {
+    pub(crate) fn downscale_by(&mut self, range_steps: u32) {
+        if range_steps == 0 {
             return;
         }
-
-        let actual = self.do_downscale(range_steps, min_output_width);
+        let actual = self.do_downscale(range_steps);
         self.change_scale(actual);
+    }
+
+    /// Widens every counter to `target`, which must not be narrower
+    /// than the current width.
+    ///
+    /// Widening sums adjacent buckets, so it costs one scale step per
+    /// level and leaves the range covered unchanged. An empty
+    /// histogram has nothing to sum and so pays nothing.
+    pub(crate) fn widen_to(&mut self, target: Width) {
+        let start = self.current.width;
+        debug_assert!(target >= start, "{target:?} is narrower than {start:?}");
+        if target == start {
+            return;
+        }
+        if !self.buckets_empty() {
+            let _ = self.widen_words(start, target);
+            self.change_scale(target.subtract(start) as u32);
+        }
+        self.current.width = target;
+        self.debug_assert_range_coverage();
     }
 
     /// Attempts to add `incr` into the bucket at `index`.
@@ -728,19 +739,9 @@ impl<const N: usize> HistogramNN<N> {
         match result {
             IncrResult::Ok => Ok(true),
             IncrResult::CounterOverflow(total) => {
-                let new_width = Width::from_max_value(total);
-                if self.buckets_empty() {
-                    // Empty histogram: no data to transform and the
-                    // retry will place the first value fresh. Just
-                    // widen the counter -- no scale change needed.
-                    self.current.width = new_width;
-                    self.debug_assert_range_coverage();
-                } else {
-                    // The value already fits the range; only the
-                    // counter is too small. Widening is a pure width
-                    // request, so no range relaxation is asked for.
-                    self.downscale_by_min(0, new_width);
-                }
+                // The value already fits the range; only the counter
+                // is too small.
+                self.widen_to(Width::from_max_value(total));
                 Ok(false)
             }
             IncrResult::NeedsDownscale(hl) => {

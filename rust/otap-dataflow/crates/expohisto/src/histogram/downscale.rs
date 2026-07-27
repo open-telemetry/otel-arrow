@@ -111,9 +111,11 @@ impl<const N: usize> HistogramNN<N> {
     }
 
     /// Narrowest width the output may take: what the widest lane needs
-    /// to survive, floored by the caller's `min_output_width`.
-    fn required_width(lanes_or: u64, min_output_width: Width) -> Width {
-        Width::from_max_value(lanes_or).max(min_output_width)
+    /// to survive, floored by the width we started at. Downscaling only
+    /// adds counts together, so a width the histogram already needed
+    /// cannot become unnecessary here.
+    fn required_width(lanes_or: u64, input_width: Width) -> Width {
+        Width::from_max_value(lanes_or).max(input_width)
     }
 
     /// Widens lanes in place until `range_steps` levels sit above the
@@ -131,12 +133,9 @@ impl<const N: usize> HistogramNN<N> {
     /// level while at most doubling the largest lane, so the gap
     /// between the current and the required width never shrinks and
     /// U64 is the worst case.
-    fn widen_to_fit(&mut self, range_steps: u32, min_output_width: Width) -> Widening {
+    fn widen_to_fit(&mut self, range_steps: u32) -> Widening {
         let start = self.current.width;
-        // The caller's floor plus the requested range is the least
-        // widening that can possibly satisfy the loop below.
-        let wanted = min_output_width.subtract(start) as u32 + range_steps;
-        let mut steps = wanted.min(start.to_u64_widen_steps());
+        let mut steps = range_steps.min(start.to_u64_widen_steps());
         let mut width = start.wider_by(steps).expect("capped at U64");
         let mut lanes_or = if steps == 0 {
             self.or_fold_words(width)
@@ -147,7 +146,7 @@ impl<const N: usize> HistogramNN<N> {
         loop {
             // The levels between the current and the required width
             // are the range the narrow step will win back.
-            let required = Self::required_width(lanes_or, min_output_width);
+            let required = Self::required_width(lanes_or, start);
             if width.subtract(required) >= range_steps as i32 || width == Width::U64 {
                 return Widening {
                     width,
@@ -163,27 +162,25 @@ impl<const N: usize> HistogramNN<N> {
     }
 
     /// Relaxes the range the histogram covers by a factor of
-    /// `2^range_steps`, leaving the output width at least
-    /// `min_output_width`.
+    /// `2^range_steps`.
     ///
-    /// The two requests are independent. Range is won by narrowing:
-    /// each level a lane gives back doubles the buckets a word holds
-    /// while the scale stays put. Width is won by widening, which
-    /// halves the buckets and drops the scale by one, leaving the range
-    /// untouched. A caller that only needs wider counters (a counter
-    /// overflow) therefore passes `range_steps == 0`.
+    /// Range is won by narrowing: each level a lane gives back doubles
+    /// the buckets a word holds while the scale stays put. Widening is
+    /// only the means -- it halves the buckets and drops the scale by
+    /// one, leaving the range untouched -- so a caller that needs wider
+    /// counters rather than more range wants
+    /// [`HistogramNN::widen_to`] instead.
     ///
-    /// Returns the scale steps applied: the widening and grouping the
-    /// two requests together demanded, which exceeds `range_steps`
-    /// whenever the output ends up wider than the input.
-    pub(super) fn do_downscale(&mut self, range_steps: u32, min_output_width: Width) -> u32 {
+    /// The output is never narrower than the input: summing buckets
+    /// only grows counts.
+    ///
+    /// Returns the scale steps applied, which exceeds `range_steps`
+    /// whenever the sums force the output wider than the input.
+    pub(super) fn do_downscale(&mut self, range_steps: u32) -> u32 {
+        debug_assert!(range_steps != 0);
         debug_assert!(!self.buckets_empty());
 
         let input_width = self.current.width;
-        debug_assert!(
-            min_output_width >= input_width,
-            "callers only ever widen: {min_output_width:?} is narrower than {input_width:?}",
-        );
 
         // We require N>=2 b/c MIN_SCALE results in 2 buckets at u64,
         // so as a precondition we must be able to change scale at
@@ -206,7 +203,7 @@ impl<const N: usize> HistogramNN<N> {
             width: cur,
             steps: total_widen,
             lanes_or,
-        } = self.widen_to_fit(range_steps, min_output_width);
+        } = self.widen_to_fit(range_steps);
 
         // Phase 2: Group consecutive words, standing in for the
         // widening that the U64 ceiling denied.
@@ -227,7 +224,7 @@ impl<const N: usize> HistogramNN<N> {
             let mut grouped_or = lanes_or;
             loop {
                 let effective = cur as i32 + cross_steps as i32;
-                let required = Self::required_width(grouped_or, min_output_width);
+                let required = Self::required_width(grouped_or, input_width);
                 // Phase 1's rule on the extended ladder.
                 if effective - required as i32 >= range_steps as i32 {
                     break;
@@ -248,8 +245,8 @@ impl<const N: usize> HistogramNN<N> {
         // Narrowing is what wins the range back, `range_steps` levels
         // of it, less the groupings that already stood in for some.
         // No floor cap is needed: Phases 1 and 2 stop only once that
-        // many levels sit above `required`, which already includes
-        // min_output_width.
+        // many levels sit above `required`, which already includes the
+        // input width.
         //
         // Narrowing is also capped by range coverage: each step
         // doubles the buckets a word holds, and two words must still
@@ -271,7 +268,7 @@ impl<const N: usize> HistogramNN<N> {
         let narrow_steps = (range_steps - cross_steps).min(coverage_cap);
         let word_shift = cross_steps + narrow_steps;
         let output_width = ALL_WIDTHS[cur as usize - narrow_steps as usize];
-        debug_assert!(output_width >= min_output_width);
+        debug_assert!(output_width >= input_width);
 
         let total_merge = 1i32 << word_shift;
         let new_word_base = self.word_base >> word_shift;
