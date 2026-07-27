@@ -158,8 +158,6 @@ enum IncrResult {
 }
 
 /// An allocation-free exponential histogram for non-negative values.
-///
-/// Use [`HistogramPN`] when values can be negative.
 pub struct HistogramNN<const N: usize> {
     initial: Settings,
     current: Settings,
@@ -694,6 +692,3 @@ pub type Histogram<const N: usize> = HistogramNN<N>;
 // Compile-time test that HistogramNN is Send + Sync
 const fn _assert_send_sync<T: Send + Sync>() {}
 const _: () = _assert_send_sync::<HistogramNN<2>>();
-
-mod pn;
-pub use pn::{HistogramPN, HistogramPNView};

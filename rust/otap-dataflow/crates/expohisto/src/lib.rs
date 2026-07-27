@@ -16,8 +16,7 @@
 //!   ranges with synchronized scales for values of any sign.
 //!
 //! Bucket index mapping is accelerated by a compile-time lookup table checked in
-//! under `src/lookup_tables.rs` (and `src/inverse_factors.rs` for boundary
-//! computation). These tables are generated data and require no build step.
+//! under `src/lookup_tables.rs`. These tables are generated data and require no build step.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -26,19 +25,15 @@ pub(crate) mod float64;
 pub mod histogram;
 pub mod mapping;
 
-#[cfg(feature = "boundary")]
-mod boundary;
-
 #[doc(hidden)]
 pub mod lookup;
 
 pub use histogram::{
-    BucketView, BucketsIter, Error, Histogram, HistogramNN, HistogramPN, HistogramPNView,
-    HistogramView, Settings, Stats, Width,
+    BucketView, BucketsIter, Error, Histogram, HistogramNN, HistogramView, Settings, Stats, Width,
 };
 #[cfg(feature = "quantile")]
 pub use histogram::{QuantileIter, QuantileValue};
-pub use mapping::{MAX_SCALE, MIN_SCALE, Scale, ScaleError, table_scale};
+pub use mapping::{MIN_SCALE, Scale, ScaleError, table_scale};
 
 #[cfg(test)]
 mod tests {

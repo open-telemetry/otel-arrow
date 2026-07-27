@@ -5,55 +5,51 @@
 
 use super::width::Width;
 
-// ── Single-step SWAR primitives ──────────────────────────────────────
-
-/// B1 → B2: sum pairs of 1-bit lanes.
+/// B1 to B2: sum pairs of 1-bit lanes.
 #[inline(always)]
 fn step_b1_b2(w: u64) -> u64 {
     (w & 0x5555_5555_5555_5555) + ((w >> 1) & 0x5555_5555_5555_5555)
 }
 
-/// B2 → B4: sum pairs of 2-bit lanes.
+/// B2 to B4: sum pairs of 2-bit lanes.
 #[inline(always)]
 fn step_b2_b4(w: u64) -> u64 {
     (w & 0x3333_3333_3333_3333) + ((w >> 2) & 0x3333_3333_3333_3333)
 }
 
-/// B4 → U8: sum pairs of 4-bit lanes.
+/// B4 to U8: sum pairs of 4-bit lanes.
 #[inline(always)]
 fn step_b4_u8(w: u64) -> u64 {
     (w & 0x0F0F_0F0F_0F0F_0F0F) + ((w >> 4) & 0x0F0F_0F0F_0F0F_0F0F)
 }
 
-/// U8 → U16: sum pairs of 8-bit lanes.
+/// U8 to U16: sum pairs of 8-bit lanes.
 #[inline(always)]
 fn step_u8_u16(w: u64) -> u64 {
     (w & 0x00FF_00FF_00FF_00FF) + ((w >> 8) & 0x00FF_00FF_00FF_00FF)
 }
 
-/// U16 → U32: sum pairs of 16-bit lanes.
+/// U16 to U32: sum pairs of 16-bit lanes.
 #[inline(always)]
 fn step_u16_u32(w: u64) -> u64 {
     (w & 0x0000_FFFF_0000_FFFF) + ((w >> 16) & 0x0000_FFFF_0000_FFFF)
 }
 
-/// U32 → U64: sum pair of 32-bit lanes.
+/// U32 to U64: sum pair of 32-bit lanes.
 #[inline(always)]
 fn step_u32_u64(w: u64) -> u64 {
     (w & 0x0000_0000_FFFF_FFFF) + (w >> 32)
 }
 
-// ── Public API ───────────────────────────────────────────────────────
-
 /// Widen a single u64 word in place from `before` lane width to
 /// `after` lane width by chaining SWAR pair-sum steps.
-/// Uses count_ones() shortcuts for B1→U32 and B1→U64.
+/// Uses count_ones() shortcuts for B1toU32 and B1toU64.
 #[inline]
 pub(crate) fn widen(before: Width, after: Width, w: u64) -> u64 {
     use Width::*;
     debug_assert!(before < after);
     match (before, after) {
-        // B1 → *
+        // B1 to *
         (B1, B2) => step_b1_b2(w),
         (B1, B4) => step_b2_b4(step_b1_b2(w)),
         (B1, U8) => step_b4_u8(step_b2_b4(step_b1_b2(w))),
@@ -65,42 +61,42 @@ pub(crate) fn widen(before: Width, after: Width, w: u64) -> u64 {
         }
         (B1, U64) => w.count_ones() as u64,
 
-        // B2 → *
+        // B2 to *
         (B2, B4) => step_b2_b4(w),
         (B2, U8) => step_b4_u8(step_b2_b4(w)),
         (B2, U16) => step_u8_u16(step_b4_u8(step_b2_b4(w))),
         (B2, U32) => step_u16_u32(step_u8_u16(step_b4_u8(step_b2_b4(w)))),
         (B2, U64) => step_u32_u64(step_u16_u32(step_u8_u16(step_b4_u8(step_b2_b4(w))))),
 
-        // B4 → *
+        // B4 to *
         (B4, U8) => step_b4_u8(w),
         (B4, U16) => step_u8_u16(step_b4_u8(w)),
         (B4, U32) => step_u16_u32(step_u8_u16(step_b4_u8(w))),
         (B4, U64) => step_u32_u64(step_u16_u32(step_u8_u16(step_b4_u8(w)))),
 
-        // U8 → *
+        // U8 to *
         (U8, U16) => step_u8_u16(w),
         (U8, U32) => step_u16_u32(step_u8_u16(w)),
         (U8, U64) => step_u32_u64(step_u16_u32(step_u8_u16(w))),
 
-        // U16 → *
+        // U16 to *
         (U16, U32) => step_u16_u32(w),
         (U16, U64) => step_u32_u64(step_u16_u32(w)),
 
-        // U32 → U64
+        // U32 to U64
         (U32, U64) => step_u32_u64(w),
 
         _ => unreachable!(),
     }
 }
 
-// ── Single-step SWAR narrow primitives ───────────────────────────────
+// Single-step SWAR narrow primitives
 //
 // Each function masks a u64 word to keep only the target-width low bits
 // in each source-width lane, then compacts the values by removing the
 // interleaved gaps.  The result occupies the low 32 bits of the u64.
 
-/// B2 → B1: keep low 1 bit of each 2-bit lane, compact 32 values.
+/// B2 to B1: keep low 1 bit of each 2-bit lane, compact 32 values.
 #[inline(always)]
 fn nstep_b2_b1(w: u64) -> u64 {
     let w = w & 0x5555_5555_5555_5555;
@@ -111,7 +107,7 @@ fn nstep_b2_b1(w: u64) -> u64 {
     (w | (w >> 16)) & 0x0000_0000_FFFF_FFFF
 }
 
-/// B4 → B2: keep low 2 bits of each 4-bit lane, compact 16 values.
+/// B4 to B2: keep low 2 bits of each 4-bit lane, compact 16 values.
 #[inline(always)]
 fn nstep_b4_b2(w: u64) -> u64 {
     let w = w & 0x3333_3333_3333_3333;
@@ -121,7 +117,7 @@ fn nstep_b4_b2(w: u64) -> u64 {
     (w | (w >> 16)) & 0x0000_0000_FFFF_FFFF
 }
 
-/// U8 → B4: keep low 4 bits of each 8-bit lane, compact 8 values.
+/// U8 to B4: keep low 4 bits of each 8-bit lane, compact 8 values.
 #[inline(always)]
 fn nstep_u8_b4(w: u64) -> u64 {
     let w = w & 0x0F0F_0F0F_0F0F_0F0F;
@@ -130,7 +126,7 @@ fn nstep_u8_b4(w: u64) -> u64 {
     (w | (w >> 16)) & 0x0000_0000_FFFF_FFFF
 }
 
-/// U16 → U8: keep low 8 bits of each 16-bit lane, compact 4 values.
+/// U16 to U8: keep low 8 bits of each 16-bit lane, compact 4 values.
 #[inline(always)]
 fn nstep_u16_u8(w: u64) -> u64 {
     let w = w & 0x00FF_00FF_00FF_00FF;
@@ -138,14 +134,14 @@ fn nstep_u16_u8(w: u64) -> u64 {
     (w | (w >> 16)) & 0x0000_0000_FFFF_FFFF
 }
 
-/// U32 → U16: keep low 16 bits of each 32-bit lane, compact 2 values.
+/// U32 to U16: keep low 16 bits of each 32-bit lane, compact 2 values.
 #[inline(always)]
 fn nstep_u32_u16(w: u64) -> u64 {
     let w = w & 0x0000_FFFF_0000_FFFF;
     (w | (w >> 16)) & 0x0000_0000_FFFF_FFFF
 }
 
-/// U64 → U32: keep low 32 bits.
+/// U64 to U32: keep low 32 bits.
 #[inline(always)]
 fn nstep_u64_u32(w: u64) -> u64 {
     w & 0x0000_0000_FFFF_FFFF
@@ -156,38 +152,38 @@ fn nstep_u64_u32(w: u64) -> u64 {
 ///
 /// Each source-width lane is truncated to `after` bits and the values
 /// are packed contiguously starting from bit 0.  The result occupies
-/// the low `64 × after_bits / before_bits` bits of the returned u64.
+/// the low `64 x after_bits / before_bits` bits of the returned u64.
 #[inline]
 pub(crate) fn narrow(before: Width, after: Width, w: u64) -> u64 {
     use Width::*;
     debug_assert!(before > after);
     match (before, after) {
-        // B2 → *
+        // B2 to *
         (B2, B1) => nstep_b2_b1(w),
 
-        // B4 → *
+        // B4 to *
         (B4, B2) => nstep_b4_b2(w),
         (B4, B1) => nstep_b2_b1(nstep_b4_b2(w)),
 
-        // U8 → *
+        // U8 to *
         (U8, B4) => nstep_u8_b4(w),
         (U8, B2) => nstep_b4_b2(nstep_u8_b4(w)),
         (U8, B1) => nstep_b2_b1(nstep_b4_b2(nstep_u8_b4(w))),
 
-        // U16 → *
+        // U16 to *
         (U16, U8) => nstep_u16_u8(w),
         (U16, B4) => nstep_u8_b4(nstep_u16_u8(w)),
         (U16, B2) => nstep_b4_b2(nstep_u8_b4(nstep_u16_u8(w))),
         (U16, B1) => nstep_b2_b1(nstep_b4_b2(nstep_u8_b4(nstep_u16_u8(w)))),
 
-        // U32 → *
+        // U32 to *
         (U32, U16) => nstep_u32_u16(w),
         (U32, U8) => nstep_u16_u8(nstep_u32_u16(w)),
         (U32, B4) => nstep_u8_b4(nstep_u16_u8(nstep_u32_u16(w))),
         (U32, B2) => nstep_b4_b2(nstep_u8_b4(nstep_u16_u8(nstep_u32_u16(w)))),
         (U32, B1) => nstep_b2_b1(nstep_b4_b2(nstep_u8_b4(nstep_u16_u8(nstep_u32_u16(w))))),
 
-        // U64 → *
+        // U64 to *
         (U64, U32) => nstep_u64_u32(w),
         (U64, U16) => nstep_u32_u16(nstep_u64_u32(w)),
         (U64, U8) => nstep_u16_u8(nstep_u32_u16(nstep_u64_u32(w))),

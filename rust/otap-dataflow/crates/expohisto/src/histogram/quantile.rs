@@ -1,9 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Quantile estimation — CDF walk over bucket view.
-//!
-//! This module is gated behind `#[cfg(feature = "quantile")]`.
+//! Quantile estimation, a CDF computed from histogram view.
 
 use crate::mapping::Scale;
 
@@ -36,12 +34,12 @@ pub struct QuantileIter<'a, const N: usize> {
     quantiles: &'a [f64],
     qi: usize,
 
-    // Bucket walk state
+    // Current position
     bucket_len: u32,
     offset: i32,
     pos: u32,
 
-    // CDF accumulator
+    // Accumulator
     cumulative: u64,
     total_count: u64,
     zero_count: u64,

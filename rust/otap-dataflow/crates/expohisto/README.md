@@ -6,8 +6,8 @@ Allocation-free OpenTelemetry exponential histogram.
 
 This crate implements the [OpenTelemetry exponential
 histogram](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponentialhistogram)
-using a fixed-size, const-generic data pool (`Histogram<N>`). It performs no
-heap allocation, contains no `unsafe` code, and has no runtime dependencies.
+using a fixed-size generic of `N` 64-bit words per instance
+(`Histogram<N>`).
 
 Bucket index mapping is accelerated by a compile-time lookup table that is
 checked in as generated data (`src/lookup_tables.rs` and

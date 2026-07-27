@@ -5,28 +5,27 @@
 
 /// The current width of bucket counters, in bits.
 ///
-/// Counters start at 1-bit (maximizing initial bucket count) and widen
-/// in place through the chain: 1→2→4→8→16→32→64 bits.
+/// Counters start at B1 and widen in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum Width {
-    /// 1-bit counters (max 1 per bucket — presence bitmap).
+    /// 1-bit counters
     B1 = 0,
-    /// 2-bit counters (max 3 per bucket).
+    /// 2-bit counters
     B2 = 1,
-    /// 4-bit counters (max 15 per bucket).
+    /// 4-bit counters
     B4 = 2,
-    /// 1-byte counters (max 255 per bucket).
+    /// 1-byte counters
     U8 = 3,
-    /// 2-byte counters (max 65,535 per bucket).
+    /// 2-byte counters
     U16 = 4,
-    /// 4-byte counters (max ~4 billion per bucket).
+    /// 4-byte counters
     U32 = 5,
-    /// 8-byte counters.
+    /// 8-byte counters
     U64 = 6,
 }
 
-/// All counter widths in level order (excludes B0), for computed lookups.
+/// All counter widths in level order, for computed lookups.
 pub(crate) const ALL_WIDTHS: [Width; 7] = [
     Width::B1,
     Width::B2,
@@ -93,8 +92,7 @@ impl<'a> SlotAddr<'a> {
     }
 }
 
-// Note we use u32 and i32 for bucket addresses. MAX_SCALE has been
-// set to ensure i32 fits all valid values.
+// Note we use u32 and i32 for bucket addresses.
 impl Width {
     /// Returns the log2 of bits.
     /// 0 through 6
@@ -169,18 +167,6 @@ impl Width {
     pub(crate) const fn word_to_slot_index(self, index: i32) -> i32 {
         index << self.to_u64_widen_steps()
     }
-
-    // /// Rounds a bucket index down to the first slot in its u64 word.
-    // #[inline]
-    // pub(crate) const fn slot_start_u64(self, index: i32) -> i32 {
-    //     index & !self.slot_sub64_index_mask()
-    // }
-
-    // /// Rounds a bucket index up to the last slot in its u64 word.
-    // #[inline]
-    // pub(crate) const fn slot_end_u64(self, index: i32) -> i32 {
-    //     index | self.slot_sub64_index_mask()
-    // }
 
     /// Returns the next-wider counter width or None.
     #[inline]
