@@ -352,7 +352,7 @@ mod receiver_harness {
     use otap_df_engine::terminal_state::TerminalState;
     use otap_df_engine::testing::test_node;
     use otap_df_otap::pdata::OtapPdata;
-    use otap_df_otap::testing::next_ack;
+    use otap_df_otap::testing::{next_ack, next_nack};
     use otap_df_telemetry::reporter::MetricsReporter;
     use tokio::task::JoinHandle;
 
