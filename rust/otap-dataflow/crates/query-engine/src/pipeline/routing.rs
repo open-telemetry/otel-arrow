@@ -168,6 +168,7 @@ mod test {
             event_name: "test-event".into(),
             ..Default::default()
         }]);
+        assert_eq!(otap_batch.num_items(), 1);
         let expected_routed_batch = otap_batch.clone();
         let result = pipeline
             .execute_with_state(otap_batch, &mut exec_state)
