@@ -100,6 +100,10 @@ config:
     dcr_endpoint: "https://my-workspace.eastus-1.ingest.monitor.azure.com"
     stream_name: "Custom-MyLogTable_CL"
     dcr: "dcr-abc123def456"
+    # Schema mapping is optional; only the sections you configure are emitted
+    # (plus the mandatory TimeGenerated column, auto-injected from the record's
+    # event time). Unmapped resource/scope attributes and log-record fields are
+    # dropped, not passed through.
     schema:
       # Map OTLP resource attributes to Azure fields.
       resource_mapping:
@@ -118,6 +122,9 @@ config:
         "time_unix_nano": "TimeGenerated"
         "trace_id": "TraceId"
         "span_id": "SpanId"
+        # `attributes` is either an explicit per-attribute mapping (below) or
+        # `passthrough` to emit every log attribute as its own column. See
+        # [Attribute Passthrough Mode](#attribute-passthrough-mode).
         "attributes":
           "message": "ParsedMessage"
 
@@ -269,6 +276,47 @@ log_record_mapping:
   "attributes":                      # Nested attribute mapping
     "user.id": "UserId"              # Specific attribute mapping
 ```
+
+### Attribute Passthrough Mode
+
+By default only the attributes listed under `log_record_mapping.attributes` are
+emitted. To emit **all** log record attributes without enumerating them, set
+`attributes` to `passthrough`:
+
+```yaml
+schema:
+  log_record_mapping:
+    attributes: passthrough
+```
+
+Each log record attribute is then written as a top-level `"<key>": <value>`
+column, using the attribute key as the column name. Passthrough covers
+log-record attributes only; `resource_mapping`, `scope_mapping`, and the other
+`log_record_mapping` fields still emit their own columns and compose with it.
+
+If a passthrough attribute key collides with a mapped column, the attribute
+value wins and the column is emitted once. This is intentional: a producer that
+has already projected the final value into an attribute overrides the static
+mapping without editing the exporter config. Passthrough keys come from runtime
+data, so unlike explicit mappings they are not checked for duplicates at config
+load; collisions are resolved at emit time by this rule.
+
+Passthrough keys are emitted verbatim, so each must already be a valid DCR
+column name. The exporter does not sanitize or namespace keys, so a raw OTel key
+such as `service.name` (with a `.`) is not a valid column. Map such attributes
+to valid columns explicitly instead of using passthrough.
+
+> **Warning -- data loss:** an attribute whose key does not match a DCR column
+> is dropped by that column at ingestion; the rest of the record is still
+> ingested (only malformed JSON or DCR/schema errors fail a batch). The drop is
+> silent to this exporter and the sender (no error returned) but visible to the
+> workspace operator via ingestion's dropped-column metrics. This reflects
+> current Log Analytics ingestion behavior, which Azure may change.
+
+The exporter auto-injects the mandatory `TimeGenerated` column from the record's
+event time (`time_unix_nano`, falling back to `observed_time_unix_nano`, then
+the current time) unless it is already mapped or passed through, so every record
+carries a timestamp.
 
 ## Azure Setup
 
