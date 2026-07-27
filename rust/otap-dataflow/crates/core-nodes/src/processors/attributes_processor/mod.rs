@@ -60,14 +60,12 @@ use otap_df_pdata::otap::{
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 mod metrics;
-use self::metrics::AttributesProcessorMetrics;
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
@@ -2704,24 +2702,45 @@ mod telemetry_tests {
                 let mut found_upserted_entries = false;
                 let mut found_domain_signal = false;
 
-                telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "processor.attributes" {
-                        for (field, v) in iter {
-                            match (field.name, v.to_u64_lossy()) {
-                                ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
-                                ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
-                                ("upserted.entries", x) if x >= 1 => found_upserted_entries = true,
-                                ("domains.signal", x) if x >= 1 => found_domain_signal = true,
-                                _ => {}
+                telemetry_registry.visit_current_metrics_with_item_attrs(
+                    |desc, _attrs, dp_attrs, iter| {
+                        let items: Vec<_> = iter.collect();
+                        if desc.name == "processor.attributes.modified" {
+                            let action = dp_attrs
+                                .iter()
+                                .find(|(k, _)| *k == "action")
+                                .map(|(_, v)| &**v);
+                            for (field, value) in &items {
+                                if field.name == "entries" && value.to_u64_lossy() >= 1 {
+                                    match action {
+                                        Some("renamed") => found_renamed_entries = true,
+                                        Some("deleted") => found_deleted_entries = true,
+                                        Some("upserted") => found_upserted_entries = true,
+                                        _ => {}
+                                    }
+                                }
                             }
                         }
-                    }
-                });
+                        if desc.name == "processor.attributes.domains" {
+                            let is_signal = dp_attrs
+                                .iter()
+                                .any(|(k, v)| *k == "domain" && &**v == "signal");
+                            if is_signal {
+                                for (field, value) in &items {
+                                    if field.name == "applied" && value.to_u64_lossy() >= 1 {
+                                        found_domain_signal = true;
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    false,
+                );
 
-                assert!(found_renamed_entries, "renamed.entries should be >= 1");
-                assert!(found_deleted_entries, "deleted.entries should be >= 1");
-                assert!(found_upserted_entries, "upserted.entries should be >= 1");
-                assert!(found_domain_signal, "domains.signal should be >= 1");
+                assert!(found_renamed_entries, "renamed entries should be >= 1");
+                assert!(found_deleted_entries, "deleted entries should be >= 1");
+                assert!(found_upserted_entries, "upserted entries should be >= 1");
+                assert!(found_domain_signal, "domain signal should be >= 1");
             });
     }
 }
