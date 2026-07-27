@@ -184,7 +184,7 @@ pub struct AttributesProcessor {
     has_scope_domain: bool,
     has_signal_domain: bool,
     // Metrics handle
-    metrics: MetricSet<AttributesProcessorMetrics>,
+    metrics: metrics::AttributesProcessorMetrics,
     // Opt-in compute-duration timing
     compute_duration: ComputeDuration,
 }
@@ -310,7 +310,7 @@ impl AttributesProcessor {
             has_resource_domain,
             has_scope_domain,
             has_signal_domain,
-            metrics: metrics::AttributesProcessorMetrics::new(pipeline_ctx),
+            metrics: metrics::AttributesProcessorMetrics::new(&pipeline_ctx),
             compute_duration: ComputeDuration::new(&pipeline_ctx),
         })
     }
@@ -420,7 +420,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    let _ = self.metrics.report(metrics_reporter);
+                    let _ = self.metrics.report(&mut metrics_reporter);
                     self.compute_duration.report(&mut metrics_reporter);
                     Ok(())
                 }
