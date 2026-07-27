@@ -54,6 +54,7 @@ Receivers ingest data into a pipeline.
 
 | Type                                                                   | Feature                | Stability    | Description                                      |
 | ---------------------------------------------------------------------- | ---------------------- | ------------ | ------------------------------------------------ |
+| [`receiver:etw`](src/receivers/etw_receiver/README.md)                 | `etw-receiver`         | experimental | Ingests Windows ETW provider events as logs.     |
 | [`receiver:kafka`](src/receivers/kafka_receiver/README.md)             | `kafka-receiver`       | experimental | Consumes traces, metrics, and logs from Kafka.   |
 | [`receiver:user_events`](src/receivers/user_events_receiver/README.md) | `user_events-receiver` | experimental | Ingests Linux `user_events` tracepoints as logs. |
 
