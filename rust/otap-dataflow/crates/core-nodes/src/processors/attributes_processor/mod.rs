@@ -2496,6 +2496,8 @@ mod telemetry_tests {
     use prost::Message as _;
     use serde_json::json;
 
+    /// Scenario: A processor with rename, delete, and upsert actions processes logs and collects telemetry.
+    /// Guarantees: The component records correct entries per action and domain in processor.attributes.modified, and transform success in processor.attributes.
     #[test]
     fn test_metrics_collect_telemetry_reports_counters() {
         use std::sync::Arc;
