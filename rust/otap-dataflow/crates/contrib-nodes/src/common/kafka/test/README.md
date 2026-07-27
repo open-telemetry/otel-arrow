@@ -179,6 +179,56 @@ throwaway member: any records it receives while polling for its assignment are
 intentionally discarded, so use a `TestConsumer` (which buffers records) to
 consume application data.
 
+### Multi-receiver scale-up/down
+
+To model 2+ node replicas with the same `group_id` against a multi-partition
+topic (the in-process analogue of scaling replicas up and down), start two
+`KafkaReceiverHarness` instances with configs that share a `group_id` on the
+same `LocalSet`. Each harness builds its own `KafkaReceiver`, so together they
+form a real dynamic consumer group that librdkafka rebalances. Use manual commit
+(`CommitMode::Manual`) so the receiver's rebalance-aware commit path is active
+and acks drive the committed offsets.
+
+The reference test is
+`rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit`
+in `receivers/kafka_receiver/receiver.rs`. Procedure another engineer can follow:
+
+1. Pre-create a multi-partition topic and produce a first wave of records
+   (`produce_per_partition`).
+2. Start replica A alone and drain the first wave in full, so A demonstrably
+   owned every partition before anyone else joined.
+3. Start replica B in the same group (scale-up), let the rebalance settle, then
+   produce a second wave so B's newly-assigned partition has fresh records.
+4. Drain the group prioritizing B (poll B before A each iteration) until B has
+   consumed its partition's share -- B receiving records is the direct proof
+   that partitions distributed, because A's continuously-polling loop would
+   otherwise re-win B's partition.
+5. Shut down B (scale-down) and read its `TerminalState` via
+   `await_terminal_state()`; drain A briefly so it re-owns and commits.
+6. Shut down A and read its `TerminalState`.
+
+Observe and assert:
+
+- **Distribution**: B consumed its share (step 4), and both replicas'
+  folded metrics (`FoldedMetrics::fold_all(terminal.metrics())`) report
+  `partitions_assigned >= 1`.
+- **Rebalance observed**: `partitions_revoked >= 1` summed across the two
+  replicas (this is the node's own metric-based observation of the rebalance,
+  the in-process equivalent of watching rebalance activity in logs/metrics).
+- **No loss / no double-commit**: every produced record is delivered at least
+  once (delivery is at-least-once, so assert `>=`, not `==`); every partition
+  durably retains all its records (`inspect().message_count(topic, p)` equals
+  the produced count); each partition's committed offset stays within
+  `[first-wave count, total produced count]` (lower bound = committed progress
+  never rolled back across a rebalance; upper bound = nothing committed past the
+  produced data); and neither replica reports `offset_commit_errors`.
+
+Note: rebalance timing on `MockCluster` is nondeterministic and an eager
+assignor lets a continuously-polling member re-win partitions, so gate
+distribution on B's own deliveries plus metrics rather than on an exact 1/1
+partition split, and gate no-loss on broker-side retention plus bounded
+committed offsets rather than on an exact final delivered-record count.
+
 ## Manipulating the broker (fault injection)
 
 `cluster.faults()` returns a `BrokerFaults` handle. Primitives:

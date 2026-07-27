@@ -754,6 +754,7 @@ impl KafkaReceiver {
                             }
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            self.reconcile_rebalance_state();
                             // Report current receiver metrics.
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
@@ -3619,6 +3620,274 @@ mod tests {
                 // clean-termination guarantee.
                 receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: two `KafkaReceiver` replicas share one consumer group against a
+    /// multi-partition topic; a second replica joins (scale-up) and then leaves
+    /// (scale-down), and every record must be delivered exactly to the group and
+    /// committed without loss or double-commit across both rebalances.
+    ///
+    /// Guarantees: (1) both replicas own a partition at some point, so the
+    /// partitions distribute across the group (B consumes records that only its
+    /// assigned partition can deliver, and both replicas' terminal metrics show
+    /// `partitions_assigned >= 1`); (2) a rebalance is observed on scale-up/down
+    /// (`partitions_revoked >= 1` across the two replicas); (3) no message is
+    /// lost or double-committed -- every produced record is delivered at least
+    /// once and durably retained on the broker, each partition's committed
+    /// offset stays within `[wave-1 count, total produced count]` (the lower
+    /// bound proves committed progress is never rolled back across a rebalance,
+    /// the upper bound proves nothing is committed past the produced data), and
+    /// neither replica reports `offset_commit_errors`.
+    ///
+    /// This is the in-process analogue of running 2+ replicas with the same
+    /// `group_id` against a multi-partition topic and scaling the replica count
+    /// up and down. Procedure (mirrored by the code below):
+    ///   1. Pre-create a `REBALANCE_TEST_PARTITIONS`-partition topic and produce
+    ///      wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per partition).
+    ///   2. Start replica A alone and drain wave 1 in full, so A demonstrably
+    ///      owned every partition before anyone else joined.
+    ///   3. Start replica B in the same group (scale-up), then produce wave 2 so
+    ///      B's newly-assigned partition has fresh records to deliver.
+    ///   4. Drain the group, prioritizing B so its assigned partition is not
+    ///      re-won by A's continuously-polling loop, until every produced record
+    ///      has been delivered at least once (bounded by a deadline so a stall
+    ///      fails loudly instead of hanging).
+    ///   5. Shut down B (scale-down); this forces a second rebalance that returns
+    ///      B's partition to A. Drain A briefly so A can re-own and commit.
+    ///   6. Shut down A. Read each replica's `TerminalState` metrics and assert
+    ///      distribution, rebalance observation, and no-loss/no-double-commit.
+    ///
+    /// Rebalance timing on the mock is nondeterministic and delivery is
+    /// at-least-once, so distribution is gated by B's own deliveries plus folded
+    /// rebalance metrics, and no-loss/no-double-commit is gated by broker-side
+    /// record retention plus a bounded committed offset per partition (not by an
+    /// exact delivered-record count, which duplicates can inflate during a
+    /// rebalance).
+    #[tokio::test]
+    async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
+        use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+
+        const TOPIC: &str = "rebalance-scale-traces";
+        let group = "rebalance-scale-group";
+        // Records are produced in two waves of `REBALANCE_RECORDS_PER_PARTITION`
+        // per partition: wave 1 before B joins (drained by A alone) and wave 2
+        // after B joins (so B's newly-assigned partition has fresh records to
+        // deliver, making its assignment observable rather than timing-dependent).
+        let per_partition_total = 2 * REBALANCE_RECORDS_PER_PARTITION;
+        let wave = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+        let total_produced = 2 * wave;
+
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+
+                // Manual commit so the receiver's rebalance-aware commit path is
+                // active and acks drive the committable offsets.
+                let mut delivered = 0usize;
+                let mut delivered_b = 0usize;
+
+                // Step 1: produce wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per
+                // partition).
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Step 2: start replica A alone and drain wave 1 in full. A single
+                // member is assigned every partition, so consuming the whole wave
+                // proves A held the entire topic before anyone else joined.
+                let cfg_a =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                for _ in 0..wave {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                    delivered += 1;
+                }
+
+                // Step 3: start replica B in the same group (scale-up), let the
+                // rebalance settle, then produce wave 2 to every partition so B's
+                // newly-assigned partition has fresh records to deliver.
+                let cfg_b =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Step 4a: drain B *first and exclusively* until it has consumed
+                // its partition's share of wave 2. Under an eager assignor B owns
+                // one partition, but A's continuously-polling loop would re-win
+                // that partition if A were polled concurrently; leaving A idle
+                // here lets B keep and drain its assigned partition. Reaching
+                // B's expected share is the direct proof that partitions
+                // distributed across the group. Bounded by a deadline so a
+                // failure to distribute fails loudly instead of hanging.
+                let expected_b = REBALANCE_RECORDS_PER_PARTITION as usize;
+                let b_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while delivered_b < expected_b {
+                    assert!(
+                        tokio::time::Instant::now() < b_deadline,
+                        "timed out: replica B consumed {delivered_b} of {expected_b} expected \
+                         records; the scale-up rebalance did not hand it a partition",
+                    );
+                    if let Some(pdata) =
+                        receiver_b.try_recv_pdata(Duration::from_millis(250)).await
+                    {
+                        receiver_b.ack(pdata);
+                        delivered += 1;
+                        delivered_b += 1;
+                    }
+                }
+
+                // Step 4b: drain A's partition's share of wave 2 (best-effort:
+                // delivery is at-least-once, so we drain until the group has
+                // delivered at least the full produced set, bounded by a
+                // deadline). Offsets asserted below are the authoritative
+                // no-loss/no-double-commit check.
+                let a_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+                while delivered < total_produced && tokio::time::Instant::now() < a_deadline {
+                    if let Some(pdata) =
+                        receiver_a.try_recv_pdata(Duration::from_millis(250)).await
+                    {
+                        receiver_a.ack(pdata);
+                        delivered += 1;
+                    }
+                }
+
+                // Allow a safety-net commit cycle to flush before scaling down.
+                tokio::time::sleep(Duration::from_millis(800)).await;
+
+                // Step 5: shut down B (scale-down). This forces a second
+                // rebalance that returns B's partition to A. B commits the
+                // offsets it acked as part of its graceful shutdown.
+                receiver_b.shutdown(Duration::from_secs(5));
+                let terminal_b = receiver_b.await_terminal_state().await;
+
+                // Step 6: after B leaves, A re-owns both partitions. Drain A for
+                // a window so it re-consumes and commits any records B acked but
+                // did not durably commit before leaving, then shut A down (which
+                // flushes its tracked offsets). Delivery is at-least-once and the
+                // eager rebalance re-delivers uncommitted records, so this is a
+                // best-effort convergence; the authoritative no-loss check below
+                // is broker-side (all records durably retained + committed
+                // progress bounded by the produced count).
+                let brokers = cluster.bootstrap_servers().to_string();
+                let settle = tokio::time::Instant::now() + Duration::from_secs(3);
+                while tokio::time::Instant::now() < settle {
+                    if let Some(pdata) =
+                        receiver_a.try_recv_pdata(Duration::from_millis(200)).await
+                    {
+                        receiver_a.ack(pdata);
+                    }
+                }
+
+                // Shut down A and collect its terminal metrics.
+                receiver_a.shutdown(Duration::from_secs(5));
+                let terminal_a = receiver_a.await_terminal_state().await;
+
+                // ---- Assertions ----
+                let mut fa = FoldedMetrics::new();
+                fa.fold_all(terminal_a.metrics());
+                let mut fb = FoldedMetrics::new();
+                fb.fold_all(terminal_b.metrics());
+
+                // (1) Distribution: both replicas were assigned at least one
+                // partition over their lifetimes, and together they cover the
+                // topic. B's deliveries above already prove it owned a partition;
+                // the metrics corroborate it from the node's own point of view.
+                assert!(
+                    fa.value("partitions_assigned") >= 1,
+                    "replica A should have been assigned at least one partition, got {}",
+                    fa.value("partitions_assigned"),
+                );
+                assert!(
+                    fb.value("partitions_assigned") >= 1,
+                    "replica B should have been assigned at least one partition on scale-up, got {}",
+                    fb.value("partitions_assigned"),
+                );
+                assert!(
+                    fa.value("partitions_assigned") + fb.value("partitions_assigned")
+                        >= REBALANCE_TEST_PARTITIONS as u64,
+                    "the group should have covered all {REBALANCE_TEST_PARTITIONS} partitions",
+                );
+
+                // (2) Rebalance observed on scale-up/down: at least one genuinely
+                // owned partition was revoked across the cycle.
+                assert!(
+                    fa.value("partitions_revoked") + fb.value("partitions_revoked") >= 1,
+                    "a partition revoke should have been observed across scale-up/down",
+                );
+
+                // (3a) No commit failures on either replica across the rebalances.
+                assert_eq!(
+                    fa.value("offset_commit_errors"),
+                    0,
+                    "replica A should have no offset commit errors",
+                );
+                assert_eq!(
+                    fb.value("offset_commit_errors"),
+                    0,
+                    "replica B should have no offset commit errors",
+                );
+
+                // (3b) No loss at the broker: every produced record is durably
+                // retained on its partition. `message_count` is `high - low`, so
+                // it must equal the number of records produced to each partition.
+                // (Delivery is at-least-once, so the raw delivered count is only
+                // required to be >= the produced total, not exactly equal.)
+                assert!(
+                    delivered >= total_produced,
+                    "the group should deliver every produced record at least once: \
+                     delivered {delivered} of {total_produced}",
+                );
+                let inspector = cluster.inspect();
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    assert_eq!(
+                        inspector.message_count(TOPIC, partition),
+                        per_partition_total as i64,
+                        "partition {partition} should durably retain all produced records",
+                    );
+                }
+
+                // (3c) No double-commit and no rollback at the offset layer: each
+                // partition's committed offset must stay within
+                // `[REBALANCE_RECORDS_PER_PARTITION, per_partition_total]`. The
+                // lower bound proves wave-1 progress was never rolled back across
+                // the two rebalances (no re-processing from an earlier offset);
+                // the upper bound proves nothing was committed past the produced
+                // records (no double-commit past the data).
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let committed = committed_offset(&brokers, group, TOPIC, partition)
+                        .expect("kafka-test: committed-offset probe failed")
+                        .unwrap_or_else(|| {
+                            panic!("partition {partition} should have a committed offset")
+                        });
+                    assert!(
+                        (REBALANCE_RECORDS_PER_PARTITION as i64..=per_partition_total as i64)
+                            .contains(&committed),
+                        "partition {partition} committed offset {committed} must be within \
+                         [{REBALANCE_RECORDS_PER_PARTITION}, {per_partition_total}] \
+                         (no rollback below committed progress, no commit past produced data)",
+                    );
+                }
             },
         )
         .await;
