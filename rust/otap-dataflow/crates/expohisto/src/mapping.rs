@@ -292,4 +292,40 @@ mod tests {
             Err(ScaleError::Underflow)
         );
     }
+
+    /// Scenario: at scale 1 (base = sqrt(2)) a spread of values across the
+    /// octave [1, 2] is mapped to bucket indices, and the lower boundaries of
+    /// buckets -1..=2 are read back.
+    /// Guarantees: mapping obeys the OpenTelemetry upper-inclusive rule --
+    /// values sitting exactly on a lower boundary (the exact powers 1.0 =
+    /// base^0 and 2.0 = base^2) fall in the bucket below, yielding the
+    /// sequence -1, 0, 0, 1, 1, 1 -- and the boundaries are the sqrt(2)-spaced
+    /// powers of the base: sqrt(2)/2, 1, sqrt(2), 2.
+    #[test]
+    fn scale_one_maps_values_and_boundaries() {
+        let s = Scale::new(1).unwrap();
+
+        // Buckets span (base^i, base^(i+1)] with base = sqrt(2). A value equal
+        // to a lower boundary (1.0 and 2.0) belongs to the bucket below.
+        for (value, want) in [
+            (1.0_f64, -1),
+            (1.1, 0),
+            (1.4, 0),
+            (1.5, 1),
+            (1.9, 1),
+            (2.0, 1),
+        ] {
+            assert_eq!(s.map_to_index(value), want, "map_to_index({value})");
+        }
+
+        // Only a value strictly above the 2.0 boundary reaches bucket 2.
+        assert_eq!(s.map_to_index(next_up(2.0)), 2);
+
+        // Lower boundaries are 2^(index/2): sqrt(2)/2, 1, sqrt(2), 2.
+        let sqrt2 = core::f64::consts::SQRT_2;
+        assert!((s.lower_boundary(-1).unwrap() - sqrt2 / 2.0).abs() < 1e-15);
+        assert_eq!(s.lower_boundary(0).unwrap(), 1.0);
+        assert!((s.lower_boundary(1).unwrap() - sqrt2).abs() < 1e-15);
+        assert_eq!(s.lower_boundary(2).unwrap(), 2.0);
+    }
 }
