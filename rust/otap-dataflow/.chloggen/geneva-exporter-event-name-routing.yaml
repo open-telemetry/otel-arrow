@@ -6,7 +6,7 @@ component: pipeline
 
 note: "Geneva exporter now supports routing logs and spans to different Geneva tables based on an attribute value via `event_name_mapping`. Logs can route on `event_name`, `resource_attribute`, `scope_attribute`, or `log_record_attribute`; spans can route on `resource_attribute`, `scope_attribute`, or `span_attribute`. The reserved keys `scope.name` and `scope.version` can be used as the routing attribute name to route on the instrumentation scope."
 
-issues: []
+issues: [3600]
 
 subtext: |
   Add an optional `event_name_mapping` block under `logs` and `spans` to map a routing-key attribute
