@@ -67,7 +67,7 @@ tests:
         clickhouse_database: otap_perf_sync
         clickhouse_async_insert: false
         loadgen_exporter_type: otap
-        max_batch_size: 512
+        max_batch_size: 8192
         signals_per_second: 50000
         observation_interval: 60
         validation_file: OTAP-CLICKHOUSE-LOGS-SYNC.csv
@@ -80,7 +80,7 @@ tests:
         clickhouse_database: otap_perf_sync_75k
         clickhouse_async_insert: false
         loadgen_exporter_type: otap
-        max_batch_size: 512
+        max_batch_size: 8192
         signals_per_second: 75000
         observation_interval: 60
         validation_file: OTAP-CLICKHOUSE-LOGS-SYNC-75K.csv
@@ -93,7 +93,7 @@ tests:
         clickhouse_database: otap_perf_sync_100k
         clickhouse_async_insert: false
         loadgen_exporter_type: otap
-        max_batch_size: 512
+        max_batch_size: 8192
         signals_per_second: 100000
         observation_interval: 60
         validation_file: OTAP-CLICKHOUSE-LOGS-SYNC-100K.csv
