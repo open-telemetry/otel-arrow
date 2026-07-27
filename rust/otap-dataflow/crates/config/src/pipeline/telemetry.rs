@@ -26,8 +26,8 @@ pub struct TelemetryConfig {
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
     /// Resource detectors to run for auto-detected telemetry attributes.
-    /// Defaults to `["env", "service_instance"]`. Static `resource` attributes take
-    /// precedence over detected ones. An empty list disables auto-detection.
+    /// Defaults to `["env", "service_name", "service_instance"]`. Static `resource`
+    /// attributes take precedence over detected ones. An empty list disables auto-detection.
     #[serde(default = "default_detectors")]
     pub detectors: Vec<String>,
 }
@@ -72,11 +72,15 @@ const fn default_reporting_interval() -> Duration {
 
 /// Detectors run when config does not specify a `detectors` list.
 ///
-/// `env` injects `OTEL_RESOURCE_ATTRIBUTES`/`OTEL_SERVICE_NAME` and `service_instance`
-/// generates a stable id; both are environment-agnostic. Host/OS/process/container/k8s
-/// detectors probe their surroundings and are opt-in.
+/// `env` injects `OTEL_RESOURCE_ATTRIBUTES`, `service_name` sets `service.name` (from
+/// `OTEL_SERVICE_NAME`, falling back to `unknown_service`), and `service_instance` generates
+/// a stable id. Host/OS/process/container/k8s detectors probe their surroundings and are opt-in.
 fn default_detectors() -> Vec<String> {
-    vec!["env".to_string(), "service_instance".to_string()]
+    vec![
+        "env".to_string(),
+        "service_name".to_string(),
+        "service_instance".to_string(),
+    ]
 }
 
 /// Attribute value types for telemetry resource attributes.

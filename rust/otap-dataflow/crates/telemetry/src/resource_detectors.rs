@@ -7,8 +7,8 @@
 //! implementations. Config (`engine.telemetry.detectors`) selects which run. Detected
 //! attributes are converted to typed [`AttributeValue`]s and merged.
 //!
-//! `env` and `service_instance` run by default (see `default_detectors` in config); the
-//! detectors that probe the host/OS/process/container/k8s environment are opt-in.
+//! `env`, `service_name`, and `service_instance` run by default (see `default_detectors` in
+//! config); the detectors that probe the host/OS/process/container/k8s environment are opt-in.
 
 use std::collections::BTreeMap;
 
@@ -17,12 +17,15 @@ use opentelemetry_resource_detectors::{
     ProcessResourceDetector, ServiceInstanceIdResourceDetector,
 };
 use opentelemetry_sdk::Resource;
-use opentelemetry_sdk::resource::{EnvResourceDetector, ResourceDetector};
+use opentelemetry_sdk::resource::{
+    EnvResourceDetector, ResourceDetector, SdkProvidedResourceDetector,
+};
 use otap_df_config::pipeline::telemetry::{AttributeValue, AttributeValueArray};
 
 /// Selectable detectors, keyed by config name.
 const REGISTRY: &[(&str, fn() -> Box<dyn ResourceDetector>)] = &[
     ("env", || Box::new(EnvResourceDetector::default())),
+    ("service_name", || Box::new(SdkProvidedResourceDetector)),
     ("host", || Box::new(HostResourceDetector::default())),
     ("os", || Box::new(OsResourceDetector)),
     ("process", || Box::new(ProcessResourceDetector)),
@@ -189,6 +192,44 @@ mod tests {
             }
             other => panic!("expected a string service.instance.id, got {other:?}"),
         }
+    }
+
+    /// Scenario: the `service_name` detector runs with `OTEL_SERVICE_NAME` set.
+    /// Guarantees: it emits `service.name` from `OTEL_SERVICE_NAME`.
+    #[test]
+    fn service_name_detector_honors_otel_service_name() {
+        temp_env::with_var("OTEL_SERVICE_NAME", Some("my-svc"), || {
+            let attrs = detect_map(&["service_name"]);
+            assert_eq!(
+                attrs.get("service.name"),
+                Some(&AttributeValue::String("my-svc".into()))
+            );
+        });
+    }
+
+    /// Scenario: the `service_name` detector runs with no service name configured in the env.
+    /// Guarantees: it falls back to an `unknown_service` placeholder rather than emitting
+    /// an empty `service.name`.
+    #[test]
+    fn service_name_detector_falls_back_to_unknown_service() {
+        temp_env::with_vars(
+            [
+                ("OTEL_SERVICE_NAME", None::<&str>),
+                ("OTEL_RESOURCE_ATTRIBUTES", None::<&str>),
+            ],
+            || {
+                let attrs = detect_map(&["service_name"]);
+                match attrs.get("service.name") {
+                    Some(AttributeValue::String(name)) => {
+                        assert!(
+                            name.starts_with("unknown_service"),
+                            "expected unknown_service fallback, got {name:?}"
+                        );
+                    }
+                    other => panic!("expected a string service.name, got {other:?}"),
+                }
+            },
+        );
     }
 
     /// Scenario: a `Resource` holding a typed (I64) attribute is converted.
