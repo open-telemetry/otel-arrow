@@ -103,7 +103,9 @@ jobs:
       - name: Run ClickHouse performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml
+          python orchestrator/run_orchestrator.py \
+            --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml \
+            --tests OTAP-CLICKHOUSE-LOGS-SYNC,OTAP-CLICKHOUSE-LOGS-SYNC-75K,OTAP-CLICKHOUSE-LOGS-SYNC-100K
 
       - name: Upload ClickHouse benchmark results
         if: ${{ !cancelled() }}
