@@ -63,7 +63,7 @@ impl Settings {
 pub enum Error {
     /// Overflow of a u64 counter.
     Overflow,
-    /// Invalid value: NaN or ±Inf for all histogram types, or negative
+    /// Invalid value: NaN or +/-Inf for all histogram types, or negative
     /// for [`HistogramNN`].
     Extreme,
 }
@@ -322,6 +322,22 @@ impl<const N: usize> HistogramNN<N> {
         self.current.width.slot_addr(slot)
     }
 
+    /// Debug-only check of the range-coverage invariant: the two u64
+    /// words every histogram has must not hold more buckets than the
+    /// value range covers at the current scale (see
+    /// [`Width::min_scale`]). Equivalently, the scale can still pay
+    /// for widening these counters to [`Width::U64`].
+    #[inline]
+    pub(crate) fn debug_assert_range_coverage(&self) {
+        debug_assert!(
+            self.current.scale.scale() >= self.current.width.min_scale(),
+            "scale {} is below the floor {} for width {:?}",
+            self.current.scale.scale(),
+            self.current.width.min_scale(),
+            self.current.width,
+        );
+    }
+
     /// Shifts all three index fields right by `by` positions.
     #[inline]
     fn shift_indices(&mut self, by: u32) {
@@ -409,25 +425,71 @@ impl<const N: usize> HistogramNN<N> {
 
     /// Sets the maximum scale.
     ///
+    /// The histogram's `N` words hold `N * slots_per_u64(width)`
+    /// buckets at the configured minimum width. That many buckets must
+    /// fit within the range of buckets covering the normal IEEE 754
+    /// range at `scale`; see [`Self::min_scale`]. Set
+    /// [`with_min_width`](Self::with_min_width) first when using a
+    /// scale near the floor.
+    ///
     /// # Errors
     ///
     /// Returns [`ScaleError::InvalidScale`] if `scale` is outside
-    /// [`MIN_SCALE`](crate::MIN_SCALE)..=[`table_scale()`](crate::table_scale).
+    /// [`MIN_SCALE`](crate::MIN_SCALE)..=[`table_scale()`](crate::table_scale),
+    /// or [`ScaleError::RangeCoverage`] if `scale` is below
+    /// [`Self::min_scale`] for the current minimum width.
     #[inline]
-    pub fn with_scale(mut self, scale: i32) -> Result<Self, ScaleError> {
+    pub fn with_max_scale(mut self, scale: i32) -> Result<Self, ScaleError> {
         let s = Scale::new(scale)?;
+        if scale < Self::min_scale(self.initial.width) {
+            return Err(ScaleError::RangeCoverage);
+        }
         self.initial.scale = s;
         self.current.scale = s;
         Ok(self)
     }
 
     /// Sets the minimum bucket width.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScaleError::RangeCoverage`] if the current scale is
+    /// below [`Self::min_scale`] for `width`, i.e. if these `N` words
+    /// would define more buckets than the value range covers.
     #[inline]
-    #[must_use]
-    pub fn with_min_width(mut self, width: Width) -> Self {
+    pub fn with_min_width(mut self, width: Width) -> Result<Self, ScaleError> {
+        if self.initial.scale.scale() < Self::min_scale(width) {
+            return Err(ScaleError::RangeCoverage);
+        }
         self.initial.width = width;
         self.current.width = width;
-        self
+        Ok(self)
+    }
+
+    /// Number of buckets this histogram defines at `width`.
+    #[inline]
+    #[must_use]
+    pub const fn bucket_capacity(width: Width) -> u64 {
+        N as u64 * width.slots_per_u64() as u64
+    }
+
+    /// Lowest scale at which all of this histogram's buckets still
+    /// fit inside the value range, given counters of `width`.
+    ///
+    /// The normal IEEE 754 range spans about `2^(scale + 11)` buckets
+    /// (see [`min_scale_for`](crate::mapping::min_scale_for)). A
+    /// histogram configured with more buckets than that has buckets no
+    /// value can ever land in, so this is the floor the builders
+    /// enforce.
+    ///
+    /// Operations may still take a large histogram below this scale --
+    /// merging in a coarser histogram, for instance -- which only
+    /// leaves words unused. The floor that always holds is
+    /// [`Width::min_scale`], the same bound for the two words every
+    /// histogram has.
+    #[must_use]
+    pub fn min_scale(width: Width) -> i32 {
+        crate::mapping::min_scale_for(Self::bucket_capacity(width))
     }
 
     /// Returns a read-only view of the histogram.
@@ -480,7 +542,7 @@ impl<const N: usize> HistogramNN<N> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Extreme`] if the value is NaN, ±Inf, or negative.
+    /// Returns [`Error::Extreme`] if the value is NaN, +/-Inf, or negative.
     /// Returns [`Error::Overflow`] if the total count would exceed `u64::MAX`.
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), Error> {
@@ -491,7 +553,7 @@ impl<const N: usize> HistogramNN<N> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Extreme`] if the value is NaN, ±Inf, or negative.
+    /// Returns [`Error::Extreme`] if the value is NaN, +/-Inf, or negative.
     /// Returns [`Error::Overflow`] if the total count would exceed `u64::MAX`.
     pub fn record_incr(&mut self, value: f64, incr: u64) -> Result<(), Error> {
         // Extract the raw exponent and significand (sign bit is ignored).
@@ -574,13 +636,16 @@ impl<const N: usize> HistogramNN<N> {
     /// # Invariant
     ///
     /// Callers must ensure `decrease` does not push below `MIN_SCALE`.
-    /// This is maintained by:
-    /// - `do_downscale`: caps at `abs_budget` (scale − MIN_SCALE)
-    /// - merge prepare: clamps at `MIN_SCALE` and pre-reserves headroom
-    /// - `resolve_increment` empty path: only sets width, no scale change
+    /// This holds because of the range-coverage invariant: the buckets
+    /// a histogram defines always fit inside the buckets covering the
+    /// value range at its current scale (see [`Self::min_scale`]), so
+    /// no caller can need to downscale past the point where the range
+    /// collapses onto the buckets it already has. At `MIN_SCALE` the
+    /// whole f64 range is 2 buckets, which `N >= 2` words hold at
+    /// `Width::U64`.
     ///
-    /// At `MIN_SCALE` the entire f64 exponent range maps to ≤ 2 bucket
-    /// indices, so `N ≥ 2` guarantees the range always fits.
+    /// The invariant is established by `with_max_scale`/`with_min_width`
+    /// and preserved by `do_downscale`, which caps how far it narrows.
     pub(crate) fn change_scale(&mut self, decrease: u32) {
         let new_scale = self.current.scale.scale() - decrease as i32;
         debug_assert!(
@@ -667,12 +732,13 @@ impl<const N: usize> HistogramNN<N> {
                 if self.buckets_empty() {
                     // Empty histogram: no data to transform and the
                     // retry will place the first value fresh. Just
-                    // widen the counter — no scale change needed.
+                    // widen the counter -- no scale change needed.
                     self.current.width = new_width;
+                    self.debug_assert_range_coverage();
                 } else {
-                    // Route through do_downscale so the headroom
-                    // invariant is maintained (narrowing is capped
-                    // to leave room for future widening).
+                    // Route through do_downscale so the range-coverage
+                    // invariant is maintained (narrowing is capped to
+                    // leave room for future widening).
                     self.downscale_by_min(change, new_width);
                 }
                 Ok(false)

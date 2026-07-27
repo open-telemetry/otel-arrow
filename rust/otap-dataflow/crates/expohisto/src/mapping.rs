@@ -10,8 +10,36 @@
 
 use core::fmt;
 
+#[cfg(test)]
+use crate::float64::SIGNIFICAND_MASK;
 use crate::float64::{EXPONENT_BIAS, MAX_NORMAL_EXPONENT, MIN_NORMAL_EXPONENT, SIGNIFICAND_WIDTH};
 use crate::lookup::BOUNDARIES;
+
+/// Lowest scale at which the value range covers `buckets` distinct
+/// buckets.
+///
+/// The normal IEEE 754 range is two buckets at [`MIN_SCALE`] and
+/// doubles with each scale step, so it covers `2^(scale + 11)`
+/// buckets:
+///
+/// ```text
+///   buckets <= 2^(scale + 11)   <=>   scale >= ceil(log2(buckets)) - 11
+/// ```
+///
+/// Doubling is exact up to scale -1; above that the top and bottom of
+/// the range round inward by a bucket or two, so the closed form can
+/// be one scale step optimistic there. That only concedes a couple of
+/// buckets no value reaches -- a histogram with more buckets than the
+/// range is wasteful, not wrong. The bound is exact where it is load
+/// bearing, at [`Width::min_scale`](crate::Width::min_scale).
+///
+/// Saturates at `MIN_SCALE`, below which no scale exists.
+#[must_use]
+pub const fn min_scale_for(buckets: u64) -> i32 {
+    let log2_ceil = buckets.next_power_of_two().trailing_zeros() as i32;
+    let scale = log2_ceil + MIN_SCALE - 1;
+    if scale < MIN_SCALE { MIN_SCALE } else { scale }
+}
 
 /// Minimum scale for the exponent mapping.
 /// At scale -10, values in (0, 1] map to bucket -1 and values in (1, MAX) map to bucket 0.
@@ -27,6 +55,16 @@ pub enum ScaleError {
     Overflow,
     /// Invalid scale parameter.
     InvalidScale,
+    /// The histogram holds more buckets than the value range covers at
+    /// this scale.
+    ///
+    /// A histogram of `N` words at its minimum counter width defines
+    /// `N * slots_per_u64(width)` buckets. Those buckets must fit
+    /// within the buckets that span the normal IEEE 754 range at the
+    /// maximum scale (see [`min_scale_for`]); otherwise the
+    /// configuration describes buckets outside the representable range
+    /// and cannot always be downscaled to [`MIN_SCALE`] without error.
+    RangeCoverage,
 }
 
 impl fmt::Display for ScaleError {
@@ -35,6 +73,9 @@ impl fmt::Display for ScaleError {
             Self::Underflow => f.write_str("bucket index corresponds to a subnormal value"),
             Self::Overflow => f.write_str("bucket index corresponds to +Inf"),
             Self::InvalidScale => f.write_str("invalid scale parameter"),
+            Self::RangeCoverage => {
+                f.write_str("histogram defines more buckets than the value range covers")
+            }
         }
     }
 }
@@ -83,6 +124,24 @@ impl Scale {
     #[must_use]
     pub const fn scale(&self) -> i32 {
         self.0 as i32
+    }
+
+    /// Number of buckets that cover the whole f64 value range at this
+    /// scale, measured from the mapping itself.
+    ///
+    /// Every recordable value maps into this many consecutive indices:
+    /// the extremes are `f64::MIN_POSITIVE` and `f64::MAX`, and
+    /// subnormals are rounded up into the smallest normal bucket.
+    ///
+    /// This is the oracle for [`min_scale_for`], which computes the
+    /// same relation in closed form.
+    #[cfg(test)]
+    pub(crate) fn range_bucket_count(&self) -> u64 {
+        // Significand 0 is the exact power of two, which maps one
+        // bucket lower than any other value with the same exponent.
+        let low = self.map_decomposed(0, MIN_NORMAL_EXPONENT);
+        let high = self.map_decomposed(SIGNIFICAND_MASK, MAX_NORMAL_EXPONENT);
+        (high - low + 1) as u64
     }
 
     /// Maps a f64 value to a bucket index. Ignores sign.

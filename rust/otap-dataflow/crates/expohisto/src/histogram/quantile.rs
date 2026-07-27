@@ -8,7 +8,7 @@ use crate::mapping::Scale;
 use super::HistogramNN;
 use super::view::HistogramView;
 
-/// A quantile–value pair estimated from a histogram's bucket distribution.
+/// A quantile-value pair estimated from a histogram's bucket distribution.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct QuantileValue {
     /// The requested quantile, in `[0.0, 1.0]`.
@@ -124,7 +124,7 @@ impl<const N: usize> Iterator for QuantileIter<'_, N> {
         let &q = self.quantiles.get(self.qi)?;
         self.qi += 1;
 
-        // Empty histogram — no meaningful estimate.
+        // Empty histogram -- no meaningful estimate.
         if self.total_count == 0 {
             return Some(QuantileValue {
                 quantile: q,
@@ -185,7 +185,7 @@ impl<const N: usize> Iterator for QuantileIter<'_, N> {
                 let fraction = (target - self.cumulative as f64) / count as f64;
                 let value = (lower + fraction * (upper - lower)).clamp(self.min, self.max);
 
-                // Don't advance pos/cumulative — next quantile may land
+                // Don't advance pos/cumulative -- next quantile may land
                 // in the same bucket.
                 return Some(QuantileValue { quantile: q, value });
             }
@@ -194,7 +194,7 @@ impl<const N: usize> Iterator for QuantileIter<'_, N> {
             self.pos += 1;
         }
 
-        // All buckets exhausted — return max.
+        // All buckets exhausted -- return max.
         Some(QuantileValue {
             quantile: q,
             value: self.max,

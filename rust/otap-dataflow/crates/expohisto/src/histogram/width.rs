@@ -195,4 +195,25 @@ impl Width {
         let width = leading.next_power_of_two();
         ALL_WIDTHS[width.trailing_zeros() as usize]
     }
+
+    /// Lowest scale any histogram may use while its counters are this
+    /// narrow.
+    ///
+    /// Every histogram has at least two u64 words, which at this width
+    /// hold `2 * slots_per_u64()` buckets. This is the scale whose
+    /// range still covers that many, i.e.
+    /// `crate::mapping::min_scale_for(2 * self.slots_per_u64() as u64)`
+    /// -- the range halves per scale step and bottoms out at two
+    /// buckets, so the result is exactly `MIN_SCALE` plus the steps it
+    /// takes to widen these counters to `Width::U64`.
+    ///
+    /// Equivalently: widening counters is paid for in scale steps, and
+    /// a histogram must always be able to afford widening to
+    /// `Width::U64`, since a counter overflow can demand it at any
+    /// time.
+    #[inline]
+    #[must_use]
+    pub const fn min_scale(self) -> i32 {
+        crate::mapping::MIN_SCALE + self.to_u64_widen_steps() as i32
+    }
 }

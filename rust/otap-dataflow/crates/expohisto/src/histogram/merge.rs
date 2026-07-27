@@ -3,9 +3,9 @@
 
 //! Merge logic for combining histograms.
 //!
-//! 1. **Prepare** — Set width to `max(W_self, W_src)` and downscale
+//! 1. **Prepare** -- Set width to `max(W_self, W_src)` and downscale
 //!    self so the combined slot range fits in N words.
-//! 2. **Merge** — For each dest word, repack its contributing source
+//! 2. **Merge** -- For each dest word, repack its contributing source
 //!    words (widen, cross-word sum, narrow, pack) then
 //!    `swar_add_checked`. Overflow widens self and retries;
 //!    `tm_log` is invariant under widening so group boundaries are
@@ -75,35 +75,25 @@ impl<const N: usize> HistogramNN<N> {
         let range_change = (self.current.scale.scale() - target_scale).max(0) as u32;
         let width_change = (merge_width as u32).saturating_sub(self.current.width as u32);
         let self_change = range_change.max(width_change);
-        // Clamp: the two-bucket invariant guarantees that at MIN_SCALE
-        // the entire exponent range fits.
-        let budget = (self.current.scale.scale() - crate::mapping::MIN_SCALE) as u32;
-        let self_change = self_change.min(budget);
+        // Both terms are affordable under the range-coverage
+        // invariant: the range shrinks to two buckets at MIN_SCALE, so
+        // no range fix can demand more steps than remain, and widening
+        // to `merge_width` only shrinks the bucket count.
+        debug_assert!(
+            self_change as i32 <= self.current.scale.scale() - crate::mapping::MIN_SCALE,
+            "merge needs {self_change} scale steps, only {} available",
+            self.current.scale.scale() - crate::mapping::MIN_SCALE,
+        );
 
         if self.buckets_empty() {
-            // No data to transform — just set scale and width.
-            // Clamp at MIN_SCALE (the two-bucket invariant guarantees
-            // the entire exponent range fits at MIN_SCALE).
-            let new_scale =
-                (self.current.scale.scale() - self_change as i32).max(crate::mapping::MIN_SCALE);
-            debug_assert!(new_scale >= crate::mapping::MIN_SCALE);
+            // No data to transform -- just set scale and width.
+            let new_scale = self.current.scale.scale() - self_change as i32;
             self.current.scale =
-                crate::mapping::Scale::new(new_scale).expect("clamped at MIN_SCALE");
+                crate::mapping::Scale::new(new_scale).expect("bounded by MIN_SCALE");
             self.current.width = merge_width;
+            self.debug_assert_range_coverage();
         } else if self_change > 0 {
             self.downscale_by_min(self_change, merge_width);
-        }
-
-        // Ensure headroom: merge_words may need to widen to U64 on
-        // overflow.  If the remaining scale budget can't afford that,
-        // downscale further now (the headroom cap in do_downscale
-        // prevents this from exceeding MIN_SCALE).
-        if !self.buckets_empty() {
-            let headroom_needed = Width::U64 as i32 - self.current.width as i32;
-            let headroom_have = self.current.scale.scale() - crate::mapping::MIN_SCALE;
-            if headroom_needed > headroom_have {
-                self.downscale_by((headroom_needed - headroom_have) as u32);
-            }
         }
 
         // Word-by-word merge with on-the-fly repacking.
@@ -141,7 +131,7 @@ impl<const N: usize> HistogramNN<N> {
     ///
     /// When `tm_log >= 0`, each dest word maps to `2^tm_log` source
     /// words (the normal case).  When `tm_log < 0`, each source word
-    /// spans `2^(-tm_log)` dest words — this happens when the dest is
+    /// spans `2^(-tm_log)` dest words -- this happens when the dest is
     /// much wider than the source after downscaling.
     fn merge_words<const M: usize>(
         &mut self,
@@ -159,7 +149,7 @@ impl<const N: usize> HistogramNN<N> {
         }
     }
 
-    /// Merge when `tm_log >= 0`: each dest word ← `2^tm_log` source words.
+    /// Merge when `tm_log >= 0`: each dest word <- `2^tm_log` source words.
     fn merge_words_positive<const M: usize>(
         &mut self,
         other: &HistogramNN<M>,
@@ -211,7 +201,7 @@ impl<const N: usize> HistogramNN<N> {
         }
     }
 
-    /// Merge when `tm_log < 0`: each source word → `2^neg_tm` dest words.
+    /// Merge when `tm_log < 0`: each source word -> `2^neg_tm` dest words.
     ///
     /// After widening the source by `in_word` steps to `cur`, each
     /// cur-lane equals one dest slot.  Since `cur < dest_width`, each
@@ -420,14 +410,16 @@ impl<const N: usize> HistogramNN<N> {
 
     /// Widen self to `new_width`, updating scale and all words.
     ///
-    /// Callers must ensure headroom: the merge prepare phase
-    /// pre-downscales so that `scale − MIN_SCALE ≥ U64 − width`,
-    /// guaranteeing `change_scale` stays within budget.
+    /// Callers must ensure range coverage: the merge prepare phase
+    /// pre-downscales so the widened buckets still fit within the
+    /// range at the resulting scale, guaranteeing `change_scale` stays
+    /// above `MIN_SCALE`.
     fn widen_to(&mut self, new_width: Width) {
         let old_width = self.current.width;
         let change = new_width.subtract(old_width) as u32;
         let _ = self.widen_words(old_width, new_width);
         self.change_scale(change);
         self.current.width = new_width;
+        self.debug_assert_range_coverage();
     }
 }
