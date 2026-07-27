@@ -45,7 +45,7 @@ pub(crate) struct DecodedFields {
     pub(crate) fields: Vec<JournalField>,
     /// Index into `fields` of the first kept `MESSAGE` field, or `None` if no
     /// `MESSAGE` was kept. Note this is `None` when the *first* `MESSAGE` was
-    /// dropped for size even if a later `MESSAGE` survived — matching the
+    /// dropped for size even if a later `MESSAGE` survived -- matching the
     /// encoder's body contract.
     pub(crate) message_body_index: Option<usize>,
     /// Count of fields dropped for exceeding the extraction limits (or for a
@@ -57,18 +57,18 @@ pub(crate) struct DecodedFields {
 ///
 /// Fed one raw `name=value` slice at a time via [`FieldDecoder::feed`], it lets
 /// the FFI reader copy each `sd_journal_enumerate_data` slice out *before*
-/// pulling the next one — those slices are only valid until the next enumerate
-/// call — so no journald-owned pointer is ever held across a call.
+/// pulling the next one -- those slices are only valid until the next enumerate
+/// call -- so no journald-owned pointer is ever held across a call.
 /// [`FieldDecoder::finish`] yields the owned result.
 ///
 /// For each field, [`FieldDecoder::feed`] applies, in order:
-/// 1. `MESSAGE` detection — the first field named `MESSAGE` is marked the body
+/// 1. `MESSAGE` detection -- the first field named `MESSAGE` is marked the body
 ///    candidate (regardless of whether it is then dropped).
-/// 2. Drop check — dropped and counted if possibly truncated
+/// 2. Drop check -- dropped and counted if possibly truncated
 ///    (`field_len >= threshold`), its value exceeds `max_field_bytes`, the kept
 ///    field count already reached `max_fields_per_entry`, or keeping it would
 ///    push the entry past `max_entry_bytes`.
-/// 3. UTF-8 name check — a field whose name is not valid UTF-8 is dropped and
+/// 3. UTF-8 name check -- a field whose name is not valid UTF-8 is dropped and
 ///    counted.
 ///
 /// The body index is set only when the first `MESSAGE` is actually *kept*; a
@@ -100,13 +100,13 @@ impl<'e> FieldDecoder<'e> {
     }
 
     /// Process one raw `name=value` field. `bytes` only needs to be valid for
-    /// the duration of the call — kept fields are copied out before returning.
+    /// the duration of the call -- kept fields are copied out before returning.
     pub(crate) fn feed(&mut self, bytes: &[u8]) {
         let Some(eq) = bytes.iter().position(|b| *b == b'=') else {
             return;
         };
         let is_first_message = if !self.message_seen && &bytes[..eq] == b"MESSAGE" {
-            // Setting `message_seen` here — before the drop check — intentionally
+            // Setting `message_seen` here -- before the drop check -- intentionally
             // poisons the body index for the whole entry if this first MESSAGE is
             // then dropped (e.g. oversized): a later, smaller MESSAGE chunk must
             // not masquerade as the (truncated) body.

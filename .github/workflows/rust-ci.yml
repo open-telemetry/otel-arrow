@@ -522,7 +522,7 @@ jobs:
           tool: cargo-nextest
       - name: Build and archive tests (Incomplete)
         if: runner.os == 'Windows'
-        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
+        run: cargo nextest archive --locked --no-default-features --features=crypto-symcrypt,mimalloc,azure,aws,azure-monitor-exporter,geneva-exporter,contrib-processors,unsafe-optimizations --workspace --archive-file nextest-archive.tar.zst
         working-directory: ./rust/${{ matrix.folder }}
       - name: Build and archive tests (Complete)
         if: runner.os != 'Windows'

@@ -52,7 +52,7 @@ pub const fn check_cardinality(cardinality: usize) {
     );
 }
 
-/// Numeric metric value — a scalar integer or float, or a pre-aggregated MMSC summary.
+/// Numeric metric value -- a scalar integer or float, or a pre-aggregated MMSC summary.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 #[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for scalars; acceptable for internal telemetry.
@@ -486,6 +486,17 @@ pub struct MeasurementMetricSet<M: MeasurementMetricSetHandler> {
     pub(crate) entity_key: EntityKey,
     pub(crate) buckets: Vec<M>,
     pub(crate) touched: Vec<u64>,
+}
+
+impl<M: MeasurementMetricSetHandler + Clone> Clone for MeasurementMetricSet<M> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            entity_key: self.entity_key,
+            buckets: self.buckets.clone(),
+            touched: self.touched.clone(),
+        }
+    }
 }
 
 impl<M: MeasurementMetricSetHandler + Debug> Debug for MeasurementMetricSet<M> {

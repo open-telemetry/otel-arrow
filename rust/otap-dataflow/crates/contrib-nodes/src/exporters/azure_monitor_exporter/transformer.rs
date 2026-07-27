@@ -160,7 +160,7 @@ impl Transformer {
     }
 
     /// High-perf, single-threaded: pre-serializes resource+scope fields once per ScopeLogs,
-    /// then writes per-record fields directly to the buffer — no Map cloning or re-serialization.
+    /// then writes per-record fields directly to the buffer -- no Map cloning or re-serialization.
     /// Assumes non-overlapping mappings across resource, scope, and log record levels.
     #[must_use]
     // TODO: When Rust generators stabilize (rust-lang/rust#117078), replace
@@ -243,7 +243,7 @@ impl Transformer {
             has_field = true;
             // Write pre-serialized key (e.g. `"TimeGenerated":`)
             out.extend_from_slice(&fm.dest_key_json);
-            // Write value directly — avoids Value allocation for simple types
+            // Write value directly -- avoids Value allocation for simple types
             Self::write_field_value_json(fm.source, log_record, out);
         }
 
@@ -1365,15 +1365,15 @@ mod tests {
         let transformer = Transformer::new(&config);
 
         let test_strings = vec![
-            "hello world",                  // ASCII
-            "héllo wörld",                  // Latin diacritics
-            "日本語テスト",                 // CJK
-            "🚀🔥💯",                       // Emoji
-            "mixed: café ☕ naïve 日本 🎉", // Mixed scripts
-            "line1\nline2\ttab",            // Escape sequences
-            "quote\"and\\backslash",        // JSON-special chars
-            "\x01\x02\x1f",                 // Control characters
-            "",                             // Empty string
+            "hello world",                                                     // ASCII
+            "h\u{E9}llo w\u{F6}rld",                                           // Latin diacritics
+            "\u{65E5}\u{672C}\u{8A9E}\u{30C6}\u{30B9}\u{30C8}",                // CJK
+            "\u{1F680}\u{1F525}\u{1F4AF}",                                     // Emoji
+            "mixed: caf\u{E9} \u{2615} na\u{EF}ve \u{65E5}\u{672C} \u{1F389}", // Mixed scripts
+            "line1\nline2\ttab",                                               // Escape sequences
+            "quote\"and\\backslash",                                           // JSON-special chars
+            "\x01\x02\x1f",                                                    // Control characters
+            "",                                                                // Empty string
         ];
 
         for test_str in &test_strings {
@@ -1437,9 +1437,9 @@ mod tests {
             "tab\there",
             "carriage\rreturn",
             "\x00\x01\x1f", // control chars
-            "emoji 🎉 and ñ",
-            "日本語",
-            "mixed\t\"escape\"\n🚀",
+            "emoji \u{1F389} and \u{F1}",
+            "\u{65E5}\u{672C}\u{8A9E}",
+            "mixed\t\"escape\"\n\u{1F680}",
         ];
 
         for input in &cases {
@@ -1710,7 +1710,7 @@ mod tests {
         let results = transformer.convert_to_log_analytics(&logs_view);
         assert_eq!(results.len(), 1, "expected one log record");
 
-        // The output MUST be valid JSON — serde_json::from_slice must not fail.
+        // The output MUST be valid JSON -- serde_json::from_slice must not fail.
         let json: Value = serde_json::from_slice(&results[0]).unwrap_or_else(|e| {
             panic!(
                 "invalid JSON from body with invalid UTF-8: {e}\nraw: {:?}",

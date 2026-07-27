@@ -118,7 +118,7 @@ fn title_bar_and_command_overlay_render() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("OpenTelemetry - Arrow Dataflow Engine"));
+    assert!(rendered.contains("OTel-Arrow Dataflow Engine"));
     assert!(rendered.contains("Equivalent CLI"));
     assert!(rendered.contains("telemetry logs watch"));
     assert!(rendered.contains("https://admin.example.com:8443/engine-a"));
@@ -126,7 +126,7 @@ fn title_bar_and_command_overlay_render() {
 
 /// Scenario: activity is in progress while the title bar is rendered.
 /// Guarantees: the shimmer splits the brand into fixed-position character
-/// spans without changing the visible OpenTelemetry label text.
+/// spans without changing the visible OTel-Arrow label text.
 #[test]
 fn active_brand_shimmer_preserves_label_text() {
     let mut app = AppState::new(UiStartView::Pipelines, true, 200);
@@ -141,8 +141,8 @@ fn active_brand_shimmer_preserves_label_text() {
         .iter()
         .map(|span| span.content.as_ref())
         .collect::<String>();
-    assert_eq!(label, "OpenTelemetry");
-    assert_eq!(active_spans.len(), "OpenTelemetry".len());
+    assert_eq!(label, "OTel-Arrow");
+    assert_eq!(active_spans.len(), "OTel-Arrow".len());
     assert!(
         active_spans
             .iter()

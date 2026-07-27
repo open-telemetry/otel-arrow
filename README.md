@@ -241,7 +241,7 @@ repository](https://github.com/open-telemetry/community/blob/main/guides/contrib
 
 ### Thanks to all of our contributors
 
-[![OpenTelemetry-Arrow
+[![OTel-Arrow
 contributors](https://contributors-img.web.app/image?repo=open-telemetry/otel-arrow)](https://github.com/open-telemetry/otel-arrow/graphs/contributors)
 
 ## Documentation

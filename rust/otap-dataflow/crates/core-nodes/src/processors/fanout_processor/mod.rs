@@ -14,7 +14,7 @@
 //!
 //! # Fallback
 //! Destinations can declare `fallback_for: <port>`. On nack/timeout of the
-//! origin, the fallback is triggered. Chains (A→B→C) are supported.
+//! origin, the fallback is triggered. Chains (A->B->C) are supported.
 //!
 //! See `processors/fanout_processor/README.md` for detailed diagrams and examples.
 
@@ -104,7 +104,7 @@ struct FanoutConfig {
     pub timeout_check_interval: Duration,
     /// Maximum number of in-flight messages tracked by the processor.
     /// When the limit is reached, `accept_pdata()` returns `false` to apply backpressure
-    /// via the engine's `recv_when` gate — no data is lost or nacked.
+    /// via the engine's `recv_when` gate -- no data is lost or nacked.
     /// Only applies when await_ack is "primary" or "all" (not "none").
     /// Default: 10000. Set to 0 for unlimited (not recommended for production).
     #[serde(default = "FanoutConfig::default_max_inflight")]
@@ -306,7 +306,7 @@ struct ValidatedConfig {
     /// Fast-path: await_ack == None, no inflight tracking needed.
     use_fire_and_forget: bool,
     /// Fast-path: parallel + primary + no fallback + no timeout.
-    /// Uses slim inflight (request_id → original_pdata) instead of full DestinationVec.
+    /// Uses slim inflight (request_id -> original_pdata) instead of full DestinationVec.
     use_slim_primary: bool,
 }
 
@@ -954,7 +954,7 @@ impl FanoutProcessor {
     // =========================================================================
     // FAST PATH: Slim primary-only (parallel + primary + no fallback/timeout)
     // =========================================================================
-    // Minimal state: request_id → original_pdata. Ignore non-primary acks/nacks.
+    // Minimal state: request_id -> original_pdata. Ignore non-primary acks/nacks.
     //
     // Note: An optimization was considered to eliminate slim_inflight by keeping the original
     // context on primary (so acks route directly upstream) and using empty context on non-primary
@@ -1113,7 +1113,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
             Message::PData(pdata) => {
                 debug_assert!(
                     self.accept_pdata(),
-                    "process() called with PData while at max_inflight ({}) — \
+                    "process() called with PData while at max_inflight ({}) \u{2014} \
                      engine must check accept_pdata() before delivering",
                     self.config.max_inflight
                 );
@@ -1126,7 +1126,7 @@ impl Processor<OtapPdata> for FanoutProcessor {
                 }
 
                 // === FAST PATH 2: Slim primary-only (parallel + primary + no fallback/timeout) ===
-                // Minimal state: just request_id → original_pdata.
+                // Minimal state: just request_id -> original_pdata.
                 if self.config.use_slim_primary {
                     self.process_slim_primary(pdata, effect_handler).await?;
                     Ok(())
@@ -2732,9 +2732,9 @@ mod tests {
     /// Test behavior when late ack arrives from original destination after timeout triggered fallback.
     ///
     /// Sequence:
-    /// 1. Primary times out → fallback dispatched, primary marked TimedOut
-    /// 2. Late ack arrives from primary → IGNORED (destination is TimedOut)
-    /// 3. Fallback acks → request completes
+    /// 1. Primary times out -> fallback dispatched, primary marked TimedOut
+    /// 2. Late ack arrives from primary -> IGNORED (destination is TimedOut)
+    /// 3. Fallback acks -> request completes
     /// 4. Upstream receives exactly one ack (from fallback outcome)
     #[tokio::test]
     async fn late_ack_from_timed_out_primary_is_ignored() {
@@ -2828,7 +2828,7 @@ mod tests {
     ///
     /// Sequence:
     /// 1. Sequential mode with A (has fallback B) and C
-    /// 2. A acks successfully → B is marked Skipped
+    /// 2. A acks successfully -> B is marked Skipped
     /// 3. C is dispatched next (B is skipped)
     #[tokio::test]
     async fn sequential_mode_skips_fallback_when_origin_succeeds() {
@@ -2908,7 +2908,7 @@ mod tests {
     #[tokio::test]
     async fn no_nacks_at_max_inflight() {
         // Slim primary path: parallel + primary + no fallback + no timeout.
-        // Acks are never returned — simulating a slow exporter holding all acks.
+        // Acks are never returned -- simulating a slow exporter holding all acks.
         const MAX_INFLIGHT: usize = 2;
         let mut h = build_harness_with_config(
             json!([make_dest(TEST_OUT_PORT_NAME, true, None, None)]),
@@ -2921,7 +2921,7 @@ mod tests {
             "expected slim primary path for this test"
         );
 
-        // Send exactly max_inflight messages — the most we can send without
+        // Send exactly max_inflight messages -- the most we can send without
         // violating the accept_pdata() contract (no acks are returned).
         for _ in 0..MAX_INFLIGHT {
             h.fanout
@@ -2940,7 +2940,7 @@ mod tests {
 
         assert_eq!(
             nacked, 0,
-            "fanout must not nack messages — backpressure is handled by the engine"
+            "fanout must not nack messages \u{2014} backpressure is handled by the engine"
         );
     }
 }
