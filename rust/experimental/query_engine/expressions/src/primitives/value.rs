@@ -1,7 +1,10 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-use std::fmt::{Debug, Display, Write};
+use std::{
+    borrow::Borrow,
+    fmt::{Debug, Display, Write},
+};
 
 use chrono::{DateTime, FixedOffset, SecondsFormat, TimeDelta, TimeZone, Utc};
 use regex::{Regex, RegexBuilder};
@@ -1110,13 +1113,39 @@ pub trait BooleanValue: Debug {
     }
 }
 
+impl<T: Into<bool> + Copy + Debug> BooleanValue for T {
+    fn get_value(&self) -> bool {
+        (*self).into()
+    }
+}
+
 pub trait IntegerValue: Debug {
     fn get_value(&self) -> i64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
-        (action)(&self.get_value().to_string())
+        (action)(&ToString::to_string(&self.get_value()))
     }
 }
+
+impl<T: Into<i64> + Copy + Debug> IntegerValue for T {
+    fn get_value(&self) -> i64 {
+        (*self).into()
+    }
+}
+
+macro_rules! impl_as_static_value_for_integers {
+    ($($t:ty),*) => {
+        $(
+            impl AsStaticValue for $t {
+                fn to_static_value(&self) -> StaticValue<'_> {
+                    StaticValue::Integer(self)
+                }
+            }
+        )*
+    };
+}
+
+impl_as_static_value_for_integers!(i8, i16, i32, i64, u8, u16, u32);
 
 pub trait DateTimeValue: Debug {
     fn get_value(&self) -> DateTime<FixedOffset>;
@@ -1130,13 +1159,39 @@ pub trait DateTimeValue: Debug {
     }
 }
 
+impl<T: Into<DateTime<FixedOffset>> + Copy + Debug> DateTimeValue for T {
+    fn get_value(&self) -> DateTime<FixedOffset> {
+        (*self).into()
+    }
+}
+
 pub trait DoubleValue: Debug {
     fn get_value(&self) -> f64;
 
     fn to_string(&self, action: &mut dyn FnMut(&str)) {
-        (action)(&self.get_value().to_string())
+        (action)(&ToString::to_string(&self.get_value()))
     }
 }
+
+impl<T: Into<f64> + Copy + Debug> DoubleValue for T {
+    fn get_value(&self) -> f64 {
+        (*self).into()
+    }
+}
+
+macro_rules! impl_as_static_value_for_floats {
+    ($($t:ty),*) => {
+        $(
+            impl AsStaticValue for $t {
+                fn to_static_value(&self) -> StaticValue<'_> {
+                    StaticValue::Double(self)
+                }
+            }
+        )*
+    };
+}
+
+impl_as_static_value_for_floats!(f32, f64);
 
 pub trait RegexValue: Debug {
     fn get_value(&self) -> &Regex;
@@ -1146,8 +1201,20 @@ pub trait RegexValue: Debug {
     }
 }
 
+impl<T: Borrow<Regex> + Debug> RegexValue for T {
+    fn get_value(&self) -> &Regex {
+        self.borrow()
+    }
+}
+
 pub trait StringValue: Debug {
     fn get_value(&self) -> &str;
+}
+
+impl<T: AsRef<str> + Debug> StringValue for T {
+    fn get_value(&self) -> &str {
+        self.as_ref()
+    }
 }
 
 pub trait TimeSpanValue: Debug {
@@ -1220,6 +1287,12 @@ pub trait TimeSpanValue: Debug {
 
             (count, v)
         }
+    }
+}
+
+impl<T: Into<TimeDelta> + Copy + Debug> TimeSpanValue for T {
+    fn get_value(&self) -> TimeDelta {
+        (*self).into()
     }
 }
 
