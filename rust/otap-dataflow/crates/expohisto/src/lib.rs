@@ -27,7 +27,8 @@ pub mod mapping;
 pub mod lookup;
 
 pub use histogram::{
-    BucketView, BucketsIter, Error, HistogramNN, HistogramView, Settings, Stats, Width,
+    BucketTotals, BucketView, BucketsIter, Error, HistogramNN, HistogramView, Settings, Stats,
+    Width,
 };
 pub use mapping::{MIN_SCALE, Scale, ScaleError, table_scale};
 

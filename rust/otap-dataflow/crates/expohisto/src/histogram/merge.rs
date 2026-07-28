@@ -433,7 +433,7 @@ mod tests {
         assert_eq!(view.stats().min, 3.0);
         assert_eq!(view.stats().max, 100.0);
         assert_eq!(view.stats().count, 3);
-        assert_eq!(view.zero_count(), 0);
+        assert_eq!(view.scan_buckets(|_| {}).zero_count, 0);
     }
 
     /// Scenario: A histogram whose population includes an exact zero is merged
@@ -453,7 +453,7 @@ mod tests {
         let view = dst.view();
         assert_eq!(view.stats().min, 0.0);
         assert_eq!(view.stats().count, 3);
-        assert_eq!(view.zero_count(), 1);
+        assert_eq!(view.scan_buckets(|_| {}).zero_count, 1);
     }
 
     /// Scenario: An aggregator that recorded only exact zeros -- a non-zero
@@ -469,14 +469,18 @@ mod tests {
             src.update(0.0).unwrap();
         }
         assert_eq!(src.view().stats().count, 4, "zeros are counted");
-        assert_eq!(src.view().zero_count(), 4, "zeros occupy no bucket");
+        assert_eq!(
+            src.view().scan_buckets(|_| {}).zero_count,
+            4,
+            "zeros occupy no bucket"
+        );
 
         let mut dst: HistogramNN<10> = HistogramNN::new();
         dst.merge_from(&src).unwrap();
 
         let view = dst.view();
         assert_eq!(view.stats().count, 4);
-        assert_eq!(view.zero_count(), 4);
+        assert_eq!(view.scan_buckets(|_| {}).zero_count, 4);
         assert_eq!(view.stats().min, 0.0);
         assert_eq!(view.stats().max, 0.0);
         assert_eq!(view.stats().sum, 0.0);
@@ -506,7 +510,7 @@ mod tests {
         for merged in [&zeros_first, &positives_first] {
             let view = merged.view();
             assert_eq!(view.stats().count, 4);
-            assert_eq!(view.zero_count(), 2);
+            assert_eq!(view.scan_buckets(|_| {}).zero_count, 2);
             assert_eq!(view.stats().min, 0.0, "recorded zeros hold the minimum");
             assert_eq!(view.stats().max, 100.0);
             assert_eq!(view.stats().sum, 105.0);
@@ -529,7 +533,7 @@ mod tests {
 
         let view = dst.view();
         assert_eq!(view.stats().count, 2);
-        assert_eq!(view.zero_count(), 0);
+        assert_eq!(view.scan_buckets(|_| {}).zero_count, 0);
         assert_eq!(view.stats().min, 5.0, "empty source is not a zero sample");
         assert_eq!(view.stats().max, 100.0);
     }

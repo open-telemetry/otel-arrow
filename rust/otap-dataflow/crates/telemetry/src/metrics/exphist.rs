@@ -26,7 +26,10 @@ use otap_df_pdata::proto::opentelemetry::metrics::v1::{
 /// The positive-only [`HistogramView`] maps directly onto OTLP's positive
 /// bucket range at the view's current `scale`. Because the histogram counts
 /// exact zeros in its total but never places them in a bucket, the OTLP
-/// `zero_count` is recovered as `count - sum(positive bucket counts)`.
+/// `zero_count` is recovered as `count - sum(positive bucket counts)`. That
+/// subtraction is a byproduct of the bucket scan this encoder performs
+/// anyway, which is why [`HistogramView::scan_buckets`] hands back both the
+/// bucket counts and the totals in one pass.
 ///
 /// `sum`, `min`, and `max` are populated only when at least one observation
 /// has been recorded. The sum is always OTLP-valid here because the source
@@ -40,10 +43,9 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
     let stats = view.stats();
     let positive = view.positive();
 
-    let bucket_counts: Vec<u64> = positive.iter().collect();
-    let positive_total: u64 = bucket_counts.iter().sum();
+    let mut bucket_counts: Vec<u64> = Vec::with_capacity(positive.len() as usize);
     // Zeros contribute to `count` but never to a bucket (see `record_incr`).
-    let zero_count = stats.count.saturating_sub(positive_total);
+    let totals = view.scan_buckets(|count| bucket_counts.push(count));
 
     let mut builder = ExponentialHistogramDataPoint::build()
         .attributes(attributes.to_vec())
@@ -51,7 +53,7 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
         .time_unix_nano(time_unix_nano)
         .count(stats.count)
         .scale(view.scale())
-        .zero_count(zero_count);
+        .zero_count(totals.zero_count);
 
     if !bucket_counts.is_empty() {
         builder = builder.positive(Buckets::new(positive.offset(), bucket_counts));

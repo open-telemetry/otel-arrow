@@ -12,6 +12,10 @@
 //! Gauges are instantaneous values that are set via `set`.
 
 use otap_df_expohisto::{Error as HistogramError, HistogramNN};
+
+/// Bucket totals recovered by [`Distribution::scan_buckets`], re-exported so
+/// callers need not depend on `otap_df_expohisto` directly.
+pub use otap_df_expohisto::BucketTotals;
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -743,39 +747,39 @@ impl Distribution {
         }
     }
 
-    /// Returns the number of observations excluded from the bucket range
-    /// because they were exactly zero.
+    /// Walks this tier's buckets exactly once, passing each count to `emit`,
+    /// and returns the totals learned by that walk -- including the number of
+    /// observations excluded from the bucket range because they were exactly
+    /// zero.
     ///
     /// A positive-only exponential histogram has no bucket that can hold a
-    /// zero, so for the bucketed tiers this is recovered as
-    /// `count - sum(positive bucket counts)`.
+    /// zero, so the zero count is recoverable only as `count - sum(positive
+    /// bucket counts)`: a full scan of the buckets. Exposing it only here ties
+    /// that cost to the encoding pass that has to walk the buckets anyway --
+    /// an encoder learns the zero count for free, and no caller can pay for a
+    /// scan whose bucket counts it then discards.
     ///
-    /// [`Distribution::Basic`] encodes no buckets and so excludes nothing: it
-    /// reports 0 regardless of whether zeros were observed. A zero there is an
-    /// ordinary observation that lowers `min`, and is summarized along with
-    /// every other observation into the single enclosing bucket.
-    #[must_use]
-    pub fn zero_count(&self) -> u64 {
+    /// [`Distribution::Basic`] encodes no buckets, so it emits nothing and
+    /// reports [`BucketTotals::EMPTY`] regardless of whether zeros were
+    /// observed. A zero there is an ordinary observation that lowers `min`,
+    /// and is summarized along with every other observation into the single
+    /// enclosing bucket its OTLP projection emits.
+    pub fn scan_buckets<F>(&self, emit: F) -> BucketTotals
+    where
+        F: FnMut(u64),
+    {
         match self {
-            Self::Basic(_) => 0,
-            Self::Normal(hist) => hist.view().zero_count(),
-            Self::Detailed(hist) => hist.view().zero_count(),
-        }
-    }
-
-    /// Returns the exponential-histogram scale of this tier's buckets.
-    ///
-    /// Returns `None` for [`Distribution::Basic`], which encodes no buckets.
-    #[must_use]
-    pub fn scale(&self) -> Option<i32> {
-        match self {
-            Self::Basic(_) => None,
-            Self::Normal(hist) => Some(hist.view().scale()),
-            Self::Detailed(hist) => Some(hist.view().scale()),
+            Self::Basic(_) => BucketTotals::EMPTY,
+            Self::Normal(hist) => hist.view().scan_buckets(emit),
+            Self::Detailed(hist) => hist.view().scan_buckets(emit),
         }
     }
 
     /// Returns the relative error bound of this tier's quantile estimates.
+    ///
+    /// The bound is the observable consequence of the bucket scale, which is
+    /// why the scale itself is not exposed here: a consumer of the estimates
+    /// needs the error they carry, not the encoding that produced it.
     ///
     /// Returns `None` for [`Distribution::Basic`], which encodes no buckets
     /// and so reports no estimated values, and 0.0 for an empty histogram.
@@ -788,26 +792,26 @@ impl Distribution {
         }
     }
 
-    /// Estimates the values at the requested quantiles into `out`.
+    /// Estimates the values at the requested quantiles into `out`, returning
+    /// the [`BucketTotals`] scanned while doing so.
     ///
     /// `quantiles` must be sorted in non-decreasing order with every entry in
-    /// `[0.0, 1.0]`, and `out` must be at least as long. Returns `false`
+    /// `[0.0, 1.0]`, and `out` must be at least as long. Returns `None`
     /// without touching `out` for [`Distribution::Basic`], which keeps no
     /// buckets and therefore cannot estimate interior quantiles.
     ///
+    /// Quantile estimation has to know the zero mass before it can walk the
+    /// buckets, so the totals come free with the estimates: a caller that
+    /// needs both -- the admin JSON rendering, for instance -- must not scan
+    /// again via [`scan_buckets`](Self::scan_buckets).
+    ///
     /// Estimates carry the error bound reported by
     /// [`relative_error`](Self::relative_error).
-    pub fn quantiles(&self, quantiles: &[f64], out: &mut [f64]) -> bool {
+    pub fn quantiles(&self, quantiles: &[f64], out: &mut [f64]) -> Option<BucketTotals> {
         match self {
-            Self::Basic(_) => false,
-            Self::Normal(hist) => {
-                hist.view().quantiles(quantiles, out);
-                true
-            }
-            Self::Detailed(hist) => {
-                hist.view().quantiles(quantiles, out);
-                true
-            }
+            Self::Basic(_) => None,
+            Self::Normal(hist) => Some(hist.view().quantiles(quantiles, out)),
+            Self::Detailed(hist) => Some(hist.view().quantiles(quantiles, out)),
         }
     }
 
@@ -839,18 +843,23 @@ impl Distribution {
 }
 
 /// Summary equality: two distributions are equal when they share a tier and
-/// agree on the observable aggregate statistics (count, sum, min, max, and
-/// zero count).
+/// agree on the observable aggregate statistics (count, sum, min, max) and on
+/// the bucket totals a scan recovers.
 ///
 /// The vendored histogram does not implement structural equality, and the
 /// bucket layout is an implementation detail; comparing the summary is
 /// sufficient for the registry's equality needs and for tests. Distinct bucket
 /// distributions that share a summary compare equal.
+///
+/// The bucket scan here is not the access pattern
+/// [`Distribution::scan_buckets`] exists to discourage: an equality test must
+/// look at the buckets, and it discards the counts only after comparing the
+/// totals they produce.
 impl PartialEq for Distribution {
     fn eq(&self, other: &Self) -> bool {
         self.tier_name() == other.tier_name()
             && self.summary() == other.summary()
-            && self.zero_count() == other.zero_count()
+            && self.scan_buckets(|_| {}) == other.scan_buckets(|_| {})
     }
 }
 
@@ -1263,10 +1272,11 @@ mod tests {
     }
 
     /// Scenario: A normal-tier distribution records exact zeros alongside
-    /// positive values.
+    /// positive values and its buckets are scanned once.
     /// Guarantees: Zeros count toward the total and toward `min` without being
-    /// bucketed, and `zero_count` recovers them so that
-    /// `zero_count + sum(positive bucket counts) == count`.
+    /// bucketed, and the scan's totals recover them so that
+    /// `zero_count + sum(positive bucket counts) == count`, with the bucket
+    /// counts delivered by the same pass.
     #[test]
     fn test_distribution_recovers_zero_count_from_total() {
         let mut dist = Distribution::normal();
@@ -1280,20 +1290,20 @@ mod tests {
         assert!((sum - 8.2).abs() < 1e-9);
         assert_eq!(min, 0.0);
         assert_eq!(max, 4.0);
-        assert_eq!(dist.zero_count(), 1);
 
-        let Distribution::Normal(hist) = &dist else {
-            panic!("expected normal tier")
-        };
-        let bucketed: u64 = hist.view().positive().iter().sum();
-        assert_eq!(dist.zero_count() + bucketed, count);
+        let mut counts = Vec::new();
+        let totals = dist.scan_buckets(|c| counts.push(c));
+        assert_eq!(totals.zero_count, 1);
+        assert_eq!(counts.iter().sum::<u64>(), totals.positive_total);
+        assert_eq!(totals.zero_count + totals.positive_total, count);
     }
 
     /// Scenario: A basic-tier distribution records exact zeros alongside
     /// positive values.
-    /// Guarantees: The basic tier does not track zeros separately -- it reports
-    /// a zero_count of 0 and folds them into min instead -- so nothing excludes
-    /// them from the single bucket its OTLP projection emits.
+    /// Guarantees: The basic tier does not track zeros separately -- its bucket
+    /// scan emits nothing and reports empty totals, folding zeros into min
+    /// instead -- so nothing excludes them from the single bucket its OTLP
+    /// projection emits.
     #[test]
     fn test_basic_tier_folds_zeros_into_min() {
         let mut dist = Distribution::basic();
@@ -1302,7 +1312,10 @@ mod tests {
         dist.record(4.0);
 
         assert_eq!(dist.count(), 3);
-        assert_eq!(dist.zero_count(), 0);
+        let mut emitted = 0_usize;
+        let totals = dist.scan_buckets(|_| emitted += 1);
+        assert_eq!(emitted, 0);
+        assert_eq!(totals, BucketTotals::EMPTY);
         let (_count, _sum, min, max) = dist.summary();
         assert_eq!(min, 0.0);
         assert_eq!(max, 4.0);
@@ -1325,7 +1338,7 @@ mod tests {
         a.merge(&b);
 
         assert_eq!(a.count(), 4);
-        assert_eq!(a.zero_count(), 0);
+        assert_eq!(a.scan_buckets(|_| {}), BucketTotals::EMPTY);
         let (_count, _sum, min, max) = a.summary();
         assert_eq!(min, 0.0);
         assert_eq!(max, 2.0);

@@ -17,23 +17,6 @@ use crate::lookup::BOUNDARIES;
 
 /// Lowest scale at which the value range covers `buckets` distinct
 /// buckets.
-///
-/// The normal IEEE 754 range is two buckets at [`MIN_SCALE`] and
-/// doubles with each scale step, so it covers `2^(scale + 11)`
-/// buckets:
-///
-/// ```text
-///   buckets <= 2^(scale + 11)   <=>   scale >= ceil(log2(buckets)) - 11
-/// ```
-///
-/// Doubling is exact up to scale -1; above that the top and bottom of
-/// the range round inward by a bucket or two, so the closed form can
-/// be one scale step optimistic there. That only concedes a couple of
-/// buckets no value reaches -- a histogram with more buckets than the
-/// range is wasteful, not wrong. The bound is exact where it is load
-/// bearing, at [`Width::min_scale`](crate::Width::min_scale).
-///
-/// Saturates at `MIN_SCALE`, below which no scale exists.
 #[must_use]
 pub(crate) const fn min_scale_for(buckets: u64) -> i32 {
     let log2_ceil = buckets.next_power_of_two().trailing_zeros() as i32;
@@ -44,22 +27,6 @@ pub(crate) const fn min_scale_for(buckets: u64) -> i32 {
 /// Minimum scale for the exponent mapping.
 /// At scale -10, values in (0, 1] map to bucket -1 and values in (1, MAX) map to bucket 0.
 pub const MIN_SCALE: i32 = -10;
-
-/// Buckets the normal IEEE 754 range spans at [`MIN_SCALE`], the
-/// bottom of the scale ladder.
-///
-/// This is the floor on a histogram's word count: at `MIN_SCALE` the
-/// counters have widened to `Width::U64`, where a word holds a single
-/// bucket, so the window can only cover the range with at least this
-/// many words. Derived by inverting [`min_scale_for`] rather than
-/// written down, so it tracks `MIN_SCALE`.
-pub(crate) const fn range_buckets_at_min_scale() -> u64 {
-    let mut buckets = 1;
-    while min_scale_for(buckets * 2) == MIN_SCALE {
-        buckets *= 2;
-    }
-    buckets
-}
 
 /// Error types for mapping operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,13 +40,6 @@ pub enum ScaleError {
     InvalidScale,
     /// The histogram holds more buckets than the value range covers at
     /// this scale.
-    ///
-    /// A histogram of `N` words at its minimum counter width defines
-    /// `N * slots_per_u64(width)` buckets. Those buckets must fit
-    /// within the buckets that span the normal IEEE 754 range at the
-    /// maximum scale (see the internal `min_scale_for` helper); otherwise the
-    /// configuration describes buckets outside the representable range
-    /// and cannot always be downscaled to [`MIN_SCALE`] without error.
     RangeCoverage,
 }
 
@@ -144,13 +104,6 @@ impl Scale {
 
     /// Number of buckets that cover the whole f64 value range at this
     /// scale, measured from the mapping itself.
-    ///
-    /// Every recordable value maps into this many consecutive indices:
-    /// the extremes are `f64::MIN_POSITIVE` and `f64::MAX`, and
-    /// subnormals are rounded up into the smallest normal bucket.
-    ///
-    /// This is the oracle for [`min_scale_for`], which computes the
-    /// same relation in closed form.
     #[cfg(test)]
     pub(crate) fn range_bucket_count(&self) -> u64 {
         // Significand 0 is the exact power of two, which maps one
@@ -204,15 +157,6 @@ impl Scale {
     }
 
     /// Returns the bucket growth factor at this scale: `2^(2^-scale)`.
-    ///
-    /// Every bucket spans `[lower, lower * base)`, so this is the ratio
-    /// between adjacent bucket boundaries. It is read from the boundary
-    /// table rather than computed, keeping the call `no_std`-clean.
-    ///
-    /// At [`MIN_SCALE`] the ratio is `2^1024`, one exponent past the f64
-    /// range, so it saturates to infinity. That is the honest answer for an
-    /// unrepresentable ratio: at that scale a single bucket already covers
-    /// more than the whole positive f64 range.
     #[inline]
     #[must_use]
     pub fn base(&self) -> f64 {
@@ -229,16 +173,6 @@ impl Scale {
     /// an exponential histogram and is the figure that applies to values
     /// produced by [`HistogramView::quantiles`], which interpolates in log
     /// space.
-    ///
-    /// The bound approaches 1 as buckets widen and is exactly 1 at
-    /// [`MIN_SCALE`], where [`base`](Self::base) is no longer representable as
-    /// an f64. That limit is taken explicitly: the closed form would otherwise
-    /// evaluate to `(inf - 1) / (inf + 1)`, which is NaN and would silently
-    /// poison every comparison a caller makes against the bound. A relative
-    /// error of 1 is also the correct reading, since a bucket that wide admits
-    /// values arbitrarily far from its midpoint.
-    ///
-    /// [`HistogramView::quantiles`]: crate::HistogramView::quantiles
     #[inline]
     #[must_use]
     pub fn relative_error(&self) -> f64 {
@@ -273,17 +207,6 @@ impl Scale {
     }
     /// Returns the value at the fractional position `index + fraction`:
     /// `2^((index + fraction) * 2^-scale)`.
-    ///
-    /// `fraction` is clamped to `[0.0, 1.0]`, so the result never leaves the
-    /// bucket at `index`. The position is converted into [`table_scale()`]
-    /// units and read from the same boundary table that
-    /// [`lower_boundary`](Self::lower_boundary) uses, so log-space
-    /// interpolation needs no `powf` and stays `no_std`-clean.
-    ///
-    /// The resolution is `2^(table_scale() - scale)` steps per bucket. At the
-    /// finest scale that is a single step -- the bucket's lower edge -- which
-    /// is already within the bucket's own
-    /// [`relative_error`](Self::relative_error).
     #[inline]
     pub fn interpolate_boundary(&self, index: i32, fraction: f64) -> Result<f64, ScaleError> {
         let shift = table_scale() - self.scale();

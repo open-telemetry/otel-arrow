@@ -115,9 +115,9 @@ pub enum MetricValue {
 
 /// Summary of a distribution metric.
 ///
-/// The exact statistics are always present. The bucketing fields are populated
-/// only for the exponential-histogram tiers; the basic tier encodes no buckets
-/// and so reports no scale, error bound, or quantile estimates.
+/// The exact statistics are always present. Everything that depends on bucket
+/// structure lives in [`details`](Self::details), which is absent for the
+/// basic tier because that tier encodes no buckets.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct DistributionSummary {
     /// Minimum observed value.
@@ -131,20 +131,31 @@ pub struct DistributionSummary {
     pub sum: f64,
     /// Total observation count, including exact zeros.
     pub count: u64,
-    /// Number of observations excluded from the bucket range because they were
-    /// exactly zero.
+    /// Everything recoverable only from the encoded buckets.
     ///
-    /// Always 0 for the basic tier, which encodes no buckets and so excludes
-    /// nothing; a zero there is an ordinary observation reflected in `min`.
-    #[serde(default)]
+    /// `None` for the basic tier, which keeps no buckets: it tracks no zero
+    /// population -- a zero there is an ordinary observation reflected in
+    /// `min` -- and can estimate no quantiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<DistributionDetails>,
+}
+
+/// The bucket-derived part of a [`DistributionSummary`].
+///
+/// Every field here is a byproduct of one walk over the encoded buckets, so
+/// they are reported together rather than exposed as separate accessors that
+/// would each pay for their own scan.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DistributionDetails {
+    /// Number of observations excluded from the bucket range because they
+    /// were exactly zero.
     pub zero_count: u64,
-    /// Exponential-histogram scale of the underlying buckets.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scale: Option<i32>,
     /// Relative error bound that applies to the quantile estimates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relative_error: Option<f64>,
+    pub relative_error: f64,
     /// Estimated median, within `relative_error` of the true value.
+    ///
+    /// `None` when no estimate is representable in JSON, as for an empty
+    /// distribution whose estimates are NaN.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p50: Option<f64>,
     /// Estimated 90th percentile, within `relative_error` of the true value.

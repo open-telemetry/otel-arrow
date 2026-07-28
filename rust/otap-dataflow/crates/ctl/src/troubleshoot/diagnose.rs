@@ -572,7 +572,7 @@ fn metric_value_positive(value: &telemetry::MetricValue) -> bool {
     match value {
         telemetry::MetricValue::U64(value) => *value > 0,
         telemetry::MetricValue::F64(value) => *value > 0.0,
-        telemetry::MetricValue::Distribution(value) => value.count > 0 || value.sum > 0.0,
+        telemetry::MetricValue::Distribution(value) => false,
     }
 }
 

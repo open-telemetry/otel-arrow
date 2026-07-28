@@ -1,6 +1,6 @@
 # otap-df-expohisto
 
-An openTelemetry exponential histogram.
+An OpenTelemetry exponential histogram aggregator.
 
 ## Overview
 
@@ -9,9 +9,7 @@ histogram](https://opentelemetry.io/docs/specs/otel/metrics/data-model/#exponent
 using a fixed-size generic of `N` 64-bit words per instance
 `HistogramNN<N>`. This structure does not allocate memory.
 
-Bucket index mapping is accelerated by a compile-time lookup table
-that is checked in as generated data , so the crate builds without any
-code-generation step.
+This data structure incorporates an exact lookup table.
 
 ## Types
 
@@ -33,13 +31,3 @@ let view = hist.view();
 let stats = view.stats();
 assert_eq!(stats.count, 3);
 ```
-
-## Features
-
-- `std` (default): enables `std::error::Error` impls. Disable for `no_std`
-  builds; all arithmetic, including quantile interpolation, is `no_std`-clean
-  either way.
-
-## Dependencies
-
-Intentionally none.

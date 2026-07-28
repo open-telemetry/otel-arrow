@@ -23,6 +23,7 @@ use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValu
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::instrument::Distribution;
 use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
 use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -98,8 +99,8 @@ fn is_empty_distribution(value: &MetricValue) -> bool {
 
 /// Quantiles estimated for bucketed distributions on the admin endpoints.
 ///
-/// Must stay sorted in non-decreasing order and aligned with
-/// [`ADMIN_QUANTILE_NAMES`].
+/// Must stay sorted in non-decreasing order and aligned with the
+/// `p50`/`p90`/`p99` fields of [`api::DistributionDetails`].
 ///
 /// TODO: the Prometheus and line-protocol renderers still expose only the
 /// exact summary statistics for a distribution, so the bucket detail visible
@@ -110,17 +111,19 @@ fn is_empty_distribution(value: &MetricValue) -> bool {
 /// format at the cost of fidelity.
 const ADMIN_QUANTILES: [f64; 3] = [0.5, 0.9, 0.99];
 
-/// JSON field names for [`ADMIN_QUANTILES`], in the same order.
-const ADMIN_QUANTILE_NAMES: [&str; 3] = ["p50", "p90", "p99"];
-
 /// Serializes a [`MetricValue`] for the JSON admin endpoints.
 ///
 /// `MetricValue` has no serde implementation: a distribution's canonical wire
 /// form is the OTLP exponential histogram, which the OTLP export path emits
 /// directly. The JSON endpoints render a distribution as its min/max/sum/count
-/// summary and exact-zero count, matching the Prometheus and line-protocol
-/// renderings, plus -- for the bucketed tiers only -- the scale, the relative
-/// error bound, and quantile estimates computed here from the live histogram.
+/// summary, matching the Prometheus and line-protocol renderings, plus -- for
+/// the bucketed tiers only -- a `details` object carrying the exact-zero
+/// count, the relative error bound, and quantile estimates computed here from
+/// the live histogram.
+///
+/// The whole `details` object is one bucket walk: the quantile pass reports
+/// the zero count it recovered on the way, so nothing here scans the buckets
+/// twice. The basic tier encodes no buckets, so it emits no `details` at all.
 ///
 /// The raw bucket counts are available only through the OTLP export. Sending
 /// estimates rather than buckets keeps this endpoint cheap for its
@@ -148,37 +151,41 @@ where
                 state.serialize_field("count", &0_u64)?;
                 return state.end();
             }
-            let mut estimates = [0.0_f64; ADMIN_QUANTILES.len()];
-            let bucketed = d.quantiles(&ADMIN_QUANTILES, &mut estimates);
-            let fields = if bucketed {
-                5 + 2 + ADMIN_QUANTILES.len()
-            } else {
-                5
-            };
+            let details = distribution_details(d);
+            let fields = if details.is_some() { 5 } else { 4 };
 
             let mut state = serializer.serialize_struct("Distribution", fields)?;
             state.serialize_field("min", &min)?;
             state.serialize_field("max", &max)?;
             state.serialize_field("sum", &sum)?;
             state.serialize_field("count", &count)?;
-            state.serialize_field("zero_count", &d.zero_count())?;
-            if bucketed {
-                state.serialize_field("scale", &d.scale())?;
-                state.serialize_field("relative_error", &d.relative_error())?;
-                for (name, value) in ADMIN_QUANTILE_NAMES.iter().zip(estimates.iter()) {
-                    // NaN is not representable in JSON; an empty distribution
-                    // has no estimate to report, so the field is null.
-                    let value = if value.is_finite() {
-                        Some(*value)
-                    } else {
-                        None
-                    };
-                    state.serialize_field(name, &value)?;
-                }
+            if let Some(details) = &details {
+                state.serialize_field("details", details)?;
             }
             state.end()
         }
     }
+}
+
+/// Collects the bucket-derived part of a distribution in a single pass.
+///
+/// Returns `None` for the basic tier, which encodes no buckets and so has no
+/// zero population to report and no quantiles to estimate.
+fn distribution_details(d: &Distribution) -> Option<api::DistributionDetails> {
+    let mut estimates = [0.0_f64; ADMIN_QUANTILES.len()];
+    // One walk over the buckets yields both the estimates and the zero count;
+    // asking for the zero count separately would repeat that walk.
+    let totals = d.quantiles(&ADMIN_QUANTILES, &mut estimates)?;
+    // NaN is not representable in JSON, so an estimate without an underlying
+    // observation is reported as an absent field rather than a misleading 0.0.
+    let finite = |v: f64| if v.is_finite() { Some(v) } else { None };
+    Some(api::DistributionDetails {
+        zero_count: totals.zero_count,
+        relative_error: d.relative_error().unwrap_or(0.0),
+        p50: finite(estimates[0]),
+        p90: finite(estimates[1]),
+        p99: finite(estimates[2]),
+    })
 }
 
 /// Serializes a name-keyed map of [`MetricValue`]s (see
@@ -985,7 +992,7 @@ fn collect_scalar_metric(
 fn collect_distribution_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    distribution: &otap_df_telemetry::instrument::Distribution,
+    distribution: &Distribution,
     base_labels: &str,
     ts_suffix: &str,
 ) {
@@ -3294,7 +3301,7 @@ mod tests {
     /// Builds a bucketed distribution over the integers 1..=n.
     #[allow(unused_qualifications)]
     fn normal_distribution(n: u64) -> MetricValue {
-        let mut d = otap_df_telemetry::instrument::Distribution::normal();
+        let mut d = Distribution::normal();
         for i in 1..=n {
             d.record(i as f64);
         }
@@ -3311,7 +3318,7 @@ mod tests {
         let tiers = [
             MetricValue::from(Mmsc::default()),
             normal_distribution(0),
-            MetricValue::Distribution(otap_df_telemetry::instrument::Distribution::detailed()),
+            MetricValue::Distribution(Distribution::detailed()),
         ];
         for value in &tiers {
             assert!(is_empty_distribution(value));
@@ -3326,8 +3333,8 @@ mod tests {
 
     /// Scenario: A basic-tier distribution, which encodes no buckets, is
     /// rendered for the admin JSON endpoints.
-    /// Guarantees: only the exact mmzsc statistics appear, with no scale,
-    /// relative error, or quantile fields that the tier cannot support.
+    /// Guarantees: only the exact mmsc statistics appear, with no `details`
+    /// object, since the tier supports neither a zero count nor quantiles.
     #[test]
     fn basic_tier_json_reports_only_exact_statistics() {
         let value = MetricValue::from(Mmsc {
@@ -3345,17 +3352,15 @@ mod tests {
         assert_eq!(obj.get("count").unwrap(), 4);
         // The basic tier keeps no bucket structure and so tracks no zero
         // population; a zero there is an ordinary observation that lowers min.
-        assert_eq!(obj.get("zero_count").unwrap(), 0);
-        assert!(!obj.contains_key("scale"));
-        assert!(!obj.contains_key("relative_error"));
-        assert!(!obj.contains_key("p50"));
+        assert!(!obj.contains_key("details"));
     }
 
     /// Scenario: A bucketed normal-tier distribution over 1..=1000 is rendered
     /// for the admin JSON endpoints.
-    /// Guarantees: the payload carries the mmzsc statistics plus the bucket
-    /// scale, the relative error bound, and ordered p50/p90/p99 estimates that
-    /// each land within that bound of the true quantile.
+    /// Guarantees: the exact statistics stay at the top level while every
+    /// bucket-derived value is grouped under a single `details` object holding
+    /// the zero count, the relative error bound, and ordered p50/p90/p99
+    /// estimates that each land within that bound of the true quantile.
     #[test]
     fn bucketed_tier_json_reports_quantiles_and_error_bound() {
         let value = normal_distribution(1000);
@@ -3363,15 +3368,19 @@ mod tests {
         let obj = json.as_object().unwrap();
 
         assert_eq!(obj.get("count").unwrap(), 1000);
-        assert_eq!(obj.get("zero_count").unwrap(), 0);
-        assert!(obj.contains_key("scale"));
+        assert!(!obj.contains_key("zero_count"), "{obj:?}");
+        assert!(!obj.contains_key("scale"), "{obj:?}");
 
-        let bound = obj.get("relative_error").unwrap().as_f64().unwrap();
+        let details = obj.get("details").unwrap().as_object().unwrap();
+        assert_eq!(details.get("zero_count").unwrap(), 0);
+        assert!(!details.contains_key("scale"), "{details:?}");
+
+        let bound = details.get("relative_error").unwrap().as_f64().unwrap();
         assert!(bound > 0.0 && bound < 0.5, "bound = {bound}");
 
-        let p50 = obj.get("p50").unwrap().as_f64().unwrap();
-        let p90 = obj.get("p90").unwrap().as_f64().unwrap();
-        let p99 = obj.get("p99").unwrap().as_f64().unwrap();
+        let p50 = details.get("p50").unwrap().as_f64().unwrap();
+        let p90 = details.get("p90").unwrap().as_f64().unwrap();
+        let p99 = details.get("p99").unwrap().as_f64().unwrap();
         assert!(p50 <= p90 && p90 <= p99, "{p50} {p90} {p99}");
 
         for (est, exact) in [(p50, 500.0), (p90, 900.0), (p99, 990.0)] {

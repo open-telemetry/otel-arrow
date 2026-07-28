@@ -2612,7 +2612,7 @@ mod tests {
             MetricValue::Distribution(d) => {
                 assert_eq!(d.tier_name(), "basic");
                 assert_eq!(d.count(), 3);
-                assert_eq!(d.zero_count(), 0);
+                assert_eq!(d.scan_buckets(|_| {}).zero_count, 0);
             }
             other => panic!("expected Distribution variant, got {other:?}"),
         }

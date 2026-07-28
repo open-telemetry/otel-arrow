@@ -70,15 +70,50 @@ impl<const N: usize> HistogramView<'_, N> {
         BucketView { hist: self.hist }
     }
 
-    /// Returns the number of exact-zero observations.
+    /// Walks every bucket exactly once, passing each count to `emit`, and
+    /// returns the totals learned by that walk.
     ///
-    /// Zeros contribute to the total count but never occupy a bucket, so
-    /// they are recovered by subtracting the positive bucket total.
-    #[inline]
-    #[must_use]
-    pub fn zero_count(&self) -> u64 {
-        let positive: u64 = self.positive().iter().sum();
-        self.hist.stats.count.saturating_sub(positive)
+    /// This is the only way to obtain a [`BucketTotals::zero_count`]. Zeros
+    /// contribute to the total count but never occupy a bucket, so the zero
+    /// count is recoverable only by subtracting the positive bucket total --
+    /// which costs a full scan of the buckets. Rather than let a caller pay
+    /// for that scan and throw the bucket counts away, the scan is exposed as
+    /// the encoding operation itself: whoever encodes, downscales, or
+    /// otherwise consumes the buckets learns the zero count for free.
+    ///
+    /// Counts are emitted in slot order starting at
+    /// [`BucketView::offset`], one per logical bucket, so an encoder can
+    /// push them straight into its output.
+    ///
+    /// ```
+    /// use otap_df_expohisto::HistogramNN;
+    ///
+    /// let mut h: HistogramNN<16> = HistogramNN::new();
+    /// for v in [0.0, 0.0, 1.5, 2.7] {
+    ///     h.update(v).unwrap();
+    /// }
+    ///
+    /// let view = h.view();
+    /// let mut counts = Vec::new();
+    /// let totals = view.scan_buckets(|count| counts.push(count));
+    ///
+    /// assert_eq!(totals.zero_count, 2);
+    /// assert_eq!(totals.positive_total, 2);
+    /// assert_eq!(counts.len(), view.positive().len() as usize);
+    /// ```
+    pub fn scan_buckets<F>(&self, mut emit: F) -> BucketTotals
+    where
+        F: FnMut(u64),
+    {
+        let mut positive_total = 0_u64;
+        for count in self.positive().iter() {
+            positive_total = positive_total.saturating_add(count);
+            emit(count);
+        }
+        BucketTotals {
+            positive_total,
+            zero_count: self.hist.stats.count.saturating_sub(positive_total),
+        }
     }
 
     /// Returns the relative error bound of values produced by
@@ -94,28 +129,18 @@ impl<const N: usize> HistogramView<'_, N> {
         self.hist.current.scale.relative_error()
     }
 
-    /// Estimates the values at the requested quantiles in a single pass.
+    /// Estimates the values at the requested quantiles in a single pass, and
+    /// returns the [`BucketTotals`] learned while doing so.
     ///
     /// `quantiles` must be sorted in non-decreasing order with every entry in
     /// `[0.0, 1.0]`; `out` receives one estimate per requested quantile and
-    /// must be at least as long. Nothing is allocated, so this is usable from
-    /// `no_std` callers that own their output buffer.
+    /// must be at least as long.
     ///
-    /// Quantile 0.0 yields the exact minimum and 1.0 the exact maximum. Zero
-    /// observations contribute cumulative mass at value 0.0 ahead of every
-    /// positive bucket. Within the bucket that straddles a threshold the
-    /// estimate is interpolated in log space, matching the geometric spacing
-    /// of the bucket boundaries, which is what makes
-    /// [`relative_error`](Self::relative_error) the applicable bound.
+    /// Quantile 0.0 yields the exact minimum and 1.0 the exact maximum.
     ///
-    /// An empty histogram yields `f64::NAN` for every quantile: there is no
-    /// observation to estimate from.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `out` is shorter than `quantiles`. Debug-asserts that the
-    /// requested quantiles are sorted and within `[0.0, 1.0]`.
-    pub fn quantiles(&self, quantiles: &[f64], out: &mut [f64]) {
+    /// An empty histogram yields `f64::NAN` for every quantile: there
+    /// is no observation to estimate from.
+    pub fn quantiles(&self, quantiles: &[f64], out: &mut [f64]) -> BucketTotals {
         assert!(
             out.len() >= quantiles.len(),
             "output buffer is shorter than the requested quantiles"
@@ -130,7 +155,8 @@ impl<const N: usize> HistogramView<'_, N> {
         );
 
         let stats = self.stats();
-        let zero_count = self.zero_count();
+        let totals = self.scan_buckets(|_| {});
+        let zero_count = totals.zero_count;
         let scale = self.hist.current.scale;
         let bucket_len = self.hist.trimmed_slot_count();
         let offset = if self.hist.buckets_empty() {
@@ -176,6 +202,8 @@ impl<const N: usize> HistogramView<'_, N> {
                 scale, offset, pos, bucket_len, target, cumulative, zero_count, &stats,
             );
         }
+
+        totals
     }
 
     /// Count in the logical bucket at `offset + pos`.
@@ -232,6 +260,30 @@ impl<const N: usize> HistogramView<'_, N> {
         let value = scale.interpolate_boundary(index, fraction).unwrap_or(lower);
         value.clamp(stats.min, stats.max)
     }
+}
+
+/// Totals learned by walking every bucket of a histogram exactly once.
+///
+/// Returned by [`HistogramView::scan_buckets`] and
+/// [`HistogramView::quantiles`], the two operations that already pay for the
+/// walk. There is deliberately no standalone zero-count accessor: obtaining
+/// `zero_count` on its own would scan every bucket only to discard the counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BucketTotals {
+    /// Sum of every positive bucket count.
+    pub positive_total: u64,
+    /// Number of exact-zero observations, recovered as
+    /// `count - positive_total`. Zeros contribute to the total count but
+    /// never occupy a bucket.
+    pub zero_count: u64,
+}
+
+impl BucketTotals {
+    /// Totals of a histogram with no observations at all.
+    pub const EMPTY: Self = Self {
+        positive_total: 0,
+        zero_count: 0,
+    };
 }
 
 /// Read-only view of bucket data in a histogram.
@@ -363,7 +415,7 @@ mod tests {
             h.update(v).unwrap();
         }
         let mut out = vec![0.0; qs.len()];
-        h.view().quantiles(qs, &mut out);
+        let _ = h.view().quantiles(qs, &mut out);
         out
     }
 
@@ -452,18 +504,48 @@ mod tests {
         }
     }
 
-    /// Scenario: A view reports its zero count after a mix of zero and
+    /// Scenario: A bucket scan reports its totals after a mix of zero and
     /// positive observations.
-    /// Guarantees: the zero count equals the number of exact zeros recorded,
-    /// recovered by subtracting the positive bucket total from the count.
+    /// Guarantees: the scan emits one count per logical bucket and reports a
+    /// zero count equal to the number of exact zeros recorded, recovered by
+    /// subtracting the positive bucket total from the count, so the zero count
+    /// costs nothing beyond the scan the caller already performed.
     #[test]
-    fn zero_count_recovers_exact_zero_observations() {
+    fn scan_buckets_recovers_exact_zero_observations() {
         let mut h: HistogramNN<32> = HistogramNN::new();
         for v in [0.0, 1.0, 0.0, 2.0, 0.0] {
             h.update(v).unwrap();
         }
-        assert_eq!(h.view().zero_count(), 3);
-        assert_eq!(h.view().stats().count, 5);
+        let view = h.view();
+        let mut counts = Vec::new();
+        let totals = view.scan_buckets(|c| counts.push(c));
+
+        assert_eq!(totals.zero_count, 3);
+        assert_eq!(totals.positive_total, 2);
+        assert_eq!(counts.len(), view.positive().len() as usize);
+        assert_eq!(counts.iter().sum::<u64>(), totals.positive_total);
+        assert_eq!(totals.zero_count + totals.positive_total, 5);
+        assert_eq!(view.stats().count, 5);
+    }
+
+    /// Scenario: Quantiles are requested from a histogram that recorded exact
+    /// zeros alongside positive values.
+    /// Guarantees: the quantile call returns the same bucket totals a
+    /// standalone scan would produce, so a caller that needs both estimates
+    /// and the zero count walks the buckets once rather than twice.
+    #[test]
+    fn quantiles_return_the_bucket_totals_they_scanned() {
+        let mut h: HistogramNN<32> = HistogramNN::new();
+        for v in [0.0, 0.0, 1.0, 2.0, 4.0] {
+            h.update(v).unwrap();
+        }
+        let view = h.view();
+        let mut out = [0.0; 3];
+        let totals = view.quantiles(&[0.1, 0.5, 0.9], &mut out);
+
+        assert_eq!(totals, view.scan_buckets(|_| {}));
+        assert_eq!(totals.zero_count, 2);
+        assert_eq!(totals.positive_total, 3);
     }
 
     /// Scenario: Two histograms record the same population of exact zeros and
@@ -488,10 +570,10 @@ mod tests {
             assert_eq!(stats.min, 0.0);
             assert_eq!(stats.max, 5.0);
             assert_eq!(stats.count, 3);
-            assert_eq!(h.view().zero_count(), 1);
+            assert_eq!(h.view().scan_buckets(|_| {}).zero_count, 1);
 
             let mut out = [f64::NAN; 1];
-            h.view().quantiles(&[0.0], &mut out);
+            let _ = h.view().quantiles(&[0.0], &mut out);
             assert_eq!(out[0], 0.0);
         }
     }

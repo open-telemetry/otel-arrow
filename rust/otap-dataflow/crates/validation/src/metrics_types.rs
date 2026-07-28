@@ -105,19 +105,20 @@ impl From<f64> for MetricValue {
 /// telemetry endpoint.
 ///
 /// Re-exported from the admin API so the validation harness observes exactly
-/// the fields the endpoint emits, including the bucketing detail
-/// (`scale`, `relative_error`, `p50`/`p90`/`p99`) that only the
-/// exponential-histogram tiers populate.
-pub use otap_df_admin_api::telemetry::DistributionSummary;
+/// the fields the endpoint emits, including the `details` object carrying the
+/// bucket-derived values (zero count, relative error, `p50`/`p90`/`p99`) that
+/// only the exponential-histogram tiers populate.
+pub use otap_df_admin_api::telemetry::{DistributionDetails, DistributionSummary};
 
 fn format_metric_value(value: &MetricValue) -> String {
     match value {
         MetricValue::U64(v) => v.to_string(),
         MetricValue::F64(v) => v.to_string(),
         MetricValue::Distribution(d) => {
+            let zero_count = d.details.map_or(0, |details| details.zero_count);
             format!(
                 "min={} max={} sum={} count={} zero_count={}",
-                d.min, d.max, d.sum, d.count, d.zero_count
+                d.min, d.max, d.sum, d.count, zero_count
             )
         }
     }

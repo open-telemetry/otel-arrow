@@ -12,12 +12,10 @@ description = "Allocation-free OpenTelemetry exponential histogram"
 [features]
 default = ["std"]
 
-# Enables `std::error::Error` impls. Disable for `#![no_std]` builds; all
-# arithmetic, including quantile interpolation, is `no_std`-clean either way.
+# Enables `std::error::Error` impls.
 std = []
 
 [dependencies]
-# intentionally empty
 
 [lints]
 workspace = true
