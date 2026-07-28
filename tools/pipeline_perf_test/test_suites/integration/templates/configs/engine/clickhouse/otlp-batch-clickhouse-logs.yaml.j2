@@ -1,0 +1,48 @@
+version: otel_dataflow/v1
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 100
+engine:
+  telemetry:
+    logs:
+      level: info
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: urn:otel:receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: 0.0.0.0:4317
+                  request_compression: gzip
+                  # The ClickHouse exporter does not yet propagate OTLP result contexts.
+                  wait_for_result: false
+          batch:
+            type: urn:otel:processor:batch
+            config:
+              format: preserve
+              otlp:
+                # Approximately 8192 logs for the semantic-convention generator payload.
+                min_size: 3145728
+                max_size: 3145728
+                sizer: bytes
+              max_batch_duration: 200ms
+          exporter:
+            type: urn:otel:exporter:clickhouse
+            config:
+              endpoint: http://{{clickhouse_hostname}}:8123
+              database: {{clickhouse_database}}
+              username: default
+              password: test
+              async_insert: false
+        connections:
+          - from: receiver
+            to: batch
+          - from: batch
+            to: exporter
