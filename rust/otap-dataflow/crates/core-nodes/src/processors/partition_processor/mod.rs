@@ -820,7 +820,10 @@ mod test {
                 .expect("collect partition metrics");
             })
             .validate(move |_ctx| async move {
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush pending partition metrics");
 
                 let mut reported_operations = Vec::new();
                 telemetry_registry.visit_current_metrics_with_item_attrs(
