@@ -29,6 +29,14 @@ groups:
                 max_size: 8192
                 sizer: items
               max_batch_duration: 200ms
+          transform:
+            type: urn:otel:processor:attribute
+            config:
+              apply_to: [signal]
+              actions:
+                - action: upsert
+                  key: benchmark.transform
+                  value: applied
           exporter:
             type: urn:otel:exporter:clickhouse
             config:
@@ -41,4 +49,6 @@ groups:
           - from: receiver
             to: batch
           - from: batch
+            to: transform
+          - from: transform
             to: exporter
