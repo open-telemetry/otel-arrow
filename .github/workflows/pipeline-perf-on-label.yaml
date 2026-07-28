@@ -92,32 +92,53 @@ jobs:
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker buildx build --load --build-arg FEATURES=clickhouse-exporter --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
-
-      - name: Build otelarrowcol image
-        run: docker build . -t otelarrowcol
 
       - name: Install dependencies
         run: |
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/orchestrator/requirements.lock.txt
           python -m pip install --user --require-hashes -r tools/pipeline_perf_test/load_generator/requirements.lock.txt
 
-      # Temporary PR validation: restore the standard dedicated suites after
-      # the ClickHouse comparison is stable.
-      - name: Run df_engine ClickHouse comparison
+      - name: Run pipeline performance test suite
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py \
-            --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml \
-            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/100klrps-docker.yaml
 
-      - name: Run OTel Collector ClickHouse comparison
+      - name: Run saturation/scaling performance test suite
         if: ${{ !cancelled() }}
         run: |
           cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py \
-            --config test_suites/integration/clickhouse/otelcol-clickhouse-logs.yaml
+          ./scripts/run-saturation-tests.sh --output-json results/scaling-efficiency.json \
+            | tee saturation-scaling-report.txt
+          echo "### Saturation/Scaling Test Analysis" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          sed -n '/^=.*SCALING ANALYSIS/,/^=\{10,\}$/p' saturation-scaling-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Run single-core saturation max throughput test (OTLP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput.yaml
+
+      - name: Run single-core saturation max throughput test (OTAP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/saturation-max-throughput-otap.yaml
+
+      - name: Run passthrough performance test (OTLP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough.yaml
+
+      - name: Run passthrough performance test (OTAP)
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py --config test_suites/integration/continuous/passthrough-otap.yaml
 
       - name: Post-run disk usage diagnostics
         if: always()
@@ -135,7 +156,6 @@ jobs:
         if: always()
         run: |
           docker rmi -f df_engine 2>/dev/null || true
-          docker rmi -f otelarrowcol 2>/dev/null || true
           # Prune dangling (unused) build cache and images only.
           docker builder prune -f 2>/dev/null || true
           docker image prune -f 2>/dev/null || true
