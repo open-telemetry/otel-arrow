@@ -48,10 +48,10 @@ pub struct LogsConfig {
 /// EventName-based filtering of internal logs.
 ///
 /// At most one of `allow` / `deny` may be set:
-/// - `allow` — emit only EventNames matching one of the patterns ("zoom in").
-/// - `deny` — emit every EventName except those matching a pattern ("zoom out
+/// - `allow` -> emit only EventNames matching one of the patterns ("zoom in").
+/// - `deny` -> emit every EventName except those matching a pattern ("zoom out
 ///   but suppress known noise").
-/// - neither — no EventName filtering (default).
+/// - neither -> no EventName filtering (default).
 ///
 /// Each pattern is either an exact EventName (`receiver.start`) or, with a
 /// trailing `*`, a prefix match over the dotted EventName hierarchy

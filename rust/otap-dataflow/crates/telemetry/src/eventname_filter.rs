@@ -19,8 +19,8 @@
 //! # Matching
 //!
 //! Each pattern is either:
-//! - **Exact** — `receiver.start` matches only that EventName; or
-//! - **Prefix** — a trailing `*` (`receiver.*`, or `receiver*`) matches every
+//! - **Exact** -> `receiver.start` matches only that EventName; or
+//! - **Prefix** -> a trailing `*` (`receiver.*`, or `receiver*`) matches every
 //!   EventName starting with the stem. This maps naturally onto the dotted,
 //!   hierarchical EventName convention ("zoom into a whole subsystem").
 //!
