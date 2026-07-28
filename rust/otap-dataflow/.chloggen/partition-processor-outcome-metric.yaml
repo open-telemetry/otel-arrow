@@ -1,4 +1,4 @@
 change_type: breaking
 component: pipeline
-note: Consolidate partition processor success and failure counters into an outcome-partitioned operations metric.
+note: Replace `processor.partition.partition_operations_succeeded` and `processor.partition.partition_operations_failed` with `processor.partition.operations`. The `outcome` attribute is `success` when the partition operation completes successfully and `failure` when it returns an error.
 issues: [3530]
