@@ -10,32 +10,89 @@
 
 use super::*;
 
-struct EngineOperationGuard<'a, PData: 'static + Clone + Send + Sync + std::fmt::Debug> {
-    runtime: &'a ControllerRuntime<PData>,
+pub(super) struct EngineOperationGuard<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> {
+    runtime: Arc<ControllerRuntime<PData>>,
     operation_id: String,
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> EngineOperationGuard<'_, PData> {
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> EngineOperationGuard<PData>
+{
     fn operation_id(&self) -> &str {
         &self.operation_id
     }
 }
 
-impl<PData: 'static + Clone + Send + Sync + std::fmt::Debug> Drop
-    for EngineOperationGuard<'_, PData>
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> Drop for EngineOperationGuard<PData>
 {
     fn drop(&mut self) {
-        let mut state = self
-            .runtime
-            .state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if state
-            .active_engine_operation
-            .as_deref()
-            .is_some_and(|operation_id| operation_id == self.operation_id)
-        {
-            state.active_engine_operation = None;
+        let released = {
+            let mut state = self
+                .runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state
+                .active_engine_operation
+                .as_deref()
+                .is_some_and(|operation_id| operation_id == self.operation_id)
+            {
+                state.active_engine_operation = None;
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            self.runtime.state_changed.notify_all();
+            self.runtime.resume_all_deferred_runtime_recoveries();
+        }
+    }
+}
+
+pub(super) struct PipelineOperationReservationGuard<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> {
+    runtime: Arc<ControllerRuntime<PData>>,
+    pipeline_key: PipelineKey,
+    reservation_id: u64,
+}
+
+impl<
+    PData: 'static + Clone + Send + Sync + std::fmt::Debug + ReceivedAtNode + Unwindable + FlowMetricHook,
+> Drop for PipelineOperationReservationGuard<PData>
+{
+    fn drop(&mut self) {
+        let released = {
+            let mut state = self
+                .runtime
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state
+                .pipeline_operation_reservations
+                .get(&self.pipeline_key)
+                .is_some_and(|reservation| reservation.reservation_id == self.reservation_id)
+            {
+                let _ = state
+                    .pipeline_operation_reservations
+                    .remove(&self.pipeline_key);
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            self.runtime.state_changed.notify_all();
+            self.runtime
+                .resume_deferred_runtime_recoveries_for_pipeline(&self.pipeline_key);
+            self.runtime
+                .prune_pipeline_runtime_and_history(&self.pipeline_key);
         }
     }
 }
@@ -52,35 +109,39 @@ impl<
         }
     }
 
-    fn begin_named_engine_operation(
-        &self,
+    pub(super) fn begin_named_engine_operation(
+        self: &Arc<Self>,
         operation_id: String,
-    ) -> Result<EngineOperationGuard<'_, PData>, ControlPlaneError> {
+    ) -> Result<EngineOperationGuard<PData>, ControlPlaneError> {
         {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.active_engine_operation.is_some() {
+            if state.active_engine_operation.is_some()
+                || !state.pipeline_operation_reservations.is_empty()
+            {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             state.active_engine_operation = Some(operation_id.clone());
         }
         Ok(EngineOperationGuard {
-            runtime: self,
+            runtime: Arc::clone(self),
             operation_id,
         })
     }
 
     fn begin_reconcile_operation(
-        &self,
-    ) -> Result<(String, EngineOperationGuard<'_, PData>), ControlPlaneError> {
+        self: &Arc<Self>,
+    ) -> Result<(String, EngineOperationGuard<PData>), ControlPlaneError> {
         let reconcile_id = {
             let mut state = self
                 .state
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            if state.active_engine_operation.is_some() {
+            if state.active_engine_operation.is_some()
+                || !state.pipeline_operation_reservations.is_empty()
+            {
                 return Err(ControlPlaneError::RolloutConflict);
             }
             let reconcile_id = format!("reconcile-{}", state.next_reconcile_id);
@@ -91,10 +152,49 @@ impl<
         Ok((
             reconcile_id.clone(),
             EngineOperationGuard {
-                runtime: self,
+                runtime: Arc::clone(self),
                 operation_id: reconcile_id,
             },
         ))
+    }
+
+    /// Reserves one pipeline lifecycle before cancellation releases the mutex.
+    pub(super) fn begin_pipeline_operation_reservation(
+        self: &Arc<Self>,
+        pipeline_key: PipelineKey,
+        kind: PipelineOperationKind,
+    ) -> Result<PipelineOperationReservationGuard<PData>, ControlPlaneError> {
+        let reservation_id = {
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.active_engine_operation.is_some()
+                || state.active_rollouts.contains_key(&pipeline_key)
+                || state.active_shutdowns.contains_key(&pipeline_key)
+                || state
+                    .pipeline_operation_reservations
+                    .contains_key(&pipeline_key)
+            {
+                return Err(ControlPlaneError::RolloutConflict);
+            }
+            let reservation_id = state.next_pipeline_operation_reservation_id;
+            state.next_pipeline_operation_reservation_id += 1;
+            let _ = state.pipeline_operation_reservations.insert(
+                pipeline_key.clone(),
+                PipelineOperationReservationState {
+                    reservation_id,
+                    kind,
+                },
+            );
+            reservation_id
+        };
+        self.state_changed.notify_all();
+        Ok(PipelineOperationReservationGuard {
+            runtime: Arc::clone(self),
+            pipeline_key,
+            reservation_id,
+        })
     }
 
     /// Resolves the concrete core ids selected by a pipeline resource policy.
@@ -124,6 +224,7 @@ impl<
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut current_generation_cores = Vec::new();
         let mut has_foreign_active_generations = false;
+        let mut active_generations: HashMap<usize, Vec<u64>> = HashMap::new();
 
         for (deployed_key, instance) in &state.runtime_instances {
             if deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
@@ -138,12 +239,40 @@ impl<
             } else {
                 has_foreign_active_generations = true;
             }
+            active_generations
+                .entry(deployed_key.core_id)
+                .or_default()
+                .push(deployed_key.deployment_generation);
         }
 
         current_generation_cores.sort_unstable();
+        current_generation_cores.dedup();
+        let serving_generations = active_generations
+            .into_iter()
+            .filter_map(|(core_id, generations)| {
+                // Prefer the controller's recovery selection when that runtime is
+                // still active. Otherwise use the committed generation, falling
+                // back to the newest live generation only for partially observed
+                // or legacy state without an explicit selection.
+                let recovered_generation = state
+                    .runtime_recoveries
+                    .get(&(pipeline_key.clone(), core_id))
+                    .map(|recovery| recovery.serving_generation)
+                    .filter(|generation| generations.contains(generation));
+                let generation = recovered_generation
+                    .or_else(|| {
+                        generations
+                            .contains(&active_generation)
+                            .then_some(active_generation)
+                    })
+                    .or_else(|| generations.into_iter().max())?;
+                Some((core_id, generation))
+            })
+            .collect();
         ActiveRuntimeCoreState {
             current_generation_cores,
             has_foreign_active_generations,
+            serving_generations,
         }
     }
 
@@ -258,7 +387,34 @@ impl<
         Ok(())
     }
 
+    /// Reserves, plans, and starts one explicit per-pipeline rollout.
+    pub(super) fn request_reconfigure_pipeline(
+        self: &Arc<Self>,
+        pipeline_group_id: &str,
+        pipeline_id: &str,
+        request: &ReconfigureRequest,
+    ) -> Result<RolloutStatus, ControlPlaneError> {
+        let pipeline_key = PipelineKey::new(
+            pipeline_group_id.to_owned().into(),
+            pipeline_id.to_owned().into(),
+        );
+        // The reservation is installed before recovery cancellation and remains
+        // until active_rollouts contains the accepted rollout. Runtime failures
+        // during planning therefore have an owner and cannot launch a candidate.
+        let _reservation = self
+            .begin_pipeline_operation_reservation(pipeline_key, PipelineOperationKind::Rollout)?;
+        let plan = self.prepare_rollout_plan_for_engine_operation(
+            pipeline_group_id,
+            pipeline_id,
+            request,
+            None,
+            None,
+        )?;
+        self.spawn_rollout(plan)
+    }
+
     /// Classifies a reconfigure request and prepares the rollout state machine inputs.
+    #[cfg(test)]
     pub(super) fn prepare_rollout_plan(
         &self,
         pipeline_group_id: &str,
@@ -370,6 +526,7 @@ impl<
             Vec::new()
         };
         let target_assigned_cores = self.assigned_cores_for_resolved(&resolved_pipeline)?;
+        self.cancel_runtime_recoveries_for_pipeline(&pipeline_key);
         let current_core_set: HashSet<_> = current_assigned_cores.iter().copied().collect();
         let target_core_set: HashSet<_> = target_assigned_cores.iter().copied().collect();
         let active_runtime_state = current_record
@@ -378,6 +535,7 @@ impl<
             .unwrap_or(ActiveRuntimeCoreState {
                 current_generation_cores: Vec::new(),
                 has_foreign_active_generations: false,
+                serving_generations: HashMap::new(),
             });
         let active_core_set: HashSet<_> = active_runtime_state
             .current_generation_cores
@@ -500,18 +658,12 @@ impl<
                 core_id,
                 previous_generation: match action {
                     RolloutAction::Create => None,
-                    RolloutAction::NoOp => active_core_set
-                        .contains(&core_id)
-                        .then_some(previous_generation)
-                        .flatten(),
-                    RolloutAction::Replace => current_core_set
-                        .contains(&core_id)
-                        .then_some(previous_generation)
-                        .flatten(),
-                    RolloutAction::Resize => active_core_set
-                        .contains(&core_id)
-                        .then_some(previous_generation)
-                        .flatten(),
+                    RolloutAction::NoOp | RolloutAction::Replace | RolloutAction::Resize => {
+                        active_runtime_state
+                            .serving_generations
+                            .get(&core_id)
+                            .copied()
+                    }
                 },
                 target_generation,
                 state: "pending".to_owned(),
@@ -543,6 +695,7 @@ impl<
             current_record,
             current_assigned_cores,
             target_assigned_cores,
+            current_serving_generations: active_runtime_state.serving_generations,
             common_assigned_cores,
             added_assigned_cores,
             removed_assigned_cores,
@@ -651,7 +804,7 @@ impl<
     }
 
     /// Marks a rollout inactive and prunes any no-longer-needed retained state.
-    pub(super) fn finish_rollout(&self, pipeline_key: &PipelineKey, rollout_id: &str) {
+    pub(super) fn finish_rollout(self: &Arc<Self>, pipeline_key: &PipelineKey, rollout_id: &str) {
         {
             let mut state = self
                 .state
@@ -665,6 +818,10 @@ impl<
                 let _ = state.active_rollouts.remove(pipeline_key);
             }
         }
+        // Removing active_rollouts transfers lifecycle ownership back to
+        // recovery. Deferred exits are revalidated against the generation that
+        // the rollout committed or restored before any exited records are pruned.
+        self.resume_deferred_runtime_recoveries_for_pipeline(pipeline_key);
         self.prune_pipeline_runtime_and_history(pipeline_key);
     }
 
@@ -720,6 +877,9 @@ impl<
                     active_generation,
                 },
             );
+            state
+                .runtime_recoveries
+                .retain(|(pipeline_key, _), _| pipeline_key != &plan.pipeline_key);
         }
         self.observed_state_store.set_pipeline_active_cores(
             plan.pipeline_key.clone(),
@@ -910,6 +1070,10 @@ impl<
                     Instant::now(),
                 );
                 let _ = state.active_shutdowns.remove(pipeline_key);
+                state.deferred_runtime_recoveries.retain(|deployed_key, _| {
+                    deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
+                        || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
+                });
                 true
             } else {
                 false
@@ -978,7 +1142,7 @@ impl<
 
     /// Creates an empty pipeline group in the controller-owned live config.
     pub(super) fn create_group(
-        &self,
+        self: &Arc<Self>,
         pipeline_group_id: &str,
         group: PipelineGroupConfig,
     ) -> Result<PipelineGroupConfig, ControlPlaneError> {
@@ -1152,6 +1316,14 @@ impl<
             }
             let _ = state.logical_pipelines.remove(pipeline_key);
             let _ = state.generation_counters.remove(pipeline_key);
+            state
+                .runtime_recoveries
+                .retain(|(key, _), _| key != pipeline_key);
+            state.deferred_runtime_recoveries.retain(|deployed_key, _| {
+                deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
+                    || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
+            });
+            let _ = state.pipeline_operation_reservations.remove(pipeline_key);
             state.runtime_instances.retain(|deployed_key, _| {
                 deployed_key.pipeline_group_id != *pipeline_key.pipeline_group_id()
                     || deployed_key.pipeline_id != *pipeline_key.pipeline_id()
