@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: engine
+note: Preserve actionable runtime error details in bounded internal logs.
+issues: [3598]
