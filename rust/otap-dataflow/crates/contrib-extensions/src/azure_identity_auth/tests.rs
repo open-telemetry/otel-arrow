@@ -411,6 +411,35 @@ async fn token_stream_yields_published_token() {
     assert_eq!(published.expose_token(), "streamed");
 }
 
+// Scenario: A consumer subscribes to token_stream() after a token was already published.
+// Guarantees: The late subscription immediately yields the current token, honoring the
+// BearerTokenProvider contract that a subscriber created after a publish never misses the
+// already-current token (so consumers need no separate get_token() seeding step).
+#[tokio::test]
+async fn token_stream_replays_current_token_to_late_subscriber() {
+    use std::time::Duration;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let credential = Arc::new(MockCredential {
+        token: "streamed".to_string(),
+        expires_in: AzureDuration::minutes(60),
+        call_count: Arc::clone(&calls),
+    });
+    let ext = make_extension(credential);
+
+    // Publish a token BEFORE anyone subscribes.
+    let _ = ext.get_token().await.expect("token acquired");
+
+    // A subscription created after the publish must still promptly observe the
+    // current token instead of blocking until the next refresh.
+    let mut stream = ext.token_stream();
+    let published = tokio::time::timeout(Duration::from_millis(200), stream.next())
+        .await
+        .expect("late subscriber must receive the current token promptly")
+        .expect("stream is not closed");
+    assert_eq!(published.expose_token(), "streamed");
+}
+
 #[tokio::test]
 async fn token_stream_skips_initial_none() {
     use std::time::Duration;
