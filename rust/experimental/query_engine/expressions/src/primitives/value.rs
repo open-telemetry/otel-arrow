@@ -1127,15 +1127,14 @@ pub trait IntegerValue: Debug {
     }
 }
 
-impl<T: Into<i64> + Copy + Debug> IntegerValue for T {
-    fn get_value(&self) -> i64 {
-        (*self).into()
-    }
-}
-
 macro_rules! impl_as_static_value_for_integers {
     ($($t:ty),*) => {
         $(
+            impl IntegerValue for $t {
+                fn get_value(&self) -> i64 {
+                    *self as i64
+                }
+            }
             impl AsStaticValue for $t {
                 fn to_static_value(&self) -> StaticValue<'_> {
                     StaticValue::Integer(self)
@@ -1173,15 +1172,14 @@ pub trait DoubleValue: Debug {
     }
 }
 
-impl<T: Into<f64> + Copy + Debug> DoubleValue for T {
-    fn get_value(&self) -> f64 {
-        (*self).into()
-    }
-}
-
 macro_rules! impl_as_static_value_for_floats {
     ($($t:ty),*) => {
         $(
+            impl DoubleValue for $t {
+                fn get_value(&self) -> f64 {
+                    *self as f64
+                }
+            }
             impl AsStaticValue for $t {
                 fn to_static_value(&self) -> StaticValue<'_> {
                     StaticValue::Double(self)
