@@ -59,6 +59,7 @@ steps:
                 engine_hostname: df-engine
                 loadgen_exporter_type: '{{loadgen_exporter_type}}'
                 data_source: semantic_conventions
+                {% if exporter_extra_config is defined %}exporter_extra_config: {{exporter_extra_config}}{% endif %}
         post:
           - ready_check_http:
               url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
