@@ -489,7 +489,7 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, and transport headers:
+controls, runtime recovery, and transport headers:
 
 ```yaml
 policies:
@@ -513,6 +513,13 @@ policies:
       source: auto
       soft_limit: 7 GiB
       hard_limit: 8 GiB
+  runtime_recovery:
+    enabled: true
+    max_restarts: 5
+    initial_backoff: 250ms
+    max_backoff: 30s
+    startup_timeout: 30s
+    reset_after: 60s
   transport_headers:
     header_capture:
       headers:
@@ -545,7 +552,28 @@ Defaults at top-level:
 - `telemetry.tokio_metrics = true`
 - `telemetry.runtime_metrics = basic`
 - `resources.core_allocation = all_cores`
+- `runtime_recovery.enabled = true`
+- `runtime_recovery.max_restarts = 5`
+- `runtime_recovery.initial_backoff = 250ms`
+- `runtime_recovery.max_backoff = 30s`
+- `runtime_recovery.startup_timeout = 30s`
+- `runtime_recovery.reset_after = 60s`
 - `transport_headers = not set` (opt-in; no headers captured or propagated)
+
+Runtime recovery notes:
+
+- `runtime_recovery` applies to regular pipelines and inherits through the
+  pipeline, group, and top-level policy scopes. It is not supported by the
+  system observability pipeline.
+- A panic or ordinary runtime error on a serving core starts a per-core
+  recovery streak. Clean runtime exits are not restarted.
+- Replacements use newer deployment generations and exponential backoff capped
+  by `max_backoff`. A replacement must become admitted and ready within
+  `startup_timeout` before it can serve.
+- A healthy replacement keeps the streak count until it has remained ready for
+  `reset_after`. A later failure after that window starts a fresh streak.
+- Exhausting `max_restarts`, or setting `enabled: false`, converts the runtime
+  failure into a fatal engine error and requests coordinated process shutdown.
 
 Memory limiter configuration:
 
