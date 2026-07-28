@@ -1,9 +1,0 @@
-change_type: new_component
-
-component: observability
-
-note: Add the otap-df-expohisto crate providing an allocation-free OpenTelemetry exponential histogram. Add it alongside the Min-Max-Sum-Count aggregator.
-
-issues: [3523]
-
-subtext:

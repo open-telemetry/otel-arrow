@@ -208,12 +208,15 @@ impl Scale {
     /// Every bucket spans `[lower, lower * base)`, so this is the ratio
     /// between adjacent bucket boundaries. It is read from the boundary
     /// table rather than computed, keeping the call `no_std`-clean.
+    ///
+    /// At [`MIN_SCALE`] the ratio is `2^1024`, one exponent past the f64
+    /// range, so it saturates to infinity. That is the honest answer for an
+    /// unrepresentable ratio: at that scale a single bucket already covers
+    /// more than the whole positive f64 range.
     #[inline]
     #[must_use]
     pub fn base(&self) -> f64 {
         // lower_boundary(0) is 1.0, so lower_boundary(1) is the ratio itself.
-        // Index 1 is always representable: at the coarsest scale it is
-        // 2^(2^11), far below the f64 exponent limit.
         self.lower_boundary(1).unwrap_or(f64::INFINITY)
     }
 
@@ -227,11 +230,22 @@ impl Scale {
     /// produced by [`HistogramView::quantiles`], which interpolates in log
     /// space.
     ///
+    /// The bound approaches 1 as buckets widen and is exactly 1 at
+    /// [`MIN_SCALE`], where [`base`](Self::base) is no longer representable as
+    /// an f64. That limit is taken explicitly: the closed form would otherwise
+    /// evaluate to `(inf - 1) / (inf + 1)`, which is NaN and would silently
+    /// poison every comparison a caller makes against the bound. A relative
+    /// error of 1 is also the correct reading, since a bucket that wide admits
+    /// values arbitrarily far from its midpoint.
+    ///
     /// [`HistogramView::quantiles`]: crate::HistogramView::quantiles
     #[inline]
     #[must_use]
     pub fn relative_error(&self) -> f64 {
         let base = self.base();
+        if !base.is_finite() {
+            return 1.0;
+        }
         (base - 1.0) / (base + 1.0)
     }
 
@@ -521,6 +535,48 @@ mod tests {
         assert_eq!(
             s.interpolate_boundary(i32::MIN, 0.5),
             Err(ScaleError::Underflow)
+        );
+    }
+
+    /// Scenario: The relative error bound is read at MIN_SCALE, where a bucket
+    /// spans more than the whole positive f64 range and the growth factor is no
+    /// longer representable.
+    /// Guarantees: The bound is exactly 1.0 rather than NaN, so callers can
+    /// compare against it without a non-finite value silently poisoning the
+    /// comparison, and it stays continuous with the adjacent scale.
+    #[test]
+    fn relative_error_is_bounded_at_the_coarsest_scale() {
+        let coarsest = Scale::new(MIN_SCALE).expect("MIN_SCALE is a valid scale");
+        assert!(!coarsest.base().is_finite());
+        assert_eq!(coarsest.relative_error(), 1.0);
+
+        let next = Scale::new(MIN_SCALE + 1).expect("scale above MIN_SCALE is valid");
+        assert!(next.relative_error() <= 1.0);
+    }
+
+    /// Scenario: The relative error bound is read across the usable scale range.
+    /// Guarantees: Every scale reports a finite bound in (0, 1] that never grows
+    /// as the scale grows finer, which is the accuracy contract quantile
+    /// consumers rely on. The coarsest few scales all saturate at 1.0, so the
+    /// ordering is non-increasing rather than strict.
+    #[test]
+    fn relative_error_never_grows_as_scale_grows_finer() {
+        let mut previous = f64::MAX;
+        for scale in MIN_SCALE..=table_scale() {
+            let bound = Scale::new(scale)
+                .expect("scale in range is valid")
+                .relative_error();
+            assert!(bound.is_finite(), "scale {scale} bound must be finite");
+            assert!(
+                bound > 0.0 && bound <= 1.0,
+                "scale {scale} bound out of range"
+            );
+            assert!(bound <= previous, "scale {scale} bound must not grow");
+            previous = bound;
+        }
+        assert!(
+            previous < 0.01,
+            "the finest scale must be substantially more accurate"
         );
     }
 }

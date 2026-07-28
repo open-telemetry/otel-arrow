@@ -87,7 +87,7 @@ impl std::error::Error for Error {}
 ///   0.0, and folding them against another population is correct.
 ///
 /// Exact zeros never occupy a bucket, so "no buckets" does not mean "no
-/// observations". [`HistogramNN::buckets_empty`] distinguishes the two only in
+/// observations". `HistogramNN::buckets_empty` distinguishes the two only in
 /// combination with `count`.
 #[derive(Debug, Clone, Copy)]
 pub struct Stats {

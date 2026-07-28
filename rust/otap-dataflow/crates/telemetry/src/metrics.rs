@@ -2480,13 +2480,12 @@ mod tests {
     }
 
     /// Builds a basic-tier distribution value from raw Mmsc fields.
-    fn mmsc_value(min: f64, max: f64, sum: f64, count: u64, zero_count: u64) -> MetricValue {
+    fn mmsc_value(min: f64, max: f64, sum: f64, count: u64) -> MetricValue {
         MetricValue::from(Mmsc {
             min,
             max,
             sum,
             count,
-            zero_count,
         })
     }
 
@@ -2498,50 +2497,49 @@ mod tests {
         }
     }
 
-    // Scenario: Empty and populated basic-tier distribution values are tested
-    //   for emptiness.
-    // Guarantees: A zero-count aggregation reports as zero so the registry can
-    //   drop it, while any recorded observation does not.
+    /// Scenario: Empty and populated basic-tier distribution values are tested
+    ///   for emptiness.
+    /// Guarantees: A zero-count aggregation reports as zero so the registry can
+    ///   drop it, while any recorded observation does not.
     #[test]
     fn test_mmsc_value_is_zero() {
-        assert!(mmsc_value(0.0, 0.0, 0.0, 0, 0).is_zero());
-        assert!(!mmsc_value(1.0, 5.0, 6.0, 2, 0).is_zero());
+        assert!(mmsc_value(0.0, 0.0, 0.0, 0).is_zero());
+        assert!(!mmsc_value(1.0, 5.0, 6.0, 2).is_zero());
     }
 
-    // Scenario: `zero_of_kind` is applied to a populated basic-tier value.
-    // Guarantees: The basic tier is preserved and its aggregation is restored to
-    //   an all-zero empty state carrying no sentinel, so the next delta interval
-    //   starts clean and no consumer can read a bogus min or max.
+    /// Scenario: `zero_of_kind` is applied to a populated basic-tier value.
+    /// Guarantees: The basic tier is preserved and its aggregation is restored to
+    ///   an all-zero empty state carrying no sentinel, so the next delta interval
+    ///   starts clean and no consumer can read a bogus min or max.
     #[test]
     fn test_mmsc_value_zero_of_kind() {
-        let zero = mmsc_value(1.0, 5.0, 6.0, 2, 1).zero_of_kind();
+        let zero = mmsc_value(1.0, 5.0, 6.0, 2).zero_of_kind();
         assert!(zero.is_zero());
         assert_eq!(expect_mmsc(&zero), Mmsc::default());
     }
 
-    // Scenario: Two populated basic-tier values are merged with `add_in_place`.
-    // Guarantees: min/max widen, sum/count/zero_count accumulate, which is how
-    //   the registry folds per-thread aggregations of the same series.
+    /// Scenario: Two populated basic-tier values are merged with `add_in_place`.
+    /// Guarantees: min/max widen, sum/count/zero_count accumulate, which is how
+    ///   the registry folds per-thread aggregations of the same series.
     #[test]
     fn test_mmsc_value_merge() {
-        let mut a = mmsc_value(2.0, 8.0, 15.0, 3, 1);
-        a.add_in_place(&mmsc_value(1.0, 10.0, 20.0, 4, 2));
+        let mut a = mmsc_value(2.0, 8.0, 15.0, 3);
+        a.add_in_place(&mmsc_value(1.0, 10.0, 20.0, 4));
         let s = expect_mmsc(&a);
         assert_eq!(s.min, 1.0);
         assert_eq!(s.max, 10.0);
         assert_eq!(s.sum, 35.0);
         assert_eq!(s.count, 7);
-        assert_eq!(s.zero_count, 3);
     }
 
-    // Scenario: A populated basic-tier value is merged into an empty one whose
-    //   min/max still hold the default sentinels.
-    // Guarantees: The sentinels are replaced rather than compared against, so
-    //   the merged result equals the incoming aggregation exactly.
+    /// Scenario: A populated basic-tier value is merged into an empty one whose
+    ///   min/max still hold the default sentinels.
+    /// Guarantees: The sentinels are replaced rather than compared against, so
+    ///   the merged result equals the incoming aggregation exactly.
     #[test]
     fn test_mmsc_value_merge_zero_to_value() {
-        let mut a = mmsc_value(0.0, 0.0, 0.0, 0, 0);
-        a.add_in_place(&mmsc_value(3.0, 7.0, 10.0, 2, 0));
+        let mut a = mmsc_value(0.0, 0.0, 0.0, 0);
+        a.add_in_place(&mmsc_value(3.0, 7.0, 10.0, 2));
         let s = expect_mmsc(&a);
         assert_eq!(s.min, 3.0);
         assert_eq!(s.max, 7.0);
@@ -2549,11 +2547,11 @@ mod tests {
         assert_eq!(s.count, 2);
     }
 
-    // Scenario: A `MetricValue::Distribution` (normal tier) records samples,
-    //   is merged with a second distribution via `add_in_place`, then reset.
-    // Guarantees: `is_zero` reflects emptiness, `add_in_place` merges same-tier
-    //   distributions by summing their counts, `zero_of_kind` preserves the tier
-    //   while clearing state, and `reset` empties the aggregation in place.
+    /// Scenario: A `MetricValue::Distribution` (normal tier) records samples,
+    ///   is merged with a second distribution via `add_in_place`, then reset.
+    /// Guarantees: `is_zero` reflects emptiness, `add_in_place` merges same-tier
+    ///   distributions by summing their counts, `zero_of_kind` preserves the tier
+    ///   while clearing state, and `reset` empties the aggregation in place.
     #[test]
     fn test_distribution_value_merge_and_reset() {
         use crate::instrument::HISTOGRAM_NORMAL_WORDS;
@@ -2596,10 +2594,10 @@ mod tests {
         }
     }
 
-    // Scenario: An `Mmsc` aggregation is converted into a `MetricValue`.
-    // Guarantees: It becomes the basic tier of a distribution -- an exponential
-    //   histogram with no encoded buckets -- preserving every field, so MMSC and
-    //   bucketed instruments share one metric value kind.
+    /// Scenario: An `Mmsc` aggregation is converted into a `MetricValue`.
+    /// Guarantees: It becomes the basic tier of a distribution -- an exponential
+    ///   histogram with no encoded buckets -- preserving every field, so MMSC and
+    ///   bucketed instruments share one metric value kind.
     #[test]
     fn test_mmsc_converts_into_basic_tier_distribution() {
         let mut mmsc = Mmsc::default();
@@ -2614,7 +2612,7 @@ mod tests {
             MetricValue::Distribution(d) => {
                 assert_eq!(d.tier_name(), "basic");
                 assert_eq!(d.count(), 3);
-                assert_eq!(d.zero_count(), 1);
+                assert_eq!(d.zero_count(), 0);
             }
             other => panic!("expected Distribution variant, got {other:?}"),
         }
@@ -2630,7 +2628,7 @@ mod tests {
         impl MockMmscMetricSet {
             fn new() -> Self {
                 Self {
-                    values: vec![mmsc_value(0.0, 0.0, 0.0, 0, 0)],
+                    values: vec![mmsc_value(0.0, 0.0, 0.0, 0)],
                 }
             }
         }
@@ -2676,10 +2674,10 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // First snapshot: min=2, max=8, sum=15, count=3
-        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(2.0, 8.0, 15.0, 3, 0)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(2.0, 8.0, 15.0, 3)]);
 
         // Second snapshot: min=1, max=10, sum=20, count=4
-        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(1.0, 10.0, 20.0, 4, 0)]);
+        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(1.0, 10.0, 20.0, 4)]);
 
         // Accumulated: min=1, max=10, sum=35, count=7
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
@@ -2688,5 +2686,98 @@ mod tests {
         assert_eq!(s.max, 10.0);
         assert_eq!(s.sum, 35.0);
         assert_eq!(s.count, 7);
+    }
+
+    /// Scenario: A bucketed exponential-histogram field is snapshotted and
+    /// exported over two successive collection cycles, with a fresh observation
+    /// recorded only in the first cycle.
+    /// Guarantees: The accumulator is cleared once the first batch is built, so
+    /// the second export does not re-send the first interval's observations.
+    /// Every instrument that is accumulated must also be reset, or a delta
+    /// export silently double-counts and grows without bound.
+    #[test]
+    fn test_exponential_histogram_export_resets_between_cycles() {
+        #[derive(Debug)]
+        struct MockHistogramMetricSet {
+            values: Vec<MetricValue>,
+        }
+
+        impl Default for MockHistogramMetricSet {
+            fn default() -> Self {
+                Self {
+                    values: vec![MetricValue::Distribution(Distribution::normal())],
+                }
+            }
+        }
+
+        static MOCK_HISTOGRAM_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
+            name: "test_histogram_metrics",
+            metrics: &[MetricsField {
+                name: "latency",
+                unit: "ms",
+                brief: "Test exponential histogram instrument",
+                instrument: Instrument::ExponentialHistogram,
+                temporality: Some(Temporality::Delta),
+                value_type: MetricValueType::F64,
+            }],
+        };
+
+        impl MetricSetHandler for MockHistogramMetricSet {
+            fn descriptor(&self) -> &'static MetricsDescriptor {
+                &MOCK_HISTOGRAM_DESCRIPTOR
+            }
+            fn snapshot_values(&self) -> Vec<MetricValue> {
+                self.values.clone()
+            }
+            fn clear_values(&mut self) {
+                self.values.iter_mut().for_each(MetricValue::reset);
+            }
+            fn needs_flush(&self) -> bool {
+                self.values.iter().any(|v| !v.is_zero())
+            }
+        }
+
+        fn histogram_value(observations: &[f64]) -> MetricValue {
+            let mut dist = Distribution::normal();
+            for v in observations {
+                dist.record(*v);
+            }
+            MetricValue::Distribution(dist)
+        }
+
+        fn count_of(value: &MetricValue) -> u64 {
+            match value {
+                MetricValue::Distribution(d) => d.count(),
+                other => panic!("expected Distribution, got {other:?}"),
+            }
+        }
+
+        let mut entities = EntityRegistry::default();
+        let entity_key = register_entity(&mut entities, "test_value");
+        let mut metrics = MetricSetRegistry::default();
+        let metric_set: MetricSet<MockHistogramMetricSet> = metrics.register(entity_key);
+        let metrics_key = metric_set.key;
+
+        metrics.accumulate_snapshot(metrics_key, 0, &[histogram_value(&[1.0, 2.0, 4.0])]);
+        let first = metrics.drain_export_batch(&mut entities, 100);
+        assert_eq!(first.metric_sets.len(), 1);
+        assert_eq!(count_of(&first.metric_sets[0].values[0]), 3);
+
+        // A second cycle with a single new observation must report only that
+        // observation, not the three already exported.
+        metrics.accumulate_snapshot(metrics_key, 0, &[histogram_value(&[8.0])]);
+        let second = metrics.drain_export_batch(&mut entities, 200);
+        assert_eq!(second.metric_sets.len(), 1);
+        assert_eq!(count_of(&second.metric_sets[0].values[0]), 1);
+
+        // A third cycle with no observations at all must report nothing
+        // outstanding.
+        let third = metrics.drain_export_batch(&mut entities, 300);
+        let outstanding: u64 = third
+            .metric_sets
+            .iter()
+            .map(|set| count_of(&set.values[0]))
+            .sum();
+        assert_eq!(outstanding, 0);
     }
 }

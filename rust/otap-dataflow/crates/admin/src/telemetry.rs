@@ -118,8 +118,16 @@ const ADMIN_QUANTILE_NAMES: [&str; 3] = ["p50", "p90", "p99"];
 /// `MetricValue` has no serde implementation: a distribution's canonical wire
 /// form is the OTLP exponential histogram, which the OTLP export path emits
 /// directly. The JSON endpoints render a distribution as its min/max/sum/count
-/// summary plus the exact-zero count, matching the Prometheus and line-protocol
-/// renderings. Bucket detail is available only through the OTLP export.
+/// summary and exact-zero count, matching the Prometheus and line-protocol
+/// renderings, plus -- for the bucketed tiers only -- the scale, the relative
+/// error bound, and quantile estimates computed here from the live histogram.
+///
+/// The raw bucket counts are available only through the OTLP export. Sending
+/// estimates rather than buckets keeps this endpoint cheap for its
+/// human-facing consumers, but note that quantiles cannot be merged: a client
+/// holding summaries from several series cannot combine them, and the quantile
+/// set is fixed by `ADMIN_QUANTILES`. Cross-series aggregation is therefore
+/// performed here, against the histograms, before serialization.
 fn serialize_metric_value<S>(value: &MetricValue, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
@@ -3036,7 +3044,6 @@ mod tests {
                         max: 100.0,
                         sum: 250.5,
                         count: 10,
-                        zero_count: 0,
                     }),
                 );
                 m
@@ -3094,7 +3101,6 @@ mod tests {
                         max: 100.0,
                         sum: 250.5,
                         count: 10,
-                        zero_count: 0,
                     }),
                 );
                 m
@@ -3329,7 +3335,6 @@ mod tests {
             max: 9.0,
             sum: 20.0,
             count: 4,
-            zero_count: 1,
         });
         let json = distribution_json(&value);
         let obj = json.as_object().unwrap();
@@ -3338,7 +3343,9 @@ mod tests {
         assert_eq!(obj.get("max").unwrap(), 9.0);
         assert_eq!(obj.get("sum").unwrap(), 20.0);
         assert_eq!(obj.get("count").unwrap(), 4);
-        assert_eq!(obj.get("zero_count").unwrap(), 1);
+        // The basic tier keeps no bucket structure and so tracks no zero
+        // population; a zero there is an ordinary observation that lowers min.
+        assert_eq!(obj.get("zero_count").unwrap(), 0);
         assert!(!obj.contains_key("scale"));
         assert!(!obj.contains_key("relative_error"));
         assert!(!obj.contains_key("p50"));

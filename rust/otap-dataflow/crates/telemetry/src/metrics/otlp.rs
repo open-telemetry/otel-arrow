@@ -1043,14 +1043,13 @@ mod tests {
     const CUMULATIVE_START: u64 = 5;
     const COLLECTION_TIME: u64 = 20;
 
-    /// Builds a basic-tier (bucketless) distribution value from raw Mmsc fields.
+    /// Builds a basic-tier distribution value from raw Mmsc fields.
     fn mmsc_value(min: f64, max: f64, sum: f64, count: u64) -> MetricValue {
         MetricValue::from(crate::instrument::Mmsc {
             min,
             max,
             sum,
             count,
-            zero_count: 0,
         })
     }
 
@@ -1796,11 +1795,11 @@ mod tests {
         assert_eq!(histogram.data_points[0].count, 4);
     }
 
-    // Scenario: A delta exponential-histogram distribution field is recorded,
-    // aggregated across two snapshots, then encoded to OTLP.
-    // Guarantees: The merged distribution exports as a single delta
-    // ExponentialHistogram data point whose count/sum/min/max reflect every
-    // recorded observation and whose delta start time is preserved.
+    /// Scenario: A delta exponential-histogram distribution field is recorded,
+    /// aggregated across two snapshots, then encoded to OTLP.
+    /// Guarantees: The merged distribution exports as a single delta
+    /// ExponentialHistogram data point whose count/sum/min/max reflect every
+    /// recorded observation and whose delta start time is preserved.
     #[test]
     fn encodes_distribution_as_delta_exponential_histogram_point() {
         use crate::instrument::Distribution;
@@ -1974,10 +1973,15 @@ mod tests {
         assert_eq!(point.sum, Some(20.0));
         assert_eq!(point.min, Some(2.0));
         assert_eq!(point.max, Some(9.0));
-        assert_eq!(point.scale, 0);
         assert_eq!(point.zero_count, 0);
-        assert!(point.positive.is_none());
         assert!(point.negative.is_none());
+        // The basic tier has no bucket structure, so its non-zero observations
+        // are summarized into the single bucket enclosing [min, max]; OTLP
+        // requires them to be represented rather than dropped.
+        let positive = point.positive.as_ref().expect("non-zero observations");
+        assert_eq!(positive.bucket_counts, vec![4]);
+        let bucketed: u64 = positive.bucket_counts.iter().sum();
+        assert_eq!(point.zero_count + bucketed, point.count);
     }
 
     #[test]

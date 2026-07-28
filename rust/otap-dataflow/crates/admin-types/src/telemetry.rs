@@ -131,7 +131,11 @@ pub struct DistributionSummary {
     pub sum: f64,
     /// Total observation count, including exact zeros.
     pub count: u64,
-    /// Number of exact-zero observations.
+    /// Number of observations excluded from the bucket range because they were
+    /// exactly zero.
+    ///
+    /// Always 0 for the basic tier, which encodes no buckets and so excludes
+    /// nothing; a zero there is an ordinary observation reflected in `min`.
     #[serde(default)]
     pub zero_count: u64,
     /// Exponential-histogram scale of the underlying buckets.

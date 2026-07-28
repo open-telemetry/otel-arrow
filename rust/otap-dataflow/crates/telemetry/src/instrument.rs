@@ -461,19 +461,24 @@ impl From<f64> for Gauge<f64> {
 // Mmsc implementation.
 // ====================
 
-/// A pre-aggregated summary metric tracking min, max, sum, count, and the
-/// number of exact zeros.
+/// A pre-aggregated summary metric tracking min, max, sum, and count.
 ///
 /// Records individual observations via [`record()`](Mmsc::record), maintaining
 /// running min/max/sum/count. This is a delta instrument -- values are reset
 /// after each reporting interval.
 ///
-/// An `Mmsc` *is* an exponential histogram with no encoded buckets: every
-/// observation lands in either the zero count or the (unrepresented) positive
-/// range, so the OTLP projection preserves min, max, sum, count, and
-/// `zero_count` exactly without reconstructing observations. This is why it is
-/// carried as the [`Distribution::Basic`] tier rather than as a distinct metric
-/// value kind.
+/// An `Mmsc` *is* an exponential histogram with no encoded buckets: it knows
+/// only the range its observations occupied, so the OTLP projection preserves
+/// min, max, sum, and count exactly and summarizes every observation into the
+/// single bucket enclosing that range. This is why it is carried as the
+/// [`Distribution::Basic`] tier rather than as a distinct metric value kind.
+///
+/// Exact zeros are not tracked separately. The bucketed tiers keep a
+/// `zero_count` because a positive-only exponential histogram has no bucket
+/// that can hold a zero, but this tier has no buckets to be excluded from:
+/// a zero is simply an observation that lowers `min`, and `min == 0.0` already
+/// reports that zeros occurred.
+///
 /// An empty `Mmsc` is all zeros. `min` and `max` carry no sentinel, so they
 /// are meaningless until an observation is recorded and must not be read
 /// unless [`count`](Mmsc::count) is non-zero. Callers that render or export an
@@ -487,10 +492,8 @@ pub struct Mmsc {
     pub max: f64,
     /// Sum of all observed values.
     pub sum: f64,
-    /// Total number of observations, including exact zeros.
+    /// Total number of observations.
     pub count: u64,
-    /// Number of exact-zero observations.
-    pub zero_count: u64,
 }
 
 impl Debug for Mmsc {
@@ -500,7 +503,6 @@ impl Debug for Mmsc {
             .field("max", &self.max)
             .field("sum", &self.sum)
             .field("count", &self.count)
-            .field("zero_count", &self.zero_count)
             .finish()
     }
 }
@@ -513,9 +515,6 @@ impl Mmsc {
             value >= 0.0,
             "Mmsc::record called with negative value: {value}"
         );
-        if value == 0.0 {
-            self.zero_count += 1;
-        }
         // An empty aggregation has no min/max to compare against -- both are
         // 0.0 -- so the first observation is adopted outright.
         if self.count == 0 {
@@ -574,7 +573,6 @@ impl Mmsc {
         }
         self.sum += other.sum;
         self.count += other.count;
-        self.zero_count += other.zero_count;
     }
 }
 
@@ -745,14 +743,21 @@ impl Distribution {
         }
     }
 
-    /// Returns the number of exact-zero observations recorded this interval.
+    /// Returns the number of observations excluded from the bucket range
+    /// because they were exactly zero.
     ///
-    /// Zeros are never placed in a bucket, so for the histogram tiers this is
-    /// recovered as `count - sum(positive bucket counts)`.
+    /// A positive-only exponential histogram has no bucket that can hold a
+    /// zero, so for the bucketed tiers this is recovered as
+    /// `count - sum(positive bucket counts)`.
+    ///
+    /// [`Distribution::Basic`] encodes no buckets and so excludes nothing: it
+    /// reports 0 regardless of whether zeros were observed. A zero there is an
+    /// ordinary observation that lowers `min`, and is summarized along with
+    /// every other observation into the single enclosing bucket.
     #[must_use]
     pub fn zero_count(&self) -> u64 {
         match self {
-            Self::Basic(mmsc) => mmsc.zero_count,
+            Self::Basic(_) => 0,
             Self::Normal(hist) => hist.view().zero_count(),
             Self::Detailed(hist) => hist.view().zero_count(),
         }
@@ -858,7 +863,7 @@ fn check_hist_update(result: Result<(), HistogramError>, context: &str) {
 
 /// A normal-tier exponential-histogram instrument.
 ///
-/// Records non-negative observations into a [`Histogram`] with
+/// Records non-negative observations into a [`HistogramNN`] with
 /// [`HISTOGRAM_NORMAL_WORDS`] bucket words and snapshots them as a live
 /// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
 /// normal tier.
@@ -906,7 +911,7 @@ impl HistogramNormal {
 
 /// A detailed-tier exponential-histogram instrument.
 ///
-/// Records non-negative observations into a [`Histogram`] with
+/// Records non-negative observations into a [`HistogramNN`] with
 /// [`HISTOGRAM_DETAILED_WORDS`] bucket words and snapshots them as a live
 /// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
 /// detailed tier.
@@ -1053,7 +1058,6 @@ mod tests {
         assert_eq!(snap.max, 0.0);
         assert_eq!(snap.sum, 0.0);
         assert_eq!(snap.count, 0);
-        assert_eq!(snap.zero_count, 0);
     }
 
     /// Scenario: The first observation recorded into an empty `Mmsc` is
@@ -1067,7 +1071,6 @@ mod tests {
         mmsc.record(42.0);
         assert_eq!(mmsc.min, 42.0);
         assert_eq!(mmsc.max, 42.0);
-        assert_eq!(mmsc.zero_count, 0);
     }
 
     #[cfg(debug_assertions)]
@@ -1153,9 +1156,9 @@ mod tests {
         assert_eq!(snap.count, 0);
     }
 
-    // Scenario: A basic-tier distribution records several non-negative values.
-    // Guarantees: The basic tier preserves exact min/max/sum/count, matching
-    // the standalone Mmsc instrument it wraps.
+    /// Scenario: A basic-tier distribution records several non-negative values.
+    /// Guarantees: The basic tier preserves exact min/max/sum/count, matching
+    /// the standalone Mmsc instrument it wraps.
     #[test]
     fn test_distribution_basic_records_mmsc_summary() {
         let mut dist = Distribution::basic();
@@ -1173,10 +1176,10 @@ mod tests {
         assert_eq!(snap.count, 4);
     }
 
-    // Scenario: Normal- and detailed-tier distributions record positive values.
-    // Guarantees: Both histogram tiers accept observations and expose the exact
-    // count and sum through their view, confirming the boxed histograms are
-    // wired to expohisto.
+    /// Scenario: Normal- and detailed-tier distributions record positive values.
+    /// Guarantees: Both histogram tiers accept observations and expose the exact
+    /// count and sum through their view, confirming the boxed histograms are
+    /// wired to expohisto.
     #[test]
     fn test_distribution_histogram_tiers_record_into_buckets() {
         for mut dist in [Distribution::normal(), Distribution::detailed()] {
@@ -1196,9 +1199,9 @@ mod tests {
         }
     }
 
-    // Scenario: A fresh distribution and a reset distribution are inspected.
-    // Guarantees: A new instrument is empty, and resetting after recording
-    // returns it to the empty state so each delta interval starts clean.
+    /// Scenario: A fresh distribution and a reset distribution are inspected.
+    /// Guarantees: A new instrument is empty, and resetting after recording
+    /// returns it to the empty state so each delta interval starts clean.
     #[test]
     fn test_distribution_reset_clears_all_tiers() {
         for mut dist in [
@@ -1215,10 +1218,10 @@ mod tests {
         }
     }
 
-    // Scenario: Two same-tier distributions with disjoint observations are
-    // merged, for both the basic and histogram tiers.
-    // Guarantees: Merging accumulates counts and sums across tiers, which the
-    // registry relies on to fold per-thread aggregations together.
+    /// Scenario: Two same-tier distributions with disjoint observations are
+    /// merged, for both the basic and histogram tiers.
+    /// Guarantees: Merging accumulates counts and sums across tiers, which the
+    /// registry relies on to fold per-thread aggregations together.
     #[test]
     fn test_distribution_merge_same_tier_accumulates() {
         let mut basic_a = Distribution::basic();
@@ -1246,11 +1249,11 @@ mod tests {
         assert_eq!(hist_a.count(), 3);
     }
 
-    // Scenario: The normal tier is asked to record a negative value in a debug
-    // build.
-    // Guarantees: Invalid observations are rejected the same way the basic tier
-    // rejects them, tripping the shared debug assertion rather than silently
-    // corrupting the aggregation.
+    /// Scenario: The normal tier is asked to record a negative value in a debug
+    /// build.
+    /// Guarantees: Invalid observations are rejected the same way the basic tier
+    /// rejects them, tripping the shared debug assertion rather than silently
+    /// corrupting the aggregation.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "Distribution::record rejected value")]
@@ -1288,27 +1291,32 @@ mod tests {
 
     /// Scenario: A basic-tier distribution records exact zeros alongside
     /// positive values.
-    /// Guarantees: The basic tier tracks `zero_count` itself, so it carries the
-    /// same information as a histogram tier with no encoded buckets.
+    /// Guarantees: The basic tier does not track zeros separately -- it reports
+    /// a zero_count of 0 and folds them into min instead -- so nothing excludes
+    /// them from the single bucket its OTLP projection emits.
     #[test]
-    fn test_basic_tier_tracks_zero_count() {
+    fn test_basic_tier_folds_zeros_into_min() {
         let mut dist = Distribution::basic();
         dist.record(0.0);
         dist.record(0.0);
         dist.record(4.0);
 
         assert_eq!(dist.count(), 3);
-        assert_eq!(dist.zero_count(), 2);
+        assert_eq!(dist.zero_count(), 0);
+        let (_count, _sum, min, max) = dist.summary();
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 4.0);
     }
 
-    /// Scenario: Two basic-tier distributions that each recorded exact zeros
-    /// are merged.
-    /// Guarantees: `zero_count` accumulates across the merge, so a registry
-    /// fold of per-thread aggregations does not lose the zero population.
+    /// Scenario: Two basic-tier distributions, one of which recorded only exact
+    /// zeros, are merged.
+    /// Guarantees: The zero population survives the merge through count and
+    /// min, so a registry fold of per-thread aggregations neither loses those
+    /// observations nor reports a spurious minimum.
     #[test]
-    fn test_basic_tier_merge_accumulates_zero_count() {
+    fn test_basic_tier_merge_preserves_zero_observations() {
         let mut a = Distribution::basic();
-        a.record(0.0);
+        a.record(2.0);
         a.record(2.0);
         let mut b = Distribution::basic();
         b.record(0.0);
@@ -1317,6 +1325,9 @@ mod tests {
         a.merge(&b);
 
         assert_eq!(a.count(), 4);
-        assert_eq!(a.zero_count(), 3);
+        assert_eq!(a.zero_count(), 0);
+        let (_count, _sum, min, max) = a.summary();
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 2.0);
     }
 }
