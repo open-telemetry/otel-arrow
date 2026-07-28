@@ -1,7 +1,5 @@
 offline = true
 include_fragments = "full"
 
-# Match markdownlint: ignore generated changelogs
-exclude_path = [
-    "CHANGELOG\\.md$",
-]
+# Do not skip hidden directories and files (e.g. .chloggen/README.md)
+hidden = true
