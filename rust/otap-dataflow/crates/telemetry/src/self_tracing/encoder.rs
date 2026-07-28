@@ -107,7 +107,9 @@ pub struct DirectFieldVisitor<'buf, B: BoundedBuf> {
 }
 
 /// Reserve 64 bytes for the generic message body plus protobuf wire overhead.
-const ERROR_ATTRIBUTE_BODY_RESERVE: usize = 72;
+const MESSAGE_BODY_ENCODED_RESERVE: usize = 72;
+/// Smallest budget that retains a meaningful error prefix with a truncation suffix.
+const MIN_ERROR_DIAGNOSTIC_BUDGET: usize = 72;
 
 impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
@@ -365,9 +367,13 @@ fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
 /// Compute the error-field budget while reserving space for the log body.
 #[inline]
 fn error_attr_budget<B: BoundedBuf>(buf: &B) -> usize {
-    buf.remaining()
-        .saturating_sub(ERROR_ATTRIBUTE_BODY_RESERVE)
-        .max(1)
+    let remaining = buf.remaining();
+    let budget_after_body_reserve = remaining.saturating_sub(MESSAGE_BODY_ENCODED_RESERVE);
+    if budget_after_body_reserve < MIN_ERROR_DIAGNOSTIC_BUDGET {
+        remaining
+    } else {
+        budget_after_body_reserve
+    }
 }
 
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
@@ -1398,6 +1404,49 @@ mod tests {
             actual_body.as_deref(),
             Some(body.as_bytes()),
             "body should fit in the space reserved after the error"
+        );
+    }
+
+    /// Scenario: a record has sufficient capacity for both an error and its body.
+    /// Guarantees: the error budget reserves encoded space for the generic message body.
+    #[test]
+    fn error_budget_reserves_body_when_capacity_is_abundant() {
+        use otap_df_pdata::otlp::common::{BoundedBuf, StackProtoBuffer};
+
+        let mut buf = StackProtoBuffer::<512>::default();
+        assert_eq!(error_attr_budget(&buf), 512 - MESSAGE_BODY_ENCODED_RESERVE);
+
+        buf.try_extend(&[0; 100])
+            .expect("prefix should fit in test buffer");
+        assert_eq!(
+            error_attr_budget(&buf),
+            512 - 100 - MESSAGE_BODY_ENCODED_RESERVE
+        );
+    }
+
+    /// Scenario: reserving the body leaves exactly the minimum useful error budget.
+    /// Guarantees: the error budget retains both the body reserve and a meaningful error prefix.
+    #[test]
+    fn error_budget_reserves_body_at_minimum_error_threshold() {
+        use otap_df_pdata::otlp::common::StackProtoBuffer;
+
+        let buf =
+            StackProtoBuffer::<{ MESSAGE_BODY_ENCODED_RESERVE + MIN_ERROR_DIAGNOSTIC_BUDGET }>::default();
+        assert_eq!(error_attr_budget(&buf), MIN_ERROR_DIAGNOSTIC_BUDGET);
+    }
+
+    /// Scenario: reserving the body would leave too little space for an error attribute.
+    /// Guarantees: the error budget falls back to all remaining record space.
+    #[test]
+    fn error_budget_prioritizes_error_when_body_reserve_is_unaffordable() {
+        use otap_df_pdata::otlp::common::StackProtoBuffer;
+
+        let buf = StackProtoBuffer::<
+            { MESSAGE_BODY_ENCODED_RESERVE + MIN_ERROR_DIAGNOSTIC_BUDGET - 1 },
+        >::default();
+        assert_eq!(
+            error_attr_budget(&buf),
+            MESSAGE_BODY_ENCODED_RESERVE + MIN_ERROR_DIAGNOSTIC_BUDGET - 1
         );
     }
 
