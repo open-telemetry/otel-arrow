@@ -70,8 +70,8 @@ jobs:
           # Get all changed files
           all_changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD")
 
-          # Treat PR as docs-only when all changed files are under any docs/ directory.
-          non_doc_files=$(printf '%s\n' "$all_changed" | grep -v '^$' | grep -v -E '(^|.*/)docs/' || true)
+          # Treat PR as docs-only when all changed files are under any docs/ or rfcs/ directory.
+          non_doc_files=$(printf '%s\n' "$all_changed" | grep -v '^$' | grep -v -E '(^|.*/)(docs|rfcs)/' || true)
 
           if [ -z "$non_doc_files" ]; then
             echo "is_doc_only=true" >> "$GITHUB_OUTPUT"
@@ -122,6 +122,17 @@ jobs:
           fi
           echo "Touched chloggen entries:"
           echo "$touched"
+
+          mapfile -t touched_files <<< "$touched"
+          non_ascii=$(LC_ALL=C grep -a -nP '[\x80-\xFF]' -- "${touched_files[@]}" || true)
+          if [ -n "$non_ascii" ]; then
+            echo "Error: .chloggen entries must contain only ASCII characters."
+            echo
+            echo "$non_ascii"
+            echo
+            echo "Replace typographic punctuation and other non-ASCII characters with ASCII equivalents."
+            exit 1
+          fi
 
       - name: Validate .chloggen/*.yaml entries
         if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}

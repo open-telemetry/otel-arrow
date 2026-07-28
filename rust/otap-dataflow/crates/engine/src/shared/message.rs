@@ -294,7 +294,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(10);
         let mut receiver = SharedReceiver::mpsc(rx);
 
-        // Channel is empty but sender is alive — should return Empty
+        // Channel is empty but sender is alive -- should return Empty
         let result = receiver.try_recv();
         assert!(
             matches!(result, Err(RecvError::Empty)),
@@ -303,7 +303,7 @@ mod tests {
 
         drop(tx);
 
-        // Now channel is closed — should return Closed
+        // Now channel is closed -- should return Closed
         let result = receiver.try_recv();
         assert!(
             matches!(result, Err(RecvError::Closed)),
@@ -316,7 +316,7 @@ mod tests {
         let (tx, rx) = flume::bounded::<String>(10);
         let mut receiver = SharedReceiver::mpmc(rx);
 
-        // Channel is empty but sender is alive — should return Empty
+        // Channel is empty but sender is alive -- should return Empty
         let result = receiver.try_recv();
         assert!(
             matches!(result, Err(RecvError::Empty)),
@@ -325,7 +325,7 @@ mod tests {
 
         drop(tx);
 
-        // Now channel is closed — should return Closed
+        // Now channel is closed -- should return Closed
         let result = receiver.try_recv();
         assert!(
             matches!(result, Err(RecvError::Closed)),

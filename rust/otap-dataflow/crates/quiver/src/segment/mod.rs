@@ -20,7 +20,7 @@
 //!    with a completely different schema.
 //!
 //! 2. **Schema evolution within a payload type**: Even for a single slot, the
-//!    schema can change between bundles—optional columns may appear/disappear,
+//!    schema can change between bundles--optional columns may appear/disappear,
 //!    and dictionary-encoded columns may switch between `Dictionary<u8, Utf8>`,
 //!    `Dictionary<u16, Utf8>`, or native `Utf8` based on cardinality.
 //!

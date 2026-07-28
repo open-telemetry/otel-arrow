@@ -25,6 +25,7 @@ otap-df-config = { workspace = true }
 otap-df-channel = { workspace = true }
 otap-df-engine = { workspace = true }
 otap-df-telemetry = { workspace = true }
+otap-df-telemetry-macros = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["bench", "testing"] }
 otap-df-pdata-views = { workspace = true }
 
@@ -93,6 +94,10 @@ harness = false
 
 [[bench]]
 name = "item_count"
+harness = false
+
+[[bench]]
+name = "internal_metrics_bridge"
 harness = false
 
 [[bench]]

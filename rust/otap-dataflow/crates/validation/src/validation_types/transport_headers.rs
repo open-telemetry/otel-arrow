@@ -10,7 +10,7 @@
 //! message must carry transport headers (`Some`). A single `None` entry
 //! (a signal that arrived without headers) causes immediate failure.
 //!
-//! For **deny** checks, `None` entries are acceptable — a signal without
+//! For **deny** checks, `None` entries are acceptable -- a signal without
 //! headers cannot contain a forbidden key.
 
 use otap_df_config::transport_headers::TransportHeaders;
@@ -119,7 +119,7 @@ pub fn validate_transport_header_require_key_values(
 /// Validate that no SUV message carrying transport headers contains any of
 /// the specified keys.
 ///
-/// `None` entries (signals without transport headers) are acceptable — a
+/// `None` entries (signals without transport headers) are acceptable -- a
 /// signal that never received headers cannot contain a forbidden key.
 #[must_use]
 pub fn validate_transport_header_deny_keys(

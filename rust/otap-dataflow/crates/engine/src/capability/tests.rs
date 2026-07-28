@@ -4,7 +4,7 @@
 //! End-to-end tests for the [`extension_capabilities!`] macro.
 //!
 //! Each test defines a hand-rolled test capability (the `#[capability]`
-//! proc macro cannot expand inside the engine crate itself — proc
+//! proc macro cannot expand inside the engine crate itself -- proc
 //! macros can't target paths in their host crate), invokes one arm of
 //! the macro, exercises the resulting `register_*` fn pointers against
 //! a real `CapabilityRegistry`, then resolves bindings and consumes the
@@ -20,7 +20,7 @@ use otap_df_config::{CapabilityId, ExtensionId};
 use std::any::{Any, TypeId};
 use std::collections::{HashMap, HashSet};
 
-// ── Test capability (mirrors what `#[capability]` generates) ─────────
+// -- Test capability (mirrors what `#[capability]` generates) ---------
 
 trait MacroTestCapLocal {
     fn value(&self) -> &str;
@@ -91,7 +91,7 @@ impl MacroTestCap {
     }
 }
 
-// ── Test extension impls ─────────────────────────────────────────────
+// -- Test extension impls ---------------------------------------------
 
 #[derive(Clone)]
 struct Shared(&'static str);
@@ -132,7 +132,7 @@ fn resolve(registry: &CapabilityRegistry) -> Capabilities {
     resolve_bindings(&bindings(), registry, &known_exts(), &mut tracker).expect("resolve_bindings")
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
+// -- Tests ------------------------------------------------------------
 
 #[test]
 fn macro_shared_only_form() {
@@ -207,7 +207,7 @@ fn macro_dual_form() {
 
     // Native dual: local and shared are distinct registrations
     // (different concrete types), but the per-binding one-shot
-    // contract applies uniformly — claiming either execution model
+    // contract applies uniformly -- claiming either execution model
     // on a node invalidates the other on the same node. To observe
     // both concrete values we resolve twice, claiming a different
     // side from each independent `Capabilities`.

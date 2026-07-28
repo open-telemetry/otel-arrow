@@ -234,11 +234,11 @@ fn cast_expr(expr: &mut Expr, data_type: DataType) {
 /// with the other side for arithmetic operation, by adding casts in the logical expression tree.
 ///
 /// Type coercion rules for integer arithmetic:
-/// - Same types: No coercion (e.g., UInt8 + UInt8 → UInt8)
-/// - Both unsigned: Coerce to larger bit width (e.g., UInt8 + UInt32 → UInt32)
-/// - Both signed: Coerce to larger bit width (e.g., Int32 + Int64 → Int64)
-/// - Mixed signedness with UInt32: Always use Int64 to avoid overflow (e.g., UInt32 + Int32 → Int64)
-/// - Mixed signedness without UInt32: Use signed type with larger width (e.g., UInt8 + Int32 → Int32)
+/// - Same types: No coercion (e.g., UInt8 + UInt8 -> UInt8)
+/// - Both unsigned: Coerce to larger bit width (e.g., UInt8 + UInt32 -> UInt32)
+/// - Both signed: Coerce to larger bit width (e.g., Int32 + Int64 -> Int64)
+/// - Mixed signedness with UInt32: Always use Int64 to avoid overflow (e.g., UInt32 + Int32 -> Int64)
+/// - Mixed signedness without UInt32: Use signed type with larger width (e.g., UInt8 + Int32 -> Int32)
 /// - Unresolved scalar integers: Coerced to match the concrete type on the other side
 /// - AnyValue with integers: Coerced to Int64 (the only integer type AnyValue can represent)
 ///

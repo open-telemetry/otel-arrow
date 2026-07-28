@@ -166,8 +166,8 @@ Allowed Payload Types are defined per gRPC service/Signal. Clients MUST only
 send ArrowPayloads with allowed ArrowPayload types for that Signal according to
 the tables defined in this section.
 
-`arrow_payloads` additionally MUST include the primary/root table (LOGS, SPANS,
-or UNIVARIATE_METRICS) and SHOULD omit payloads with 0 rows.
+`arrow_payloads` SHOULD omit payloads with 0 rows, but a payload with 0 rows is
+considered semantically equivalent to one that is missing.
 
 A `type` MUST NOT be sent as `UNKNOWN` (value 0).
 
@@ -926,7 +926,7 @@ hashing, too few client connections can pin traffic to a single backend core.
 
 For a detailed treatment of challenges, solution techniques (client-side and
 server-side), and recommended baseline configurations, see
-[Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
+[Load Balancing: Challenges & Solutions](../rust/otap-dataflow/docs/load-balancing.md).
 
 ---
 

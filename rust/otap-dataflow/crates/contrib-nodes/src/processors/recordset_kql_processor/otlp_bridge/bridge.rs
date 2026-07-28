@@ -74,19 +74,26 @@ impl BridgePipeline {
 
 #[derive(Debug)]
 pub struct BridgeResponse {
-    pub included_records: Option<ExportLogsServiceRequest>,
-    pub included_record_count: usize,
+    /// Records emitted on the output channel: individually included records
+    /// plus any synthetic rows produced by a `summarize` aggregation. This is
+    /// the OTLP payload forwarded downstream, and is distinct from the
+    /// per-input-record `counters.included` count (a summary row is emitted
+    /// here even though no input record was individually included).
+    pub output_records: Option<ExportLogsServiceRequest>,
+    /// Records removed by a filter (`where`), serialized only when the pipeline
+    /// is configured to include dropped records.
     pub dropped_records: Option<ExportLogsServiceRequest>,
-    pub dropped_record_count: usize,
+    /// Per-input-record classification counts (included / dropped / summarized).
+    pub counters: RecordSetEngineCounters,
 }
 
 impl BridgeResponse {
     pub fn into_otlp_bytes(self) -> Result<(Vec<u8>, Vec<u8>), BridgeError> {
-        let mut included_records_otlp_response = Vec::new();
-        if let Some(ref included) = self.included_records {
-            match ExportLogsServiceRequest::to_protobuf(included, OTLP_BUFFER_INITIAL_CAPACITY) {
+        let mut output_records_otlp_response = Vec::new();
+        if let Some(ref output) = self.output_records {
+            match ExportLogsServiceRequest::to_protobuf(output, OTLP_BUFFER_INITIAL_CAPACITY) {
                 Ok(r) => {
-                    included_records_otlp_response = r.to_vec();
+                    output_records_otlp_response = r.to_vec();
                 }
                 Err(e) => {
                     return Err(BridgeError::OtlpProtobufWriteError(e));
@@ -106,10 +113,7 @@ impl BridgeResponse {
             }
         }
 
-        Ok((
-            included_records_otlp_response,
-            dropped_records_otlp_response,
-        ))
+        Ok((output_records_otlp_response, dropped_records_otlp_response))
     }
 }
 
@@ -238,9 +242,10 @@ pub fn process_export_logs_service_request_using_pipeline(
     let initial_dropped_records = batch.push_records(&mut export_logs_service_request);
 
     let mut final_results = batch.flush();
+    let counters = final_results.counters;
 
     let mut dropped_records = None;
-    let dropped_record_count = if pipeline.options.get_include_dropped_records() {
+    if pipeline.options.get_include_dropped_records() {
         for record in initial_dropped_records.into_iter() {
             final_results.dropped_records.push(record);
         }
@@ -267,8 +272,6 @@ pub fn process_export_logs_service_request_using_pipeline(
                 dropped_records_request.resource_logs.push(resource_logs);
             }
 
-            let count = final_results.dropped_records.len();
-
             process_log_record_results(
                 pipeline.options.get_diagnostic_options(),
                 &mut dropped_records_request,
@@ -276,19 +279,12 @@ pub fn process_export_logs_service_request_using_pipeline(
             );
 
             dropped_records = Some(dropped_records_request);
-
-            count
-        } else {
-            0
         }
-    } else {
-        initial_dropped_records.len() + final_results.dropped_records.len()
-    };
+    }
 
-    let mut included_records = None;
+    let mut output_records = None;
 
-    let mut included_record_count = final_results.included_records.len();
-    let has_included_records = included_record_count > 0;
+    let has_included_records = !final_results.included_records.is_empty();
 
     let has_summaries = !final_results.summaries.included_summaries.is_empty();
     if has_summaries || has_included_records {
@@ -380,7 +376,6 @@ pub fn process_export_logs_service_request_using_pipeline(
                 );
 
                 log_records.push(log_record);
-                included_record_count += 1;
             }
 
             let summary_otlp = ResourceLogs::new().with_scope_logs(
@@ -396,14 +391,13 @@ pub fn process_export_logs_service_request_using_pipeline(
             export_logs_service_request.resource_logs.push(summary_otlp);
         }
 
-        included_records = Some(export_logs_service_request);
+        output_records = Some(export_logs_service_request);
     }
 
     Ok(BridgeResponse {
-        included_records,
-        included_record_count,
+        output_records,
         dropped_records,
-        dropped_record_count,
+        counters,
     })
 }
 
@@ -733,7 +727,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert_eq!(1, response.dropped_record_count);
+            assert_eq!(1, response.counters.dropped);
             assert!(response.dropped_records.is_none())
         }
     }
@@ -753,12 +747,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(0, response.included_record_count);
-        assert_eq!(1, response.dropped_record_count);
+        assert_eq!(0, response.counters.included);
+        assert_eq!(0, response.counters.summarized);
+        assert_eq!(1, response.counters.dropped);
 
-        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+        let (output_records, dropped_records) = response.into_otlp_bytes().unwrap();
 
-        assert!(included_records.is_empty());
+        assert!(output_records.is_empty());
         assert!(!dropped_records.is_empty());
     }
 
@@ -777,12 +772,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(1, response.included_record_count);
-        assert_eq!(0, response.dropped_record_count);
+        assert_eq!(1, response.counters.included);
+        assert_eq!(0, response.counters.dropped);
 
-        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+        let (output_records, dropped_records) = response.into_otlp_bytes().unwrap();
 
-        assert!(!included_records.is_empty());
+        assert!(!output_records.is_empty());
         assert!(dropped_records.is_empty());
     }
 
@@ -802,13 +797,13 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(1, response.included_record_count);
-        assert_eq!(1, response.dropped_record_count);
-
-        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
-
-        assert!(!included_records.is_empty());
-        assert!(!dropped_records.is_empty());
+        // No input record was individually included or dropped; the single
+        // input was folded into the aggregation. The aggregation still emits
+        // one synthetic summary row on the output channel.
+        assert_eq!(0, response.counters.included);
+        assert_eq!(0, response.counters.dropped);
+        assert_eq!(1, response.counters.summarized);
+        assert!(response.output_records.is_some());
     }
 
     #[test]
@@ -834,10 +829,11 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(2, response.included_record_count);
-        assert_eq!(2, response.dropped_record_count);
+        assert_eq!(0, response.counters.included);
+        assert_eq!(0, response.counters.dropped);
+        assert_eq!(2, response.counters.summarized);
 
-        let response_otlp = response.included_records.as_mut().unwrap();
+        let response_otlp = response.output_records.as_mut().unwrap();
 
         let response_summaries = &mut response_otlp.resource_logs[1].scope_logs[0].log_records;
 
@@ -885,10 +881,10 @@ mod tests {
                 .map(|v| v.to_value())
         );
 
-        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+        let (output_records, dropped_records) = response.into_otlp_bytes().unwrap();
 
-        assert!(!included_records.is_empty());
-        assert!(!dropped_records.is_empty());
+        assert!(!output_records.is_empty());
+        assert!(dropped_records.is_empty());
     }
 
     #[test]
@@ -911,10 +907,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(2, response.included_record_count);
-        assert_eq!(2, response.dropped_record_count);
+        assert_eq!(0, response.counters.dropped);
+        assert_eq!(2, response.counters.summarized);
 
-        let response_otlp = response.included_records.as_mut().unwrap();
+        let response_otlp = response.output_records.as_mut().unwrap();
 
         let response_summaries = &mut response_otlp.resource_logs[1].scope_logs[0].log_records;
 
@@ -992,10 +988,10 @@ mod tests {
                 .map(|v| v.to_value())
         );
 
-        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+        let (output_records, dropped_records) = response.into_otlp_bytes().unwrap();
 
-        assert!(!included_records.is_empty());
-        assert!(!dropped_records.is_empty());
+        assert!(!output_records.is_empty());
+        assert!(dropped_records.is_empty());
     }
 
     #[test]
@@ -1094,12 +1090,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(1, response.included_record_count);
-        assert_eq!(0, response.dropped_record_count);
+        assert_eq!(1, response.counters.included);
+        assert_eq!(0, response.counters.dropped);
 
-        let (included_records, dropped_records) = response.into_otlp_bytes().unwrap();
+        let (output_records, dropped_records) = response.into_otlp_bytes().unwrap();
 
-        assert!(!included_records.is_empty());
+        assert!(!output_records.is_empty());
         assert!(dropped_records.is_empty());
     }
 
@@ -1242,13 +1238,9 @@ mod tests {
         )
         .unwrap();
 
-        let canonical_logs = &response_canonical.included_records.unwrap().resource_logs[0]
-            .scope_logs[0]
-            .log_records;
-        let aliased_logs = &response_with_aliases
-            .included_records
-            .unwrap()
-            .resource_logs[0]
+        let canonical_logs =
+            &response_canonical.output_records.unwrap().resource_logs[0].scope_logs[0].log_records;
+        let aliased_logs = &response_with_aliases.output_records.unwrap().resource_logs[0]
             .scope_logs[0]
             .log_records;
 

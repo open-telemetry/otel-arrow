@@ -22,6 +22,9 @@ pub mod content_router;
 /// Durable buffer processor.
 pub mod durable_buffer_processor;
 
+/// Partition processor.
+pub mod partition_processor;
+
 /// Retry processor.
 pub mod retry_processor;
 

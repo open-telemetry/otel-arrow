@@ -712,7 +712,7 @@ nodes:
     #[test]
     fn update_configs_missing_internal_port_errors() {
         let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
-        // ContainerConnection without .internal_port() — should fail validation.
+        // ContainerConnection without .internal_port() -- should fail validation.
         let generator = Generator::logs()
             .to_container(ContainerConnection::new("redis").node_template("type: fake"));
         let mut scenario = Scenario::new()

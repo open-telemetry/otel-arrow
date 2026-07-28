@@ -136,3 +136,14 @@ jobs:
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the pipeline benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/continuous/)" >> $GITHUB_STEP_SUMMARY
+
+  workflow-notification:
+    permissions:
+      issues: write
+    needs:
+      - pipeline-perf-test
+      - update-benchmarks
+    if: always()
+    uses: open-telemetry/shared-workflows/.github/workflows/workflow-failure-issue.yml@62d5939b47144252763c5ff9fffe8c20d76cd806 # v0.4.0
+    with:
+      success: ${{ needs.pipeline-perf-test.result == 'success' && needs.update-benchmarks.result == 'success' }}

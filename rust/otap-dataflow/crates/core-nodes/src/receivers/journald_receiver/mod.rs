@@ -60,7 +60,15 @@ use std::time::Instant as StdInstant;
 mod arrow_records_encoder;
 mod checkpoint;
 mod config;
+#[cfg(any(target_os = "linux", test, feature = "bench"))]
+mod decode;
 mod journal;
+
+/// Re-exported only for the out-of-crate `journald_decode` benchmark. Not part
+/// of the public API; may change or disappear without notice.
+#[cfg(feature = "bench")]
+#[doc(hidden)]
+pub use decode::bench_reference_decode;
 
 use config::RuntimeConfig;
 pub use config::{

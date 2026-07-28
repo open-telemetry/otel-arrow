@@ -350,7 +350,7 @@ impl MetricSignalBuilder {
 
     /// Replace an existing number data point row with newer data.
     ///
-    /// Attributes are not updated — they are part of stream identity and
+    /// Attributes are not updated -- they are part of stream identity and
     /// never change for the same stream.
     pub fn replace_number_dp<V: NumberDataPointView>(&mut self, row: usize, dp: &V) {
         self.number_dps.replace(row, dp);

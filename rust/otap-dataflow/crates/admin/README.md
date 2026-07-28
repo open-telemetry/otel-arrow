@@ -80,13 +80,18 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   from in-memory embedded files (no runtime static file directory exposure).
 - Default admin bind address is loopback (`127.0.0.1:8080`) unless explicitly
   overridden in config.
-- UI/static responses include hardened browser headers:
-  - `Content-Security-Policy` (self-only scripts/connect/object/base/frame
-    restrictions)
-  - `X-Content-Type-Options: nosniff`
-  - `X-Frame-Options: DENY`
-  - `Referrer-Policy: no-referrer`
-  - `Cache-Control: no-store, no-cache, must-revalidate`
+- Both UI/static responses and `/api/v1/*` API responses include hardened
+  browser security headers. The table below lists each header with its
+  normative source and purpose:
+
+  | Header | Source | Purpose |
+  | --- | --- | --- |
+  | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 section 5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses; `no-store` is the strongest directive, `no-cache`/`must-revalidate` add coverage for older proxies |
+  | `X-Frame-Options: DENY` | [RFC 7034](https://www.rfc-editor.org/rfc/rfc7034) (Informational, deprecated) | Legacy anti-clickjacking fallback for browsers that do not implement CSP `frame-ancestors` |
+  | `Content-Security-Policy` | [W3C CSP Level 3](https://www.w3.org/TR/CSP3/) | Modern anti-clickjacking and injection defense; `frame-ancestors 'none'` supersedes `X-Frame-Options` in compliant browsers. Applied to UI/static routes only (not meaningful for JSON API responses) |
+  | `X-Content-Type-Options: nosniff` | [WHATWG Fetch Standard](https://fetch.spec.whatwg.org/#x-content-type-options-header) | Instructs browser to honor the declared `Content-Type` and not MIME-sniff, preventing responses from being misinterpreted as executable script or HTML |
+  | `Referrer-Policy: no-referrer` | [W3C Referrer Policy](https://www.w3.org/TR/referrer-policy/) | Strips the `Referer` header so admin endpoint URLs do not leak to third parties through outbound links |
+
 - UI dependencies are vendored and served locally from `/static/vendor/*`
   (no CDN dependency at runtime).
 - UI code uses explicit escaping helpers (`ui/js/dom-safety.js`) for dynamic
@@ -103,7 +108,7 @@ guidance, see [`docs/admin/architecture.md`](../../docs/admin/architecture.md).
   `POST /api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`,
   and `POST /api/v1/groups/shutdown` with stricter access controls than
   read-only endpoints.
-- [ ] Apply the same hardened response headers to API endpoints
+- [x] Apply the same hardened response headers to API endpoints
   (`/api/v1/status`, `/api/v1/livez`, `/api/v1/readyz`,
   `/api/v1/telemetry/*`, `/api/v1/metrics`), not only UI/static.
 - [ ] Harden CSP further by removing `style-src 'unsafe-inline'` (move toward

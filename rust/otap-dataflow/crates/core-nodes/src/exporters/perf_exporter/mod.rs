@@ -39,9 +39,10 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
 use otap_df_telemetry::otel_info;
 use serde_json::Value;
 use std::sync::Arc;
@@ -54,7 +55,7 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
 pub struct PerfExporter {
     config: Config,
     metrics: MetricSet<PerfExporterPdataMetrics>,
-    pdata_metrics: MetricSet<ExporterPDataMetrics>,
+    pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
 }
 
 /// Declares the OTAP Perf exporter as a local exporter factory
@@ -86,7 +87,7 @@ impl PerfExporter {
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
         let metrics = pipeline_ctx.register_metrics::<PerfExporterPdataMetrics>();
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
         PerfExporter {
             config,
@@ -110,16 +111,14 @@ impl PerfExporter {
         ))
     }
 
-    fn terminal_state(&self, deadline: Instant) -> TerminalState {
+    fn terminal_state(&mut self, deadline: Instant) -> TerminalState {
         let mut snapshots = Vec::new();
 
         if self.metrics.needs_flush() {
             snapshots.push(self.metrics.snapshot());
         }
 
-        if self.pdata_metrics.needs_flush() {
-            snapshots.push(self.pdata_metrics.snapshot());
-        }
+        snapshots.extend(self.pdata_metrics.terminal_snapshots());
 
         TerminalState::new(deadline, snapshots)
     }
@@ -149,7 +148,7 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     mut metrics_reporter,
                 }) => {
                     _ = metrics_reporter.report(&mut self.metrics);
-                    _ = metrics_reporter.report(&mut self.pdata_metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                 }
                 // ToDo: Handle configuration changes
                 Message::Control(NodeControlMsg::Config { .. }) => {}
@@ -159,9 +158,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 Message::PData(mut pdata) => {
                     // Capture signal type before moving pdata into try_from
                     let signal_type = pdata.signal_type();
-
-                    // Increment consumed for this signal
-                    self.pdata_metrics.inc_consumed(signal_type);
 
                     let payload = pdata.take_payload();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
@@ -219,7 +215,13 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     // }
 
                     // Successful perf reporting: mark as exported for this signal
-                    self.pdata_metrics.inc_exported(signal_type);
+                    self.pdata_metrics
+                        .with(SignalOutcomeAttributes {
+                            signal: signal_type,
+                            outcome: Outcome::Success,
+                        })
+                        .messages
+                        .inc();
 
                     // ToDo Report disk, io, cpu, mem usage once gauge metrics are implemented
                 }

@@ -25,7 +25,7 @@ pub(crate) enum InsertOutcome {
 /// insertion, removal, and in-place priority updates.
 ///
 /// Entries are `(K, P)` pairs.  The heap is ordered by `P` where the
-/// *smallest* priority sits at the root.  Keys must be unique — inserting
+/// *smallest* priority sits at the root.  Keys must be unique -- inserting
 /// a key that already exists replaces its priority in place.
 ///
 /// # Key cloning

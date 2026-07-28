@@ -31,6 +31,10 @@ make chlog-validate
 make chlog-preview             # renders entries without modifying CHANGELOGs
 ```
 
+Changelog entries must use ASCII characters only. Replace typographic punctuation
+and other non-ASCII characters with ASCII equivalents so generated changelogs
+pass repository validation.
+
 ## When no entry is needed
 
 Skip the entry when the change is not user-facing. The PR-validation
@@ -39,7 +43,8 @@ workflow honors any of:
 - `chore` (case-insensitive) anywhere in the PR title.
 - The `chore` label (for maintainers).
 - The `skipchangelog` label (for maintainers).
-- Documentation-only PRs (all changed files are under a `docs/` directory).
+- Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
+  directory).
 - The `dependencies` label (auto-applied by Renovate).
 - Bot authors (`dependabot[bot]`, `renovate[bot]`, `otelbot`).
 

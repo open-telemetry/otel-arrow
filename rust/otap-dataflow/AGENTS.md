@@ -26,6 +26,36 @@ python3 tools/sanitycheck.py
 
 Fix any errors before committing.
 
+## ASCII-only Rust source
+
+Rust source under `rust/otap-dataflow` must be pure ASCII (no bytes > 0x7F). CI
+enforces this via `tools/sanitycheck.py`, which scans `rust/otap-dataflow/**/*.rs`
+and rejects non-ASCII bytes -- em dashes, curly quotes, arrows, box-drawing,
+emoji, a UTF-8 BOM, and invisible/bidi Trojan-Source characters. This keeps
+diffs reviewable and stops editors/LLMs from silently slipping in confusable
+punctuation.
+
+- In comments, use ASCII equivalents: `--` not an em dash, `->` not an arrow,
+  `...` not an ellipsis, straight `'`/`"` quotes, and `+`/`-`/`|` for diagrams.
+- In a string/char literal that genuinely needs a non-ASCII value, use a
+  `\u{XXXX}` escape (e.g. `"\u{25B6}"`); the source stays ASCII while the runtime
+  value is byte-identical.
+- Escape hatch for a genuinely required raw non-ASCII byte: put
+  `sanitycheck: allow-non-ascii-line` in a `//` comment on that line, or
+  `sanitycheck: allow-non-ascii-file` in a `//` comment anywhere in the file.
+
+## Tests
+
+Document every test immediately above its declaration with Rust doc comments:
+
+```rust
+/// Scenario: <the behavior or condition under test>
+/// Guarantees: <the observable invariant protected by the test>
+```
+
+Make both statements specific enough for a reviewer to understand the test's
+intent and the behavior that must not regress without reading its implementation.
+
 ## Component naming conventions
 
 When adding a new component, keep public names consistent across the module,
@@ -117,6 +147,9 @@ filling in the fields.
 Required fields: `change_type` (one of `breaking`, `deprecation`,
 `new_component`, `enhancement`, `bug_fix`), `component` (must be listed in
 [`.chloggen/config.yaml`](.chloggen/config.yaml)), `note`, and `issues`.
+
+Changelog entries must use ASCII characters only. Replace typographic punctuation
+and other non-ASCII characters with ASCII equivalents.
 
 Skip the entry only when the change is not user-facing. In that case include
 `chore` in the PR title.

@@ -81,6 +81,7 @@ through a pipeline.
 | [`processor:fanout`](src/processors/fanout_processor/README.md)                                 | default | experimental | Clones incoming data to multiple downstream destinations.        |
 | [`processor:filter`](src/processors/filter_processor/README.md)                                 | default | experimental | Drops logs or traces according to include and exclude rules.     |
 | [`processor:log_sampling`](src/processors/log_sampling_processor/README.md)                     | default | experimental | Reduces log volume by discarding selected log records.           |
+| [`processor:partition`](src/processors/partition_processor/)                                    | default | experimental | Partition batches by expression and insert value as header.      |
 | [`processor:retry`](src/processors/retry_processor/README.md)                                   | default | experimental | Retries downstream delivery when it receives a NACK.             |
 | [`processor:type_router`](src/processors/signal_type_router/README.md)                          | default | experimental | Routes OTAP payloads to output ports by signal type.             |
 | [`processor:temporal_reaggregation`](src/processors/temporal_reaggregation_processor/README.md) | default | experimental | Reaggregates high-frequency metrics into lower-frequency output. |
