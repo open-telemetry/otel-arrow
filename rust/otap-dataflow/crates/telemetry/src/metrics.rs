@@ -13,7 +13,7 @@ mod exphist;
 
 use crate::attributes::{AttributeSetHandler, MeasurementAttributeSet};
 use crate::descriptor::{
-    Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField, Temporality,
+    Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField,
 };
 use crate::entity::{EntityAttributeSet, EntityRegistry};
 use crate::instrument::{Distribution, Mmsc};
@@ -1023,30 +1023,23 @@ impl MetricSetRegistry {
             .iter_mut()
             .zip(incoming_values)
             .zip(fields)
-            .for_each(|((current, incoming), field)| match field.instrument {
-                Instrument::Gauge => {
-                    // Gauges report absolute values; replace.
+            .for_each(|((current, incoming), field)| {
+                debug_assert!(
+                    !matches!(
+                        field.instrument,
+                        Instrument::Counter | Instrument::UpDownCounter
+                    ) || field.temporality.is_some(),
+                    "sum-like instrument must have a temporality"
+                );
+                if field.accumulates() {
+                    // Per-interval values accumulate across collections.
+                    current.add_in_place(incoming);
+                } else {
+                    // Gauges and cumulative sums report an absolute value;
+                    // replace. A sum-like field with no temporality also lands
+                    // here, preferring replacement over runaway accumulation.
                     *current = incoming.clone();
                 }
-                Instrument::Histogram | Instrument::Mmsc | Instrument::ExponentialHistogram => {
-                    // Histograms and MMSC instruments report per-interval changes.
-                    current.add_in_place(incoming);
-                }
-                Instrument::Counter | Instrument::UpDownCounter => match field.temporality {
-                    Some(Temporality::Delta) => {
-                        // Delta sums report per-interval changes => accumulate.
-                        current.add_in_place(incoming);
-                    }
-                    Some(Temporality::Cumulative) => {
-                        // Cumulative sums report the current value => replace.
-                        *current = incoming.clone();
-                    }
-                    None => {
-                        debug_assert!(false, "sum-like instrument must have a temporality");
-                        // Prefer replacing to avoid runaway accumulation if misconfigured.
-                        *current = incoming.clone();
-                    }
-                },
             });
     }
 
@@ -1233,13 +1226,7 @@ impl MetricSetRegistry {
                     });
 
                     for (field, value) in entry.metrics_descriptor.metrics.iter().zip(values) {
-                        let is_delta_sum = matches!(
-                            field.instrument,
-                            Instrument::Counter | Instrument::UpDownCounter
-                        ) && field.temporality == Some(Temporality::Delta);
-                        if is_delta_sum
-                            || matches!(field.instrument, Instrument::Histogram | Instrument::Mmsc)
-                        {
+                        if field.accumulates() {
                             value.reset();
                         }
                     }
@@ -1332,13 +1319,7 @@ impl MetricSetRegistry {
                 .zip(current_values)
                 .zip(&metric_set.values)
             {
-                let is_delta_sum = matches!(
-                    field.instrument,
-                    Instrument::Counter | Instrument::UpDownCounter
-                ) && field.temporality == Some(Temporality::Delta);
-                if is_delta_sum
-                    || matches!(field.instrument, Instrument::Histogram | Instrument::Mmsc)
-                {
+                if field.accumulates() {
                     current.add_in_place(exported);
                 }
             }

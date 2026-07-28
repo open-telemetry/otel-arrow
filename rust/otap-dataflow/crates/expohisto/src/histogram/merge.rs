@@ -455,4 +455,82 @@ mod tests {
         assert_eq!(view.stats().count, 3);
         assert_eq!(view.zero_count(), 1);
     }
+
+    /// Scenario: An aggregator that recorded only exact zeros -- a non-zero
+    /// count with empty buckets -- is distinguished from a never-touched one,
+    /// and is merged into an empty destination.
+    /// Guarantees: the all-zero source is not mistaken for empty and skipped:
+    /// its count survives the merge as the destination's zero count, keeping
+    /// `zero_count == count` for a population that occupies no bucket.
+    #[test]
+    fn merging_an_all_zero_source_preserves_its_zero_observations() {
+        let mut src: HistogramNN<10> = HistogramNN::new();
+        for _ in 0..4 {
+            src.update(0.0).unwrap();
+        }
+        assert_eq!(src.view().stats().count, 4, "zeros are counted");
+        assert_eq!(src.view().zero_count(), 4, "zeros occupy no bucket");
+
+        let mut dst: HistogramNN<10> = HistogramNN::new();
+        dst.merge_from(&src).unwrap();
+
+        let view = dst.view();
+        assert_eq!(view.stats().count, 4);
+        assert_eq!(view.zero_count(), 4);
+        assert_eq!(view.stats().min, 0.0);
+        assert_eq!(view.stats().max, 0.0);
+        assert_eq!(view.stats().sum, 0.0);
+    }
+
+    /// Scenario: A positive population is merged into a destination that has
+    /// recorded only exact zeros, and the mirror-image merge is performed.
+    /// Guarantees: the all-zero destination is treated as populated rather
+    /// than empty, so its zeros hold the merged minimum at 0.0; both merge
+    /// orders agree on count, zero count, min, and max.
+    #[test]
+    fn merging_with_an_all_zero_side_is_order_independent() {
+        let mut zeros: HistogramNN<10> = HistogramNN::new();
+        for _ in 0..2 {
+            zeros.update(0.0).unwrap();
+        }
+        let mut positives: HistogramNN<10> = HistogramNN::new();
+        for v in [5.0, 100.0] {
+            positives.update(v).unwrap();
+        }
+
+        let mut zeros_first = zeros.clone();
+        zeros_first.merge_from(&positives).unwrap();
+        let mut positives_first = positives.clone();
+        positives_first.merge_from(&zeros).unwrap();
+
+        for merged in [&zeros_first, &positives_first] {
+            let view = merged.view();
+            assert_eq!(view.stats().count, 4);
+            assert_eq!(view.zero_count(), 2);
+            assert_eq!(view.stats().min, 0.0, "recorded zeros hold the minimum");
+            assert_eq!(view.stats().max, 100.0);
+            assert_eq!(view.stats().sum, 105.0);
+        }
+    }
+
+    /// Scenario: A never-touched histogram is merged into a populated one.
+    /// Guarantees: the empty source contributes nothing -- count, sum, min,
+    /// and max are unchanged -- so an idle aggregator cannot drag the merged
+    /// minimum down to its 0.0 sentinel.
+    #[test]
+    fn merging_an_empty_source_leaves_the_destination_untouched() {
+        let mut dst: HistogramNN<10> = HistogramNN::new();
+        for v in [5.0, 100.0] {
+            dst.update(v).unwrap();
+        }
+
+        let empty: HistogramNN<10> = HistogramNN::new();
+        dst.merge_from(&empty).unwrap();
+
+        let view = dst.view();
+        assert_eq!(view.stats().count, 2);
+        assert_eq!(view.zero_count(), 0);
+        assert_eq!(view.stats().min, 5.0, "empty source is not a zero sample");
+        assert_eq!(view.stats().max, 100.0);
+    }
 }

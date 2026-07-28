@@ -68,6 +68,39 @@ pub struct MetricsField {
     pub value_type: MetricValueType,
 }
 
+impl MetricsField {
+    /// Returns true when this field's stored value is an increment contributed
+    /// by the reporting instrument, rather than an absolute reading.
+    ///
+    /// This is an input-side property and is independent of the aggregation
+    /// temporality an exporter chooses. Incremental fields are combined into an
+    /// accumulator with `add_in_place` (a merge, for distributions) and are
+    /// cleared once the accumulator that owns them is drained; absolute fields
+    /// (gauges, and sums whose instrument itself holds the running total) are
+    /// replaced on collection and must survive a drain untouched.
+    ///
+    /// Distribution-shaped instruments are always incremental: the instrument
+    /// holds only what was recorded since `clear_values`, so its snapshot is
+    /// per-collection no matter how it is later exported. Delta and cumulative
+    /// output are then a property of the accumulator being read -- the OTLP
+    /// path drains and resets, while the admin path is read without reset for
+    /// a cumulative Prometheus scrape -- not of this classification.
+    ///
+    /// Keeping accumulate, reset, and rollback on one predicate is what stops
+    /// an instrument from being accumulated but never cleared, which silently
+    /// re-exports the previous interval's observations.
+    #[must_use]
+    pub fn accumulates(&self) -> bool {
+        match self.instrument {
+            Instrument::Counter | Instrument::UpDownCounter => {
+                self.temporality == Some(Temporality::Delta)
+            }
+            Instrument::Histogram | Instrument::Mmsc | Instrument::ExponentialHistogram => true,
+            Instrument::Gauge => false,
+        }
+    }
+}
+
 /// Descriptor for a multivariate metrics.
 #[derive(Debug, Serialize)]
 pub struct MetricsDescriptor {

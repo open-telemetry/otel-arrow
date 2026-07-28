@@ -74,6 +74,21 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Aggregate statistics of a histogram: count, sum, min, max.
+///
+/// `count` is the sole indicator of emptiness, and it separates two states
+/// that the bucket contents alone cannot:
+///
+/// - `count == 0` -- the aggregator is empty. `sum`, `min`, and `max` are
+///   0.0 sentinels standing for "no observation", not recorded values. A merge
+///   must adopt the source's `min`/`max` outright rather than folding them
+///   against these, or every merged result reports a minimum of 0.0.
+/// - `count != 0` with empty buckets -- every observation was an exact zero,
+///   so `zero_count == count`. Here `min`, `max`, and `sum` are all genuinely
+///   0.0, and folding them against another population is correct.
+///
+/// Exact zeros never occupy a bucket, so "no buckets" does not mean "no
+/// observations". [`HistogramNN::buckets_empty`] distinguishes the two only in
+/// combination with `count`.
 #[derive(Debug, Clone, Copy)]
 pub struct Stats {
     /// Total number of observations.
@@ -222,6 +237,11 @@ impl<const N: usize> HistogramNN<N> {
     /// are both 0.0 -- so the source values are adopted outright. Folding them
     /// in with `f64::min` would otherwise pin the merged minimum at 0.0 and
     /// report a zero observation that was never recorded.
+    ///
+    /// `count` is the only safe test for that empty state: a destination that
+    /// recorded nothing but exact zeros also has empty buckets and a 0.0
+    /// minimum, but its zeros are real observations that must participate in
+    /// the fold. See [`Stats`].
     fn commit_stats(&mut self, stats: &Stats) {
         if self.stats.count == 0 {
             self.stats.min = stats.min;
