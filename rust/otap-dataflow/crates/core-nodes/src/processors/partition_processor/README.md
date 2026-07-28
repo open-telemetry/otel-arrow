@@ -38,7 +38,7 @@ policy.
 
 ### Metric Sets
 
-#### `processor.partition`
+### `processor.partition`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
