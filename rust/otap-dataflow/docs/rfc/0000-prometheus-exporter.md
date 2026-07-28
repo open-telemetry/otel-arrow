@@ -6,6 +6,8 @@
 
 **Tracking issue:** [#3453](https://github.com/open-telemetry/otel-arrow/issues/3453)
 
+**Related RFC:** [Metrics Temporality Processor](0000-temporality-processor.md)
+
 **Exporter URN:** `urn:otel:exporter:prometheus`
 
 **Shortcut:** `exporter:prometheus`
@@ -48,11 +50,16 @@ restart.
 The first useful end-to-end slice supports gauges, cumulative sums, cumulative
 classic histograms, scalar attributes, deterministic Prometheus text 0.0.4,
 resource and scope mapping, expiration, hard resource limits, and both OTLP and
-OTAP input representations. Delta aggregation, summaries, exemplar-capable
-formats, OpenMetrics, and Prometheus protobuf/native histograms are staged
-follow-up work. Unsupported metric kinds are rejected explicitly. Fields that
-the selected protocol requires exporters to omit, notably exemplars in text
-0.0.4, are dropped only under a documented compatibility rule and are counted.
+OTAP input representations. Delta sums and histograms are not accumulated by
+the exporter: pipelines that receive them compose the
+[metrics temporality processor](0000-temporality-processor.md) on the
+Prometheus branch with the `cumulative` preference. Summaries,
+exemplar-capable formats,
+OpenMetrics, and Prometheus protobuf/native histograms are staged follow-up
+work. Unsupported metric kinds and temporalities are rejected explicitly.
+Fields that the selected protocol requires exporters to omit, notably
+exemplars in text 0.0.4, are dropped only under a documented compatibility rule
+and are counted.
 
 ## Motivation
 
@@ -102,6 +109,30 @@ connections:
     to: prometheus
 ```
 
+This direct form requires the receiver path to supply cumulative sums and
+histograms. For delta or low-memory input, including native ITS metrics, compose
+the temporality processor explicitly:
+
+```yaml
+nodes:
+  source:
+    type: receiver:internal_telemetry
+  cumulative:
+    type: processor:temporality
+    config:
+      preference: cumulative
+  prometheus:
+    type: exporter:prometheus
+    config:
+      endpoint: "127.0.0.1:9464"
+
+connections:
+  - from: source
+    to: cumulative
+  - from: cumulative
+    to: prometheus
+```
+
 For a multi-core source, the recommended topology is:
 
 ```mermaid
@@ -111,14 +142,15 @@ flowchart LR
     C[Bounded balanced topic]
     D[One-core sink pipeline]
     E[receiver:topic]
-    F[exporter:prometheus]
-    G[Prometheus scraper]
+    F[processor:temporality]
+    G[exporter:prometheus]
+    H[Prometheus scraper]
 
     A --> B --> C --> E
     subgraph D
-        E --> F
+        E --> F --> G
     end
-    G -->|GET /metrics| F
+    H -->|GET /metrics| G
 ```
 
 The topic is declared at startup, uses balanced delivery, has one receiver in
@@ -129,16 +161,20 @@ retains only the Nack's human-readable reason; the topic receiver drops its
 permanent flag and machine-readable NackCause, and the topic exporter
 reconstructs it as a retryable Nack with an unspecified cause. Before the
 topology can provide the end-to-end Ack/Nack contract defined below, the
-engine’s tracked-topic outcome and subscription APIs must preserve those fields.
+engine's tracked-topic outcome and subscription APIs must preserve those fields.
 Until then, permanent-versus-retryable classification is reliable only within
 the sink pipeline. The topic remains the shared bounded transport between
-pipelines, avoiding a Prometheus-specific global queue.
+pipelines, avoiding a Prometheus-specific global queue. The temporality
+processor is required in this topology only when the topic may carry delta or
+low-memory sums and histograms.
 
 ## Goals
 
 - Expose one coherent Prometheus endpoint for the declared sink pipeline.
 - Consume both `OtlpBytes` and `OtapArrowRecords` through one semantic
   translation implementation.
+- Require cumulative sums and histograms, with explicit composition for other
+  temporalities.
 - Follow the OpenTelemetry Prometheus/OpenMetrics compatibility specification
   for every admitted metric type.
 - Preserve familiar, useful Collector configuration and defaults where they do
@@ -169,6 +205,8 @@ The initial release does not provide:
 - full Collector `confighttp.ServerConfig` option parity;
 - automatic metric value rescaling merely to match Prometheus naming
   conventions;
+- temporality conversion or inference of an upstream converter;
+- automatic insertion of processors into the configured pipeline graph;
 - a mechanical Rust translation of the Go package layout or `sync.Map` design.
 
 ## Evidence Base
@@ -212,9 +250,9 @@ translation owned by this project, and precise telemetry semantics.
 | Reference `target_info` requires both a non-empty derived `job` and `instance` | Improve | Follow the current compatibility specification by making any non-empty resource eligible and using an empty `instance` when `service.instance.id` is absent. The native contract also uses an empty `job` when `service.name` is absent so every federated series has a fixed identity shape. Reject ambiguous identities deterministically. |
 | `resource_to_telemetry_conversion` mutates input in place | Improve | Build effective labels without changing `OtapPdata`; an exact point-attribute key overrides the same resource key. |
 | Gauges and cumulative values keep the newest point | Preserve/Improve | Use explicit timestamp and tie rules independent of map or input representation order. |
-| Delta monotonic sums and classic histograms are accumulated in the exporter | Preserve/Improve | Serialize transitions in the local actor, define resets and overlap precisely, and reject invalid transactions explicitly. Non-monotonic delta sums remain unsupported. |
+| The reference exporter accumulates delta sums and classic histograms locally | Decompose/Compose | Keep reusable temporality state in `processor:temporality`. This exporter requires cumulative input and permanently Nacks non-cumulative streams. |
 | Cumulative exponential histograms become Prometheus native histograms | Investigate/stage | Requires Prometheus protobuf negotiation and a current client-model encoder. It is not part of the first text slice. |
-| Delta exponential histograms | Investigate | The pinned implementation and current OTel compatibility text are not fully aligned. Do not promise support before the specification and tests are reconciled. |
+| Delta exponential histograms | Decompose/Investigate | Conversion belongs in `processor:temporality` after specification alignment. The exporter may admit the resulting cumulative stream only after native-histogram support lands. |
 | `NoRecordedValue` handling | Improve | Remove the addressed series and continue processing the rest of the metric and batch. |
 | Text 0.0.4 cannot represent exemplars | Preserve/Improve | Drop exemplars as required by the compatibility specification, count the omission, and add lossless conversion with an exemplar-capable protocol. |
 | Expiration cleanup on scrape plus background ticker | Preserve/Improve | Cleanup is independent of scraper presence, uses monotonic arrival time, and has bounded work. `0` is invalid; `null` explicitly disables expiration. |
@@ -225,7 +263,6 @@ translation owned by this project, and precise telemetry semantics.
 | Reference mostly ignores incompatible `prometheus.type` hints | Improve | Validate hints eagerly. Follow specified gauge/info/stateset/unknown mappings and Nack incompatible counter/histogram hints instead of silently discarding metadata intent. |
 | Collector sending queue | Compose | Use bounded engine channels, topics, Ack/Nack, and separate retry/durable components. No private queue. Tracked-topic status/cause fidelity is a prerequisite for end-to-end classification. |
 | Prometheus Go registry, `sync.Map`, goroutines, and package layout | Avoid | Use a local actor, bounded local tasks, and independently tested translation/store/HTTP modules. |
-| Concurrent same-series delta updates are a `sync.Map` load/compute/store sequence | Avoid | Serialize transitions in the actor. The possibility of a lost concurrent increment is an inference from source, not a claimed upstream race report. |
 | One listener and store per core using `SO_REUSEPORT` | Reject | A scrape would observe one arbitrary shard. |
 | One process-global locked registry | Reject | It creates a central synchronization path and obscures backpressure. |
 | Broadcast every point to every core-local exporter | Reject | It multiplies state and can diverge; current broadcast Ack is not an all-replica commit protocol. |
@@ -275,15 +312,11 @@ labels or series identities.
 
 Follow-up slices may add, in order:
 
-1. delta monotonic sum and classic histogram accumulation with reset/overlap
-   rules;
-2. summaries;
-3. OpenMetrics 1.0 negotiation and counter/classic-histogram exemplars;
-4. Prometheus protobuf and cumulative exponential/native histograms;
-5. compatible delta exponential histogram behavior if the specification allows
-   it;
-6. gzip response encoding after bounded CPU and memory behavior is measured;
-7. reusable inbound authentication and generation-safe endpoint/state handoff.
+1. summaries;
+2. OpenMetrics 1.0 negotiation and counter/classic-histogram exemplars;
+3. Prometheus protobuf and cumulative exponential/native histograms;
+4. gzip response encoding after bounded CPU and memory behavior is measured;
+5. reusable inbound authentication and generation-safe endpoint/state handoff.
 
 Each slice updates the component's supported-behavior table and development
 note. Until a slice lands, receiving that metric kind or temporality is an
@@ -310,6 +343,47 @@ The exporter uses an exclusive listener. It does not enable `SO_REUSEPORT`.
 The engine's existing listener/socket-option helper should be exposed to
 exporter effect handlers rather than duplicating platform-specific `socket2`
 logic, with reuseport disabled for this component.
+
+### Temporality composition
+
+The exporter admits gauges and supported cumulative sums and histograms. It
+does not need to know whether a particular processor exists upstream: the
+temporality encoded in the payload is the authoritative contract. An already
+cumulative source needs no converter, while a delta or low-memory source uses
+[`processor:temporality`](0000-temporality-processor.md) with
+`preference: cumulative` on the Prometheus branch after fan-out.
+
+If any sum or histogram in a message has delta or unspecified temporality, the
+exporter permanently Nacks the whole message with a fixed, privacy-safe
+unsupported-temporality reason category and leaves the scrape store unchanged.
+This runtime check is required even if future configuration validation can
+prove a cumulative upstream path: custom components, routing, or malformed
+input can still violate a declared guarantee.
+
+The current engine exposes component-local config validation and simple wiring
+contracts, but no semantic input/output property system. Searching for a
+`processor:temporality` URN is not a sound substitute. The processor may be
+configured for another preference in the future, a branch may bypass it, or
+property-preserving processors such as batch or retry may appear between it and
+the exporter.
+
+The integration options are classified as follows:
+
+| Option | Decision | Rationale |
+| --- | --- | --- |
+| Explicit processor plus runtime validation | Selected for V1 | The configured graph, state owner, limits, telemetry, and failure path remain visible. Cumulative sources avoid unnecessary state. |
+| Direct-predecessor or upstream URN scan | Rejected | Component presence does not prove that every incoming metric path produces cumulative data. |
+| Generic semantic topology preflight | Future engine capability | Component factories could declare per-signal input requirements, output guarantees, and property preservation. Validation would prove every incoming path or report unknown paths. |
+| Automatic processor injection | Deferred behind semantic preflight | A future generic, opt-in resolver may insert a processor only if the resolved node, deterministic identity, limits, telemetry, and live-update diff are visible. It must not be Prometheus-specific hidden rewriting. |
+| Exporter-local conversion | Rejected | It duplicates reusable state and retry semantics and couples a consumer-independent transformation to one exporter. |
+| Provenance marker asserting prior conversion | Rejected | A marker is weaker than validating the actual per-metric temporality and can become stale after routing or transformation. |
+| Ack while dropping non-cumulative series | Rejected | It creates hidden data loss and misleading exporter success telemetry. |
+
+An engine-supplied or generated default topology may include the processor as
+an ordinary declared node and expose it in the resolved configuration. That is
+explicit composition, not runtime injection. Any broader automatic composition
+mechanism requires a separate engine design because it affects graph identity,
+resource policy, diagnostics, and live replacement for every component type.
 
 ### Readiness prerequisite
 
@@ -682,13 +756,13 @@ concatenation rule in the preceding section.
 | Gauge | Supported | Latest point by timestamp. Missing `prometheus.type` or `gauge` renders a gauge; `unknown` renders an untyped family. In text 0.0.4, `info` renders a gauge with the required `_info` suffix and `stateset` renders a gauge. Malformed values and hints incompatible with the OTel kind are permanent Nacks. |
 | Cumulative monotonic sum | Supported | Counter, including `_total` when the selected strategy enables suffixes and optional created/start time when the wire format can represent it. Missing `prometheus.type` or `counter` is accepted; incompatible hints are permanent Nacks. |
 | Cumulative non-monotonic sum | Supported | Gauge semantics, including the same `prometheus.type` hint and text-format fallback rules. |
-| Delta monotonic sum | Permanent Nack | Later delta-to-cumulative accumulation with explicit alignment/reset rules. |
-| Delta non-monotonic sum | Permanent Nack | Remains unsupported: neither the compatibility specification nor the pinned reference defines a valid accumulation. Use cumulative input or an explicit processor. |
+| Delta monotonic sum | Permanent Nack | Use `processor:temporality` with `preference: cumulative` before this exporter. The exporter never accumulates it locally. |
+| Delta non-monotonic sum | Permanent Nack | Use `processor:temporality` with `preference: cumulative` before this exporter. The exporter never accumulates it locally. |
 | Cumulative classic histogram | Supported | Cumulative `le` buckets in ascending bound order, followed by the implicit `le="+Inf"` bucket whose cumulative value equals `_count`; emit `_sum` only when present rather than fabricating zero. Missing `prometheus.type` or `histogram` is accepted; incompatible hints are permanent Nacks. Min/max are not exported. |
-| Delta classic histogram | Permanent Nack | Later delta-to-cumulative accumulation; boundary changes are explicit resets or conflicts, never partial addition. |
+| Delta classic histogram | Permanent Nack | Use `processor:temporality` with `preference: cumulative` before this exporter. The exporter never accumulates it locally. |
 | Summary | Permanent Nack | Later summary family with sorted quantiles, sum, and count. |
 | Cumulative exponential histogram | Permanent Nack | Later Prometheus native histogram through protobuf negotiation. |
-| Delta exponential histogram | Permanent Nack | Investigate after specification alignment. |
+| Delta exponential histogram | Permanent Nack | A future temporality-processor slice must first produce a supported cumulative representation; the exporter does not convert it. |
 | Empty/unknown data | Permanent Nack | Never Ack a metric with no defined supported data kind. |
 
 All points in a metric are processed. The implementation must not assume one
@@ -726,20 +800,6 @@ For gauges and cumulative points:
   competing-writer conflict;
 - changing a cumulative start time from present to absent or absent to present
   is rejected as an ambiguous stream transition.
-
-When delta support lands:
-
-- the first interval seeds cumulative state;
-- a next interval whose start equals the previous end is accumulated;
-- a start after the previous end is a gap/reset and starts new cumulative
-  state, with explicit reset telemetry;
-- an overlapping or backwards interval is rejected as an alignment conflict;
-- histogram addition requires compatible bounds;
-- exponential-histogram addition is considered only if a future compatibility
-  specification admits delta input and defines a common-scale and
-  zero-threshold rule; the current specification requires dropping it;
-- diagnostic events explain the category and remediation without including
-  metric names, attributes, or values.
 
 `NoRecordedValue` participates in the same timestamp ordering. A newer flag
 stages removal of the visible canonical series and installs a timestamped
@@ -952,8 +1012,7 @@ for:
 - active series, retained tombstones, active families, and accounted state
   bytes;
 - expired and explicit-stale series removals;
-- cumulative resets, stale updates, and alignment conflicts when delta support
-  lands;
+- cumulative-sequence resets, stale updates, and timestamp conflicts;
 - scrape requests, completions, overload rejections, timeouts, and failures;
 - scrape response bytes and render-duration MMSC;
 - ambiguous `target_info` and dropped reserved scope attributes;
@@ -984,8 +1043,10 @@ category, not customer metric identity.
 - Scope identity, prefixed attributes, opt-out, generated-label merges, and the
   required scope-attribute drops, including prefix-before-normalization edge
   cases.
-- Every admitted metric type, point shape, timestamp, reset, and
+- Every admitted metric type, point shape, timestamp, cumulative reset, and
   `NoRecordedValue` transition.
+- Atomic permanent Nack for delta, unspecified, and mixed-temporality messages,
+  with no scrape-store mutation.
 - Tombstone stale-resurrection prevention, target reference release, capacity
   accounting, and expiry.
 - Explicit timestamp nanosecond-to-millisecond truncation at sub-millisecond
@@ -1037,6 +1098,8 @@ until both views support them.
   response cap, TLS/mTLS, and listener cleanup; public config tests continue to
   reject port zero.
 - A direct one-core OTLP receiver to Prometheus exporter pipeline.
+- A low-memory ITS or delta OTLP path through `processor:temporality` into the
+  exporter, producing cumulative counter and histogram scrapes.
 - An OTAP-record pipeline and an OTLP-byte pipeline producing identical
   scrapes.
 - Multi-core producers through tracked balanced-topic fan-in to the one-core
@@ -1070,7 +1133,7 @@ belong in direct and end-to-end tests.
 
 Rejected. Reuseport distributes connections, not logical scrapes or state. Each
 scrape sees one core's store and may land on a different core next time, causing
-series to blink and delta state to diverge.
+series to blink and expiration or timestamp state to diverge.
 
 ### Process-global `Arc<Mutex<Registry>>`
 
@@ -1145,7 +1208,7 @@ intentional deterministic and safety improvements in this RFC.
 
 ## Staged PR Plan
 
-1. Land this RFC and resolve the decisions required for the first release.
+1. Land this RFC together with the temporality-processor architecture decision.
 2. Land the engine prerequisites for single-core endpoint ownership, startup
    readiness, and end-to-end topic Ack/Nack propagation.
 3. Implement metric translation, the bounded transactional store, expiration,
@@ -1153,8 +1216,9 @@ intentional deterministic and safety improvements in this RFC.
    tests.
 4. Add the exporter node, strict configuration, HTTP/TLS lifecycle, component
    telemetry, shutdown, and the first one-core end-to-end path.
-5. Complete topic fan-in coverage, benchmarks, documentation, examples, catalog
-   registration, and the user-facing changelog entry.
+5. Complete explicit temporality-processor composition, topic fan-in coverage,
+   benchmarks, documentation, examples, catalog registration, and the
+   user-facing changelog entry.
 6. Add further metric kinds, protocols, authentication, and process-scoped
    generation handoff in separate follow-up work.
 
