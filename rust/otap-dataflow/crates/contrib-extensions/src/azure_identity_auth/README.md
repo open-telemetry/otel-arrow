@@ -19,7 +19,7 @@ Identity Federation.
 
 For the full design -- problem, goals, lifecycle, configuration reference, and
 security considerations -- see
-[`docs/azure-identity-auth-extension.md`](../../../../docs/azure-identity-auth-extension.md).
+[`design.md`](./design.md).
 
 ## Crypto provider requirement
 
