@@ -1,4 +1,4 @@
-change_type: enhancement
+change_type: breaking
 component: pipeline
 note: "Migrate attributes_processor telemetry to enum attributes"
 issues: [3593, 3530]
