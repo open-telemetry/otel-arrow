@@ -1,6 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+use super::error::KafkaReceiverError;
 use crate::common::kafka::auth::Auth;
 use crate::common::kafka::security::{apply_sasl_config, resolve_security_protocol};
 use crate::common::kafka::{
@@ -45,25 +46,6 @@ pub(crate) const MANAGED_CONSUMER_CONFIG_KEYS: &[&str] = &[
     "partition.assignment.strategy",
     "debug",
 ];
-
-/// Error returned when validating a [`KafkaReceiverConfigBuilder`] into a
-/// [`KafkaReceiverConfig`](super::config::KafkaReceiverConfig).
-#[derive(Debug, thiserror::Error)]
-pub enum KafkaReceiverConfigError {
-    /// The configuration failed validation. The message describes which rule
-    /// was violated (e.g. an empty required field, overlapping topics, an
-    /// invalid regex, or a non-positive interval).
-    #[error("invalid kafka receiver configuration: {0}")]
-    Invalid(String),
-}
-
-impl KafkaReceiverConfigError {
-    /// Build an [`Invalid`](Self::Invalid) error from any message-like value.
-    #[must_use]
-    pub fn invalid(message: impl Into<String>) -> Self {
-        Self::Invalid(message.into())
-    }
-}
 
 /// Auto offset reset behavior
 #[derive(Copy, Clone, PartialEq, Debug, Deserialize)]
@@ -442,49 +424,49 @@ impl IsolationLevel {
 pub struct KafkaReceiverConfig(KafkaReceiverConfigBuilder);
 
 impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
-    // `KafkaReceiverConfigError::Invalid` so behavior (and the serde `Display`
-    // surfaced to users) is unchanged.
-    type Error = KafkaReceiverConfigError;
+    type Error = KafkaReceiverError;
 
-    fn try_from(builder: KafkaReceiverConfigBuilder) -> Result<Self, KafkaReceiverConfigError> {
+    fn try_from(builder: KafkaReceiverConfigBuilder) -> Result<Self, KafkaReceiverError> {
         // Reject empty required string fields
         if builder.brokers.is_empty() {
-            return Err(KafkaReceiverConfigError::invalid("brokers can't be empty"));
+            return Err(KafkaReceiverError::ConfigEmptyField {
+                field: "brokers".to_string(),
+            });
         }
         if builder.client_id.is_empty() {
-            return Err(KafkaReceiverConfigError::invalid(
-                "client_id can't be empty",
-            ));
+            return Err(KafkaReceiverError::ConfigEmptyField {
+                field: "client_id".to_string(),
+            });
         }
         if builder.group_id.is_empty() {
-            return Err(KafkaReceiverConfigError::invalid("group_id can't be empty"));
+            return Err(KafkaReceiverError::ConfigEmptyField {
+                field: "group_id".to_string(),
+            });
         }
 
         // Reject empty optional string fields when explicitly set
         if let Some(ref id) = builder.group_instance_id {
             if id.is_empty() {
-                return Err(KafkaReceiverConfigError::invalid(
-                    "valid group_instance_id can't be empty",
-                ));
+                return Err(KafkaReceiverError::ConfigEmptyField {
+                    field: "group_instance_id".to_string(),
+                });
             }
         }
         if builder.message_format_header.is_empty() {
-            return Err(KafkaReceiverConfigError::invalid(
-                "message_format_header can't be empty",
-            ));
+            return Err(KafkaReceiverError::ConfigEmptyField {
+                field: "message_format_header".to_string(),
+            });
         }
 
         // Reject empty keys in resource_attrs_from_headers
         for (header_key, extraction) in &builder.resource_attrs_from_headers {
             if header_key.is_empty() {
-                return Err(KafkaReceiverConfigError::invalid(
-                    "resource_attrs_from_headers contains an empty header key",
-                ));
+                return Err(KafkaReceiverError::ConfigEmptyHeaderKey);
             }
             if extraction.key.is_empty() {
-                return Err(KafkaReceiverConfigError::invalid(format!(
-                    "resource_attrs_from_headers['{header_key}'].key can't be empty"
-                )));
+                return Err(KafkaReceiverError::ConfigEmptyExtractionKey {
+                    header_key: header_key.clone(),
+                });
             }
         }
 
@@ -493,9 +475,7 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
             && builder.metrics.topics().is_empty()
             && builder.logs.topics().is_empty()
         {
-            return Err(KafkaReceiverConfigError::invalid(
-                "at least one signal (traces, metrics, or logs) must have non-empty topics",
-            ));
+            return Err(KafkaReceiverError::ConfigNoSignalTopics);
         }
 
         // Topics must be disjoint across signals
@@ -514,9 +494,7 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
                 || !traces.is_disjoint(&logs)
                 || !metrics.is_disjoint(&logs)
             {
-                return Err(KafkaReceiverConfigError::invalid(
-                    "kafka topics overlap across signals",
-                ));
+                return Err(KafkaReceiverError::ConfigOverlappingTopics);
             }
         }
 
@@ -538,39 +516,43 @@ impl TryFrom<KafkaReceiverConfigBuilder> for KafkaReceiverConfig {
         // Validate auth configuration when present
         if let Some(ref auth) = builder.auth {
             auth.validate()
-                .map_err(|e| KafkaReceiverConfigError::invalid(format!("auth: {e}")))?;
+                .map_err(|e| KafkaReceiverError::ConfigInvalidAuth {
+                    message: e.to_string(),
+                })?;
         }
 
         // Validate TLS configuration when present
         if let Some(ref tls) = builder.tls {
             tls.validate()
-                .map_err(|e| KafkaReceiverConfigError::invalid(format!("tls: {e}")))?;
+                .map_err(|e| KafkaReceiverError::ConfigInvalidTls {
+                    message: e.to_string(),
+                })?;
         }
 
         // Fetch byte constraints
         if builder.max_fetch_bytes < builder.min_fetch_bytes {
-            return Err(KafkaReceiverConfigError::invalid(format!(
-                "max_fetch_bytes ({}) must be >= min_fetch_bytes ({})",
-                builder.max_fetch_bytes, builder.min_fetch_bytes
-            )));
+            return Err(KafkaReceiverError::ConfigInvalidFetchBytes {
+                max: builder.max_fetch_bytes,
+                min: builder.min_fetch_bytes,
+            });
         }
 
         if builder.max_partition_fetch_bytes <= 0 {
-            return Err(KafkaReceiverConfigError::invalid(
-                "max_partition_fetch_bytes must be > 0",
-            ));
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "max_partition_fetch_bytes".to_string(),
+            });
         }
 
         if builder.commit.interval_ms == Some(0) {
-            return Err(KafkaReceiverConfigError::invalid(
-                "commit.interval_ms, when set, must be > 0",
-            ));
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "commit.interval_ms".to_string(),
+            });
         }
 
         if builder.lag_refresh_interval_ms == Some(0) {
-            return Err(KafkaReceiverConfigError::invalid(
-                "lag_refresh_interval_ms, when set, must be > 0",
-            ));
+            return Err(KafkaReceiverError::ConfigNonPositiveValue {
+                field: "lag_refresh_interval_ms".to_string(),
+            });
         }
 
         Ok(Self(builder))
@@ -618,20 +600,16 @@ impl KafkaReceiverConfigBuilder {
         }
     }
 
-    // REVIEW(6b structured-config-errors): helper validators now return the
-    // structured error; the message text is unchanged.
     /// Validate that all regex topic patterns (starting with `^`) compile.
-    fn validate_topic_regexes(
-        topics: &[String],
-        signal: &str,
-    ) -> Result<(), KafkaReceiverConfigError> {
+    fn validate_topic_regexes(topics: &[String], signal: &str) -> Result<(), KafkaReceiverError> {
         for topic in topics {
             if topic.starts_with('^') {
-                let _ = Regex::new(topic).map_err(|e| {
-                    KafkaReceiverConfigError::invalid(format!(
-                        "invalid regex topic pattern in {signal}: '{topic}': {e}"
-                    ))
-                })?;
+                let _ =
+                    Regex::new(topic).map_err(|e| KafkaReceiverError::ConfigInvalidTopicRegex {
+                        signal: signal.to_string(),
+                        topic: topic.clone(),
+                        message: e.to_string(),
+                    })?;
             }
         }
         Ok(())
@@ -644,7 +622,7 @@ impl KafkaReceiverConfigBuilder {
     fn validate_exclude_topics(
         signal: &SignalConfig,
         signal_name: &str,
-    ) -> Result<(), KafkaReceiverConfigError> {
+    ) -> Result<(), KafkaReceiverError> {
         if signal.exclude_topics.is_empty() {
             return Ok(());
         }
@@ -652,23 +630,24 @@ impl KafkaReceiverConfigBuilder {
         // exclude_topics only allowed when at least one topic is a regex pattern
         let has_regex = signal.topics.iter().any(|t| t.starts_with('^'));
         if !has_regex {
-            return Err(KafkaReceiverConfigError::invalid(format!(
-                "{signal_name}.exclude_topics is only allowed when at least one topic is a regex pattern"
-            )));
+            return Err(KafkaReceiverError::ConfigExcludeTopicsRequiresRegex {
+                signal: signal_name.to_string(),
+            });
         }
 
         // Each entry must be non-empty and valid regex
         for pattern in &signal.exclude_topics {
             if pattern.is_empty() {
-                return Err(KafkaReceiverConfigError::invalid(format!(
-                    "{signal_name}.exclude_topics entries must be non-empty"
-                )));
+                return Err(KafkaReceiverError::ConfigEmptyExcludeTopic {
+                    signal: signal_name.to_string(),
+                });
             }
-            let _ = Regex::new(pattern).map_err(|e| {
-                KafkaReceiverConfigError::invalid(format!(
-                    "invalid regex in {signal_name}.exclude_topics: '{pattern}': {e}"
-                ))
-            })?;
+            let _ =
+                Regex::new(pattern).map_err(|e| KafkaReceiverError::ConfigInvalidExcludeRegex {
+                    signal: signal_name.to_string(),
+                    pattern: pattern.clone(),
+                    message: e.to_string(),
+                })?;
         }
 
         Ok(())
@@ -678,14 +657,14 @@ impl KafkaReceiverConfigBuilder {
     ///
     /// Entries starting with `^` are treated as regex patterns and are skipped
     /// here (they are validated separately by [`Self::validate_topic_regexes`]).
-    fn validate_topic_names(
-        topics: &[String],
-        signal: &str,
-    ) -> Result<(), KafkaReceiverConfigError> {
+    fn validate_topic_names(topics: &[String], signal: &str) -> Result<(), KafkaReceiverError> {
         for topic in topics {
             if !topic.starts_with('^') {
                 validate_kafka_topic(topic).map_err(|e| {
-                    KafkaReceiverConfigError::invalid(format!("{signal}.topics: {e}"))
+                    KafkaReceiverError::ConfigInvalidTopicName {
+                        signal: signal.to_string(),
+                        message: e.to_string(),
+                    }
                 })?;
             }
         }

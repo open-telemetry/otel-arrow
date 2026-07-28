@@ -7,7 +7,7 @@
 // ToDo: Offload heavier decode operations to avoid stalling the receiver
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
-use super::errors::DecodeError;
+use super::error::KafkaReceiverError;
 use super::headers::HeaderExtractions;
 use super::metrics::KafkaReceiverMetrics;
 use super::offset_tracker::OffsetTracker;
@@ -328,11 +328,11 @@ impl KafkaReceiver {
         &mut self,
         kafka_message: BorrowedMessage<'_>,
         capture_policy: Option<&HeaderCapturePolicy>,
-    ) -> Result<OtapPdata, DecodeError> {
+    ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
         let data = kafka_message.payload().ok_or_else(|| {
-            DecodeError::EmptyPayload(EngineError::PdataConversionError {
+            KafkaReceiverError::EmptyPayloadDecode(EngineError::PdataConversionError {
                 error: "Empty payload inside Kafka Message unable to convert to PData".to_string(),
             })
         })?;
@@ -363,7 +363,7 @@ impl KafkaReceiver {
                 HeaderExtractions::apply_otap_traces,
                 decode_traces_payload,
             )
-            .map_err(DecodeError::Traces)
+            .map_err(KafkaReceiverError::TracesDecode)
         } else if matches_any_topic(
             self.config.metrics_topics(),
             &self.metrics_topic_regexes,
@@ -385,7 +385,7 @@ impl KafkaReceiver {
                 HeaderExtractions::apply_otap_metrics,
                 decode_metrics_payload,
             )
-            .map_err(DecodeError::Metrics)
+            .map_err(KafkaReceiverError::MetricsDecode)
         } else if matches_any_topic(self.config.logs_topics(), &self.logs_topic_regexes, topic)
             && !matches_any_exclude(&self.logs_exclude_regexes, topic)
         {
@@ -404,9 +404,9 @@ impl KafkaReceiver {
                 HeaderExtractions::apply_otap_logs,
                 decode_logs_payload,
             )
-            .map_err(DecodeError::Logs)
+            .map_err(KafkaReceiverError::LogsDecode)
         } else {
-            Err(DecodeError::UnknownTopic(
+            Err(KafkaReceiverError::UnknownTopicDecode(
                 EngineError::PdataConversionError {
                     error: "Unknown kafka topic received unable to convert to PData".to_string(),
                 },
@@ -1010,7 +1010,7 @@ impl KafkaReceiver {
                                     // a descriptive error so operators can
                                     // identify what went wrong and where.
                                     match &decode_err {
-                                        DecodeError::EmptyPayload(e) => {
+                                        KafkaReceiverError::EmptyPayloadDecode(e) => {
                                             self.metrics.empty_payloads.add(1);
                                             otel_error!(
                                                 "kafka.message.empty_payload",
@@ -1020,7 +1020,7 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::UnknownTopic(e) => {
+                                        KafkaReceiverError::UnknownTopicDecode(e) => {
                                             self.metrics.unknown_topic_errors.add(1);
                                             otel_error!(
                                                 "kafka.message.unknown_topic",
@@ -1030,7 +1030,7 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::Traces(e) => {
+                                        KafkaReceiverError::TracesDecode(e) => {
                                             self.metrics.unmarshal_failed_traces.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
@@ -1041,7 +1041,7 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::Metrics(e) => {
+                                        KafkaReceiverError::MetricsDecode(e) => {
                                             self.metrics.unmarshal_failed_metrics.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
@@ -1052,12 +1052,24 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::Logs(e) => {
+                                        KafkaReceiverError::LogsDecode(e) => {
                                             self.metrics.unmarshal_failed_logs.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
                                                 signal = "logs",
                                                 error = %e,
+                                                topic = %topic,
+                                                partition = partition,
+                                                offset = offset,
+                                            );
+                                        }
+                                        // Config variants are never produced on
+                                        // the per-message decode path.
+                                        _ => {
+                                            self.metrics.processing_errors.add(1);
+                                            otel_error!(
+                                                "kafka.message.decode_failed",
+                                                error = %decode_err,
                                                 topic = %topic,
                                                 partition = partition,
                                                 offset = offset,
@@ -2061,8 +2073,8 @@ mod tests {
                 .with_metrics(SignalConfig::new(vec!["same".to_string()])),
         );
         assert!(result.is_err());
-        // REVIEW(6b structured-config-errors): error is now
-        // `KafkaReceiverConfigError`; assert against its Display string.
+        // The error is now `KafkaReceiverError::ConfigOverlappingTopics`;
+        // assert against its Display string.
         let err_str = result.unwrap_err().to_string();
         assert!(
             err_str.contains("overlap"),
