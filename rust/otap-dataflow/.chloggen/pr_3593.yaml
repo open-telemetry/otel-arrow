@@ -1,4 +1,4 @@
 change_type: breaking
 component: pipeline
-note: "Migrate attributes_processor telemetry to enum attributes"
+note: "Consolidate 9 individual attributes_processor action and domain counters into a single 'processor.attributes.modified' metric partitioned by action and domain attributes."
 issues: [3593, 3530]
