@@ -110,7 +110,8 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(
                     "either a string 'event_name' or a map with exactly one of: \
-                     'resource_attribute', 'scope_attribute', or 'log_record_attribute'",
+                     'event_name', 'resource_attribute', 'scope_attribute', or \
+                     'log_record_attribute'",
                 )
             }
 
@@ -1630,6 +1631,10 @@ mod tests {
         );
     }
 
+    /// Scenario: a `logs.event_name_mapping` uses the string short-form
+    /// `routing_key: "event_name"`.
+    /// Guarantees: it deserializes to the `EventName` routing-key variant and
+    /// the mapping is present on the parsed logs config.
     #[test]
     fn test_routing_key_event_name_variant() {
         let config = serde_json::json!({
@@ -1677,6 +1682,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a `logs.event_name_mapping.routing_key` is the map form
+    /// `{ scope_attribute: "scope.name" }`.
+    /// Guarantees: it deserializes to the `ScopeAttribute` variant carrying the
+    /// exact attribute name supplied.
     #[test]
     fn test_routing_key_scope_attribute_variant() {
         let config = serde_json::json!({
@@ -1727,6 +1736,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a logs `routing_key` map specifies more than one attribute
+    /// field at once.
+    /// Guarantees: deserialization fails with an error naming the "exactly one
+    /// field" requirement, so an ambiguous routing key is never accepted.
     #[test]
     fn test_routing_key_validation_rejects_multiple_fields() {
         // Test that providing multiple routing_key fields is rejected for logs
@@ -1772,6 +1785,11 @@ mod tests {
         );
     }
 
+    /// Scenario: a `spans.event_name_mapping.routing_key` is
+    /// `{ resource_attribute: ... }` with both a mapped and a null (passthrough)
+    /// destination in `events`.
+    /// Guarantees: it deserializes to the `ResourceAttribute` variant and the
+    /// events map preserves both the explicit destination and the null value.
     #[test]
     fn test_span_routing_key_resource_attribute_variant() {
         // Test that resource_attribute variant deserializes correctly
@@ -1832,6 +1850,10 @@ mod tests {
         assert_eq!(mapping.events.get("clusterB"), Some(&None));
     }
 
+    /// Scenario: a `spans.event_name_mapping.routing_key` is
+    /// `{ scope_attribute: ... }`.
+    /// Guarantees: it deserializes to the `ScopeAttribute` variant carrying the
+    /// exact attribute name supplied.
     #[test]
     fn test_span_routing_key_scope_attribute_variant() {
         // Test that scope_attribute variant deserializes correctly
@@ -1882,6 +1904,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a `spans.event_name_mapping.routing_key` is
+    /// `{ span_attribute: ... }`.
+    /// Guarantees: it deserializes to the `SpanAttribute` variant and the events
+    /// map preserves each destination table name.
     #[test]
     fn test_span_routing_key_span_attribute_variant() {
         // Test that span_attribute variant deserializes correctly
@@ -1941,6 +1967,10 @@ mod tests {
         );
     }
 
+    /// Scenario: a spans `routing_key` map specifies more than one attribute
+    /// field at once.
+    /// Guarantees: deserialization fails with an error naming the "only one of"
+    /// requirement, so an ambiguous span routing key is never accepted.
     #[test]
     fn test_span_routing_key_validation_rejects_multiple_fields() {
         // Test that providing multiple routing_key fields is rejected
@@ -1986,6 +2016,9 @@ mod tests {
         );
     }
 
+    /// Scenario: a logs `routing_key` attribute name is the empty string.
+    /// Guarantees: deserialization fails with an error requiring a non-empty
+    /// attribute name, so a blank routing attribute is never accepted.
     #[test]
     fn test_logs_routing_key_rejects_empty_attribute() {
         let config = serde_json::json!({
@@ -2026,6 +2059,9 @@ mod tests {
         );
     }
 
+    /// Scenario: a spans `routing_key` attribute name is whitespace-only.
+    /// Guarantees: deserialization fails with an error requiring a non-empty
+    /// attribute name, so a blank/whitespace routing attribute is never accepted.
     #[test]
     fn test_span_routing_key_rejects_empty_attribute() {
         let config = serde_json::json!({
@@ -2066,6 +2102,10 @@ mod tests {
         );
     }
 
+    /// Scenario: a `logs.event_name_mapping.routing_key` is
+    /// `{ resource_attribute: ... }`.
+    /// Guarantees: it deserializes to the `ResourceAttribute` variant carrying
+    /// the exact attribute name supplied.
     #[test]
     fn test_logs_routing_key_resource_attribute_variant() {
         let config = serde_json::json!({
@@ -2110,6 +2150,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a `logs.event_name_mapping.routing_key` is
+    /// `{ log_record_attribute: ... }`.
+    /// Guarantees: it deserializes to the `LogRecordAttribute` variant carrying
+    /// the exact attribute name supplied.
     #[test]
     fn test_logs_routing_key_log_record_attribute_variant() {
         let config = serde_json::json!({
@@ -2156,6 +2200,10 @@ mod tests {
         }
     }
 
+    /// Scenario: a parsed logs mapping (scope.name key, with a mapped and a null
+    /// destination) is converted via `Into` to the uploader `LogsEventNameMapping`.
+    /// Guarantees: the conversion preserves the routing key and both the explicit
+    /// destination and the null (passthrough) value in the events map.
     #[test]
     fn test_logs_mapping_converts_to_uploader_type() {
         // Verify the config wrapper converts into the geneva-uploader
@@ -2208,6 +2256,10 @@ mod tests {
         assert_eq!(uploader_mapping.events.get("passthrough"), Some(&None));
     }
 
+    /// Scenario: a parsed spans mapping (span.kind key, with a mapped and a null
+    /// destination) is converted via `Into` to the uploader `SpanEventNameMapping`.
+    /// Guarantees: the conversion preserves the routing key and both the explicit
+    /// destination and the null (passthrough) value in the events map.
     #[test]
     fn test_spans_mapping_converts_to_uploader_type() {
         let config = serde_json::json!({
@@ -2257,6 +2309,11 @@ mod tests {
         assert_eq!(uploader_mapping.events.get("CLIENT"), Some(&None));
     }
 
+    /// Scenario: every `LogsEventNameRoutingKeyConfig` variant (EventName,
+    /// ResourceAttribute, ScopeAttribute, LogRecordAttribute) is passed through
+    /// the `From` conversion to the uploader routing-key type.
+    /// Guarantees: each config variant maps to its corresponding uploader variant
+    /// with the attribute name carried through unchanged.
     #[test]
     fn test_logs_routing_key_from_conversion_all_variants() {
         assert!(matches!(
@@ -2283,6 +2340,11 @@ mod tests {
         ));
     }
 
+    /// Scenario: every `SpansEventNameRoutingKeyConfig` variant
+    /// (ResourceAttribute, ScopeAttribute, SpanAttribute) is passed through the
+    /// `From` conversion to the uploader routing-key type.
+    /// Guarantees: each config variant maps to its corresponding uploader variant
+    /// with the attribute name carried through unchanged.
     #[test]
     fn test_span_routing_key_from_conversion_all_variants() {
         assert!(matches!(
@@ -2305,6 +2367,9 @@ mod tests {
         ));
     }
 
+    /// Scenario: a config omits both the `logs` and `spans` sections entirely.
+    /// Guarantees: both parse to `None`, letting the uploader fall back to the
+    /// default "Log"/"Span" tables.
     #[test]
     fn test_logs_and_spans_optional_default_to_none() {
         // Omitting the logs/spans sections yields None, which the uploader maps

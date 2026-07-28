@@ -1352,8 +1352,11 @@ mod tests {
         }
     }
 
-    /// Test UTF-8 multi-byte strings (emoji, CJK, etc.) survive the
-    /// direct JSON serialization without corruption.
+    /// Scenario: transform log records whose string fields contain multi-byte
+    /// UTF-8 (Latin diacritics, CJK, emoji, mixed scripts, escape/control chars)
+    /// through the direct JSON serialization path.
+    /// Guarantees: every multi-byte string is emitted intact and byte-for-byte
+    /// recoverable from the serialized JSON, with no corruption or truncation.
     #[test]
     fn test_utf8_multibyte_strings() {
         let mut config = create_test_config();
