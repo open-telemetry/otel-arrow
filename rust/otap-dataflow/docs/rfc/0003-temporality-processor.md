@@ -1,4 +1,4 @@
-# RFC 0000: Metrics Temporality Processor
+# RFC 0003: Metrics Temporality Processor
 
 <!-- markdownlint-disable MD013 -->
 
@@ -6,7 +6,7 @@
 
 **Tracking issue:** [#3543](https://github.com/open-telemetry/otel-arrow/issues/3543)
 
-**Related RFC:** [Native Prometheus Exporter](0000-prometheus-exporter.md)
+**Related RFC:** [Native Prometheus Exporter](0004-prometheus-exporter.md)
 
 **Processor URN:** `urn:otel:processor:temporality`
 

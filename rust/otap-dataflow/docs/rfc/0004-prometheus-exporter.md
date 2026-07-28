@@ -1,4 +1,4 @@
-# RFC 0000: Native Prometheus Exporter
+# RFC 0004: Native Prometheus Exporter
 
 <!-- markdownlint-disable MD013 -->
 
@@ -6,7 +6,7 @@
 
 **Tracking issue:** [#3453](https://github.com/open-telemetry/otel-arrow/issues/3453)
 
-**Related RFC:** [Metrics Temporality Processor](0000-temporality-processor.md)
+**Related RFC:** [Metrics Temporality Processor](0003-temporality-processor.md)
 
 **Exporter URN:** `urn:otel:exporter:prometheus`
 
@@ -52,7 +52,7 @@ classic histograms, scalar attributes, deterministic Prometheus text 0.0.4,
 resource and scope mapping, expiration, hard resource limits, and both OTLP and
 OTAP input representations. Delta sums and histograms are not accumulated by
 the exporter: pipelines that receive them compose the
-[metrics temporality processor](0000-temporality-processor.md) on the
+[metrics temporality processor](0003-temporality-processor.md) on the
 Prometheus branch with the `cumulative` preference. Summaries,
 exemplar-capable formats,
 OpenMetrics, and Prometheus protobuf/native histograms are staged follow-up
@@ -350,7 +350,7 @@ The exporter admits gauges and supported cumulative sums and histograms. It
 does not need to know whether a particular processor exists upstream: the
 temporality encoded in the payload is the authoritative contract. An already
 cumulative source needs no converter, while a delta or low-memory source uses
-[`processor:temporality`](0000-temporality-processor.md) with
+[`processor:temporality`](0003-temporality-processor.md) with
 `preference: cumulative` on the Prometheus branch after fan-out.
 
 If any sum or histogram in a message has delta or unspecified temporality, the
