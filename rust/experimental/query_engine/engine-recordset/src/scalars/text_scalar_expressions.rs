@@ -47,7 +47,7 @@ where
                             Value::String(v) => s.push_str(v.get_value()),
                             Value::Null => {
                                 // Note: Null becomes empty string
-                            },
+                            }
                             v => s.push_str(v.convert_to_string().as_ref()),
                         }
                     })?;
@@ -80,15 +80,17 @@ where
                     let mut s = String::new();
                     let mut len = 0;
 
-                    a.take((..).into(), |_, r| Ok(r), &mut |r: ResolvedValue<'_>| {
-                        match r.to_value() {
+                    a.take(
+                        (..).into(),
+                        |_, r| Ok(r),
+                        &mut |r: ResolvedValue<'_>| match r.to_value() {
                             Value::String(v) => {
                                 len += 1;
                                 if len > 1 {
                                     s.push_str(separator.as_ref());
                                 }
                                 s.push_str(v.get_value())
-                            },
+                            }
                             v => {
                                 len += 1;
                                 if len > 1 {
@@ -96,8 +98,8 @@ where
                                 }
                                 s.push_str(v.convert_to_string().as_ref());
                             }
-                        }
-                    })?;
+                        },
+                    )?;
 
                     ResolvedValue::Computed(OwnedValue::String(StringValueStorage::new(s)))
                 }
