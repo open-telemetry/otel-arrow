@@ -76,14 +76,14 @@ groups:
                 #    resource_attribute: cluster
                 #  events:
                 #    MyTable: MyLogTable
-                #    LogTable1: 
+                #    LogTable1:
 
                 # Or use scope_attribute:
                 # event_name_mapping:
                 #  routing_key:
                 #    scope_attribute: scope.name
                 #  events:
-                #    MyTable: MyLogTable   
+                #    MyTable: MyLogTable
                 #    LogTable1: MyLogTable
 
                 # Or use log_record_attribute:
@@ -127,12 +127,12 @@ groups:
                 default_event_name: "CustomSpanTable"
                 # Example span routing configurations (similar to logs):
                 event_name_mapping:
-                 routing_key:
-                   resource_attribute: cluster
-                 events:
-                   MyTable: MySpanTable
-                   SpanTable1:
-                
+                  routing_key:
+                    resource_attribute: cluster
+                  events:
+                    MyTable: MySpanTable
+                    SpanTable1:
+
                 # Or use scope_attribute:
                 # event_name_mapping:
                 #  routing_key:
@@ -140,7 +140,7 @@ groups:
                 #  events:
                 #    MyTable: MySpanTable
                 #    SpanTable1: MySpanTable
-                
+
                 # Or use span_attribute:
                 # event_name_mapping:
                 #  routing_key:
