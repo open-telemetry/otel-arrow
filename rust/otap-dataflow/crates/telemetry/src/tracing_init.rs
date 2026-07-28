@@ -482,9 +482,11 @@ mod tests {
             let (reporter, receiver) = test_reporter();
             let setup = test_setup(internal_async_provider(reporter), level("info"));
 
-            // Use enough long-string attributes to overflow any reasonable
-            // LOG_ARGUMENTS_ENCODE_INLINE (well above 256 bytes worth of payload).
+            // Keep the regular fields below the limit, then add one field that
+            // exceeds the current inline budget so this test remains valid if
+            // the configured buffer size changes.
             setup.with_subscriber_ignoring_env(|| {
+                let oversized_value = "x".repeat(crate::self_tracing::LOG_ARGUMENTS_ENCODE_INLINE);
                 otel_info!(
                     "overflow.test",
                     a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -494,6 +496,7 @@ mod tests {
                     e = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
                     f = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
                     g = "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg",
+                    oversized = oversized_value.as_str(),
                     message = "Body that itself is fairly long and may not fit alongside the attributes above"
                 );
             });

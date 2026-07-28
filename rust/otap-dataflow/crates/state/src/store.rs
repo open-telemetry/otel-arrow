@@ -11,7 +11,9 @@ use crate::pipeline_status::{PipelineRolloutSummary, PipelineStatus, RuntimeInst
 use otap_df_config::PipelineKey;
 use otap_df_config::health::HealthPolicy;
 use otap_df_config::observed_state::{ObservedStateSettings, SendPolicy};
-use otap_df_telemetry::event::{EngineEvent, EventType, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::event::{
+    EngineEvent, ErrorEvent, ErrorSummary, EventType, ObservedEvent, ObservedEventReporter,
+};
 use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{AnsiCode, ConsoleWriter, LogContext, StyledBufWriter};
@@ -23,6 +25,19 @@ use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 const RECENT_EVENTS_CAPACITY: usize = 10;
+
+fn error_event_details(error: &ErrorEvent) -> (&'static str, Option<&ErrorSummary>) {
+    match error {
+        ErrorEvent::AdmissionError(summary) => ("admission_error", Some(summary)),
+        ErrorEvent::ConfigRejected(summary) => ("config_rejected", Some(summary)),
+        ErrorEvent::UpdateFailed(summary) => ("update_failed", Some(summary)),
+        ErrorEvent::RollbackFailed(summary) => ("rollback_failed", Some(summary)),
+        ErrorEvent::DrainError(summary) => ("drain_error", Some(summary)),
+        ErrorEvent::DrainDeadlineReached => ("drain_deadline_reached", None),
+        ErrorEvent::RuntimeError(summary) => ("runtime_error", Some(summary)),
+        ErrorEvent::DeleteError(summary) => ("delete_error", Some(summary)),
+    }
+}
 
 /// Event-driven observed state store representing what we know about the state of the
 /// pipelines (DAG executors) controlled by the controller.
@@ -399,13 +414,53 @@ impl ObservedStateStore {
                 );
             }
             EventType::Error(err) => {
-                otel_error!("state.observed_error",
-                    pipeline_group_id = %observed_event.key.pipeline_group_id,
-                    pipeline_id = %observed_event.key.pipeline_id,
-                    core_id = observed_event.key.core_id,
-                    event_type = ?err,
-                    message = observed_event.message.as_deref().unwrap_or(""),
-                );
+                let (event_type, summary) = error_event_details(err);
+                if let Some(summary) = summary {
+                    match summary {
+                        ErrorSummary::Pipeline {
+                            error_kind,
+                            message: error,
+                            ..
+                        } => {
+                            otel_error!("state.observed_error",
+                                error = error,
+                                error_kind = error_kind,
+                                event_type = event_type,
+                                pipeline_group_id = %observed_event.key.pipeline_group_id,
+                                pipeline_id = %observed_event.key.pipeline_id,
+                                core_id = observed_event.key.core_id,
+                                message = observed_event.message.as_deref().unwrap_or(""),
+                            );
+                        }
+                        ErrorSummary::Node {
+                            node,
+                            node_kind,
+                            error_kind,
+                            message: error,
+                            ..
+                        } => {
+                            otel_error!("state.observed_error",
+                                error = error,
+                                error_kind = error_kind,
+                                event_type = event_type,
+                                node = %node,
+                                node_kind = ?node_kind,
+                                pipeline_group_id = %observed_event.key.pipeline_group_id,
+                                pipeline_id = %observed_event.key.pipeline_id,
+                                core_id = observed_event.key.core_id,
+                                message = observed_event.message.as_deref().unwrap_or(""),
+                            );
+                        }
+                    }
+                } else {
+                    otel_error!("state.observed_error",
+                        event_type = event_type,
+                        pipeline_group_id = %observed_event.key.pipeline_group_id,
+                        pipeline_id = %observed_event.key.pipeline_id,
+                        core_id = observed_event.key.core_id,
+                        message = observed_event.message.as_deref().unwrap_or(""),
+                    );
+                }
             }
             EventType::Success(_) => {}
         };
@@ -621,6 +676,21 @@ mod tests {
         }
     }
 
+    struct LogCaptureLayer {
+        sender: flume::Sender<LogRecord>,
+    }
+
+    impl<S> Layer<S> for LogCaptureLayer
+    where
+        S: Subscriber + for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
+            self.sender
+                .send(LogRecord::new(event, LogContext::default()))
+                .expect("log capture receiver should be connected");
+        }
+    }
+
     fn emit_log_via_async_reporter(reporter: ObservedEventReporter, message: &str) {
         let dispatch = tracing::Dispatch::new(
             tracing_subscriber::Registry::default().with(ReporterLayer { reporter }),
@@ -628,6 +698,92 @@ mod tests {
         tracing::dispatcher::with_default(&dispatch, || {
             otel_info!("state.test.log", message = message);
         });
+    }
+
+    /// Scenario: pipeline-level and node-level runtime errors reach observed state.
+    /// Guarantees: rendered state errors retain compact diagnostics and required identity fields.
+    #[test]
+    fn observed_runtime_errors_log_compact_error_summaries() {
+        let store = ObservedStateStore::new(
+            &ObservedStateSettings::default(),
+            TelemetryRegistryHandle::new(),
+        );
+        let (sender, receiver) = flume::bounded(2);
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::Registry::default().with(LogCaptureLayer { sender }),
+        );
+        let error = "Pipeline runtime error: A processor error occurred in node debug \
+            (transport): Write error: No space left on device (os error 28)";
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let result = store
+                .report_engine(EngineEvent::pipeline_runtime_error(
+                    make_key(0),
+                    "Pipeline encountered a runtime error.",
+                    ErrorSummary::Pipeline {
+                        error_kind: "runtime".into(),
+                        message: error.into(),
+                        source: None,
+                    },
+                ))
+                .expect_err("runtime error from Pending should be rejected after logging");
+            assert!(matches!(result, Error::InvalidTransition { .. }));
+
+            let result = store
+                .report_engine(EngineEvent::node_runtime_error(
+                    make_key(0),
+                    "debug".into(),
+                    otap_df_config::node::NodeKind::Processor,
+                    Some("Node encountered a runtime error.".into()),
+                    ErrorSummary::Node {
+                        node: "debug".into(),
+                        node_kind: otap_df_config::node::NodeKind::Processor,
+                        error_kind: "transport".into(),
+                        message: "Write error: No space left on device (os error 28)".into(),
+                        source: None,
+                    },
+                ))
+                .expect_err("runtime error from Pending should be rejected after logging");
+            assert!(matches!(result, Error::InvalidTransition { .. }));
+        });
+
+        let rendered_pipeline = receiver
+            .recv()
+            .expect("pipeline error log should be captured")
+            .to_string();
+        assert!(
+            rendered_pipeline.contains(error),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("error_kind=runtime"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            rendered_pipeline.contains("pipeline_group_id=group"),
+            "rendered log: {rendered_pipeline}"
+        );
+        assert!(
+            !rendered_pipeline.contains("dropped"),
+            "rendered log: {rendered_pipeline}"
+        );
+
+        let rendered_node = receiver
+            .recv()
+            .expect("node error log should be captured")
+            .to_string();
+        assert!(
+            rendered_node.contains("node=debug"),
+            "rendered log: {rendered_node}"
+        );
+        assert!(
+            rendered_node.contains("node_kind=Processor"),
+            "rendered log: {rendered_node}"
+        );
+        assert!(
+            rendered_node.contains("error_kind=transport"),
+            "rendered log: {rendered_node}"
+        );
     }
 
     /// Validates that `send_timeout(1ms)` on a full bounded channel drops

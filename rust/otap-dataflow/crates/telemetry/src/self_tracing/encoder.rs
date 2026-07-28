@@ -11,7 +11,9 @@ use bytes::Bytes;
 use otap_df_config::pipeline::telemetry::{
     AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
 };
-use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
+use otap_df_pdata::otlp::common::{
+    BoundedBuf, Dropped, EncodeResult, ProtoBuffer, TRUNCATION_SUFFIX,
+};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
 };
@@ -103,6 +105,9 @@ pub struct DirectFieldVisitor<'buf, B: BoundedBuf> {
     buf: &'buf mut B,
     dropped_count: u32,
 }
+
+/// Reserve 64 bytes for the generic message body plus protobuf wire overhead.
+const ERROR_ATTRIBUTE_BODY_RESERVE: usize = 72;
 
 impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
     /// Create a new DirectFieldVisitor that writes to the provided buffer.
@@ -202,6 +207,31 @@ impl<'buf, B: BoundedBuf> DirectFieldVisitor<'buf, B> {
         })
     }
 
+    /// Encode a Debug attribute with bounded formatting and string truncation.
+    ///
+    /// This is used only for diagnostic-priority fields. It prevents a large
+    /// Debug implementation from allocating an unbounded intermediate string
+    /// while preserving a marked prefix in the encoded attribute.
+    #[inline]
+    fn encode_debug_attribute_truncating_to(
+        buf: &mut B,
+        key: &str,
+        value: &dyn std::fmt::Debug,
+    ) -> Result<bool, Dropped> {
+        let mut truncated = false;
+        buf.encode_len_delimited_partial(LOG_RECORD_ATTRIBUTES, |buf| {
+            buf.encode_string(KEY_VALUE_KEY, key)?;
+            buf.encode_len_delimited_partial(KEY_VALUE_VALUE, |buf| {
+                buf.encode_len_delimited_partial(ANY_VALUE_STRING_VALUE, |buf| {
+                    truncated = encode_debug_string_truncating(buf, value)?;
+                    Ok(())
+                })?;
+                Ok(())
+            })
+        })?;
+        Ok(truncated)
+    }
+
     /// Encode the body as a string. Empty strings are skipped.
     ///
     /// Wrapped in `try_encode` so that any partial wire bytes written before
@@ -245,6 +275,66 @@ impl<B: BoundedBuf> std::fmt::Write for BoundedBufFmt<'_, B> {
     }
 }
 
+/// Direct formatter for diagnostic-priority Debug attributes.
+///
+/// Reserves the existing truncation suffix while writing to the bounded
+/// protobuf buffer, avoiding an intermediate allocation and copy.
+struct TruncatingBoundedBufFmt<'a, B: BoundedBuf> {
+    buf: &'a mut B,
+    truncated: bool,
+}
+
+impl<B: BoundedBuf> std::fmt::Write for TruncatingBoundedBufFmt<'_, B> {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if self.truncated {
+            return Err(std::fmt::Error);
+        }
+
+        let suffix_len = TRUNCATION_SUFFIX.len();
+        if value.len() <= self.buf.remaining().saturating_sub(suffix_len) {
+            self.buf
+                .try_extend(value.as_bytes())
+                .map_err(|_| std::fmt::Error)?;
+            return Ok(());
+        }
+
+        let prefix_len = self.buf.remaining().saturating_sub(suffix_len);
+        let mut end = prefix_len.min(value.len());
+        while end > 0 && !value.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end > 0 {
+            self.buf
+                .try_extend(&value.as_bytes()[..end])
+                .map_err(|_| std::fmt::Error)?;
+        }
+        self.buf
+            .try_extend(TRUNCATION_SUFFIX)
+            .map_err(|_| std::fmt::Error)?;
+        self.truncated = true;
+        Err(std::fmt::Error)
+    }
+}
+
+/// Encode a Debug value directly into a bounded buffer with a truncation suffix.
+#[inline]
+fn encode_debug_string_truncating<B: BoundedBuf>(
+    buf: &mut B,
+    value: &dyn std::fmt::Debug,
+) -> Result<bool, Dropped> {
+    use std::fmt::Write as _;
+
+    let mut adapter = TruncatingBoundedBufFmt {
+        buf,
+        truncated: false,
+    };
+    match write!(adapter, "{value:?}") {
+        Ok(()) => Ok(false),
+        Err(_) if adapter.truncated => Ok(true),
+        Err(_) => Err(Dropped),
+    }
+}
+
 /// Helper to encode a Debug value as a protobuf string field.
 /// This is separate from DirectFieldVisitor to avoid borrow conflicts with the macro.
 #[inline]
@@ -270,6 +360,14 @@ fn encode_debug_string<B: BoundedBuf>(buf: &mut B, value: &dyn std::fmt::Debug) 
 #[inline]
 fn attr_budget<B: BoundedBuf>(buf: &B) -> usize {
     buf.remaining().div_ceil(2)
+}
+
+/// Compute the error-field budget while reserving space for the log body.
+#[inline]
+fn error_attr_budget<B: BoundedBuf>(buf: &B) -> usize {
+    buf.remaining()
+        .saturating_sub(ERROR_ATTRIBUTE_BODY_RESERVE)
+        .max(1)
 }
 
 impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
@@ -334,8 +432,12 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             self.encode_body_string(value);
             return;
         }
-        let budget = attr_budget(self.buf);
         let key = field.name();
+        let budget = if key == "error" {
+            error_attr_budget(self.buf)
+        } else {
+            attr_budget(self.buf)
+        };
         let mut truncated = false;
         // Attempt the encoding (with truncation as needed) within the scoped
         // budget, transactionally so a hard failure rolls back any partial
@@ -366,13 +468,28 @@ impl<B: BoundedBuf> tracing::field::Visit for DirectFieldVisitor<'_, B> {
             self.encode_body_debug(value);
             return;
         }
-        let budget = attr_budget(self.buf);
+        let is_error = field.name() == "error";
+        let budget = if is_error {
+            error_attr_budget(self.buf)
+        } else {
+            attr_budget(self.buf)
+        };
+        let mut truncated = false;
         let fit = self.buf.with_max_remaining(budget, |buf| {
             buf.try_encode(|b| {
-                DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value)
+                if is_error {
+                    truncated = DirectFieldVisitor::encode_debug_attribute_truncating_to(
+                        b,
+                        field.name(),
+                        value,
+                    )?;
+                    Ok(())
+                } else {
+                    DirectFieldVisitor::encode_debug_attribute_to(b, field.name(), value)
+                }
             })
         });
-        if fit.is_err() {
+        if fit.is_err() || truncated {
             self.dropped_count += 1;
         }
     }
@@ -1208,6 +1325,82 @@ mod tests {
         );
     }
 
+    /// Scenario: a direct error attribute exceeds its bounded encoding budget.
+    /// Guarantees: the error retains a marked prefix instead of being dropped entirely.
+    #[test]
+    fn record_error_overflow_preserves_truncated_prefix() {
+        use otap_df_pdata::otlp::common::StackProtoBuffer;
+        use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue as ProtoKeyValue;
+        use otap_df_pdata::views::otlp::bytes::logs::RawLogRecord;
+        use otap_df_pdata_views::views::common::AnyValueView;
+        use otap_df_pdata_views::views::logs::LogRecordView;
+        use prost::Message;
+        use tracing::field::Visit;
+
+        struct HugeError;
+        impl std::fmt::Debug for HugeError {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("root cause: ")?;
+                for _ in 0..512 {
+                    f.write_str("xxxxxxxx")?;
+                }
+                Ok(())
+            }
+        }
+
+        let fields = DEBUG_TEST_METADATA.fields();
+        let error = fields.field("error").expect("error field should exist");
+        let message = fields.field("message").expect("message field should exist");
+        let mut buf = StackProtoBuffer::<256>::default();
+        let mut visitor = DirectFieldVisitor::new(&mut buf);
+        visitor.record_debug(&error, &HugeError);
+        let body = "m".repeat(64);
+        visitor.record_str(&message, &body);
+
+        assert_eq!(
+            visitor.dropped_count(),
+            1,
+            "the error prefix should report truncation"
+        );
+        let bytes = buf.as_ref().to_vec();
+        let mut cursor = bytes.as_slice();
+        let (_, tag_len) = read_varint(cursor);
+        cursor = &cursor[tag_len..];
+        let (len, len_len) = read_varint(cursor);
+        cursor = &cursor[len_len..];
+        let key_value = ProtoKeyValue::decode(&cursor[..len as usize])
+            .expect("truncated error should remain decodable");
+        let value = match key_value
+            .value
+            .as_ref()
+            .and_then(|value| value.value.as_ref())
+        {
+            Some(
+                otap_df_pdata::proto::opentelemetry::common::v1::any_value::Value::StringValue(
+                    value,
+                ),
+            ) => value,
+            other => panic!("expected StringValue, got {other:?}"),
+        };
+
+        assert_eq!(key_value.key, "error");
+        assert!(value.starts_with("root cause: "), "error value: {value}");
+        assert!(
+            value.ends_with(std::str::from_utf8(TRUNCATION_SUFFIX).unwrap()),
+            "error value: {value}"
+        );
+
+        let record = RawLogRecord::new(buf.as_ref());
+        let actual_body = record
+            .body()
+            .and_then(|body| body.as_string().map(|value| value.to_vec()));
+        assert_eq!(
+            actual_body.as_deref(),
+            Some(body.as_bytes()),
+            "body should fit in the space reserved after the error"
+        );
+    }
+
     static DEBUG_TEST_CALLSITE: DebugTestCallsite = DebugTestCallsite;
 
     struct DebugTestCallsite;
@@ -1227,7 +1420,7 @@ mod tests {
         Some(line!()),
         Some(module_path!()),
         tracing::field::FieldSet::new(
-            &["dbg"],
+            &["dbg", "error", "message"],
             tracing::callsite::Identifier(&DEBUG_TEST_CALLSITE),
         ),
         tracing::metadata::Kind::EVENT,
