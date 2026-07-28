@@ -42,10 +42,10 @@ policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `processor.partition.operations` | `{batch}` | `outcome` | Number of incoming batches whose partition evaluation reached a terminal outcome. |
+| `processor.partition.operations` | `{batch}` | `outcome` | Number of incoming batches processed by the partition operation. |
 
-The bounded `outcome` attribute is `success` when partition evaluation completes
-and `failure` when partition evaluation returns an error.
+The bounded `outcome` attribute is `success` when the partition operation
+completes successfully and `failure` when it returns an error.
 
 ### Events
 

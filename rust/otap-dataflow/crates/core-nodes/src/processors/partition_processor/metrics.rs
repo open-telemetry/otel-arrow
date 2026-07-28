@@ -7,14 +7,14 @@ use otap_df_telemetry::common_attributes::OutcomeAttributes;
 use otap_df_telemetry::instrument::Counter;
 use otap_df_telemetry_macros::metric_set;
 
-/// Partition operations grouped by terminal outcome.
+/// Partition operations grouped by outcome.
 #[metric_set(
     name = "processor.partition",
     measurement_attributes = OutcomeAttributes
 )]
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
-    /// Number of incoming batches whose partition evaluation reached a terminal outcome.
+    /// Number of incoming batches processed by the partition operation.
     #[metric(unit = "{batch}")]
     pub operations: Counter<u64>,
 }
@@ -35,7 +35,7 @@ mod tests {
         Metrics::register(&pipeline_ctx)
     }
 
-    /// Scenario: Partition evaluations complete with successful and failed outcomes.
+    /// Scenario: Partition operations complete with successful and failed outcomes.
     /// Guarantees: Operation counts are exported as isolated bounded outcome buckets.
     #[test]
     fn partition_operations_are_bucketed_by_outcome() {

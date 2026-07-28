@@ -822,38 +822,27 @@ mod test {
             .validate(move |_ctx| async move {
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
-                let mut successful_operations = 0;
-                let mut failed_operations = 0;
+                let mut reported_operations = Vec::new();
                 telemetry_registry.visit_current_metrics_with_item_attrs(
                     |descriptor, _attributes, item_attributes, metrics| {
-                        if descriptor.name != "processor.partition" {
-                            return;
-                        }
-
-                        let outcome = item_attributes
-                            .iter()
-                            .find(|(key, _)| *key == "outcome")
-                            .map(|(_, value)| *value);
-                        for (field, value) in metrics {
-                            if field.name != "operations" {
-                                continue;
-                            }
-                            match outcome {
-                                Some("success") => {
-                                    successful_operations += value.to_u64_lossy();
+                        if descriptor.name == "processor.partition" {
+                            let outcome = item_attributes
+                                .iter()
+                                .find(|(key, _)| *key == "outcome")
+                                .map(|(_, value)| *value)
+                                .expect("partition operation outcome");
+                            for (field, value) in metrics {
+                                if field.name == "operations" {
+                                    reported_operations
+                                        .push((outcome.to_string(), value.to_u64_lossy()));
                                 }
-                                Some("failure") => {
-                                    failed_operations += value.to_u64_lossy();
-                                }
-                                _ => {}
                             }
                         }
                     },
                     false,
                 );
 
-                assert_eq!(successful_operations, 1);
-                assert_eq!(failed_operations, 0);
+                assert_eq!(reported_operations, vec![("success".to_string(), 1)]);
             });
     }
 
