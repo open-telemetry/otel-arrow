@@ -20,7 +20,7 @@ refreshes OAuth 2.0 access tokens using the **client-credentials** grant
 (RFC 6749 section 4.4, 2-legged) and the **JWT-bearer** grant (RFC 7523), and exposes
 them to data-path nodes through the `BearerTokenProvider` capability. It is the
 generic, provider-neutral counterpart to the Azure-specific
-[Azure Identity Auth extension](azure-identity-auth-extension.md), modeled on the
+[Azure Identity Auth extension](../crates/contrib-extensions/src/azure_identity_auth/design.md), modeled on the
 Go collector's
 [`oauth2clientauthextension`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/oauth2clientauthextension/README.md).
 
@@ -97,25 +97,22 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523, signed client assertion). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the usability margin, min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
-| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS client cert, SNI override). While `http://` endpoints are allowed, it is strongly recommended to use an `https://` `token_url`. Extension will throw a warning when `http://` endpoints are used. A `timeout` bounds each request. |
+| Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. A `timeout` bounds each request. |
 | Registration | `#[distributed_slice(OTAP_EXTENSION_FACTORIES)]` link-time discovery, same mechanism as nodes. |
 | Telemetry | `MetricSet`-backed counters + latency histogram, flushed via `ExtensionControlMsg::CollectTelemetry`. |
 
 ## Capability
 
 The extension implements `BearerTokenProvider` unchanged - the same
-`get_token()` / `token_stream()` trait, `BearerToken` data type, and
-`CapabilityError` semantics defined in the
+`get_token()` / `token_stream()` trait, `BearerToken` type, and `CapabilityError`
+semantics defined in the
 [Azure Identity Auth extension](azure-identity-auth-extension.md#capability-bearertokenprovider).
-It lives in the engine at `capability::auth::bearer_token_provider` and is the
-**outbound token provider** - distinct from the sibling inbound
-`capability::auth::bearer_token_authorizer` (`BearerTokenAuthorizer`), which
-*admits* tokens presented on inbound requests (a receiver-side concern this
-extension has no part in). Because both bearer-token *providers* expose the same
-capability, a consumer binds this extension or the Azure one interchangeably; the
-choice is a configuration concern, not a code change. This document therefore
-covers only what differs: the OAuth 2.0 token source, its configuration, and its
-refresh behavior.
+It is the engine's **outbound token provider**
+(`capability::auth::bearer_token_provider`), distinct from the inbound
+`BearerTokenAuthorizer` that admits tokens on incoming requests. A consumer binds
+this extension or the Azure one interchangeably - a config choice, not a code
+change - so this document covers only what differs: the OAuth 2.0 token source,
+its configuration, and its refresh behavior.
 
 ## Architecture
 
@@ -149,23 +146,18 @@ flowchart LR
    schedules the next refresh `expiry_buffer` ahead of expiry. After the first
    successful publish it calls `signal_ready()`, releasing the engine's readiness
    gate so the data path starts with a warm cache.
-3. **Fast-path read.** `get_token()` first checks the `watch` cache and returns
-   the cached token immediately - no token round-trip, no lock - as long as it is
-   still *usable*: outside a small usability margin (`TOKEN_USABLE_MARGIN`, 30s)
-   before its expiry. This usability margin is deliberately separate from, and
-   much smaller than, the proactive `expiry_buffer` refresh window: the token is
-   refreshed ~5m early in the background, but a token that has entered that
-   refresh window while still comfortably valid is served as-is. So a stalled
-   background refresh (e.g. an IdP outage) does not stop export several minutes
-   before the token actually expires.
+3. **Fast-path read.** `get_token()` returns the cached token with no lock or
+   round-trip as long as it is still *usable* - outside the small
+   `TOKEN_USABLE_MARGIN` (30s) before expiry. This margin is separate from, and
+   much smaller than, the `expiry_buffer` refresh window, so a stalled background
+   refresh (e.g. an IdP outage) keeps serving a still-valid token instead of
+   failing export minutes early.
 4. **Slow-path read.** On a cache miss (before the first refresh, or once the
-   cached token has entered the usability margin), `get_token()` takes the
-   `fetch_lock` and double-checks the cache; if it is still a miss it performs a
-   single token request, so concurrent callers coalesce onto one in-flight
-   request. A negative cache guards this path: if the most recent acquisition
-   failed within the retry cooldown (`TOKEN_REFRESH_RETRY_SECS`), `get_token()`
-   returns a throttle error instead of hitting the token endpoint again, leaving
-   the background loop to keep retrying on its own backoff cadence.
+   token enters the usability margin), `get_token()` takes the `fetch_lock`,
+   double-checks the cache, and issues a single coalesced token request. A
+   negative cache short-circuits this: after a failure within
+   `TOKEN_REFRESH_RETRY_SECS`, it returns a throttle error and lets the
+   background loop retry on its own cadence.
 5. **Stream.** `token_stream()` subscribes to the `watch` channel and yields each
    subsequent published token; the initial `None` is filtered out.
 
@@ -190,8 +182,7 @@ struct Inner {
 All mutable state lives behind `Arc<Inner>` so the engine can clone the extension
 freely. The `fetch_lock` is an async `Mutex` (held across an `.await`); the
 metrics `Mutex` is a `std` `Mutex` whose critical sections are short and never
-held across an `.await`. This mirrors the Azure extension's sharing model - only
-the `auth` field differs.
+held across an `.await`. Only the `auth` field differs from the Azure extension.
 
 ## Configuration
 
@@ -258,41 +249,52 @@ are rejected for `client_credentials`:
 | `audience` | `string?` | `token_url` | Assertion audience. |
 | `claims` | `map<string,string>` | `{}` | Extra assertion claims. |
 
-The config struct uses `#[serde(deny_unknown_fields)]` and is validated by the
-factory's `validate_config` hook before the pipeline starts. Validation rejects
-an empty `token_url`, a zero `expiry_buffer`/`startup_timeout`, a missing
-client identifier, a missing secret/signing key for the selected grant, and any
-grant-specific field that does not apply to the selected `grant_type`.
+The config struct uses `#[serde(deny_unknown_fields)]` and is validated before
+the pipeline starts. Validation rejects an empty `token_url`, a zero
+`expiry_buffer`/`startup_timeout`, a missing client identifier, a missing
+secret/signing key for the selected grant, and any grant-specific field that does
+not apply to the selected `grant_type`. Because these cross-field rules go beyond
+what serde deserialization can express, the factory wires a **custom**
+`validate_config` hook (rather than `validate_typed_config::<Config>`) that
+deserializes `Config` and then runs `Config::validate()` - the same
+parse-then-validate pattern the Azure extension uses.
 
 ### Token-endpoint TLS
 
 The token endpoint carries the client secret (or signed assertion) and returns
-bearer tokens, so it must be reached over TLS - OAuth 2.0 requires it
-(RFC 6749 section 3.2). The extension invents no TLS knobs of its own: the `tls`
+bearer tokens, so it must be reached over TLS (RFC 6749 section 3.2). The `tls`
 field is the engine's shared `otap_df_config::tls::TlsClientConfig` - the same
-type the OTLP/HTTP exporters use - so behavior and validation match the rest of
-the collector.
+type the OTLP/HTTP exporters use - so the extension invents no TLS knobs and its
+behavior and validation match the rest of the collector.
 
-TLS usage follows the `token_url` scheme: an `https://` endpoint is served over
-TLS (configured by the `tls` block), while a plaintext `http://` endpoint uses no
-TLS and is intended only for local development or testing. Production deployments
-must therefore use `https://` - OAuth 2.0 requires the token endpoint to be
-TLS-protected. The scheme is an explicit operator choice; the extension does not
-silently upgrade or downgrade it. `TlsClientConfig` configures how the TLS
-connection is made:
+TLS follows the `token_url` scheme: `https://` is TLS-protected (configured by
+the `tls` block), while plaintext `http://` uses none and is intended only for
+local development or testing. Production must use `https://`. `TlsClientConfig`
+configures the connection:
 
 - **Custom trust** - `ca_file` / `ca_pem` to trust a private or enterprise CA,
   plus `include_system_ca_certs_pool` (default `true`) for the system store.
 - **Mutual TLS** - `cert_file` / `key_file` present a client certificate, so the
   extension can authenticate to endpoints requiring mTLS client auth
   (RFC 8705) in addition to, or instead of, a client secret.
-- **SNI override** - `server_name_override` when connecting by IP or to a name
-  that does not match the server certificate.
 
-`insecure_skip_verify` (TLS enabled but certificate verification skipped) is
-**not supported** by the Rust stack today; setting it fails fast at startup
-rather than silently weakening verification. TLS relies on the process-wide
-`rustls` crypto provider described under [Cargo features](#cargo-features).
+The extension acquires tokens over a `reqwest`/`rustls` HTTP client built from
+`TlsClientConfig` exactly as the OTLP/HTTP exporter does, so its TLS surface
+matches that client. Two `TlsClientConfig` knobs therefore behave differently
+from a fully general TLS stack:
+
+- **`server_name_override` (SNI override) is not supported** by the
+  reqwest/rustls client. Like the OTLP/HTTP exporter, the extension rejects it at
+  config validation rather than silently ignoring it, so a config that relies on
+  it fails fast instead of connecting with the wrong SNI.
+- **`insecure_skip_verify`** (TLS enabled but certificate verification skipped) is
+  honored - it maps to reqwest's `danger_accept_invalid_certs`. It is intended
+  only for local development or testing against a self-signed endpoint; because it
+  disables certificate verification on a connection that carries the client
+  secret, production deployments must leave it off.
+
+TLS relies on the process-wide `rustls` crypto provider described under
+[Cargo features](#cargo-features).
 
 ## Refresh Loop
 
@@ -310,12 +312,10 @@ the `expiry_buffer` source differ:
    immediately on startup:
    - On tick: note the current `watch` version, then take the `fetch_lock` (the
      same one the slow-path `get_token` uses). Coalesce onto a concurrent
-     acquisition **only if a slow-path `get_token` published a new token while we
-     waited for the lock** (the `watch` version changed) and that token is still
-     usable; otherwise acquire a new token. A token that is merely still valid is
-     not reused here: the loop refreshes ~`expiry_buffer` before expiry while a
-     token stays usable until the much smaller usability margin, so reusing it
-     would defer the planned early refresh far too long.
+     acquisition only if a slow-path `get_token` published a new usable token
+     while we waited for the lock (the `watch` version changed); otherwise
+     acquire a new token. A merely still-valid token is not reused, so the
+     planned early refresh is not deferred.
    - On success: publish with `send_replace` (updates the cache regardless of
      subscriber count), reset the consecutive-failure count, clear the
      `last_failure` negative cache, then compute `next_refresh` from `expires_on`
@@ -334,7 +334,7 @@ Tuning constants:
 | Constant | Value | Purpose |
 | --- | --- | --- |
 | `expiry_buffer` (config) | `5m` default | Background loop refreshes this far before `expires_on`. |
-| `TOKEN_USABLE_MARGIN` | 30s | Safety margin before actual expiry within which the fast path treats a cached token as no longer usable. Deliberately much smaller than `expiry_buffer`: the background loop refreshes ~5m early, but a still-valid token keeps being served while that refresh is failing, so an IdP outage does not stop export until the token is genuinely near expiry (and the slow path is not stampeded during a transient outage). |
+| `TOKEN_USABLE_MARGIN` | 30s | Fast path treats a token within this margin of expiry as unusable. Much smaller than `expiry_buffer` so a still-valid token keeps being served while a background refresh is failing, and the slow path is not stampeded during a transient outage. |
 | `MIN_TOKEN_REFRESH_INTERVAL_SECS` | 10 | Floor between successful refreshes; also the earliest a jittered refresh may land. Avoids busy-looping on near-expired tokens. |
 | `TOKEN_REFRESH_RETRY_SECS` | 10 | Base reschedule delay after a failed acquisition; doubles per consecutive failure. Also the slow-path negative-cache cooldown that throttles `get_token()` retries after a failure. |
 | `MAX_TOKEN_REFRESH_RETRY_SECS` | 300 (5m) | Ceiling for the exponential retry backoff. |
@@ -390,8 +390,6 @@ Metrics are recorded in the background refresh loop and the slow-path
 1. The engine starts the extension before any consumer that binds it (extensions
    start first; see
    [Extension System Architecture](extension-system-architecture.md#key-design-decisions)).
-   At factory time `create()` has already built `Auth`, registered the metric
-   set, and constructed the extension with an empty token cache.
 2. `SharedExtension::start()` runs the refresh loop. The first successful token
    request publishes a token onto the `watch` channel, then calls
    `EffectHandler::signal_ready()`.
@@ -457,8 +455,7 @@ rand = { workspace = true, optional = true }
 process-wide `rustls` crypto provider. `Auth::new()` calls
 `otap_df_otap::crypto::ensure_crypto_provider()` before constructing the client,
 and the deployed binary **must** enable exactly one `crypto-*` feature; otherwise
-token requests panic at runtime with "No provider set". This is the same
-prerequisite as the Azure extension.
+token requests panic at runtime with "No provider set".
 
 ### Factory registration
 
@@ -474,7 +471,7 @@ pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
         shared: OAuth2ClientAuthExtension => [BearerTokenProvider]
     )),
     create,
-    validate_config: validate_typed_config::<Config>,
+    validate_config,
 };
 ```
 
@@ -492,11 +489,10 @@ effect.
 - **Secret sourcing.** Prefer the `*_file` fields over inline secrets so
   credentials are not embedded in pipeline config and can be rotated by updating
   the file; the extension re-reads them on each acquisition.
-- **Transport security.** TLS protects the client secret in transit and the
-  returned token; production must use an `https://` `token_url`, with plaintext
-  `http://` reserved for local testing (see
-  [Token-endpoint TLS](#token-endpoint-tls)). A `timeout` bounds each token
-  request so a hung endpoint cannot stall refresh.
+- **Transport security.** TLS protects the client secret and returned token in
+  transit; production must use `https://` (see
+  [Token-endpoint TLS](#token-endpoint-tls)). A `timeout` bounds each request so
+  a hung endpoint cannot stall refresh.
 - **Endpoint protection.** Slow-path fetch coalescing (`fetch_lock`) prevents
   request stampedes against the token endpoint on cache misses.
 - **Least privilege.** The extension requests exactly the configured `scopes`.
@@ -511,19 +507,15 @@ effect.
   across `.await`).
 - **Per-core instantiation.** At pipeline scope the extension is instantiated per
   pipeline instance (per core), consistent with the Phase 1 sharing-boundary
-  rule. The cache, refresh loop, and token acquisitions **replicate per core**,
-  not per consumer: on an N-core deployment a single-exporter pipeline yields N
-  caches, N refresh loops, and N independent token fetches. The `shared` model
-  only collapses duplication *within* a core (multiple consumers on the same core
-  share one `Arc<Inner>`); it does not share across cores. Consequently,
-  **slow-path coalescing (`fetch_lock`) bounds the startup thundering herd to N
-  concurrent acquisitions (one per core), but does not eliminate it** - the
-  per-core loops are uncoordinated. To stop those uncoordinated loops from
-  realigning after startup, scheduled refreshes carry negative jitter and failed
-  acquisitions use bounded exponential backoff with jitter, so steady-state
-  refreshes and outage retries stay spread across cores rather than firing on a
-  shared cadence. A future move to a broader scope (group/engine) would let a
-  single instance be shared across cores without code changes (see
+  rule. The cache, refresh loop, and token acquisitions **replicate per core**:
+  on an N-core deployment a single-exporter pipeline yields N caches, N refresh
+  loops, and N independent token fetches. The `shared` model only collapses
+  duplication *within* a core, not across cores. So slow-path coalescing
+  (`fetch_lock`) bounds the startup thundering herd to N concurrent acquisitions
+  (one per core) but does not eliminate it; the per-core jitter and backoff (see
+  [Refresh Loop](#refresh-loop)) keep those uncoordinated loops from realigning.
+  A future move to group/engine scope would share one instance across cores
+  without code changes (see
   [Extension Scopes](extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all token I/O is async (`reqwest` HTTP), so it never blocks other futures on
@@ -579,7 +571,7 @@ OAuth-specific coverage:
 
 ## References
 
-- [Azure Identity Auth Extension](azure-identity-auth-extension.md) - sibling
+- [Azure Identity Auth Extension](../crates/contrib-extensions/src/azure_identity_auth/design.md) - sibling
   `BearerTokenProvider` provider; source of the capability, cache, and lifecycle
   design reused here.
 - [Extension System Proposal](extension-requirements.md)
