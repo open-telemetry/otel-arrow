@@ -51,7 +51,7 @@ jobs:
           git submodule init
           git submodule update
           cd rust/otap-dataflow
-          docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
+          docker buildx build --load --build-arg FEATURES=clickhouse-exporter --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
       - name: Build otelarrowcol image
@@ -111,6 +111,21 @@ jobs:
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly/batch-processor-docker.yaml
+
+      - name: Run df_engine ClickHouse comparison
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py \
+            --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml \
+            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K
+
+      - name: Run OTel Collector ClickHouse comparison
+        if: ${{ !cancelled() }}
+        run: |
+          cd tools/pipeline_perf_test
+          python orchestrator/run_orchestrator.py \
+            --config test_suites/integration/clickhouse/otelcol-clickhouse-logs.yaml
 
       - name: Run idle state performance tests
         if: ${{ !cancelled() }}
@@ -253,6 +268,15 @@ jobs:
           name: passthrough-nightly-results
           path: tools/pipeline_perf_test/results/continuous_passthrough/gh-actions-benchmark/*.json
 
+      - name: Upload ClickHouse comparison results for processing
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: clickhouse-nightly-results
+          path: |
+            tools/pipeline_perf_test/results/clickhouse/gh-actions-benchmark/*.json
+            tools/pipeline_perf_test/results/otelcol_clickhouse/gh-actions-benchmark/*.json
+
       - name: Add benchmark link to job summary
         if: ${{ !cancelled() }}
         run: |
@@ -265,7 +289,8 @@ jobs:
       - name: Clean up Docker artifacts created by this job
         if: always()
         run: |
-          docker rmi -f df_engine otelarrowcol 2>/dev/null || true
+          docker rm -f load-generator df-engine go-collector clickhouse 2>/dev/null || true
+          docker rmi -f df_engine otelarrowcol otel/opentelemetry-collector-contrib:0.149.0 clickhouse/clickhouse-server:25.6 2>/dev/null || true
           # Prune dangling (unused) build cache and images only.
           docker builder prune -f 2>/dev/null || true
           docker image prune -f 2>/dev/null || true
@@ -371,6 +396,13 @@ jobs:
           merge-multiple: true
           path: passthrough_results
 
+      - name: Download ClickHouse comparison artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: clickhouse-nightly-results*
+          merge-multiple: true
+          path: clickhouse_results
+
       - name: Consolidate syslog benchmark data
         if: ${{ !cancelled() }}
         run: |
@@ -425,6 +457,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           bash ./.github/workflows/scripts/consolidate-benchmarks.sh passthrough_results passthrough_output.json
+
+      - name: Consolidate ClickHouse comparison benchmark data
+        if: ${{ !cancelled() }}
+        run: |
+          bash ./.github/workflows/scripts/consolidate-benchmarks.sh clickhouse_results clickhouse_output.json
 
       - name: Update benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
@@ -592,6 +629,19 @@ jobs:
           max-items-in-chart: 100
           github-token: ${{ secrets.GITHUB_TOKEN }}
           benchmark-data-dir-path: "docs/benchmarks/continuous-passthrough"
+          auto-push: true
+          save-data-file: true
+
+      - name: Update ClickHouse comparison benchmark data
+        if: ${{ !cancelled() && hashFiles('clickhouse_output.json') != '' }}
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
+        with:
+          tool: "customSmallerIsBetter"
+          output-file-path: clickhouse_output.json
+          gh-pages-branch: benchmarks
+          max-items-in-chart: 100
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          benchmark-data-dir-path: "docs/benchmarks/nightly/clickhouse"
           auto-push: true
           save-data-file: true
 
