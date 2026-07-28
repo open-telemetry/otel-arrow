@@ -1729,10 +1729,10 @@ mod tests {
             if desc.name == set_name {
                 for (field, metric_value) in iter {
                     if field.name == metric_name
-                        && let otap_df_telemetry::metrics::MetricValue::Mmsc(snapshot) =
+                        && let otap_df_telemetry::metrics::MetricValue::Distribution(distribution) =
                             metric_value
                     {
-                        count = snapshot.count;
+                        count = distribution.count();
                     }
                 }
             }

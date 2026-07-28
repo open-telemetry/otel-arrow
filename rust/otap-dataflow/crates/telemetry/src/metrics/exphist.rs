@@ -13,7 +13,7 @@
 //! All points are emitted with delta temporality by the caller; these
 //! functions only build the per-point payload.
 
-use crate::instrument::MmscSnapshot;
+use crate::instrument::{Distribution, Mmsc};
 use otap_df_expohisto::HistogramView;
 use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue;
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
@@ -66,12 +66,15 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
 /// Projects a pre-aggregated min/max/sum/count summary onto a bucketless OTLP
 /// `ExponentialHistogramDataPoint`.
 ///
-/// This is the "basic" tier: it carries no buckets (`scale` 0, empty positive
-/// and negative ranges, zero `zero_count`) and preserves the exact `count`,
-/// `min`, and `max`. `sum` is populated only for non-negative populations, for
-/// which the OTLP sum is well defined.
+/// This is the "basic" tier: an exponential histogram with no encoded buckets
+/// (`scale` 0, empty positive and negative ranges). It preserves the exact
+/// `count`, `zero_count`, `min`, and `max`. `sum` is populated only for
+/// non-negative populations, for which the OTLP sum is well defined.
+///
+/// `Mmsc::record` debug-asserts non-negative observations, so a negative `min`
+/// only arises in a release build with a misbehaving call site.
 pub(crate) fn mmsc_exponential_histogram_data_point(
-    snapshot: &MmscSnapshot,
+    mmsc: &Mmsc,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
     attributes: &[KeyValue],
@@ -80,28 +83,28 @@ pub(crate) fn mmsc_exponential_histogram_data_point(
         .attributes(attributes.to_vec())
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano)
-        .count(snapshot.count);
-    if snapshot.count > 0 {
-        builder = builder
-            .sum(snapshot.sum)
-            .min(snapshot.min)
-            .max(snapshot.max);
+        .count(mmsc.count)
+        .zero_count(mmsc.zero_count);
+    if mmsc.count > 0 {
+        builder = builder.min(mmsc.min).max(mmsc.max);
+        if mmsc.min >= 0.0 {
+            builder = builder.sum(mmsc.sum);
+        }
     }
     builder.finish()
 }
 
-/// Projects a live [`Distribution`] onto an OTLP `ExponentialHistogramDataPoint`,
+/// Projects a [`Distribution`] onto an OTLP `ExponentialHistogramDataPoint`,
 /// dispatching each tier onto the matching primitive.
 pub(crate) fn distribution_exponential_histogram_data_point(
-    distribution: &crate::instrument::Distribution,
+    distribution: &Distribution,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
     attributes: &[KeyValue],
 ) -> ExponentialHistogramDataPoint {
-    use crate::instrument::Distribution;
     match distribution {
         Distribution::Basic(mmsc) => mmsc_exponential_histogram_data_point(
-            &mmsc.get(),
+            mmsc,
             start_time_unix_nano,
             time_unix_nano,
             attributes,
@@ -133,7 +136,7 @@ mod tests {
     /// sum to the number of bucketed observations, and reports no zeros.
     #[test]
     fn projects_positive_observations_into_buckets() {
-        let mut hist: HistogramNN<16> = Histogram::new();
+        let mut hist: HistogramNN<16> = HistogramNN::new();
         for v in [1.5_f64, 2.7, 4.0, 100.0] {
             hist.update(v).expect("positive value is recordable");
         }
@@ -163,7 +166,7 @@ mod tests {
     /// range, so `zero_count + sum(bucket_counts) == count`.
     #[test]
     fn recovers_zero_count_from_total() {
-        let mut hist: HistogramNN<16> = Histogram::new();
+        let mut hist: HistogramNN<16> = HistogramNN::new();
         hist.update(0.0).expect("zero is recordable");
         hist.update(0.0).expect("zero is recordable");
         hist.update(3.0).expect("positive value is recordable");
@@ -186,7 +189,7 @@ mod tests {
     /// positive buckets and no sum, so downstream consumers can drop it.
     #[test]
     fn empty_histogram_yields_empty_point() {
-        let hist: HistogramNN<16> = Histogram::new();
+        let hist: HistogramNN<16> = HistogramNN::new();
         let view = hist.view();
 
         let point = exponential_histogram_data_point(&view, 0, 0, &[]);
@@ -197,25 +200,24 @@ mod tests {
         assert!(point.sum.is_none());
     }
 
-    /// Scenario: A pre-aggregated min/max/sum/count summary is projected onto
-    /// the bucketless "basic" exponential-histogram form.
-    /// Guarantees: The point preserves count, min, max, and sum, uses scale 0,
-    /// and carries neither positive nor negative buckets.
+    /// Scenario: A pre-aggregated min/max/sum/count summary that also counted
+    /// exact zeros is projected onto the bucketless "basic" form.
+    /// Guarantees: The point preserves count, zero_count, min, max, and sum,
+    /// uses scale 0, and carries neither positive nor negative buckets, so an
+    /// Mmsc is a faithful exponential histogram with no encoded buckets.
     #[test]
     fn mmsc_projects_to_bucketless_point() {
-        let snapshot = MmscSnapshot {
-            min: 2.0,
-            max: 9.0,
-            sum: 20.0,
-            count: 4,
-        };
+        let mut mmsc = Mmsc::default();
+        for v in [0.0_f64, 2.0, 9.0, 9.0] {
+            mmsc.record(v);
+        }
 
-        let point = mmsc_exponential_histogram_data_point(&snapshot, 5, 7, &[]);
+        let point = mmsc_exponential_histogram_data_point(&mmsc, 5, 7, &[]);
 
         assert_eq!(point.count, 4);
         assert_eq!(point.scale, 0);
-        assert_eq!(point.zero_count, 0);
-        assert_eq!(point.min, Some(2.0));
+        assert_eq!(point.zero_count, 1);
+        assert_eq!(point.min, Some(0.0));
         assert_eq!(point.max, Some(9.0));
         assert_eq!(point.sum, Some(20.0));
         assert!(point.positive.is_none());

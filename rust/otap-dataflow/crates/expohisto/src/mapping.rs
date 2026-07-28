@@ -203,6 +203,38 @@ impl Scale {
         }
     }
 
+    /// Returns the bucket growth factor at this scale: `2^(2^-scale)`.
+    ///
+    /// Every bucket spans `[lower, lower * base)`, so this is the ratio
+    /// between adjacent bucket boundaries. It is read from the boundary
+    /// table rather than computed, keeping the call `no_std`-clean.
+    #[inline]
+    #[must_use]
+    pub fn base(&self) -> f64 {
+        // lower_boundary(0) is 1.0, so lower_boundary(1) is the ratio itself.
+        // Index 1 is always representable: at the coarsest scale it is
+        // 2^(2^11), far below the f64 exponent limit.
+        self.lower_boundary(1).unwrap_or(f64::INFINITY)
+    }
+
+    /// Returns the relative error bound of a value reported at the geometric
+    /// midpoint of its bucket.
+    ///
+    /// For a bucket `[lower, lower * base)`, reporting `sqrt(lower * upper)`
+    /// bounds the error symmetrically at `(base - 1) / (base + 1)` for any
+    /// true value in the bucket. This is the standard accuracy parameter of
+    /// an exponential histogram and is the figure that applies to values
+    /// produced by [`HistogramView::quantiles`], which interpolates in log
+    /// space.
+    ///
+    /// [`HistogramView::quantiles`]: crate::HistogramView::quantiles
+    #[inline]
+    #[must_use]
+    pub fn relative_error(&self) -> f64 {
+        let base = self.base();
+        (base - 1.0) / (base + 1.0)
+    }
+
     /// Constructs a mask for index position between [0, 2^S)
     const fn mask(&self) -> usize {
         let scale = self.0 as usize;

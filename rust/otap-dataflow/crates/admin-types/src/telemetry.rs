@@ -109,11 +109,15 @@ pub enum MetricValue {
     U64(u64),
     /// Floating-point value.
     F64(f64),
-    /// MMSC snapshot.
+    /// Summary of a pre-aggregated distribution.
     Mmsc(MmscSnapshot),
 }
 
-/// MMSC metric snapshot.
+/// Summary of a pre-aggregated distribution metric.
+///
+/// The exact statistics are always present. The bucketing fields are populated
+/// only for the exponential-histogram tiers; the basic tier encodes no buckets
+/// and so reports no scale, error bound, or quantile estimates.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MmscSnapshot {
     /// Minimum observed value.
@@ -122,8 +126,26 @@ pub struct MmscSnapshot {
     pub max: f64,
     /// Sum of observed values.
     pub sum: f64,
-    /// Observation count.
+    /// Total observation count, including exact zeros.
     pub count: u64,
+    /// Number of exact-zero observations.
+    #[serde(default)]
+    pub zero_count: u64,
+    /// Exponential-histogram scale of the underlying buckets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<i32>,
+    /// Relative error bound that applies to the quantile estimates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relative_error: Option<f64>,
+    /// Estimated median, within `relative_error` of the true value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p50: Option<f64>,
+    /// Estimated 90th percentile, within `relative_error` of the true value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p90: Option<f64>,
+    /// Estimated 99th percentile, within `relative_error` of the true value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99: Option<f64>,
 }
 
 /// Metric field descriptor.
@@ -154,10 +176,12 @@ pub enum Instrument {
     UpDownCounter,
     /// Gauge.
     Gauge,
-    /// Histogram.
+    /// Histogram with explicit bucket boundaries.
     Histogram,
-    /// MMSC.
+    /// Distribution keeping exact min/max/sum/count with no encoded buckets.
     Mmsc,
+    /// Distribution keeping exponential-histogram buckets.
+    ExponentialHistogram,
 }
 
 /// Aggregation temporality.

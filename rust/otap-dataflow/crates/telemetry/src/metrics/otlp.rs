@@ -90,6 +90,32 @@
 //! values retain their native OTLP type; unsigned attribute values follow the
 //! same saturation rule, and map attributes become OTLP key-value lists.
 //!
+//! # Encoding strategy
+//!
+//! This module materializes a full prost object tree
+//! (`ExportMetricsServiceRequest` -> `ResourceMetrics` -> `ScopeMetrics` ->
+//! `Metric` -> data point) and serializes it with `encode_to_vec` at the end.
+//! The internal-logs path in [`crate::self_tracing::encoder`] instead writes
+//! OTLP wire bytes directly into a `ProtoBuffer`, allocating nothing per
+//! record.
+//!
+//! TODO: move this path to direct `ProtoBuffer` writes as well. The tree costs
+//! a per-cycle allocation for every descriptor string that is already
+//! `&'static str`, a deep clone of the data-point attributes, a one-element
+//! `Vec` per metric, a heap `Vec<u64>` for bucket counts that already live in
+//! a fixed-size array, a clone of the resource prototype, and then a second
+//! full traversal in `encode_to_vec` to compute lengths and serialize. Because
+//! this is self-telemetry, that churn is attributed to the process whose
+//! allocation behaviour these very metrics report.
+//!
+//! The nesting that makes this awkward is already handled by
+//! `BoundedBuf::encode_len_delimited`, which writes a length placeholder,
+//! encodes the submessage body, and patches the length afterwards. The real
+//! work is that views, metric-set coalescing, and name-collision detection
+//! currently operate on the object tree and would need to run before or during
+//! a single encoding pass. The existing tests decode the emitted bytes with
+//! prost, so they carry over unchanged as a correctness net.
+//!
 //! # Transitional design
 //!
 //! This univariate projection is a compatibility bridge, not the intended
@@ -104,7 +130,6 @@
 use crate::attributes::{AttributeSetHandler, AttributeValue};
 use crate::descriptor::{Instrument, MetricsField, Temporality};
 use crate::entity::EntityAttributeSet;
-use crate::instrument::DistributionValue;
 use crate::metrics::{MetricExportBatch, MetricSetExport, MetricValue};
 use bytes::Bytes;
 use otap_df_config::pipeline::telemetry::AttributeValue as ConfigAttributeValue;
@@ -833,36 +858,17 @@ fn encode_metric(
             );
             metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
         }
-        Instrument::Mmsc => {
+        // Both instruments aggregate into a `Distribution`; the basic (Mmsc)
+        // tier simply encodes no buckets.
+        Instrument::Mmsc | Instrument::ExponentialHistogram => {
             let MetricValue::Distribution(distribution) = value else {
                 unreachable!("metric value kind was validated before encoding")
             };
-            if distribution.Mmsc.count == 0 {
-                return Ok(None);
-            }
-            let point = crate::metrics::exphist::mmsc_exponential_histogram_data_point(
-                snapshot,
-                metric_set.delta_start_time_unix_nano,
-                time_unix_nano,
-                datapoint_attributes,
-            );
-            metric::Data::ExponentialHistogram(ExponentialHistogram::new(
-                AggregationTemporality::Delta,
-                vec![point],
-            ))
-        }
-        Instrument::ExponentialHistogram => {
-            let MetricValue::Distribution(distribution) = value else {
-                unreachable!("metric value kind was validated before encoding")
-            };
-            let DistributionValue::Live(live) = distribution.as_ref() else {
-                unreachable!("registry distributions are always live aggregations")
-            };
-            if live.is_empty() {
+            if distribution.is_empty() {
                 return Ok(None);
             }
             let point = crate::metrics::exphist::distribution_exponential_histogram_data_point(
-                live,
+                distribution,
                 metric_set.delta_start_time_unix_nano,
                 time_unix_nano,
                 datapoint_attributes,
@@ -886,8 +892,7 @@ fn encode_metric(
 /// Validates the descriptor/value pairing before any lossy projection occurs.
 fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), Error> {
     let expected = match field.instrument {
-        Instrument::Mmsc => "mmsc",
-        Instrument::ExponentialHistogram => "distribution",
+        Instrument::Mmsc | Instrument::ExponentialHistogram => "distribution",
         _ => match field.value_type {
             crate::descriptor::MetricValueType::U64 => "u64",
             crate::descriptor::MetricValueType::F64 => "f64",
@@ -896,7 +901,6 @@ fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), 
     let actual = match value {
         MetricValue::U64(_) => "u64",
         MetricValue::F64(_) => "f64",
-        MetricValue::Mmsc(_) => "mmsc",
         MetricValue::Distribution(_) => "distribution",
     };
 
@@ -925,7 +929,7 @@ fn number_data_point(
     match value {
         MetricValue::U64(value) => builder.value_int(saturating_i64(*value)).finish(),
         MetricValue::F64(value) => builder.value_double(*value).finish(),
-        MetricValue::Mmsc(_) | MetricValue::Distribution(_) => {
+        MetricValue::Distribution(_) => {
             unreachable!("metric value kind was validated before encoding")
         }
     }
@@ -950,7 +954,7 @@ fn scalar_histogram_data_point(
     let value = match value {
         MetricValue::U64(value) => *value as f64,
         MetricValue::F64(value) => *value,
-        MetricValue::Mmsc(_) | MetricValue::Distribution(_) => {
+        MetricValue::Distribution(_) => {
             unreachable!("metric value kind was validated before encoding")
         }
     };
@@ -1018,7 +1022,6 @@ mod tests {
         MetricsDescriptor,
     };
     use crate::entity::{EntityAttributeSet, EntityRegistry};
-    use crate::instrument::MmscSnapshot;
     use otap_df_pdata::proto::opentelemetry::common::v1::{KeyValueList, any_value};
     use otap_df_pdata::proto::opentelemetry::logs::v1::ResourceLogs;
     use otap_df_pdata::proto::opentelemetry::metrics::v1::{metric, number_data_point};
@@ -1039,6 +1042,17 @@ mod tests {
     const DELTA_START: u64 = 10;
     const CUMULATIVE_START: u64 = 5;
     const COLLECTION_TIME: u64 = 20;
+
+    /// Builds a basic-tier (bucketless) distribution value from raw Mmsc fields.
+    fn mmsc_value(min: f64, max: f64, sum: f64, count: u64) -> MetricValue {
+        MetricValue::from(crate::instrument::Mmsc {
+            min,
+            max,
+            sum,
+            count,
+            zero_count: 0,
+        })
+    }
 
     static ALL_METRICS_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
         name: "test.scope",
@@ -1725,12 +1739,7 @@ mod tests {
                 MetricValue::F64(-1.0),
                 MetricValue::F64(3.0),
                 MetricValue::F64(4.0),
-                MetricValue::Mmsc(MmscSnapshot {
-                    min: 1.0,
-                    max: 3.0,
-                    sum: 4.0,
-                    count: 2,
-                }),
+                mmsc_value(1.0, 3.0, 4.0, 2),
             ],
         );
         let mut second = metric_set(
@@ -1742,12 +1751,7 @@ mod tests {
                 MetricValue::F64(2.0),
                 MetricValue::F64(8.0),
                 MetricValue::F64(6.0),
-                MetricValue::Mmsc(MmscSnapshot {
-                    min: 0.0,
-                    max: 5.0,
-                    sum: 8.0,
-                    count: 2,
-                }),
+                mmsc_value(0.0, 5.0, 8.0, 2),
             ],
         );
         second.delta_start_time_unix_nano = 8;
@@ -1799,7 +1803,7 @@ mod tests {
     // recorded observation and whose delta start time is preserved.
     #[test]
     fn encodes_distribution_as_delta_exponential_histogram_point() {
-        use crate::instrument::{Distribution, DistributionValue};
+        use crate::instrument::Distribution;
 
         let attributes = empty_attributes();
         let mut first_dist = Distribution::normal();
@@ -1809,9 +1813,7 @@ mod tests {
         let first = metric_set(
             &DISTRIBUTION_ONLY_DESCRIPTOR,
             attributes.clone(),
-            vec![MetricValue::Distribution(Box::new(
-                DistributionValue::Live(first_dist),
-            ))],
+            vec![MetricValue::from(first_dist)],
         );
 
         let mut second_dist = Distribution::normal();
@@ -1819,9 +1821,7 @@ mod tests {
         let second = metric_set(
             &DISTRIBUTION_ONLY_DESCRIPTOR,
             attributes,
-            vec![MetricValue::Distribution(Box::new(
-                DistributionValue::Live(second_dist),
-            ))],
+            vec![MetricValue::from(second_dist)],
         );
 
         let batch = MetricExportBatch {
@@ -1868,12 +1868,7 @@ mod tests {
                     MetricValue::F64(-2.5),
                     MetricValue::F64(18.25),
                     MetricValue::F64(42.0),
-                    MetricValue::Mmsc(MmscSnapshot {
-                        min: 2.0,
-                        max: 9.0,
-                        sum: 20.0,
-                        count: 4,
-                    }),
+                    mmsc_value(2.0, 9.0, 20.0, 4),
                 ],
             )],
         };
@@ -1987,12 +1982,7 @@ mod tests {
 
     #[test]
     fn emits_multiple_scopes_while_omitting_empty_mmsc_fields_and_sets() {
-        let empty_mmsc = MetricValue::Mmsc(MmscSnapshot {
-            min: f64::MAX,
-            max: f64::MIN,
-            sum: 0.0,
-            count: 0,
-        });
+        let empty_mmsc = mmsc_value(0.0, 0.0, 0.0, 0);
         let batch = MetricExportBatch {
             time_unix_nano: COLLECTION_TIME,
             metric_sets: vec![
@@ -2016,12 +2006,7 @@ mod tests {
                 metric_set(
                     &MMSC_ONLY_DESCRIPTOR,
                     empty_attributes(),
-                    vec![MetricValue::Mmsc(MmscSnapshot {
-                        min: 2.0,
-                        max: 8.0,
-                        sum: 10.0,
-                        count: 2,
-                    })],
+                    vec![mmsc_value(2.0, 8.0, 10.0, 2)],
                 ),
             ],
         };
@@ -2069,12 +2054,7 @@ mod tests {
                     MetricValue::F64(0.0),
                     MetricValue::F64(0.0),
                     MetricValue::F64(0.0),
-                    MetricValue::Mmsc(MmscSnapshot {
-                        min: f64::MAX,
-                        max: f64::MIN,
-                        sum: 0.0,
-                        count: 0,
-                    }),
+                    mmsc_value(0.0, 0.0, 0.0, 0),
                 ],
             )],
         };
@@ -2176,12 +2156,7 @@ mod tests {
             metric_sets: vec![metric_set(
                 &MMSC_ONLY_DESCRIPTOR,
                 empty_attributes(),
-                vec![MetricValue::Mmsc(MmscSnapshot {
-                    min: -2.0,
-                    max: 8.0,
-                    sum: 6.0,
-                    count: 2,
-                })],
+                vec![mmsc_value(-2.0, 8.0, 6.0, 2)],
             )],
         };
         let request = decode_request(
@@ -2211,12 +2186,7 @@ mod tests {
             metric_sets: vec![metric_set(
                 &MMSC_ONLY_DESCRIPTOR,
                 empty_attributes(),
-                vec![MetricValue::Mmsc(MmscSnapshot {
-                    min: f64::MAX,
-                    max: f64::MIN,
-                    sum: 0.0,
-                    count: 0,
-                })],
+                vec![mmsc_value(0.0, 0.0, 0.0, 0)],
             )],
         };
         assert!(
@@ -2278,12 +2248,7 @@ mod tests {
             metric_sets: vec![metric_set(
                 &MMSC_ONLY_DESCRIPTOR,
                 attributes,
-                vec![MetricValue::Mmsc(MmscSnapshot {
-                    min: 1.0,
-                    max: 1.0,
-                    sum: 1.0,
-                    count: 1,
-                })],
+                vec![mmsc_value(1.0, 1.0, 1.0, 1)],
             )],
         };
 
@@ -2373,15 +2338,7 @@ mod tests {
                 metric_sets: vec![metric_set(
                     &MMSC_ONLY_DESCRIPTOR,
                     empty_attributes(),
-                    vec![
-                        MetricValue::Mmsc(MmscSnapshot {
-                            min: 1.0,
-                            max: 1.0,
-                            sum: 1.0,
-                            count: 1,
-                        });
-                        actual
-                    ],
+                    vec![mmsc_value(1.0, 1.0, 1.0, 1); actual],
                 )],
             };
 
@@ -2420,7 +2377,7 @@ mod tests {
                 &MMSC_ONLY_DESCRIPTOR,
                 MetricValue::U64(1),
                 "histogram.empty",
-                "mmsc",
+                "distribution",
                 "u64",
             ),
         ];
@@ -2513,12 +2470,7 @@ mod tests {
                     MetricValue::F64(-2.5),
                     MetricValue::F64(18.25),
                     MetricValue::F64(42.0),
-                    MetricValue::Mmsc(MmscSnapshot {
-                        min: 2.0,
-                        max: 9.0,
-                        sum: 20.0,
-                        count: 4,
-                    }),
+                    mmsc_value(2.0, 9.0, 20.0, 4),
                 ],
             )],
         };

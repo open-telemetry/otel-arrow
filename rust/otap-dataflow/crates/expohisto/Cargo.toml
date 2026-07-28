@@ -10,16 +10,11 @@ rust-version.workspace = true
 description = "Allocation-free OpenTelemetry exponential histogram"
 
 [features]
-default = ["std", "boundary", "quantile"]
+default = ["std"]
 
-# Enables `std::error::Error` impls. Disable for `#![no_std]` builds.
+# Enables `std::error::Error` impls and `f64` math. Disable for `#![no_std]`
+# builds, where quantile estimation degrades to linear bucket interpolation.
 std = []
-
-# Boundary computation (`lower_boundary`). Uses `exp()` from std.
-boundary = ["std"]
-
-# Quantile estimation over histogram buckets.
-quantile = ["boundary"]
 
 [dependencies]
 # intentionally empty

@@ -16,10 +16,9 @@ use crate::descriptor::{
     Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField, Temporality,
 };
 use crate::entity::{EntityAttributeSet, EntityRegistry};
-use crate::instrument::{Distribution, DistributionValue, MmscSnapshot};
+use crate::instrument::{Distribution, Mmsc};
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
-use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
@@ -54,18 +53,24 @@ pub const fn check_cardinality(cardinality: usize) {
     );
 }
 
-/// Metric value -- a scalar integer or float, or a pre-aggregated
-/// histogram or min-max-sum-count.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+/// Metric value -- a scalar integer or float, or a pre-aggregated distribution.
+///
+/// [`Distribution`] boxes its tier internally, so it is embedded here directly
+/// rather than boxed again.
+///
+/// This type has no serde representation on purpose: a distribution's wire form
+/// is the OTLP exponential histogram, produced by the OTLP encoder, and
+/// consumers that need a textual rendering (the admin endpoints) project the
+/// summary themselves.
+#[derive(Debug, Clone, PartialEq)]
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
     U64(u64),
     /// 64-bit floating point value.
     F64(f64),
-    /// A distribution aggregation from a [`Distribution`] instrument, carried
-    /// live or as a materialized exponential-histogram point.
-    Distribution(DistributionValue),
+    /// A distribution aggregation from an [`Mmsc`] or exponential-histogram
+    /// instrument.
+    Distribution(Distribution),
 }
 
 impl MetricValue {
@@ -75,17 +80,15 @@ impl MetricValue {
         match self {
             MetricValue::U64(v) => *v == 0,
             MetricValue::F64(v) => *v == 0.0,
-            MetricValue::Mmsc(s) => s.count == 0,
             MetricValue::Distribution(d) => d.is_empty(),
         }
     }
 
     /// Returns a zero value of the same variant.
     ///
-    /// For `Mmsc`, the zero state uses sentinel values (`f64::MAX` for min,
-    /// `f64::MIN` for max) so that subsequent merges work correctly. For
-    /// `Distribution`, the same tier is preserved and its aggregation is
-    /// cleared.
+    /// For `Distribution`, the same tier is preserved and its aggregation is
+    /// cleared. A cleared aggregation is all zeros and carries no sentinel;
+    /// merging handles the empty case explicitly instead.
     #[must_use]
     pub fn zero_of_kind(&self) -> Self {
         match self {
@@ -101,8 +104,8 @@ impl MetricValue {
 
     /// Adds another metric value into this one, converting between numeric kinds if needed.
     ///
-    /// For scalars, this performs addition. For MMSC and `Distribution`, this
-    /// performs a merge (same-tier for distributions).
+    /// For scalars, this performs addition. For `Distribution`, this performs a
+    /// same-tier merge.
     ///
     /// # Panics (debug only)
     /// Debug-asserts that both values are compatible variants.
@@ -127,12 +130,6 @@ impl MetricValue {
             (MetricValue::F64(lhs), MetricValue::F64(rhs)) => {
                 *lhs += *rhs;
             }
-            (MetricValue::Mmsc(lhs), MetricValue::Mmsc(rhs)) => {
-                lhs.min = lhs.min.min(rhs.min);
-                lhs.max = lhs.max.max(rhs.max);
-                lhs.sum += rhs.sum;
-                lhs.count += rhs.count;
-            }
             (MetricValue::Distribution(lhs), MetricValue::Distribution(rhs)) => {
                 lhs.merge(rhs);
             }
@@ -147,14 +144,6 @@ impl MetricValue {
         match self {
             MetricValue::U64(v) => *v = 0,
             MetricValue::F64(v) => *v = 0.0,
-            MetricValue::Mmsc(s) => {
-                *s = MmscSnapshot {
-                    min: f64::MAX,
-                    max: f64::MIN,
-                    sum: 0.0,
-                    count: 0,
-                };
-            }
             MetricValue::Distribution(d) => d.reset(),
         }
     }
@@ -162,13 +151,13 @@ impl MetricValue {
     /// Returns the floating-point representation of the value.
     ///
     /// This method is intended for **scalar** values only.
-    /// For `Mmsc`/`Distribution` variants, read their aggregation directly.
+    /// For the `Distribution` variant, read its aggregation directly.
     #[must_use]
     pub fn to_f64(&self) -> f64 {
         match self {
             MetricValue::U64(v) => *v as f64,
             MetricValue::F64(v) => *v,
-            MetricValue::Mmsc(_) | MetricValue::Distribution(_) => {
+            MetricValue::Distribution(_) => {
                 debug_assert!(false, "to_f64() called on a non-scalar MetricValue");
                 0.0
             }
@@ -178,13 +167,13 @@ impl MetricValue {
     /// Converts the metric value to `u64`, lossy for floating-point values.
     ///
     /// This method is intended for **scalar** values only.
-    /// For `Mmsc`/`Distribution` variants, read their aggregation directly.
+    /// For the `Distribution` variant, read its aggregation directly.
     #[must_use]
     pub fn to_u64_lossy(&self) -> u64 {
         match self {
             MetricValue::U64(v) => *v,
             MetricValue::F64(v) => *v as u64,
-            MetricValue::Mmsc(_) | MetricValue::Distribution(_) => {
+            MetricValue::Distribution(_) => {
                 debug_assert!(false, "to_u64_lossy() called on a non-scalar MetricValue");
                 0
             }
@@ -212,13 +201,13 @@ impl std::ops::AddAssign for MetricValue {
 
 impl From<Distribution> for MetricValue {
     fn from(value: Distribution) -> Self {
-        MetricValue::Distribution(Box::new(DistributionValue::Live(value)))
+        MetricValue::Distribution(value)
     }
 }
 
-impl From<MmscSnapshot> for MetricValue {
-    fn from(value: MmscSnapshot) -> Self {
-        MetricValue::Mmsc(value)
+impl From<Mmsc> for MetricValue {
+    fn from(value: Mmsc) -> Self {
+        MetricValue::Distribution(Distribution::Basic(Box::new(value)))
     }
 }
 
@@ -2509,97 +2498,74 @@ mod tests {
         assert_eq!(entry.metric_values, vec![MetricValue::U64(15)]);
     }
 
+    /// Builds a basic-tier distribution value from raw Mmsc fields.
+    fn mmsc_value(min: f64, max: f64, sum: f64, count: u64, zero_count: u64) -> MetricValue {
+        MetricValue::from(Mmsc {
+            min,
+            max,
+            sum,
+            count,
+            zero_count,
+        })
+    }
+
+    /// Extracts the basic-tier aggregation from a distribution value.
+    fn expect_mmsc(value: &MetricValue) -> Mmsc {
+        match value {
+            MetricValue::Distribution(Distribution::Basic(mmsc)) => **mmsc,
+            other => panic!("expected basic-tier distribution, got {other:?}"),
+        }
+    }
+
+    // Scenario: Empty and populated basic-tier distribution values are tested
+    //   for emptiness.
+    // Guarantees: A zero-count aggregation reports as zero so the registry can
+    //   drop it, while any recorded observation does not.
     #[test]
-    fn test_mmsc_snapshot_value_is_zero() {
-        let zero = MetricValue::Mmsc(MmscSnapshot {
-            min: f64::MAX,
-            max: f64::MIN,
-            sum: 0.0,
-            count: 0,
-        });
+    fn test_mmsc_value_is_zero() {
+        assert!(mmsc_value(0.0, 0.0, 0.0, 0, 0).is_zero());
+        assert!(!mmsc_value(1.0, 5.0, 6.0, 2, 0).is_zero());
+    }
+
+    // Scenario: `zero_of_kind` is applied to a populated basic-tier value.
+    // Guarantees: The basic tier is preserved and its aggregation is restored to
+    //   an all-zero empty state carrying no sentinel, so the next delta interval
+    //   starts clean and no consumer can read a bogus min or max.
+    #[test]
+    fn test_mmsc_value_zero_of_kind() {
+        let zero = mmsc_value(1.0, 5.0, 6.0, 2, 1).zero_of_kind();
         assert!(zero.is_zero());
-
-        let non_zero = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 5.0,
-            sum: 6.0,
-            count: 2,
-        });
-        assert!(!non_zero.is_zero());
+        assert_eq!(expect_mmsc(&zero), Mmsc::default());
     }
 
+    // Scenario: Two populated basic-tier values are merged with `add_in_place`.
+    // Guarantees: min/max widen, sum/count/zero_count accumulate, which is how
+    //   the registry folds per-thread aggregations of the same series.
     #[test]
-    fn test_mmsc_snapshot_value_zero_of_kind() {
-        let val = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 5.0,
-            sum: 6.0,
-            count: 2,
-        });
-        let zero = val.zero_of_kind();
-        assert!(zero.is_zero());
-        match zero {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, f64::MAX);
-                assert_eq!(s.max, f64::MIN);
-                assert_eq!(s.sum, 0.0);
-                assert_eq!(s.count, 0);
-            }
-            _ => panic!("Expected Mmsc variant"),
-        }
+    fn test_mmsc_value_merge() {
+        let mut a = mmsc_value(2.0, 8.0, 15.0, 3, 1);
+        a.add_in_place(&mmsc_value(1.0, 10.0, 20.0, 4, 2));
+        let s = expect_mmsc(&a);
+        assert_eq!(s.min, 1.0);
+        assert_eq!(s.max, 10.0);
+        assert_eq!(s.sum, 35.0);
+        assert_eq!(s.count, 7);
+        assert_eq!(s.zero_count, 3);
     }
 
+    // Scenario: A populated basic-tier value is merged into an empty one whose
+    //   min/max still hold the default sentinels.
+    // Guarantees: The sentinels are replaced rather than compared against, so
+    //   the merged result equals the incoming aggregation exactly.
     #[test]
-    fn test_mmsc_snapshot_value_merge() {
-        let mut a = MetricValue::Mmsc(MmscSnapshot {
-            min: 2.0,
-            max: 8.0,
-            sum: 15.0,
-            count: 3,
-        });
-        let b = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 10.0,
-            sum: 20.0,
-            count: 4,
-        });
-        a.add_in_place(&b);
-        match a {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, 1.0);
-                assert_eq!(s.max, 10.0);
-                assert_eq!(s.sum, 35.0);
-                assert_eq!(s.count, 7);
-            }
-            _ => panic!("Expected Mmsc variant"),
-        }
-    }
-
-    #[test]
-    fn test_mmsc_snapshot_value_merge_zero_to_value() {
-        // Merging into a zero/sentinel Mmsc should produce the incoming value
-        let mut a = MetricValue::Mmsc(MmscSnapshot {
-            min: f64::MAX,
-            max: f64::MIN,
-            sum: 0.0,
-            count: 0,
-        });
-        let b = MetricValue::Mmsc(MmscSnapshot {
-            min: 3.0,
-            max: 7.0,
-            sum: 10.0,
-            count: 2,
-        });
-        a.add_in_place(&b);
-        match a {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, 3.0);
-                assert_eq!(s.max, 7.0);
-                assert_eq!(s.sum, 10.0);
-                assert_eq!(s.count, 2);
-            }
-            _ => panic!("Expected Mmsc variant"),
-        }
+    fn test_mmsc_value_merge_zero_to_value() {
+        let mut a = mmsc_value(0.0, 0.0, 0.0, 0, 0);
+        a.add_in_place(&mmsc_value(3.0, 7.0, 10.0, 2, 0));
+        let s = expect_mmsc(&a);
+        assert_eq!(s.min, 3.0);
+        assert_eq!(s.max, 7.0);
+        assert_eq!(s.sum, 10.0);
+        assert_eq!(s.count, 2);
     }
 
     // Scenario: A `MetricValue::Distribution` (normal tier) records samples,
@@ -2627,10 +2593,7 @@ mod tests {
         assert!(zeroed.is_zero());
         match &zeroed {
             MetricValue::Distribution(d) => {
-                assert!(matches!(
-                    d.as_ref(),
-                    DistributionValue::Live(Distribution::Normal(_))
-                ));
+                assert!(matches!(d, Distribution::Normal(_)));
                 let _ = HISTOGRAM_NORMAL_WORDS; // tier constant is in scope for clarity
             }
             _ => panic!("expected Distribution variant"),
@@ -2652,71 +2615,28 @@ mod tests {
         }
     }
 
-    // Scenario: `MetricValue` values of every variant are serialized to JSON and
-    //   deserialized back, including a live distribution alongside an Mmsc
-    //   summary whose object shapes could otherwise collide under untagged serde.
-    // Guarantees: Scalars and Mmsc round-trip to equal values; a live
-    //   distribution serializes to the exponential-histogram point form and
-    //   deserializes into a materialized point with the same summary, and is not
-    //   mis-parsed as an Mmsc summary (nor an Mmsc as a distribution).
+    // Scenario: An `Mmsc` aggregation is converted into a `MetricValue`.
+    // Guarantees: It becomes the basic tier of a distribution -- an exponential
+    //   histogram with no encoded buckets -- preserving every field, so MMSC and
+    //   bucketed instruments share one metric value kind.
     #[test]
-    fn test_metric_value_serde_roundtrip_disambiguates_distribution_and_mmsc() {
-        let mmsc = MetricValue::Mmsc(MmscSnapshot {
-            min: 1.0,
-            max: 9.0,
-            sum: 20.0,
-            count: 4,
-        });
-        let mut dist = Distribution::normal();
-        for v in [1.0, 2.0, 8.0] {
-            dist.record(v);
-        }
-        let dist_value = MetricValue::from(dist);
-
-        // Scalars and Mmsc round-trip to identical values.
-        for value in [MetricValue::U64(7), MetricValue::F64(3.5), mmsc.clone()] {
-            let json = serde_yaml::to_string(&value).expect("serialize");
-            let back: MetricValue = serde_yaml::from_str(&json).expect("deserialize");
-            assert_eq!(value, back);
+    fn test_mmsc_converts_into_basic_tier_distribution() {
+        let mut mmsc = Mmsc::default();
+        for v in [0.0_f64, 1.0, 10.0] {
+            mmsc.record(v);
         }
 
-        // An Mmsc object is parsed as Mmsc, not as a distribution point.
-        let mmsc_json = serde_yaml::to_string(&mmsc).expect("serialize mmsc");
-        assert!(matches!(
-            serde_yaml::from_str::<MetricValue>(&mmsc_json).expect("mmsc"),
-            MetricValue::Mmsc(_)
-        ));
+        let value = MetricValue::from(mmsc);
 
-        // A live distribution serializes to the point form and deserializes
-        // into a materialized point carrying the same summary.
-        let dist_json = serde_yaml::to_string(&dist_value).expect("serialize dist");
-        match serde_yaml::from_str::<MetricValue>(&dist_json).expect("dist") {
+        assert_eq!(expect_mmsc(&value), mmsc);
+        match &value {
             MetricValue::Distribution(d) => {
-                assert!(matches!(d.as_ref(), DistributionValue::Point(_)));
-                assert_eq!(d.summary().0, 3);
+                assert_eq!(d.tier_name(), "basic");
+                assert_eq!(d.count(), 3);
+                assert_eq!(d.zero_count(), 1);
             }
-            other => panic!("expected Distribution point, got {other:?}"),
+            other => panic!("expected Distribution variant, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn test_mmsc_from_snapshot() {
-        let snap = MmscSnapshot {
-            min: 1.0,
-            max: 10.0,
-            sum: 25.0,
-            count: 5,
-        };
-        let val = MetricValue::from(snap);
-        assert_eq!(
-            val,
-            MetricValue::Mmsc(MmscSnapshot {
-                min: 1.0,
-                max: 10.0,
-                sum: 25.0,
-                count: 5,
-            })
-        );
     }
 
     #[test]
@@ -2729,12 +2649,7 @@ mod tests {
         impl MockMmscMetricSet {
             fn new() -> Self {
                 Self {
-                    values: vec![MetricValue::Mmsc(MmscSnapshot {
-                        min: f64::MAX,
-                        max: f64::MIN,
-                        sum: 0.0,
-                        count: 0,
-                    })],
+                    values: vec![mmsc_value(0.0, 0.0, 0.0, 0, 0)],
                 }
             }
         }
@@ -2780,39 +2695,17 @@ mod tests {
         let metrics_key = metric_set.key;
 
         // First snapshot: min=2, max=8, sum=15, count=3
-        metrics.accumulate_snapshot(
-            metrics_key,
-            0,
-            &[MetricValue::Mmsc(MmscSnapshot {
-                min: 2.0,
-                max: 8.0,
-                sum: 15.0,
-                count: 3,
-            })],
-        );
+        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(2.0, 8.0, 15.0, 3, 0)]);
 
         // Second snapshot: min=1, max=10, sum=20, count=4
-        metrics.accumulate_snapshot(
-            metrics_key,
-            0,
-            &[MetricValue::Mmsc(MmscSnapshot {
-                min: 1.0,
-                max: 10.0,
-                sum: 20.0,
-                count: 4,
-            })],
-        );
+        metrics.accumulate_snapshot(metrics_key, 0, &[mmsc_value(1.0, 10.0, 20.0, 4, 0)]);
 
         // Accumulated: min=1, max=10, sum=35, count=7
         let entry = metrics.metrics.get(metrics_key).expect("metric set entry");
-        match entry.metric_values[0] {
-            MetricValue::Mmsc(s) => {
-                assert_eq!(s.min, 1.0);
-                assert_eq!(s.max, 10.0);
-                assert_eq!(s.sum, 35.0);
-                assert_eq!(s.count, 7);
-            }
-            _ => panic!("Expected Mmsc variant"),
-        }
+        let s = expect_mmsc(&entry.metric_values[0]);
+        assert_eq!(s.min, 1.0);
+        assert_eq!(s.max, 10.0);
+        assert_eq!(s.sum, 35.0);
+        assert_eq!(s.count, 7);
     }
 }

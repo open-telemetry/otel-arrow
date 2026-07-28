@@ -1027,7 +1027,12 @@ mod tests {
         let snapshot = metrics_rx
             .try_recv()
             .expect("flow duration metric should be reported");
-        let [MetricValue::Mmsc(duration_snapshot)] = snapshot.get_metrics() else {
+        let [
+            MetricValue::Distribution(otap_df_telemetry::instrument::Distribution::Basic(
+                duration_snapshot,
+            )),
+        ] = snapshot.get_metrics()
+        else {
             panic!("expected flow duration MMSC metric");
         };
         assert_eq!(duration_snapshot.count, 3);

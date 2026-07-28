@@ -5,7 +5,6 @@
 
 use otap_df_telemetry::attributes::AttributeValue;
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
-pub use otap_df_telemetry::metrics::MetricValue;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -58,25 +57,75 @@ fn format_attribute_value(value: &AttributeValue) -> String {
     }
 }
 
+/// A metric value as rendered by the admin telemetry endpoint.
+///
+/// This mirrors the JSON the admin endpoint emits rather than reusing the
+/// engine's live `MetricValue`, which has no serde representation: a
+/// distribution's canonical wire form is the OTLP exponential histogram, and
+/// the JSON endpoint renders only its summary.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[allow(variant_size_differences)]
+pub enum MetricValue {
+    /// Unsigned 64-bit scalar.
+    U64(u64),
+    /// 64-bit floating point scalar.
+    F64(f64),
+    /// The summary of a pre-aggregated distribution.
+    Distribution(DistributionSummary),
+}
+
+impl MetricValue {
+    /// Converts the value to `u64`, lossy for floating-point values.
+    ///
+    /// Distributions report their observation count.
+    #[must_use]
+    pub fn to_u64_lossy(&self) -> u64 {
+        match self {
+            MetricValue::U64(v) => *v,
+            MetricValue::F64(v) => *v as u64,
+            MetricValue::Distribution(d) => d.count,
+        }
+    }
+}
+
+impl From<u64> for MetricValue {
+    fn from(value: u64) -> Self {
+        MetricValue::U64(value)
+    }
+}
+
+impl From<f64> for MetricValue {
+    fn from(value: f64) -> Self {
+        MetricValue::F64(value)
+    }
+}
+
+/// Summary statistics of a distribution metric, as rendered by the admin
+/// telemetry endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DistributionSummary {
+    /// Minimum observed value.
+    pub min: f64,
+    /// Maximum observed value.
+    pub max: f64,
+    /// Sum of observed values.
+    pub sum: f64,
+    /// Total number of observations, including exact zeros.
+    pub count: u64,
+    /// Number of exact-zero observations.
+    #[serde(default)]
+    pub zero_count: u64,
+}
+
 fn format_metric_value(value: &MetricValue) -> String {
     match value {
         MetricValue::U64(v) => v.to_string(),
         MetricValue::F64(v) => v.to_string(),
-        MetricValue::Mmsc(s) => {
-            format!(
-                "min={} max={} sum={} count={}",
-                s.min, s.max, s.sum, s.count
-            )
-        }
         MetricValue::Distribution(d) => {
-            let (count, sum, min, max) = d.summary();
             format!(
-                "tier={} min={} max={} sum={} count={}",
-                d.tier_name(),
-                min,
-                max,
-                sum,
-                count
+                "min={} max={} sum={} count={} zero_count={}",
+                d.min, d.max, d.sum, d.count, d.zero_count
             )
         }
     }

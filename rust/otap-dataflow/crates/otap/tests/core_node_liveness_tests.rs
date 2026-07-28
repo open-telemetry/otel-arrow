@@ -310,7 +310,7 @@ fn capture_batch_metrics(
     registry.visit_current_metrics(|desc, _attrs, iter| {
         if desc.name == "otap.processor.batch" {
             for (field, value) in iter {
-                if let MetricValue::Mmsc(_) = value {
+                if let MetricValue::Distribution(_) = value {
                     continue;
                 }
 

@@ -409,3 +409,50 @@ impl<const N: usize> HistogramNN<N> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::HistogramNN;
+
+    /// Scenario: A histogram carrying observations is merged into a freshly
+    /// created, empty histogram.
+    /// Guarantees: the destination adopts the source's exact minimum instead
+    /// of folding it against the empty sentinel 0.0, so the merged result does
+    /// not report a zero observation that was never recorded.
+    #[test]
+    fn merging_into_an_empty_histogram_adopts_the_source_min() {
+        let mut src: HistogramNN<10> = HistogramNN::new();
+        for v in [5.0, 100.0, 3.0] {
+            src.update(v).unwrap();
+        }
+
+        let mut dst: HistogramNN<10> = HistogramNN::new();
+        dst.merge_from(&src).unwrap();
+
+        let view = dst.view();
+        assert_eq!(view.stats().min, 3.0);
+        assert_eq!(view.stats().max, 100.0);
+        assert_eq!(view.stats().count, 3);
+        assert_eq!(view.zero_count(), 0);
+    }
+
+    /// Scenario: A histogram whose population includes an exact zero is merged
+    /// into an empty histogram.
+    /// Guarantees: the merged minimum is 0.0 and the zero count is preserved,
+    /// distinguishing a genuine zero observation from the empty sentinel.
+    #[test]
+    fn merging_into_an_empty_histogram_preserves_a_real_zero() {
+        let mut src: HistogramNN<10> = HistogramNN::new();
+        for v in [0.0, 5.0, 100.0] {
+            src.update(v).unwrap();
+        }
+
+        let mut dst: HistogramNN<10> = HistogramNN::new();
+        dst.merge_from(&src).unwrap();
+
+        let view = dst.view();
+        assert_eq!(view.stats().min, 0.0);
+        assert_eq!(view.stats().count, 3);
+        assert_eq!(view.zero_count(), 1);
+    }
+}

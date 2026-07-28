@@ -3429,15 +3429,17 @@ mod tests {
         }
     }
 
-    /// Extract Mmsc from a MetricValue, returning the snapshot for further assertions.
+    /// Extract the basic-tier aggregation from a MetricValue for further assertions.
     fn assert_mmsc(
         values: &[MetricValue],
         index: usize,
         msg: &str,
-    ) -> otap_df_telemetry::instrument::MmscSnapshot {
+    ) -> otap_df_telemetry::instrument::Mmsc {
         match &values[index] {
-            MetricValue::Mmsc(snap) => *snap,
-            other => panic!("{msg}: expected Mmsc, got {other:?}"),
+            MetricValue::Distribution(otap_df_telemetry::instrument::Distribution::Basic(mmsc)) => {
+                **mmsc
+            }
+            other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
         }
     }
 

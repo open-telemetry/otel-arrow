@@ -11,8 +11,7 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
-use otap_df_expohisto::{Error as HistogramError, HistogramNN, HistogramView};
-use serde::{Deserialize, Serialize};
+use otap_df_expohisto::{Error as HistogramError, HistogramNN};
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
 use std::time::Instant;
@@ -462,34 +461,36 @@ impl From<f64> for Gauge<f64> {
 // Mmsc implementation.
 // ====================
 
-/// A pre-aggregated summary metric tracking min, max, sum, count.
+/// A pre-aggregated summary metric tracking min, max, sum, count, and the
+/// number of exact zeros.
 ///
 /// Records individual observations via [`record()`](Mmsc::record), maintaining
-/// running min/max/sum/count. Exported as a synthetic OTel histogram preserving
-/// exact MMSC values. This is a delta instrument -- values are reset after each
-/// reporting interval.
+/// running min/max/sum/count. This is a delta instrument -- values are reset
+/// after each reporting interval.
 ///
-/// The OTLP projection emits this as a bucketless histogram, so min, max, sum,
-/// and count are preserved without reconstructing observations.
-#[derive(Clone, Copy)]
+/// An `Mmsc` *is* an exponential histogram with no encoded buckets: every
+/// observation lands in either the zero count or the (unrepresented) positive
+/// range, so the OTLP projection preserves min, max, sum, count, and
+/// `zero_count` exactly without reconstructing observations. This is why it is
+/// carried as the [`Distribution::Basic`] tier rather than as a distinct metric
+/// value kind.
+/// An empty `Mmsc` is all zeros. `min` and `max` carry no sentinel, so they
+/// are meaningless until an observation is recorded and must not be read
+/// unless [`count`](Mmsc::count) is non-zero. Callers that render or export an
+/// aggregation are expected to skip it entirely while it is empty, exactly as
+/// an empty exponential histogram is skipped.
+#[derive(Clone, Copy, PartialEq, Default)]
 pub struct Mmsc {
-    min: f64,
-    max: f64,
-    sum: f64,
-    count: u64,
-    zero_count: u64,
-}
-
-impl Default for Mmsc {
-    fn default() -> Self {
-        Self {
-            min: f64::MAX,
-            max: f64::MIN,
-            sum: 0.0,
-            count: 0,
-            zero_count: 0,
-        }
-    }
+    /// Minimum observed value. Only meaningful when `count` is non-zero.
+    pub min: f64,
+    /// Maximum observed value. Only meaningful when `count` is non-zero.
+    pub max: f64,
+    /// Sum of all observed values.
+    pub sum: f64,
+    /// Total number of observations, including exact zeros.
+    pub count: u64,
+    /// Number of exact-zero observations.
+    pub zero_count: u64,
 }
 
 impl Debug for Mmsc {
@@ -499,6 +500,7 @@ impl Debug for Mmsc {
             .field("max", &self.max)
             .field("sum", &self.sum)
             .field("count", &self.count)
+            .field("zero_count", &self.zero_count)
             .finish()
     }
 }
@@ -511,27 +513,38 @@ impl Mmsc {
             value >= 0.0,
             "Mmsc::record called with negative value: {value}"
         );
-        if value < self.min {
-            self.min = value;
+        if value == 0.0 {
+            self.zero_count += 1;
         }
-        if value > self.max {
+        // An empty aggregation has no min/max to compare against -- both are
+        // 0.0 -- so the first observation is adopted outright.
+        if self.count == 0 {
+            self.min = value;
             self.max = value;
+        } else {
+            if value < self.min {
+                self.min = value;
+            }
+            if value > self.max {
+                self.max = value;
+            }
         }
         self.sum += value;
         self.count += 1;
     }
 
-    /// Returns the current MMSC snapshot.
+    /// Returns a copy of the current aggregation.
     #[inline]
     #[must_use]
-    pub const fn get(&self) -> MmscSnapshot {
-        MmscSnapshot {
-            min: self.min,
-            max: self.max,
-            sum: self.sum,
-            count: self.count,
-            zero_count: self.zero_count,
-        }
+    pub const fn get(&self) -> Self {
+        *self
+    }
+
+    /// Returns `true` when no observation was recorded this interval.
+    #[inline]
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
     }
 
     /// Resets all fields for the next reporting interval.
@@ -542,8 +555,8 @@ impl Mmsc {
 
     /// Merge another Mmsc into this.
     ///
-    /// Handles the empty-receiver case explicitly so the result is
-    /// correct regardless of sentinel values in a default/reset `Mmsc`.
+    /// Both empty cases are handled explicitly, since an empty aggregation's
+    /// min/max are zeros that would otherwise pull the merged minimum to 0.0.
     #[inline]
     pub fn merge(&mut self, other: Self) {
         if other.count == 0 {
@@ -561,6 +574,7 @@ impl Mmsc {
         }
         self.sum += other.sum;
         self.count += other.count;
+        self.zero_count += other.zero_count;
     }
 }
 
@@ -591,21 +605,6 @@ impl Timer {
     }
 }
 
-/// An immutable snapshot of MMSC (min, max, sum, count) values.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MmscSnapshot {
-    /// Minimum observed value.
-    pub min: f64,
-    /// Maximum observed value.
-    pub max: f64,
-    /// Sum of all observed values.
-    pub sum: f64,
-    /// Number of observations.
-    pub count: u64,
-    /// Number of zeros.
-    pub zero_count: u64,
-}
-
 // Distribution implementation.
 // ============================
 
@@ -627,21 +626,25 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 
 /// A delta distribution instrument with three resolution tiers.
 ///
-/// Every tier projects onto the OTLP exponential-histogram point type, so
-/// distributions are represented consistently regardless of resolution:
-/// - [`Distribution::Basic`] keeps only exact min/max/sum/count and encodes as
-///   a bucketless point.
+/// Every tier is an exponential-histogram aggregation, so distributions are
+/// represented consistently regardless of resolution:
+/// - [`Distribution::Basic`] is an [`Mmsc`]: an exponential histogram with no
+///   encoded buckets, keeping exact min/max/sum/count/zero-count.
 /// - [`Distribution::Normal`] and [`Distribution::Detailed`] keep full
 ///   exponential-histogram bucket ranges sized by [`HISTOGRAM_NORMAL_WORDS`]
 ///   and [`HISTOGRAM_DETAILED_WORDS`] respectively.
 ///
-/// Like [`Mmsc`], this is a delta instrument: observations are recorded over an
-/// interval and then cleared via [`reset`](Distribution::reset) after each
-/// report. All tiers are boxed so the enum stays pointer-small when carried by
-/// value.
+/// This is a delta instrument: observations are recorded over an interval and
+/// then cleared via [`reset`](Distribution::reset) after each report.
+///
+/// Tiers differ widely in size (a detailed histogram is roughly 256 bytes), so
+/// each variant is boxed and the enum itself stays pointer-small. That keeps a
+/// basic-tier series cheap to carry by value, which is why
+/// [`crate::metrics::MetricValue`] embeds a `Distribution` directly rather than
+/// boxing it a second time.
 #[derive(Debug, Clone)]
 pub enum Distribution {
-    /// Basic tier: exact min/max/sum/count with no buckets.
+    /// Basic tier: exact min/max/sum/count with no encoded buckets.
     Basic(Box<Mmsc>),
     /// Normal tier: exponential histogram with [`HISTOGRAM_NORMAL_WORDS`] bucket words.
     Normal(Box<HistogramNN<HISTOGRAM_NORMAL_WORDS>>),
@@ -700,11 +703,7 @@ impl Distribution {
     #[inline]
     #[must_use]
     pub fn count(&self) -> u64 {
-        match self {
-            Self::Basic(mmsc) => mmsc.get().count,
-            Self::Normal(hist) => hist.view().stats().count,
-            Self::Detailed(hist) => hist.view().stats().count,
-        }
+        self.summary().0
     }
 
     /// Returns `true` when no observations have been recorded this interval.
@@ -727,14 +726,14 @@ impl Distribution {
 
     /// Returns a `(count, sum, min, max)` summary of this interval's observations.
     ///
-    /// For an empty distribution `min`/`max` are the aggregation's sentinels.
+    /// When `count` is zero every other field is zero as well: there is no
+    /// observation to summarize, so `min` and `max` carry no meaning and must
+    /// not be rendered or exported. Callers are expected to branch on `count`
+    /// (or [`Distribution::is_empty`]) before reading them.
     #[must_use]
     pub fn summary(&self) -> (u64, f64, f64, f64) {
         match self {
-            Self::Basic(mmsc) => {
-                let s = mmsc.get();
-                (s.count, s.sum, s.min, s.max)
-            }
+            Self::Basic(mmsc) => (mmsc.count, mmsc.sum, mmsc.min, mmsc.max),
             Self::Normal(hist) => {
                 let s = hist.view().stats();
                 (s.count, s.sum, s.min, s.max)
@@ -746,32 +745,64 @@ impl Distribution {
         }
     }
 
-    /// Projects this distribution onto its OTel exponential-histogram point
-    /// form ([`ExponentialHistogramPoint`]).
+    /// Returns the number of exact-zero observations recorded this interval.
     ///
-    /// The "basic" tier projects onto a bucketless point (scale 0, no positive
-    /// buckets, no zeros), consistent with how the basic tier is exported to
-    /// OTLP. The "normal"/"detailed" tiers project their positive bucket range
-    /// at the view's current scale, recovering `zero_count` as
-    /// `count - sum(positive bucket counts)`.
+    /// Zeros are never placed in a bucket, so for the histogram tiers this is
+    /// recovered as `count - sum(positive bucket counts)`.
     #[must_use]
-    pub fn to_point(&self) -> ExponentialHistogramPoint {
+    pub fn zero_count(&self) -> u64 {
         match self {
-            Self::Basic(mmsc) => {
-                let s = mmsc.get();
-                ExponentialHistogramPoint {
-                    scale: 0,
-                    zero_count: 0,
-                    positive_offset: 0,
-                    positive_buckets: Vec::new(),
-                    count: s.count,
-                    sum: (s.count > 0 && s.min >= 0.0).then_some(s.sum),
-                    min: (s.count > 0).then_some(s.min),
-                    max: (s.count > 0).then_some(s.max),
-                }
+            Self::Basic(mmsc) => mmsc.zero_count,
+            Self::Normal(hist) => hist.view().zero_count(),
+            Self::Detailed(hist) => hist.view().zero_count(),
+        }
+    }
+
+    /// Returns the exponential-histogram scale of this tier's buckets.
+    ///
+    /// Returns `None` for [`Distribution::Basic`], which encodes no buckets.
+    #[must_use]
+    pub fn scale(&self) -> Option<i32> {
+        match self {
+            Self::Basic(_) => None,
+            Self::Normal(hist) => Some(hist.view().scale()),
+            Self::Detailed(hist) => Some(hist.view().scale()),
+        }
+    }
+
+    /// Returns the relative error bound of this tier's quantile estimates.
+    ///
+    /// Returns `None` for [`Distribution::Basic`], which encodes no buckets
+    /// and so reports no estimated values, and 0.0 for an empty histogram.
+    #[must_use]
+    pub fn relative_error(&self) -> Option<f64> {
+        match self {
+            Self::Basic(_) => None,
+            Self::Normal(hist) => Some(hist.view().relative_error()),
+            Self::Detailed(hist) => Some(hist.view().relative_error()),
+        }
+    }
+
+    /// Estimates the values at the requested quantiles into `out`.
+    ///
+    /// `quantiles` must be sorted in non-decreasing order with every entry in
+    /// `[0.0, 1.0]`, and `out` must be at least as long. Returns `false`
+    /// without touching `out` for [`Distribution::Basic`], which keeps no
+    /// buckets and therefore cannot estimate interior quantiles.
+    ///
+    /// Estimates carry the error bound reported by
+    /// [`relative_error`](Self::relative_error).
+    pub fn quantiles(&self, quantiles: &[f64], out: &mut [f64]) -> bool {
+        match self {
+            Self::Basic(_) => false,
+            Self::Normal(hist) => {
+                hist.view().quantiles(quantiles, out);
+                true
             }
-            Self::Normal(hist) => point_from_view(&hist.view()),
-            Self::Detailed(hist) => point_from_view(&hist.view()),
+            Self::Detailed(hist) => {
+                hist.view().quantiles(quantiles, out);
+                true
+            }
         }
     }
 
@@ -803,209 +834,18 @@ impl Distribution {
 }
 
 /// Summary equality: two distributions are equal when they share a tier and
-/// agree on the observable aggregate statistics (count, sum, min, max).
+/// agree on the observable aggregate statistics (count, sum, min, max, and
+/// zero count).
 ///
-/// The vendored [`Histogram`] does not implement structural equality, and the
+/// The vendored histogram does not implement structural equality, and the
 /// bucket layout is an implementation detail; comparing the summary is
 /// sufficient for the registry's equality needs and for tests. Distinct bucket
 /// distributions that share a summary compare equal.
 impl PartialEq for Distribution {
     fn eq(&self, other: &Self) -> bool {
-        fn summary(dist: &Distribution) -> (u8, u64, f64, f64, f64) {
-            match dist {
-                Distribution::Basic(mmsc) => {
-                    let s = mmsc.get();
-                    (0, s.count, s.sum, s.min, s.max)
-                }
-                Distribution::Normal(hist) => {
-                    let s = hist.view().stats();
-                    (1, s.count, s.sum, s.min, s.max)
-                }
-                Distribution::Detailed(hist) => {
-                    let s = hist.view().stats();
-                    (2, s.count, s.sum, s.min, s.max)
-                }
-            }
-        }
-        summary(self) == summary(other)
-    }
-}
-
-/// Projects an exponential-histogram view onto an [`ExponentialHistogramPoint`].
-fn point_from_view<const N: usize>(view: &HistogramView<'_, N>) -> ExponentialHistogramPoint {
-    let stats = view.stats();
-    let positive = view.positive();
-    let positive_buckets: Vec<u64> = positive.iter().collect();
-    let positive_total: u64 = positive_buckets.iter().sum();
-    // Zeros contribute to `count` but are never bucketed.
-    let zero_count = stats.count.saturating_sub(positive_total);
-    ExponentialHistogramPoint {
-        scale: view.scale(),
-        zero_count,
-        positive_offset: positive.offset(),
-        positive_buckets,
-        count: stats.count,
-        sum: (stats.count > 0).then_some(stats.sum),
-        min: (stats.count > 0).then_some(stats.min),
-        max: (stats.count > 0).then_some(stats.max),
-    }
-}
-
-/// A materialized exponential-histogram point in the OTel exponential-histogram
-/// form.
-///
-/// This is the stable *wire* representation of a [`Distribution`]: a live
-/// distribution serializes into this shape (see [`DistributionValue`]) and
-/// deserializing a distribution yields this read-only form. `sum`/`min`/`max`
-/// are absent for an empty point, matching OTLP semantics.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ExponentialHistogramPoint {
-    /// OTel scale of the positive bucket range.
-    pub scale: i32,
-    /// Number of exact-zero observations.
-    pub zero_count: u64,
-    /// Bucket index of the first entry in `positive_buckets`.
-    pub positive_offset: i32,
-    /// Positive bucket counts, starting at `positive_offset`.
-    pub positive_buckets: Vec<u64>,
-    /// Total number of observations (including zeros).
-    pub count: u64,
-    /// Sum of observations, present only for a non-empty point.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sum: Option<f64>,
-    /// Minimum observation, present only for a non-empty point.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    /// Maximum observation, present only for a non-empty point.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-}
-
-impl ExponentialHistogramPoint {
-    /// Returns a `(count, sum, min, max)` summary, using `0.0`/sentinels for an
-    /// empty point.
-    #[must_use]
-    pub fn summary(&self) -> (u64, f64, f64, f64) {
-        (
-            self.count,
-            self.sum.unwrap_or(0.0),
-            self.min.unwrap_or(f64::MAX),
-            self.max.unwrap_or(f64::MIN),
-        )
-    }
-}
-
-/// A distribution value carried by [`crate::metrics::MetricValue`].
-///
-/// A distribution can be present in two forms:
-/// - [`DistributionValue::Live`] is the live aggregation produced by an
-///   instrument. It is what the registry merges and what encoding projects.
-/// - [`DistributionValue::Point`] is the read-only materialized point produced
-///   by *deserializing* the wire form. The vendored histogram cannot be rebuilt
-///   from buckets, so a deserialized distribution is a point, not a live
-///   aggregation.
-///
-/// Both forms serialize identically to the OTel exponential-histogram point
-/// form, so the representation is transparent on the wire.
-#[derive(Debug, Clone)]
-pub enum DistributionValue {
-    /// A live aggregation produced by an instrument.
-    Live(Distribution),
-    /// A read-only materialized point from a deserialized wire value.
-    Point(ExponentialHistogramPoint),
-}
-
-impl DistributionValue {
-    /// Projects this value onto its exponential-histogram point form.
-    #[must_use]
-    pub fn to_point(&self) -> ExponentialHistogramPoint {
-        match self {
-            Self::Live(dist) => dist.to_point(),
-            Self::Point(point) => point.clone(),
-        }
-    }
-
-    /// Returns the number of observations recorded this interval.
-    #[must_use]
-    pub fn count(&self) -> u64 {
-        match self {
-            Self::Live(dist) => dist.count(),
-            Self::Point(point) => point.count,
-        }
-    }
-
-    /// Returns `true` when no observations have been recorded this interval.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.count() == 0
-    }
-
-    /// Returns a `(count, sum, min, max)` summary of this interval.
-    #[must_use]
-    pub fn summary(&self) -> (u64, f64, f64, f64) {
-        match self {
-            Self::Live(dist) => dist.summary(),
-            Self::Point(point) => point.summary(),
-        }
-    }
-
-    /// Returns the tier name, or `"point"` for a materialized wire value.
-    #[must_use]
-    pub fn tier_name(&self) -> &'static str {
-        match self {
-            Self::Live(dist) => dist.tier_name(),
-            Self::Point(_) => "point",
-        }
-    }
-
-    /// Resets a live aggregation for the next interval. Materialized points are
-    /// read-only, so resetting one is a programming error (a debug assertion).
-    pub fn reset(&mut self) {
-        match self {
-            Self::Live(dist) => dist.reset(),
-            Self::Point(_) => {
-                debug_assert!(false, "DistributionValue::reset on a materialized point")
-            }
-        }
-    }
-
-    /// Merges another live distribution into this one. Only `Live`-into-`Live`
-    /// merges are valid; other combinations are a programming error (a debug
-    /// assertion) because materialized points cannot be aggregated.
-    pub fn merge(&mut self, other: &Self) {
-        match (self, other) {
-            (Self::Live(dst), Self::Live(src)) => dst.merge(src),
-            _ => debug_assert!(
-                false,
-                "DistributionValue::merge requires two live distributions"
-            ),
-        }
-    }
-}
-
-impl PartialEq for DistributionValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.to_point() == other.to_point()
-    }
-}
-
-impl Serialize for DistributionValue {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        self.to_point().serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for DistributionValue {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        Ok(Self::Point(ExponentialHistogramPoint::deserialize(
-            deserializer,
-        )?))
+        self.tier_name() == other.tier_name()
+            && self.summary() == other.summary()
+            && self.zero_count() == other.zero_count()
     }
 }
 
@@ -1186,27 +1026,48 @@ mod tests {
         assert_eq!(snap.count, 4);
     }
 
+    /// Scenario: An `Mmsc` with recorded observations is reset for the next
+    /// reporting interval.
+    /// Guarantees: every field returns to zero, including min and max, so a
+    /// reset aggregation carries no sentinel that a consumer could mistake
+    /// for an observed extreme.
     #[test]
     fn test_mmsc_reset() {
         let mut mmsc = Mmsc::default();
         mmsc.record(10.0);
         mmsc.record(20.0);
         mmsc.reset();
-        let snap = mmsc.get();
-        assert_eq!(snap.min, f64::MAX);
-        assert_eq!(snap.max, f64::MIN);
-        assert_eq!(snap.sum, 0.0);
-        assert_eq!(snap.count, 0);
+        assert_eq!(mmsc.get(), Mmsc::default());
+        assert!(mmsc.is_empty());
     }
 
+    /// Scenario: A default-constructed `Mmsc` is inspected before anything is
+    /// recorded.
+    /// Guarantees: all five fields are zero, so an empty aggregation is
+    /// indistinguishable from an all-zero struct and never exposes
+    /// `f64::MAX`/`f64::MIN` sentinels to a renderer or exporter.
     #[test]
     fn test_mmsc_default_no_observations() {
-        let mmsc = Mmsc::default();
-        let snap = mmsc.get();
-        assert_eq!(snap.min, f64::MAX);
-        assert_eq!(snap.max, f64::MIN);
+        let snap = Mmsc::default().get();
+        assert_eq!(snap.min, 0.0);
+        assert_eq!(snap.max, 0.0);
         assert_eq!(snap.sum, 0.0);
         assert_eq!(snap.count, 0);
+        assert_eq!(snap.zero_count, 0);
+    }
+
+    /// Scenario: The first observation recorded into an empty `Mmsc` is
+    /// greater than the zeroed min field.
+    /// Guarantees: min is adopted from that first observation rather than
+    /// staying at 0.0, so a population with no zeros never reports a minimum
+    /// of zero.
+    #[test]
+    fn test_mmsc_first_record_adopts_min() {
+        let mut mmsc = Mmsc::default();
+        mmsc.record(42.0);
+        assert_eq!(mmsc.min, 42.0);
+        assert_eq!(mmsc.max, 42.0);
+        assert_eq!(mmsc.zero_count, 0);
     }
 
     #[cfg(debug_assertions)]
@@ -1398,72 +1259,64 @@ mod tests {
         dist.record(-1.0);
     }
 
-    /// Scenario: A normal-tier distribution records positive values and exact
-    /// zeros, then is projected to an exponential-histogram point.
-    /// Guarantees: The point preserves the total count and per-observation
-    /// stats, recovers `zero_count` so `zero_count + sum(positive_buckets) ==
-    /// count`, and carries the view's scale.
+    /// Scenario: A normal-tier distribution records exact zeros alongside
+    /// positive values.
+    /// Guarantees: Zeros count toward the total and toward `min` without being
+    /// bucketed, and `zero_count` recovers them so that
+    /// `zero_count + sum(positive bucket counts) == count`.
     #[test]
-    fn test_distribution_to_point_projects_buckets_and_zeros() {
+    fn test_distribution_recovers_zero_count_from_total() {
         let mut dist = Distribution::normal();
         dist.record(0.0);
         for v in [1.5_f64, 2.7, 4.0] {
             dist.record(v);
         }
 
-        let point = dist.to_point();
+        let (count, sum, min, max) = dist.summary();
+        assert_eq!(count, 4);
+        assert!((sum - 8.2).abs() < 1e-9);
+        assert_eq!(min, 0.0);
+        assert_eq!(max, 4.0);
+        assert_eq!(dist.zero_count(), 1);
 
-        assert_eq!(point.count, 4);
-        assert!((point.sum.expect("sum present") - 8.2).abs() < 1e-9);
-        // Zeros count toward the total but do not lower the recorded min/max.
-        assert_eq!(point.min, Some(1.5));
-        assert_eq!(point.max, Some(4.0));
-        let bucketed: u64 = point.positive_buckets.iter().sum();
-        assert_eq!(point.zero_count + bucketed, point.count);
-        assert_eq!(point.zero_count, 1);
-    }
-
-    /// Scenario: A live distribution is serialized and deserialized through the
-    /// exponential-histogram point wire form.
-    /// Guarantees: Deserialization yields a read-only materialized point whose
-    /// summary matches the live distribution's, and both forms are equal under
-    /// the summary-based `PartialEq`.
-    #[test]
-    fn test_distribution_value_serialize_yields_materialized_point() {
-        let mut dist = Distribution::detailed();
-        for v in [1.0_f64, 2.0, 3.0, 100.0] {
-            dist.record(v);
-        }
-        let live = DistributionValue::Live(dist);
-
-        let yaml = serde_yaml::to_string(&live).expect("serialize distribution value");
-        let back: DistributionValue = serde_yaml::from_str(&yaml).expect("deserialize");
-
-        assert!(matches!(back, DistributionValue::Point(_)));
-        assert_eq!(live.summary(), back.summary());
-        assert_eq!(live, back);
-    }
-
-    /// Scenario: `reset` and `merge` are invoked on a materialized (read-only)
-    /// point.
-    /// Guarantees: In release builds these are no-ops that leave the point
-    /// unchanged, documenting that materialized points cannot be aggregated.
-    #[cfg(not(debug_assertions))]
-    #[test]
-    fn test_distribution_point_reset_and_merge_are_noops() {
-        let point = ExponentialHistogramPoint {
-            scale: 0,
-            zero_count: 0,
-            positive_offset: 0,
-            positive_buckets: vec![],
-            count: 2,
-            sum: Some(3.0),
-            min: Some(1.0),
-            max: Some(2.0),
+        let Distribution::Normal(hist) = &dist else {
+            panic!("expected normal tier")
         };
-        let mut value = DistributionValue::Point(point.clone());
-        value.reset();
-        value.merge(&DistributionValue::Point(point.clone()));
-        assert_eq!(value, DistributionValue::Point(point));
+        let bucketed: u64 = hist.view().positive().iter().sum();
+        assert_eq!(dist.zero_count() + bucketed, count);
+    }
+
+    /// Scenario: A basic-tier distribution records exact zeros alongside
+    /// positive values.
+    /// Guarantees: The basic tier tracks `zero_count` itself, so it carries the
+    /// same information as a histogram tier with no encoded buckets.
+    #[test]
+    fn test_basic_tier_tracks_zero_count() {
+        let mut dist = Distribution::basic();
+        dist.record(0.0);
+        dist.record(0.0);
+        dist.record(4.0);
+
+        assert_eq!(dist.count(), 3);
+        assert_eq!(dist.zero_count(), 2);
+    }
+
+    /// Scenario: Two basic-tier distributions that each recorded exact zeros
+    /// are merged.
+    /// Guarantees: `zero_count` accumulates across the merge, so a registry
+    /// fold of per-thread aggregations does not lose the zero population.
+    #[test]
+    fn test_basic_tier_merge_accumulates_zero_count() {
+        let mut a = Distribution::basic();
+        a.record(0.0);
+        a.record(2.0);
+        let mut b = Distribution::basic();
+        b.record(0.0);
+        b.record(0.0);
+
+        a.merge(&b);
+
+        assert_eq!(a.count(), 4);
+        assert_eq!(a.zero_count(), 3);
     }
 }

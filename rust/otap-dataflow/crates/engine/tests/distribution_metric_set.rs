@@ -7,7 +7,7 @@
 #![allow(missing_docs)]
 
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, Temporality};
-use otap_df_telemetry::instrument::{DistributionValue, HistogramNormal};
+use otap_df_telemetry::instrument::HistogramNormal;
 use otap_df_telemetry::metrics::{MetricSetHandler, MetricValue};
 use otap_df_telemetry_macros::metric_set;
 
@@ -44,11 +44,8 @@ fn histogram_normal_field_wires_through_metric_set_macro() {
     assert!(metrics.needs_flush(), "recorded distribution should flush");
 
     let values = metrics.snapshot_values();
-    let [MetricValue::Distribution(value)] = values.as_slice() else {
+    let [MetricValue::Distribution(distribution)] = values.as_slice() else {
         panic!("expected a single distribution value")
-    };
-    let DistributionValue::Live(distribution) = value.as_ref() else {
-        panic!("snapshot should carry a live distribution")
     };
     let (count, sum, min, max) = distribution.summary();
     assert_eq!(count, 2);

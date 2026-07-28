@@ -159,6 +159,8 @@ pub struct HistogramNN<const N: usize> {
     word_start: i32,
     word_end: i32,
 
+    // This field omits zero_count; it is implied by the difference
+    // between Stats.count and sum of data counts.
     stats: Stats,
 
     data: [u64; N],
@@ -215,10 +217,20 @@ impl<const N: usize> HistogramNN<N> {
     /// Commits merged statistics. The incoming `stats` carry the
     /// already-computed `sum` and `count` (self + other) and the
     /// other side's `min`/`max` which are merged via `f64::min`/`max`.
+    ///
+    /// An empty destination has no min/max to merge against -- its sentinels
+    /// are both 0.0 -- so the source values are adopted outright. Folding them
+    /// in with `f64::min` would otherwise pin the merged minimum at 0.0 and
+    /// report a zero observation that was never recorded.
     fn commit_stats(&mut self, stats: &Stats) {
+        if self.stats.count == 0 {
+            self.stats.min = stats.min;
+            self.stats.max = stats.max;
+        } else {
+            self.stats.min = self.stats.min.min(stats.min);
+            self.stats.max = self.stats.max.max(stats.max);
+        }
         self.stats.sum = stats.sum;
-        self.stats.min = self.stats.min.min(stats.min);
-        self.stats.max = self.stats.max.max(stats.max);
         self.stats.count = stats.count;
     }
 
