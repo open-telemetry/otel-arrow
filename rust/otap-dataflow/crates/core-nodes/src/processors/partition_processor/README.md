@@ -38,12 +38,14 @@ policy.
 
 ### Metric Sets
 
-### `processor.partition`
+#### `processor.partition`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.partition.partition_operations_succeeded` | "{batch}" | Number of incoming batches that were successfully partitioned |
-| `processor.partition.partition_operations_failed` | "{batch}" | Number of incoming batches that failed to be partitioned |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.partition.operations` | `{batch}` | `outcome` | Number of incoming batches whose partition evaluation reached a terminal outcome. |
+
+The bounded `outcome` attribute is `success` when partition evaluation completes
+and `failure` when partition evaluation returns an error.
 
 ### Events
 

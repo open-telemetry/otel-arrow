@@ -1,0 +1,4 @@
+change_type: breaking
+component: pipeline
+note: Consolidate partition processor success and failure counters into an outcome-partitioned operations metric.
+issues: [3530]
