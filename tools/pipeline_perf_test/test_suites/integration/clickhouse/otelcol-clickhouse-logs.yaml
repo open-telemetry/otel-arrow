@@ -43,7 +43,7 @@ components:
   clickhouse:
     deployment:
       docker:
-        image: clickhouse/clickhouse-server:25.6@sha256:00d0f351e150ee2e7a1842ecc217066ab2c4a4781931f262ee99460ed4e2fcf7
+        image: clickhouse/clickhouse-server:26.3.17.56@sha256:422be85ae7344058369cdd366ac0efea9daa8428b55c9cf50258e83a7d12fcb3
         network: testbed
         cpuset_cpus: "4-7"
         ports:
