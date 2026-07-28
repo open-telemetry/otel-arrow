@@ -94,7 +94,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 | Sharing model | All state behind `Arc<Inner>`; every clone (consumers + background task) observes one token cache. At pipeline scope this is per pipeline instance (per core). |
 | Token cache | `tokio::sync::watch<Option<BearerToken>>` - lock-free fast-path read + pub/sub for `token_stream()`. |
 | Slow-path coalescing | An async `fetch_lock` with double-checked caching so concurrent cache-miss callers - and the background refresh - share one in-flight token request. |
-| Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523, signed client assertion). |
+| Grant types (v1) | `client_credentials` (client secret) and `jwt-bearer` (RFC 7523 section 2.1 authorization grant; the signed JWT is sent as the `assertion` parameter). |
 | Credential rotation | `client_id` / `client_secret` / signing key may be supplied inline or via `*_file` paths re-read on each acquisition; the file form takes precedence. |
 | Refresh tuning | `expiry_buffer` is user-configurable; the usability margin, min cadence, refresh jitter, and exponential-backoff-with-jitter retry are fixed constants. |
 | Transport security | Token endpoint reached over TLS via the shared `TlsClientConfig` (custom CA, mTLS). `https://` recommended; `http://` allowed but warned. A `timeout` bounds each request. |
@@ -223,7 +223,7 @@ groups:
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `grant_type` | enum | `client_credentials` | `client_credentials` or `jwt-bearer` (`urn:ietf:params:oauth:grant-type:jwt-bearer`). |
+| `grant_type` | enum | `client_credentials` | `client_credentials`, or `jwt-bearer` - the RFC 7523 section 2.1 authorization grant (`urn:ietf:params:oauth:grant-type:jwt-bearer`). |
 | `token_url` | `string` | *required* | The token endpoint URL. Must be non-empty. |
 | `client_id` | `string?` | *none* | Client identifier. Required unless `client_id_file` is set. |
 | `client_id_file` | `string?` (path) | *none* | Path re-read on each acquisition; takes precedence over `client_id`. Enables rotation. |
@@ -236,9 +236,11 @@ groups:
 | `tls` | object? | *none* | Client TLS for the token endpoint. The engine's shared `otap_df_config::tls::TlsClientConfig` (not extension-specific knobs). See [Token-endpoint TLS](#token-endpoint-tls). |
 | `startup_timeout` | duration | `30s` | How long the engine holds data-path startup waiting for the first token publish before aborting (see [Lifecycle](#lifecycle)). Must be non-zero. |
 
-For `grant_type: jwt-bearer` (RFC 7523), the extension signs a client assertion
-instead of sending a client secret. These fields apply only to that grant and
-are rejected for `client_credentials`:
+For `grant_type: jwt-bearer` (RFC 7523 section 2.1), the extension uses the JWT
+bearer *authorization grant*: it signs a JWT and sends it as the `assertion`
+parameter, rather than authenticating with a client secret. The signed JWT is
+itself the authorization grant. These fields apply only to the `jwt-bearer` grant
+and are rejected for `client_credentials`:
 
 | Field | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -248,6 +250,13 @@ are rejected for `client_credentials`:
 | `iss` | `string?` | `client_id` | Assertion issuer. |
 | `audience` | `string?` | `token_url` | Assertion audience. |
 | `claims` | `map<string,string>` | `{}` | Extra assertion claims. |
+
+At the token endpoint, `client_credentials` sends `grant_type=client_credentials`
+with the client id and secret; `jwt-bearer` sends
+`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` and
+`assertion=<signed JWT>`. The signed JWT carries `iss`/`sub` (default `client_id`),
+`aud` (default `token_url`), and `exp`/`iat`/`jti`; any configured `scopes` are
+sent as the `scope` parameter.
 
 The config struct uses `#[serde(deny_unknown_fields)]` and is validated before
 the pipeline starts. Validation rejects an empty `token_url`, a zero
@@ -533,7 +542,7 @@ OAuth-specific coverage:
 - **Client-credentials happy path.** A `client_credentials` config against a test
   token endpoint publishes a token, the bound OTLP exporter only exports once a
   token exists, and `auth_successes` / `auth_token_publish` increment.
-- **JWT-bearer grant.** A `jwt-bearer` config signs a client assertion with the
+- **JWT-bearer grant.** A `jwt-bearer` config signs a JWT assertion with the
   configured key/algorithm and obtains a token; `client_credentials`-only fields
   are rejected for this grant and vice versa.
 - **Config validation.** Missing `token_url`, missing client id, missing
@@ -581,4 +590,4 @@ OAuth-specific coverage:
 - [URN Format](urns.md)
 - [Go collector `oauth2clientauthextension`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/oauth2clientauthextension/README.md)
 - [RFC 6749 section 4.4 - Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
-- [RFC 7523 - JWT Profile for OAuth 2.0 Client Authentication](https://datatracker.ietf.org/doc/html/rfc7523)
+- [RFC 7523 - JSON Web Token (JWT) Profile for OAuth 2.0 Client Authentication and Authorization Grants](https://datatracker.ietf.org/doc/html/rfc7523) - section 2.1 (JWT authorization grant) is the flow used here.
