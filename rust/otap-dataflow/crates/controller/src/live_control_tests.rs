@@ -22,8 +22,8 @@ use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
-use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::eventname_filter::{EventNameFilter, EventNameFilterHandle};
+use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::tracing_init::ProviderSetup;
 use tokio_util::sync::CancellationToken;
 
