@@ -150,14 +150,14 @@ groups:
                 #    SpanTable1: MySpanTable
 
         connections:
-          # Shared receiver → type router
+          # Shared receiver -> type router
           - from: otlp-receiver
             to: signal-router
 
-          # Logs path: router["logs"] → exporter
+          # Logs path: router["logs"] -> exporter
           - from: signal-router["logs"]
             to: geneva-exporter-logs
 
-          # Traces path: router["traces"] → exporter
+          # Traces path: router["traces"] -> exporter
           - from: signal-router["traces"]
             to: geneva-exporter-traces
