@@ -6,14 +6,12 @@
 //! Exponential histograms provide a compact, high-resolution representation of
 //! value distributions using logarithmically-spaced bucket boundaries. This
 //! implementation stores bucket counters in a fixed-size data pool sized with a
-//! const generic (`Histogram<N>`), performs no heap allocation, and contains no
-//! `unsafe` code.
+//! const generic ([`HistogramNN<N>`]), performs no heap allocation, and
+//! contains no `unsafe` code.
 //!
-//! - [`HistogramNN<N>`] (aliased as [`Histogram<N>`]) is positive-only:
-//!   negative values are rejected. This suits the common case of non-negative
-//!   measurements such as latencies, sizes, and counts.
-//! - [`HistogramPN<K, L>`] maintains independent positive and negative bucket
-//!   ranges with synchronized scales for values of any sign.
+//! [`HistogramNN<N>`] is positive-only: negative values are rejected. This
+//! suits the common case of non-negative measurements such as latencies,
+//! sizes, and counts.
 //!
 //! Bucket index mapping is accelerated by a compile-time lookup table checked in
 //! under `src/lookup_tables.rs`. These tables are generated data and require no build step.

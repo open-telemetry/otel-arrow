@@ -110,21 +110,24 @@ pub enum MetricValue {
     /// Floating-point value.
     F64(f64),
     /// Summary of a pre-aggregated distribution.
-    Mmsc(MmscSnapshot),
+    Distribution(DistributionSummary),
 }
 
-/// Summary of a pre-aggregated distribution metric.
+/// Summary of a distribution metric.
 ///
 /// The exact statistics are always present. The bucketing fields are populated
 /// only for the exponential-histogram tiers; the basic tier encodes no buckets
 /// and so reports no scale, error bound, or quantile estimates.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct MmscSnapshot {
+pub struct DistributionSummary {
     /// Minimum observed value.
+    #[serde(default)]
     pub min: f64,
     /// Maximum observed value.
+    #[serde(default)]
     pub max: f64,
     /// Sum of observed values.
+    #[serde(default)]
     pub sum: f64,
     /// Total observation count, including exact zeros.
     pub count: u64,

@@ -495,7 +495,7 @@ impl<const N: usize> HistogramNN<N> {
     /// fit inside the value range, given counters of `width`.
     ///
     /// The normal IEEE 754 range spans about `2^(scale + 11)` buckets
-    /// (see [`min_scale_for`](crate::mapping::min_scale_for)). A
+    /// (see the internal `min_scale_for` helper). A
     /// histogram configured with more buckets than that has buckets no
     /// value can ever land in, so this is the floor the builders
     /// enforce.
@@ -584,7 +584,11 @@ impl<const N: usize> HistogramNN<N> {
         match biased_exp {
             0 => {
                 if significand == 0 {
-                    // Zero case: no bucket, no min/max update.
+                    // Zero case: no bucket. Stats start at 0.0, and this
+                    // histogram is positive-only, so a zero observation can
+                    // only lower an established minimum to exactly 0.0 and
+                    // can never raise the maximum.
+                    self.stats.min = 0.0;
                     self.stats.count = new_count;
                     return Ok(());
                 } else if value.is_sign_negative() {

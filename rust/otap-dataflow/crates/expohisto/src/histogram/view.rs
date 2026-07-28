@@ -150,7 +150,7 @@ impl<const N: usize> HistogramView<'_, N> {
                 continue;
             }
             if q <= 0.0 {
-                *slot = if zero_count > 0 { 0.0 } else { stats.min };
+                *slot = stats.min;
                 continue;
             }
             if q >= 1.0 {
@@ -210,11 +210,8 @@ impl<const N: usize> HistogramView<'_, N> {
 
         let index = offset + pos as i32;
         // lower_boundary(index) cannot fail for an occupied index: subnormals
-        // are clamped before mapping, so every index maps to a normal f64. The
-        // upper edge can overflow in the topmost bucket, where max is the
-        // correct bound.
+        // are clamped before mapping, so every index maps to a normal f64.
         let lower = scale.lower_boundary(index).unwrap_or(stats.min);
-        let upper = scale.lower_boundary(index + 1).unwrap_or(stats.max);
 
         // The threshold sits at or before this bucket's lower edge, meaning
         // the mass already accumulated covers it.
@@ -227,35 +224,13 @@ impl<const N: usize> HistogramView<'_, N> {
 
         let fraction = ((target - cumulative as f64) / count as f64).clamp(0.0, 1.0);
 
-        // Interpolate geometrically: lower * (upper / lower)^fraction. The
-        // boundaries are exponentially spaced, so a log-space position is the
-        // one for which this bucket's relative error bound holds.
-        let value = if lower > 0.0 && upper > lower {
-            lower * powf(upper / lower, fraction)
-        } else {
-            lower
-        };
+        // Interpolate geometrically: the boundaries are exponentially spaced,
+        // so a log-space position is the one for which this bucket's relative
+        // error bound holds. The position is read from the boundary table, so
+        // no floating-point exponentiation is involved. The topmost bucket can
+        // have no representable upper edge, where `max` is the correct bound.
+        let value = scale.interpolate_boundary(index, fraction).unwrap_or(lower);
         value.clamp(stats.min, stats.max)
-    }
-}
-
-/// `base^exponent` for a finite positive base.
-///
-/// `f64::powf` lives in `std`, so it is used when available and otherwise
-/// reconstructed from the exponent/mantissa split of `ln`/`exp`, keeping the
-/// crate usable under `no_std`.
-#[inline]
-fn powf(base: f64, exponent: f64) -> f64 {
-    #[cfg(feature = "std")]
-    {
-        base.powf(exponent)
-    }
-    #[cfg(not(feature = "std"))]
-    {
-        // Without std math, fall back to linear placement inside the bucket.
-        // The reported value stays within the bucket, so it remains a valid
-        // estimate, only with the looser `base - 1` error bound.
-        1.0 + (base - 1.0) * exponent
     }
 }
 
@@ -489,6 +464,36 @@ mod tests {
         }
         assert_eq!(h.view().zero_count(), 3);
         assert_eq!(h.view().stats().count, 5);
+    }
+
+    /// Scenario: Two histograms record the same population of exact zeros and
+    /// positive values, one with the zeros first and one with the zeros last.
+    /// Guarantees: both report a minimum of 0.0 and the same maximum, so an
+    /// exact zero always participates in the reported min/max regardless of
+    /// arrival order, and the q=0 quantile equals that minimum without needing
+    /// a separate zero-count special case.
+    #[test]
+    fn exact_zeros_pin_the_minimum_regardless_of_order() {
+        let mut zeros_first: HistogramNN<32> = HistogramNN::new();
+        for v in [0.0, 5.0, 2.0] {
+            zeros_first.update(v).unwrap();
+        }
+        let mut zeros_last: HistogramNN<32> = HistogramNN::new();
+        for v in [5.0, 2.0, 0.0] {
+            zeros_last.update(v).unwrap();
+        }
+
+        for h in [&zeros_first, &zeros_last] {
+            let stats = h.view().stats();
+            assert_eq!(stats.min, 0.0);
+            assert_eq!(stats.max, 5.0);
+            assert_eq!(stats.count, 3);
+            assert_eq!(h.view().zero_count(), 1);
+
+            let mut out = [f64::NAN; 1];
+            h.view().quantiles(&[0.0], &mut out);
+            assert_eq!(out[0], 0.0);
+        }
     }
 
     /// Scenario: An empty histogram is asked for its relative error.

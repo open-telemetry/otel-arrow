@@ -36,8 +36,9 @@ assert_eq!(stats.count, 3);
 
 ## Features
 
-- `std` (default): enables `std::error::Error` impls. Disable for `no_std`.
-- `quantile` (default): quantile estimation over the bucket distribution.
+- `std` (default): enables `std::error::Error` impls. Disable for `no_std`
+  builds; all arithmetic, including quantile interpolation, is `no_std`-clean
+  either way.
 
 ## Dependencies
 

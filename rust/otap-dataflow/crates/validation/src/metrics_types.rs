@@ -103,20 +103,12 @@ impl From<f64> for MetricValue {
 
 /// Summary statistics of a distribution metric, as rendered by the admin
 /// telemetry endpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct DistributionSummary {
-    /// Minimum observed value.
-    pub min: f64,
-    /// Maximum observed value.
-    pub max: f64,
-    /// Sum of observed values.
-    pub sum: f64,
-    /// Total number of observations, including exact zeros.
-    pub count: u64,
-    /// Number of exact-zero observations.
-    #[serde(default)]
-    pub zero_count: u64,
-}
+///
+/// Re-exported from the admin API so the validation harness observes exactly
+/// the fields the endpoint emits, including the bucketing detail
+/// (`scale`, `relative_error`, `p50`/`p90`/`p99`) that only the
+/// exponential-histogram tiers populate.
+pub use otap_df_admin_api::telemetry::DistributionSummary;
 
 fn format_metric_value(value: &MetricValue) -> String {
     match value {

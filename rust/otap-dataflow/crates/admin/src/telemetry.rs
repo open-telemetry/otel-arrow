@@ -934,9 +934,17 @@ fn collect_scalar_metric(
             // Proper handling requires extending `MetricValue` with a variant
             // carrying buckets/sum/count.
             Instrument::Histogram => "gauge",
-            Instrument::Mmsc => unreachable!("MMSC is not a scalar"),
-            Instrument::ExponentialHistogram => {
-                unreachable!("distributions are not scalars")
+            // A distribution-valued field routed here means the descriptor
+            // and the stored value disagree. The renderer has a scalar in
+            // hand, so it emits a gauge rather than panicking the admin
+            // worker and failing the whole scrape.
+            Instrument::Mmsc | Instrument::ExponentialHistogram => {
+                debug_assert!(
+                    false,
+                    "distribution instrument {:?} carried a scalar value for metric {}",
+                    field.instrument, field.name
+                );
+                "gauge"
             }
         };
         PromMetricMetadata {

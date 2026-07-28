@@ -77,7 +77,7 @@ pub enum ScaleError {
     /// A histogram of `N` words at its minimum counter width defines
     /// `N * slots_per_u64(width)` buckets. Those buckets must fit
     /// within the buckets that span the normal IEEE 754 range at the
-    /// maximum scale (see [`min_scale_for`]); otherwise the
+    /// maximum scale (see the internal `min_scale_for` helper); otherwise the
     /// configuration describes buckets outside the representable range
     /// and cannot always be downscaled to [`MIN_SCALE`] without error.
     RangeCoverage,
@@ -192,7 +192,7 @@ impl Scale {
 
     /// Constructs 2^k as an f64 from bits.
     #[inline]
-    const fn pow2(k: i32, s: u64) -> Result<f64, ScaleError> {
+    const fn f64_from_parts(k: i32, s: u64) -> Result<f64, ScaleError> {
         if k < MIN_NORMAL_EXPONENT {
             Err(ScaleError::Underflow)
         } else if k > MAX_NORMAL_EXPONENT {
@@ -246,16 +246,44 @@ impl Scale {
     pub fn lower_boundary(&self, index: i32) -> Result<f64, ScaleError> {
         let scale = self.0 as i32;
         if scale <= 0 {
-            return Self::pow2(index << -scale, 0);
+            return Self::f64_from_parts(index << -scale, 0);
         }
 
         let offset = index >> scale;
         let subidx = index as usize & self.mask();
         if subidx == 0 {
-            Self::pow2(offset, 0)
+            Self::f64_from_parts(offset, 0)
         } else {
-            Self::pow2(offset, BOUNDARIES[(subidx << (table_scale() - scale)) + 1])
+            Self::f64_from_parts(offset, BOUNDARIES[(subidx << (table_scale() - scale)) + 1])
         }
+    }
+    /// Returns the value at the fractional position `index + fraction`:
+    /// `2^((index + fraction) * 2^-scale)`.
+    ///
+    /// `fraction` is clamped to `[0.0, 1.0]`, so the result never leaves the
+    /// bucket at `index`. The position is converted into [`table_scale()`]
+    /// units and read from the same boundary table that
+    /// [`lower_boundary`](Self::lower_boundary) uses, so log-space
+    /// interpolation needs no `powf` and stays `no_std`-clean.
+    ///
+    /// The resolution is `2^(table_scale() - scale)` steps per bucket. At the
+    /// finest scale that is a single step -- the bucket's lower edge -- which
+    /// is already within the bucket's own
+    /// [`relative_error`](Self::relative_error).
+    #[inline]
+    pub fn interpolate_boundary(&self, index: i32, fraction: f64) -> Result<f64, ScaleError> {
+        let shift = table_scale() - self.scale();
+        let steps = 1_i64 << shift;
+        let step = (fraction.clamp(0.0, 1.0) * steps as f64) as i64;
+        let fine = ((index as i64) << shift) + step.clamp(0, steps);
+        let fine = i32::try_from(fine).map_err(|_| {
+            if fine > 0 {
+                ScaleError::Overflow
+            } else {
+                ScaleError::Underflow
+            }
+        })?;
+        Self(table_scale() as i8).lower_boundary(fine)
     }
 }
 
@@ -433,5 +461,66 @@ mod tests {
         assert_eq!(s.lower_boundary(0).unwrap(), 1.0);
         assert!((s.lower_boundary(1).unwrap() - sqrt2).abs() < 1e-15);
         assert_eq!(s.lower_boundary(2).unwrap(), 2.0);
+    }
+
+    /// Scenario: fractional positions inside a bucket are resolved at scales
+    /// coarser than the boundary table, and compared against the analytic
+    /// value `2^((index + fraction) * 2^-scale)`.
+    /// Guarantees: interpolation stays inside the bucket, is monotone in
+    /// `fraction`, reproduces the bucket edges at `fraction` 0 and 1, and
+    /// tracks the analytic value to the table's resolution -- so log-space
+    /// quantile placement needs no `powf` and no `std`.
+    #[test]
+    fn interpolate_boundary_tracks_the_analytic_value() {
+        for scale in [-2_i32, 0, 1, 4] {
+            let s = Scale::new(scale).unwrap();
+            for index in [-3_i32, 0, 5] {
+                let lower = s.lower_boundary(index).unwrap();
+                let upper = s.lower_boundary(index + 1).unwrap();
+
+                assert_eq!(s.interpolate_boundary(index, 0.0).unwrap(), lower);
+                assert_eq!(s.interpolate_boundary(index, 1.0).unwrap(), upper);
+
+                let mut previous = lower;
+                for step in 1..=8 {
+                    let fraction = f64::from(step) / 8.0;
+                    let got = s.interpolate_boundary(index, fraction).unwrap();
+                    assert!(
+                        got >= previous && got <= upper,
+                        "scale {scale} index {index} fraction {fraction}: \
+                         {got} outside [{previous}, {upper}]"
+                    );
+                    previous = got;
+
+                    // 2^((index + fraction) / 2^scale) is the value the table
+                    // approximates; the result is within one table step of it.
+                    let want = ((index as f64 + fraction) / 2.0_f64.powi(scale)).exp2();
+                    let step_ratio = 2.0_f64.powi(-table_scale());
+                    let ratio = got / want;
+                    assert!(
+                        ratio >= 1.0 - step_ratio && ratio <= 1.0 + step_ratio,
+                        "scale {scale} index {index} fraction {fraction}: \
+                         {got} vs analytic {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Scenario: a fractional position is requested at an index whose fine
+    /// position overflows the table's index space.
+    /// Guarantees: the call reports `Overflow`/`Underflow` instead of wrapping
+    /// into an unrelated bucket, so callers can fall back to the bucket edge.
+    #[test]
+    fn interpolate_boundary_reports_out_of_range_positions() {
+        let s = Scale::new(0).unwrap();
+        assert_eq!(
+            s.interpolate_boundary(i32::MAX, 0.5),
+            Err(ScaleError::Overflow)
+        );
+        assert_eq!(
+            s.interpolate_boundary(i32::MIN, 0.5),
+            Err(ScaleError::Underflow)
+        );
     }
 }

@@ -12,8 +12,8 @@ description = "Allocation-free OpenTelemetry exponential histogram"
 [features]
 default = ["std"]
 
-# Enables `std::error::Error` impls and `f64` math. Disable for `#![no_std]`
-# builds, where quantile estimation degrades to linear bucket interpolation.
+# Enables `std::error::Error` impls. Disable for `#![no_std]` builds; all
+# arithmetic, including quantile interpolation, is `no_std`-clean either way.
 std = []
 
 [dependencies]
