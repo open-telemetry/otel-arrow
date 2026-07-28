@@ -109,8 +109,8 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str(
-                    "either a string 'event_name' or a map with exactly one of: \
-                     'event_name', 'resource_attribute', 'scope_attribute', or \
+                    "either the string 'event_name' or a map with exactly one of: \
+                     'resource_attribute', 'scope_attribute', or \
                      'log_record_attribute'",
                 )
             }
@@ -149,11 +149,16 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
 
                     match key.as_str() {
                         "event_name" => {
-                            // The value for `event_name` is ignored; accept any
-                            // value (including null) so the map form behaves
-                            // consistently regardless of what the user supplies.
-                            let _ignored = map.next_value::<de::IgnoredAny>()?;
-                            found_key = Some("event_name".to_string());
+                            // `event_name` carries no routing value: the value
+                            // comes from the log record's built-in event name.
+                            // Reject the map form (e.g. `event_name: MyTable`)
+                            // so a supplied value can't be silently ignored;
+                            // the string form `routing_key: event_name` is the
+                            // only supported way to select this variant.
+                            return Err(de::Error::custom(
+                                "'event_name' does not take a value; use the string form \
+                                 `routing_key: event_name` instead of a map",
+                            ));
                         }
                         "resource_attribute" => {
                             routing_value = Some(map.next_value::<String>()?);
@@ -192,7 +197,6 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
                 };
 
                 match found_key.as_deref() {
-                    Some("event_name") => Ok(LogsEventNameRoutingKeyConfig::EventName),
                     Some("resource_attribute") => {
                         Ok(LogsEventNameRoutingKeyConfig::ResourceAttribute {
                             resource_attribute: non_empty("resource_attribute", routing_value)?,
@@ -207,7 +211,7 @@ impl<'de> Deserialize<'de> for LogsEventNameRoutingKeyConfig {
                         })
                     }
                     _ => Err(de::Error::custom(
-                        "routing_key must have one of: 'event_name', 'resource_attribute', 'scope_attribute', or 'log_record_attribute'",
+                        "routing_key map must have one of: 'resource_attribute', 'scope_attribute', or 'log_record_attribute' (use the string form `routing_key: event_name` to route by event name)",
                     )),
                 }
             }
@@ -2691,11 +2695,12 @@ mod tests {
 
     /// Scenario: A logs `routing_key` uses the map form `{ event_name: <v> }`
     /// with either a null or a string value.
-    /// Guarantees: Both forms deserialize consistently to the `EventName`
-    /// variant (the value is ignored) rather than one succeeding and the other
-    /// failing with a type-mismatch error.
+    /// Guarantees: Both forms are rejected during deserialization, since
+    /// `event_name` takes no routing value; the error directs the user to the
+    /// string form `routing_key: event_name` so a supplied value can never be
+    /// silently ignored.
     #[test]
-    fn test_logs_routing_key_event_name_map_form_ignores_value() {
+    fn test_logs_routing_key_event_name_map_form_is_rejected() {
         for value in [serde_json::Value::Null, serde_json::json!("anything")] {
             let config = serde_json::json!({
                 "endpoint": "https://localhost",
@@ -2721,19 +2726,15 @@ mod tests {
                 }
             });
 
-            let parsed: Config = serde_json::from_value(config)
-                .expect("map-form event_name should parse regardless of value");
-            let mapping = parsed
-                .logs
-                .as_ref()
-                .and_then(|l| l.event_name_mapping.as_ref())
-                .expect("logs mapping should be configured");
+            let result: Result<Config, _> = serde_json::from_value(config);
             assert!(
-                matches!(
-                    mapping.routing_key,
-                    LogsEventNameRoutingKeyConfig::EventName
-                ),
-                "Expected EventName variant for map-form event_name"
+                result.is_err(),
+                "map-form event_name should be rejected regardless of value"
+            );
+            let error_msg = result.unwrap_err().to_string();
+            assert!(
+                error_msg.contains("event_name") && error_msg.contains("does not take a value"),
+                "Error should explain event_name takes no value, got: {error_msg}"
             );
         }
     }
