@@ -1,0 +1,214 @@
+name: OTel Collector ClickHouse Logs
+components:
+  load-generator:
+    deployment:
+      docker:
+        image: df_engine:latest
+        network: testbed
+        ports:
+          - "8085:8080"
+        volumes:
+          - 'test_suites/integration/configs/loadgen/config.rendered.yaml:/home/nonroot/config.yaml:ro'
+        command:
+          - "--config"
+          - "./config.yaml"
+          - "--core-id-range"
+          - "2-2"
+          - "--http-admin-bind"
+          - "0.0.0.0:8080"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8085/api/v1/telemetry/metrics?format=prometheus&reset=false
+
+  go-collector:
+    deployment:
+      docker:
+        image: otel/opentelemetry-collector-contrib:0.149.0@sha256:0fba96233274f6d665ac8831ad99dfe6479a9a20459f6e2719c0d20945773b46
+        network: testbed
+        cpuset_cpus: "3"
+        ports:
+          - "8086:8086"
+        volumes:
+          - 'test_suites/integration/configs/otelcol/clickhouse-logs.yaml:/etc/otelcol-contrib/config.yaml:ro'
+        environment:
+          GOMAXPROCS: "1"
+    monitoring:
+      docker_component:
+        allocated_cores: 1
+      prometheus:
+        endpoint: http://localhost:8086/metrics
+
+  clickhouse:
+    deployment:
+      docker:
+        image: clickhouse/clickhouse-server:25.6@sha256:00d0f351e150ee2e7a1842ecc217066ab2c4a4781931f262ee99460ed4e2fcf7
+        network: testbed
+        cpuset_cpus: "4-7"
+        ports:
+          - "8123:8123"
+        environment:
+          CLICKHOUSE_PASSWORD: test
+    monitoring:
+      docker_component:
+        allocated_cores: 4
+
+tests:
+  - name: OTELCOL-OTLP-TRANSFORMED-100K
+    steps:
+      - name: Deploy ClickHouse
+        action:
+          component_action:
+            phase: deploy
+            target: clickhouse
+        hooks:
+          run:
+            pre:
+              - run_command:
+                  command: >-
+                    mkdir -p results/otelcol_clickhouse &&
+                    rm -f results/otelcol_clickhouse/validation.csv
+                    results/otelcol_clickhouse/rows-before
+            post:
+              - ready_check_http:
+                  url: http://localhost:8123/ping
+                  method: GET
+                  expected_status_code: 200
+
+      - name: Deploy Collector
+        action:
+          component_action:
+            phase: deploy
+            target: go-collector
+        hooks:
+          run:
+            post:
+              - ready_check_http:
+                  url: http://localhost:8086/metrics
+                  method: GET
+                  expected_status_code: 200
+
+      - name: Deploy Load Generator
+        action:
+          component_action:
+            phase: deploy
+            target: load-generator
+        hooks:
+          run:
+            pre:
+              - render_template:
+                  template_path: ./test_suites/integration/templates/configs/loadgen/config.yaml.j2
+                  output_path: ./test_suites/integration/configs/loadgen/config.rendered.yaml
+                  variables:
+                    engine_hostname: go-collector
+                    loadgen_exporter_type: otlp
+                    exporter_extra_config:
+                      max_in_flight: 256
+                    max_batch_size: 512
+                    signals_per_second: 100000
+                    metric_weight: 0
+                    trace_weight: 0
+                    log_weight: 100
+            post:
+              - ready_check_http:
+                  url: http://localhost:8085/api/v1/telemetry/metrics?reset=false
+                  method: GET
+                  expected_status_code: 200
+
+      - name: Monitor All
+        action:
+          multi_component_action:
+            phase: start_monitoring
+            targets:
+              - clickhouse
+              - load-generator
+              - go-collector
+
+      - name: Warm Up
+        action:
+          wait:
+            delay_seconds: 10
+
+      - name: Observe Load
+        action:
+          wait:
+            delay_seconds: 60
+        hooks:
+          run:
+            pre:
+              - run_command:
+                  command: >-
+                    curl --fail --silent --show-error --user default:test
+                    --data-binary 'SELECT count() FROM otelcol_comparison.otel_logs'
+                    http://localhost:8123 >
+                    results/otelcol_clickhouse/rows-before
+              - record_event:
+                  name: observation_start
+            post:
+              - record_event:
+                  name: observation_stop
+              - run_command:
+                  command: >-
+                    before=$(cat results/otelcol_clickhouse/rows-before) &&
+                    after=$(curl --fail --silent --show-error --user default:test
+                    --data-binary 'SELECT count() FROM otelcol_comparison.otel_logs'
+                    http://localhost:8123) &&
+                    printf 'rows_before,rows_after,observation_seconds\n%s,%s,60\n'
+                    "${before}" "${after}" >
+                    results/otelcol_clickhouse/validation.csv
+
+      - name: Stop Load Generator
+        action:
+          no_op: {}
+        hooks:
+          run:
+            pre:
+              - send_http_request:
+                  url: http://localhost:8085/api/v1/groups/shutdown?wait=true&timeout_secs=60
+                  method: POST
+                  timeout: 65
+                  raise_for_status: false
+                  on_error:
+                    continue: true
+
+      - name: Stop Monitoring
+        action:
+          multi_component_action:
+            phase: stop_monitoring
+            targets:
+              - clickhouse
+              - load-generator
+              - go-collector
+
+      - name: Destroy All
+        action:
+          multi_component_action:
+            phase: destroy
+            targets:
+              - load-generator
+              - go-collector
+              - clickhouse
+
+      - name: Run Report
+        action:
+          wait:
+            delay_seconds: 0
+        hooks:
+          run:
+            post:
+              - print_container_logs: {}
+              - sql_report:
+                  name: OTel Collector ClickHouse Report
+                  report_config_file: ./test_suites/integration/configs/otelcol_clickhouse_report_logs.yaml
+                  output:
+                    - format:
+                        template: {}
+                      destination:
+                        console: {}
+                    - format:
+                        template:
+                          path: ./test_suites/integration/templates/reports/gh-action-sqlreport.j2
+                      destination:
+                        file:
+                          directory: results/otelcol_clickhouse/gh-actions-benchmark

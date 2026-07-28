@@ -105,14 +105,18 @@ jobs:
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py \
             --config test_suites/integration/clickhouse/otap-clickhouse-logs.yaml \
-            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K,OTAP-IN-BATCHED-200K,OTLP-IN-BATCHED-200K
+            --tests OTAP-IN-BATCHED-100K,OTLP-IN-BATCHED-100K
+          python orchestrator/run_orchestrator.py \
+            --config test_suites/integration/clickhouse/otelcol-clickhouse-logs.yaml
 
       - name: Upload ClickHouse benchmark results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: clickhouse-pipeline-perf-results
-          path: tools/pipeline_perf_test/results/clickhouse/gh-actions-benchmark/*.json
+          path: |
+            tools/pipeline_perf_test/results/clickhouse/gh-actions-benchmark/*.json
+            tools/pipeline_perf_test/results/otelcol_clickhouse/gh-actions-benchmark/*.json
 
       - name: Post-run disk usage diagnostics
         if: always()
@@ -129,7 +133,7 @@ jobs:
       - name: Clean up Docker artifacts created by this job
         if: always()
         run: |
-          docker rm -f load-generator df-engine clickhouse 2>/dev/null || true
+          docker rm -f load-generator df-engine go-collector clickhouse 2>/dev/null || true
           docker rmi -f df_engine clickhouse/clickhouse-server:25.6 2>/dev/null || true
           # Prune dangling (unused) build cache and images only.
           docker builder prune -f 2>/dev/null || true
