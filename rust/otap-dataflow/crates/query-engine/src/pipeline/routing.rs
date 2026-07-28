@@ -112,6 +112,8 @@ mod test {
         QueryLocation, StringScalarExpression,
     };
     use otap_df_pdata::otap::Logs;
+    use otap_df_pdata::proto::opentelemetry::logs::v1::LogRecord;
+    use otap_df_pdata::testing::round_trip::to_otap_logs;
 
     use crate::pipeline::Pipeline;
 
@@ -141,6 +143,8 @@ mod test {
         }
     }
 
+    /// Scenario: A pipeline routes a non-empty logs batch to a named sink.
+    /// Guarantees: The router receives the original batch unchanged and the pipeline returns an empty logs batch.
     #[tokio::test]
     async fn test_route_to_pipeline_stage() {
         let output_expr = OutputDataExpression::new(
@@ -160,8 +164,12 @@ mod test {
         let test_router = TestRouter { routed: vec![] };
         exec_state.set_extension::<Box<dyn Router>>(Box::new(test_router));
 
-        // TODO maybe not test with empty so we can make some verifications of the data
-        let otap_batch = OtapArrowRecords::Logs(Logs::default());
+        let otap_batch = to_otap_logs(vec![LogRecord {
+            event_name: "test-event".into(),
+            ..Default::default()
+        }]);
+        assert_eq!(otap_batch.num_items(), 1);
+        let expected_routed_batch = otap_batch.clone();
         let result = pipeline
             .execute_with_state(otap_batch, &mut exec_state)
             .await
@@ -174,7 +182,9 @@ mod test {
         match router.as_any_mut().downcast_mut::<TestRouter>() {
             Some(test_router) => {
                 assert_eq!(test_router.routed.len(), 1);
-                assert_eq!(test_router.routed[0].0.as_str(), "test_sink");
+                let (route_name, routed_batch) = &test_router.routed[0];
+                assert_eq!(route_name.as_str(), "test_sink");
+                assert_eq!(routed_batch, &expected_routed_batch);
             }
             None => panic!("Failed to downcast router to TestRouter"),
         }
