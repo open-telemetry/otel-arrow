@@ -363,8 +363,7 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                     match resolve_map_destination(target) {
                         Some(mut target_map) => {
                             for key in map_keys.keys {
-                                key.to_value().convert_to_string(&mut |k| {
-                                match target_map.remove(k) {
+                                match target_map.remove(key.to_value().convert_to_string().as_ref()) {
                                     ValueMutRemoveResult::NotFound => {
                                         execution_context.add_diagnostic_if_enabled(
                                             RecordSetEngineDiagnosticLevel::Info,
@@ -383,7 +382,6 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                                         );
                                     }
                                 }
-                            });
                             }
                         }
                         None => {
@@ -414,9 +412,8 @@ pub fn execute_transform_expression<'a, TRecord: Record>(
                         Some(mut target_map) => {
                             let mut key_map: HashSet<Box<str>> = HashSet::new();
                             for key in map_keys.keys {
-                                key.to_value().convert_to_string(&mut |s| {
-                                    key_map.insert(s.into());
-                                });
+                                let s: String = key.to_value().convert_to_string().into();
+                                key_map.insert(s.into());
                             }
                             target_map.retain(&mut KeyValueMutClosureCallback::new(|k, v| {
                                 if key_map.contains(k) {
