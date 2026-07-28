@@ -834,10 +834,10 @@ fn encode_metric(
             metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
         }
         Instrument::Mmsc => {
-            let MetricValue::Mmsc(snapshot) = value else {
+            let MetricValue::Distribution(distribution) = value else {
                 unreachable!("metric value kind was validated before encoding")
             };
-            if snapshot.count == 0 {
+            if distribution.Mmsc.count == 0 {
                 return Ok(None);
             }
             let point = crate::metrics::exphist::mmsc_exponential_histogram_data_point(

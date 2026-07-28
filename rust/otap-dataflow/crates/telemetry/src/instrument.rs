@@ -477,6 +477,7 @@ pub struct Mmsc {
     max: f64,
     sum: f64,
     count: u64,
+    zero_count: u64,
 }
 
 impl Default for Mmsc {
@@ -486,6 +487,7 @@ impl Default for Mmsc {
             max: f64::MIN,
             sum: 0.0,
             count: 0,
+            zero_count: 0,
         }
     }
 }
@@ -528,6 +530,7 @@ impl Mmsc {
             max: self.max,
             sum: self.sum,
             count: self.count,
+            zero_count: self.zero_count,
         }
     }
 
@@ -658,14 +661,14 @@ impl Distribution {
     #[inline]
     #[must_use]
     pub fn normal() -> Self {
-        Self::Normal(Box::new(Histogram::new()))
+        Self::Normal(Box::new(HistogramNN::new()))
     }
 
     /// Creates a detailed-tier exponential-histogram distribution.
     #[inline]
     #[must_use]
     pub fn detailed() -> Self {
-        Self::Detailed(Box::new(Histogram::new()))
+        Self::Detailed(Box::new(HistogramNN::new()))
     }
 
     /// Records a single non-negative observation.

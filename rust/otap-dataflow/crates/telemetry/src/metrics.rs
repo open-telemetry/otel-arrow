@@ -56,9 +56,8 @@ pub const fn check_cardinality(cardinality: usize) {
 
 /// Metric value -- a scalar integer or float, or a pre-aggregated
 /// histogram or min-max-sum-count.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-#[allow(variant_size_differences)] // Mmsc is 32 bytes vs 8 for scalars/boxed distribution; acceptable for internal telemetry.
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
     U64(u64),
@@ -66,9 +65,7 @@ pub enum MetricValue {
     F64(f64),
     /// A distribution aggregation from a [`Distribution`] instrument, carried
     /// live or as a materialized exponential-histogram point.
-    Distribution(Box<DistributionValue>),
-    /// Pre-aggregated min/max/sum/count summary from an [`crate::instrument::Mmsc`] instrument.
-    Mmsc(MmscSnapshot),
+    Distribution(DistributionValue),
 }
 
 impl MetricValue {
@@ -94,12 +91,6 @@ impl MetricValue {
         match self {
             MetricValue::U64(_) => MetricValue::U64(0),
             MetricValue::F64(_) => MetricValue::F64(0.0),
-            MetricValue::Mmsc(_) => MetricValue::Mmsc(MmscSnapshot {
-                min: f64::MAX,
-                max: f64::MIN,
-                sum: 0.0,
-                count: 0,
-            }),
             MetricValue::Distribution(d) => {
                 let mut cleared = d.clone();
                 cleared.reset();
