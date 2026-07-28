@@ -6,8 +6,8 @@
 //!
 //! These primitives are the foundation for encoding ITS histogram instruments
 //! consistently: both the pre-aggregated min/max/sum/count summary (the
-//! "basic" tier) and full [`otap_df_expohisto::Histogram`] aggregations (the
-//! "normal" and "detailed" tiers) are projected onto the same OTLP
+//! "basic" level) and full [`otap_df_expohisto::HistogramNN`] aggregations (the
+//! "normal" and "detailed" levels) are projected onto the same OTLP
 //! exponential-histogram point type.
 //!
 //! All points are emitted with delta temporality by the caller; these
@@ -80,13 +80,12 @@ pub(crate) fn mmsc_exponential_histogram_data_point(
         .attributes(attributes.to_vec())
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano)
-        .count(snapshot.count)
-        .scale(0)
-        .zero_count(0u64)
-        .min(snapshot.min)
-        .max(snapshot.max);
-    if snapshot.min >= 0.0 {
-        builder = builder.sum(snapshot.sum);
+        .count(snapshot.count);
+    if snapshot.count > 0 {
+        builder = builder
+            .sum(snapshot.sum)
+            .min(snapshot.min)
+            .max(snapshot.max);
     }
     builder.finish()
 }
@@ -125,7 +124,7 @@ pub(crate) fn distribution_exponential_histogram_data_point(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use otap_df_expohisto::Histogram;
+    use otap_df_expohisto::HistogramNN;
 
     /// Scenario: A positive-only histogram records several positive values and
     /// is projected onto an OTLP exponential-histogram point.
@@ -134,7 +133,7 @@ mod tests {
     /// sum to the number of bucketed observations, and reports no zeros.
     #[test]
     fn projects_positive_observations_into_buckets() {
-        let mut hist: Histogram<16> = Histogram::new();
+        let mut hist: HistogramNN<16> = Histogram::new();
         for v in [1.5_f64, 2.7, 4.0, 100.0] {
             hist.update(v).expect("positive value is recordable");
         }
@@ -164,7 +163,7 @@ mod tests {
     /// range, so `zero_count + sum(bucket_counts) == count`.
     #[test]
     fn recovers_zero_count_from_total() {
-        let mut hist: Histogram<16> = Histogram::new();
+        let mut hist: HistogramNN<16> = Histogram::new();
         hist.update(0.0).expect("zero is recordable");
         hist.update(0.0).expect("zero is recordable");
         hist.update(3.0).expect("positive value is recordable");
@@ -187,7 +186,7 @@ mod tests {
     /// positive buckets and no sum, so downstream consumers can drop it.
     #[test]
     fn empty_histogram_yields_empty_point() {
-        let hist: Histogram<16> = Histogram::new();
+        let hist: HistogramNN<16> = Histogram::new();
         let view = hist.view();
 
         let point = exponential_histogram_data_point(&view, 0, 0, &[]);

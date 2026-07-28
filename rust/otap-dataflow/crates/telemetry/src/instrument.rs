@@ -11,7 +11,7 @@
 //!
 //! Gauges are instantaneous values that are set via `set`.
 
-use otap_df_expohisto::{Error as HistogramError, Histogram, HistogramView};
+use otap_df_expohisto::{Error as HistogramError, HistogramNN, HistogramView};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::ops::{AddAssign, SubAssign};
@@ -599,6 +599,8 @@ pub struct MmscSnapshot {
     pub sum: f64,
     /// Number of observations.
     pub count: u64,
+    /// Number of zeros.
+    pub zero_count: u64,
 }
 
 // Distribution implementation.
@@ -609,6 +611,7 @@ pub struct MmscSnapshot {
 ///
 /// Sized for a compact per-series footprint suitable for always-on internal
 /// telemetry while still capturing a useful bucket range.
+/// Size = (10+6)*8 = 128 bytes
 pub const HISTOGRAM_NORMAL_WORDS: usize = 10;
 
 /// Number of `u64` bucket words in the "detailed" resolution exponential
@@ -616,6 +619,7 @@ pub const HISTOGRAM_NORMAL_WORDS: usize = 10;
 ///
 /// Trades a larger per-series footprint for finer bucket coverage, for metrics
 /// that warrant high-resolution distributions.
+/// Size = (26+6)*8 = 256 bytes
 pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 
 /// A delta distribution instrument with three resolution tiers.
@@ -637,9 +641,9 @@ pub enum Distribution {
     /// Basic tier: exact min/max/sum/count with no buckets.
     Basic(Box<Mmsc>),
     /// Normal tier: exponential histogram with [`HISTOGRAM_NORMAL_WORDS`] bucket words.
-    Normal(Box<Histogram<HISTOGRAM_NORMAL_WORDS>>),
+    Normal(Box<HistogramNN<HISTOGRAM_NORMAL_WORDS>>),
     /// Detailed tier: exponential histogram with [`HISTOGRAM_DETAILED_WORDS`] bucket words.
-    Detailed(Box<Histogram<HISTOGRAM_DETAILED_WORDS>>),
+    Detailed(Box<HistogramNN<HISTOGRAM_DETAILED_WORDS>>),
 }
 
 impl Distribution {
@@ -1016,7 +1020,7 @@ fn check_hist_update(result: Result<(), HistogramError>, context: &str) {
 /// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
 /// normal tier.
 #[derive(Clone, Default)]
-pub struct HistogramNormal(Histogram<HISTOGRAM_NORMAL_WORDS>);
+pub struct HistogramNormal(HistogramNN<HISTOGRAM_NORMAL_WORDS>);
 
 impl Debug for HistogramNormal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1064,7 +1068,7 @@ impl HistogramNormal {
 /// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
 /// detailed tier.
 #[derive(Clone, Default)]
-pub struct HistogramDetailed(Histogram<HISTOGRAM_DETAILED_WORDS>);
+pub struct HistogramDetailed(HistogramNN<HISTOGRAM_DETAILED_WORDS>);
 
 impl Debug for HistogramDetailed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1308,7 +1312,7 @@ mod tests {
     // Scenario: Normal- and detailed-tier distributions record positive values.
     // Guarantees: Both histogram tiers accept observations and expose the exact
     // count and sum through their view, confirming the boxed histograms are
-    // wired to the vendored expohisto aggregation.
+    // wired to expohisto.
     #[test]
     fn test_distribution_histogram_tiers_record_into_buckets() {
         for mut dist in [Distribution::normal(), Distribution::detailed()] {
