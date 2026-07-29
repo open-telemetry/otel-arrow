@@ -228,9 +228,12 @@ pub fn create_otap_batch_with_rows(
     payload_type: ArrowPayloadType,
     num_rows: usize,
 ) -> OtapArrowRecords {
-    let ids = UInt16Array::from_iter_values(
-        (0..num_rows).map(|i| batch_id as u16 + i as u16),
-    );
+    let base = u16::try_from(batch_id).expect("batch_id must fit in u16");
+    
+    let ids = UInt16Array::from_iter_values((0..num_rows).map(|i| {
+         base.checked_add(u16::try_from(i).expect("num_rows must fit in u16"))
+             .expect("batch_id + num_rows must fit in u16")
+     }));
 
     let record_batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new(
