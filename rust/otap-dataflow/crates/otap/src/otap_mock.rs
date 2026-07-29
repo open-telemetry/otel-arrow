@@ -221,7 +221,7 @@ impl ArrowTracesService for ArrowTracesServiceMock {
     }
 }
 
-/// create multiple rows of arrow record
+/// Creates an OTAP batch with `num_rows` rows (for testing).
 #[must_use]
 pub fn create_otap_batch_with_rows(
     batch_id: i64,
