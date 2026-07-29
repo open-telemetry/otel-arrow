@@ -221,18 +221,24 @@ impl ArrowTracesService for ArrowTracesServiceMock {
     }
 }
 
-/// creates a basic batch arrow record to use for testing
+/// create multiple rows of arrow record
 #[must_use]
-pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapArrowRecords {
+pub fn create_otap_batch_with_rows(
+    batch_id: i64,
+    payload_type: ArrowPayloadType,
+    num_rows: usize,
+) -> OtapArrowRecords {
+    let ids = UInt16Array::from_iter_values(
+        (0..num_rows).map(|i| batch_id as u16 + i as u16),
+    );
+
     let record_batch = RecordBatch::try_new(
         Arc::new(Schema::new(vec![Field::new(
             consts::ID,
             DataType::UInt16,
             true,
         )])),
-        vec![Arc::new(UInt16Array::from_iter_values(vec![
-            batch_id as u16,
-        ]))],
+        vec![Arc::new(ids)],
     )
     .expect("failed to build test OTAP batch record");
 
@@ -241,13 +247,24 @@ pub fn create_otap_batch(batch_id: i64, payload_type: ArrowPayloadType) -> OtapA
     let mut otap_batch = match payload_type {
         ArrowPayloadType::Logs => OtapArrowRecords::Logs(Logs::default()),
         ArrowPayloadType::Spans => OtapArrowRecords::Traces(Traces::default()),
-        ArrowPayloadType::UnivariateMetrics => OtapArrowRecords::Metrics(Metrics::default()),
-        _ => {
-            panic!("unexpected payload_type")
+        ArrowPayloadType::UnivariateMetrics => {
+            OtapArrowRecords::Metrics(Metrics::default())
         }
+        _ => panic!("unexpected payload_type"),
     };
 
-    otap_batch.set(payload_type, record_batch).expect("valid");
+    otap_batch
+        .set(payload_type, record_batch)
+        .expect("valid");
 
     otap_batch
+}
+
+/// creates a basic batch arrow record to use for testing
+#[must_use]
+pub fn create_otap_batch(
+    batch_id: i64,
+    payload_type: ArrowPayloadType,
+) -> OtapArrowRecords {
+    create_otap_batch_with_rows(batch_id, payload_type, 1)
 }
