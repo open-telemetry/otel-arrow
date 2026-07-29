@@ -271,12 +271,10 @@ impl JoinTextScalarExpression {
 
         let separator = match self.separator_expression.try_resolve_static(scope)? {
             None => return Ok(None),
-            Some(s) => {
-                StringScalarExpression::new(
-                    separator_location,
-                    s.to_value().convert_to_string().as_ref(),
-                )
-            }
+            Some(s) => StringScalarExpression::new(
+                separator_location,
+                s.to_value().convert_to_string().as_ref(),
+            ),
         };
 
         let (mut values, len) = match values.as_ref().map(|v| v.as_ref()) {
