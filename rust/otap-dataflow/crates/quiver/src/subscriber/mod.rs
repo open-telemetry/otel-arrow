@@ -15,7 +15,7 @@
 //! - **BundleRef**: A lightweight reference to a specific bundle within a
 //!   segment, consisting of `(segment_seq, bundle_index)`.
 //!
-//! - **AckOutcome**: The terminal outcome of bundle processing—either
+//! - **AckOutcome**: The terminal outcome of bundle processing--either
 //!   successfully acknowledged or permanently dropped.
 //!
 //! - **Progress File** (`quiver.sub.<id>`): Each subscriber maintains an
@@ -38,11 +38,11 @@
 //! **Note:** Deferred bundles are automatically rescheduled. When `defer()` is
 //! called, the bundle's claim is released and it becomes eligible for redelivery
 //! via `next_bundle()`. The embedding layer does NOT need to track deferred
-//! bundles separately—Quiver handles this internally.
+//! bundles separately--Quiver handles this internally.
 //!
 //! The embedding layer (e.g., otap-dataflow's durable_buffer_processor) may still
 //! choose to track deferred bundles for custom retry timing, backoff strategies,
-//! or priority scheduling—but this is optional.
+//! or priority scheduling--but this is optional.
 //!
 //! # Module Organization
 //!

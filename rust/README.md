@@ -35,7 +35,7 @@ records representation.
 - [Query engine: reference implementation for the abstraction
   layer](./experimental/query_engine/README.md)
 - [Parquet query examples: querying OTel-Arrow data in Parquet
-  files using DataFusion](./parquet_query_examples/README.md)
+  files using DataFusion](./parquet-query-examples/README.md)
 
 ## Beaubourg (retired)
 

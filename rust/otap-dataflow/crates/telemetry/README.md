@@ -1,9 +1,9 @@
-# Telemetry SDK (schema-first, multivariate, NUMA-aware)
+# Internal Telemetry System (schema-first, multivariate, NUMA-aware)
 
 Status: draft under active development.
 
-A low-overhead, NUMA-aware telemetry SDK that turns a declarative schema into a
-type-safe Rust API for emitting richly structured, multivariate metrics. It is
+A low-overhead, NUMA-aware telemetry system that turns a declarative schema into
+a type-safe Rust API for emitting richly structured, multivariate metrics. It is
 designed for engines that run a thread-per-core and require predictable latency
 while still exporting high-fidelity operational data.
 
@@ -98,40 +98,41 @@ There are four aspects that can be configured:
   (e.g., libraries, startup code)
 - `admin`: logging for administrative threads (metrics aggregation,
   observed state store, controller tasks)
-- `internal`: logging for the internal telemetry pipeline itself;
+- `internal`: logging for the engine observability pipeline itself;
   restricted to `console_direct` or `noop` to avoid feedback loops
 
 These modes are configured through the `engine.telemetry.logs.providers`
 field, with the following choices:
 
-- `its`: configure the Internal Telemetry System using nodes defined
-  in the pipeline's `internal` nodes section. These nodes are
-  configured in a dedicated thread.
+- `its`: send logs to the Internal Telemetry System for consumption by the
+  internal telemetry receiver in `engine.observability.pipeline`.
 - `console_async`: configure asynchronous console logging. In this
   mode log records are printed to the console by the
   observed-state-store thread, avoiding blocking the caller.
 - `console_direct`: configure synchronous logging. This mode blocks
   the calling thread to print each log statement immediately.
-- `opentelemetry`: configure the OpenTelemetry Rust SDK. This provider
-  supports more extensive diagnostics, including support for
-  distributed tracing events.
 - `noop`: disables logging.
 
-Internal metrics use `engine.telemetry.metrics.provider`:
-
-- `opentelemetry` (default) publishes through configured OpenTelemetry SDK
-  readers and views.
-- `its` drains aggregated registry snapshots through the internal telemetry
-  receiver as OTLP metrics. It requires exactly one such receiver in the engine
-  observability pipeline and cannot be combined with SDK readers or views.
-- `none` disables periodic metric export while retaining the registry for the
-  admin metrics endpoint.
+Periodic internal metrics always flow through the engine observability
+pipeline. When configuration omits that pipeline, the engine installs a
+built-in pipeline that consumes metrics with a noop exporter. Global and engine
+logs continue to use `console_async` by default; the built-in pipeline's console
+route is used only when a log provider explicitly selects `its`. A custom
+internal telemetry receiver can override the default registry drain and export
+interval and apply metric views through its `metrics` block. Its `signals` field
+defaults to `[logs, metrics]`; either signal can be omitted. When metric
+emission is disabled, the receiver commits the ITS export accumulator without
+OTLP conversion or downstream delivery, while leaving the admin metric view
+intact.
 
 ITS metric export and admin endpoint reads use independent registry views, so
 an admin reset does not consume metrics waiting for pipeline export.
 The bridge projects multivariate metric sets into standard univariate OTLP
 metrics that normal OTLP or OTAP exporters can consume. This is a transitional
 representation pending native multivariate metric-set support in OTAP.
+
+Prometheus scraping is provided by the admin server at the fixed
+`/api/v1/metrics` path. Receiver views do not apply to that endpoint.
 
 For more on this design, see the [self-tracing architecture
 document](../../docs/self_tracing_architecture.md). See a sample

@@ -48,7 +48,7 @@ Metrics are for entity behavior, not request identity.
 ## Metric and metric set
 
 *Metrics* in this project use the instrument types supported by our internal
-telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
+telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for details):
 
 - Counter: monotonic counts of events or outcomes, recorded as deltas.
 - UpDownCounter: signed deltas that can increase or decrease over time.
@@ -59,6 +59,24 @@ telemetry SDK (see [crates/telemetry](/crates/telemetry/README.md) for details):
 
 Histogram support status is tracked in
 [Implementation Gaps](implementation-gaps.md).
+
+### Recording semantics and export temporality
+
+Instrument types describe how component code records measurements, independently
+of how a downstream consumer prefers to receive them. ITS uses the OpenTelemetry
+`lowmemory` temporality mapping as its canonical representation:
+
+- Counter and histogram/MMSC aggregates are delta.
+- UpDownCounter, ObserveCounter, and ObserveUpDownCounter aggregates are
+  cumulative.
+- Gauge values have no aggregation temporality.
+
+Component authors should therefore choose an instrument from the meaning and
+recording form of the measurement, not from an exporter requirement. The native
+pipeline currently emits the canonical representation unchanged; it cannot yet
+produce a different cumulative or delta preference for each consumer. A
+downstream conversion mechanism is tracked in
+[#3543](https://github.com/open-telemetry/otel-arrow/issues/3543).
 
 ObserveUpDownCounter and Gauge both report values that can rise or fall, but
 they aggregate differently.

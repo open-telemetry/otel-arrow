@@ -23,7 +23,6 @@ use tracing::{Event, Level, Metadata};
 pub use encoder::DirectLogRecordEncoder;
 pub use encoder::ScopeToBytesMap;
 pub use encoder::encode_export_logs_request;
-pub use encoder::encode_resource_to_bytes;
 pub use formatter::{
     AnsiCode, ColorMode, ConsoleWriter, RawLoggingLayer, StyledBufWriter,
     format_log_record_to_string,
