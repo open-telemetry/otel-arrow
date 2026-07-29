@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 [package]
-name = "otap-df-engine-inventory-syntax"
+name = "otap-df-component-inventory-syntax"
 description = "Shared syn parser for the #[component_inventory] attribute (RFC 0001), used by both the proc-macro and the xtask scanner"
 version.workspace = true
 authors.workspace = true

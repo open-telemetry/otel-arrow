@@ -21,7 +21,7 @@
 
 /// Component category (RFC 0001).
 ///
-/// Re-exported from the leaf `otap-df-engine-inventory-syntax` crate, which is
+/// Re-exported from the leaf `otap-df-component-inventory-syntax` crate, which is
 /// the single source of truth shared by the runtime type (here), the
 /// `#[component_inventory]` proc macro, and the `cargo xtask component-inventory`
 /// scanner. Defining it once there (rather than duplicating a string table in
@@ -35,7 +35,7 @@
 /// middle segment (e.g. `urn:otel:`**`receiver`**`:otlp`).
 ///
 /// See [`Category`] for the full list of variants and their intended meanings.
-pub use otap_df_engine_inventory_syntax::Category;
+pub use otap_df_component_inventory_syntax::Category;
 
 /// Well-known attribute keys (RFC 0001, "Option A": free-form map + key
 /// constants). Contributors are encouraged to use these constants for the

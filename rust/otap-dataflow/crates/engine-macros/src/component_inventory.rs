@@ -9,7 +9,7 @@
 //! `KNOWN_CAPABILITIES` mechanism. The annotated item is re-emitted unchanged.
 //!
 //! The attribute-argument grammar ([`ComponentInventoryArgs`]) is defined once
-//! in the shared `otap-df-engine-inventory-syntax` crate and reused by both
+//! in the shared `otap-df-component-inventory-syntax` crate and reused by both
 //! this macro and the `cargo xtask component-inventory` scanner, so the two can
 //! never disagree about what an annotation means.
 //!
@@ -44,7 +44,7 @@
 //! pub struct AdminServer { /* ... */ }
 //! ```
 
-use otap_df_engine_inventory_syntax::ComponentInventoryArgs;
+use otap_df_component_inventory_syntax::ComponentInventoryArgs;
 use proc_macro2::{Span, TokenStream};
 use quote::{format_ident, quote};
 use syn::{Attribute, Expr, ExprLit, Ident, Item, Lit};
@@ -215,7 +215,7 @@ fn cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
 // build for its fixture crate that cannot resolve dependencies offline. The
 // expansion/argument-parsing helpers below exercise the same error paths in a
 // self-contained, environment-independent way. (Argument-parsing errors are
-// additionally covered by unit tests in `otap-df-engine-inventory-syntax`.)
+// additionally covered by unit tests in `otap-df-component-inventory-syntax`.)
 #[cfg(test)]
 mod tests {
     use super::*;

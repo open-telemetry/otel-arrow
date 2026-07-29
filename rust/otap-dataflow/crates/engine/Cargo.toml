@@ -23,7 +23,7 @@ otap-df-channel = { workspace = true }
 otap-df-pdata = { workspace = true }
 otap-df-config = { workspace = true }
 otap-df-engine-macros = { workspace = true }
-otap-df-engine-inventory-syntax = { workspace = true }
+otap-df-component-inventory-syntax = { workspace = true }
 otap-df-state = { workspace = true }
 otap-df-telemetry = { workspace = true }
 otap-df-telemetry-macros = { workspace = true }

@@ -10,7 +10,7 @@
 //! record. This scanner therefore parses each source file into a real Rust AST
 //! with [`syn::parse_file`] and reads the `#[component_inventory(...)]`
 //! attribute with the **same** parser the proc-macro uses
-//! ([`otap_df_engine_inventory_syntax::ComponentInventoryArgs`]), so the tool
+//! ([`otap_df_component_inventory_syntax::ComponentInventoryArgs`]), so the tool
 //! and the macro can never disagree about the annotation grammar.
 //!
 //! # Completeness vs. reliability
@@ -37,7 +37,7 @@
 //! greppable `urn:UNRESOLVED:<const>` marker (never a silent value), and the
 //! check fails so it cannot be frozen into the baseline unnoticed.
 
-use otap_df_engine_inventory_syntax::ComponentInventoryArgs;
+use otap_df_component_inventory_syntax::ComponentInventoryArgs;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -86,7 +86,7 @@ const SKIP_DIRS: &[&str] = &[
     "benches",
     "examples",
     "engine-macros",
-    "engine-inventory-syntax",
+    "component-inventory-syntax",
     "telemetry-macros",
     "validation",
     "otap-test-net",
