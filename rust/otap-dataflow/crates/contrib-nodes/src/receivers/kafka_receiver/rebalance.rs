@@ -432,12 +432,7 @@ impl RebalanceState {
         // partitions that were genuinely owned for the revoked metric, mirroring
         // the newly-added count in `set_assignment`.
         let mut revoked_tagged = Vec::with_capacity(revoked.len());
-        let mut owned_revoked = 0u64;
-        // Log buffer for the genuinely-owned revoked partitions only, built
-        // inline so the logged list matches `owned_revoked` (a revoke reported
-        // for a partition this consumer did not own is neither counted nor
-        // listed).
-        let mut revoked_list = String::new();
+        let mut revoked_list = PartitionListFmt::default();
         let owned_after;
         {
             let mut assigned = self.lock_assigned();
@@ -446,8 +441,7 @@ impl RebalanceState {
                 // partition wasn't actually owned).
                 let generation = assigned.generation(topic, *partition).unwrap_or(0);
                 if assigned.remove_partition(topic, *partition) {
-                    owned_revoked += 1;
-                    append_partition(&mut revoked_list, topic, *partition);
+                    revoked_list.append(topic, *partition);
                 }
                 revoked_tagged.push(RevokedPartition {
                     topic: topic.clone(),
@@ -457,6 +451,7 @@ impl RebalanceState {
             }
             owned_after = assigned.len();
         }
+        let owned_revoked = revoked_list.count();
         {
             let mut revoked_queue = lock_ignore_poison(&self.revoked);
             revoked_queue.extend(revoked_tagged);
@@ -467,16 +462,17 @@ impl RebalanceState {
             .fetch_add(owned_revoked, Ordering::Relaxed);
 
         // Structured observability: list the genuinely-owned revoked partition
-        // IDs, and emit a consumer-group "left" event when this revocation drops
-        // the consumer to zero owned partitions.
+        // IDs.
         if owned_revoked > 0 {
             otel_info!(
                 "kafka.rebalance.partitions_revoked",
-                partitions = %revoked_list,
+                partitions = %revoked_list.as_str(),
                 count = owned_revoked,
+                listed_count = revoked_list.listed_count(),
+                truncated = revoked_list.truncated(),
             );
             if owned_after == 0 {
-                otel_info!("kafka.consumer_group.left");
+                otel_info!("kafka.assignment.became_empty");
             }
         }
     }
@@ -497,9 +493,8 @@ impl RebalanceState {
     /// revocation queued for its prior ownership period.
     ///
     /// Emits the `kafka.rebalance.partitions_assigned` /
-    /// `kafka.consumer_group.joined` observability events for the newly-acquired
-    /// partitions before returning, using topic names borrowed directly from
-    /// `full` (no per-partition `String` cloning).
+    /// `kafka.assignment.became_non_empty` observability events for the
+    /// newly-acquired partitions before returning.
     fn set_assignment(&self, full: &TopicPartitionList) {
         let elements = full.elements();
         let mut assigned = self.lock_assigned();
@@ -518,19 +513,14 @@ impl RebalanceState {
         // and reassigned to this consumer is absent from the set at this point
         // and correctly receives a fresh, strictly-greater generation.
         let mut next = AssignedPartitions::new();
-        let mut newly_acquired = 0u64;
-        // Log buffer for the `topic-partition` list, built inline from the
-        // borrowed topic names (no `String` cloning) and only populated when a
-        // partition is actually acquired.
-        let mut acquired_list = String::new();
+        let mut acquired_list = PartitionListFmt::default();
         for elem in &elements {
             let topic = elem.topic();
             let partition = elem.partition();
             match assigned.generation(topic, partition) {
                 Some(existing) => next.add_partition(topic, partition, existing),
                 None => {
-                    newly_acquired += 1;
-                    append_partition(&mut acquired_list, topic, partition);
+                    acquired_list.append(topic, partition);
                     let generation =
                         *rebalance_generation.get_or_insert_with(|| self.next_generation());
                     next.add_partition(topic, partition, generation);
@@ -541,6 +531,7 @@ impl RebalanceState {
         // Drop the assignment lock before logging.
         drop(assigned);
 
+        let newly_acquired = acquired_list.count();
         let _ = self
             .partition_assignments
             .fetch_add(newly_acquired, Ordering::Relaxed);
@@ -548,11 +539,13 @@ impl RebalanceState {
         if newly_acquired > 0 {
             otel_info!(
                 "kafka.rebalance.partitions_assigned",
-                partitions = %acquired_list,
+                partitions = %acquired_list.as_str(),
                 count = newly_acquired,
+                listed_count = acquired_list.listed_count(),
+                truncated = acquired_list.truncated(),
             );
             if owned_before == 0 {
-                otel_info!("kafka.consumer_group.joined");
+                otel_info!("kafka.assignment.became_non_empty");
             }
         }
     }
@@ -571,23 +564,20 @@ impl RebalanceState {
     /// per call); already-owned partitions keep theirs.
     ///
     /// Emits the same observability events as
-    /// [`set_assignment`](Self::set_assignment) on the fallback path, borrowing
-    /// topic names from `delta` (no per-partition `String` cloning).
+    /// [`set_assignment`](Self::set_assignment) on the fallback path
     fn merge_assignment(&self, delta: &TopicPartitionList) {
         let elements = delta.elements();
         let mut assigned = self.lock_assigned();
         let owned_before = assigned.len();
         let mut rebalance_generation: Option<u64> = None;
-        let mut newly_acquired = 0u64;
-        // Log buffer for the `topic-partition` list, built inline (see
+        // Bounded log buffer for the `topic-partition` list, built inline (see
         // `set_assignment`).
-        let mut acquired_list = String::new();
+        let mut acquired_list = PartitionListFmt::default();
         for elem in &elements {
             let topic = elem.topic();
             let partition = elem.partition();
             if !assigned.contains(topic, partition) {
-                newly_acquired += 1;
-                append_partition(&mut acquired_list, topic, partition);
+                acquired_list.append(topic, partition);
                 let generation =
                     *rebalance_generation.get_or_insert_with(|| self.next_generation());
                 assigned.add_partition(topic, partition, generation);
@@ -596,6 +586,7 @@ impl RebalanceState {
         // Drop the assignment lock before logging.
         drop(assigned);
 
+        let newly_acquired = acquired_list.count();
         let _ = self
             .partition_assignments
             .fetch_add(newly_acquired, Ordering::Relaxed);
@@ -603,11 +594,15 @@ impl RebalanceState {
         if newly_acquired > 0 {
             otel_info!(
                 "kafka.rebalance.partitions_assigned",
-                partitions = %acquired_list,
+                partitions = %acquired_list.as_str(),
                 count = newly_acquired,
+                listed_count = acquired_list.listed_count(),
+                truncated = acquired_list.truncated(),
             );
+            // See `set_assignment`: an assignment-size transition to non-empty,
+            // not a consumer-group join.
             if owned_before == 0 {
-                otel_info!("kafka.consumer_group.joined");
+                otel_info!("kafka.assignment.became_non_empty");
             }
         }
     }
@@ -675,16 +670,60 @@ fn lock_ignore_poison<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Append a `topic-partition` token to a comma-separated log buffer,
-/// inserting a separator when the buffer is non-empty. Used to build the
-/// partition list for structured log events (e.g. `traces-0,traces-1,metrics-3`)
-/// directly from borrowed topic names, without cloning.
-fn append_partition(buf: &mut String, topic: &str, partition: i32) {
-    if !buf.is_empty() {
-        buf.push(',');
+/// Maximum number of `topic-partition` listed in a single rebalance
+/// observability event.
+const MAX_LISTED_PARTITIONS: u64 = 64;
+
+#[derive(Debug, Default)]
+struct PartitionListFmt {
+    buf: String,
+    count: u64,
+    listed: u64,
+    truncated: bool,
+}
+
+impl PartitionListFmt {
+    fn append(&mut self, topic: &str, partition: i32) {
+        self.count += 1;
+
+        // Once truncated the trailing "..." is already present; keep counting only.
+        if self.truncated {
+            return;
+        }
+
+        // Entry cap: append a single trailing "..." and stop updating buf.
+        if self.listed >= MAX_LISTED_PARTITIONS {
+            self.truncated = true;
+            if !self.buf.is_empty() {
+                self.buf.push(',');
+            }
+            self.buf.push_str("...");
+            return;
+        }
+
+        use std::fmt::Write as _;
+        if !self.buf.is_empty() {
+            self.buf.push(',');
+        }
+        let _ = write!(self.buf, "{topic}-{partition}");
+        self.listed += 1;
     }
-    use std::fmt::Write as _;
-    let _ = write!(buf, "{topic}-{partition}");
+
+    fn count(&self) -> u64 {
+        self.count
+    }
+
+    fn listed_count(&self) -> u64 {
+        self.listed
+    }
+
+    fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn as_str(&self) -> &str {
+        &self.buf
+    }
 }
 
 /// Collect `(topic, partition)` pairs from a [`TopicPartitionList`].
@@ -1236,7 +1275,7 @@ mod tests {
     /// Scenario: partitions are revoked down to an empty assignment.
     /// Guarantees: `AssignedPartitions::len` and the drained `partitions_owned`
     /// snapshot both reach zero, which is the signal the receiver uses to emit
-    /// the consumer-group "left" event.
+    /// the `kafka.assignment.became_empty` event.
     #[test]
     fn owned_count_reaches_zero_after_full_revocation() {
         let state = RebalanceState::new(false);
@@ -1255,18 +1294,78 @@ mod tests {
     }
 
     /// Scenario: partition tokens are appended to a structured-log buffer.
-    /// Guarantees: `append_partition` produces a stable, compact,
-    /// comma-separated `topic-partition` string (no leading/trailing comma) so
-    /// assignment/revocation logs are human- and machine-readable.
+    /// Guarantees: `PartitionListFmt` eagerly builds a stable, compact,
+    /// comma-separated `topic-partition` string (no leading/trailing comma, no
+    /// truncation marker when nothing was dropped) so assignment/revocation logs
+    /// are human- and machine-readable, and reports an accurate un-truncated
+    /// count/listed_count.
     #[test]
     fn append_partition_builds_comma_separated_list() {
-        let mut buf = String::new();
-        // An empty buffer starts without a leading separator.
-        assert_eq!(buf, "");
-        append_partition(&mut buf, "traces", 0);
-        append_partition(&mut buf, "traces", 1);
-        append_partition(&mut buf, "metrics", 3);
-        assert_eq!(buf, "traces-0,traces-1,metrics-3");
+        let mut fmt = PartitionListFmt::default();
+        // An empty buffer is the empty string.
+        assert_eq!(fmt.as_str(), "");
+        assert_eq!(fmt.count(), 0);
+        fmt.append("traces", 0);
+        fmt.append("traces", 1);
+        fmt.append("metrics", 3);
+        assert_eq!(fmt.as_str(), "traces-0,traces-1,metrics-3");
+        assert_eq!(fmt.count(), 3);
+        assert_eq!(fmt.listed_count(), 3);
+        // Nothing was dropped, so no truncation marker is present.
+        assert!(!fmt.truncated());
+        assert!(!fmt.as_str().ends_with("..."));
+    }
+
+    /// Scenario: more `topic-partition` tokens are appended than the entry cap
+    /// `MAX_LISTED_PARTITIONS` permits.
+    /// Guarantees: the rendered list is capped at `MAX_LISTED_PARTITIONS`
+    /// tokens, a single trailing `...` marker signals the drop, `truncated()`
+    /// flips to `true`, `listed_count()` equals the cap, and `count()` still
+    /// reports the full total -- so a huge rebalance never emits an unbounded log
+    /// line yet the true magnitude is preserved.
+    #[test]
+    fn partition_list_fmt_truncates_beyond_cap() {
+        let mut fmt = PartitionListFmt::default();
+        let total = MAX_LISTED_PARTITIONS + 10;
+        for partition in 0..total {
+            fmt.append("traces", partition as i32);
+        }
+        assert_eq!(fmt.count(), total);
+        assert_eq!(fmt.listed_count(), MAX_LISTED_PARTITIONS);
+        assert!(fmt.truncated());
+        let rendered = fmt.as_str();
+        // Truncation appends exactly one `...` marker.
+        assert!(rendered.ends_with("..."), "rendered = {rendered}");
+        assert_eq!(rendered.matches("...").count(), 1, "exactly one marker");
+        // The rendered list contains exactly `MAX_LISTED_PARTITIONS` tokens plus
+        // the marker: one comma between each of the cap tokens and one before
+        // the marker == `MAX_LISTED_PARTITIONS` commas.
+        let commas = rendered.matches(',').count() as u64;
+        assert_eq!(commas, MAX_LISTED_PARTITIONS);
+        // The last listed token is the one at index `MAX_LISTED_PARTITIONS - 1`;
+        // nothing past the cap leaks in.
+        assert!(rendered.contains(&format!("traces-{}", MAX_LISTED_PARTITIONS - 1)));
+        assert!(!rendered.contains(&format!("traces-{MAX_LISTED_PARTITIONS}")));
+    }
+
+    /// Scenario: exactly the cap number of tokens are appended.
+    /// Guarantees: a list at the cap boundary is fully rendered with no trailing
+    /// `...` marker and `truncated()` stays `false`, so the marker has no
+    /// off-by-one at the boundary.
+    #[test]
+    fn partition_list_fmt_at_cap_is_not_truncated() {
+        let mut fmt = PartitionListFmt::default();
+        for partition in 0..MAX_LISTED_PARTITIONS {
+            fmt.append("traces", partition as i32);
+        }
+        assert_eq!(fmt.count(), MAX_LISTED_PARTITIONS);
+        assert_eq!(fmt.listed_count(), MAX_LISTED_PARTITIONS);
+        assert!(!fmt.truncated());
+        let rendered = fmt.as_str();
+        assert!(!rendered.ends_with("..."), "rendered = {rendered}");
+        // Exactly `MAX_LISTED_PARTITIONS` tokens => one fewer comma.
+        let commas = rendered.matches(',').count() as u64;
+        assert_eq!(commas, MAX_LISTED_PARTITIONS - 1);
     }
 
     #[test]

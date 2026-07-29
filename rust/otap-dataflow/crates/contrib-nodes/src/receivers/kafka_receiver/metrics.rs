@@ -120,9 +120,14 @@ pub struct KafkaReceiverMetrics {
     /// how far behind the group's committed position is, not the receiver's local
     /// progress.
     ///
+    /// The mean covers every owned partition: a refresh that cannot measure all
+    /// of them (a failed broker read, or an owned partition with no committed
+    /// offset yet) is abandoned and the previous value is retained rather than
+    /// computing the mean from a subset. When ownership drops to zero the gauge
+    /// is reset to `0`.
+    ///
     /// Manual commit mode only and opt-in via `lag_refresh_interval_ms`;
-    /// otherwise stays `0`. On a failed refresh the previous value is kept rather
-    /// than reset.
+    /// otherwise stays `0`.
     #[metric(unit = "{message}")]
     pub consumer_lag: Gauge<f64>,
     /// Offset commit failures during pre-rebalance revoke.
