@@ -38,7 +38,6 @@ source for metric and attribute-set design:
   `#[metric(name = "custom.name", unit = "{unit}")]`.
   - If `name` is omitted, the field identifier is converted by replacing `_`
     with `.`.
-
 - The macro injects `#[repr(C, align(64))]` for better cache-line isolation.
 - The macro also derives the required handler to integrate with the metrics
   registry.
