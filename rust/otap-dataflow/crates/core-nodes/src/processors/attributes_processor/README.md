@@ -111,16 +111,8 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.attributes.transform_failed` | `{op}` | Number of failed transform attempts. |
-| `processor.attributes.renamed_entries` | `{attr}` | Total number of attribute entries actually renamed. |
-| `processor.attributes.deleted_entries` | `{attr}` | Total number of attribute entries actually deleted. |
-| `processor.attributes.inserted_entries` | `{attr}` | Total number of attribute entries actually inserted. |
-| `processor.attributes.upserted_entries` | `{attr}` | Total number of attribute entries actually upserted. |
-| `processor.attributes.updated_entries` | `{attr}` | Total number of attribute entries actually updated. |
-| `processor.attributes.hashed_entries` | `{attr}` | Total number of attribute entries actually hashed. |
-| `processor.attributes.domains_signal` | `{apply}` | Number of times transforms were applied to signal-level payloads. |
-| `processor.attributes.domains_resource` | `{apply}` | Number of times transforms were applied to resource-level payloads. |
-| `processor.attributes.domains_scope` | `{apply}` | Number of times transforms were applied to scope-level payloads. |
+| `processor.attributes.transforms` | `{transform}` | Number of transform attempts, partitioned by `outcome` (`success` or `failure`). |
+| `processor.attributes.modified.entries` | `{attr}` | Total number of attribute entries modified, partitioned by `action` and `domain`. |
 
 ### Events
 

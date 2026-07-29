@@ -4723,14 +4723,42 @@ mod tests {
     /// and down; the full procedure is documented in the Kafka test-suite README
     /// ("Multi-receiver scale-up/down").
     ///
-    /// Guarantees: (1) partitions distribute across the group -- B delivers its
-    /// assigned partition's records and both replicas' terminal metrics report
-    /// `partition_assignments >= 1` covering all partitions; (2) a rebalance is
-    /// observed via metrics (`partition_revocations >= 1` across the replicas);
-    /// (3) no loss and no double-commit -- every produced record is delivered at
-    /// least once and durably retained on the broker, each partition's committed
-    /// offset converges to exactly the produced total (no rollback, no
-    /// over-commit), and neither replica reports `offset_commit_errors`.
+    /// Guarantees: (1) both replicas own a partition at some point, so the
+    /// partitions distribute across the group (B consumes records that only its
+    /// assigned partition can deliver, and both replicas' terminal metrics show
+    /// `partitions_assigned >= 1`); (2) a rebalance is observed on scale-up/down
+    /// (`partition_revocations >= 1` across the two replicas); (3) no message is
+    /// lost or double-committed -- every produced record is delivered at least
+    /// once and durably retained on the broker, each partition's committed
+    /// offset stays within `[wave-1 count, total produced count]` (the lower
+    /// bound proves committed progress is never rolled back across a rebalance,
+    /// the upper bound proves nothing is committed past the produced data), and
+    /// neither replica reports `offset_commit_errors`.
+    ///
+    /// This is the in-process analogue of running 2+ replicas with the same
+    /// `group_id` against a multi-partition topic and scaling the replica count
+    /// up and down. Procedure (mirrored by the code below):
+    ///   1. Pre-create a `REBALANCE_TEST_PARTITIONS`-partition topic and produce
+    ///      wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per partition).
+    ///   2. Start replica A alone and drain wave 1 in full, so A demonstrably
+    ///      owned every partition before anyone else joined.
+    ///   3. Start replica B in the same group (scale-up), then produce wave 2 so
+    ///      B's newly-assigned partition has fresh records to deliver.
+    ///   4. Drain the group, prioritizing B so its assigned partition is not
+    ///      re-won by A's continuously-polling loop, until every produced record
+    ///      has been delivered at least once (bounded by a deadline so a stall
+    ///      fails loudly instead of hanging).
+    ///   5. Shut down B (scale-down); this forces a second rebalance that returns
+    ///      B's partition to A. Drain A briefly so A can re-own and commit.
+    ///   6. Shut down A. Read each replica's `TerminalState` metrics and assert
+    ///      distribution, rebalance observation, and no-loss/no-double-commit.
+    ///
+    /// Rebalance timing on the mock is nondeterministic and delivery is
+    /// at-least-once, so distribution is gated by B's own deliveries plus folded
+    /// rebalance metrics, and no-loss/no-double-commit is gated by broker-side
+    /// record retention plus a bounded committed offset per partition (not by an
+    /// exact delivered-record count, which duplicates can inflate during a
+    /// rebalance).
     #[tokio::test]
     async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
         use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
