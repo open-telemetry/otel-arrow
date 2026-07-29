@@ -198,7 +198,9 @@ func (b *DataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumulator) (
 	b.builder.Reserve(len(b.dataPointAccumulator.dps))
 
 	for _, ndp := range b.dataPointAccumulator.dps {
-		b.ib.Append(ID)
+		if err = b.ib.Append(ID); err != nil {
+			return nil, werror.Wrap(err)
+		}
 		b.pib.Append(b.dataPointAccumulator.sorter.Encode(ndp.ParentID, ndp.Orig))
 
 		// Attributes

@@ -182,7 +182,9 @@ func (b *ExemplarBuilder) TryBuild(attrsAccu *carrow.Attributes32Accumulator) (r
 		if attrs.Len() == 0 {
 			b.ib.AppendNull()
 		} else {
-			b.ib.Append(exemplarID)
+			if err = b.ib.Append(exemplarID); err != nil {
+				return
+			}
 
 			// Attributes
 			err = attrsAccu.Append(exemplarID, attrs)
