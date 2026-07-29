@@ -93,16 +93,19 @@ pub struct AdminServer { /* ... */ }
 
 ## Standard Attribute Keys
 
-Use well-known attribute key constants from otap_df_engine::inventory::attrs:
+Use well-known attribute key constants from otap_df_engine::inventory::attrs.
+The values shown are illustrative examples, not defaults: the attribute map is
+free-form and each component supplies its own value.
 
-| Key Constant | Description | Example Values |
+| Key (constant) | Description | Example values |
 | :--- | :--- | :--- |
-| port | Listening network port | "4317", "8080" |
-| protocol | Wire protocol | "gRPC (HTTP/2)", "HTTP", "TCP" |
-| auth | Authentication mechanism | "mTLS (opt-in)", "NONE", "OAuth2" |
-| filesystem_access | Local filesystem access level | "READ_ONLY", "READ_WRITE", "NONE" |
-| cloud_api | External cloud API endpoint | "Azure Monitor", "AWS Kinesis" |
-| feature_flag | Cargo feature flag required | "etw", "kafka" |
+| listen_port (LISTEN_PORT) | Inbound port the component listens on | "4317", "8080" |
+| remote_port (REMOTE_PORT) | Destination port the component connects out to | "4317", "443" |
+| protocol (PROTOCOL) | Wire protocol | "gRPC (HTTP/2)", "HTTP", "TCP" |
+| auth (AUTH) | Authentication mechanism | "mTLS (opt-in)", "NONE", "OAuth2" |
+| filesystem_access (FILESYSTEM_ACCESS) | Local filesystem access level | "READ_ONLY", "READ_WRITE", "NONE" |
+| cloud_api (CLOUD_API) | External cloud API endpoint | "Azure Monitor", "AWS Kinesis" |
+| feature_flag (FEATURE_FLAG) | Cargo feature flag required | "etw", "kafka" |
 
 ---
 

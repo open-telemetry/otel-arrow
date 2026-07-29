@@ -22,7 +22,7 @@
 //! #[component_inventory(
 //!     category = Receiver,
 //!     description = "OTLP unary gRPC receiver on port 4317",
-//!     attributes(port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
+//!     attributes(listen_port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
 //! )]
 //! #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 //! pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
@@ -39,7 +39,7 @@
 //!     id = "urn:otel:admin:http_server",
 //!     category = Admin,
 //!     description = "Built-in HTTP admin server",
-//!     attributes(port = "8080", protocol = "HTTP", auth = "NONE"),
+//!     attributes(listen_port = "8080", protocol = "HTTP", auth = "NONE"),
 //! )]
 //! pub struct AdminServer { /* ... */ }
 //! ```

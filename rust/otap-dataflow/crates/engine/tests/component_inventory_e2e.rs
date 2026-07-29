@@ -24,7 +24,7 @@ struct FakeFactory {
 #[component_inventory(
     category = Receiver,
     description = "test receiver",
-    attributes(port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
+    attributes(listen_port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
 )]
 static TEST_RECEIVER: FakeFactory = FakeFactory {
     name: TEST_RECEIVER_URN,
@@ -58,7 +58,7 @@ fn factory_static_entry_is_registered_with_derived_urn_id() {
     let meta = find(TEST_RECEIVER_URN);
     assert_eq!(meta.category, Category::Receiver);
     assert_eq!(meta.description, Some("test receiver"));
-    assert_eq!(meta.attribute(attrs::PORT), Some("4317"));
+    assert_eq!(meta.attribute(attrs::LISTEN_PORT), Some("4317"));
     assert_eq!(meta.attribute(attrs::PROTOCOL), Some("gRPC (HTTP/2)"));
     assert_eq!(meta.attribute(attrs::AUTH), Some("mTLS (opt-in)"));
     assert_eq!(meta.attribute("does-not-exist"), None);

@@ -52,8 +52,14 @@ pub use otap_df_engine_inventory_syntax::Category;
 // stability field does not fit. Revisit with the SIG if a component-level
 // stability key is wanted later.
 pub mod attrs {
-    /// Network port the component listens on or connects to (e.g. `"4317"`).
-    pub const PORT: &str = "port";
+    /// Network port the component listens on for inbound connections (e.g. a
+    /// receiver or admin server accepting traffic on `"4317"`). Use
+    /// [`REMOTE_PORT`] for the destination port of an outbound connection.
+    pub const LISTEN_PORT: &str = "listen_port";
+    /// Destination port the component connects out to (e.g. an exporter dialing
+    /// a downstream collector on `"4317"`). Use [`LISTEN_PORT`] for an inbound
+    /// listening port.
+    pub const REMOTE_PORT: &str = "remote_port";
     /// Wire protocol (e.g. `"gRPC (HTTP/2)"`, `"HTTP"`).
     pub const PROTOCOL: &str = "protocol";
     /// Authentication mechanism (e.g. `"mTLS (opt-in)"`, `"NONE"`).

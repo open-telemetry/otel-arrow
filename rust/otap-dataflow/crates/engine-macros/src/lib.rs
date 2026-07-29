@@ -162,7 +162,7 @@ pub fn capability(args: TokenStream, input: TokenStream) -> TokenStream {
 /// #[component_inventory(
 ///     category = Receiver,
 ///     description = "OTLP unary gRPC receiver on port 4317",
-///     attributes(port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
+///     attributes(listen_port = "4317", protocol = "gRPC (HTTP/2)", auth = "mTLS (opt-in)"),
 /// )]
 /// #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
 /// pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
