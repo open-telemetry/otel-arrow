@@ -44,5 +44,6 @@ uuid = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]
+async-trait = { workspace = true }
 axum = { workspace = true }
 otap-df-test-net = { workspace = true }

@@ -16,7 +16,7 @@ configuration semantics, see
 
 | Extension | URN | Feature gate | Capability | Docs |
 | --- | --- | --- | --- | --- |
-| Azure Identity Auth | `urn:microsoft:extension:azure_identity_auth` | `azure-identity-auth-extension` | `bearer_token_provider` | [`docs/azure-identity-auth-extension.md`](../../docs/azure-identity-auth-extension.md) |
+| Azure Identity Auth | `urn:microsoft:extension:azure_identity_auth` | `azure-identity-auth-extension` | `bearer_token_provider` | [`design.md`](./src/azure_identity_auth/design.md) |
 
 Extensions are enabled through individual feature gates or the aggregate
 `contrib-extensions` feature gate. An extension documented as `Experimental`,

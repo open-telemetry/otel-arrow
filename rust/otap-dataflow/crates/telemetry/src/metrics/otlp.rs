@@ -5,7 +5,7 @@
 //!
 //! # Why this bridge exists
 //!
-//! The internal telemetry SDK records a *metric set*: one multivariate value
+//! The internal telemetry system records a *metric set*: one multivariate value
 //! containing several metric fields that share an entity, attributes, and a
 //! collection time. The current OTLP and OTAP export paths operate on standard
 //! univariate metrics instead. This module is the boundary that expands each
@@ -67,7 +67,7 @@
 //! | `Counter` | monotonic `Sum` | Descriptor temporality; delta-window or registration start |
 //! | `UpDownCounter` | non-monotonic `Sum` | Descriptor temporality; delta-window or registration start |
 //! | `Gauge` | `Gauge` | Start time is zero, as required for an instantaneous value |
-//! | scalar `Histogram` | delta `Histogram` with one observation | Delta-window start; uses the SDK-compatible default explicit bounds |
+//! | scalar `Histogram` | delta `Histogram` with one observation | Delta-window start; uses the bridge's stable explicit bounds |
 //! | `Mmsc` | delta, bucketless `Histogram` | Delta-window start; preserves exact min, max, sum, and count |
 //!
 //! Every point uses [`MetricExportBatch::time_unix_nano`] as its end time. A
@@ -176,7 +176,7 @@ pub enum Error {
     },
 }
 
-/// A supported subset of an OpenTelemetry SDK metric view.
+/// A supported subset of metric view behavior.
 ///
 /// A metric field can match more than one view. Each matching view produces an
 /// OTLP metric stream, while a field that matches no views retains its
@@ -311,7 +311,7 @@ impl MetricsOtlpEncoder {
 
     /// Creates an encoder with metric views applied during OTLP projection.
     ///
-    /// Matching follows SDK view semantics for the supported subset: optional
+    /// Matching follows view semantics for the supported subset: optional
     /// selectors are exact matches, all matching views produce streams, and
     /// the descriptor-defined stream is emitted only when no view matches.
     /// Views must not map different source fields in one effective
@@ -900,9 +900,9 @@ fn number_data_point(
 
 /// Encodes the legacy scalar histogram form as exactly one observation.
 ///
-/// Scalar histograms are not pre-aggregated. Retaining the OpenTelemetry SDK's
-/// default explicit bounds keeps this bridge compatible with the previous SDK
-/// export path. [`Instrument::Mmsc`] follows a separate, bucketless path above.
+/// Scalar histograms are not pre-aggregated. These stable explicit bounds keep
+/// their output shape consistent across native ITS releases.
+/// [`Instrument::Mmsc`] follows a separate, bucketless path above.
 fn scalar_histogram_data_point(
     value: MetricValue,
     start_time_unix_nano: u64,

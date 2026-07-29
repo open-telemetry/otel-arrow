@@ -51,7 +51,7 @@ use tower::{Layer, Service};
 /// or backpressure state (e.g., services wrapping bounded channels where each
 /// clone has independent capacity). For such services, use Tower's
 /// `GlobalConcurrencyLimitLayer` or `Buffer` which hold the same service
-/// instance through the `poll_ready` → `call` sequence.
+/// instance through the `poll_ready` -> `call` sequence.
 ///
 /// # Example
 ///

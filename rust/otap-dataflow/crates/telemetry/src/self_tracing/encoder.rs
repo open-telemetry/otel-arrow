@@ -8,6 +8,9 @@ use crate::event::LogEvent;
 use crate::registry::EntityKey;
 use crate::registry::TelemetryRegistryHandle;
 use bytes::Bytes;
+use otap_df_config::pipeline::telemetry::{
+    AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
+};
 use otap_df_pdata::otlp::common::{BoundedBuf, Dropped, EncodeResult, ProtoBuffer};
 use otap_df_pdata::proto::consts::{
     field_num::common::*, field_num::logs::*, field_num::resource::*, wire_types,
@@ -83,7 +86,7 @@ impl<'buf, B: BoundedBuf> DirectLogRecordEncoder<'buf, B> {
 /// Encode the event name from callsite metadata.
 ///
 /// Emits the bare `callsite.name()` (the first argument to `otel_info!` /
-/// `otel_warn!` / …). The crate name (`callsite.target()`) is **not**
+/// `otel_warn!` / ...). The crate name (`callsite.target()`) is **not**
 /// prefixed here; it is conveyed separately through
 /// `InstrumentationScope.name` by [`encode_export_logs_request`] so that
 /// `event.name` on the wire matches the value declared in the
@@ -261,7 +264,7 @@ fn encode_debug_string<B: BoundedBuf>(buf: &mut B, value: &dyn std::fmt::Debug) 
 /// Compute the per-attribute budget: at most half of remaining space, but
 /// at least 1 byte (to ensure a chance of a tag byte being written and
 /// triggering an atomic drop). Intentionally halves for every attribute,
-/// including the last — this keeps the policy single-pass without requiring
+/// including the last -- this keeps the policy single-pass without requiring
 /// pre-counting the field set, while still preventing one large value from
 /// consuming the entire remaining buffer.
 #[inline]
@@ -390,72 +393,102 @@ pub const fn level_to_severity_number(level: &Level) -> u8 {
     }
 }
 
-/// Encode an SDK Resource as OTLP Resource bytes (field 1 of ResourceLogs).
+/// Encode configured resource attributes as the resource fragment shared by
+/// OTLP `ResourceLogs` and `ResourceMetrics` messages.
 ///
-/// The buffer is NOT cleared; bytes are appended.
-fn encode_resource<'a, I>(buf: &mut ProtoBuffer, attrs: I, schema_url: Option<&str>)
-where
-    I: Iterator<Item = (&'a opentelemetry::Key, &'a opentelemetry::Value)>,
-{
-    // ResourceLogs.resource (field 1, Resource message)
+/// The fragment contains only the encoded `resource` field. Both OTLP message
+/// types assign that field the same number, so callers can reuse these bytes
+/// without constructing an intermediate SDK resource.
+#[must_use]
+pub(crate) fn encode_config_resource_field(
+    resource_attributes: &HashMap<String, ConfigAttributeValue>,
+) -> Bytes {
+    let mut buf = ProtoBuffer::with_capacity(256);
     let _: EncodeResult = buf.encode_len_delimited(RESOURCE_LOGS_RESOURCE, |buf| {
-        // Encode each attribute as a KeyValue
-        for (key, value) in attrs {
-            encode_resource_attribute(buf, key.as_str(), value)?;
+        for (key, value) in resource_attributes {
+            encode_config_resource_attribute(buf, key, value)?;
         }
         Ok(())
     });
-
-    // ResourceLogs.schema_url (field 3, string)
-    if let Some(url) = schema_url {
-        let _ = buf.encode_string(RESOURCE_LOGS_SCHEMA_URL, url);
-    }
-}
-
-/// Encode an SDK Resource to bytes for later reuse.
-#[must_use]
-pub fn encode_resource_to_bytes(resource: &opentelemetry_sdk::Resource) -> Bytes {
-    let mut buf = ProtoBuffer::with_capacity(256);
-    encode_resource(&mut buf, resource.iter(), resource.schema_url());
     buf.into_bytes()
 }
 
-/// Encode a single resource attribute as a KeyValue message.
-#[inline]
-fn encode_resource_attribute(
+/// Encode one configured resource attribute as an OTLP `KeyValue`.
+fn encode_config_resource_attribute(
     buf: &mut ProtoBuffer,
     key: &str,
-    value: &opentelemetry::Value,
+    value: &ConfigAttributeValue,
 ) -> EncodeResult {
-    use opentelemetry::Value;
-
     buf.encode_len_delimited(RESOURCE_ATTRIBUTES, |buf| {
         buf.encode_string(KEY_VALUE_KEY, key)?;
         buf.encode_len_delimited(KEY_VALUE_VALUE, |buf| {
-            match value {
-                Value::String(s) => {
-                    buf.encode_string(ANY_VALUE_STRING_VALUE, s.as_str())?;
-                }
-                Value::Bool(b) => {
-                    buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
-                    buf.encode_varint(u64::from(*b))?;
-                }
-                Value::I64(i) => {
-                    buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
-                    buf.encode_varint(*i as u64)?;
-                }
-                Value::F64(f) => {
-                    buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
-                    buf.extend_from_slice(&f.to_le_bytes())?;
-                }
-                _ => {
-                    // TODO: share the encoding logic used somewhere else, somehow.
-                    crate::raw_error!("encoder.sdk_resource_value", message = "cannot encode SDK resource value", value = ?value);
-                }
-            }
-            Ok(())
+            encode_config_resource_value(buf, value)
         })
     })
+}
+
+/// Encode one configured resource value as an OTLP `AnyValue` payload.
+fn encode_config_resource_value(
+    buf: &mut ProtoBuffer,
+    value: &ConfigAttributeValue,
+) -> EncodeResult {
+    match value {
+        ConfigAttributeValue::String(value) => {
+            buf.encode_string(ANY_VALUE_STRING_VALUE, value)?;
+        }
+        ConfigAttributeValue::Bool(value) => {
+            buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+            buf.encode_varint(u64::from(*value))?;
+        }
+        ConfigAttributeValue::I64(value) => {
+            buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+            buf.encode_varint(*value as u64)?;
+        }
+        ConfigAttributeValue::F64(value) => {
+            buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+            buf.extend_from_slice(&value.to_le_bytes())?;
+        }
+        ConfigAttributeValue::Array(values) => {
+            buf.encode_len_delimited(ANY_VALUE_ARRAY_VALUE, |buf| match values {
+                ConfigAttributeValueArray::Bool(values) => {
+                    encode_config_resource_array(buf, values, |buf, value| {
+                        buf.encode_field_tag(ANY_VALUE_BOOL_VALUE, wire_types::VARINT)?;
+                        buf.encode_varint(u64::from(*value))
+                    })
+                }
+                ConfigAttributeValueArray::I64(values) => {
+                    encode_config_resource_array(buf, values, |buf, value| {
+                        buf.encode_field_tag(ANY_VALUE_INT_VALUE, wire_types::VARINT)?;
+                        buf.encode_varint(*value as u64)
+                    })
+                }
+                ConfigAttributeValueArray::F64(values) => {
+                    encode_config_resource_array(buf, values, |buf, value| {
+                        buf.encode_field_tag(ANY_VALUE_DOUBLE_VALUE, wire_types::FIXED64)?;
+                        buf.extend_from_slice(&value.to_le_bytes())
+                    })
+                }
+                ConfigAttributeValueArray::String(values) => {
+                    encode_config_resource_array(buf, values, |buf, value| {
+                        buf.encode_string(ANY_VALUE_STRING_VALUE, value)
+                    })
+                }
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Encode a homogeneous configured array as repeated OTLP `AnyValue` entries.
+fn encode_config_resource_array<T>(
+    buf: &mut ProtoBuffer,
+    values: &[T],
+    mut encode_value: impl FnMut(&mut ProtoBuffer, &T) -> EncodeResult,
+) -> EncodeResult {
+    for value in values {
+        buf.encode_len_delimited(ARRAY_VALUE_VALUES, |buf| encode_value(buf, value))?;
+    }
+    Ok(())
 }
 
 // Field numbers for ExportLogsServiceRequest and related messages
@@ -611,7 +644,7 @@ pub fn encode_export_logs_request(
         buf.encode_len_delimited(RESOURCE_LOGS_SCOPE_LOGS, |buf| {
             // ScopeLogs.scope (field 1, InstrumentationScope message)
             buf.encode_len_delimited(SCOPE_LOG_SCOPE, |buf| {
-                // InstrumentationScope.name (field 1, string) — the crate
+                // InstrumentationScope.name (field 1, string) -- the crate
                 // that emitted the event (i.e. the tracing target,
                 // `env!("CARGO_PKG_NAME")` at the call site). Pairing
                 // scope.name with the bare `event.name` encoded below
@@ -644,8 +677,9 @@ mod tests {
     use crate::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
     use crate::event::LogEvent;
     use crate::self_tracing::formatter::format_log_record_to_string;
-    use opentelemetry::KeyValue as OTelKeyValue;
-    use opentelemetry_sdk::Resource as OTelResource;
+    use otap_df_config::pipeline::telemetry::{
+        AttributeValue as ConfigAttributeValue, AttributeValueArray as ConfigAttributeValueArray,
+    };
     use otap_df_pdata::proto::opentelemetry::collector::logs::v1::ExportLogsServiceRequest;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue, InstrumentationScope, KeyValue,
@@ -656,7 +690,7 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::logs::v1::SeverityNumber;
     use otap_df_pdata::proto::opentelemetry::resource::v1::Resource;
     use prost::Message;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::time::{Duration, SystemTime};
     use tracing::Level;
 
@@ -701,18 +735,90 @@ mod tests {
         }
     }
 
+    /// Scenario: configured scalar and array resource attributes are encoded directly.
+    /// Guarantees: the reusable OTLP resource fragment preserves every supported value type.
     #[test]
-    fn encode_resource_to_bytes_encodes_attributes() {
-        // Empty resource produces output
-        let empty = encode_resource_to_bytes(&OTelResource::builder_empty().build());
-        assert!(!empty.is_empty());
+    fn encode_config_resource_field_preserves_supported_values() {
+        let empty = ResourceLogs::decode(encode_config_resource_field(&HashMap::new()))
+            .expect("empty resource fragment should decode");
+        assert_eq!(
+            empty
+                .resource
+                .expect("empty resource should still be present")
+                .attributes,
+            []
+        );
 
-        // Resource with attributes contains encoded values
-        let resource = OTelResource::builder_empty()
-            .with_attributes([OTelKeyValue::new("service.name", "test-svc")])
-            .build();
-        let bytes = encode_resource_to_bytes(&resource);
-        assert!(bytes.windows(8).any(|w| w == b"test-svc"));
+        let resource = HashMap::from([
+            (
+                "service.name".to_owned(),
+                ConfigAttributeValue::String("test-svc".to_owned()),
+            ),
+            ("enabled".to_owned(), ConfigAttributeValue::Bool(true)),
+            ("replicas".to_owned(), ConfigAttributeValue::I64(3)),
+            ("ratio".to_owned(), ConfigAttributeValue::F64(0.5)),
+            (
+                "zones".to_owned(),
+                ConfigAttributeValue::Array(ConfigAttributeValueArray::String(vec![
+                    "west".to_owned(),
+                    "east".to_owned(),
+                ])),
+            ),
+            (
+                "flags".to_owned(),
+                ConfigAttributeValue::Array(ConfigAttributeValueArray::Bool(vec![true, false])),
+            ),
+            (
+                "ports".to_owned(),
+                ConfigAttributeValue::Array(ConfigAttributeValueArray::I64(vec![4317, 4318])),
+            ),
+            (
+                "weights".to_owned(),
+                ConfigAttributeValue::Array(ConfigAttributeValueArray::F64(vec![0.25, 0.75])),
+            ),
+        ]);
+        let bytes = encode_config_resource_field(&resource);
+        let decoded = ResourceLogs::decode(bytes).expect("resource fragment should decode");
+        let actual = decoded
+            .resource
+            .expect("resource should exist")
+            .attributes
+            .into_iter()
+            .map(|attribute| {
+                (
+                    attribute.key,
+                    attribute.value.expect("attribute value should be present"),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected = BTreeMap::from([
+            ("enabled".to_owned(), AnyValue::new_bool(true)),
+            (
+                "flags".to_owned(),
+                AnyValue::new_array(vec![AnyValue::new_bool(true), AnyValue::new_bool(false)]),
+            ),
+            (
+                "ports".to_owned(),
+                AnyValue::new_array(vec![AnyValue::new_int(4317), AnyValue::new_int(4318)]),
+            ),
+            ("ratio".to_owned(), AnyValue::new_double(0.5)),
+            ("replicas".to_owned(), AnyValue::new_int(3)),
+            ("service.name".to_owned(), AnyValue::new_string("test-svc")),
+            (
+                "weights".to_owned(),
+                AnyValue::new_array(vec![AnyValue::new_double(0.25), AnyValue::new_double(0.75)]),
+            ),
+            (
+                "zones".to_owned(),
+                AnyValue::new_array(vec![
+                    AnyValue::new_string("west"),
+                    AnyValue::new_string("east"),
+                ]),
+            ),
+        ]);
+
+        assert_eq!(actual, expected);
+        assert!(decoded.scope_logs.is_empty());
     }
 
     #[test]
@@ -730,7 +836,7 @@ mod tests {
         let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
         let log_event = LogEvent { time, record };
 
-        let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
+        let resource_bytes = encode_config_resource_field(&HashMap::new());
 
         let mut buf = ProtoBuffer::default();
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
@@ -846,7 +952,7 @@ mod tests {
         let time = SystemTime::UNIX_EPOCH + Duration::from_nanos(timestamp_ns);
         let log_event = LogEvent { time, record };
 
-        let resource_bytes = encode_resource_to_bytes(&OTelResource::builder_empty().build());
+        let resource_bytes = encode_config_resource_field(&HashMap::new());
         let mut buf = ProtoBuffer::default();
         encode_export_logs_request(&mut buf, &log_event, &resource_bytes, &mut scope_cache);
 
@@ -1008,7 +1114,7 @@ mod tests {
 
     /// Verify `record_debug` formats a Debug value directly into the buffer
     /// (via the `BoundedBufFmt` adapter) and produces a decodable KeyValue
-    /// whose string matches `format!("{:?}", value)` — i.e. no truncation
+    /// whose string matches `format!("{:?}", value)` -- i.e. no truncation
     /// when the value comfortably fits.
     #[test]
     fn record_debug_writes_fmt_output_without_intermediate_string() {
@@ -1061,7 +1167,7 @@ mod tests {
     /// When a Debug value overflows the available buffer, `BoundedBufFmt`
     /// returns `fmt::Error` from the formatter, `encode_debug_string`
     /// propagates `Dropped`, and the surrounding `try_encode` rolls back
-    /// any partial KeyValue bytes — leaving the buffer unchanged and
+    /// any partial KeyValue bytes -- leaving the buffer unchanged and
     /// incrementing `dropped_count`.
     #[test]
     fn record_debug_overflow_rolls_back_and_increments_dropped() {
@@ -1094,7 +1200,7 @@ mod tests {
             "the single oversized debug field should be counted as dropped"
         );
 
-        // No partial KeyValue bytes survive — the transaction was rolled back.
+        // No partial KeyValue bytes survive -- the transaction was rolled back.
         assert_eq!(
             buf.len(),
             before_len,

@@ -10,7 +10,7 @@
 //! # Features
 //!
 //! - Per-signal topic and encoding configuration (traces, metrics, logs)
-//! - Optional signals — only configure the signals you need
+//! - Optional signals -- only configure the signals you need
 //! - Per-signal encoding: `otlp_proto` or `otap_proto`
 //! - Per-signal dynamic topic routing from transport headers
 //! - Authentication: SASL with AWS MSK IAM OAUTHBEARER

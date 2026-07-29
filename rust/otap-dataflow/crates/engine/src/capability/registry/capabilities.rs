@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`Capabilities`] — the per-node consumer API for resolved capability
+//! [`Capabilities`] -- the per-node consumer API for resolved capability
 //! bindings, with `require_*` and `optional_*` accessors.
 
 use super::{Error, ResolvedLocalEntry, ResolvedSharedEntry};
@@ -40,16 +40,16 @@ impl Capabilities {
 
     /// Resolve a **required** local capability.
     ///
-    /// Returns `Box<dyn C::Local>` — a fresh local trait object minted
+    /// Returns `Box<dyn C::Local>` -- a fresh local trait object minted
     /// for this consumer. If the capability was registered by a
     /// shared-only extension, the `SharedAsLocal` adapter is returned
-    /// transparently — the caller always gets a local trait object.
+    /// transparently -- the caller always gets a local trait object.
     ///
     /// Each consumer gets its own boxed instance, mirroring
     /// [`Self::require_shared`]. Capabilities that need to share state
     /// across consumers (across calls or across nodes that bound the
     /// same instance) must use `Rc<RefCell<T>>` (local) or
-    /// `Arc<Mutex<T>>` (shared) fields explicitly — there is no
+    /// `Arc<Mutex<T>>` (shared) fields explicitly -- there is no
     /// implicit fan-out via `Rc::clone`.
     ///
     /// # One-shot contract
@@ -58,7 +58,7 @@ impl Capabilities {
     /// claim consumes the local entry, and a `require_shared` claim
     /// consumes the shared entry. Node factories are expected to
     /// call each accessor at most once at construction and store the
-    /// returned handle (wrapping it in `Rc<…>` themselves if they need
+    /// returned handle (wrapping it in `Rc<...>` themselves if they need
     /// to fan out within the node).
     ///
     /// The contract is **per-binding**, not per-execution-model: a
@@ -91,7 +91,7 @@ impl Capabilities {
     ///
     /// # Panics
     ///
-    /// Panics on a type-erasure downcast mismatch — this indicates a
+    /// Panics on a type-erasure downcast mismatch -- this indicates a
     /// registry bug (the `#[capability]` proc macro guarantees the
     /// stored entry's concrete type matches `C::Local`).
     pub fn require_local<C: crate::capability::ExtensionCapability>(
@@ -123,7 +123,7 @@ impl Capabilities {
             // `require_shared`/`optional_shared` returns
             // `CapabilityAlreadyConsumed`. In the SharedAsLocal
             // fallback there is no separate native local entry, so
-            // this branch does not run for that path — the shared
+            // this branch does not run for that path -- the shared
             // entry's `Cell::take()` below is the single guard.
             if let Some(shared_entry) = self.shared.get(&id) {
                 let _ = shared_entry.produce.take();
@@ -134,7 +134,7 @@ impl Capabilities {
         // SharedAsLocal fallback. The same `Cell::take()` on the
         // shared entry is the binding's one-shot guard, so claiming
         // the local-via-fallback accessor here naturally consumes
-        // the native shared accessor too — a subsequent
+        // the native shared accessor too -- a subsequent
         // `require_shared` returns [`Error::CapabilityAlreadyConsumed`].
         let entry = self
             .shared
@@ -165,7 +165,7 @@ impl Capabilities {
 
     /// Resolve a **required** shared capability.
     ///
-    /// Returns `Box<dyn C::Shared>` — the extension's shared
+    /// Returns `Box<dyn C::Shared>` -- the extension's shared
     /// implementation produced for this node.
     ///
     /// # One-shot contract
@@ -183,7 +183,7 @@ impl Capabilities {
     ///
     /// # Panics
     ///
-    /// Panics on a type-erasure downcast mismatch — this indicates a
+    /// Panics on a type-erasure downcast mismatch -- this indicates a
     /// registry bug (the `#[capability]` proc macro guarantees the
     /// stored entry's concrete type matches `C::Shared`).
     pub fn require_shared<C: crate::capability::ExtensionCapability>(
@@ -217,7 +217,7 @@ impl Capabilities {
         // alternative on this node so a subsequent
         // `require_local`/`optional_local` returns
         // `CapabilityAlreadyConsumed`. In the SharedAsLocal fallback
-        // (no native local entry) this is a no-op — the shared
+        // (no native local entry) this is a no-op -- the shared
         // entry's `Cell::take()` above already serves both sides.
         if let Some(local_entry) = self.local.get(&id) {
             let _ = local_entry.produce.take();

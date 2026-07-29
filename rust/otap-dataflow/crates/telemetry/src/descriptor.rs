@@ -19,8 +19,8 @@ pub enum Instrument {
     Histogram,
     /// Pre-aggregated min/max/sum/count summary.
     ///
-    /// Internally tracked as an `Mmsc` instrument; the dispatcher exports the
-    /// aggregated snapshot as a synthetic OTel histogram without bucket counts.
+    /// Internally tracked as an `Mmsc` instrument; the OTLP bridge exports the
+    /// aggregated snapshot as a bucketless OTel histogram.
     Mmsc,
 }
 

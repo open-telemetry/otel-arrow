@@ -5,6 +5,7 @@
 
 use otap_df_config::SignalType;
 use otap_df_engine::context::PipelineContext;
+use otap_df_telemetry::common_attributes::SignalAttributes;
 use otap_df_telemetry::error::Error;
 use otap_df_telemetry::instrument::{Counter, Gauge, ObserveCounter};
 use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
@@ -85,12 +86,6 @@ pub(super) struct DurableBufferIngestMetrics {
     /// Number of failed ingest attempts.
     #[metric(unit = "{failure}")]
     pub(super) failures: Counter<u64>,
-}
-
-#[attribute_set(item, measurement)]
-#[derive(Debug, Clone, Copy)]
-pub(super) struct SignalAttributes {
-    pub(super) signal: SignalType,
 }
 
 /// Item operation metrics partitioned by OpenTelemetry signal.
