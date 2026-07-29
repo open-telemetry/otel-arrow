@@ -504,103 +504,6 @@ fn bench_runtime_log_filter_emission(c: &mut Criterion) {
     group.finish();
 }
 
-struct PolicyUpdateNoopLayer;
-
-impl<S: Subscriber> Layer<S> for PolicyUpdateNoopLayer {}
-
-fn register_log_filter_update_callsites() {
-    tracing::info!(target: "benchmark.target_0", "target 0");
-    tracing::info!(target: "benchmark.target_1", "target 1");
-    tracing::info!(target: "benchmark.target_2", "target 2");
-    tracing::info!(target: "benchmark.target_3", "target 3");
-    tracing::info!(target: "benchmark.target_4", "target 4");
-    tracing::info!(target: "benchmark.target_5", "target 5");
-    tracing::info!(target: "benchmark.target_6", "target 6");
-    tracing::info!(target: "benchmark.target_7", "target 7");
-}
-
-fn create_update_dispatches(filter: &RuntimeLogFilter, count: usize) -> Vec<tracing::Dispatch> {
-    (0..count)
-        .map(|_| {
-            tracing::Dispatch::new(
-                tracing_subscriber::registry()
-                    .with(filter.layer())
-                    .with(PolicyUpdateNoopLayer),
-            )
-        })
-        .collect()
-}
-
-/// Measures filter parsing plus replacement and callsite-cache rebuilding for
-/// this benchmark binary. Production cost also scales with total registered
-/// callsite count.
-fn bench_runtime_log_filter_update(c: &mut Criterion) {
-    assert_rust_log_unset();
-    let mut group = c.benchmark_group("runtime_log_filter_update");
-
-    let (filter, handle) = RuntimeLogFilter::new(&log_level("warn"));
-    let dispatch = tracing::Dispatch::new(
-        tracing_subscriber::registry()
-            .with(filter.layer())
-            .with(PolicyUpdateNoopLayer),
-    );
-    _ = group.bench_function("severity_warn_info", |b| {
-        tracing::dispatcher::with_default(&dispatch, || {
-            register_log_filter_update_callsites();
-            let info = log_level("info");
-            let warn = log_level("warn");
-            let mut enable_info = true;
-            b.iter(|| {
-                let level = if enable_info { &info } else { &warn };
-                enable_info = !enable_info;
-                handle.apply(std::hint::black_box(level));
-            });
-        });
-    });
-
-    for subscriber_count in [1, 10, 100] {
-        let (filter, handle) = RuntimeLogFilter::new(&log_level("warn"));
-        let dispatches = create_update_dispatches(&filter, subscriber_count);
-        for dispatch in &dispatches {
-            tracing::dispatcher::with_default(dispatch, register_log_filter_update_callsites);
-        }
-        let info = log_level("info");
-        let warn = log_level("warn");
-        let mut enable_info = true;
-        _ = group.bench_with_input(
-            BenchmarkId::new("severity_by_subscriber_count", subscriber_count),
-            &dispatches,
-            |b, _dispatches| {
-                b.iter(|| {
-                    let level = if enable_info { &info } else { &warn };
-                    enable_info = !enable_info;
-                    handle.apply(std::hint::black_box(level));
-                });
-            },
-        );
-    }
-
-    for directive_count in [1, 10, 100] {
-        let directives = (0..directive_count)
-            .map(|index| format!("benchmark.target_{index}=info"))
-            .collect::<Vec<_>>()
-            .join(",");
-        let configured = log_level(&format!("off,{directives}"));
-        _ = group.bench_with_input(
-            BenchmarkId::new("parse_and_rebuild_target_directives", directive_count),
-            &configured,
-            |b, configured| {
-                tracing::dispatcher::with_default(&dispatch, || {
-                    register_log_filter_update_callsites();
-                    b.iter(|| handle.apply(std::hint::black_box(configured)));
-                });
-            },
-        );
-    }
-
-    group.finish();
-}
-
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
@@ -610,7 +513,7 @@ mod bench_entry {
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
                   bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic,
-                  bench_runtime_log_filter_emission, bench_runtime_log_filter_update
+                  bench_runtime_log_filter_emission
     );
 }
 

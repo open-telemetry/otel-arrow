@@ -2451,8 +2451,8 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
 
 /// Scenario: full-config reconciliation is rejected after validation because a
 /// target pipeline already has an active rollout.
-/// Guarantees: desired engine-level scaffold fields are not committed when the
-/// reconcile request fails before applying all requested changes.
+/// Guarantees: desired engine-level fields and the active log filter remain
+/// unchanged when the request fails before applying all requested changes.
 #[test]
 fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     let mut config = engine_config_with_pipeline(simple_pipeline_yaml());
