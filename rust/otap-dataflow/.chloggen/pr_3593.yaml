@@ -1,4 +1,4 @@
 change_type: breaking
 component: pipeline
-note: "Consolidate 9 individual attributes_processor action and domain counters into a single 'processor.attributes.modified' metric partitioned by action and domain attributes."
+note: "Consolidate individual attributes_processor metrics (e.g., deleted_entries, inserted_entries, domains_signal) into the new 'processor.attributes.modified' and 'processor.attributes.transforms' metrics."
 issues: [3593, 3530]
