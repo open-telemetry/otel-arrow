@@ -26,7 +26,7 @@ source for metric and attribute-set design:
 - Import instrument types from otap-df-telemetry and the macro from this crate.
 - Annotate your struct with `#[metric_set(name = "<metrics.group.name>")]`.
 - For each metric field, choose one of the supported instruments and add
-  `#[metric(unit = "{unit}")]`.
+  `#[metric(unit = "<unit>")]`.
   - Supported instruments: `Counter<u64|f64>`, `UpDownCounter<u64|f64>`,
     `ObserveCounter<u64|f64>`, `ObserveUpDownCounter<u64|f64>`,
     `Gauge<u64|f64>`, and `Mmsc`.
@@ -35,7 +35,7 @@ source for metric and attribute-set design:
 - Optional: Document each field with a Rust doc comment; it becomes the metric
   "brief" in the descriptor.
 - Optional: Override a field metric name with
-  `#[metric(name = "custom.name", unit = "{unit}")]`.
+  `#[metric(name = "custom.name", unit = "<unit>")]`.
   - If `name` is omitted, the field identifier is converted by replacing `_`
     with `.`.
 - The macro injects `#[repr(C, align(64))]` for better cache-line isolation.
