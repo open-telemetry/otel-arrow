@@ -86,33 +86,31 @@ chlog-validate:
 	$(CHLOGGEN) validate --config $(CHLOGGEN_RUST_CONFIG)
 	@for f in go/.chloggen/*.yaml rust/otap-dataflow/.chloggen/*.yaml; do \
 		grep -qx 'change_type: breaking' $$f || continue; \
-		grep -q '^  Migration: ' $$f || { \
+		grep -q 'Migration:' $$f || { \
 			echo "Error: $$f is a breaking changelog entry without a Migration: section."; \
 			exit 1; \
 		}; \
 	done
 	@awk '\
 		function check_entry() { \
-			if (!breaking) return; \
 			if (note_length > 200) { \
-				printf "Error: %s has a breaking changelog note longer than 200 characters.\\n", filename; \
+				printf "Error: %s has a changelog note longer than 200 characters.\\n", filename; \
 				errors++; \
 			} \
 			if (subtext_length > 300) { \
-				printf "Error: %s has breaking changelog subtext longer than 300 characters.\\n", filename; \
+				printf "Error: %s has changelog subtext longer than 300 characters.\\n", filename; \
 				errors++; \
 			} \
 		} \
 		FNR == 1 { \
 			if (NR > 1) check_entry(); \
-			filename = FILENAME; breaking = 0; note_length = 0; subtext_length = 0; in_subtext = 0; \
+			filename = FILENAME; note_length = 0; subtext_length = 0; in_subtext = 0; \
 		} \
-		/^change_type: breaking$$/ { breaking = 1; next } \
-		/^change_type:/ { breaking = 0; in_subtext = 0 } \
-		breaking && /^note: / { note_length = length(substr($$0, 7)); next } \
-		breaking && /^subtext: [>|]/ { in_subtext = 1; next } \
-		breaking && in_subtext && /^[^ ]/ { in_subtext = 0 } \
-		breaking && in_subtext { subtext_length += length(substr($$0, 3)) } \
+		/^note: / { note_length = length(substr($$0, 7)); next } \
+		/^subtext: [>|]/ { in_subtext = 1; next } \
+		/^subtext: / { subtext_length = length(substr($$0, 10)); next } \
+		in_subtext && /^[^ ]/ { in_subtext = 0 } \
+		in_subtext { subtext_length += length(substr($$0, 3)) } \
 		END { check_entry(); exit errors != 0 } \
 	' go/.chloggen/*.yaml rust/otap-dataflow/.chloggen/*.yaml
 

@@ -24,10 +24,9 @@ issues: [1234]                 # issue or PR number(s)
 subtext:                       # optional multi-line details
 ```
 
-Breaking entries must use `subtext` for a migration section. Begin the first
-non-empty line with `Migration:` and state both what consumers must replace
-and the action they must take. Keep breaking notes to 200 characters and
-breaking subtext to 300 characters.
+Breaking entries must use `subtext` for a `Migration:` section and state both
+what consumers must replace and the action they must take. Keep notes to 200
+characters and subtext to 300 characters.
 
 Validate locally:
 
