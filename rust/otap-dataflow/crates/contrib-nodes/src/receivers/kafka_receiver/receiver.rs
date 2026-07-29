@@ -1153,6 +1153,12 @@ fn compute_consumer_lag<C: ConsumerContext>(
         return Some(0.0);
     }
 
+    // Deadline check before the first (committed_offsets) broker call.
+    let Some(committed_timeout) = remaining_call_timeout() else {
+        otel_warn!("kafka.lag.refresh_incomplete", reason = "deadline_exceeded");
+        return None;
+    };
+
     // Broker-acknowledged committed offsets for the owned partitions.
     let committed = match consumer.committed_offsets(assignment, committed_timeout) {
         Ok(tpl) => tpl,
