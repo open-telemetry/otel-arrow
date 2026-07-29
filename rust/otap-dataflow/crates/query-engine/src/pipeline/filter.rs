@@ -5907,10 +5907,22 @@ mod test {
 
         let result = exec_logs_pipeline::<OplParser>(
             r#"logs | where (attributes["code.function"] == "foo") and not(contains(attributes["thread.name"], "bar"))"#,
-            to_logs_data(log_records),
+            to_logs_data(log_records.clone()),
         )
         .await;
 
         assert!(result.resource_logs.is_empty());
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "run") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(!result.resource_logs.is_empty());
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
+        );
     }
 }
