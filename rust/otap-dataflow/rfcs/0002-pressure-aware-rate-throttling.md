@@ -161,8 +161,10 @@ the token component populated. A later shared-state scope changes where the
 bucket lives, not what the bucket is keyed by.
 
 This RFC places named limiter declarations under
-`policies.resources.rate_limiters`, following the generic limiter model in
-[#3583](https://github.com/open-telemetry/otel-arrow/pull/3583). Compatible
+`policies.resources.rate_limiters`, aligned with the generic limiter model
+proposed in [#3583](https://github.com/open-telemetry/otel-arrow/pull/3583).
+That design PR is still under review; this RFC amendment intentionally brings
+the V1 public shape forward for review with the implementation. Compatible
 receivers automatically apply the one effective limiter supported by V1. The
 named collection and implementation-specific `token_bucket` block avoid a
 configuration migration when node selection, multiple limiters, and
@@ -235,7 +237,11 @@ that already build item-level batches on their admission path, may support item
 rate units more naturally.
 
 V1 OTLP implements only `request_bytes/second`, measured from the decompressed
-payload. It does not implement OTLP item counting.
+payload. It does not implement OTLP item counting. Because the authoritative
+weight is not known until decompression finishes, the first request that
+crosses the bucket limit pays the bounded body-collection and decompression
+cost. A non-charging exhaustion check rejects subsequent requests before that
+work while pressure and exhaustion continue.
 
 Receivers admit whole requests or batches, not individual items inside an
 accepted batch. This matters for item-based units because admission happens
@@ -262,11 +268,17 @@ resumes when refill brings the balance positive again.
 
 While the pressure gate is active under sustained over-limit offered load, the
 admitted rate is bounded by the configured rate because each admitted request
-pays its true weight before more work is admitted. For item-based units, this
+pays its true weight before later work is admitted. For item-based units, this
 requires the debt floor to hold the largest chargeable request. A smaller floor
 would clamp away part of the charge and allow sustained admitted rate above the
 configured rate. Maximum instantaneous overshoot is bounded by the configured
 burst and debt limits plus the receiver's existing maximum request size.
+
+A request larger than `burst` can never fit the token bucket while pressure
+gating is active. V1 rejects it as a non-retryable size error: HTTP returns 413
+without `Retry-After`, and gRPC returns `RESOURCE_EXHAUSTED` with negative retry
+pushback. Operators must configure `burst` at least as large as the largest
+request they intend to accept during pressure.
 
 The debt floor must also apply while memory is normal. The gate only rejects
 when pressure is active, but the bucket should keep charging and refilling in
@@ -443,6 +455,12 @@ anything other than `aggregation: receiver_instance`, a pressure value other
 than `soft`, and pressure-aware rate limiting without a process memory pressure
 source. Per-tenant overrides will use ordered conditions from the tenant-token
 policy model when that model is implemented.
+
+V1 is implemented only for OTLP and Syslog / CEF receivers. A limiter inherited
+by a pipeline containing any receiver that does not support its unit, including
+the OTAP receiver, fails startup. Operators must keep such receivers in a
+separate pipeline or explicitly disable inheritance with `rate_limiters: {}`
+until named limiter bindings and OTAP-native units are designed.
 
 A live limiter change uses the controller's rolling pipeline replacement path,
 not in-place mutation. The replacement receiver starts with fresh bucket state;

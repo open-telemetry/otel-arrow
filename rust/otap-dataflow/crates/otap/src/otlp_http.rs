@@ -340,6 +340,14 @@ fn rate_limit_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
     resource_exhausted_with_retry_after("rate limit", retry_after_secs)
 }
 
+fn rate_limit_burst_exceeded() -> Response<Full<Bytes>> {
+    rpc_status_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        8,
+        "request exceeds rate limit burst",
+    )
+}
+
 fn internal_error() -> Response<Full<Bytes>> {
     rpc_status_response(StatusCode::INTERNAL_SERVER_ERROR, 13, "internal error")
 }
@@ -756,6 +764,10 @@ impl HttpHandler {
                     RateAdmissionDecision::Reject => {
                         self.record_rejection(ReceiverRejectionErrorType::RateLimit);
                         return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));
+                    }
+                    RateAdmissionDecision::RejectOversized => {
+                        self.record_rejection(ReceiverRejectionErrorType::RateLimit);
+                        return Err(rate_limit_burst_exceeded());
                     }
                 }
             }
@@ -1699,6 +1711,7 @@ mod tests {
             },
             admission_state.clone(),
         );
+        assert_eq!(rate_limiter.check_units(1), RateAdmissionDecision::Admit);
 
         let server = tokio::spawn(serve(
             effect_handler,
@@ -1732,7 +1745,7 @@ mod tests {
             .uri("/v1/logs")
             .header(HOST, "localhost")
             .header(CONTENT_TYPE, PROTOBUF_CONTENT_TYPE)
-            .body(Full::new(Bytes::from_static(&[0, 0])))
+            .body(Full::new(Bytes::from_static(&[0])))
             .unwrap();
 
         let resp = sender.send_request(req).await.expect("response");
@@ -1939,5 +1952,15 @@ mod tests {
             .await
             .expect("server finished");
         assert!(server_result.unwrap().is_ok());
+    }
+
+    /// Scenario: an OTLP HTTP request is larger than the configured rate-limit burst.
+    /// Guarantees: the response is non-retryable and does not carry Retry-After.
+    #[test]
+    fn oversized_rate_limit_response_is_non_retryable() {
+        let response = rate_limit_burst_exceeded();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(!response.headers().contains_key(http::header::RETRY_AFTER));
     }
 }

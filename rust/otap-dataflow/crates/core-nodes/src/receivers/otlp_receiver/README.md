@@ -139,6 +139,10 @@ Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 - At least one of `protocols.grpc` or `protocols.http` is required.
 - HTTP request body limits apply to both compressed and decompressed payload
   size.
+- V1 rate limiting measures decompressed request bytes. A request larger than
+  the configured burst is rejected as non-retryable while pressure gating is
+  active: HTTP returns 413 without `Retry-After`, and gRPC sends negative retry
+  pushback.
 - `wait_for_result` reflects the immediate downstream node, not necessarily the
   final exporter.
 

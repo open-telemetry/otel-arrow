@@ -20,6 +20,8 @@ pub enum RateAdmissionDecision {
     WouldThrottle,
     /// The request is rejected by the rate policy.
     Reject,
+    /// The request exceeds the bucket's maximum burst and cannot succeed by retrying later.
+    RejectOversized,
 }
 
 struct TokenBucket {
@@ -86,10 +88,15 @@ impl TokenBucket {
         loop {
             let current = self.theoretical_arrival_nanos.load(Ordering::Acquire);
             let candidate = current.max(now).saturating_add(cost);
-            let over_limit = weight > self.burst || candidate > limit;
+            let oversized = weight > self.burst;
+            let over_limit = oversized || candidate > limit;
 
             if pressure_active && over_limit && mode == RateLimitMode::Enforce {
-                return RateAdmissionDecision::Reject;
+                return if oversized {
+                    RateAdmissionDecision::RejectOversized
+                } else {
+                    RateAdmissionDecision::Reject
+                };
             }
 
             let next = candidate.min(debt_limit);
@@ -380,7 +387,10 @@ mod tests {
         admission.apply(state.current_update(1));
 
         assert_eq!(limiter.check_units(1), RateAdmissionDecision::Admit);
-        assert_eq!(limiter.check_units(1024), RateAdmissionDecision::Reject);
+        assert_eq!(
+            limiter.check_units(1024),
+            RateAdmissionDecision::RejectOversized
+        );
     }
 
     /// Scenario: a programmatic caller constructs a limiter with a zero refill interval.

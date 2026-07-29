@@ -18,7 +18,7 @@ use std::task::Poll;
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
-use crate::rate_limit_layer::grpc_rate_limit_status;
+use crate::rate_limit_layer::{grpc_rate_limit_burst_exceeded_status, grpc_rate_limit_status};
 use crate::rate_limiter::{RateAdmissionDecision, RateLimiter};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
@@ -211,27 +211,30 @@ fn response_channel_closed_status() -> Status {
 
 /// Tonic `Codec` implementation that returns the bytes of the serialized message
 /// Custom tonic codec that keeps OTLP request bodies as raw bytes and writes minimal responses.
+#[derive(Clone)]
+struct GrpcRateLimitContext {
+    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
+    rate_limiter: RateLimiter,
+}
+
 struct OtlpBytesCodec {
     /// Which OTLP signal this service handles.
     signal: SignalType,
     /// Whether to pre-reserve a context frame (when wait_for_result is on).
     preallocate_frame: bool,
-    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    rate_limiter: Option<RateLimiter>,
+    rate_limit: Option<GrpcRateLimitContext>,
 }
 
 impl OtlpBytesCodec {
     fn new(
         signal: SignalType,
         preallocate_frame: bool,
-        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-        rate_limiter: Option<RateLimiter>,
+        rate_limit: Option<GrpcRateLimitContext>,
     ) -> Self {
         Self {
             signal,
             preallocate_frame,
-            metrics,
-            rate_limiter,
+            rate_limit,
         }
     }
 }
@@ -248,12 +251,7 @@ impl Codec for OtlpBytesCodec {
     }
 
     fn decoder(&mut self) -> Self::Decoder {
-        OtlpBytesDecoder::new(
-            self.signal,
-            self.preallocate_frame,
-            self.metrics.clone(),
-            self.rate_limiter.clone(),
-        )
+        OtlpBytesDecoder::new(self.signal, self.preallocate_frame, self.rate_limit.clone())
     }
 }
 
@@ -285,22 +283,19 @@ impl Encoder for OtlpResponseEncoder {
 struct OtlpBytesDecoder {
     signal: SignalType,
     preallocate_frame: bool,
-    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    rate_limiter: Option<RateLimiter>,
+    rate_limit: Option<GrpcRateLimitContext>,
 }
 
 impl OtlpBytesDecoder {
     fn new(
         signal: SignalType,
         preallocate_frame: bool,
-        metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-        rate_limiter: Option<RateLimiter>,
+        rate_limit: Option<GrpcRateLimitContext>,
     ) -> Self {
         Self {
             signal,
             preallocate_frame,
-            metrics,
-            rate_limiter,
+            rate_limit,
         }
     }
 }
@@ -312,21 +307,32 @@ impl Decoder for OtlpBytesDecoder {
 
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         let len = src.remaining();
-        if let Some(rate_limiter) = &self.rate_limiter {
-            match rate_limiter.check_units(len as u64) {
+        if let Some(rate_limit) = &self.rate_limit {
+            match rate_limit.rate_limiter.check_units(len as u64) {
                 RateAdmissionDecision::Admit => {}
                 RateAdmissionDecision::WouldThrottle => {
-                    self.metrics
+                    rate_limit
+                        .metrics
                         .lock()
                         .record_would_refuse_rate_limit(self.signal, OtlpProtocol::Grpc);
                 }
                 RateAdmissionDecision::Reject => {
-                    self.metrics.lock().record_rejection(
+                    rate_limit.metrics.lock().record_rejection(
                         OtlpProtocol::Grpc,
                         ReceiverRejectionErrorType::RateLimit,
                     );
                     src.advance(len);
-                    return Err(grpc_rate_limit_status(rate_limiter.retry_after_secs()));
+                    return Err(grpc_rate_limit_status(
+                        rate_limit.rate_limiter.retry_after_secs(),
+                    ));
+                }
+                RateAdmissionDecision::RejectOversized => {
+                    rate_limit.metrics.lock().record_rejection(
+                        OtlpProtocol::Grpc,
+                        ReceiverRejectionErrorType::RateLimit,
+                    );
+                    src.advance(len);
+                    return Err(grpc_rate_limit_burst_exceeded_status());
                 }
             }
         }
@@ -354,10 +360,9 @@ impl Decoder for OtlpBytesDecoder {
 fn new_grpc(
     signal: SignalType,
     settings: OtlpServerSettings,
-    metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    rate_limiter: Option<RateLimiter>,
+    rate_limit: Option<GrpcRateLimitContext>,
 ) -> Grpc<OtlpBytesCodec> {
-    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, metrics, rate_limiter);
+    let codec = OtlpBytesCodec::new(signal, settings.wait_for_result, rate_limit);
     let mut grpc = Grpc::new(codec);
     if let Some(limit) = settings.max_decoding_message_size {
         grpc = grpc.max_decoding_message_size(limit);
@@ -592,6 +597,15 @@ impl ServerCommon {
             .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit);
         Some(grpc_rate_limit_status(rate_limiter.retry_after_secs()).into_http())
     }
+
+    fn grpc_rate_limit_context(&self) -> Option<GrpcRateLimitContext> {
+        self.rate_limiter
+            .clone()
+            .map(|rate_limiter| GrpcRateLimitContext {
+                metrics: self.metrics.clone(),
+                rate_limiter,
+            })
+    }
 }
 
 /// implementation of OTLP bytes -> OTAP GRPC server for logs
@@ -630,14 +644,16 @@ impl tower_service::Service<Request<Body>> for LogsServiceServer {
         match req.uri().path() {
             super::LOGS_SERVICE_EXPORT_PATH => {
                 let common = self.common.clone();
+                // The outer layer avoids entering this service when exhaustion
+                // is already visible. Re-check here because another service
+                // clone can charge the shared bucket between poll_ready and call.
                 if let Some(response) = common.exhausted_rate_limit_response() {
                     return Box::pin(async move { Ok(response) });
                 }
                 let mut grpc = new_grpc(
                     SignalType::Logs,
                     common.settings.clone(),
-                    common.metrics.clone(),
-                    common.rate_limiter.clone(),
+                    common.grpc_rate_limit_context(),
                 );
                 let service = OtapBatchService::new(
                     common.effect_handler,
@@ -698,8 +714,7 @@ impl tower_service::Service<Request<Body>> for MetricsServiceServer {
                 let mut grpc = new_grpc(
                     SignalType::Metrics,
                     common.settings.clone(),
-                    common.metrics.clone(),
-                    common.rate_limiter.clone(),
+                    common.grpc_rate_limit_context(),
                 );
                 let service = OtapBatchService::new(
                     common.effect_handler,
@@ -760,8 +775,7 @@ impl tower_service::Service<Request<Body>> for TraceServiceServer {
                 let mut grpc = new_grpc(
                     SignalType::Traces,
                     common.settings.clone(),
-                    common.metrics.clone(),
-                    common.rate_limiter.clone(),
+                    common.grpc_rate_limit_context(),
                 );
                 let service = OtapBatchService::new(
                     common.effect_handler,

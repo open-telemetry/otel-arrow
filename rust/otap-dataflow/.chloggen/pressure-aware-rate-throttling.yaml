@@ -21,4 +21,5 @@ subtext: >-
   policies.resources.rate_limiters with token-bucket settings nested under
   token_bucket. Custom receiver embedders must declare supported rate-limit
   units on ReceiverFactory and pass the resolved rate limiter policy into
-  pipeline build and validation helpers.
+  pipeline build and validation helpers. Resource members now inherit
+  independently across engine, group, and pipeline scopes.

@@ -270,7 +270,7 @@ fn admit_syslog_message(
     metrics: &Rc<RefCell<MetricSet<SyslogCefReceiverMetrics>>>,
 ) -> bool {
     match rate_limiter.as_ref().map(|limiter| limiter.check_units(1)) {
-        Some(RateAdmissionDecision::Reject) => {
+        Some(RateAdmissionDecision::Reject | RateAdmissionDecision::RejectOversized) => {
             metrics.borrow_mut().received_logs_refused_rate_limit.inc();
             false
         }
@@ -562,11 +562,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                             // EOF reached - connection closed
                                                             // Check if there's an incomplete line to process
                                                             if discard_until_newline {
-                                                                if !line_bytes.is_empty() {
-                                                                    let mut m = metrics.borrow_mut();
-                                                                    m.received_logs_total.inc();
-                                                                    m.received_logs_refused_rate_limit.inc();
-                                                                }
                                                                 line_bytes.clear();
                                                             } else if !line_bytes.is_empty() {
                                                                 // Remove trailing newline if present
@@ -643,9 +638,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                         }
                                                         Ok(bounded_result) => {
                                                             if discard_until_newline {
-                                                                let mut m = metrics.borrow_mut();
-                                                                m.received_logs_total.inc();
-                                                                m.received_logs_refused_rate_limit.inc();
                                                                 if matches!(bounded_result, BoundedReadResult::Complete) {
                                                                     discard_until_newline = false;
                                                                 }
@@ -2814,7 +2806,7 @@ mod telemetry_tests {
     }
 
     /// Scenario: an oversized TCP syslog line is rejected, then its tail arrives after token refill.
-    /// Guarantees: the receiver discards the rejected line through newline and admits the next complete line.
+    /// Guarantees: discarded continuation chunks do not inflate log counters and the next line is admitted.
     #[test]
     fn tcp_rate_rejected_oversized_line_discards_tail_after_refill() {
         let (rt, local) = setup_test_runtime();
@@ -2916,9 +2908,9 @@ mod telemetry_tests {
             let _ = handle.await;
 
             let snap = metrics_rx.recv_async().await.unwrap();
-            assert_eq!(metric_value(&snap, "received_logs_total"), 4);
+            assert_eq!(metric_value(&snap, "received_logs_total"), 3);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 2);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 2);
+            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 1);
             assert_eq!(metric_value(&snap, "received_logs_truncated"), 1);
         }));
     }

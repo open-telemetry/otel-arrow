@@ -333,10 +333,24 @@ The rate state is receiver-local and lock-free. It uses a token-bucket-equivalen
 GCRA state machine with bounded debt, so each receiver instance can continue
 tracking over-limit traffic while memory is normal and apply that state when
 soft pressure begins. OTLP keeps decompressed-byte accounting as the
-authoritative charge, but it also performs a non-charging exhausted-bucket check
-before body collection or gRPC message assembly. That early check avoids repeated
-decode and allocation work once the bucket is already exhausted under active
-rate-limit enforcement.
+authoritative charge. The first request that crosses the limit is therefore
+collected and decompressed before its exact charge is known, within the
+receiver's existing request-size bound. A non-charging exhausted-bucket check
+rejects subsequent requests before body collection or gRPC message assembly
+while active enforcement and exhaustion continue.
+
+An OTLP request larger than the configured `burst` can never fit the bucket
+while pressure gating is active. HTTP rejects it with 413 and no `Retry-After`;
+gRPC returns `RESOURCE_EXHAUSTED` with negative retry pushback. Configure
+`burst` at least as large as the largest request the receiver should accept
+during pressure.
+
+V1 supports rate limiting only for OTLP and Syslog / CEF receivers. If a
+resolved pipeline also contains an unsupported receiver, including OTAP,
+startup fails rather than silently leaving that receiver unlimited. Separate
+the receivers into different pipelines or use `rate_limiters: {}` to disable
+the inherited limiter until named receiver bindings and OTAP-native rate units
+are available.
 
 **Syslog / CEF client behavior under Hard pressure:**
 
