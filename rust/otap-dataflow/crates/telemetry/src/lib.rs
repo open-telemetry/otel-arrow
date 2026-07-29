@@ -28,6 +28,7 @@
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
 use crate::registry::TelemetryRegistryHandle;
+use log_filter::{RuntimeLogFilter, RuntimeLogFilterHandle};
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
 use otap_df_config::settings::telemetry::logs::{LogLevel, LoggingProviders, ProviderMode};
@@ -46,6 +47,8 @@ pub mod event;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
+/// Runtime-reloadable filtering for internal logs.
+pub mod log_filter;
 /// Internal log tap for admin-side log queries.
 pub mod log_tap;
 pub mod metrics;
@@ -188,6 +191,12 @@ pub struct InternalTelemetrySystem {
     /// Log level from config.
     log_level: LogLevel,
 
+    /// Shared runtime filter installed into every tracing dispatcher.
+    log_filter: RuntimeLogFilter,
+
+    /// Handle used to apply reconciled log-level configuration.
+    log_filter_handle: RuntimeLogFilterHandle,
+
     /// The logging providers.
     provider_modes: LoggingProviders,
 
@@ -264,11 +273,15 @@ impl InternalTelemetrySystem {
             )
         };
 
+        let (log_filter, log_filter_handle) = RuntimeLogFilter::new(&config.logs.level);
+
         Ok(Self {
             registry: telemetry_registry,
             collector,
             metrics_reporter,
             log_level: config.logs.level.clone(),
+            log_filter,
+            log_filter_handle,
             provider_modes: config.logs.providers.clone(),
             context_fn,
             console_async_reporter,
@@ -315,6 +328,7 @@ impl InternalTelemetrySystem {
         };
 
         TracingSetup::new(provider, self.log_level.clone(), self.context_fn)
+            .with_log_filter(self.log_filter.clone())
     }
 
     /// Returns a `TracingSetup` for engine threads.
@@ -361,6 +375,12 @@ impl InternalTelemetrySystem {
     #[must_use]
     pub const fn log_level(&self) -> &LogLevel {
         &self.log_level
+    }
+
+    /// Returns the handle for applying runtime log-level configuration.
+    #[must_use]
+    pub fn log_filter_handle(&self) -> RuntimeLogFilterHandle {
+        self.log_filter_handle.clone()
     }
 
     /// Returns a shareable/cloneable handle to the telemetry registry.

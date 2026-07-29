@@ -1176,6 +1176,8 @@ impl<
     }
 
     fn apply_reconcile_success(&self, desired_config: &OtelDataflowSpec, delete_missing: bool) {
+        self.log_filter_handle
+            .apply(&desired_config.engine.telemetry.logs.level);
         let mut state = self
             .state
             .lock()

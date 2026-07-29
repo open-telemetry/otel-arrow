@@ -85,10 +85,16 @@ The dataflow engine supports multiple ways to configure internal logs and
 metrics. Log provider modes determine how logging is configured in different
 parts of the code.
 
-All modes configure the [Rust-standard `env_logger`
-crate](https://docs.rs/env_logger/latest/env_logger/), making the
-`RUST_LOG` environment variable available for controlling internal
-logging.
+All modes use a [`tracing_subscriber::EnvFilter`](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html).
+The `engine.telemetry.logs.level` field accepts either a severity such as
+`warn` or a complete target directive string. Successful full-engine
+reconciliation applies changes to this field to existing tracing subscribers,
+so an OpAMP or admin control plane can temporarily increase verbosity without
+restarting the engine. Failed reconciliation preserves the active filter.
+
+The `RUST_LOG` environment variable remains a process-level override. When it
+is set, it takes precedence over both startup and reconciled `logs.level`
+values.
 
 There are four aspects that can be configured:
 

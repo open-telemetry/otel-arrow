@@ -11,17 +11,24 @@
 //! Example: `encode/3_attrs/1000_events` = 300 us -> 300 ns per event
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_config::observed_state::SendPolicy;
+use otap_df_config::settings::telemetry::logs::LogLevel;
 use otap_df_pdata::otlp::ProtoBuffer;
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{AttributeField, AttributeValueType, AttributesDescriptor};
-use otap_df_telemetry::event::LogEvent;
+use otap_df_telemetry::event::{LogEvent, ObservedEvent, ObservedEventReporter};
+use otap_df_telemetry::log_filter::RuntimeLogFilter;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::self_tracing::{
     DirectLogRecordEncoder, LogContext, LogRecord, ScopeToBytesMap, encode_export_logs_request,
     format_log_record_to_string,
 };
-use std::time::SystemTime;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{Event, Subscriber};
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::Layer;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry::LookupSpan;
@@ -372,6 +379,228 @@ fn bench_realistic(c: &mut Criterion) {
     group.finish();
 }
 
+struct ItsNoopLayer {
+    reporter: ObservedEventReporter,
+}
+
+impl<S> Layer<S> for ItsNoopLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &Event<'_>, _context: tracing_subscriber::layer::Context<'_, S>) {
+        self.reporter.log(LogEvent {
+            time: UNIX_EPOCH,
+            record: LogRecord::new(event, LogContext::new()),
+        });
+    }
+}
+
+fn log_level(value: &str) -> LogLevel {
+    serde_json::from_value(serde_json::json!(value)).expect("log level should parse")
+}
+
+fn assert_rust_log_unset() {
+    assert!(
+        std::env::var_os("RUST_LOG").is_none(),
+        "runtime log-filter benchmarks require RUST_LOG to be unset"
+    );
+}
+
+fn emit_enabled() {
+    otap_df_telemetry::otel_info!("benchmark.enabled", value = std::hint::black_box(42));
+}
+
+fn emit_disabled() {
+    otap_df_telemetry::otel_info!("benchmark.disabled", value = std::hint::black_box(42));
+}
+
+enum EmissionFilter {
+    Static(Box<EnvFilter>),
+    Runtime(RuntimeLogFilter),
+}
+
+/// Measures producer-side ITS emission while an unbounded noop consumer drains
+/// every accepted event. The consumer is not part of the timed operation.
+fn run_log_filter_emission_bench(
+    b: &mut criterion::Bencher<'_>,
+    filter: EmissionFilter,
+    emit: fn(),
+    expected_enabled: bool,
+) {
+    let (sender, receiver) = flume::unbounded();
+    let reporter = ObservedEventReporter::new(
+        SendPolicy {
+            blocking_timeout: None,
+            console_fallback: false,
+        },
+        sender,
+    );
+    let received = Arc::new(AtomicU64::new(0));
+    let consumer_count = Arc::clone(&received);
+    let consumer = thread::spawn(move || {
+        while let Ok(ObservedEvent::Log(_)) = receiver.recv() {
+            _ = consumer_count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let layer = ItsNoopLayer { reporter };
+    let dispatch = match filter {
+        EmissionFilter::Static(filter) => {
+            tracing::Dispatch::new(tracing_subscriber::registry().with(*filter).with(layer))
+        }
+        EmissionFilter::Runtime(filter) => tracing::Dispatch::new(
+            tracing_subscriber::registry()
+                .with(filter.layer())
+                .with(layer),
+        ),
+    };
+
+    tracing::dispatcher::with_default(&dispatch, || b.iter(emit));
+    drop(dispatch);
+    consumer.join().expect("noop ITS consumer should stop");
+
+    if expected_enabled {
+        assert!(
+            received.load(Ordering::Relaxed) > 0,
+            "enabled benchmark must reach ITS"
+        );
+    } else {
+        assert_eq!(
+            received.load(Ordering::Relaxed),
+            0,
+            "disabled benchmark must be filtered before ITS"
+        );
+    }
+}
+
+fn bench_runtime_log_filter_emission(c: &mut Criterion) {
+    assert_rust_log_unset();
+    let mut group = c.benchmark_group("runtime_log_filter_emission");
+
+    _ = group.bench_function("enabled/static_info", |b| {
+        run_log_filter_emission_bench(
+            b,
+            EmissionFilter::Static(Box::new(EnvFilter::new("info"))),
+            emit_enabled,
+            true,
+        );
+    });
+    _ = group.bench_function("enabled/runtime_info", |b| {
+        let (filter, _handle) = RuntimeLogFilter::new(&log_level("info"));
+        run_log_filter_emission_bench(b, EmissionFilter::Runtime(filter), emit_enabled, true);
+    });
+    _ = group.bench_function("disabled/static_warn", |b| {
+        run_log_filter_emission_bench(
+            b,
+            EmissionFilter::Static(Box::new(EnvFilter::new("warn"))),
+            emit_disabled,
+            false,
+        );
+    });
+    _ = group.bench_function("disabled/runtime_warn", |b| {
+        let (filter, _handle) = RuntimeLogFilter::new(&log_level("warn"));
+        run_log_filter_emission_bench(b, EmissionFilter::Runtime(filter), emit_disabled, false);
+    });
+
+    group.finish();
+}
+
+struct PolicyUpdateNoopLayer;
+
+impl<S: Subscriber> Layer<S> for PolicyUpdateNoopLayer {}
+
+fn register_log_filter_update_callsites() {
+    tracing::info!(target: "benchmark.target_0", "target 0");
+    tracing::info!(target: "benchmark.target_1", "target 1");
+    tracing::info!(target: "benchmark.target_2", "target 2");
+    tracing::info!(target: "benchmark.target_3", "target 3");
+    tracing::info!(target: "benchmark.target_4", "target 4");
+    tracing::info!(target: "benchmark.target_5", "target 5");
+    tracing::info!(target: "benchmark.target_6", "target 6");
+    tracing::info!(target: "benchmark.target_7", "target 7");
+}
+
+fn create_update_dispatches(filter: &RuntimeLogFilter, count: usize) -> Vec<tracing::Dispatch> {
+    (0..count)
+        .map(|_| {
+            tracing::Dispatch::new(
+                tracing_subscriber::registry()
+                    .with(filter.layer())
+                    .with(PolicyUpdateNoopLayer),
+            )
+        })
+        .collect()
+}
+
+/// Measures filter parsing plus replacement and callsite-cache rebuilding for
+/// this benchmark binary. Production cost also scales with total registered
+/// callsite count.
+fn bench_runtime_log_filter_update(c: &mut Criterion) {
+    assert_rust_log_unset();
+    let mut group = c.benchmark_group("runtime_log_filter_update");
+
+    let (filter, handle) = RuntimeLogFilter::new(&log_level("warn"));
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(filter.layer())
+            .with(PolicyUpdateNoopLayer),
+    );
+    _ = group.bench_function("severity_warn_info", |b| {
+        tracing::dispatcher::with_default(&dispatch, || {
+            register_log_filter_update_callsites();
+            let info = log_level("info");
+            let warn = log_level("warn");
+            let mut enable_info = true;
+            b.iter(|| {
+                let level = if enable_info { &info } else { &warn };
+                enable_info = !enable_info;
+                handle.apply(std::hint::black_box(level));
+            });
+        });
+    });
+
+    for subscriber_count in [1, 10, 100] {
+        let (filter, handle) = RuntimeLogFilter::new(&log_level("warn"));
+        let dispatches = create_update_dispatches(&filter, subscriber_count);
+        for dispatch in &dispatches {
+            tracing::dispatcher::with_default(dispatch, register_log_filter_update_callsites);
+        }
+        let info = log_level("info");
+        let warn = log_level("warn");
+        let mut enable_info = true;
+        _ = group.bench_with_input(
+            BenchmarkId::new("severity_by_subscriber_count", subscriber_count),
+            &dispatches,
+            |b, _dispatches| {
+                b.iter(|| {
+                    let level = if enable_info { &info } else { &warn };
+                    enable_info = !enable_info;
+                    handle.apply(std::hint::black_box(level));
+                });
+            },
+        );
+    }
+
+    for directive_count in [1, 10, 100] {
+        let directives = (0..directive_count)
+            .map(|index| format!("benchmark.target_{index}=info"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let configured = log_level(&format!("off,{directives}"));
+        _ = group.bench_with_input(
+            BenchmarkId::new("parse_and_rebuild_target_directives", directive_count),
+            &configured,
+            |b, configured| {
+                tracing::dispatcher::with_default(&dispatch, || {
+                    register_log_filter_update_callsites();
+                    b.iter(|| handle.apply(std::hint::black_box(configured)));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 #[allow(missing_docs)]
 mod bench_entry {
     use super::*;
@@ -380,7 +609,8 @@ mod bench_entry {
         name = benches;
         config = Criterion::default();
         targets = bench_new_record, bench_format, bench_format_new_record, bench_encode_proto,
-                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic
+                  bench_encode_proto_with_scope, bench_format_with_entity, bench_realistic,
+                  bench_runtime_log_filter_emission, bench_runtime_log_filter_update
     );
 }
 
