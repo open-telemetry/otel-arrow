@@ -42,6 +42,10 @@ directory's `config.yaml`), `note`, and `issues`.
 Changelog entries must use ASCII characters only. Replace typographic punctuation
 and other non-ASCII characters with ASCII equivalents.
 
+Breaking entries must begin `subtext` with `Migration:` followed by the
+consumer action. Keep breaking `note` values to 200 characters and breaking
+`subtext` to 300 characters; `make chlog-validate` enforces these limits.
+
 Skip the entry only when the change is not user-facing (build chores, internal
 refactors, dev-only dependency bumps). In that case include
 `chore` in the PR title.
