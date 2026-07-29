@@ -99,6 +99,11 @@ pub trait ControlPlane: Send + Sync {
     /// Requests shutdown of all currently running runtime instances.
     fn shutdown_all(&self, timeout_secs: u64) -> Result<(), ControlPlaneError>;
 
+    /// Returns true if there are active runtime instances still running.
+    fn has_active_instances(&self) -> bool {
+        false
+    }
+
     /// Requests shutdown of all currently running runtime instances for one logical pipeline.
     fn shutdown_pipeline(
         &self,

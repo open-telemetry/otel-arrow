@@ -454,6 +454,15 @@ impl<
         self.runtime.request_shutdown_all(timeout_secs)
     }
 
+    fn has_active_instances(&self) -> bool {
+        let state = self
+            .runtime
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active_instances > 0
+    }
+
     fn shutdown_pipeline(
         &self,
         pipeline_group_id: &str,

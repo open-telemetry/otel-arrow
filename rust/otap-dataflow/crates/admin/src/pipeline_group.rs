@@ -213,24 +213,12 @@ async fn shutdown_all_pipelines(
             );
         }
 
-        // Check if all pipelines have terminated. An empty snapshot means no
-        // pipelines were ever registered, which is itself a terminal state.
+        // Check if all pipelines have terminated. We verify that there are no
+        // active runtime instances in the controller, and that the observed
+        // snapshot is either empty or all pipelines are terminated.
         let snapshot = state.observed_state_store.snapshot();
-        let all_terminated = if !snapshot.is_empty() {
-            snapshot.values().all(|status| status.is_terminated())
-        } else {
-            // Snapshot is empty, but are there running pipelines in the controller?
-            match state.controller.engine_config_snapshot() {
-                Ok(config) => {
-                    let has_pipelines = config.groups.values().any(|g| !g.pipelines.is_empty());
-                    !has_pipelines
-                }
-                Err(err) => {
-                    otel_info!("shutdown.engine_config_check_failed", error = ?err);
-                    false // Assume not terminated to be safe
-                }
-            }
-        };
+        let all_terminated = !state.controller.has_active_instances()
+            && (snapshot.is_empty() || snapshot.values().all(|status| status.is_terminated()));
 
         if all_terminated {
             otel_info!(
@@ -272,11 +260,16 @@ mod tests {
         group_details_result: Result<Option<PipelineGroupConfig>, ControlPlaneError>,
         create_group_result: Result<PipelineGroupConfig, ControlPlaneError>,
         delete_group_result: Result<GroupDeleteStatus, ControlPlaneError>,
+        active_instances: usize,
     }
 
     impl ControlPlane for StubControlPlane {
         fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
             Ok(())
+        }
+
+        fn has_active_instances(&self) -> bool {
+            self.active_instances > 0
         }
 
         fn shutdown_pipeline(
@@ -395,6 +388,7 @@ mod tests {
             group_details_result,
             create_group_result,
             delete_group_result,
+            active_instances: 0,
         })
     }
 
@@ -689,6 +683,34 @@ mod tests {
             response.status(),
             StatusCode::OK,
             "empty snapshot should satisfy shutdown immediately"
+        );
+    }
+
+    /// Scenario: shutdown is requested with `wait=true` when the observed
+    /// snapshot is empty but the controller still has active instances.
+    /// Guarantees: the handler polls and eventually times out (returning 504)
+    /// instead of returning 200 immediately.
+    #[tokio::test]
+    async fn shutdown_times_out_when_snapshot_is_empty_but_controller_has_active_instances() {
+        let response = shutdown_all_pipelines(
+            State(test_app_state(Arc::new(StubControlPlane {
+                group_details_result: Ok(None),
+                create_group_result: Ok(PipelineGroupConfig::new()),
+                delete_group_result: Ok(delete_status("succeeded")),
+                active_instances: 1,
+            }))),
+            Query(OperationOptions {
+                wait: true,
+                timeout_secs: 1,
+            }),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::GATEWAY_TIMEOUT,
+            "should time out because an active runtime is still running"
         );
     }
 }
