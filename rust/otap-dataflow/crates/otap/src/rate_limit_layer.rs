@@ -117,7 +117,8 @@ mod tests {
     use crate::rate_limiter::RateAdmissionDecision;
     use futures::future;
     use otap_df_config::policy::{
-        RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure, RateLimitUnit,
+        RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit, RateLimiterPolicy,
+        TokenBucketPolicy,
     };
     use otap_df_engine::memory_limiter::{
         MemoryPressureLevel, MemoryPressureState, SharedReceiverAdmissionState,
@@ -159,15 +160,17 @@ mod tests {
         }
     }
 
-    fn policy() -> RateLimitPolicy {
-        RateLimitPolicy {
+    fn policy() -> RateLimiterPolicy {
+        RateLimiterPolicy {
             mode: RateLimitMode::Enforce,
             aggregation: RateLimitAggregation::ReceiverInstance,
             unit: RateLimitUnit::RequestBytesPerSecond,
-            allow: 10,
-            interval: Duration::from_secs(1),
-            burst: Some(10),
             pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 10,
+                interval: Duration::from_secs(1),
+                burst: Some(10),
+            },
         }
     }
 

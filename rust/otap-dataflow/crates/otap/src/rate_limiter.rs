@@ -3,7 +3,7 @@
 
 //! Receiver-local pressure-aware rate admission.
 
-use otap_df_config::policy::{RateLimitMode, RateLimitPolicy, RateLimitPressure};
+use otap_df_config::policy::{RateLimitMode, RateLimitPressure, RateLimiterPolicy};
 use otap_df_engine::memory_limiter::{
     LocalReceiverAdmissionState, MemoryPressureLevel, SharedReceiverAdmissionState,
 };
@@ -26,16 +26,26 @@ struct TokenBucket {
     allow: u64,
     interval_nanos: u64,
     burst: u64,
+    burst_window_nanos: u64,
     epoch: Instant,
     theoretical_arrival_nanos: AtomicU64,
 }
 
 impl TokenBucket {
-    fn new(policy: &RateLimitPolicy) -> Self {
+    fn new(policy: &RateLimiterPolicy) -> Self {
+        let allow = policy.token_bucket.allow;
+        let interval_nanos =
+            u64::try_from(policy.token_bucket.interval.as_nanos()).unwrap_or(u64::MAX);
+        let burst = policy.burst_or_allow();
         Self {
-            allow: policy.allow,
-            interval_nanos: u64::try_from(policy.interval.as_nanos()).unwrap_or(u64::MAX),
-            burst: policy.burst_or_allow(),
+            allow,
+            interval_nanos,
+            burst,
+            burst_window_nanos: if burst == 0 || allow == 0 || interval_nanos == 0 {
+                0
+            } else {
+                Self::nanos_for_rate(allow, interval_nanos, burst)
+            },
             epoch: Instant::now(),
             theoretical_arrival_nanos: AtomicU64::new(0),
         }
@@ -46,24 +56,19 @@ impl TokenBucket {
     }
 
     fn nanos_for_units(&self, units: u64) -> u64 {
+        Self::nanos_for_rate(self.allow, self.interval_nanos, units)
+    }
+
+    fn nanos_for_rate(allow: u64, interval_nanos: u64, units: u64) -> u64 {
         if units == 0 {
             return 0;
         }
-        if self.allow == 0 || self.interval_nanos == 0 {
+        if allow == 0 || interval_nanos == 0 {
             return u64::MAX;
         }
 
-        let nanos =
-            (u128::from(units) * u128::from(self.interval_nanos)).div_ceil(u128::from(self.allow));
+        let nanos = (u128::from(units) * u128::from(interval_nanos)).div_ceil(u128::from(allow));
         u64::try_from(nanos).unwrap_or(u64::MAX)
-    }
-
-    fn burst_window_nanos(&self) -> u64 {
-        if self.burst == 0 || self.allow == 0 || self.interval_nanos == 0 {
-            return 0;
-        }
-
-        self.nanos_for_units(self.burst)
     }
 
     fn charge(
@@ -74,7 +79,7 @@ impl TokenBucket {
     ) -> RateAdmissionDecision {
         let cost = self.nanos_for_units(weight);
         let now = self.now_nanos();
-        let burst_window = self.burst_window_nanos();
+        let burst_window = self.burst_window_nanos;
         let limit = now.saturating_add(burst_window);
         let debt_limit = limit.saturating_add(burst_window);
 
@@ -103,7 +108,7 @@ impl TokenBucket {
 
     fn is_exhausted(&self) -> bool {
         let now = self.now_nanos();
-        let limit = now.saturating_add(self.burst_window_nanos());
+        let limit = now.saturating_add(self.burst_window_nanos);
         let current = self.theoretical_arrival_nanos.load(Ordering::Acquire);
         let candidate = current.max(now).saturating_add(self.nanos_for_units(1));
         candidate > limit
@@ -116,6 +121,7 @@ impl std::fmt::Debug for TokenBucket {
             .field("allow", &self.allow)
             .field("interval_nanos", &self.interval_nanos)
             .field("burst", &self.burst)
+            .field("burst_window_nanos", &self.burst_window_nanos)
             .field(
                 "theoretical_arrival_nanos",
                 &self.theoretical_arrival_nanos.load(Ordering::Relaxed),
@@ -156,7 +162,7 @@ impl AdmissionPressure for LocalReceiverAdmissionState {
 /// Receiver-instance rate gate.
 #[derive(Clone, Debug)]
 pub struct GenericRateLimiter<P> {
-    policy: Arc<RateLimitPolicy>,
+    policy: RateLimiterPolicy,
     admission_state: P,
     bucket: Arc<TokenBucket>,
 }
@@ -170,10 +176,10 @@ pub type LocalRateLimiter = GenericRateLimiter<LocalReceiverAdmissionState>;
 impl<P: AdmissionPressure> GenericRateLimiter<P> {
     /// Creates a receiver-local limiter from the effective policy.
     #[must_use]
-    pub fn new(policy: RateLimitPolicy, admission_state: P) -> Self {
+    pub fn new(policy: RateLimiterPolicy, admission_state: P) -> Self {
         Self {
             bucket: Arc::new(TokenBucket::new(&policy)),
-            policy: Arc::new(policy),
+            policy,
             admission_state,
         }
     }
@@ -218,15 +224,17 @@ mod tests {
     use otap_df_engine::memory_limiter::{MemoryPressureState, SharedReceiverAdmissionState};
     use std::time::Duration;
 
-    fn policy(mode: RateLimitMode) -> RateLimitPolicy {
-        RateLimitPolicy {
+    fn policy(mode: RateLimitMode) -> RateLimiterPolicy {
+        RateLimiterPolicy {
             mode,
             aggregation: RateLimitAggregation::ReceiverInstance,
             unit: RateLimitUnit::RequestBytesPerSecond,
-            allow: 10,
-            interval: Duration::from_secs(1),
-            burst: Some(10),
             pressure: RateLimitPressure::Soft,
+            token_bucket: otap_df_config::policy::TokenBucketPolicy {
+                allow: 10,
+                interval: Duration::from_secs(1),
+                burst: Some(10),
+            },
         }
     }
 
@@ -330,8 +338,8 @@ mod tests {
         let state = MemoryPressureState::default();
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let mut policy = policy(RateLimitMode::Enforce);
-        policy.allow = 1_000;
-        policy.burst = Some(1_000);
+        policy.token_bucket.allow = 1_000;
+        policy.token_bucket.burst = Some(1_000);
         let limiter = RateLimiter::new(policy, admission.clone());
 
         assert_eq!(limiter.check_units(2_000), RateAdmissionDecision::Admit);
@@ -349,8 +357,8 @@ mod tests {
         let state = MemoryPressureState::default();
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let mut policy = policy(RateLimitMode::Enforce);
-        policy.allow = 3;
-        policy.burst = Some(10);
+        policy.token_bucket.allow = 3;
+        policy.token_bucket.burst = Some(10);
         let limiter = RateLimiter::new(policy, admission.clone());
         state.set_level_for_tests(MemoryPressureLevel::Soft);
         admission.apply(state.current_update(1));
@@ -365,8 +373,8 @@ mod tests {
         let state = MemoryPressureState::default();
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let mut policy = policy(RateLimitMode::Enforce);
-        policy.allow = u64::MAX;
-        policy.burst = Some(1);
+        policy.token_bucket.allow = u64::MAX;
+        policy.token_bucket.burst = Some(1);
         let limiter = RateLimiter::new(policy, admission.clone());
         state.set_level_for_tests(MemoryPressureLevel::Soft);
         admission.apply(state.current_update(1));
@@ -382,7 +390,7 @@ mod tests {
         let state = MemoryPressureState::default();
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
         let mut policy = policy(RateLimitMode::Enforce);
-        policy.interval = Duration::ZERO;
+        policy.token_bucket.interval = Duration::ZERO;
         let limiter = RateLimiter::new(policy, admission.clone());
 
         assert_eq!(limiter.check_units(20), RateAdmissionDecision::Admit);

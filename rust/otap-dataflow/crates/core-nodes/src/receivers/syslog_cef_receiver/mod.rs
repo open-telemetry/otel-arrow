@@ -308,8 +308,7 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let mut receiver = SyslogCefReceiver::from_config(pipeline, &node_config.config)?;
         receiver.rate_limiter = receiver_config
-            .rate_limit
-            .clone()
+            .rate_limiter
             .map(|policy| LocalRateLimiter::new(policy, receiver.admission_state.clone()));
         Ok(ReceiverWrapper::local(
             receiver,
@@ -2181,7 +2180,8 @@ mod config_tests {
 mod telemetry_tests {
     use super::*;
     use otap_df_config::policy::{
-        RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure, RateLimitUnit,
+        RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit, RateLimiterPolicy,
+        TokenBucketPolicy,
     };
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::receiver::Receiver;
@@ -2207,15 +2207,17 @@ mod telemetry_tests {
         snap.get_metrics()[index].to_u64_lossy()
     }
 
-    fn messages_per_second_policy() -> RateLimitPolicy {
-        RateLimitPolicy {
+    fn messages_per_second_policy() -> RateLimiterPolicy {
+        RateLimiterPolicy {
             mode: RateLimitMode::Enforce,
             aggregation: RateLimitAggregation::ReceiverInstance,
             unit: RateLimitUnit::MessagesPerSecond,
-            allow: 1,
-            interval: Duration::from_secs(1),
-            burst: Some(1),
             pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 1,
+                interval: Duration::from_secs(1),
+                burst: Some(1),
+            },
         }
     }
 

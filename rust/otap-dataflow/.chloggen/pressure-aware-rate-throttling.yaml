@@ -17,6 +17,8 @@ issues: [3484]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: >-
-  Custom receiver embedders must declare supported rate-limit units on
-  ReceiverFactory and pass the resolved rate_limit policy into pipeline
-  build and validation helpers.
+  Configure the V1 limiter as one named entry under
+  policies.resources.rate_limiters with token-bucket settings nested under
+  token_bucket. Custom receiver embedders must declare supported rate-limit
+  units on ReceiverFactory and pass the resolved rate limiter policy into
+  pipeline build and validation helpers.

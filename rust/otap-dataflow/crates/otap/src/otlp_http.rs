@@ -1633,7 +1633,8 @@ mod tests {
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
         use otap_df_config::policy::{
-            RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure, RateLimitUnit,
+            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
         };
         use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::memory_limiter::MemoryPressureChanged;
@@ -1685,14 +1686,16 @@ mod tests {
             usage_bytes: 0,
         });
         let rate_limiter = RateLimiter::new(
-            RateLimitPolicy {
+            RateLimiterPolicy {
                 mode: RateLimitMode::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
                 unit: RateLimitUnit::RequestBytesPerSecond,
-                allow: 1,
-                interval: Duration::from_secs(1),
-                burst: Some(1),
                 pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
             },
             admission_state.clone(),
         );
@@ -1787,7 +1790,8 @@ mod tests {
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
         use otap_df_config::policy::{
-            RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure, RateLimitUnit,
+            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+            RateLimiterPolicy, TokenBucketPolicy,
         };
         use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::memory_limiter::MemoryPressureChanged;
@@ -1839,14 +1843,16 @@ mod tests {
             usage_bytes: 0,
         });
         let rate_limiter = RateLimiter::new(
-            RateLimitPolicy {
+            RateLimiterPolicy {
                 mode: RateLimitMode::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
                 unit: RateLimitUnit::RequestBytesPerSecond,
-                allow: 1,
-                interval: Duration::from_secs(1),
-                burst: Some(1),
                 pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
             },
             admission_state.clone(),
         );

@@ -316,8 +316,9 @@ elevated usage. A `process_memory_limiter.transition` log event is emitted at
 pressure-aware rate throttling, may use `Soft` as their activation signal. The
 behaviors in the table above apply only at `Hard` in `enforce` mode.
 
-For the v1 pressure-aware rate policy, OTLP `request_bytes/second` is measured
-as decompressed OTLP payload bytes at the receiver admission point. Syslog / CEF
+For the v1 pressure-aware rate policy, OTLP supports only
+`request_bytes/second`, measured as decompressed OTLP payload bytes at the
+receiver admission point. V1 does not count OTLP telemetry items. Syslog / CEF
 supports `messages/second`, measured as one UDP datagram or one emitted TCP
 record before parsing. A normal TCP line is one record; a line that exceeds
 `MAX_MESSAGE_SIZE` may be emitted as multiple bounded-read fragments, and each

@@ -10,7 +10,7 @@ use schemars::JsonSchema;
 use serde::Deserializer;
 use serde::de;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::time::Duration;
 
@@ -55,11 +55,6 @@ pub struct Policies {
     /// (the feature is entirely opt-in).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) transport_headers: Option<TransportHeadersPolicy>,
-    /// Pressure-aware receiver admission rate limit.
-    ///
-    /// When absent, no scoped rate gate is applied.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) rate_limit: Option<RateLimitPolicy>,
 }
 
 impl Policies {
@@ -81,9 +76,11 @@ impl Policies {
         let mut health = None;
         let mut runtime_recovery = None;
         let mut telemetry = None;
-        let mut resources = None;
+        let mut core_allocation = None;
+        let mut memory_limiter = None;
         let mut transport_headers = None;
-        let mut rate_limit = None;
+        let mut rate_limiter = None;
+        let mut rate_limiters_resolved = false;
         for scope in scopes {
             if channel_capacity.is_none() {
                 channel_capacity = scope.channel_capacity.as_ref();
@@ -97,14 +94,25 @@ impl Policies {
             if telemetry.is_none() {
                 telemetry = scope.telemetry.as_ref();
             }
-            if resources.is_none() {
-                resources = scope.resources.as_ref();
+            if let Some(resources) = scope.resources.as_ref() {
+                if core_allocation.is_none() {
+                    core_allocation = resources.core_allocation.as_ref();
+                }
+                if memory_limiter.is_none() {
+                    memory_limiter = resources.memory_limiter.as_ref();
+                }
             }
             if transport_headers.is_none() {
                 transport_headers = scope.transport_headers.as_ref();
             }
-            if rate_limit.is_none() {
-                rate_limit = scope.rate_limit.as_ref();
+            if !rate_limiters_resolved
+                && let Some(rate_limiters) = scope
+                    .resources
+                    .as_ref()
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+            {
+                rate_limiter = rate_limiters.values().next().copied();
+                rate_limiters_resolved = true;
             }
         }
         ResolvedPolicies {
@@ -112,9 +120,12 @@ impl Policies {
             health: health.cloned().unwrap_or_default(),
             runtime_recovery: runtime_recovery.cloned().unwrap_or_default(),
             telemetry: telemetry.cloned().unwrap_or_default(),
-            resources: resources.cloned().unwrap_or_default(),
+            resources: ResolvedResourcesPolicy {
+                core_allocation: core_allocation.cloned().unwrap_or_default(),
+                memory_limiter: memory_limiter.cloned(),
+            },
             transport_headers: transport_headers.cloned(),
-            rate_limit: rate_limit.cloned(),
+            rate_limiter,
         }
     }
 
@@ -198,8 +209,12 @@ impl Policies {
             }
         }
 
-        if let Some(resources) = &self.resources {
-            if let Err(e) = resources.core_allocation.validate() {
+        if let Some(core_allocation) = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.core_allocation.as_ref())
+        {
+            if let Err(e) = core_allocation.validate() {
                 errors.push(format!("{path_prefix}.resources.core_allocation: {e}"));
             }
         }
@@ -218,8 +233,25 @@ impl Policies {
                 ));
             }
         }
-        if let Some(rate_limit) = &self.rate_limit {
-            errors.extend(rate_limit.validation_errors(&format!("{path_prefix}.rate_limit")));
+        if let Some(rate_limiters) = self
+            .resources
+            .as_ref()
+            .and_then(|resources| resources.rate_limiters.as_ref())
+        {
+            let rate_limiters_path = format!("{path_prefix}.resources.rate_limiters");
+            if rate_limiters.len() > 1 {
+                errors.push(format!(
+                    "{rate_limiters_path} supports exactly one named limiter in V1"
+                ));
+            }
+            for (name, rate_limiter) in rate_limiters {
+                if name.is_empty() {
+                    errors.push(format!("{rate_limiters_path} names must not be empty"));
+                }
+                errors.extend(
+                    rate_limiter.validation_errors(&format!("{rate_limiters_path}.{name}")),
+                );
+            }
         }
         errors
     }
@@ -237,13 +269,30 @@ pub struct ResolvedPolicies {
     pub telemetry: TelemetryPolicy,
     /// Controller-managed runtime recovery policy.
     pub runtime_recovery: RuntimeRecoveryPolicy,
-    /// Resources policy.
-    pub resources: ResourcesPolicy,
+    /// Effective resource policy resolved field-by-field across scopes.
+    pub resources: ResolvedResourcesPolicy,
     /// Transport headers policy. `None` when the feature is not configured
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
-    /// Pressure-aware receiver admission rate limit.
-    pub rate_limit: Option<RateLimitPolicy>,
+    /// Authoritative effective pressure-aware receiver admission rate limiter.
+    ///
+    /// V1 resolves at most one named limiter into this allocation-free runtime
+    /// representation. The configured name remains a cold-path concern until
+    /// nodes can select multiple named limiters.
+    pub rate_limiter: Option<RateLimiterPolicy>,
+}
+
+/// Fully-resolved resource policy used by runtime planning.
+///
+/// Named rate-limiter declarations are intentionally absent. The selected V1
+/// limiter is represented only by [`ResolvedPolicies::rate_limiter`], avoiding
+/// divergent declaration and runtime state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolvedResourcesPolicy {
+    /// Effective CPU core allocation strategy.
+    pub core_allocation: CoreAllocation,
+    /// Effective process-wide memory limiter configuration.
+    pub memory_limiter: Option<MemoryLimiterPolicy>,
 }
 
 impl ResolvedPolicies {
@@ -258,7 +307,7 @@ impl ResolvedPolicies {
             runtime_recovery: self_runtime_recovery,
             resources: _,
             transport_headers: self_transport_headers,
-            rate_limit: self_rate_limit,
+            rate_limiter: self_rate_limiter,
         } = self;
         let Self {
             channel_capacity: other_channel_capacity,
@@ -267,7 +316,7 @@ impl ResolvedPolicies {
             runtime_recovery: other_runtime_recovery,
             resources: _,
             transport_headers: other_transport_headers,
-            rate_limit: other_rate_limit,
+            rate_limiter: other_rate_limiter,
         } = other;
 
         self_channel_capacity == other_channel_capacity
@@ -275,14 +324,14 @@ impl ResolvedPolicies {
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
-            && self_rate_limit == other_rate_limit
+            && self_rate_limiter == other_rate_limiter
     }
 }
 
-/// Pressure-aware receiver admission rate limit policy.
-#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+/// Pressure-aware receiver admission rate limiter policy.
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct RateLimitPolicy {
+pub struct RateLimiterPolicy {
     /// Runtime behavior applied when the scoped rate gate would throttle.
     pub mode: RateLimitMode,
     /// Runtime aggregation scope. V1 supports only `receiver_instance`.
@@ -290,6 +339,16 @@ pub struct RateLimitPolicy {
     /// Rate unit measured by the receiver admission point, such as OTLP request
     /// bytes or Syslog/CEF messages.
     pub unit: RateLimitUnit,
+    /// Process pressure gate. V1 supports only `soft`.
+    pub pressure: RateLimitPressure,
+    /// Token-bucket implementation settings.
+    pub token_bucket: TokenBucketPolicy,
+}
+
+/// Token-bucket-specific rate limiter settings.
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TokenBucketPolicy {
     /// Number of configured units allowed per interval.
     #[schemars(with = "U64OrString")]
     pub allow: u64,
@@ -300,8 +359,6 @@ pub struct RateLimitPolicy {
     /// Burst capacity in configured units. Defaults to `allow`.
     #[schemars(with = "Option<U64OrString>")]
     pub burst: Option<u64>,
-    /// Process pressure gate. V1 supports only `soft`.
-    pub pressure: RateLimitPressure,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -343,58 +400,73 @@ where
         .map_err(|err| E::custom(err.to_string()))
 }
 
-impl<'de> Deserialize<'de> for RateLimitPolicy {
+impl<'de> Deserialize<'de> for RateLimiterPolicy {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
-        struct RawRateLimitPolicy {
+        struct RawRateLimiterPolicy {
             mode: RateLimitMode,
             aggregation: RateLimitAggregation,
             unit: RateLimitUnit,
+            pressure: RateLimitPressure,
+            token_bucket: RawTokenBucketPolicy,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawTokenBucketPolicy {
             allow: U64OrString,
             #[serde(with = "humantime_serde")]
             interval: Duration,
             #[serde(default)]
             burst: Option<U64OrString>,
-            pressure: RateLimitPressure,
         }
 
-        let raw = RawRateLimitPolicy::deserialize(deserializer)?;
+        let raw = RawRateLimiterPolicy::deserialize(deserializer)?;
         Ok(Self {
             mode: raw.mode,
             aggregation: raw.aggregation,
             unit: raw.unit,
-            allow: raw.allow.parse_for_unit("allow", raw.unit)?,
-            interval: raw.interval,
-            burst: raw
-                .burst
-                .map(|burst| burst.parse_for_unit("burst", raw.unit))
-                .transpose()?,
             pressure: raw.pressure,
+            token_bucket: TokenBucketPolicy {
+                allow: raw.token_bucket.allow.parse_for_unit("allow", raw.unit)?,
+                interval: raw.token_bucket.interval,
+                burst: raw
+                    .token_bucket
+                    .burst
+                    .map(|burst| burst.parse_for_unit("burst", raw.unit))
+                    .transpose()?,
+            },
         })
     }
 }
 
-impl RateLimitPolicy {
+impl RateLimiterPolicy {
     /// Returns validation errors for explicitly configured rate-limit fields.
     #[must_use]
     pub fn validation_errors(&self, path_prefix: &str) -> Vec<String> {
         let mut errors = Vec::new();
-        if self.allow == 0 {
-            errors.push(format!("{path_prefix}.allow must be greater than 0"));
-        }
-        if self.interval.is_zero() {
-            errors.push(format!("{path_prefix}.interval must be greater than 0"));
-        } else if self.interval != Duration::from_secs(1) {
+        if self.token_bucket.allow == 0 {
             errors.push(format!(
-                "{path_prefix}.interval must be 1s for per-second rate units"
+                "{path_prefix}.token_bucket.allow must be greater than 0"
             ));
         }
-        if matches!(self.burst, Some(0)) {
-            errors.push(format!("{path_prefix}.burst must be greater than 0"));
+        if self.token_bucket.interval.is_zero() {
+            errors.push(format!(
+                "{path_prefix}.token_bucket.interval must be greater than 0"
+            ));
+        } else if self.token_bucket.interval != Duration::from_secs(1) {
+            errors.push(format!(
+                "{path_prefix}.token_bucket.interval must be 1s for per-second rate units"
+            ));
+        }
+        if matches!(self.token_bucket.burst, Some(0)) {
+            errors.push(format!(
+                "{path_prefix}.token_bucket.burst must be greater than 0"
+            ));
         }
         errors
     }
@@ -402,7 +474,10 @@ impl RateLimitPolicy {
     /// Returns the configured burst capacity, defaulting to `allow`.
     #[must_use]
     pub fn burst_or_allow(&self) -> u64 {
-        self.burst.unwrap_or(self.allow).max(1)
+        self.token_bucket
+            .burst
+            .unwrap_or(self.token_bucket.allow)
+            .max(1)
     }
 }
 
@@ -730,14 +805,21 @@ const fn default_false() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct ResourcesPolicy {
     /// CPU core allocation strategy for this pipeline.
-    #[serde(default)]
-    pub core_allocation: CoreAllocation,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub core_allocation: Option<CoreAllocation>,
     /// Optional process-wide memory limiter configuration.
     ///
     /// This is currently supported only at the top-level `policies.resources`
     /// scope. Group and pipeline overrides are rejected during engine validation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_limiter: Option<MemoryLimiterPolicy>,
+    /// Named pressure-aware receiver admission rate limiters.
+    ///
+    /// V1 accepts at most one entry. Keeping the public configuration named and
+    /// plural allows later node selection and multi-tenant limiter composition
+    /// without putting names or maps on the request hot path today.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limiters: Option<BTreeMap<String, RateLimiterPolicy>>,
 }
 
 /// Process-wide memory limiter declarations.
@@ -1058,19 +1140,34 @@ mod tests {
         MemoryLimiterMode, MemoryLimiterPolicy, MemoryLimiterSource, Policies,
         RuntimeRecoveryPolicy,
     };
+    use std::collections::BTreeMap;
     use std::time::Duration;
+
+    fn test_rate_limiter(allow: u64) -> super::RateLimiterPolicy {
+        super::RateLimiterPolicy {
+            mode: super::RateLimitMode::Enforce,
+            aggregation: super::RateLimitAggregation::ReceiverInstance,
+            unit: super::RateLimitUnit::MessagesPerSecond,
+            pressure: super::RateLimitPressure::Soft,
+            token_bucket: super::TokenBucketPolicy {
+                allow,
+                interval: Duration::from_secs(1),
+                burst: Some(allow),
+            },
+        }
+    }
 
     #[test]
     fn resolved_policies_eq_ignoring_resources_ignores_resource_only_changes() {
         let current = super::ResolvedPolicies {
-            resources: super::ResourcesPolicy {
+            resources: super::ResolvedResourcesPolicy {
                 core_allocation: super::CoreAllocation::core_count(1),
                 memory_limiter: None,
             },
             ..super::ResolvedPolicies::default()
         };
         let candidate = super::ResolvedPolicies {
-            resources: super::ResourcesPolicy {
+            resources: super::ResolvedResourcesPolicy {
                 core_allocation: super::CoreAllocation::core_count(2),
                 memory_limiter: None,
             },
@@ -1249,16 +1346,17 @@ unknown_recovery_option: true
 mode: enforce
 aggregation: receiver_instance
 unit: messages/second
-allow: 1000
-interval: 1s
-burst: 2000
 pressure: soft
+token_bucket:
+  allow: 1000
+  interval: 1s
+  burst: 2000
 "#;
-        let policy: super::RateLimitPolicy =
+        let policy: super::RateLimiterPolicy =
             serde_yaml::from_str(yaml).expect("numeric rate-limit values should parse");
 
-        assert_eq!(policy.allow, 1000);
-        assert_eq!(policy.burst, Some(2000));
+        assert_eq!(policy.token_bucket.allow, 1000);
+        assert_eq!(policy.token_bucket.burst, Some(2000));
     }
 
     /// Scenario: a message-rate policy uses byte-unit suffixes for count fields.
@@ -1269,12 +1367,13 @@ pressure: soft
 mode: enforce
 aggregation: receiver_instance
 unit: messages/second
-allow: "1 KiB"
-interval: 1s
-burst: "2 KiB"
 pressure: soft
+token_bucket:
+  allow: "1 KiB"
+  interval: 1s
+  burst: "2 KiB"
 "#;
-        let err = serde_yaml::from_str::<super::RateLimitPolicy>(yaml)
+        let err = serde_yaml::from_str::<super::RateLimiterPolicy>(yaml)
             .expect_err("byte units should not parse for message counts");
 
         assert!(
@@ -1291,23 +1390,24 @@ pressure: soft
 mode: enforce
 aggregation: receiver_instance
 unit: request_bytes/second
-allow: "1 KiB"
-interval: 1s
-burst: "2 KiB"
 pressure: soft
+token_bucket:
+  allow: "1 KiB"
+  interval: 1s
+  burst: "2 KiB"
 "#;
-        let policy: super::RateLimitPolicy =
+        let policy: super::RateLimiterPolicy =
             serde_yaml::from_str(yaml).expect("byte units should parse for byte limits");
 
-        assert_eq!(policy.allow, 1024);
-        assert_eq!(policy.burst, Some(2048));
+        assert_eq!(policy.token_bucket.allow, 1024);
+        assert_eq!(policy.token_bucket.burst, Some(2048));
     }
 
     /// Scenario: the rate-limit schema is generated for fields parsed by byte-unit helpers.
     /// Guarantees: CRD validation permits both numeric and string values for allow and burst.
     #[test]
     fn rate_limit_schema_exposes_allow_and_burst_as_number_or_string() {
-        let schema = schemars::schema_for!(super::RateLimitPolicy);
+        let schema = schemars::schema_for!(super::RateLimiterPolicy);
         let json = serde_json::to_value(schema).expect("schema should serialize");
 
         let allow_schema = json["$defs"]["U64OrString"].to_string();
@@ -1316,7 +1416,12 @@ pressure: soft
             "allow should allow integer or string values: {allow_schema}"
         );
 
-        let burst_schema = json["properties"]["burst"].to_string();
+        let burst_schema = json["properties"]["token_bucket"]["$ref"]
+            .as_str()
+            .and_then(|reference| reference.rsplit('/').next())
+            .and_then(|name| json["$defs"].get(name))
+            .map(|schema| schema["properties"]["burst"].to_string())
+            .expect("token_bucket schema should be defined");
         assert!(
             burst_schema.contains("U64OrString"),
             "burst should reference the number-or-string schema: {burst_schema}"
@@ -1328,14 +1433,22 @@ pressure: soft
     #[test]
     fn validates_rate_limit_requires_one_second_interval() {
         let policies = Policies {
-            rate_limit: Some(super::RateLimitPolicy {
-                mode: super::RateLimitMode::Enforce,
-                aggregation: super::RateLimitAggregation::ReceiverInstance,
-                unit: super::RateLimitUnit::MessagesPerSecond,
-                allow: 100,
-                interval: Duration::from_secs(10),
-                burst: Some(100),
-                pressure: super::RateLimitPressure::Soft,
+            resources: Some(super::ResourcesPolicy {
+                rate_limiters: Some(BTreeMap::from([(
+                    "default".to_owned(),
+                    super::RateLimiterPolicy {
+                        mode: super::RateLimitMode::Enforce,
+                        aggregation: super::RateLimitAggregation::ReceiverInstance,
+                        unit: super::RateLimitUnit::MessagesPerSecond,
+                        pressure: super::RateLimitPressure::Soft,
+                        token_bucket: super::TokenBucketPolicy {
+                            allow: 100,
+                            interval: Duration::from_secs(10),
+                            burst: Some(100),
+                        },
+                    },
+                )])),
+                ..super::ResourcesPolicy::default()
             }),
             ..Policies::default()
         };
@@ -1346,6 +1459,125 @@ pressure: soft
             errors[0].contains("interval must be 1s"),
             "unexpected validation error: {errors:?}"
         );
+    }
+
+    /// Scenario: a policy scope declares two named rate limiters before node selection exists.
+    /// Guarantees: V1 rejects ambiguous multi-limiter configuration instead of silently choosing one.
+    #[test]
+    fn validates_v1_rejects_multiple_named_rate_limiters() {
+        let policies = Policies {
+            resources: Some(super::ResourcesPolicy {
+                rate_limiters: Some(BTreeMap::from([
+                    ("first".to_owned(), test_rate_limiter(100)),
+                    ("second".to_owned(), test_rate_limiter(200)),
+                ])),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+
+        let errors = policies.validation_errors("policies");
+
+        assert_eq!(errors.len(), 1);
+        assert!(errors[0].contains("supports exactly one named limiter in V1"));
+    }
+
+    /// Scenario: a narrower scope explicitly declares an empty named limiter collection.
+    /// Guarantees: the empty collection disables an inherited limiter without changing other resources.
+    #[test]
+    fn empty_rate_limiter_collection_disables_inheritance() {
+        let parent = Policies {
+            resources: Some(super::ResourcesPolicy {
+                rate_limiters: Some(BTreeMap::from([(
+                    "ingress".to_owned(),
+                    test_rate_limiter(100),
+                )])),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+        let child = Policies {
+            resources: Some(super::ResourcesPolicy {
+                core_allocation: Some(super::CoreAllocation::core_count(2)),
+                rate_limiters: Some(BTreeMap::new()),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+
+        let resolved = Policies::resolve([&child, &parent]);
+
+        assert!(resolved.rate_limiter.is_none());
+        assert_eq!(
+            resolved.resources.core_allocation,
+            super::CoreAllocation::core_count(2)
+        );
+    }
+
+    /// Scenario: a child scope declares only a rate limiter while its parent declares core allocation.
+    /// Guarantees: resource members resolve independently and retain both effective declarations.
+    #[test]
+    fn rate_limiter_override_preserves_parent_core_allocation() {
+        let parent = Policies {
+            resources: Some(super::ResourcesPolicy {
+                core_allocation: Some(super::CoreAllocation::core_count(4)),
+                rate_limiters: Some(BTreeMap::from([(
+                    "parent".to_owned(),
+                    test_rate_limiter(100),
+                )])),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+        let child = Policies {
+            resources: Some(super::ResourcesPolicy {
+                rate_limiters: Some(BTreeMap::from([(
+                    "child".to_owned(),
+                    test_rate_limiter(200),
+                )])),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+
+        let resolved = Policies::resolve([&child, &parent]);
+
+        assert_eq!(
+            resolved.resources.core_allocation,
+            super::CoreAllocation::core_count(4)
+        );
+        assert_eq!(resolved.rate_limiter, Some(test_rate_limiter(200)));
+    }
+
+    /// Scenario: a child scope declares only core allocation while its parent declares a rate limiter.
+    /// Guarantees: core allocation does not suppress the independently inherited limiter.
+    #[test]
+    fn core_allocation_override_preserves_parent_rate_limiter() {
+        let parent = Policies {
+            resources: Some(super::ResourcesPolicy {
+                rate_limiters: Some(BTreeMap::from([(
+                    "parent".to_owned(),
+                    test_rate_limiter(100),
+                )])),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+        let child = Policies {
+            resources: Some(super::ResourcesPolicy {
+                core_allocation: Some(super::CoreAllocation::core_count(2)),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+
+        let resolved = Policies::resolve([&child, &parent]);
+
+        assert_eq!(
+            resolved.resources.core_allocation,
+            super::CoreAllocation::core_count(2)
+        );
+        assert_eq!(resolved.rate_limiter, Some(test_rate_limiter(100)));
     }
 
     #[test]
@@ -1551,7 +1783,7 @@ pressure: soft
     fn validates_memory_limiter_settings() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::all_cores(),
+                core_allocation: Some(super::CoreAllocation::all_cores()),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Auto,
@@ -1564,6 +1796,7 @@ pressure: soft
                     purge_on_hard: false,
                     purge_min_interval: Duration::from_secs(5),
                 }),
+                rate_limiters: None,
             }),
             ..Policies::default()
         };
@@ -1579,7 +1812,7 @@ pressure: soft
     fn validates_memory_limiter_requires_both_limits_when_explicit() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::all_cores(),
+                core_allocation: Some(super::CoreAllocation::all_cores()),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Rss,
@@ -1592,6 +1825,7 @@ pressure: soft
                     purge_on_hard: false,
                     purge_min_interval: Duration::from_secs(5),
                 }),
+                rate_limiters: None,
             }),
             ..Policies::default()
         };
@@ -1605,7 +1839,7 @@ pressure: soft
     fn validates_memory_limiter_rejects_zero_soft_limit() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::all_cores(),
+                core_allocation: Some(super::CoreAllocation::all_cores()),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Rss,
@@ -1618,6 +1852,7 @@ pressure: soft
                     purge_on_hard: false,
                     purge_min_interval: Duration::from_secs(5),
                 }),
+                rate_limiters: None,
             }),
             ..Policies::default()
         };
@@ -1631,7 +1866,7 @@ pressure: soft
     fn validates_memory_limiter_requires_limits_for_non_auto_sources() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::all_cores(),
+                core_allocation: Some(super::CoreAllocation::all_cores()),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Rss,
@@ -1644,6 +1879,7 @@ pressure: soft
                     purge_on_hard: false,
                     purge_min_interval: Duration::from_secs(5),
                 }),
+                rate_limiters: None,
             }),
             ..Policies::default()
         };
@@ -1657,7 +1893,7 @@ pressure: soft
     fn validates_memory_limiter_rejects_zero_retry_after_secs() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::all_cores(),
+                core_allocation: Some(super::CoreAllocation::all_cores()),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Auto,
@@ -1670,6 +1906,7 @@ pressure: soft
                     purge_on_hard: false,
                     purge_min_interval: Duration::from_secs(5),
                 }),
+                rate_limiters: None,
             }),
             ..Policies::default()
         };
@@ -1683,7 +1920,7 @@ pressure: soft
     fn validates_memory_limiter_rejects_zero_purge_min_interval() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation::all_cores(),
+                core_allocation: Some(super::CoreAllocation::all_cores()),
                 memory_limiter: Some(MemoryLimiterPolicy {
                     mode: MemoryLimiterMode::Enforce,
                     source: MemoryLimiterSource::Auto,
@@ -1696,6 +1933,7 @@ pressure: soft
                     purge_on_hard: true,
                     purge_min_interval: Duration::ZERO,
                 }),
+                rate_limiters: None,
             }),
             ..Policies::default()
         };
@@ -1834,11 +2072,11 @@ pressure: soft
     fn validates_core_allocation_in_policies() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
-                core_allocation: super::CoreAllocation {
+                core_allocation: Some(super::CoreAllocation {
                     strategy: super::CoreAllocationStrategy::CoreCount,
                     count: None,
                     set: None,
-                },
+                }),
                 ..Default::default()
             }),
             ..Default::default()

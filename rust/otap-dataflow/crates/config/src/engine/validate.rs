@@ -115,19 +115,25 @@ impl OtelDataflowSpec {
             }
         }
 
-        let any_regular_rate_limit = self.policies.rate_limit.is_some()
+        let has_rate_limiters = |policies: &crate::policy::Policies| {
+            policies
+                .resources
+                .as_ref()
+                .and_then(|resources| resources.rate_limiters.as_ref())
+                .is_some_and(|rate_limiters| !rate_limiters.is_empty())
+        };
+        let any_regular_rate_limiter = has_rate_limiters(&self.policies)
             || self.groups.values().any(|pipeline_group| {
                 pipeline_group
                     .policies
                     .as_ref()
-                    .is_some_and(|policies| policies.rate_limit.is_some())
-                    || pipeline_group.pipelines.values().any(|pipeline| {
-                        pipeline
-                            .policies()
-                            .is_some_and(|policies| policies.rate_limit.is_some())
-                    })
+                    .is_some_and(&has_rate_limiters)
+                    || pipeline_group
+                        .pipelines
+                        .values()
+                        .any(|pipeline| pipeline.policies().is_some_and(&has_rate_limiters))
             });
-        if any_regular_rate_limit
+        if any_regular_rate_limiter
             && self
                 .policies
                 .resources
@@ -136,7 +142,7 @@ impl OtelDataflowSpec {
                 .is_none()
         {
             errors.push(Error::InvalidUserConfig {
-                error: "rate_limit policy requires policies.resources.memory_limiter so receivers have a process pressure source".to_owned(),
+                error: "rate limiter policies require policies.resources.memory_limiter so receivers have a process pressure source".to_owned(),
             });
         }
 

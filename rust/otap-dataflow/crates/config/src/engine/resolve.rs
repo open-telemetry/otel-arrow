@@ -5,7 +5,7 @@
 
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
-use crate::policy::{Policies, ResolvedPolicies, ResourcesPolicy};
+use crate::policy::{Policies, ResolvedPolicies, ResolvedResourcesPolicy};
 use crate::topic::TopicSpec;
 use crate::{PipelineGroupId, PipelineId, TopicName};
 
@@ -188,9 +188,9 @@ impl OtelDataflowSpec {
         let mut policies = Policies::resolve([&obs_as_policies, &self.policies]);
         // Observability pipelines use default resources and do not consume
         // user-facing receiver policies.
-        policies.resources = ResourcesPolicy::default();
+        policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
-        policies.rate_limit = None;
+        policies.rate_limiter = None;
         pipelines.push(ResolvedPipelineConfig {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),
@@ -231,7 +231,9 @@ impl OtelDataflowSpec {
 mod tests {
     use super::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use crate::pipeline::PipelineConfig;
-    use crate::policy::{CoreAllocation, ResolvedPolicies, ResourcesPolicy, TelemetryPolicy};
+    use crate::policy::{
+        CoreAllocation, ResolvedPolicies, ResolvedResourcesPolicy, TelemetryPolicy,
+    };
 
     #[test]
     fn runtime_shape_matches_ignoring_resources_ignores_resource_only_changes() {
@@ -261,7 +263,7 @@ connections:
             )
             .expect("current pipeline should parse"),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation: CoreAllocation::core_count(1),
                     memory_limiter: None,
                 },
@@ -295,7 +297,7 @@ connections:
             )
             .expect("candidate pipeline should parse"),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation: CoreAllocation::core_count(2),
                     memory_limiter: None,
                 },

@@ -125,10 +125,16 @@ Declaration placement does not determine aggregation. These are independent.
 Policy declaration follows the existing
 [configuration model](../docs/configuration-model.md): top-level policies
 provide defaults, group policies override them for a group, and pipeline
-policies override them for a single pipeline. Precedence applies by policy
-family, and a lower scope replaces an upper scope for that family rather than
-deep-merging into it. Receiver binding is not a policy scope and does not add a
-precedence level.
+policies override them for a single pipeline. Precedence applies independently
+to each member of `policies.resources`: `core_allocation`, `memory_limiter`, and
+`rate_limiters`. Declaring one resource member at a narrower scope does not
+suppress the others inherited from broader scopes. Receiver binding is not a
+policy scope and does not add a precedence level.
+
+An omitted `rate_limiters` member inherits the nearest broader declaration. An
+explicit empty collection, `rate_limiters: {}`, disables that inherited
+declaration. This explicit disable rule is needed because V1 has no per-limiter
+`enabled` flag and an absent member already means "inherit."
 
 Resolution copies configuration down; it does not create shared state. A
 group-level declaration therefore gives every pipeline in that group the same
@@ -154,18 +160,17 @@ design for each. Tenant limits are not a special case: they are this tuple with
 the token component populated. A later shared-state scope changes where the
 bucket lives, not what the bucket is keyed by.
 
-This RFC models `rate_limit` as a singleton policy family, not a named limiter
-catalog. Compatible receivers apply the effective `rate_limit` policy
-automatically. A receiver can provide an inline override or explicitly disable
-the policy when needed. This follows the existing hierarchical policy model:
-top-level policy provides the default, group policy replaces it for a group, and
-pipeline policy replaces it for a pipeline. The existing `transport_headers`
-policy is the closest precedent: an effective policy applies to compatible
-nodes, while a node can override it when needed.
+This RFC places named limiter declarations under
+`policies.resources.rate_limiters`, following the generic limiter model in
+[#3583](https://github.com/open-telemetry/otel-arrow/pull/3583). Compatible
+receivers automatically apply the one effective limiter supported by V1. The
+named collection and implementation-specific `token_bucket` block avoid a
+configuration migration when node selection, multiple limiters, and
+tenant-conditioned buckets are added.
 
-This RFC constrains the first version to one effective pressure-aware rate
-limiter per compatible receiver. Composing several rate limits at one admission
-point is out of scope and belongs to future generic-limiter work.
+V1 constrains each policy scope to at most one named pressure-aware rate
+limiter. Composing several rate limits at one admission point remains out of
+scope until nodes can select named limiters explicitly.
 
 #### Runtime aggregation
 
@@ -228,6 +233,9 @@ counting for encoded OTLP is not free and should not be assumed; it requires a
 scan or decode the receiver would otherwise avoid. OTAP receivers, and receivers
 that already build item-level batches on their admission path, may support item
 rate units more naturally.
+
+V1 OTLP implements only `request_bytes/second`, measured from the decompressed
+payload. It does not implement OTLP item counting.
 
 Receivers admit whole requests or batches, not individual items inside an
 accepted batch. This matters for item-based units because admission happens
@@ -370,15 +378,10 @@ admission-control step.
 
 ### Configuration Shape
 
-This RFC does not define the final configuration schema. The sketch below is
-illustrative only. It treats `rate_limit` as a singleton policy family. The
-future plural `rate_limits` namespace is reserved for a named limiter catalog if
-the generic limiter model is added later.
-
-`rate_limit` is separate from `policies.resources`. The current policy resolver
-handles `resources` as one atomic family, so a scoped `resources.core_allocation`
-override would replace any broader rate-limit configuration nested under
-`resources`.
+The implemented V1 schema uses a named collection aligned with the generic
+limiter model. Rate-limit declarations resolve independently from the other
+members of `resources`, so a scoped `resources.core_allocation` override does
+not suppress a broader rate-limiter declaration.
 
 ```yaml
 tenant_tokens:
@@ -390,26 +393,22 @@ tenant_tokens:
       transport_header: x-workspace-id
 
 policies:
-  rate_limit:
-    mode: enforce
-    aggregation: receiver_instance
-    unit: request_bytes/second
-    optional_tenant_tokens: [customer_tenant]
-    # Applies per receiver instance, not process-wide.
-    allow: 10485760
-    # Token refill interval for the configured rate.
-    interval: 1s
-    # Burst and debt fields are illustrative. Exact schema names are
-    # unresolved and should align with the tenant-token limiter model.
-    burst: 10485760
-    max_debt: 10485760
-    # Proposed policy-level gate: apply this limit only while process
-    # memory is at or above soft pressure. Driven by the pressure level
-    # the receiver already receives, not by a tenant-token condition.
-    pressure: soft
-    cardinality:
-      max_count: 10000
-      failure_mode: reject
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      ingress:
+        mode: enforce
+        aggregation: receiver_instance
+        unit: request_bytes/second
+        # Applies only while process memory is at or above soft pressure.
+        pressure: soft
+        token_bucket:
+          # Applies per receiver instance, not process-wide.
+          allow: 10485760
+          interval: 1s
+          burst: 10485760
 
 groups:
   main:
@@ -426,33 +425,28 @@ This example uses `request_bytes/second` because OTLP request bytes are
 available before protobuf inspection. A receiver that can measure item counts on
 its admission path may instead support `request_items/second`. In a shared
 pipeline, the rate buckets come from tenant tokens. If tenants are already
-separated by pipeline or pipeline group, the same singleton policy can be
+separated by pipeline or pipeline group, the same named policy can be
 overridden at that scope without extracting a tenant token. The receiver remains
 the admission point in both cases, and each receiver instance keeps its own rate
 state in both cases. Both shapes are the same bucket key described in "Policy
 application and bucket key", with and without the tenant-token component.
 
-In the sketch, `optional_tenant_tokens` says which resolved tokens may subdivide
-the policy into buckets. The receiver's `config.tenant_tokens` says which tokens
-the receiver should resolve from its request context.
+V1 does not yet subdivide a limiter by tenant token. A future condition block
+will identify which resolved tokens form bucket keys, and a cardinality block
+will bound the number of tracked tenant buckets.
 
-The `cardinality` block bounds the number of tracked scope buckets. If that
-limit is exceeded, `failure_mode: reject` avoids creating unbounded new bucket
-state while the process is already under pressure.
+The V1 schema keeps strict unknown-field rejection, validates declaration
+placement and receiver compatibility, verifies that the receiver supports the
+configured rate unit on its admission path, and rejects unsupported
+pressure-gate combinations. It also rejects more than one named limiter,
+anything other than `aggregation: receiver_instance`, a pressure value other
+than `soft`, and pressure-aware rate limiting without a process memory pressure
+source. Per-tenant overrides will use ordered conditions from the tenant-token
+policy model when that model is implemented.
 
-This example is not accepted by the current v1 schema. `rate_limit` does not
-exist in the configuration model today, and `Policies` rejects unknown fields.
-The eventual schema must keep strict unknown-field rejection, validate
-declaration placement and receiver compatibility, verify that the receiver
-supports the configured rate unit on its admission path, and reject at startup
-both unsupported pressure-gate combinations and multi-level placements that the
-first version cannot evaluate. The first version should also reject any
-`aggregation` value other than `receiver_instance`, treat `pressure: soft` as
-the only supported v1 pressure gate, require an explicit rate policy `mode`,
-reject a pressure-aware rate policy when no process pressure source is
-configured, and reject configs that set both singleton `rate_limit` and reserved
-plural `rate_limits`. Per-tenant overrides should use ordered conditions from
-the tenant-token policy model if that model is adopted.
+A live limiter change uses the controller's rolling pipeline replacement path,
+not in-place mutation. The replacement receiver starts with fresh bucket state;
+no process restart is required.
 
 The first version must emit would-throttle counters in `observe_only` mode so
 operators can evaluate the policy before enforcing it.
@@ -468,18 +462,16 @@ A later implementation should define:
 - receiver-level override and disable syntax,
 - how the pressure gate is expressed, and how it composes with tenant-token
   conditions,
-- burst and debt bounds,
-- live-update behavior for limiter state.
+- burst and debt bounds.
 
 The configuration should be operator-owned and should avoid unbounded
 per-request or per-scope label cardinality.
 
-This RFC does not define the generic limiter catalog. Same-receiver multi-limit
-composition, per-signal selectors, shared aggregation, retained-work activation,
-and non-receiver enforcement points are future generic-limiter work. If a
-future generic limiter framework is accepted, the singleton `rate_limit` policy
-can either remain as shorthand for one inherited receiver admission limiter, or
-migrate mechanically into a named `rate_limits` policy plus explicit bindings.
+This RFC adopts the generic limiter catalog's outer configuration shape but
+implements only one effective rate limiter per scope. Same-receiver multi-limit
+composition, explicit node bindings, per-signal selectors, shared aggregation,
+retained-work activation, and non-receiver enforcement points remain future
+generic-limiter work.
 
 ### Performance Validation
 
@@ -511,8 +503,8 @@ units.
 - Declaring the policy at group scope gives every pipeline in the group the same
   configuration, not a shared group-wide bucket. Operators who read placement as
   aggregation will be surprised.
-- The singleton policy does not support composing multiple independent rate
-  limits at one receiver. That belongs to a future named limiter catalog.
+- V1 accepts only one named rate limiter per policy scope and does not compose
+  multiple independent limits at one receiver.
 - The configured rate unit must be defined carefully across receivers and
   signals.
 - For item-based units, a receiver may admit one request before knowing the
@@ -567,18 +559,15 @@ units.
 - How should limits be represented for mixed signal traffic from one scope?
 - Should unidentified traffic share one default bucket, or should missing tenant
   identity reject immediately?
-- Does changing limits reset or preserve limiter state during live
-  reconfiguration?
-- If maintainers want a generic named limiter catalog in this RFC, should this
-  RFC depend on that design and land after it is accepted?
+- Which node-binding syntax should select one or more named limiters once V1's
+  automatic single-limiter application is generalized?
 
 ## Future possibilities
 
 - Add more receiver-native rate units beyond request bytes and telemetry items.
 - Add per-signal item-rate limits for logs, traces, and metrics.
-- Add a generic `policies.rate_limits` catalog with named definitions and
-  explicit node bindings. The singleton `policies.rate_limit` namespace is
-  reserved for v1, and configs should not set both forms.
+- Add explicit node bindings and allow multiple named
+  `policies.resources.rate_limiters` entries to compose at one admission point.
 - Trigger selective throttling at a threshold below soft pressure, or at a
   separate threshold of its own, instead of reusing the existing soft level.
   The first version uses soft pressure because it already exists and already

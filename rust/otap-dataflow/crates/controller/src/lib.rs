@@ -55,7 +55,7 @@ use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
-    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimitPolicy,
+    ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RateLimiterPolicy,
     RuntimeRecoveryPolicy, TelemetryPolicy,
 };
 use otap_df_config::topic::{
@@ -1593,7 +1593,7 @@ impl<
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.transport_headers.clone(),
-                    pipeline_entry.policies.rate_limit.clone(),
+                    pipeline_entry.policies.rate_limiter,
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -2068,7 +2068,7 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
-        rate_limit_policy: Option<RateLimitPolicy>,
+        rate_limiter_policy: Option<RateLimiterPolicy>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2127,7 +2127,7 @@ impl<
                         channel_capacity_policy,
                         telemetry_policy,
                         transport_headers_policy,
-                        rate_limit_policy,
+                        rate_limiter_policy,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2262,7 +2262,7 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
-        rate_limit_policy: Option<RateLimitPolicy>,
+        rate_limiter_policy: Option<RateLimiterPolicy>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2321,7 +2321,7 @@ impl<
                     channel_capacity_policy,
                     telemetry_policy,
                     transport_headers_policy,
-                    rate_limit_policy,
+                    rate_limiter_policy,
                     internal_telemetry_settings,
                 )
                 .map_err(|e| {
@@ -2387,7 +2387,7 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
+    use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResolvedResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
     use otap_df_engine::control::NodeControlMsg;
@@ -2695,9 +2695,9 @@ groups: {{}}
             pipeline_id: pipeline_id.to_string().into(),
             pipeline: minimal_pipeline_config(),
             policies: ResolvedPolicies {
-                resources: ResourcesPolicy {
+                resources: ResolvedResourcesPolicy {
                     core_allocation,
-                    ..Default::default()
+                    memory_limiter: None,
                 },
                 ..Default::default()
             },
@@ -2854,14 +2854,20 @@ groups: {{}}
         let config: OtelDataflowSpec = serde_json::from_value(serde_json::json!({
             "version": otap_df_config::engine::ENGINE_CONFIG_VERSION_V1,
             "policies": {
-                "rate_limit": {
-                    "mode": "enforce",
-                    "aggregation": "receiver_instance",
-                    "unit": "request_bytes/second",
-                    "allow": 1000,
-                    "interval": "1s",
-                    "burst": 1000,
-                    "pressure": "soft"
+                "resources": {
+                    "rate_limiters": {
+                        "ingress": {
+                            "mode": "enforce",
+                            "aggregation": "receiver_instance",
+                            "unit": "request_bytes/second",
+                            "pressure": "soft",
+                            "token_bucket": {
+                                "allow": 1000,
+                                "interval": "1s",
+                                "burst": 1000
+                            }
+                        }
+                    }
                 }
             },
             "groups": {}
@@ -2874,7 +2880,7 @@ groups: {{}}
 
         assert!(
             err.to_string()
-                .contains("rate_limit policy requires policies.resources.memory_limiter"),
+                .contains("rate limiter policies require policies.resources.memory_limiter"),
             "unexpected error: {err}"
         );
     }

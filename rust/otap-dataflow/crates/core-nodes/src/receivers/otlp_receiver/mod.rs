@@ -204,7 +204,7 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
-        receiver.configure_rate_limiter(receiver_config.rate_limit.clone());
+        receiver.configure_rate_limiter(receiver_config.rate_limiter);
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
         Ok(ReceiverWrapper::shared(
@@ -277,7 +277,10 @@ impl OTLPReceiver {
         })
     }
 
-    fn configure_rate_limiter(&mut self, policy: Option<otap_df_config::policy::RateLimitPolicy>) {
+    fn configure_rate_limiter(
+        &mut self,
+        policy: Option<otap_df_config::policy::RateLimiterPolicy>,
+    ) {
         self.rate_limiter =
             policy.map(|policy| RateLimiter::new(policy, self.admission_state.clone()));
     }
@@ -853,8 +856,8 @@ mod tests {
     use otap_df_channel::error::RecvError;
     use otap_df_config::node::NodeUserConfig;
     use otap_df_config::policy::{
-        MemoryLimiterMode, RateLimitAggregation, RateLimitMode, RateLimitPolicy, RateLimitPressure,
-        RateLimitUnit,
+        MemoryLimiterMode, RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+        RateLimiterPolicy, TokenBucketPolicy,
     };
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy,
@@ -3059,14 +3062,16 @@ mod tests {
         let admission_state =
             SharedReceiverAdmissionState::from_process_state(&memory_pressure_state);
         let rate_limiter = RateLimiter::new(
-            RateLimitPolicy {
+            RateLimiterPolicy {
                 mode: RateLimitMode::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
                 unit: RateLimitUnit::RequestBytesPerSecond,
-                allow: 1,
-                interval: Duration::from_secs(1),
-                burst: Some(1),
                 pressure: RateLimitPressure::Soft,
+                token_bucket: TokenBucketPolicy {
+                    allow: 1,
+                    interval: Duration::from_secs(1),
+                    burst: Some(1),
+                },
             },
             admission_state.clone(),
         );

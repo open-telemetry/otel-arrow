@@ -24,7 +24,7 @@ use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
 use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::PipelineConfig;
-use otap_df_config::policy::{CoreAllocation, RateLimitPolicy, ResourcesPolicy};
+use otap_df_config::policy::{CoreAllocation, RateLimiterPolicy, ResourcesPolicy};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_engine::PipelineFactory;
 use std::fmt::Debug;
@@ -71,7 +71,7 @@ pub fn apply_cli_overrides(
             .resources()
             .cloned()
             .unwrap_or_else(ResourcesPolicy::default);
-        resources.core_allocation = core_allocation;
+        resources.core_allocation = Some(core_allocation);
         engine_cfg.policies.set_resources(resources);
     }
     if let Some(http_admin) = http_admin_bind_override(http_admin_bind) {
@@ -96,7 +96,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
     pipeline_cfg: &PipelineConfig,
-    rate_limit_policy: Option<&RateLimitPolicy>,
+    rate_limiter_policy: Option<&RateLimiterPolicy>,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (node_id, node_cfg) in pipeline_cfg.node_iter() {
@@ -136,22 +136,22 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .into());
             }
             Some(validate_fn) => {
-                if let (NodeKind::Receiver, Some(rate_limit)) = (kind, rate_limit_policy) {
+                if let (NodeKind::Receiver, Some(rate_limiter)) = (kind, rate_limiter_policy) {
                     let receiver_factory = factory
                         .get_receiver_factory_map()
                         .get(urn_str)
                         .expect("receiver factory existence checked above");
                     if !receiver_factory
                         .supported_rate_units
-                        .contains(&rate_limit.unit)
+                        .contains(&rate_limiter.unit)
                     {
                         return Err(std::io::Error::other(format!(
-                            "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate_limit unit {}",
+                            "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate limiter unit {}",
                             urn_str,
                             pipeline_group_id.as_ref(),
                             pipeline_id.as_ref(),
                             node_id.as_ref(),
-                            rate_limit.unit.as_str()
+                            rate_limiter.unit.as_str()
                         ))
                         .into());
                     }
@@ -222,7 +222,7 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
             &resolved.pipeline_group_id,
             &resolved.pipeline_id,
             &resolved.pipeline,
-            resolved.policies.rate_limit.as_ref(),
+            resolved.policies.rate_limiter.as_ref(),
             factory,
         )?;
     }
@@ -477,14 +477,16 @@ policies:
     memory_limiter:
       mode: enforce
       source: auto
-  rate_limit:
-    mode: enforce
-    aggregation: receiver_instance
-    unit: {unit}
-    allow: 1
-    interval: 1s
-    burst: 1
-    pressure: soft
+    rate_limiters:
+      ingress:
+        mode: enforce
+        aggregation: receiver_instance
+        unit: {unit}
+        pressure: soft
+        token_bucket:
+          allow: 1
+          interval: 1s
+          burst: 1
 engine: {{}}
 groups:
   default:
@@ -597,7 +599,7 @@ extensions:
             .expect_err("unsupported receiver rate-limit unit must be rejected");
         let msg = err.to_string();
         assert!(
-            msg.contains("does not support rate_limit unit"),
+            msg.contains("does not support rate limiter unit"),
             "unexpected error: {msg}"
         );
         assert!(
