@@ -44,22 +44,38 @@ queries:
   - name: Calculate generated throughput
     sql: |
       CREATE TABLE generated_throughput AS
-      WITH samples AS (
+      WITH filtered AS (
         SELECT
           timestamp,
-          value,
-          LAG(value) OVER (ORDER BY timestamp) AS previous_value,
-          LAG(timestamp) OVER (ORDER BY timestamp) AS previous_timestamp
+          COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
+          value
         FROM metrics
         CROSS JOIN observation_window
         WHERE metric_name = 'logs_produced'
           AND "metric_attributes.component_name" = 'load-generator'
           AND timestamp BETWEEN start_ts AND stop_ts
+      ),
+      samples AS (
+        SELECT
+          timestamp,
+          core_id,
+          value,
+          LAG(value) OVER (PARTITION BY core_id ORDER BY timestamp) AS previous_value,
+          LAG(timestamp) OVER (PARTITION BY core_id ORDER BY timestamp) AS previous_timestamp
+        FROM filtered
+      ),
+      series_rates AS (
+        SELECT
+          core_id,
+          SUM(value - previous_value) /
+            NULLIF(SUM(EXTRACT(EPOCH FROM timestamp - previous_timestamp)), 0)
+            AS rows_per_second
+        FROM samples
+        WHERE value >= previous_value
+        GROUP BY core_id
       )
-      SELECT SUM(value - previous_value) /
-        NULLIF(SUM(EXTRACT(EPOCH FROM timestamp - previous_timestamp)), 0)
-        AS rows_per_second
-      FROM samples;
+      SELECT SUM(rows_per_second) AS rows_per_second
+      FROM series_rates;
 
   - name: Calculate ClickHouse throughput
     sql: |

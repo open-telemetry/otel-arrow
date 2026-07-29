@@ -84,7 +84,8 @@ steps:
                 curl --fail --silent --show-error --user default:test
                 --data-binary 'SELECT count() FROM otelcol_comparison.otel_logs'
                 http://localhost:8123 >
-                results/otelcol_clickhouse/rows-before
+                results/otelcol_clickhouse/rows-before &&
+                date +%s.%N > results/otelcol_clickhouse/count-start
           - record_event:
               name: observation_start
         post:
@@ -93,11 +94,19 @@ steps:
           - run_command:
               command: >-
                 before=$(cat results/otelcol_clickhouse/rows-before) &&
-                after=$(curl --fail --silent --show-error --user default:test
-                --data-binary 'SELECT count() FROM otelcol_comparison.otel_logs'
+                counts=$(curl --fail --silent --show-error --user default:test
+                --data-binary "SELECT count(),
+                countIf(LogAttributes['benchmark.transform'] = 'applied')
+                FROM otelcol_comparison.otel_logs FORMAT TabSeparated"
                 http://localhost:8123) &&
-                printf 'rows_before,rows_after,observation_seconds\n%s,%s,60\n'
-                "${before}" "${after}" >
+                end=$(date +%s.%N) &&
+                after=$(printf '%s' "${counts}" | cut -f1) &&
+                transformed=$(printf '%s' "${counts}" | cut -f2) &&
+                start=$(cat results/otelcol_clickhouse/count-start) &&
+                seconds=$(awk -v start="${start}" -v end="${end}" 'BEGIN { print end - start }') &&
+                test "${after}" -gt "${before}" && test "${transformed}" -eq "${after}" &&
+                printf 'rows_before,rows_after,observation_seconds\n%s,%s,%s\n'
+                "${before}" "${after}" "${seconds}" >
                 results/otelcol_clickhouse/validation.csv
 
   - name: Stop Load Generator
