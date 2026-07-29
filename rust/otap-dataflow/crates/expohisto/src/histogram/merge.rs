@@ -13,7 +13,7 @@
 
 use super::swar::{narrow, swar_add_checked, widen};
 use super::width::Width;
-use super::{Error, HighLow, HistogramNN, Stats};
+use super::{Error, HighLow, HistogramNN};
 
 impl<const N: usize> HistogramNN<N> {
     /// Merges another histogram into this one.
@@ -35,12 +35,7 @@ impl<const N: usize> HistogramNN<N> {
 
         self.merge_buckets(other);
 
-        self.commit_stats(&Stats {
-            count: new_count,
-            sum: self.stats.sum + other.stats.sum,
-            min: other.stats.min,
-            max: other.stats.max,
-        });
+        self.commit_merge(&other.stats, new_count);
         Ok(())
     }
 

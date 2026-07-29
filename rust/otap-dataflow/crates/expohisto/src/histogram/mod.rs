@@ -229,29 +229,33 @@ impl<const N: usize> HistogramNN<N> {
         self.stats.count.checked_add(incr)
     }
 
-    /// Commits merged statistics. The incoming `stats` carry the
-    /// already-computed `sum` and `count` (self + other) and the
-    /// other side's `min`/`max` which are merged via `f64::min`/`max`.
+    /// Folds `other`'s statistics into this histogram's, taking the merged
+    /// total count from `merged_count`.
+    ///
+    /// `merged_count` is passed in rather than computed here because the
+    /// caller must check it for overflow before it touches any bucket; `sum`
+    /// and `min`/`max` cannot overflow, so they are combined here.
     ///
     /// An empty destination has no min/max to merge against -- its sentinels
     /// are both 0.0 -- so the source values are adopted outright. Folding them
     /// in with `f64::min` would otherwise pin the merged minimum at 0.0 and
     /// report a zero observation that was never recorded.
     ///
-    /// `count` is the only safe test for that empty state: a destination that
-    /// recorded nothing but exact zeros also has empty buckets and a 0.0
-    /// minimum, but its zeros are real observations that must participate in
-    /// the fold. See [`Stats`].
-    fn commit_stats(&mut self, stats: &Stats) {
+    /// `count` is the only safe test for that empty state, and it must be read
+    /// before `merged_count` overwrites it: a destination that recorded
+    /// nothing but exact zeros also has empty buckets and a 0.0 minimum, but
+    /// its zeros are real observations that must participate in the fold. See
+    /// [`Stats`].
+    fn commit_merge(&mut self, other: &Stats, merged_count: u64) {
         if self.stats.count == 0 {
-            self.stats.min = stats.min;
-            self.stats.max = stats.max;
+            self.stats.min = other.min;
+            self.stats.max = other.max;
         } else {
-            self.stats.min = self.stats.min.min(stats.min);
-            self.stats.max = self.stats.max.max(stats.max);
+            self.stats.min = self.stats.min.min(other.min);
+            self.stats.max = self.stats.max.max(other.max);
         }
-        self.stats.sum = stats.sum;
-        self.stats.count = stats.count;
+        self.stats.sum += other.sum;
+        self.stats.count = merged_count;
     }
 
     /// Returns true if no non-zero values have been recorded.
