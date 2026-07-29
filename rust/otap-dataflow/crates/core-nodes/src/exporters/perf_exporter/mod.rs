@@ -19,10 +19,8 @@
 //! - Support live reconfiguration via control message.
 
 pub mod config;
-pub mod metrics;
 
 use crate::exporters::perf_exporter::config::Config;
-use crate::exporters::perf_exporter::metrics::PerfExporterPdataMetrics;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
@@ -40,7 +38,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_telemetry::common_attributes::{Outcome, SignalAttributes, SignalOutcomeAttributes};
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry::otel_info;
 use serde_json::Value;
@@ -53,7 +51,6 @@ pub const OTAP_PERF_EXPORTER_URN: &str = "urn:otel:exporter:perf";
 /// Perf Exporter that emits performance data
 pub struct PerfExporter {
     config: Config,
-    metrics: MeasurementMetricSet<PerfExporterPdataMetrics>,
     pdata_metrics: MeasurementMetricSet<ExporterPDataExportMetrics>,
 }
 
@@ -85,12 +82,10 @@ impl PerfExporter {
     /// creates a perf exporter with the provided config
     #[must_use]
     pub fn new(pipeline_ctx: PipelineContext, config: Config) -> Self {
-        let metrics = PerfExporterPdataMetrics::register(&pipeline_ctx);
         let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
 
         PerfExporter {
             config,
-            metrics,
             pdata_metrics,
         }
     }
@@ -112,8 +107,6 @@ impl PerfExporter {
 
     fn terminal_state(&mut self, deadline: Instant) -> TerminalState {
         let mut snapshots = Vec::new();
-
-        snapshots.extend(self.metrics.terminal_snapshots());
         snapshots.extend(self.pdata_metrics.terminal_snapshots());
 
         TerminalState::new(deadline, snapshots)
@@ -143,7 +136,6 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 Message::Control(NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 }) => {
-                    _ = metrics_reporter.report_measurement(&mut self.metrics);
                     _ = metrics_reporter.report_measurement(&mut self.pdata_metrics);
                 }
                 // ToDo: Handle configuration changes
@@ -152,20 +144,9 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                     return Ok(self.terminal_state(deadline));
                 }
                 Message::PData(mut pdata) => {
-                    // Capture the signal type before taking the payload.
                     let signal_type = pdata.signal_type();
-
-                    let payload = pdata.take_payload();
+                    _ = pdata.take_payload();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
-
-                    let num_items = payload.num_items() as u64;
-
-                    self.metrics
-                        .with(SignalAttributes {
-                            signal: signal_type,
-                        })
-                        .items
-                        .add(num_items);
 
                     // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
                     // decode the headers which are hpack encoded
@@ -268,7 +249,7 @@ mod tests {
     use std::time::Instant;
     use tokio::time::Duration;
 
-    /// Test closure that sends three log messages and shuts down the exporter.
+    /// Test closure that sends three PData messages containing one log record each, then shuts down.
     fn scenario()
     -> impl FnOnce(TestContext<OtapPdata>) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |ctx| {
@@ -290,56 +271,26 @@ mod tests {
         }
     }
 
-    fn collect_item_counts(registry: &TelemetryRegistryHandle) -> Vec<(String, u64)> {
-        let mut item_counts = Vec::new();
-        registry.visit_current_metrics_with_item_attrs(
-            |descriptor, _registration_attributes, measurement_attributes, mut metric_values| {
-                if descriptor.name != "exporter.perf.pdata" {
-                    return;
-                }
-
-                let signal = measurement_attributes
-                    .iter()
-                    .find(|(name, _value)| *name == "signal")
-                    .map(|(_name, value)| (*value).to_string())
-                    .expect("perf exporter item signal");
-                let item_count = metric_values
-                    .find(|(field, _value)| field.name == "items")
-                    .map(|(_field, value)| value.to_u64_lossy())
-                    .expect("perf exporter item count");
-                item_counts.push((signal, item_count));
-            },
-            false,
-        );
-        item_counts
-    }
-
-    /// Validation closure that checks the expected counter values
-    fn validation_procedure(
-        telemetry_registry_handle: TelemetryRegistryHandle,
-    ) -> impl FnOnce(
+    /// Validation closure that checks the exporter completed successfully.
+    fn validation_procedure() -> impl FnOnce(
         TestContext<OtapPdata>,
         Result<(), Error>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()>>> {
         |_, exporter_result| {
             Box::pin(async move {
                 exporter_result.unwrap();
-
-                let item_counts = collect_item_counts(&telemetry_registry_handle);
-                assert_eq!(item_counts, vec![("logs".to_string(), 3)]);
             })
         }
     }
 
-    /// Scenario: A local performance exporter receives three single-log PData messages.
-    /// Guarantees: The production path exports three items in the logs signal bucket.
+    /// Scenario: A local performance exporter receives three PData messages and then shuts down.
+    /// Guarantees: The exporter acknowledges the messages and terminates without an error.
     #[test]
     fn test_exporter_local() {
         let test_runtime = TestRuntime::new();
         let config = Config::new(1000, 0.3, true, true, true, true, true);
         let node_config = Arc::new(NodeUserConfig::new_exporter_config(OTAP_PERF_EXPORTER_URN));
-        let telemetry_registry_handle = test_runtime.metrics_registry();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle.clone());
+        let controller_ctx = ControllerContext::new(TelemetryRegistryHandle::new());
         let pipeline_ctx =
             controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
         let exporter = ExporterWrapper::local(
@@ -352,6 +303,6 @@ mod tests {
         test_runtime
             .set_exporter(exporter)
             .run_test(scenario())
-            .run_validation(validation_procedure(telemetry_registry_handle));
+            .run_validation(validation_procedure());
     }
 }

@@ -74,12 +74,6 @@ by the exporter.
 | --- | --- | --- | --- |
 | `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
 
-#### `exporter.perf.pdata`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `exporter.perf.pdata.items` | `{item}` | `signal` (`logs`, `metrics`, `traces`) | Number of log records, metric data points, or spans received by the performance exporter. |
-
 ### Events
 
 | Event | Severity | Description |

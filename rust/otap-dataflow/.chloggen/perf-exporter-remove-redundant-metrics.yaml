@@ -1,0 +1,4 @@
+change_type: breaking
+component: pipeline
+note: Remove the redundant `exporter.perf.pdata.logs`, `exporter.perf.pdata.spans`, and `exporter.perf.pdata.metrics` counters and the unused `exporter.perf.pdata.invalid_batches` counter. When item counts are enabled, use the engine-level `node.consumer.consumed.items` metric for per-signal input volume.
+issues: [3530]
