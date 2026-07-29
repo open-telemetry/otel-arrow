@@ -53,6 +53,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::MissedTickBehavior;
+use tokio_util::sync::CancellationToken;
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
@@ -567,6 +568,7 @@ impl KafkaReceiver {
         &self,
         consumer: &Arc<StreamConsumer<C>>,
         deadline: Instant,
+        cancel: CancellationToken,
     ) -> Option<tokio::task::JoinHandle<Option<f64>>> {
         if self.config.is_auto_commit() {
             return None;
@@ -574,7 +576,7 @@ impl KafkaReceiver {
 
         let consumer = Arc::clone(consumer);
         Some(tokio::task::spawn_blocking(move || {
-            compute_consumer_lag(consumer.as_ref(), deadline)
+            compute_consumer_lag(consumer.as_ref(), deadline, &cancel)
         }))
     }
 
@@ -631,40 +633,40 @@ impl KafkaReceiver {
             return;
         };
 
-        // Read the partition's tracked generation once and reuse it for both
-        // guards below (avoids repeated tracker lookups on this hot path).
-        let tracked_generation = self.offset_tracker.partition_generation(&name, partition);
-
-        // Stale-generation guard: feedback produced under an earlier ownership
-        // period must not affect the current one. If the partition's tracked
-        // state belongs to a newer generation than this ack, the ack is stale
-        // (the partition was revoked and reassigned since); drop it without
-        // disturbing the current state.
-        if tracked_generation.is_some_and(|current| ack_generation < current) {
-            self.metrics.acks_for_revoked_partition.add(1);
-            return;
-        }
-
-        // Late-ack guard: never commit a partition this consumer no longer
-        // owns. Drop the feedback and purge any lingering tracker state for the
-        // ack's generation or older (never a newer ownership period).
+        // Read the partition's tracked generation, its currently-assigned
+        // generation, and whether it is still owned. The assigned generation is
+        // consulted (not just the tracker's) so a stale ack is rejected even in
+        // the window after a revoke/reassign where the tracker still reports the
+        // old generation because no record of the new period has been tracked
+        // yet. The `is_assigned` membership check remains explicit for clarity.
         //
-        // This is safe because librdkafka runs `post_rebalance(Assign)` on the
-        // poll thread *before* `consumer.recv()` yields messages for the newly
-        // assigned partitions, so `assigned` is always populated before any ack
-        // for those partitions can return.
-        if !self.rebalance_state.is_assigned(&name, partition) {
-            self.metrics.acks_for_revoked_partition.add(1);
-            // Purge only state not newer than the ack (never a newer ownership
-            // period). `tracked_generation` was already fetched above, so this
-            // reuses that knowledge rather than re-reading the tracker.
-            if tracked_generation.is_some_and(|current| current <= ack_generation) {
-                self.offset_tracker.revoke(&name, partition);
-            }
-            return;
-        }
+        // The late-ack path is safe because librdkafka runs
+        // `post_rebalance(Assign)` on the poll thread *before* `consumer.recv()`
+        // yields messages for the newly assigned partitions, so `assigned` is
+        // always populated before any ack for those partitions can return.
+        let tracked_generation = self.offset_tracker.partition_generation(&name, partition);
+        let assigned_generation = self.rebalance_state.current_generation(&name, partition);
+        let is_assigned = self.rebalance_state.is_assigned(&name, partition);
 
-        self.advance_offset_and_commit(&name, partition, offset, consumer, receiver_id);
+        match classify_offset_feedback(
+            ack_generation,
+            tracked_generation,
+            assigned_generation,
+            is_assigned,
+        ) {
+            OffsetFeedbackAction::Commit => {
+                self.advance_offset_and_commit(&name, partition, offset, consumer, receiver_id);
+            }
+            OffsetFeedbackAction::DropStale => {
+                self.metrics.acks_for_revoked_partition.add(1);
+            }
+            OffsetFeedbackAction::DropLateAck { purge } => {
+                self.metrics.acks_for_revoked_partition.add(1);
+                if purge {
+                    self.offset_tracker.revoke(&name, partition);
+                }
+            }
+        }
     }
 
     async fn run_receive_loop<C: ConsumerContext + 'static>(
@@ -731,10 +733,13 @@ impl KafkaReceiver {
                 ticker
             });
 
-        // Keeps track of the current in flight consumer_lag worker
+        // Keeps track of the current in flight consumer_lag worker: its join
+        // handle, its absolute deadline, and a cancellation token used to stop
+        // it cooperatively on shutdown so it cannot outlive the receiver.
         let mut lag_refresh_in_flight: Option<(
             tokio::task::JoinHandle<Option<f64>>,
             tokio::time::Instant,
+            CancellationToken,
         )> = None;
 
         // Set once the receiver-first drain protocol begins. After this the
@@ -765,9 +770,15 @@ impl KafkaReceiver {
                                 }
                             }
                             // Drain any in-flight consumer-lag worker so we do not
-                            // abandon a running `spawn_blocking` task
-                            if let Some((handle, lag_deadline)) = lag_refresh_in_flight.take() {
-                                let _ = tokio::time::timeout_at(lag_deadline, handle).await;
+                            // abandon a running `spawn_blocking` task. send a cancellation
+                            // signal
+                            if let Some((handle, lag_deadline, lag_cancel)) =
+                                lag_refresh_in_flight.take()
+                            {
+                                lag_cancel.cancel();
+                                let bound =
+                                    lag_deadline.min(tokio::time::Instant::from_std(deadline));
+                                let _ = tokio::time::timeout_at(bound, handle).await;
                             }
                             consumer.unsubscribe();
                             let snapshot = self.metrics.snapshot();
@@ -862,10 +873,14 @@ impl KafkaReceiver {
                 // 2. Get the result from consumer_lag worker
                 result = async {
                     match lag_refresh_in_flight.as_mut() {
-                        Some((handle, deadline)) if tokio::time::Instant::now() >= *deadline => {
+                        Some((handle, deadline, _cancel))
+                            if tokio::time::Instant::now() >= *deadline =>
+                        {
                             Ok(handle.await)
                         }
-                        Some((handle, deadline)) => tokio::time::timeout_at(*deadline, handle).await,
+                        Some((handle, deadline, _cancel)) => {
+                            tokio::time::timeout_at(*deadline, handle).await
+                        }
                         // do nothing here
                         None => std::future::pending().await,
                     }
@@ -1103,12 +1118,17 @@ impl KafkaReceiver {
                     // pass the instant deadline to the worker so it can
                     // monitor itself during the consumer_lag calculation
                     // if deadline exceeds, it returns None
+                    let cancel = CancellationToken::new();
                     if let Some(handle) = self.spawn_consumer_lag_refresh(
                         &consumer,
                         Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                        cancel.clone(),
                     ) {
-                        lag_refresh_in_flight =
-                            Some((handle, tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE));
+                        lag_refresh_in_flight = Some((
+                            handle,
+                            tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                            cancel,
+                        ));
                     }
                 }
             }
@@ -1130,9 +1150,13 @@ impl KafkaReceiver {
 fn compute_consumer_lag<C: ConsumerContext>(
     consumer: &StreamConsumer<C>,
     deadline: Instant,
+    cancel: &CancellationToken,
 ) -> Option<f64> {
     // Remaining time until `deadline`
     let remaining_call_timeout = || -> Option<Duration> {
+        if cancel.is_cancelled() {
+            return None;
+        }
         let remaining = deadline.checked_duration_since(Instant::now())?;
         if remaining.is_zero() {
             return None;
@@ -1153,9 +1177,15 @@ fn compute_consumer_lag<C: ConsumerContext>(
         return Some(0.0);
     }
 
-    // Deadline check before the first (committed_offsets) broker call.
+    // Deadline / cancellation check before the first (committed_offsets) broker
+    // call.
     let Some(committed_timeout) = remaining_call_timeout() else {
-        otel_warn!("kafka.lag.refresh_incomplete", reason = "deadline_exceeded");
+        let reason = if cancel.is_cancelled() {
+            "cancelled"
+        } else {
+            "deadline_exceeded"
+        };
+        otel_warn!("kafka.lag.refresh_incomplete", reason = reason);
         return None;
     };
 
@@ -1176,9 +1206,15 @@ fn compute_consumer_lag<C: ConsumerContext>(
     let elements = committed.elements();
     let mut sum: i64 = 0;
     for elem in &elements {
-        // Bound this partition's watermark lookup by the remaining time.
+        // Bound this partition's watermark lookup by the remaining time (or
+        // abandon on cancellation).
         let Some(watermark_timeout) = remaining_call_timeout() else {
-            otel_warn!("kafka.lag.refresh_incomplete", reason = "deadline_exceeded");
+            let reason = if cancel.is_cancelled() {
+                "cancelled"
+            } else {
+                "deadline_exceeded"
+            };
+            otel_warn!("kafka.lag.refresh_incomplete", reason = reason);
             return None;
         };
 
@@ -1227,6 +1263,57 @@ fn compute_consumer_lag<C: ConsumerContext>(
     // `elements` is non-empty here (assignment count was > 0), so the divisor is
     // never zero.
     Some(sum as f64 / elements.len() as f64)
+}
+
+/// Decision for an incoming Ack/Nack carrying Kafka offset identity, derived
+/// purely from generation/ownership state.
+///
+/// Extracted from [`KafkaReceiver::handle_offset_feedback`] so the stale/late-ack
+/// policy is self-contained and exhaustively unit-testable without a live
+/// consumer.
+#[derive(Debug, PartialEq, Eq)]
+enum OffsetFeedbackAction {
+    /// Advance the offset tracker and commit: the ack belongs to the current
+    /// ownership period of a currently-owned partition.
+    Commit,
+    /// Drop as stale: the ack is from an ownership period strictly older than
+    /// the partition's current tracked *or* currently-assigned generation. The
+    /// partition was revoked and reassigned since the record was delivered.
+    DropStale,
+    /// Drop as a late ack: the partition is no longer assigned to this consumer.
+    /// `purge` indicates whether lingering tracker state should also be removed
+    /// (only when that state is not newer than the ack's ownership period).
+    DropLateAck { purge: bool },
+}
+
+/// Classify an Ack/Nack given the ack's ownership `generation` and the
+/// partition's current tracker/assignment state.
+///
+/// The stale-generation check compares the ack against the **maximum** of the
+/// tracker generation and the currently-assigned generation. Consulting the
+/// assigned generation (not just the tracker's) closes the window where a
+/// partition was revoked and reassigned to this consumer under a newer
+/// generation but no record of the new period has been tracked yet: in that
+/// window the tracker still reports the old generation, so an ack that equals
+/// the tracker generation would otherwise pass the guard, find the partition
+/// assigned, and mutate/commit stale state. Because real generations start at
+/// `1`, a `0` assigned/tracked generation means "not owned / untracked" and is
+/// treated as no lower bound.
+fn classify_offset_feedback(
+    ack_generation: u64,
+    tracked_generation: Option<u64>,
+    assigned_generation: u64,
+    is_assigned: bool,
+) -> OffsetFeedbackAction {
+    let current = tracked_generation.unwrap_or(0).max(assigned_generation);
+    if current > 0 && ack_generation < current {
+        return OffsetFeedbackAction::DropStale;
+    }
+    if !is_assigned {
+        let purge = tracked_generation.is_some_and(|tracked| tracked <= ack_generation);
+        return OffsetFeedbackAction::DropLateAck { purge };
+    }
+    OffsetFeedbackAction::Commit
 }
 
 /// Encode Kafka message identity into [`CallData`] for Ack/Nack routing.
@@ -2029,6 +2116,236 @@ mod tests {
         );
     }
 
+    // Scenario: the receiver owns partition 0 under generation 1 and tracks and
+    // acks records for it, then the partition is revoked (rebalance) and later
+    // reassigned to this receiver under generation 2, where a new record is
+    // tracked. The generation-1 records were committed further by whoever owned
+    // the partition in between.
+    // Guarantees: after reassignment the receiver only commits generation-2
+    // offsets. Records received under generation 1 do not contribute to the
+    // generation-2 commit, so the committable offset the receiver would send to
+    // the broker reflects only the new ownership period and never rolls back to
+    // a generation-1 offset.
+    #[test]
+    fn stale_generation_records_not_committed_after_reassignment() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Generation 1: own partition 0, track and ack offsets 100..=104. The
+        // committable offset is high_water_mark + 1 = 105.
+        for offset in 100..=104 {
+            receiver.offset_tracker.track("traces", 0, offset, 1);
+        }
+        for offset in 100..=104 {
+            let _ = receiver.offset_tracker.acknowledge("traces", 0, offset);
+        }
+        assert_eq!(
+            receiver
+                .offset_tracker
+                .committable_snapshot()
+                .get(&("traces".to_string(), 0))
+                .copied(),
+            Some(105),
+            "generation 1 would commit its own high-water mark",
+        );
+
+        // Partition 0 is revoked; the revocation carries generation 1. The
+        // receive loop reconciles and purges the generation-1 tracker state.
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 1);
+        receiver.reconcile_rebalance_state();
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
+        assert!(
+            !receiver
+                .offset_tracker
+                .committable_snapshot()
+                .contains_key(&("traces".to_string(), 0)),
+            "a revoked partition contributes no committable offset",
+        );
+
+        // Generation 2: partition 0 is reassigned to this receiver and resumes
+        // from the group's committed position (200), then tracks a new record.
+        receiver.offset_tracker.track("traces", 0, 200, 2);
+        assert_eq!(
+            receiver.offset_tracker.partition_generation("traces", 0),
+            Some(2),
+        );
+
+        // The receiver only commits the generation-2 offset (200); it never
+        // regresses to generation 1's 105.
+        assert_eq!(
+            receiver
+                .offset_tracker
+                .committable_snapshot()
+                .get(&("traces".to_string(), 0))
+                .copied(),
+            Some(200),
+            "only generation-2 records drive the commit after reassignment",
+        );
+    }
+
+    // ---- classify_offset_feedback unit tests ----
+
+    // Scenario: an ack arrives for a partition this consumer still owns, whose
+    // ownership generation matches the ack.
+    // Guarantees: the ack is committed (advances the tracker) rather than
+    // dropped.
+    #[test]
+    fn classify_offset_feedback_commits_current_generation_ack() {
+        assert_eq!(
+            classify_offset_feedback(2, Some(2), 2, true),
+            OffsetFeedbackAction::Commit,
+        );
+    }
+
+    // Scenario: an ack arrives whose generation is older than the partition's
+    // tracked generation (the partition was reassigned and re-tracked under a
+    // newer generation).
+    // Guarantees: the ack is dropped as stale, so it cannot roll back or
+    // disturb the newer ownership period's committed offset.
+    #[test]
+    fn classify_offset_feedback_drops_ack_older_than_tracked_generation() {
+        assert_eq!(
+            classify_offset_feedback(1, Some(3), 3, true),
+            OffsetFeedbackAction::DropStale,
+        );
+    }
+
+    // Scenario: the closed gap. A partition was revoked and reassigned to this
+    // consumer under a newer generation, but no record of the new period has
+    // been tracked yet, so the tracker still reports the OLD generation while
+    // the assignment already reports the NEW one. A stale ack for the old
+    // period arrives with a generation equal to the tracker's.
+    // Guarantees: the ack is still dropped as stale because the classifier
+    // consults the assigned generation, not just the tracker generation -- so a
+    // stale same-as-tracker ack cannot slip through and mutate/commit stale
+    // state during the reassign-before-retrack window.
+    #[test]
+    fn classify_offset_feedback_drops_stale_ack_when_assigned_generation_is_newer() {
+        assert_eq!(
+            classify_offset_feedback(1, Some(1), 2, true),
+            OffsetFeedbackAction::DropStale,
+        );
+    }
+
+    // Scenario: an ack arrives for a partition no longer assigned to this
+    // consumer, whose tracked state is not newer than the ack's generation.
+    // Guarantees: the ack is dropped as a late ack and the lingering tracker
+    // state is purged (it belongs to the revoked ownership period).
+    #[test]
+    fn classify_offset_feedback_late_ack_purges_when_not_newer() {
+        assert_eq!(
+            classify_offset_feedback(1, Some(1), 0, false),
+            OffsetFeedbackAction::DropLateAck { purge: true },
+        );
+    }
+
+    // Scenario: an ack arrives for a partition no longer assigned, whose
+    // tracked state belongs to a NEWER generation than the ack. This is caught
+    // by the stale-generation check *before* the late-ack check, because a
+    // newer tracked generation means the partition was reassigned and
+    // re-tracked since the ack's ownership period.
+    // Guarantees: such an ack is classified `DropStale` (the newer tracked
+    // state is preserved), never `DropLateAck` with a purge -- so a stale ack
+    // can never purge a newer ownership period's tracker state.
+    #[test]
+    fn classify_offset_feedback_ack_older_than_tracked_is_stale_even_when_unassigned() {
+        assert_eq!(
+            classify_offset_feedback(2, Some(3), 0, false),
+            OffsetFeedbackAction::DropStale,
+        );
+    }
+
+    // Scenario: an ack arrives for a partition that is neither assigned nor
+    // tracked (fully revoked and purged already).
+    // Guarantees: the ack is dropped as a late ack with nothing to purge.
+    #[test]
+    fn classify_offset_feedback_late_ack_untracked_does_not_purge() {
+        assert_eq!(
+            classify_offset_feedback(1, None, 0, false),
+            OffsetFeedbackAction::DropLateAck { purge: false },
+        );
+    }
+
+    // Scenario: the first ack for a freshly-assigned partition arrives before
+    // its record was tracked (untracked, but currently owned), with a
+    // generation matching the assignment.
+    // Guarantees: the ack is committed -- an untracked-but-owned partition is
+    // not treated as stale as long as the ack is not older than the assigned
+    // generation.
+    #[test]
+    fn classify_offset_feedback_commits_untracked_but_assigned_current_ack() {
+        assert_eq!(
+            classify_offset_feedback(1, None, 1, true),
+            OffsetFeedbackAction::Commit,
+        );
+    }
+
+    // Scenario: a partition is owned under generation 1 with a tracked record,
+    // then revoked and reassigned to this receiver under generation 2 (via a
+    // rebalance), but no generation-2 record has been tracked yet -- so the
+    // tracker still reports generation 1 while the assignment reports 2. A
+    // stale generation-1 ack for the old record then arrives.
+    // Guarantees: the receiver classifies the stale ack as `DropStale` (it
+    // consults the assigned generation), so the ack neither advances the
+    // tracker nor rolls back the committed offset during the
+    // reassign-before-retrack window.
+    #[test]
+    fn stale_same_gen_ack_dropped_after_reassignment_before_retrack() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Generation 1: own partition 0 and track a record at offset 100.
+        let mut tpl1 = TopicPartitionList::new();
+        let _ = tpl1.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl1);
+        let gen1 = receiver.rebalance_state.current_generation("traces", 0);
+        receiver.offset_tracker.track("traces", 0, 100, gen1);
+
+        // Revoke partition 0 (queued for tracker purge) AND drop it from the
+        // assigned set by applying an empty assignment, mirroring librdkafka's
+        // pre_rebalance(Revoke) removing it before post_rebalance(Assign). This
+        // is what lets the subsequent reassignment allocate a fresh,
+        // strictly-greater generation.
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, gen1);
+        receiver
+            .rebalance_state
+            .set_assignment_for_test(&TopicPartitionList::new());
+
+        // Reassign partition 0 (fresh, strictly-greater generation). The tracker
+        // is NOT re-tracked yet, so it still reports generation 1 while the
+        // assignment reports generation 2.
+        let mut tpl2 = TopicPartitionList::new();
+        let _ = tpl2.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl2);
+        let gen2 = receiver.rebalance_state.current_generation("traces", 0);
+        assert!(gen2 > gen1, "reassignment must allocate a newer generation");
+        assert_eq!(
+            receiver.offset_tracker.partition_generation("traces", 0),
+            Some(gen1),
+            "tracker still reports the old generation before any re-track",
+        );
+
+        // A stale generation-1 ack, equal to the tracker generation, must be
+        // classified as stale because the assigned generation is newer.
+        let tracked = receiver.offset_tracker.partition_generation("traces", 0);
+        let assigned = receiver.rebalance_state.current_generation("traces", 0);
+        let is_assigned = receiver.rebalance_state.is_assigned("traces", 0);
+        assert_eq!(
+            classify_offset_feedback(gen1, tracked, assigned, is_assigned),
+            OffsetFeedbackAction::DropStale,
+            "a stale ack matching the tracker generation is dropped once the \
+             partition has been reassigned to a newer generation",
+        );
+    }
+
     #[test]
     fn retained_partition_generation_is_stable_across_unrelated_rebalance() {
         // Regression: the per-partition ownership generation must NOT change when the
@@ -2168,6 +2485,7 @@ mod tests {
                     .spawn_consumer_lag_refresh(
                         &consumer,
                         Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                        CancellationToken::new(),
                     )
                     .expect("manual mode spawns a refresh task");
                 let result = handle.await.expect("lag task should not panic");
@@ -2212,6 +2530,7 @@ mod tests {
                         .spawn_consumer_lag_refresh(
                             &consumer,
                             Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                            CancellationToken::new(),
                         )
                         .is_none()
                 );
@@ -2256,10 +2575,11 @@ mod tests {
                 consumer.assign(&tpl).expect("assign partitions");
 
                 let deadline = Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
-                let result =
-                    tokio::task::spawn_blocking(move || compute_consumer_lag(&consumer, deadline))
-                        .await
-                        .expect("lag task should not panic");
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &CancellationToken::new())
+                })
+                .await
+                .expect("lag task should not panic");
 
                 assert_eq!(
                     result, None,
@@ -2312,10 +2632,11 @@ mod tests {
                     .expect("commit partition 0");
 
                 let deadline = Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
-                let result =
-                    tokio::task::spawn_blocking(move || compute_consumer_lag(&consumer, deadline))
-                        .await
-                        .expect("lag task should not panic");
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &CancellationToken::new())
+                })
+                .await
+                .expect("lag task should not panic");
 
                 assert_eq!(
                     result, None,
@@ -2347,10 +2668,11 @@ mod tests {
                 // Deadline in the past: the first broker-call deadline check
                 // must abort before any committed_offsets/fetch_watermarks call.
                 let deadline = Instant::now() - Duration::from_secs(1);
-                let result =
-                    tokio::task::spawn_blocking(move || compute_consumer_lag(&consumer, deadline))
-                        .await
-                        .expect("lag task should not panic");
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &CancellationToken::new())
+                })
+                .await
+                .expect("lag task should not panic");
 
                 assert_eq!(
                     result, None,
@@ -2524,6 +2846,96 @@ mod tests {
         assert!(
             in_flight.is_none(),
             "the in-flight slot must be cleared once the worker finishes",
+        );
+    }
+
+    // Scenario: a consumer-lag worker is still in flight when a Shutdown arrives
+    // whose deadline is *earlier* than the worker's own lag deadline. The
+    // shutdown handler signals cooperative cancellation and then drains the
+    // worker bounded by `min(lag_deadline, shutdown_deadline)`.
+    // Guarantees: the drain never waits past the (earlier) shutdown deadline --
+    // a recently-started refresh cannot delay shutdown -- and because the worker
+    // observes the cancellation token it actually finishes rather than being
+    // abandoned, so it cannot outlive the receiver.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_lag_drain_is_bounded_by_shutdown_deadline_and_cancels_worker() {
+        let start = tokio::time::Instant::now();
+        // Worker deadline is far out (15s); shutdown deadline is near (1s).
+        let lag_deadline = start + LAG_REFRESH_TOTAL_DEADLINE;
+        let shutdown_deadline = start + Duration::from_secs(1);
+
+        // A cooperatively-cancellable worker: it runs until the token is
+        // cancelled, then returns (mirrors `compute_consumer_lag` abandoning the
+        // refresh on cancellation). It must NOT complete on its own before the
+        // shutdown deadline, so the drain's boundedness is what we observe.
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let handle = tokio::task::spawn(async move {
+            worker_cancel.cancelled().await;
+            None::<f64>
+        });
+
+        // Model the shutdown handler: cancel first, then drain bounded by the
+        // tighter of the two deadlines.
+        cancel.cancel();
+        let bound = lag_deadline.min(shutdown_deadline);
+        let drain = tokio::time::timeout_at(bound, handle).await;
+
+        // The worker observed the cancellation and completed within the bound,
+        // so the drain resolved with the worker's result (not a timeout).
+        let join_result = drain.expect("drain must not exceed the min-bounded deadline");
+        assert_eq!(
+            join_result.expect("worker must not panic"),
+            None,
+            "a cancelled lag worker abandons the refresh and returns None",
+        );
+
+        // The drain finished no later than the shutdown deadline, well before
+        // the worker's own 15s lag deadline: shutdown is not delayed.
+        let elapsed = tokio::time::Instant::now();
+        assert!(
+            elapsed <= shutdown_deadline,
+            "drain must complete by the shutdown deadline, not the lag deadline",
+        );
+    }
+
+    // Scenario: a consumer-lag worker is in flight at Shutdown, but this time the
+    // worker's lag deadline is *earlier* than the shutdown deadline.
+    // Guarantees: the drain bound is the tighter (lag) deadline, so `min` selects
+    // the lag deadline and the drain still cannot run to the later shutdown
+    // deadline.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_lag_drain_bound_selects_the_earlier_lag_deadline() {
+        let start = tokio::time::Instant::now();
+        // Worker deadline is near (2s); shutdown deadline is far (30s).
+        let lag_deadline = start + Duration::from_secs(2);
+        let shutdown_deadline = start + Duration::from_secs(30);
+
+        // A worker that never finishes on its own and ignores cancellation, so
+        // the only thing that can unblock the drain is the min-bounded timeout.
+        let handle = tokio::task::spawn(async {
+            std::future::pending::<()>().await;
+            None::<f64>
+        });
+
+        let bound = lag_deadline.min(shutdown_deadline);
+        assert_eq!(
+            bound, lag_deadline,
+            "min must pick the earlier lag deadline"
+        );
+
+        let drain = tokio::time::timeout_at(bound, handle).await;
+        assert!(
+            drain.is_err(),
+            "a non-cooperative worker is bounded by the lag deadline, not the later shutdown one",
+        );
+
+        // The drain elapsed at the lag deadline, strictly before the shutdown
+        // deadline.
+        let elapsed = tokio::time::Instant::now();
+        assert!(
+            elapsed <= lag_deadline && elapsed < shutdown_deadline,
+            "drain must be bounded by the earlier (lag) deadline",
         );
     }
 
@@ -4304,47 +4716,21 @@ mod tests {
         .await;
     }
 
-    /// Scenario: two `KafkaReceiver` replicas share one consumer group against a
-    /// multi-partition topic; a second replica joins (scale-up) and then leaves
-    /// (scale-down), and every record must be delivered exactly to the group and
-    /// committed without loss or double-commit across both rebalances.
+    /// Scenario: two `KafkaReceiver` replicas share one `group_id` against a
+    /// multi-partition topic; replica B joins (scale-up) then leaves
+    /// (scale-down), driving two rebalances. This is the in-process analogue of
+    /// running 2+ replicas with the same group and scaling the replica count up
+    /// and down; the full procedure is documented in the Kafka test-suite README
+    /// ("Multi-receiver scale-up/down").
     ///
-    /// Guarantees: (1) both replicas own a partition at some point, so the
-    /// partitions distribute across the group (B consumes records that only its
-    /// assigned partition can deliver, and both replicas' terminal metrics show
-    /// `partitions_assigned >= 1`); (2) a rebalance is observed on scale-up/down
-    /// (`partition_revocations >= 1` across the two replicas); (3) no message is
-    /// lost or double-committed -- every produced record is delivered at least
-    /// once and durably retained on the broker, each partition's committed
-    /// offset stays within `[wave-1 count, total produced count]` (the lower
-    /// bound proves committed progress is never rolled back across a rebalance,
-    /// the upper bound proves nothing is committed past the produced data), and
-    /// neither replica reports `offset_commit_errors`.
-    ///
-    /// This is the in-process analogue of running 2+ replicas with the same
-    /// `group_id` against a multi-partition topic and scaling the replica count
-    /// up and down. Procedure (mirrored by the code below):
-    ///   1. Pre-create a `REBALANCE_TEST_PARTITIONS`-partition topic and produce
-    ///      wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per partition).
-    ///   2. Start replica A alone and drain wave 1 in full, so A demonstrably
-    ///      owned every partition before anyone else joined.
-    ///   3. Start replica B in the same group (scale-up), then produce wave 2 so
-    ///      B's newly-assigned partition has fresh records to deliver.
-    ///   4. Drain the group, prioritizing B so its assigned partition is not
-    ///      re-won by A's continuously-polling loop, until every produced record
-    ///      has been delivered at least once (bounded by a deadline so a stall
-    ///      fails loudly instead of hanging).
-    ///   5. Shut down B (scale-down); this forces a second rebalance that returns
-    ///      B's partition to A. Drain A briefly so A can re-own and commit.
-    ///   6. Shut down A. Read each replica's `TerminalState` metrics and assert
-    ///      distribution, rebalance observation, and no-loss/no-double-commit.
-    ///
-    /// Rebalance timing on the mock is nondeterministic and delivery is
-    /// at-least-once, so distribution is gated by B's own deliveries plus folded
-    /// rebalance metrics, and no-loss/no-double-commit is gated by broker-side
-    /// record retention plus a bounded committed offset per partition (not by an
-    /// exact delivered-record count, which duplicates can inflate during a
-    /// rebalance).
+    /// Guarantees: (1) partitions distribute across the group -- B delivers its
+    /// assigned partition's records and both replicas' terminal metrics report
+    /// `partition_assignments >= 1` covering all partitions; (2) a rebalance is
+    /// observed via metrics (`partition_revocations >= 1` across the replicas);
+    /// (3) no loss and no double-commit -- every produced record is delivered at
+    /// least once and durably retained on the broker, each partition's committed
+    /// offset converges to exactly the produced total (no rollback, no
+    /// over-commit), and neither replica reports `offset_commit_errors`.
     #[tokio::test]
     async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
         use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
@@ -4366,11 +4752,22 @@ mod tests {
                 let req = create_traces_with_spans();
                 let mut bytes = vec![];
                 req.encode(&mut bytes).expect("encode");
+                let brokers = cluster.bootstrap_servers().to_string();
 
                 // Manual commit so the receiver's rebalance-aware commit path is
                 // active and acks drive the committable offsets.
                 let mut delivered = 0usize;
                 let mut delivered_b = 0usize;
+
+                // True once every partition's committed offset has reached the
+                // produced total (no loss, no rollback, no double-commit).
+                let all_committed = |b: &str| {
+                    (0..REBALANCE_TEST_PARTITIONS).all(|p| {
+                        committed_offset(b, group, TOPIC, p)
+                            .expect("kafka-test: committed-offset probe failed")
+                            == Some(per_partition_total as i64)
+                    })
+                };
 
                 // Step 1: produce wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per
                 // partition).
@@ -4411,7 +4808,7 @@ mod tests {
                     )
                     .await;
 
-                // Step 4a: drain B *first and exclusively* until it has consumed
+                // Step 4: drain B *first and exclusively* until it has consumed
                 // its partition's share of wave 2. Under an eager assignor B owns
                 // one partition, but A's continuously-polling loop would re-win
                 // that partition if A were polled concurrently; leaving A idle
@@ -4435,22 +4832,10 @@ mod tests {
                     }
                 }
 
-                // Step 4b: drain A's partition's share of wave 2 (best-effort:
-                // delivery is at-least-once, so we drain until the group has
-                // delivered at least the full produced set, bounded by a
-                // deadline). Offsets asserted below are the authoritative
-                // no-loss/no-double-commit check.
-                let a_deadline = tokio::time::Instant::now() + Duration::from_secs(15);
-                while delivered < total_produced && tokio::time::Instant::now() < a_deadline {
-                    if let Some(pdata) = receiver_a.try_recv_pdata(Duration::from_millis(250)).await
-                    {
-                        receiver_a.ack(pdata);
-                        delivered += 1;
-                    }
-                }
-
-                // Allow a safety-net commit cycle to flush before scaling down.
-                tokio::time::sleep(Duration::from_millis(800)).await;
+                // Let B durably commit before it leaves: B's commits are async,
+                // so wait past its safety-net commit interval (500ms) so its
+                // acked offsets flush to the broker.
+                tokio::time::sleep(Duration::from_secs(1)).await;
 
                 // Step 5: shut down B (scale-down). This forces a second
                 // rebalance that returns B's partition to A. B commits the
@@ -4458,24 +4843,34 @@ mod tests {
                 receiver_b.shutdown(Duration::from_secs(5));
                 let terminal_b = receiver_b.await_terminal_state().await;
 
-                // Step 6: after B leaves, A re-owns both partitions. Drain A for
-                // a window so it re-consumes and commits any records B acked but
-                // did not durably commit before leaving, then shut A down (which
-                // flushes its tracked offsets). Delivery is at-least-once and the
-                // eager rebalance re-delivers uncommitted records, so this is a
-                // best-effort convergence; the authoritative no-loss check below
-                // is broker-side (all records durably retained + committed
-                // progress bounded by the produced count).
-                let brokers = cluster.bootstrap_servers().to_string();
-                let settle = tokio::time::Instant::now() + Duration::from_secs(3);
-                while tokio::time::Instant::now() < settle {
+                // Step 6: drain A. The loop body focuses solely on A receiving
+                // and acking records; A re-consuming and acking the tail B did
+                // not durably commit is what advances the committed offsets back
+                // to the produced total. The deadline is the loop guard (not a
+                // per-iteration assert), and the loop stops as soon as every
+                // partition is committed to the produced total.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while tokio::time::Instant::now() < deadline && !all_committed(&brokers) {
                     if let Some(pdata) = receiver_a.try_recv_pdata(Duration::from_millis(200)).await
                     {
                         receiver_a.ack(pdata);
+                        delivered += 1;
                     }
                 }
 
-                // Shut down A and collect its terminal metrics.
+                // One assertion, after both replicas have received and acked:
+                // the broker must report every partition committed to the
+                // produced total. This is the authoritative no-loss /
+                // no-rollback / no-double-commit check; the deadline above lets
+                // A's async commits and any redelivery settle first.
+                assert!(
+                    all_committed(&brokers),
+                    "after scale-down the group did not commit every partition to the produced \
+                     total {per_partition_total} (delivered {delivered} of {total_produced}); \
+                     committed offsets did not converge",
+                );
+
+                // Shut down A (flushes its tracked offsets) and collect metrics.
                 receiver_a.shutdown(Duration::from_secs(5));
                 let terminal_a = receiver_a.await_terminal_state().await;
 
@@ -4485,13 +4880,12 @@ mod tests {
                 let mut fb = FoldedMetrics::new();
                 fb.fold_all(terminal_b.metrics());
 
-                // (1) Distribution: both replicas were assigned at least one
-                // partition over their lifetimes, and together they cover the
-                // topic. B's deliveries above already prove it owned a partition;
-                // the metrics corroborate it from the node's own point of view.
+                // (1) Distribution: both replicas acquired a partition over their
+                // lifetimes and together cover the topic. B's deliveries above
+                // already prove it owned a partition; metrics corroborate it.
                 assert!(
                     fa.value("partition_assignments") >= 1,
-                    "replica A should have acquired at least one partition over its life, got {}",
+                    "replica A should have acquired at least one partition, got {}",
                     fa.value("partition_assignments"),
                 );
                 assert!(
@@ -4505,23 +4899,22 @@ mod tests {
                     "the group should have acquired all {REBALANCE_TEST_PARTITIONS} partitions \
                      across the two replicas' lifetimes",
                 );
-
-                // Current ownership at shutdown: after scale-down A re-owns its
-                // partitions, so its gauge is a deterministic ownership check.
+                // After scale-down A re-owns its partitions, a deterministic
+                // current-ownership check.
                 assert!(
                     fa.value("partitions_assigned") >= 1,
                     "replica A should currently own at least one partition at shutdown, got {}",
                     fa.value("partitions_assigned"),
                 );
 
-                // (2) Rebalance observed on scale-up/down: at least one genuinely
-                // owned partition was revoked across the cycle.
+                // (2) Rebalance observed: at least one owned partition was revoked
+                // across scale-up/down.
                 assert!(
                     fa.value("partition_revocations") + fb.value("partition_revocations") >= 1,
                     "a partition revoke should have been observed across scale-up/down",
                 );
 
-                // (3a) No commit failures on either replica across the rebalances.
+                // (3a) No commit failures on either replica.
                 assert_eq!(
                     fa.value("offset_commit_errors"),
                     0,
@@ -4533,11 +4926,9 @@ mod tests {
                     "replica B should have no offset commit errors",
                 );
 
-                // (3b) No loss at the broker: every produced record is durably
-                // retained on its partition. `message_count` is `high - low`, so
-                // it must equal the number of records produced to each partition.
-                // (Delivery is at-least-once, so the raw delivered count is only
-                // required to be >= the produced total, not exactly equal.)
+                // (3b) No loss: every produced record was delivered at least once
+                // (delivery is at-least-once, so `>=`) and durably retained on the
+                // broker (`message_count` is `high - low`).
                 assert!(
                     delivered >= total_produced,
                     "the group should deliver every produced record at least once: \
@@ -4552,25 +4943,21 @@ mod tests {
                     );
                 }
 
-                // (3c) No double-commit and no rollback at the offset layer: each
-                // partition's committed offset must stay within
-                // `[REBALANCE_RECORDS_PER_PARTITION, per_partition_total]`. The
-                // lower bound proves wave-1 progress was never rolled back across
-                // the two rebalances (no re-processing from an earlier offset);
-                // the upper bound proves nothing was committed past the produced
-                // records (no double-commit past the data).
+                // (3c) No rollback and no double-commit: each partition's committed
+                // offset equals exactly the produced total -- committed progress
+                // was never rolled back across a rebalance and nothing was
+                // committed past the produced data. Guaranteed by the convergence
+                // drain above, so this equality is deterministic.
                 for partition in 0..REBALANCE_TEST_PARTITIONS {
                     let committed = committed_offset(&brokers, group, TOPIC, partition)
                         .expect("kafka-test: committed-offset probe failed")
                         .unwrap_or_else(|| {
                             panic!("partition {partition} should have a committed offset")
                         });
-                    assert!(
-                        (REBALANCE_RECORDS_PER_PARTITION as i64..=per_partition_total as i64)
-                            .contains(&committed),
-                        "partition {partition} committed offset {committed} must be within \
-                         [{REBALANCE_RECORDS_PER_PARTITION}, {per_partition_total}] \
-                         (no rollback below committed progress, no commit past produced data)",
+                    assert_eq!(
+                        committed, per_partition_total as i64,
+                        "partition {partition} committed offset should equal the produced total \
+                         {per_partition_total} (no rollback, no commit past produced data)",
                     );
                 }
             },

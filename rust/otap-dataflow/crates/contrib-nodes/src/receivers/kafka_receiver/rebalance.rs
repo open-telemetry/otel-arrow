@@ -33,6 +33,15 @@
 //! message simply will not have its offset committed by this consumer; the new
 //! owner re-delivers it. This is safe under at-least-once semantics and mirrors
 //! the rotel Kafka receiver's behavior.
+//!
+//! When such an in-flight message is finally acknowledged, its Ack/Nack carries
+//! the ownership **generation** it was tracked under, and
+//! `classify_offset_feedback` drops it as stale if that generation is older than
+//! the partition's current tracked *or* currently-assigned generation. Both are
+//! consulted: after a revoke/reassign the tracker may still report the old
+//! generation until a record of the new period is tracked, so comparing against
+//! the assigned generation is what rejects a stale ack during that window --
+//! before it can advance the tracker or roll back the committed offset.
 
 use std::collections::HashMap;
 use std::sync::Mutex;

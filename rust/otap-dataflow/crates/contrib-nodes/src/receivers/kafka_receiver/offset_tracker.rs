@@ -54,6 +54,9 @@ impl PartitionTracker {
     fn track(&mut self, offset: i64, generation: u64) {
         if generation > self.generation {
             self.generation = generation;
+            self.pending.clear();
+            self.high_water_mark = None;
+            self.last_lowest = None;
         }
         let _ = self.pending.insert(offset);
         // Update cached lowest if this is lower or first entry.
@@ -471,6 +474,38 @@ mod tests {
 
         assert_eq!(pt.lowest_pending(), None);
         assert_eq!(pt.high_water_mark(), Some(102));
+    }
+
+    // Scenario: a partition owned in one generation is fully acked, then
+    // reacquired in a later generation where it fetches a lower offset than the
+    // prior high-water mark (the group's committed position advanced elsewhere
+    // while this member did not own the partition).
+    // Guarantees: crossing into the newer generation resets the partition's
+    // offset state, so the committable offset reflects only the current
+    // ownership period's records and never regresses below what a prior owner
+    // committed (no backward commit / offset rollback on reacquisition).
+    #[test]
+    fn partition_track_resets_state_on_newer_generation() {
+        let mut pt = PartitionTracker::new(1);
+
+        // Generation 1: own offsets 100..=104 and ack them all.
+        for offset in 100..=104 {
+            pt.track(offset, 1);
+        }
+        for offset in 100..=104 {
+            let _ = pt.acknowledge(offset);
+        }
+        assert_eq!(pt.high_water_mark(), Some(104));
+        assert_eq!(pt.committable_offset(), Some(105));
+
+        // Generation 2 (reacquired): the first fetched offset is lower than the
+        // prior high-water mark. The stale state must be discarded so the
+        // committable offset follows the new ownership period, not the old HWM.
+        pt.track(50, 2);
+        assert_eq!(pt.generation, 2);
+        assert_eq!(pt.pending_count(), 1);
+        assert_eq!(pt.high_water_mark(), None);
+        assert_eq!(pt.committable_offset(), Some(50));
     }
 
     // ---- OffsetTracker tests ----
@@ -971,5 +1006,100 @@ mod tests {
     fn revoke_if_older_unknown_partition_is_noop() {
         let mut tracker = OffsetTracker::new();
         assert!(!tracker.revoke_if_older("traces", 0, 5));
+    }
+
+    // Scenario: a partition has several pending (and some acked) offsets, then
+    // it is revoked during a rebalance.
+    // Guarantees: `revoke` drops ALL of the partition's state -- every pending
+    // offset, the high-water mark, and its committable offset -- so a revoked
+    // partition contributes nothing to a subsequent commit and the new owner
+    // resumes solely from the group's committed position (at-least-once).
+    #[test]
+    fn revoke_drops_all_pending_and_hwm() {
+        let mut tracker = OffsetTracker::new();
+
+        // Track 5,6,7 under generation 1 and ack 5 so there is both pending
+        // state (6,7) and a high-water mark (5).
+        for offset in 5..=7 {
+            tracker.track("traces", 0, offset, 1);
+        }
+        let _ = tracker.acknowledge("traces", 0, 5);
+        assert_eq!(tracker.pending_count("traces", 0), 2);
+        assert_eq!(
+            committable_sorted(&tracker),
+            vec![("traces".to_string(), 0, 6)],
+            "the committable offset is the lowest pending (6) before revoke",
+        );
+
+        // Revoke the partition: all of its state must be gone.
+        tracker.revoke("traces", 0);
+        assert_eq!(tracker.pending_count("traces", 0), 0);
+        assert_eq!(tracker.partition_generation("traces", 0), None);
+        assert!(
+            !tracker
+                .committable_snapshot()
+                .contains_key(&("traces".to_string(), 0)),
+            "a revoked partition contributes no committable offset",
+        );
+    }
+
+    // Scenario: a partition is tracked and acked under generation 1, revoked,
+    // then reassigned to this consumer under generation 2 where new records are
+    // tracked. Some records were only fetched/acked during generation 1.
+    // Guarantees: after reassignment the committable offset reflects only
+    // generation-2 records. Offsets fetched or acked under generation 1 do not
+    // contribute to (and cannot roll back) the generation-2 commit, so no
+    // stale-generation offset is ever committed under the new assignment.
+    #[test]
+    fn revoke_reassign_commits_only_new_generation() {
+        let mut tracker = OffsetTracker::new();
+
+        // Generation 1: own partition 0, track and ack offsets 100..=104. The
+        // committable offset is high_water_mark + 1 = 105.
+        for offset in 100..=104 {
+            tracker.track("traces", 0, offset, 1);
+        }
+        for offset in 100..=104 {
+            let _ = tracker.acknowledge("traces", 0, offset);
+        }
+        assert_eq!(
+            committable_sorted(&tracker),
+            vec![("traces".to_string(), 0, 105)],
+            "generation 1 commits its own high-water mark",
+        );
+
+        // Partition 0 is revoked (revocation carries generation 1). Its state
+        // is purged, so nothing is committable for it anymore.
+        assert!(tracker.revoke_if_older("traces", 0, 1));
+        assert!(
+            committable_sorted(&tracker).is_empty(),
+            "a revoked partition contributes no committable offset",
+        );
+
+        // Generation 2: partition 0 is reassigned to this consumer. It resumes
+        // from the group's committed position (200), lower than generation 1's
+        // high-water mark, and a single new record is tracked.
+        tracker.track("traces", 0, 200, 2);
+        assert_eq!(
+            tracker.partition_generation("traces", 0),
+            Some(2),
+            "the reassigned partition adopts generation 2",
+        );
+
+        // A stale generation-1 ack that arrives after reassignment targets an
+        // offset the generation-2 state has never seen; it must be a no-op and
+        // must not advance or roll back the generation-2 committable offset.
+        assert!(
+            !tracker.acknowledge("traces", 0, 104),
+            "a stale generation-1 offset is not pending under generation 2",
+        );
+
+        // The committable offset reflects only the generation-2 record (200),
+        // never generation 1's 105.
+        assert_eq!(
+            committable_sorted(&tracker),
+            vec![("traces".to_string(), 0, 200)],
+            "only generation-2 records drive the commit after reassignment",
+        );
     }
 }
