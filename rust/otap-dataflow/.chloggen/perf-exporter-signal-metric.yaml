@@ -1,0 +1,4 @@
+change_type: breaking
+component: pipeline
+note: Replace the separate `exporter.perf.pdata.logs`, `exporter.perf.pdata.spans`, and `exporter.perf.pdata.metrics` counters with `exporter.perf.pdata.items`. Filter the new metric by `signal="logs"` for log records, `signal="traces"` for spans, or `signal="metrics"` for metric data points. Remove `exporter.perf.pdata.invalid_batches`, which was never recorded.
+issues: [3530]

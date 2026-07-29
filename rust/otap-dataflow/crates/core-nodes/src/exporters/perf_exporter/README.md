@@ -76,12 +76,9 @@ by the exporter.
 
 #### `exporter.perf.pdata`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `exporter.perf.pdata.invalid_batches` | `{msg}` | Number of invalid pdata batches received. |
-| `exporter.perf.pdata.logs` | `{log}` | Number of logs received. |
-| `exporter.perf.pdata.spans` | `{span}` | Number of spans received. |
-| `exporter.perf.pdata.metrics` | `{metric}` | Number of metrics received. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.perf.pdata.items` | `{item}` | `signal` (`logs`, `metrics`, `traces`) | Number of log records, metric data points, or spans received by the performance exporter. |
 
 ### Events
 
