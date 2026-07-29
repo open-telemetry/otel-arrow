@@ -206,7 +206,10 @@ fn scan_workspace(base_dir: &Path) -> anyhow::Result<(Vec<Component>, Vec<Missin
                 parsed.push((rel, ast));
             }
             Err(e) => {
-                eprintln!("\u{26A0}\u{FE0F}  Skipping unparsable file {}: {e}", path.display());
+                eprintln!(
+                    "\u{26A0}\u{FE0F}  Skipping unparsable file {}: {e}",
+                    path.display()
+                );
             }
         }
     }
