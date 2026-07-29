@@ -24,7 +24,7 @@ engine:
     # [env, service_name, service_instance] when omitted; static `resource` attributes above
     # take precedence over detected ones. Opt into host/os/process/container/k8s to probe the
     # environment (here host.* is added); an empty list disables detection entirely.
-    detectors: [env, service_name, service_instance, host]
+    detectors: [service_instance, env, service_name, host]
   observability:
     pipeline:
       policies:

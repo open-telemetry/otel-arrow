@@ -7,8 +7,8 @@ note: Self-telemetry resource attributes are now produced by configurable OpenTe
 issues: [3177]
 
 subtext: |
-  Defaults to `["env", "service_instance"]`; `host`, `os`, `process`, `container`,
-  and `k8s` are opt-in. Static `resource` attributes still take precedence over
+  Defaults to `["service_instance", "env", "service_name"]`; `host`, `os`, `process`,
+  `container`, and `k8s` are opt-in. Static `resource` attributes still take precedence over
   detected ones. Behavior change for the default self-telemetry resource:
   `host.id` and `container.id` are no longer emitted unless opted in; `host.id`
   (when enabled) now derives from machine-id rather than hostname; and

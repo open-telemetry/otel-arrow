@@ -7,7 +7,7 @@
 //! implementations. Config (`engine.telemetry.detectors`) selects which run. Detected
 //! attributes are converted to typed [`AttributeValue`]s and merged.
 //!
-//! `env`, `service_name`, and `service_instance` run by default (see `default_detectors` in
+//! `service_instance`, `env`, and `service_name` run by default (see `default_detectors` in
 //! config); the detectors that probe the host/OS/process/container/k8s environment are opt-in.
 
 use std::collections::BTreeMap;
@@ -257,6 +257,25 @@ mod tests {
                 assert_eq!(
                     attrs.get("service.instance.id"),
                     Some(&AttributeValue::String("from-env".into()))
+                );
+            },
+        );
+    }
+
+    /// Scenario: the default detector order runs with `service.instance.id` set via
+    /// `OTEL_RESOURCE_ATTRIBUTES`.
+    /// Guarantees: the user-provided id wins over `service_instance`'s generated UUID.
+    #[test]
+    fn env_service_instance_id_wins_over_generated_default() {
+        // Mirrors config's default_detectors order.
+        temp_env::with_var(
+            "OTEL_RESOURCE_ATTRIBUTES",
+            Some("service.instance.id=user-provided"),
+            || {
+                let attrs = detect_map(&["service_instance", "env", "service_name"]);
+                assert_eq!(
+                    attrs.get("service.instance.id"),
+                    Some(&AttributeValue::String("user-provided".into()))
                 );
             },
         );
