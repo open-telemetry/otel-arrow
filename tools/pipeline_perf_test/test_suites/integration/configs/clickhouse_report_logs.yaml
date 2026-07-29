@@ -35,29 +35,41 @@ queries:
           timestamp,
           metric_name,
           "metric_attributes.component_name" AS component_name,
+          COALESCE("metric_attributes.otel_scope_core_id", 'N/A') AS core_id,
           value
         FROM metrics
+        CROSS JOIN observation_window
         WHERE metric_name IN ('logs_produced', 'log_rows_written', 'failed')
+          AND timestamp BETWEEN start_ts AND stop_ts
       ),
       deltas AS (
         SELECT
           *,
           value - LAG(value) OVER (
-            PARTITION BY metric_name, component_name ORDER BY timestamp
+            PARTITION BY metric_name, component_name, core_id ORDER BY timestamp
           ) AS delta,
           EXTRACT(EPOCH FROM timestamp - LAG(timestamp) OVER (
-            PARTITION BY metric_name, component_name ORDER BY timestamp
+            PARTITION BY metric_name, component_name, core_id ORDER BY timestamp
           )) AS elapsed
         FROM filtered
+      ),
+      series_rates AS (
+        SELECT
+          component_name,
+          metric_name,
+          core_id,
+          SUM(delta) AS total_increase,
+          SUM(delta) / NULLIF(SUM(elapsed), 0) AS average_rate
+        FROM deltas
+        WHERE delta >= 0
+        GROUP BY component_name, metric_name, core_id
       )
       SELECT
         component_name,
         metric_name,
-        SUM(delta) AS total_increase,
-        SUM(delta) / NULLIF(SUM(elapsed), 0) AS average_rate
-      FROM deltas
-      CROSS JOIN observation_window
-      WHERE timestamp BETWEEN start_ts AND stop_ts
+        SUM(total_increase) AS total_increase,
+        SUM(average_rate) AS average_rate
+      FROM series_rates
       GROUP BY component_name, metric_name;
 
   - name: Calculate component resources
@@ -124,17 +136,6 @@ queries:
   - name: Create GitHub Actions benchmark data
     sql: |
       CREATE TABLE gh_actions_benchmark AS
-      SELECT
-        'dropped_logs_percentage' AS name,
-        '%' AS unit,
-        CAST(logs_lost_pct AS FLOAT) * 100 AS value,
-        metadata_row."test.suite" || '/' || metadata_row."test.name" ||
-          ' - Dropped Logs %' AS extra
-      FROM log_loss
-      CROSS JOIN metadata_row
-
-      UNION ALL
-
       SELECT
         metric_name || '_rate' AS name,
         'rows/sec' AS unit,

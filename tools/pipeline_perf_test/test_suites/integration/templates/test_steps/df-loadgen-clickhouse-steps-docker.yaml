@@ -150,7 +150,12 @@ steps:
                 mkdir -p results/clickhouse/validation &&
                 rows=$(curl --fail --silent --show-error --user default:test
                 --data-binary 'SELECT count() FROM {{clickhouse_database}}.otel_logs'
-                http://localhost:8123) && test "${rows}" -gt 0 &&
+                http://localhost:8123) &&
+                transformed=$(curl --fail --silent --show-error --user default:test
+                --data-binary "SELECT count() FROM {{clickhouse_database}}.otel_logs
+                WHERE LogAttributes['benchmark.transform'] = 'applied'"
+                http://localhost:8123) &&
+                test "${rows}" -gt 0 && test "${transformed}" -eq "${rows}" &&
                 printf 'logs_persisted_final\n%s\n' "${rows}" >
                 results/clickhouse/validation/{{validation_file}} &&
                 echo "ClickHouse {{clickhouse_database}} persisted ${rows} log rows"
