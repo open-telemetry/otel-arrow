@@ -1,0 +1,4 @@
+change_type: breaking
+component: pipeline
+note: "Consolidate individual attributes_processor metrics (e.g., deleted_entries, inserted_entries, domains_signal) into the new 'processor.attributes.modified' and 'processor.attributes.transforms' metrics."
+issues: [3593, 3530]

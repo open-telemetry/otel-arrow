@@ -3,49 +3,94 @@
 
 //! Metrics for the AttributesProcessor node.
 
+use otap_df_engine::context::PipelineContext;
+use otap_df_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otap_df_telemetry::error::Error;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
+use otap_df_telemetry::reporter::MetricsReporter;
+use otap_df_telemetry_macros::{AttributeEnum, attribute_set, metric_set};
 
-/// Metrics for the AttributesProcessor node.
-#[metric_set(name = "processor.attributes")]
+/// Actions performed on attributes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum ActionType {
+    Renamed,
+    Deleted,
+    Inserted,
+    Upserted,
+    Updated,
+    Hashed,
+}
+
+/// Target payload domain where transforms were applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, AttributeEnum)]
+pub enum TargetDomain {
+    Signal,
+    Resource,
+    Scope,
+}
+
+/// Combined action and domain dimensions for attribute modification metrics.
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct ActionAttributes {
+    pub action: ActionType,
+    pub domain: TargetDomain,
+}
+
+#[metric_set(
+    name = "processor.attributes.modified",
+    measurement_attributes = ActionAttributes
+)]
 #[derive(Debug, Default, Clone)]
+pub struct AttributesProcessorModifiedMetrics {
+    #[metric(unit = "{attr}")]
+    pub entries: Counter<u64>,
+}
+
+/// Transform outcome metric using the common Outcome attribute.
+#[metric_set(
+    name = "processor.attributes",
+    measurement_attributes = OutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct AttributesProcessorTransformMetrics {
+    #[metric(unit = "{transform}")]
+    pub transforms: Counter<u64>,
+}
+
 pub struct AttributesProcessorMetrics {
-    /// Number of failed transform attempts.
-    #[metric(unit = "{op}")]
-    pub transform_failed: Counter<u64>,
+    pub transform_metrics: MeasurementMetricSet<AttributesProcessorTransformMetrics>,
+    pub modified_metrics: MeasurementMetricSet<AttributesProcessorModifiedMetrics>,
+}
 
-    /// Total number of attribute entries actually renamed.
-    #[metric(unit = "{attr}")]
-    pub renamed_entries: Counter<u64>,
+impl AttributesProcessorMetrics {
+    pub fn new(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            transform_metrics: AttributesProcessorTransformMetrics::register(pipeline_ctx),
+            modified_metrics: AttributesProcessorModifiedMetrics::register(pipeline_ctx),
+        }
+    }
 
-    /// Total number of attribute entries actually deleted.
-    #[metric(unit = "{attr}")]
-    pub deleted_entries: Counter<u64>,
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), Error> {
+        reporter
+            .report_measurement(&mut self.transform_metrics)
+            .and_then(|()| reporter.report_measurement(&mut self.modified_metrics))
+    }
 
-    /// Total number of attribute entries actually inserted.
-    #[metric(unit = "{attr}")]
-    pub inserted_entries: Counter<u64>,
+    pub fn record_transform_outcome(&mut self, outcome: Outcome) {
+        self.transform_metrics
+            .with(OutcomeAttributes { outcome })
+            .transforms
+            .inc();
+    }
 
-    /// Total number of attribute entries actually upserted.
-    #[metric(unit = "{attr}")]
-    pub upserted_entries: Counter<u64>,
-
-    /// Total number of attribute entries actually updated.
-    #[metric(unit = "{attr}")]
-    pub updated_entries: Counter<u64>,
-    /// Total number of attribute entries actually hashed.
-    #[metric(unit = "{attr}")]
-    pub hashed_entries: Counter<u64>,
-
-    /// Number of times transforms were applied to signal-level payloads.
-    #[metric(unit = "{apply}")]
-    pub domains_signal: Counter<u64>,
-
-    /// Number of times transforms were applied to resource-level payloads.
-    #[metric(unit = "{apply}")]
-    pub domains_resource: Counter<u64>,
-
-    /// Number of times transforms were applied to scope-level payloads.
-    #[metric(unit = "{apply}")]
-    pub domains_scope: Counter<u64>,
+    pub fn modified_for(
+        &mut self,
+        action: ActionType,
+        domain: TargetDomain,
+    ) -> &mut AttributesProcessorModifiedMetrics {
+        self.modified_metrics
+            .with(ActionAttributes { action, domain })
+    }
 }
