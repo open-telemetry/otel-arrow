@@ -143,9 +143,8 @@ impl local::Exporter<OtapPdata> for PerfExporter {
                 Message::Control(NodeControlMsg::Shutdown { deadline, .. }) => {
                     return Ok(self.terminal_state(deadline));
                 }
-                Message::PData(mut pdata) => {
+                Message::PData(pdata) => {
                     let signal_type = pdata.signal_type();
-                    _ = pdata.take_payload();
                     let _ = effect_handler.notify_ack(AckMsg::new(pdata)).await?;
 
                     // ToDo (LQ) We need to introduce pdata headers without hpack encoding for data coming from other nodes
