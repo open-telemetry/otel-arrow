@@ -144,7 +144,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         if !unresolved.is_empty() {
             for c in &unresolved {
                 eprintln!(
-                    "❌ Unresolved URN for component at {}:{} ({})",
+                    "\u{274C} Unresolved URN for component at {}:{} ({})",
                     c.file, c.line, c.id
                 );
             }
@@ -157,7 +157,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         let path = check_path.unwrap_or(default_baseline);
         save_baseline(&path, &components)?;
         println!(
-            "✨ Updated component inventory baseline saved to: {}",
+            "\u{2728} Updated component inventory baseline saved to: {}",
             path.display()
         );
         return Ok(());
@@ -206,7 +206,7 @@ fn scan_workspace(base_dir: &Path) -> anyhow::Result<(Vec<Component>, Vec<Missin
                 parsed.push((rel, ast));
             }
             Err(e) => {
-                eprintln!("⚠️  Skipping unparsable file {}: {e}", path.display());
+                eprintln!("\u{26A0}\u{FE0F}  Skipping unparsable file {}: {e}", path.display());
             }
         }
     }
@@ -329,7 +329,9 @@ fn extract_from_items(
                 }
                 Err(e) => {
                     // A malformed annotation must be loud, not silently dropped.
-                    eprintln!("⚠️  Failed to parse #[component_inventory] in {rel_path}: {e}");
+                    eprintln!(
+                        "\u{26A0}\u{FE0F}  Failed to parse #[component_inventory] in {rel_path}: {e}"
+                    );
                 }
             }
         } else if let Some(slice) = distributed_slice_otap(attrs) {
@@ -599,7 +601,7 @@ fn run_check(
     missing_annotations: &[MissingAnnotation],
 ) -> anyhow::Result<()> {
     println!(
-        "🚀 Verifying component inventory against baseline: {}...\n",
+        "\u{1F680} Verifying component inventory against baseline: {}...\n",
         path.display()
     );
 
@@ -617,35 +619,37 @@ fn run_check(
     let report = compute_report(&baseline, code_components, missing_annotations);
 
     if !report.unresolved.is_empty() {
-        println!("❌ UNRESOLVED URNs (scanner could not resolve the component id):");
+        println!("\u{274C} UNRESOLVED URNs (scanner could not resolve the component id):");
         for c in &report.unresolved {
             println!("  ? {c}");
         }
         println!();
     }
     if !report.new.is_empty() {
-        println!("🆕 NEW (annotated in code, not in baseline):");
+        println!("\u{1F195} NEW (annotated in code, not in baseline):");
         for c in &report.new {
             println!("  + {c}");
         }
         println!();
     }
     if !report.modified.is_empty() {
-        println!("🔄 MODIFIED (properties differ from baseline):");
+        println!("\u{1F504} MODIFIED (properties differ from baseline):");
         for c in &report.modified {
             println!("  * {c}");
         }
         println!();
     }
     if !report.removed.is_empty() {
-        println!("❌ REMOVED (in baseline, no annotation found in code):");
+        println!("\u{274C} REMOVED (in baseline, no annotation found in code):");
         for c in &report.removed {
             println!("  - {c}");
         }
         println!();
     }
     if !report.missing.is_empty() {
-        println!("⚠️  MISSING annotation (OTAP_* factory static without #[component_inventory]):");
+        println!(
+            "\u{26A0}\u{FE0F}  MISSING annotation (OTAP_* factory static without #[component_inventory]):"
+        );
         for m in &report.missing {
             println!("  ! {m}");
         }
@@ -653,7 +657,7 @@ fn run_check(
     }
 
     if report.is_clean() {
-        println!("✅ STATUS: PASS (component inventory matches baseline)");
+        println!("\u{2705} STATUS: PASS (component inventory matches baseline)");
         Ok(())
     } else {
         // Return an error instead of process::exit so callers can render their
@@ -695,29 +699,29 @@ fn print_table(components: &[Component]) {
     }
     max_desc = max_desc.min(80);
 
-    let rule = |l: &str, m: &str, r: &str| {
+    let rule = || {
         format!(
-            "{l}─{}─{m}─{}─{m}─{}─{r}",
-            "─".repeat(max_id),
-            "─".repeat(max_cat),
-            "─".repeat(max_desc)
+            "+-{}-+-{}-+-{}-+",
+            "-".repeat(max_id),
+            "-".repeat(max_cat),
+            "-".repeat(max_desc)
         )
     };
 
-    println!("{}", rule("┌", "┬", "┐"));
+    println!("{}", rule());
     println!(
-        "│ {:<max_id$} │ {:<max_cat$} │ {:<max_desc$} │",
+        "| {:<max_id$} | {:<max_cat$} | {:<max_desc$} |",
         "ID", "Category", "Description"
     );
-    println!("{}", rule("├", "┼", "┤"));
+    println!("{}", rule());
     for c in components {
         let desc = truncate_chars(c.description.as_deref().unwrap_or(""), max_desc);
         println!(
-            "│ {:<max_id$} │ {:<max_cat$} │ {:<max_desc$} │",
+            "| {:<max_id$} | {:<max_cat$} | {:<max_desc$} |",
             c.id, c.category, desc
         );
     }
-    println!("{}", rule("└", "┴", "┘"));
+    println!("{}", rule());
 }
 
 fn print_yaml(components: &[Component]) {
@@ -1014,7 +1018,7 @@ mod tests {
     fn truncate_chars_is_utf8_safe() {
         assert_eq!(truncate_chars("short", 80), "short");
         // 10 multibyte chars, truncate to 8 -> 5 chars + "..."
-        let s = "★★★★★★★★★★";
+        let s = "\u{2605}\u{2605}\u{2605}\u{2605}\u{2605}\u{2605}\u{2605}\u{2605}\u{2605}\u{2605}";
         let out = truncate_chars(s, 8);
         assert_eq!(out.chars().count(), 8);
         assert!(out.ends_with("..."));
