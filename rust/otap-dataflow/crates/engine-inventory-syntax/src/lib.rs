@@ -28,39 +28,141 @@ use syn::{
     token::Comma,
 };
 
-/// Categories accepted by the `#[component_inventory]` macro (RFC 0001).
+/// Component category (RFC 0001).
 ///
-/// Kept in sync with `otap_df_engine::inventory::Category`.
-pub const KNOWN_CATEGORIES: &[&str] = &[
-    "Receiver",
-    "Exporter",
-    "Processor",
-    "Extension",
-    "Admin",
-    "Controller",
-    "Cli",
-    "Subsystem",
-    "Safety",
-];
+/// This enum is the **single source of truth** for the set of accepted
+/// categories and their URN segments. It lives in this leaf crate (which
+/// depends only on `syn`/`proc-macro2`) so that all three consumers reference
+/// the same type and cannot drift:
+///
+/// - `otap-df-engine` re-exports it as `otap_df_engine::inventory::Category`,
+///   the runtime type stored in every `ComponentMeta`;
+/// - the `#[component_inventory]` proc macro validates the `category = <Ident>`
+///   argument and emits `Category::<Variant>` referencing that re-export; and
+/// - the `cargo xtask component-inventory` scanner uses the same variants when
+///   parsing annotations out of source.
+///
+/// Adding a variant here updates every consumer through the type system: the
+/// parser's accepted set, the URN cross-check, and the runtime enum all derive
+/// from these variants, so there is no separate list to keep in sync.
+///
+/// The macro accepts a bare identifier (e.g. `Receiver`) and rejects unknown
+/// variants at compile time, preventing misspellings like `Reciever` from
+/// silently corrupting the inventory. For factory components the macro also
+/// validates the category against the URN's middle segment (e.g.
+/// `urn:otel:`**`receiver`**`:otlp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Category {
+    /// A receiver: ingests telemetry into a pipeline (`urn:...:receiver:...`).
+    Receiver,
+    /// An exporter: emits telemetry out of a pipeline (`urn:...:exporter:...`).
+    Exporter,
+    /// A processor: transforms telemetry in a pipeline (`urn:...:processor:...`).
+    Processor,
+    /// An extension: shared, non-pipeline functionality (`urn:...:extension:...`).
+    Extension,
+    /// Built-in HTTP/gRPC admin server (`urn:...:admin:...`).
+    Admin,
+    /// Pipeline controller or OpAMP engine (`urn:...:controller:...`).
+    Controller,
+    /// Command line tooling (`urn:...:cli:...`).
+    Cli,
+    /// Core infrastructure subsystem (`urn:...:subsystem:...`).
+    Subsystem,
+    /// Safety guardrails such as memory limiter (`urn:...:safety:...`).
+    Safety,
+}
+
+impl Category {
+    /// Every category variant, in declaration order.
+    ///
+    /// Used to validate the `category` identifier and to build the
+    /// "expected one of: ..." error, so both derive from the enum rather than a
+    /// separate list.
+    pub const ALL: &'static [Category] = &[
+        Category::Receiver,
+        Category::Exporter,
+        Category::Processor,
+        Category::Extension,
+        Category::Admin,
+        Category::Controller,
+        Category::Cli,
+        Category::Subsystem,
+        Category::Safety,
+    ];
+
+    /// The Rust identifier for this variant (e.g. `Receiver` -> `"Receiver"`).
+    #[must_use]
+    pub const fn ident_str(self) -> &'static str {
+        match self {
+            Category::Receiver => "Receiver",
+            Category::Exporter => "Exporter",
+            Category::Processor => "Processor",
+            Category::Extension => "Extension",
+            Category::Admin => "Admin",
+            Category::Controller => "Controller",
+            Category::Cli => "Cli",
+            Category::Subsystem => "Subsystem",
+            Category::Safety => "Safety",
+        }
+    }
+
+    /// The URN category segment for this variant (e.g. `Receiver` -> `"receiver"`).
+    ///
+    /// Used to cross-check `category` against a component's URN and by the
+    /// inventory tooling.
+    #[must_use]
+    pub const fn urn_segment(self) -> &'static str {
+        match self {
+            Category::Receiver => "receiver",
+            Category::Exporter => "exporter",
+            Category::Processor => "processor",
+            Category::Extension => "extension",
+            Category::Admin => "admin",
+            Category::Controller => "controller",
+            Category::Cli => "cli",
+            Category::Subsystem => "subsystem",
+            Category::Safety => "safety",
+        }
+    }
+
+    /// Parse a bare category identifier (e.g. `"Receiver"`) into a [`Category`].
+    ///
+    /// Returns `None` for an unknown identifier.
+    #[must_use]
+    pub fn from_ident_str(ident: &str) -> Option<Category> {
+        Category::ALL
+            .iter()
+            .copied()
+            .find(|cat| cat.ident_str() == ident)
+    }
+
+    /// A comma-separated list of every accepted category identifier, for use in
+    /// error messages (e.g. `"Receiver, Exporter, ..."`).
+    #[must_use]
+    pub fn expected_list() -> String {
+        Category::ALL
+            .iter()
+            .map(|cat| cat.ident_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl core::fmt::Display for Category {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.urn_segment())
+    }
+}
 
 /// Map a `Category` identifier to its URN segment, for the URN cross-check.
 ///
-/// Returns `None` for an unknown category. Kept in sync with
-/// `otap_df_engine::inventory::Category::urn_segment`.
+/// Returns `None` for an unknown category. Thin wrapper over [`Category`]; the
+/// mapping itself is defined once in [`Category::urn_segment`].
 #[must_use]
 pub fn category_urn_segment(cat: &str) -> Option<&'static str> {
-    match cat {
-        "Receiver" => Some("receiver"),
-        "Exporter" => Some("exporter"),
-        "Processor" => Some("processor"),
-        "Extension" => Some("extension"),
-        "Admin" => Some("admin"),
-        "Controller" => Some("controller"),
-        "Cli" => Some("cli"),
-        "Subsystem" => Some("subsystem"),
-        "Safety" => Some("safety"),
-        _ => None,
-    }
+    Category::from_ident_str(cat).map(Category::urn_segment)
 }
 
 /// Parsed arguments from `#[component_inventory(...)]`.
@@ -69,7 +171,7 @@ pub struct ComponentInventoryArgs {
     /// Explicit `id = "..."` (required only when the annotated item is not a
     /// factory static with a `name` field).
     pub id: Option<LitStr>,
-    /// `category = <Ident>` (required). Validated against [`KNOWN_CATEGORIES`].
+    /// `category = <Ident>` (required). Validated against [`Category`].
     pub category: Ident,
     /// Optional `description = "..."`.
     pub description: Option<LitStr>,
@@ -145,12 +247,12 @@ impl Parse for ComponentInventoryArgs {
         // Validate the category identifier so a misspelling like `Reciever` is a
         // clear error rather than a silently bad entry.
         let cat_str = category.to_string();
-        if !KNOWN_CATEGORIES.contains(&cat_str.as_str()) {
+        if Category::from_ident_str(&cat_str).is_none() {
             return Err(syn::Error::new_spanned(
                 &category,
                 format!(
                     "unknown component category `{cat_str}`; expected one of: {}",
-                    KNOWN_CATEGORIES.join(", ")
+                    Category::expected_list()
                 ),
             ));
         }
@@ -169,6 +271,16 @@ impl ComponentInventoryArgs {
     #[must_use]
     pub fn category_str(&self) -> String {
         self.category.to_string()
+    }
+
+    /// The declared category as a typed [`Category`].
+    ///
+    /// Always `Some` after a successful parse, because [`Self::parse`] rejects
+    /// any identifier that is not a known category; returns `None` only if
+    /// constructed by other means with an invalid identifier.
+    #[must_use]
+    pub fn category(&self) -> Option<Category> {
+        Category::from_ident_str(&self.category_str())
     }
 
     /// The explicit `id` value, if one was supplied.
@@ -199,7 +311,7 @@ impl ComponentInventoryArgs {
     /// not a literal (the common `const`-path factory case) the caller passes
     /// `None` and no check runs here.
     pub fn check_urn_category(&self, literal_urn: Option<&str>) -> syn::Result<()> {
-        let Some(seg) = category_urn_segment(&self.category_str()) else {
+        let Some(seg) = self.category().map(Category::urn_segment) else {
             return Ok(());
         };
         let Some(urn) = literal_urn else {
@@ -356,5 +468,39 @@ mod tests {
         assert_eq!(category_urn_segment("Receiver"), Some("receiver"));
         assert_eq!(category_urn_segment("Safety"), Some("safety"));
         assert_eq!(category_urn_segment("Nope"), None);
+    }
+
+    /// Scenario: `Category::from_ident_str` round-trips every variant's
+    /// `ident_str`, and rejects an unknown identifier.
+    /// Guarantees: the parser's accepted set is exactly `Category::ALL`, so a
+    /// new variant is automatically accepted and no stale string list can drift.
+    #[test]
+    fn from_ident_str_round_trips_all_variants() {
+        for &cat in Category::ALL {
+            assert_eq!(Category::from_ident_str(cat.ident_str()), Some(cat));
+        }
+        assert_eq!(Category::from_ident_str("Reciever"), None);
+    }
+
+    /// Scenario: every `Category` variant is asked for its `urn_segment` and
+    /// `ident_str`.
+    /// Guarantees: the URN segment is the lowercase of the identifier, keeping
+    /// the single enum consistent with the URN cross-check for all variants.
+    #[test]
+    fn urn_segment_is_lowercase_ident_for_all_variants() {
+        for &cat in Category::ALL {
+            assert_eq!(cat.urn_segment(), cat.ident_str().to_lowercase());
+        }
+    }
+
+    /// Scenario: `Category::expected_list` is rendered for an error message.
+    /// Guarantees: it lists every variant identifier in declaration order, so
+    /// the "expected one of" diagnostic derives from the enum, not a copy.
+    #[test]
+    fn expected_list_covers_all_variants_in_order() {
+        assert_eq!(
+            Category::expected_list(),
+            "Receiver, Exporter, Processor, Extension, Admin, Controller, Cli, Subsystem, Safety"
+        );
     }
 }

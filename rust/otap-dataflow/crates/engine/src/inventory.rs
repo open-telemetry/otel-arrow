@@ -19,7 +19,14 @@
 //! [rfc]: https://github.com/open-telemetry/otel-arrow/blob/main/rust/otap-dataflow/rfcs/0001-component-inventory.md
 //! [macro]: otap_df_engine_macros::component_inventory
 
-/// Component category.
+/// Component category (RFC 0001).
+///
+/// Re-exported from the leaf `otap-df-engine-inventory-syntax` crate, which is
+/// the single source of truth shared by the runtime type (here), the
+/// `#[component_inventory]` proc macro, and the `cargo xtask component-inventory`
+/// scanner. Defining it once there (rather than duplicating a string table in
+/// each consumer) means adding a variant updates every consumer through the
+/// type system and the three cannot drift.
 ///
 /// The `#[component_inventory]` macro accepts a bare identifier (e.g.
 /// `Receiver`) and rejects unknown variants at compile time, preventing
@@ -27,60 +34,8 @@
 /// factory components the macro also validates the category against the URN's
 /// middle segment (e.g. `urn:otel:`**`receiver`**`:otlp`).
 ///
-/// Phase 1 (RFC 0001) ships only the four factory categories. The non-factory
-/// categories (`Admin`, `Controller`, `Cli`, `Subsystem`, `Safety`) proposed in
-/// the RFC are deferred to Phase 2, when the non-factory components (admin
-/// server, controller, `dfctl`, memory limiter) are actually annotated and the
-/// synthetic-URN scheme for them is settled with the SIG.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum Category {
-    /// A receiver: ingests telemetry into a pipeline (`urn:...:receiver:...`).
-    Receiver,
-    /// An exporter: emits telemetry out of a pipeline (`urn:...:exporter:...`).
-    Exporter,
-    /// A processor: transforms telemetry in a pipeline (`urn:...:processor:...`).
-    Processor,
-    /// An extension: shared, non-pipeline functionality (`urn:...:extension:...`).
-    Extension,
-    /// Built-in HTTP/gRPC admin server (`urn:...:admin:...`).
-    Admin,
-    /// Pipeline controller or OpAMP engine (`urn:...:controller:...`).
-    Controller,
-    /// Command line tooling (`urn:...:cli:...`).
-    Cli,
-    /// Core infrastructure subsystem (`urn:...:subsystem:...`).
-    Subsystem,
-    /// Safety guardrails such as memory limiter (`urn:...:safety:...`).
-    Safety,
-}
-
-impl Category {
-    /// The URN category segment for this variant (e.g. `Receiver` -> `"receiver"`).
-    ///
-    /// Used to cross-check `category` against a component's URN and by the
-    /// inventory tooling.
-    #[must_use]
-    pub const fn urn_segment(self) -> &'static str {
-        match self {
-            Category::Receiver => "receiver",
-            Category::Exporter => "exporter",
-            Category::Processor => "processor",
-            Category::Extension => "extension",
-            Category::Admin => "admin",
-            Category::Controller => "controller",
-            Category::Cli => "cli",
-            Category::Subsystem => "subsystem",
-            Category::Safety => "safety",
-        }
-    }
-}
-
-impl core::fmt::Display for Category {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.urn_segment())
-    }
-}
+/// See [`Category`] for the full list of variants and their intended meanings.
+pub use otap_df_engine_inventory_syntax::Category;
 
 /// Well-known attribute keys (RFC 0001, "Option A": free-form map + key
 /// constants). Contributors are encouraged to use these constants for the

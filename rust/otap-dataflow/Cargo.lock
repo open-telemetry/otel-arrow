@@ -7432,6 +7432,7 @@ dependencies = [
  "otap-df-channel",
  "otap-df-config",
  "otap-df-engine",
+ "otap-df-engine-inventory-syntax",
  "otap-df-engine-macros",
  "otap-df-pdata",
  "otap-df-state",
