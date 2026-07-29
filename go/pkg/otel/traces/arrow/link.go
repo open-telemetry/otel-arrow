@@ -199,7 +199,9 @@ func (b *LinkBuilder) TryBuild(attrsAccu *acommon.Attributes32Accumulator) (reco
 		if link.Attributes.Len() == 0 {
 			b.ib.AppendNull()
 		} else {
-			b.ib.Append(linkID)
+			if err = b.ib.Append(linkID); err != nil {
+				return
+			}
 
 			// Attributes
 			err = attrsAccu.Append(linkID, link.Attributes)
