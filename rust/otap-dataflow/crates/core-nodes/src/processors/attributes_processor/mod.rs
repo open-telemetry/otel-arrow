@@ -62,6 +62,7 @@ use otap_df_pdata::otap::{
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
@@ -328,8 +329,8 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<Vec<(metrics::TargetDomain, u64, u64, u64, u64, u64, u64)>, EngineError> {
-        let mut per_domain: Vec<(metrics::TargetDomain, u64, u64, u64, u64, u64, u64)> = Vec::new();
+    ) -> Result<SmallVec<[(metrics::TargetDomain, u64, u64, u64, u64, u64, u64); 3]>, EngineError> {
+        let mut per_domain = SmallVec::new();
 
         if self.is_noop() {
             return Ok(per_domain);
