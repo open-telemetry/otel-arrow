@@ -5890,7 +5890,7 @@ mod test {
     }
 
     /// Scenario: A five-attribute traffic-generator-shaped log record joins two attribute predicates.
-    /// Guarantees: A scalar false result from fused attribute evaluation does not terminate filtering.
+    /// Guarantees: Scalar false filters the record, while scalar true keeps it without terminating filtering.
     #[tokio::test]
     async fn test_filter_attributes_all_scalar_result() {
         let log_records = vec![
