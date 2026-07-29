@@ -202,7 +202,7 @@ impl CombineScalarExpression {
                         Some(e) => {
                             let s = StringScalarExpression::new(
                                 expression.get_query_location().clone(),
-                                e.to_value().to_string().as_str(),
+                                e.to_value().convert_to_string().as_ref(),
                             );
 
                             len += s.get_value().len();

@@ -267,14 +267,14 @@ impl JoinTextScalarExpression {
     ) -> ScalarStaticResolutionResult<'_> {
         let values = self.values_expression.try_resolve_static(scope)?;
 
+        let separator_location = self.separator_expression.get_query_location().clone();
+
         let separator = match self.separator_expression.try_resolve_static(scope)? {
             None => return Ok(None),
             Some(s) => {
-                let value = s.to_value().to_string();
-
                 StringScalarExpression::new(
-                    self.separator_expression.get_query_location().clone(),
-                    value.as_str(),
+                    separator_location,
+                    s.to_value().convert_to_string().as_ref(),
                 )
             }
         };
@@ -292,7 +292,7 @@ impl JoinTextScalarExpression {
                         Some(e) => {
                             let s = StringScalarExpression::new(
                                 expression.get_query_location().clone(),
-                                e.to_value().to_string().as_str(),
+                                e.to_value().convert_to_string().as_ref(),
                             );
 
                             len += s.get_value().len();
