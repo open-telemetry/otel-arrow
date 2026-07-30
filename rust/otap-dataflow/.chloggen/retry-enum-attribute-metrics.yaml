@@ -2,6 +2,6 @@
 
 change_type: breaking
 component: pipeline
-note: Replace retry processor metric-name dimensions with a bounded signal attribute and use engine-owned item outcome metrics.
+note: Replace retry processor metric-name dimensions with bounded enum attributes, add retry recovery and termination metrics, and use engine-owned item outcome metrics.
 issues: [3300]
-subtext:
+subtext: Local retry scheduling failures are now forwarded upstream instead of being routed back to the retry processor.

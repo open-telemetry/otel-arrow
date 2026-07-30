@@ -63,13 +63,32 @@ runtime metrics are enabled or the node opts in with
 `policies.telemetry.item_counts`. The processor does not duplicate these
 engine-owned metrics.
 
-#### `processor.retry.attempts`
+#### `processor.retry`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `processor.retry.attempts.scheduled` | `{retry}` | `signal` | Number of retry attempts scheduled after a downstream refusal. |
+| `processor.retry.retries.scheduled` | `{retry}` | `signal` | Number of retries successfully scheduled after a downstream refusal. |
+| `processor.retry.requests.recovered` | `{request}` | `signal` | Number of requests accepted downstream after at least one retry. |
 
 The `signal` attribute is bounded to `traces`, `metrics`, or `logs`.
+
+#### `processor.retry.requests`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.retry.requests.terminated` | `{request}` | `signal`, `reason` | Number of requests the retry processor stopped retrying. |
+
+The `reason` attribute is bounded to:
+
+| Value | Description |
+| --- | --- |
+| `invalid_state` | Retry state in call data was absent or malformed. |
+| `permanent_refusal` | Downstream permanently refused the request. |
+| `payload_missing` | Downstream did not return the payload required for a retry. |
+| `retry_limit` | The retry-count safety limit was reached. |
+| `deadline` | The next retry would exceed the configured elapsed-time deadline. |
+| `scheduling_failure` | The processor-local delayed-resume queue rejected the retry. |
+| `send_failure` | The processor could not send the request or convert the failure into a NACK. |
 
 ### Events
 
