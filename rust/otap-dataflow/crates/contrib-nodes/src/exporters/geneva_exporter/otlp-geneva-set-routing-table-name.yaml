@@ -46,15 +46,15 @@ groups:
           geneva-exporter-logs:
             type: "urn:microsoft:exporter:geneva"
             config:
-              endpoint: "endpoint"
-              environment: "environment"
-              account: "account"
-              namespace: "namespace"
-              region: "region"
+              endpoint: "https://your-geneva-endpoint.example"
+              environment: "your-environment"
+              account: "your-account"
+              namespace: "your-namespace"
+              region: "your-region"
               config_major_version: 1
-              tenant: "tenant"
-              role_name: "role_name"
-              role_instance: "role_instance"
+              tenant: "your-tenant"
+              role_name: "your-role-name"
+              role_instance: "your-role-instance"
               auth:
                 type: "certificate"
                 path: "/path/to/your/certificate.p12"
@@ -94,29 +94,30 @@ groups:
                 #    MyTable: MyLogTable
                 #    LogTable1: MyLogTable
 
-              spans:
-                # Note: spans do NOT support the `event_name` routing key (that
-                # key is logs-only). Spans can only route by resource_attribute,
-                # scope_attribute, or span_attribute -- see the geneva-exporter-traces
-                # node below for a working span mapping.
-                # event_name_mapping:
-                #   routing_key: event_name
-                #   events:
-                #     MyTable: MyLogTable
-                #     LogTable1: MyLogTable
+              # Note: spans do NOT support the `event_name` routing key (that
+              # key is logs-only). Spans can only route by resource_attribute,
+              # scope_attribute, or span_attribute -- see the geneva-exporter-traces
+              # node below for a working span mapping. Example (commented out):
+              # spans:
+              #   event_name_mapping:
+              #     routing_key:
+              #       span_attribute: cluster
+              #     events:
+              #       MyTable: MySpanTable
+              #       SpanTable1:
 
           geneva-exporter-traces:
             type: "urn:microsoft:exporter:geneva"
             config:
-              endpoint: "endpoint"
-              environment: "environment"
-              account: "account"
-              namespace: "namespace"
-              region: "region"
+              endpoint: "https://your-geneva-endpoint.example"
+              environment: "your-environment"
+              account: "your-account"
+              namespace: "your-namespace"
+              region: "your-region"
               config_major_version: 1
-              tenant: "tenant"
-              role_name: "role_name"
-              role_instance: "role_instance"
+              tenant: "your-tenant"
+              role_name: "your-role-name"
+              role_instance: "your-role-instance"
               auth:
                 type: "certificate"
                 path: "/path/to/your/certificate.p12"

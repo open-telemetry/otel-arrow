@@ -58,6 +58,6 @@ groups:
                 default_event_name: "CustomSpanTable"
 
         connections:
-          # Shared receiver -> type router
+          # Shared receiver -> Geneva exporter
           - from: otlp-receiver
             to: geneva-exporter

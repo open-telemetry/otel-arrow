@@ -14,4 +14,4 @@ subtext: |
       default_event_name: "CustomLogTable"
     spans:
       default_event_name: "CustomSpanTable"
-  Each field is optional and will default to "Log" or "Span" respectively if omitted. This replaces the previous unified `event_name` configuration, providing clearer separation of concerns between log and trace signal types.
+  Each field is optional and will default to "Log" or "Span" respectively if omitted. This provides clear separation of concerns between log and trace signal types, letting each signal be routed to its own Geneva table.

@@ -258,15 +258,70 @@ where
     Ok(value)
 }
 
+/// Shared validation for logs/spans routing `events` maps. Rejects mappings
+/// that can never route or that carry silently-ignored values: an empty
+/// `events` map, blank/whitespace source keys, or empty/whitespace destination
+/// values. A `null` destination is valid and means "route to the source value
+/// unchanged". Running this during deserialization keeps `--validate` and
+/// pipeline startup in agreement so a config accepted by `--validate` cannot
+/// fail later inside `GenevaClient::new()`.
+fn validate_events_map(
+    signal: &str,
+    events: &std::collections::HashMap<String, Option<String>>,
+) -> Result<(), String> {
+    if events.is_empty() {
+        return Err(format!(
+            "{signal}.event_name_mapping.events must be non-empty when routing is configured"
+        ));
+    }
+    for (source, destination) in events {
+        if source.trim().is_empty() {
+            return Err(format!(
+                "{signal}.event_name_mapping.events source keys must not be blank"
+            ));
+        }
+        if let Some(dest) = destination {
+            if dest.trim().is_empty() {
+                return Err(format!(
+                    "{signal}.event_name_mapping.events destination for source '{source}' must \
+                     not be empty or whitespace; omit the value (use null) to route to the \
+                     source value unchanged"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Deserializable wrapper for LogsEventNameMapping
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "LogsEventNameMappingConfigRaw")]
 pub struct LogsEventNameMappingConfig {
     /// The routing key configuration (determines which attribute to route on)
     pub routing_key: LogsEventNameRoutingKeyConfig,
-    /// Map of source values to destination table names.
-    /// A null value means the source value is used as the destination.
+    /// Map of source values to destination table names. A `null` value means
+    /// the source value is used unchanged as the destination; empty or
+    /// whitespace-only destination strings are rejected during validation.
     pub events: std::collections::HashMap<String, Option<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogsEventNameMappingConfigRaw {
+    routing_key: LogsEventNameRoutingKeyConfig,
+    events: std::collections::HashMap<String, Option<String>>,
+}
+
+impl TryFrom<LogsEventNameMappingConfigRaw> for LogsEventNameMappingConfig {
+    type Error = String;
+
+    fn try_from(raw: LogsEventNameMappingConfigRaw) -> Result<Self, Self::Error> {
+        validate_events_map("logs", &raw.events)?;
+        Ok(Self {
+            routing_key: raw.routing_key,
+            events: raw.events,
+        })
+    }
 }
 
 impl From<LogsEventNameMappingConfig> for LogsEventNameMapping {
@@ -387,14 +442,34 @@ impl<'de> Deserialize<'de> for SpansEventNameRoutingKeyConfig {
 }
 
 /// Deserializable wrapper for SpanEventNameMapping
-#[derive(Debug, Deserialize, Clone)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(try_from = "SpansEventNameMappingConfigRaw")]
 pub struct SpansEventNameMappingConfig {
     /// The routing key configuration (determines which attribute to route on)
     pub routing_key: SpansEventNameRoutingKeyConfig,
-    /// Map of source values to destination table names.
-    /// A null value means the source value is used as the destination.
+    /// Map of source values to destination table names. A `null` value means
+    /// the source value is used unchanged as the destination; empty or
+    /// whitespace-only destination strings are rejected during validation.
     pub events: std::collections::HashMap<String, Option<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpansEventNameMappingConfigRaw {
+    routing_key: SpansEventNameRoutingKeyConfig,
+    events: std::collections::HashMap<String, Option<String>>,
+}
+
+impl TryFrom<SpansEventNameMappingConfigRaw> for SpansEventNameMappingConfig {
+    type Error = String;
+
+    fn try_from(raw: SpansEventNameMappingConfigRaw) -> Result<Self, Self::Error> {
+        validate_events_map("spans", &raw.events)?;
+        Ok(Self {
+            routing_key: raw.routing_key,
+            events: raw.events,
+        })
+    }
 }
 
 impl From<SpansEventNameMappingConfig> for SpanEventNameMapping {
@@ -467,6 +542,82 @@ const fn default_buffer_size() -> usize {
 
 const fn default_max_concurrent() -> usize {
     4
+}
+
+impl Config {
+    /// Build the `geneva-uploader` `GenevaClientConfig` from this exporter
+    /// configuration.
+    ///
+    /// This is the adapter owned by this crate: it maps the local, serde-facing
+    /// config types onto the uploader's client config, including the auth
+    /// method, MSI resource, and the per-signal logs/spans default table names
+    /// and routing mappings. It is factored out of
+    /// [`GenevaExporter::from_config`] so the pure `Config` ->
+    /// `GenevaClientConfig` conversion can be unit-tested without initializing
+    /// a live `GenevaClient`.
+    fn to_geneva_client_config(&self) -> GenevaClientConfig {
+        // Convert AuthConfig to AuthMethod
+        let auth_method = match &self.auth {
+            AuthConfig::Certificate { path, password } => AuthMethod::Certificate {
+                path: PathBuf::from(path),
+                password: password.clone(),
+            },
+            AuthConfig::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
+            AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
+                client_id: client_id.clone(),
+            },
+            AuthConfig::UserManagedIdentityByArmResourceId { resource_id, .. } => {
+                AuthMethod::UserManagedIdentityByResourceId {
+                    resource_id: resource_id.clone(),
+                }
+            }
+            AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
+                resource: msi_resource.clone(),
+            },
+        };
+
+        // Get MSI resource if needed for managed identity
+        let msi_resource = match &self.auth {
+            AuthConfig::SystemManagedIdentity { msi_resource }
+            | AuthConfig::UserManagedIdentity { msi_resource, .. }
+            | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
+            | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
+            AuthConfig::Certificate { .. } => None,
+        };
+
+        // Create LogsConfig and TracesConfig from the configuration
+        let logs_config = self
+            .logs
+            .as_ref()
+            .map(|logs| geneva_uploader::client::LogsConfig {
+                default_event_name: logs.default_event_name.clone(),
+                event_name_mapping: logs.event_name_mapping.clone().map(|m| m.into()),
+            });
+        let traces_config =
+            self.spans
+                .as_ref()
+                .map(|spans| geneva_uploader::client::TracesConfig {
+                    default_event_name: spans.default_event_name.clone(),
+                    event_name_mapping: spans.event_name_mapping.clone().map(|m| m.into()),
+                });
+
+        GenevaClientConfig {
+            endpoint: self.endpoint.clone(),
+            environment: self.environment.clone(),
+            account: self.account.clone(),
+            namespace: self.namespace.clone(),
+            region: self.region.clone(),
+            config_major_version: self.config_major_version,
+            auth_method,
+            tenant: self.tenant.clone(),
+            role_name: self.role_name.clone(),
+            role_instance: self.role_instance.clone(),
+            msi_resource,
+            logs: logs_config,
+            spans: traces_config,
+            obo_event_map: None,
+        }
+    }
 }
 
 /// Authentication configuration
@@ -627,69 +778,7 @@ impl GenevaExporter {
             }
         })?;
 
-        // Convert AuthConfig to AuthMethod
-        let auth_method = match &config.auth {
-            AuthConfig::Certificate { path, password } => AuthMethod::Certificate {
-                path: PathBuf::from(path),
-                password: password.clone(),
-            },
-            AuthConfig::SystemManagedIdentity { .. } => AuthMethod::SystemManagedIdentity,
-            AuthConfig::UserManagedIdentity { client_id, .. } => AuthMethod::UserManagedIdentity {
-                client_id: client_id.clone(),
-            },
-            AuthConfig::UserManagedIdentityByArmResourceId { resource_id, .. } => {
-                AuthMethod::UserManagedIdentityByResourceId {
-                    resource_id: resource_id.clone(),
-                }
-            }
-            AuthConfig::WorkloadIdentity { msi_resource } => AuthMethod::WorkloadIdentity {
-                resource: msi_resource.clone(),
-            },
-        };
-
-        // Get MSI resource if needed for managed identity
-        let msi_resource = match &config.auth {
-            AuthConfig::SystemManagedIdentity { msi_resource }
-            | AuthConfig::UserManagedIdentity { msi_resource, .. }
-            | AuthConfig::UserManagedIdentityByArmResourceId { msi_resource, .. }
-            | AuthConfig::WorkloadIdentity { msi_resource } => Some(msi_resource.clone()),
-            AuthConfig::Certificate { .. } => None,
-        };
-
-        // Create LogsConfig and TracesConfig from the configuration
-        let logs_config = config
-            .logs
-            .as_ref()
-            .map(|logs| geneva_uploader::client::LogsConfig {
-                default_event_name: logs.default_event_name.clone(),
-                event_name_mapping: logs.event_name_mapping.clone().map(|m| m.into()),
-            });
-        let traces_config =
-            config
-                .spans
-                .as_ref()
-                .map(|spans| geneva_uploader::client::TracesConfig {
-                    default_event_name: spans.default_event_name.clone(),
-                    event_name_mapping: spans.event_name_mapping.clone().map(|m| m.into()),
-                });
-
-        // Create GenevaClient configuration
-        let client_config = GenevaClientConfig {
-            endpoint: config.endpoint.clone(),
-            environment: config.environment.clone(),
-            account: config.account.clone(),
-            namespace: config.namespace.clone(),
-            region: config.region.clone(),
-            config_major_version: config.config_major_version,
-            auth_method,
-            tenant: config.tenant.clone(),
-            role_name: config.role_name.clone(),
-            role_instance: config.role_instance.clone(),
-            msi_resource,
-            logs: logs_config,
-            spans: traces_config,
-            obo_event_map: None,
-        };
+        let client_config = config.to_geneva_client_config();
 
         // The Geneva exporter uses rustls for mTLS. If no process-wide crypto
         // provider was installed at startup (i.e. the binary was built without
@@ -2842,6 +2931,350 @@ mod tests {
             error_msg.contains("default_event_names") || error_msg.contains("unknown field"),
             "Error should mention the unknown field: {}",
             error_msg
+        );
+    }
+
+    /// Scenario: A full `Config` with both `logs` and `spans` sections - each
+    /// with a `default_event_name` and an `event_name_mapping` using different
+    /// routing-key variants and event maps - is converted through the
+    /// `Config::to_geneva_client_config` adapter into a `GenevaClientConfig`.
+    /// Guarantees: The adapter carries every field to the correct signal
+    /// without a logs/spans mix-up: logs keep their default table name, routing
+    /// key (`log_record_attribute`) and events map; spans keep their default
+    /// table name, routing key (`span_attribute`) and events map; and scalar
+    /// fields (endpoint, account, ...) are propagated unchanged.
+    #[test]
+    fn test_config_to_geneva_client_config_full_adapter() {
+        let config = serde_json::json!({
+            "endpoint": "https://geneva.example",
+            "environment": "prod-env",
+            "account": "acct-1",
+            "namespace": "ns-1",
+            "region": "westus2",
+            "config_major_version": 3,
+            "tenant": "tenant-1",
+            "role_name": "role-1",
+            "role_instance": "instance-1",
+            "logs": {
+                "default_event_name": "MyLogs",
+                "event_name_mapping": {
+                    "routing_key": { "log_record_attribute": "log.kind" },
+                    "events": { "audit": "AuditLogs", "raw": null }
+                }
+            },
+            "spans": {
+                "default_event_name": "MySpans",
+                "event_name_mapping": {
+                    "routing_key": { "span_attribute": "span.kind" },
+                    "events": { "SERVER": "ServerSpans", "CLIENT": null }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).expect("config should parse");
+        let client_config = parsed.to_geneva_client_config();
+
+        // Scalar fields propagate unchanged.
+        assert_eq!(client_config.endpoint, "https://geneva.example");
+        assert_eq!(client_config.environment, "prod-env");
+        assert_eq!(client_config.account, "acct-1");
+        assert_eq!(client_config.namespace, "ns-1");
+        assert_eq!(client_config.region, "westus2");
+        assert_eq!(client_config.config_major_version, 3);
+        assert_eq!(client_config.tenant, "tenant-1");
+        assert_eq!(client_config.role_name, "role-1");
+        assert_eq!(client_config.role_instance, "instance-1");
+
+        // Certificate auth maps to AuthMethod::Certificate with no MSI resource.
+        match &client_config.auth_method {
+            AuthMethod::Certificate { path, password } => {
+                assert_eq!(path, &PathBuf::from("/path/to/cert.p12"));
+                assert_eq!(password, "secret");
+            }
+            other => panic!("expected Certificate auth method, got {other:?}"),
+        }
+        assert_eq!(client_config.msi_resource, None);
+        assert!(client_config.obo_event_map.is_none());
+
+        // Logs mapped to the logs slot with the correct routing key + events.
+        let logs = client_config.logs.expect("logs config should be present");
+        assert_eq!(logs.default_event_name.as_deref(), Some("MyLogs"));
+        let logs_mapping = logs
+            .event_name_mapping
+            .expect("logs mapping should be present");
+        match &logs_mapping.routing_key {
+            LogsEventNameRoutingKey::LogRecordAttribute(k) => assert_eq!(k, "log.kind"),
+            other => panic!("expected LogRecordAttribute routing key, got {other:?}"),
+        }
+        assert_eq!(
+            logs_mapping.events.get("audit"),
+            Some(&Some("AuditLogs".to_string()))
+        );
+        assert_eq!(logs_mapping.events.get("raw"), Some(&None));
+
+        // Spans mapped to the spans slot with the correct routing key + events.
+        let spans = client_config.spans.expect("spans config should be present");
+        assert_eq!(spans.default_event_name.as_deref(), Some("MySpans"));
+        let spans_mapping = spans
+            .event_name_mapping
+            .expect("spans mapping should be present");
+        match &spans_mapping.routing_key {
+            SpanEventNameRoutingKey::SpanAttribute(k) => assert_eq!(k, "span.kind"),
+            other => panic!("expected SpanAttribute routing key, got {other:?}"),
+        }
+        assert_eq!(
+            spans_mapping.events.get("SERVER"),
+            Some(&Some("ServerSpans".to_string()))
+        );
+        assert_eq!(spans_mapping.events.get("CLIENT"), Some(&None));
+    }
+
+    /// Scenario: A logs `event_name_mapping` supplies an empty `events` map.
+    /// Guarantees: Deserialization (the same path `--validate` exercises) fails
+    /// up-front instead of being accepted here and later rejected inside
+    /// `GenevaClient::new()` at pipeline startup.
+    #[test]
+    fn test_logs_events_map_rejects_empty_events() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "event_name_mapping": {
+                    "routing_key": "event_name",
+                    "events": {}
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty events map should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be non-empty"),
+            "error should explain events must be non-empty"
+        );
+    }
+
+    /// Scenario: A logs `event_name_mapping` uses a blank (whitespace-only)
+    /// source key.
+    /// Guarantees: Deserialization fails so `--validate` rejects a mapping that
+    /// could never route, matching the uploader's own validation.
+    #[test]
+    fn test_logs_events_map_rejects_blank_source_key() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "event_name_mapping": {
+                    "routing_key": "event_name",
+                    "events": { "   ": "TableA" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "blank source key should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("source keys must not be blank"),
+            "error should explain source keys must not be blank"
+        );
+    }
+
+    /// Scenario: A logs `event_name_mapping` maps a source value to an empty
+    /// (or whitespace-only) destination string, e.g. `Foo: ""`.
+    /// Guarantees: Deserialization fails rather than silently treating the empty
+    /// destination as passthrough; only the documented `null` form selects
+    /// passthrough. This prevents an ineffective config from looking valid.
+    #[test]
+    fn test_logs_events_map_rejects_empty_destination() {
+        for dest in ["", "   "] {
+            let config = serde_json::json!({
+                "endpoint": "https://localhost",
+                "environment": "test",
+                "account": "test-account",
+                "namespace": "test-namespace",
+                "region": "test-region",
+                "config_major_version": 1,
+                "tenant": "test-tenant",
+                "role_name": "test-role",
+                "role_instance": "test-instance",
+                "logs": {
+                    "event_name_mapping": {
+                        "routing_key": "event_name",
+                        "events": { "Foo": dest }
+                    }
+                },
+                "auth": {
+                    "type": "certificate",
+                    "path": "/path/to/cert.p12",
+                    "password": "secret"
+                }
+            });
+
+            let result: Result<Config, _> = serde_json::from_value(config);
+            assert!(
+                result.is_err(),
+                "empty destination '{dest}' should be rejected"
+            );
+            let error_msg = result.unwrap_err().to_string();
+            assert!(
+                error_msg.contains("must") && error_msg.contains("empty or whitespace"),
+                "error should explain empty destinations are rejected, got: {error_msg}"
+            );
+        }
+    }
+
+    /// Scenario: A `null` destination (the documented passthrough form) is used
+    /// in a logs `event_name_mapping`.
+    /// Guarantees: The `null` form remains valid and deserializes to a `None`
+    /// destination, so the destination-validation only rejects empty strings and
+    /// not the intended passthrough form.
+    #[test]
+    fn test_logs_events_map_accepts_null_passthrough_destination() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "logs": {
+                "event_name_mapping": {
+                    "routing_key": "event_name",
+                    "events": { "Foo": null }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let parsed: Config = serde_json::from_value(config).expect("null passthrough should parse");
+        let mapping = parsed
+            .logs
+            .and_then(|l| l.event_name_mapping)
+            .expect("logs mapping should be configured");
+        assert_eq!(mapping.events.get("Foo"), Some(&None));
+    }
+
+    /// Scenario: A spans `event_name_mapping` supplies an empty `events` map.
+    /// Guarantees: Deserialization fails up-front, mirroring the logs behavior
+    /// so `--validate` and pipeline startup agree for spans too.
+    #[test]
+    fn test_spans_events_map_rejects_empty_events() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "event_name_mapping": {
+                    "routing_key": { "span_attribute": "span.kind" },
+                    "events": {}
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(result.is_err(), "empty spans events map should be rejected");
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("must be non-empty"),
+            "error should explain events must be non-empty"
+        );
+    }
+
+    /// Scenario: A spans `event_name_mapping` maps a source value to an empty
+    /// destination string.
+    /// Guarantees: Deserialization fails, matching the logs behavior so empty
+    /// destinations are consistently rejected across both signals.
+    #[test]
+    fn test_spans_events_map_rejects_empty_destination() {
+        let config = serde_json::json!({
+            "endpoint": "https://localhost",
+            "environment": "test",
+            "account": "test-account",
+            "namespace": "test-namespace",
+            "region": "test-region",
+            "config_major_version": 1,
+            "tenant": "test-tenant",
+            "role_name": "test-role",
+            "role_instance": "test-instance",
+            "spans": {
+                "event_name_mapping": {
+                    "routing_key": { "span_attribute": "span.kind" },
+                    "events": { "SERVER": "" }
+                }
+            },
+            "auth": {
+                "type": "certificate",
+                "path": "/path/to/cert.p12",
+                "password": "secret"
+            }
+        });
+
+        let result: Result<Config, _> = serde_json::from_value(config);
+        assert!(
+            result.is_err(),
+            "empty spans destination should be rejected"
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("empty or whitespace"),
+            "error should explain empty destinations are rejected"
         );
     }
 
