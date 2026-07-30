@@ -199,7 +199,7 @@ impl RetryConfig {
     }
 }
 
-/// Retry processor operations partitioned by signal.
+/// Retry operations that only need the shared signal dimension.
 #[metric_set(
     name = "processor.retry",
     measurement_attributes = SignalAttributes
@@ -243,7 +243,10 @@ pub struct RetryTerminationAttributes {
     pub reason: RetryTerminationReason,
 }
 
-/// Terminal retry request outcomes partitioned by signal and reason.
+/// Terminal retry requests partitioned by signal and reason.
+///
+/// Keeping this separate avoids attaching a termination reason to unrelated
+/// operational metrics.
 #[metric_set(
     name = "processor.retry.requests",
     measurement_attributes = RetryTerminationAttributes
@@ -358,7 +361,10 @@ fn now_f64() -> f64 {
     systemtime_f64(SystemTime::now())
 }
 
-/// State tracking for retry attempts, sized for Context8u8.
+/// Retry-control state stored in call data, sized for Context8u8.
+///
+/// Item counts are intentionally omitted: generic item outcomes are recorded
+/// by the engine-owned node consumer and producer metrics.
 #[derive(Debug, Clone)]
 struct RetryState {
     /// Number of retry attempts so far (0 = first attempt, 1+ = retries).
@@ -427,6 +433,8 @@ impl RetryProcessor {
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
         let signal = ack.accepted.signal_type();
+        // Recovery classification is best effort: malformed state must not
+        // turn a successful downstream ACK into a failure.
         let recovered = RetryState::try_from(ack.unwind.route.calldata.clone())
             .is_ok_and(|state| state.retries > 0);
 
@@ -444,6 +452,7 @@ impl RetryProcessor {
         reason: RetryTerminationReason,
         effect_handler: &mut EffectHandler<OtapPdata>,
     ) -> Result<(), Error> {
+        // Count only after the terminal NACK is handed back to the engine.
         effect_handler.notify_nack(nack).await?;
         self.metrics.record_request_terminated(signal, reason);
         Ok(())
@@ -508,8 +517,9 @@ impl RetryProcessor {
             .get(rstate.retries as usize)
             .unwrap_or(&self.config.max_interval);
 
+        // Prefer the deadline reason when both guards fire. The retry-count
+        // limit remains the safety net if wall-clock progress stalls.
         if rstate.deadline <= now_f64() + delay.as_secs_f64() {
-            // The caller has refused, as often as we'll let them.
             nack.reason = format!("final retry: {}", nack.reason);
             return self
                 .terminate_nack(
@@ -550,6 +560,7 @@ impl RetryProcessor {
         // Requeue the data onto this node, we'll continue in the DelayedData branch next.
         match effect_handler.requeue_later(next_retry_time_i, rereq) {
             Ok(_) => {
+                // "Scheduled" means the local scheduler accepted ownership.
                 self.metrics.record_retry_scheduled(signal);
                 Ok(())
             }
@@ -590,6 +601,8 @@ impl RetryProcessor {
                 Ok(())
             }
             Err(TypedError::ChannelSendError(sent)) => {
+                // Channel send errors retain the payload and become retryable
+                // NACKs through the normal refusal path.
                 let reason = sent.to_string();
                 let data = sent.inner();
                 effect_handler
@@ -598,6 +611,7 @@ impl RetryProcessor {
                 Ok(())
             }
             Err(e) => {
+                // Other send errors cannot be converted into retryable NACKs.
                 self.metrics
                     .record_request_terminated(signal, RetryTerminationReason::SendFailure);
                 Err(e.into())
