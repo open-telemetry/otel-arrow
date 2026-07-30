@@ -1,0 +1,21 @@
+change_type: new_component
+
+component: pipeline
+
+note: Add the `oauth2_client_auth` extension, a `BearerTokenProvider` backed by the OAuth 2.0 client-credentials grant.
+
+issues: [3479]
+
+subtext: |
+  New extension in the `otap-df-contrib-extensions` crate (feature
+  `oauth2-client-auth-extension`, URN `urn:otel:extension:oauth2_client_auth`)
+  that acquires and refreshes OAuth 2.0 access tokens using the
+  client-credentials grant and exposes them to data-path nodes via the shared
+  `BearerTokenProvider` capability. The token endpoint is reached over TLS via
+  the engine's shared `TlsClientConfig` (custom CA and mTLS), and `client_id` /
+  `client_secret` may be supplied inline or via files re-read on each
+  acquisition for rotation without a restart. Tokens are cached and refreshed
+  ahead of expiry in a background task, concurrent cache misses are coalesced
+  onto a single token request, and the extension gates pipeline startup on the
+  first successful token publish. Emits success/failure/publish counters and
+  acquisition-latency telemetry.
