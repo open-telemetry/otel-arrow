@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn parses_full_annotation() {
         let args: ComponentInventoryArgs = syn::parse_str(
-            r#"id = "urn:otel:receiver:otlp", category = Receiver, description = "OTLP", attributes(port = "4317", auth = "mTLS")"#,
+            r#"id = "urn:otel:receiver:otlp", category = Receiver, description = "OTLP", attributes(listen_port = "4317", auth = "mTLS")"#,
         )
         .expect("parse");
         assert_eq!(args.id_value(), Some("urn:otel:receiver:otlp".to_string()));
@@ -396,7 +396,7 @@ mod tests {
         assert_eq!(
             args.attribute_pairs(),
             vec![
-                ("port".to_string(), "4317".to_string()),
+                ("listen_port".to_string(), "4317".to_string()),
                 ("auth".to_string(), "mTLS".to_string()),
             ]
         );

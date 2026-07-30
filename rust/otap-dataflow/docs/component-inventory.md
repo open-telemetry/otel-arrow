@@ -51,7 +51,7 @@ derived automatically from the factory's name field (its URN), so you do not
 need to provide an explicit id.
 
 ```rust
-use otap_df_engine_macros::component_inventory;
+use otap_df_engine::component_inventory;
 
 #[component_inventory(
     category = Receiver,

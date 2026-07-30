@@ -99,14 +99,20 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut update_baseline = false;
     let mut format = "table".to_string();
 
-    let mut iter = args.iter();
+    let mut iter = args.iter().peekable();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--check" => {
-                if let Some(val) = iter.next() {
-                    check_path = Some(PathBuf::from(val));
-                } else {
-                    check_path = Some(PathBuf::from("components-baseline.json"));
+                // Consume the next token as the baseline path only when it is a
+                // value, not another option (so `--check --format json` does
+                // not swallow `--format` as the path).
+                match iter.peek() {
+                    Some(val) if !val.starts_with("--") => {
+                        check_path = Some(PathBuf::from(iter.next().expect("peeked value")));
+                    }
+                    _ => {
+                        check_path = Some(PathBuf::from("components-baseline.json"));
+                    }
                 }
             }
             "--update-baseline" => {
@@ -132,7 +138,21 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 
     let default_baseline = PathBuf::from("components-baseline.json");
     let base_dir = std::env::current_dir()?;
-    let (components, missing) = scan_workspace(&base_dir)?;
+    let (components, missing, parse_errors) = scan_workspace(&base_dir)?;
+
+    // A malformed #[component_inventory(...)] annotation must never be silently
+    // ignored: fail before recording a baseline or verifying against one, so a
+    // broken new annotation cannot slip through CI with no entry.
+    if !parse_errors.is_empty() {
+        for e in &parse_errors {
+            eprintln!("\u{274C} {e}");
+        }
+        anyhow::bail!(
+            "found {} malformed #[component_inventory] annotation(s); \
+             fix the annotation(s) above",
+            parse_errors.len()
+        );
+    }
 
     if update_baseline {
         // Refuse to write a baseline containing unresolved URNs -- that is
@@ -180,7 +200,9 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 // Workspace scan
 // ---------------------------------------------------------------------------
 
-fn scan_workspace(base_dir: &Path) -> anyhow::Result<(Vec<Component>, Vec<MissingAnnotation>)> {
+fn scan_workspace(
+    base_dir: &Path,
+) -> anyhow::Result<(Vec<Component>, Vec<MissingAnnotation>, Vec<String>)> {
     // Collect every .rs file under crates/ once, then run two passes over the
     // parsed ASTs: (1) build the URN const table, (2) extract components.
     let crates_dir = base_dir.join("crates");
@@ -223,12 +245,20 @@ fn scan_workspace(base_dir: &Path) -> anyhow::Result<(Vec<Component>, Vec<Missin
     // Pass 2: extract annotated components + missing-annotation lint.
     let mut components = Vec::new();
     let mut missing = Vec::new();
+    let mut parse_errors = Vec::new();
     for (rel, ast) in &parsed {
-        extract_from_items(&ast.items, rel, &urn_table, &mut components, &mut missing);
+        extract_from_items(
+            &ast.items,
+            rel,
+            &urn_table,
+            &mut components,
+            &mut missing,
+            &mut parse_errors,
+        );
     }
 
     components.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok((components, missing))
+    Ok((components, missing, parse_errors))
 }
 
 fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> anyhow::Result<()> {
@@ -302,12 +332,20 @@ fn extract_from_items(
     urn_table: &HashMap<String, String>,
     components: &mut Vec<Component>,
     missing: &mut Vec<MissingAnnotation>,
+    parse_errors: &mut Vec<String>,
 ) {
     for item in items {
         // Recurse into inline modules.
         if let Item::Mod(m) = item {
             if let Some((_, inner)) = &m.content {
-                extract_from_items(inner, rel_path, urn_table, components, missing);
+                extract_from_items(
+                    inner,
+                    rel_path,
+                    urn_table,
+                    components,
+                    missing,
+                    parse_errors,
+                );
             }
         }
 
@@ -331,10 +369,13 @@ fn extract_from_items(
                     });
                 }
                 Err(e) => {
-                    // A malformed annotation must be loud, not silently dropped.
-                    eprintln!(
-                        "\u{26A0}\u{FE0F}  Failed to parse #[component_inventory] in {rel_path}: {e}"
-                    );
+                    // A malformed annotation must be loud, not silently dropped:
+                    // record it so the scan/check fails rather than letting a
+                    // broken new annotation slip through with no entry.
+                    let line = span_line(ident_span(item));
+                    parse_errors.push(format!(
+                        "{rel_path}:{line}: failed to parse #[component_inventory]: {e}"
+                    ));
                 }
             }
         } else if let Some(slice) = distributed_slice_otap(attrs) {
@@ -885,11 +926,20 @@ mod tests {
         collect_str_consts(&file.items, &mut table);
         let mut components = Vec::new();
         let mut missing = Vec::new();
-        extract_from_items(&file.items, "etw.rs", &table, &mut components, &mut missing);
+        let mut parse_errors = Vec::new();
+        extract_from_items(
+            &file.items,
+            "etw.rs",
+            &table,
+            &mut components,
+            &mut missing,
+            &mut parse_errors,
+        );
         assert_eq!(components.len(), 1);
         assert_eq!(components[0].id, "urn:otel:receiver:etw");
         assert_eq!(components[0].category, "Receiver");
         assert!(missing.is_empty());
+        assert!(parse_errors.is_empty());
     }
 
     /// Scenario: an OTAP_* factory static lacks the #[component_inventory]
@@ -907,16 +957,19 @@ mod tests {
         .unwrap();
         let mut components = Vec::new();
         let mut missing = Vec::new();
+        let mut parse_errors = Vec::new();
         extract_from_items(
             &file.items,
             "e.rs",
             &HashMap::new(),
             &mut components,
             &mut missing,
+            &mut parse_errors,
         );
         assert!(components.is_empty());
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0].slice, "OTAP_EXPORTER_FACTORIES");
+        assert!(parse_errors.is_empty());
     }
 
     /// Scenario: an annotated struct with attributes and description is scanned.
@@ -929,7 +982,7 @@ mod tests {
                 id = "urn:otel:admin:http_server",
                 category = Admin,
                 description = "Admin server",
-                attributes(port = "8080", auth = "NONE"),
+                attributes(listen_port = "8080", auth = "NONE"),
             )]
             pub struct AdminServer;
             "#,
@@ -937,20 +990,59 @@ mod tests {
         .unwrap();
         let mut components = Vec::new();
         let mut missing = Vec::new();
+        let mut parse_errors = Vec::new();
         extract_from_items(
             &file.items,
             "a.rs",
             &HashMap::new(),
             &mut components,
             &mut missing,
+            &mut parse_errors,
         );
         assert_eq!(components.len(), 1);
         let c = &components[0];
         assert_eq!(c.id, "urn:otel:admin:http_server");
         assert_eq!(c.category, "Admin");
         assert_eq!(c.description.as_deref(), Some("Admin server"));
-        assert_eq!(c.attributes.get("port").map(String::as_str), Some("8080"));
+        assert_eq!(
+            c.attributes.get("listen_port").map(String::as_str),
+            Some("8080")
+        );
         assert_eq!(c.attributes.get("auth").map(String::as_str), Some("NONE"));
+        assert!(parse_errors.is_empty());
+    }
+
+    /// Scenario: a #[component_inventory] annotation is present but malformed
+    /// (missing the required `category`).
+    /// Guarantees: the scanner records a parse error (so the check/update can
+    /// fail) instead of silently dropping the broken annotation.
+    #[test]
+    fn malformed_annotation_is_recorded_as_parse_error() {
+        let file: syn::File = syn::parse_str(
+            r#"
+            #[otap_df_engine::component_inventory(
+                id = "urn:otel:admin:broken",
+                description = "no category",
+            )]
+            pub struct Broken;
+            "#,
+        )
+        .unwrap();
+        let mut components = Vec::new();
+        let mut missing = Vec::new();
+        let mut parse_errors = Vec::new();
+        extract_from_items(
+            &file.items,
+            "broken.rs",
+            &HashMap::new(),
+            &mut components,
+            &mut missing,
+            &mut parse_errors,
+        );
+        assert!(components.is_empty());
+        assert_eq!(parse_errors.len(), 1);
+        assert!(parse_errors[0].contains("broken.rs"));
+        assert!(parse_errors[0].contains("failed to parse #[component_inventory]"));
     }
 
     /// Scenario: baseline diff over new / modified / removed components.
