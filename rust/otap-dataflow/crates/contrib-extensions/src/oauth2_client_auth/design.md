@@ -26,12 +26,12 @@ Go collector's
 
 It builds on the extension system foundations:
 
-- [Extension System Proposal](extension-requirements.md) - the *what* and *why*
+- [Extension System Proposal](../../../../docs/extension-requirements.md) - the *what* and *why*
   of the capability-based extension system.
-- [Extension System Architecture](extension-system-architecture.md) - the
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md) - the
   Phase 1 *how* (capability proc macro, registry, Active/Passive lifecycle,
   local/shared execution models).
-- [Design Principles and Constraints](design-principles.md) - thread-per-core
+- [Design Principles and Constraints](../../../../docs/design-principles.md) - thread-per-core
   execution, minimal synchronization, security/privacy first.
 
 ## Problem
@@ -398,7 +398,7 @@ Metrics are recorded in the background refresh loop and the slow-path
 
 1. The engine starts the extension before any consumer that binds it (extensions
    start first; see
-   [Extension System Architecture](extension-system-architecture.md#key-design-decisions)).
+   [Extension System Architecture](../../../../docs/extension-system-architecture.md#key-design-decisions)).
 2. `SharedExtension::start()` runs the refresh loop. The first successful token
    request publishes a token onto the `watch` channel, then calls
    `EffectHandler::signal_ready()`.
@@ -484,7 +484,7 @@ pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
 };
 ```
 
-The URN follows the [URN format](urns.md): `urn:otel:extension:oauth2_client_auth`
+The URN follows the [URN format](../../../../docs/urns.md): `urn:otel:extension:oauth2_client_auth`
 uses the `otel` namespace (standard OAuth 2.0, not vendor-specific). The main
 binary links the crate with a side-effect import so the registration takes
 effect.
@@ -525,7 +525,7 @@ effect.
   [Refresh Loop](#refresh-loop)) keep those uncoordinated loops from realigning.
   A future move to group/engine scope would share one instance across cores
   without code changes (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 - **Runtime discipline.** The refresh loop runs on the per-core async runtime;
   all token I/O is async (`reqwest` HTTP), so it never blocks other futures on
   the core. TLS handshakes and JWT signing for the `jwt-bearer` grant happen only
@@ -573,7 +573,7 @@ OAuth-specific coverage:
 
 - **Broader extension scope.** Hoist to group/engine scope (Phase 2) for genuine
   cross-core token-cache sharing (see
-  [Extension Scopes](extension-requirements.md#extension-scopes)).
+  [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
 - **Shared token-source module.** Factor the `watch`-cache + refresh-loop +
   `fetch_lock` machinery common to this and the Azure extension into a reusable
   internal helper.
@@ -583,11 +583,11 @@ OAuth-specific coverage:
 - [Azure Identity Auth Extension](../azure_identity_auth/design.md) - sibling
   `BearerTokenProvider` provider; source of the capability, cache, and lifecycle
   design reused here.
-- [Extension System Proposal](extension-requirements.md)
-- [Extension System Architecture](extension-system-architecture.md)
-- [Design Principles and Constraints](design-principles.md)
-- [Architecture](architecture.md)
-- [URN Format](urns.md)
+- [Extension System Proposal](../../../../docs/extension-requirements.md)
+- [Extension System Architecture](../../../../docs/extension-system-architecture.md)
+- [Design Principles and Constraints](../../../../docs/design-principles.md)
+- [Architecture](../../../../docs/architecture.md)
+- [URN Format](../../../../docs/urns.md)
 - [Go collector `oauth2clientauthextension`](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/extension/oauth2clientauthextension/README.md)
 - [RFC 6749 section 4.4 - Client Credentials Grant](https://datatracker.ietf.org/doc/html/rfc6749#section-4.4)
 - [RFC 7523 - JSON Web Token (JWT) Profile for OAuth 2.0 Client Authentication and Authorization Grants](https://datatracker.ietf.org/doc/html/rfc7523) - section 2.1 (JWT authorization grant) is the flow used here.
