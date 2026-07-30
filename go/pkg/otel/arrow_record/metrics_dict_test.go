@@ -18,6 +18,7 @@ import (
 
 	"github.com/open-telemetry/otel-arrow/go/pkg/config"
 	"github.com/open-telemetry/otel-arrow/go/pkg/otel/assert"
+	acommon "github.com/open-telemetry/otel-arrow/go/pkg/otel/common/arrow"
 )
 
 // TestMetricsWithNoDictionary
@@ -228,6 +229,35 @@ func TestMetricsMultiBatchWithDictionaryLimit(t *testing.T) {
 
 	// name and description should be utf8 at this point and not dictionaries.
 	require.Equal(t, "description:Str,id:U16,metric_type:U8,name:Str,resource:{id:U16,schema_url:Dic<U8,Str>},scope:{id:U16}", builder.SchemaID())
+}
+
+// Scenario: A single metrics batch contains more than 65535 (math.MaxUint16)
+// distinct metric records, which overflows the uint16 record-ID counter used
+// by the Arrow producer.
+// Guarantees: BatchArrowRecordsFromMetrics returns ErrTooManyRecords instead of
+// panicking, so an oversized batch surfaces as a recoverable error.
+func TestMetricsBatchExceedingUint16ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	pool := memory.NewCheckedAllocator(memory.NewGoAllocator())
+	defer pool.AssertSize(t, 0)
+
+	producer := NewProducerWithOptions(
+		config.WithAllocator(pool),
+		config.WithNoDictionary(),
+	)
+	defer func() {
+		if err := producer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	// math.MaxUint16 + 1 distinct metrics overflow the uint16 record-ID counter.
+	metrics := GenerateMetrics(0, math.MaxUint16+1)
+	batch, err := producer.BatchArrowRecordsFromMetrics(metrics)
+	require.Error(t, err)
+	require.ErrorIs(t, err, acommon.ErrTooManyRecords)
+	require.Nil(t, batch)
 }
 
 func GenerateMetrics(initValue int, metricCount int) pmetric.Metrics {

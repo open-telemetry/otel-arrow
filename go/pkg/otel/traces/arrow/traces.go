@@ -204,7 +204,12 @@ func (b *TracesBuilder) Append(traces ptrace.Traces) error {
 			// No related data found
 			b.ib.AppendNull()
 		} else {
-			b.ib.Append(ID)
+			if spanID == math.MaxUint16 {
+				return werror.Wrap(acommon.ErrTooManyRecords)
+			}
+			if err = b.ib.Append(ID); err != nil {
+				return werror.Wrap(err)
+			}
 			spanID++
 		}
 
