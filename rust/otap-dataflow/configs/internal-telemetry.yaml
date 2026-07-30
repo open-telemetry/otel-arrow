@@ -9,7 +9,6 @@ policies:
     runtime_metrics: none
 engine:
   telemetry:
-    reporting_interval: 1s
     logs:
       level: "info"
       providers:
@@ -38,85 +37,21 @@ engine:
         telemetry:
           type: "receiver:internal_telemetry"
           config:
-            metrics:
-              interval: 2s
-              views:
-                - selector:
-                    scope_name: engine
-                    instrument_name: memory.rss
-                  stream:
-                    name: process_memory_usage
-                    description: >-
-                      Total physical memory (resident set size) used by the
-                      pipeline group process.
-                - selector:
-                    scope_name: engine
-                    instrument_name: cpu.utilization
-                  stream:
-                    name: process_cpu_utilization
-                    description: >-
-                      The percentage of CPU utilized by the pipeline group
-                      process, normalized across all cores.
-                - selector:
-                    scope_name: pipeline
-                    instrument_name: uptime
-                  stream:
-                    name: process_uptime
-                    description: >-
-                      Uptime of the pipeline group process since last start.
-                - selector:
-                    scope_name: flow
-                    instrument_name: consumed.items
-                  stream:
-                    name: processor_incoming_items
-                    description: The count of items passed to the processor.
-                - selector:
-                    scope_name: flow
-                    instrument_name: produced.items
-                  stream:
-                    name: processor_outgoing_items
-                    description: The count of items emitted from the processor.
-                - selector:
-                    scope_name: flow
-                    instrument_name: compute.duration
-                  stream:
-                    name: processing_duration
-                    description: Duration of the processing of the items.
-        router:
-          type: "processor:type_router"
-          outputs: ["logs", "metrics"]
-          config: {}
-        metrics_debug:
-          type: "processor:debug"
-          config:
-            verbosity: detailed
-            mode: batch
-            signals: [metrics]
+            signals: [logs]
         console:
           type: "exporter:console"
-          config: {}
-          # To emit internal logs as NDJSON, replace the empty config above with:
-          # config:
-          #   format: record_json
-          #   record_json:
-          #     timestamp_format: rfc3339  # rfc3339 (default) or unix_nano
-          #     body_field: body           # body (default) or message
-          #     int64_format: number       # number (default) or string
-          #     resource: false            # Include resource attributes; default: false
-          #     scope: true                # Include scope context; default: true
-          #     otel: false                # Include OTel bookkeeping; default: false
-        noop:
-          type: "exporter:noop"
-          config: {}
+          config:
+            format: pretty  # Change to record_json to emit NDJSON.
+            # record_json:
+            #   timestamp_format: rfc3339  # rfc3339 (default) or unix_nano
+            #   body_field: body           # body (default) or message
+            #   int64_format: number       # number (default) or string
+            #   resource: false            # Include resource attributes; default: false
+            #   scope: true                # Include scope context; default: true
+            #   otel: false                # Include OTel bookkeeping; default: false
       connections:
         - from: telemetry
-          to: router
-        - from: router["logs"]
           to: console
-        - from: router["metrics"]
-          to: metrics_debug
-        - from: metrics_debug
-          to: noop
 groups:
   default:
     pipelines:
@@ -128,19 +63,9 @@ groups:
               pipeline: 200
             pdata: 20
           telemetry:
-            pipeline_metrics: true
+            pipeline_metrics: false
             tokio_metrics: false
             runtime_metrics: none
-            flow_metrics:
-              - id: main_processing
-                bounds:
-                  start_node: debug
-                  end_node: debug
-                metrics:
-                  - compute_duration
-                  - consumed_items
-                  - produced_items
-                purpose: manual_test
         nodes:
           generator:
             type: receiver:traffic_generator

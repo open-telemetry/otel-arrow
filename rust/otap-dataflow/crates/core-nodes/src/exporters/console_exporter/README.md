@@ -11,9 +11,9 @@
 ## Overview
 
 The console exporter prints OTLP logs to standard output. It supports a
-hierarchical text format for interactive inspection and a newline-delimited
-record JSON format for structured logging pipelines. It ACKs each message
-after attempting to write the formatted view.
+human-readable hierarchical `pretty` format for interactive inspection and a
+newline-delimited record JSON format for structured logging pipelines. It ACKs
+each message after attempting to write the formatted view.
 
 This node is intended for local inspection, demos, and debugging pipelines. It
 is not a production exporter, durable export path, or stable machine-readable
@@ -27,7 +27,7 @@ engine process:
 ```yaml
 type: exporter:console
 config:
-  format: text
+  format: pretty
   color: true
   unicode: true
 ```
@@ -37,15 +37,15 @@ config:
 ```yaml
 type: exporter:console
 config:
-  # Output format: "text" (default) or "record_json".
-  format: text
+  # Output format: "pretty" (default) or "record_json".
+  format: pretty
 
   # Enables ANSI color output (default: true).
-  # Applies only to text output.
+  # Applies only to pretty output.
   color: true
 
   # Enables Unicode box-drawing output (default: true).
-  # Applies only to text output.
+  # Applies only to pretty output.
   unicode: true
 
   # Format-specific record_json options.
@@ -71,18 +71,18 @@ config:
 
 Structured formats use named configuration blocks. A future `otlp_json` format
 can therefore add an `otlp_json` block without changing `record_json` options.
-The existing text-only `color` and `unicode` fields remain at the top level for
+The existing pretty-only `color` and `unicode` fields remain at the top level for
 compatibility. Options belonging to an unselected format are accepted but
 ignored.
 
 ## Examples
 
-### ASCII-only text output
+### ASCII-only pretty output
 
 ```yaml
 type: exporter:console
 config:
-  format: text
+  format: pretty
   color: false
   unicode: false
 ```

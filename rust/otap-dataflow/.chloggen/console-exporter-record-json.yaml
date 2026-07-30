@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add record_json output to the console exporter for newline-delimited structured log records.
+note: Add pretty and record_json output formats to the console exporter, including newline-delimited structured log records.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3611]

@@ -45,9 +45,9 @@ pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:exporter:console";
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsoleOutputFormat {
-    /// Existing hierarchical output intended for interactive inspection.
+    /// Human-readable hierarchical output intended for interactive inspection.
     #[default]
-    Text,
+    Pretty,
     /// One compact log record JSON object per line.
     RecordJson,
 }
@@ -124,7 +124,7 @@ impl Default for RecordJsonConfig {
 /// Configuration for the console exporter
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ConsoleExporterConfig {
-    /// Output format (default: text).
+    /// Output format (default: pretty).
     #[serde(default)]
     pub format: ConsoleOutputFormat,
     /// Whether to use ANSI colors in output (default: true)
@@ -171,8 +171,8 @@ impl ConsoleExporter {
     #[must_use]
     pub const fn new(config: ConsoleExporterConfig) -> Self {
         let formatter = match config.format {
-            ConsoleOutputFormat::Text => {
-                ConsoleFormatter::Text(HierarchicalFormatter::new(config.color, config.unicode))
+            ConsoleOutputFormat::Pretty => {
+                ConsoleFormatter::Pretty(HierarchicalFormatter::new(config.color, config.unicode))
             }
             ConsoleOutputFormat::RecordJson => {
                 ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
@@ -280,7 +280,7 @@ impl ConsoleExporter {
 
 /// Runtime-selected console formatter.
 enum ConsoleFormatter {
-    Text(HierarchicalFormatter),
+    Pretty(HierarchicalFormatter),
     RecordJson(RecordJsonFormatter),
 }
 
@@ -289,7 +289,7 @@ impl ConsoleFormatter {
     async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
         let mut output = Vec::new();
         let format_result = match self {
-            Self::Text(formatter) => {
+            Self::Pretty(formatter) => {
                 formatter.format_logs_data_to(logs_data, &mut output);
                 Ok(())
             }
@@ -622,13 +622,13 @@ mod tests {
         assert_eq!(text, expected);
     }
 
-    /// Scenario: console configuration uses defaults and every record JSON override.
-    /// Guarantees: text and record JSON defaults remain stable and invalid selectors are rejected.
+    /// Scenario: console configuration selects pretty output and every record JSON override.
+    /// Guarantees: pretty and record JSON defaults remain stable and invalid selectors are rejected.
     #[test]
-    fn console_config_supports_record_json_options_and_rejects_invalid_values() {
+    fn console_config_supports_pretty_and_record_json_options() {
         let config: ConsoleExporterConfig =
             serde_json::from_value(json!({})).expect("default config");
-        assert_eq!(config.format, ConsoleOutputFormat::Text);
+        assert_eq!(config.format, ConsoleOutputFormat::Pretty);
         assert!(config.color);
         assert!(config.unicode);
         assert_eq!(
@@ -643,6 +643,10 @@ mod tests {
         assert!(!config.record_json.resource);
         assert!(config.record_json.scope);
         assert!(!config.record_json.otel);
+
+        let config: ConsoleExporterConfig =
+            serde_json::from_value(json!({"format": "pretty"})).expect("pretty config");
+        assert_eq!(config.format, ConsoleOutputFormat::Pretty);
 
         let config: ConsoleExporterConfig = serde_json::from_value(json!({
             "format": "record_json",
@@ -672,7 +676,7 @@ mod tests {
         assert!(!config.record_json.scope);
         assert!(config.record_json.otel);
 
-        for unsupported in ["json", "otlp_json", "logfmt"] {
+        for unsupported in ["text", "json", "otlp_json", "logfmt"] {
             let result = serde_json::from_value::<ConsoleExporterConfig>(json!({
                 "format": unsupported
             }));
