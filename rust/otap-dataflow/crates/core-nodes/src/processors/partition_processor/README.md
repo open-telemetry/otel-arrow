@@ -42,7 +42,7 @@ policy.
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `processor.partition.operations` | `{batch}` | `outcome` | Number of incoming batches processed by the partition operation. |
+| `processor.partition.operations` | `{operation}` | `outcome` | Number of partitioning operations attempted by this processor. |
 
 The bounded `outcome` attribute is `success` when the partition operation
 completes successfully and `failure` when it returns an error.

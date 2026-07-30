@@ -14,8 +14,8 @@ use otap_df_telemetry_macros::metric_set;
 )]
 #[derive(Debug, Default, Clone)]
 pub struct Metrics {
-    /// Number of incoming batches processed by the partition operation.
-    #[metric(unit = "{batch}")]
+    /// Number of partitioning operations attempted by this processor.
+    #[metric(unit = "{operation}")]
     pub operations: Counter<u64>,
 }
 
@@ -58,6 +58,7 @@ mod tests {
         assert!(snapshots.iter().all(|snapshot| {
             snapshot.descriptor().name == "processor.partition"
                 && snapshot.descriptor().metrics[0].name == "operations"
+                && snapshot.descriptor().metrics[0].unit == "{operation}"
         }));
         assert!(snapshots.iter().any(|snapshot| {
             snapshot.measurement_attribute_value("outcome") == Some("success")
