@@ -1,0 +1,8 @@
+change_type: breaking
+component: pipeline
+note: "Replace transform processor message counters with bounded operation outcome and failure classification metrics."
+issues: [3530]
+subtext: |
+  The new processor.transform.operations metric is partitioned by language,
+  signal, and outcome. The processor.transform.failures metric adds a bounded
+  error.type diagnostic for failed operations.
