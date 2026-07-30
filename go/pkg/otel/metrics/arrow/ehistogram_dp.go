@@ -227,7 +227,9 @@ func (b *EHistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accu
 
 	for ID, ehdpRec := range b.dataPointAccumulator.ehdps {
 		ehdp := ehdpRec.Orig
-		b.ib.Append(uint32(ID))
+		if err = b.ib.Append(uint32(ID)); err != nil {
+			return nil, werror.Wrap(err)
+		}
 		b.pib.Append(b.dataPointAccumulator.sorter.Encode(ehdpRec.ParentID, ehdp))
 
 		// Attributes
