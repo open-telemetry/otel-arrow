@@ -1,17 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Programmatic scenario builder that renders a full pipeline group, runs it,
-//! waits for readiness, and checks validation metrics.
+//! Programmatic scenario builder that renders one or more pipeline stages,
+//! runs them, waits for readiness, and checks validation metrics.
+//!
+//! A scenario is a list of ordered stages. The first stage starts the engine;
+//! every subsequent stage is reached with the engine's live-update
+//! (reconfigure) API instead of restarting the engine. Each stage bundles a
+//! system-under-validation pipeline, its traffic generators, and its captures
+//! (assertions).
+//!
+//! The legacy flat builder (`pipeline`/`add_generator`/`add_capture`) is kept
+//! as sugar over an implicit first stage, so single-stage scenarios behave
+//! exactly as before.
 
 use crate::container::ContainerConfig;
 use crate::error::ValidationError;
 use crate::pipeline::{EndpointKind, Pipeline};
-use crate::simulate::run_pipelines_with_timeout;
+use crate::simulate::{StagePlan, run_stages_with_timeout};
+use crate::stage::Stage;
 use crate::template::render_jinja;
 use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::context;
+use otap_df_config::engine::OtelDataflowSpec;
+use otap_df_config::pipeline::PipelineConfig;
 use otap_df_test_net::try_pick_unused_loopback_tcp_port;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -25,7 +38,14 @@ const DEFAULT_READY_MAX_ATTEMPTS: usize = 10;
 const DEFAULT_READY_BACKOFF: Duration = Duration::from_secs(3);
 const DEFAULT_METRICS_POLL: Duration = Duration::from_secs(2);
 const DEFAULT_SCENARIO_RUNTIME: Duration = Duration::from_secs(60);
+const DEFAULT_RECONFIGURE_TIMEOUT_SECS: u64 = 60;
 const MAX_PORT_ALLOCATION_ATTEMPTS: usize = 64;
+
+/// Pipeline group id used for every rendered stage. The SUV pipeline is
+/// `suv`; each generator/capture pipeline is named by its label.
+pub(crate) const VALIDATION_GROUP_ID: &str = "validation_test";
+/// Pipeline id of the system-under-validation pipeline in the rendered group.
+pub(crate) const SUV_PIPELINE_ID: &str = "suv";
 
 /// Look up a container by label, validate that `internal_port` is set, and
 /// return the host port mapped to that internal port. If no mapping exists
@@ -57,15 +77,15 @@ fn allocate_container_port(
 
 /// Programmatic scenario builder used by tests.
 pub struct Scenario {
-    pipeline: Option<Pipeline>,
-    generators: HashMap<String, Generator>,
-    captures: HashMap<String, Capture>,
+    stages: Vec<(String, Stage)>,
     containers: HashMap<String, ContainerConfig>,
     admin_addr: String,
     ready_max_attempts: usize,
     ready_backoff: Duration,
     metrics_poll: Duration,
     runtime: Duration,
+    step_timeout_secs: u64,
+    drain_timeout_secs: u64,
 }
 
 impl Default for Scenario {
@@ -79,38 +99,69 @@ impl Scenario {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            pipeline: None,
-            generators: HashMap::new(),
-            captures: HashMap::new(),
+            stages: Vec::new(),
             containers: HashMap::new(),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
             ready_backoff: DEFAULT_READY_BACKOFF,
             metrics_poll: DEFAULT_METRICS_POLL,
             runtime: DEFAULT_SCENARIO_RUNTIME,
+            step_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
+            drain_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
         }
     }
 
-    /// Provide the pipeline under validation.
+    /// Returns a mutable reference to the implicit first stage, creating it if
+    /// the scenario has no stages yet. Used by the legacy flat builder.
+    fn implicit_stage(&mut self) -> &mut Stage {
+        if self.stages.is_empty() {
+            self.stages.push((String::from("stage0"), Stage::new()));
+        }
+        &mut self.stages[0].1
+    }
+
+    /// Provide the pipeline under validation for the implicit first stage.
+    ///
+    /// Legacy single-stage API. For multi-stage scenarios use
+    /// [`add_stage`](Self::add_stage).
     #[must_use]
     pub fn pipeline(mut self, pipeline: Pipeline) -> Self {
-        self.pipeline = Some(pipeline);
+        self.implicit_stage().pipeline = Some(pipeline);
         self
     }
 
-    /// Add a traffic generator labeled for wiring.
+    /// Add a traffic generator to the implicit first stage.
+    ///
+    /// Legacy single-stage API. For multi-stage scenarios use
+    /// [`add_stage`](Self::add_stage).
     #[must_use]
     pub fn add_generator(mut self, label: impl Into<String>, generator: Generator) -> Self {
-        let key = label.into();
-        let _ = self.generators.insert(key, generator);
+        let _ = self
+            .implicit_stage()
+            .generators
+            .insert(label.into(), generator);
         self
     }
 
-    /// Add a capture labeled for wiring.
+    /// Add a capture to the implicit first stage.
+    ///
+    /// Legacy single-stage API. For multi-stage scenarios use
+    /// [`add_stage`](Self::add_stage).
     #[must_use]
     pub fn add_capture(mut self, label: impl Into<String>, capture: Capture) -> Self {
-        let key = label.into();
-        let _ = self.captures.insert(key, capture);
+        let _ = self.implicit_stage().captures.insert(label.into(), capture);
+        self
+    }
+
+    /// Add a stage to the scenario.
+    ///
+    /// Stages run in the order they are added. The first stage starts the
+    /// engine; each subsequent stage is reached with a live-update
+    /// (reconfigure) of the `suv` pipeline plus each generator and capture
+    /// pipeline. The engine is not restarted between stages.
+    #[must_use]
+    pub fn add_stage(mut self, label: impl Into<String>, stage: Stage) -> Self {
+        self.stages.push((label.into(), stage));
         self
     }
 
@@ -119,7 +170,8 @@ impl Scenario {
     /// on generators and captures.
     ///
     /// Containers are started before the pipeline runs and stopped after
-    /// it shuts down.
+    /// it shuts down. Container connections are only supported in
+    /// single-stage scenarios.
     #[must_use]
     pub fn add_container(mut self, label: impl Into<String>, container: ContainerConfig) -> Self {
         let key = label.into();
@@ -134,6 +186,15 @@ impl Scenario {
         self
     }
 
+    /// Configure the per-core step and drain timeouts (in seconds) used for
+    /// live-update transitions between stages.
+    #[must_use]
+    pub fn reconfigure_timeouts(mut self, step_secs: u64, drain_secs: u64) -> Self {
+        self.step_timeout_secs = step_secs;
+        self.drain_timeout_secs = drain_secs;
+        self
+    }
+
     /// Execute the scenario.
     ///
     /// When containers are configured (via [`add_container`](Self::add_container)),
@@ -145,15 +206,8 @@ impl Scenario {
         let metrics_poll = self.metrics_poll;
         let timeout = self.runtime;
 
-        self.update_configs()?;
+        let stage_plans = self.build_stage_plans()?;
         let admin_base = format!("http://{}", self.admin_addr);
-        let generator_signals: HashMap<String, u64> = self
-            .generators
-            .iter()
-            .map(|(label, g)| (label.clone(), g.max_signal_count as u64))
-            .collect();
-
-        let rendered_group = self.render_template()?;
         let containers = self.containers;
 
         let tokio_rt = tokio::runtime::Runtime::new()
@@ -167,10 +221,9 @@ impl Scenario {
                 })?);
             }
 
-            let result = run_pipelines_with_timeout(
-                rendered_group,
+            let result = run_stages_with_timeout(
+                stage_plans,
                 admin_base,
-                generator_signals,
                 timeout,
                 ready_max_attempts,
                 ready_backoff,
@@ -188,36 +241,18 @@ impl Scenario {
         })
     }
 
-    /// Render all templates into the final pipeline group YAML.
-    fn render_template(&self) -> Result<String, ValidationError> {
-        let pipeline = self
-            .pipeline
-            .as_ref()
-            .ok_or_else(|| ValidationError::Config("pipeline missing".into()))?;
-        let pipeline_yaml = pipeline.to_yaml_string()?;
-        let (suv_core_start, suv_core_end) = (pipeline.core_start, pipeline.core_end);
-        let suv_transport_headers_policy = pipeline.transport_headers_policy_yaml()?;
-        let capture_pipeline = self.render_captures()?;
-        let generator_pipeline = self.render_generators()?;
-        render_jinja(
-            VALIDATION_TEMPLATE,
-            context! {
-                suv_pipeline => pipeline_yaml,
-                admin_bind_address => &self.admin_addr,
-                capture_pipeline => capture_pipeline,
-                generator_pipeline => generator_pipeline,
-                suv_core_start => suv_core_start,
-                suv_core_end => suv_core_end,
-                suv_transport_headers_policy => suv_transport_headers_policy,
-            },
-        )
-    }
+    /// Wire every stage, render each into a full group YAML, extract per-stage
+    /// pipeline configs, and produce the ordered [`StagePlan`] list executed by
+    /// [`run_stages_with_timeout`].
+    fn build_stage_plans(&mut self) -> Result<Vec<StagePlan>, ValidationError> {
+        if self.stages.is_empty() {
+            return Err(ValidationError::Config("no stages configured".into()));
+        }
 
-    /// update the config to wire the connections between the pipelines
-    fn update_configs(&mut self) -> Result<(), ValidationError> {
-        // Track ports already handed out so that back-to-back
-        // `try_pick_unused_loopback_tcp_port()` calls (which only probe
-        // availability) cannot return the same port twice (TOCTOU race).
+        // Global, stable port plan shared across stages. Ports are keyed by the
+        // logical wiring endpoint so a pipeline reused across stages keeps the
+        // same listening/target address and reconnects cleanly after a
+        // reconfigure.
         let allocated = RefCell::new(HashSet::<u16>::new());
         let pick_port = |context: &str| -> Result<u16, ValidationError> {
             let mut set = allocated.borrow_mut();
@@ -251,115 +286,37 @@ impl Scenario {
             )))
         };
 
-        if self.generators.is_empty() {
-            return Err(ValidationError::Config("no generators configured".into()));
-        }
-        if self.captures.is_empty() {
-            return Err(ValidationError::Config("no captures configured".into()));
-        }
+        // Stable ports keyed by generator label, capture label, and control
+        // edge (capture_label -> generator_label).
+        let mut suv_receiver_ports: HashMap<String, u16> = HashMap::new();
+        let mut suv_exporter_ports: HashMap<String, u16> = HashMap::new();
+        let mut control_ports: HashMap<(String, String), u16> = HashMap::new();
 
-        let pipeline = self
-            .pipeline
-            .as_mut()
-            .ok_or_else(|| ValidationError::Config("pipeline not provided".into()))?;
-        let containers = &mut self.containers;
+        // Container connections are only supported in single-stage scenarios.
+        let multi_stage = self.stages.len() > 1;
 
-        // Allocate a receiver port per generator and configure the pipeline.
-        // Generators with a container connection get their port allocated and
-        // mapped to the container instead of wiring the SUV pipeline.
-        for generator in self.generators.values_mut() {
-            if let Some(ref mut conn) = generator.container_connection {
-                conn.allocated_port = Some(allocate_container_port(
-                    containers,
-                    &conn.container_label,
-                    conn.internal_port,
-                    &pick_port,
-                    "generator container connection",
-                )?);
-            } else {
-                if generator.suv_exporter_node.is_empty() {
-                    return Err(ValidationError::Config(
-                        "generator missing suv exporter node name".into(),
-                    ));
-                }
+        // Admin port is allocated once for the whole engine lifetime.
+        self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
 
-                let port = pick_port("generator wiring")?;
-                generator.suv_port = port;
-
-                let node = generator.suv_exporter_node.clone();
-                let endpoint = match generator.suv_exporter_type {
-                    MessageType::Otlp => EndpointKind::OtlpGrpcReceiver(node),
-                    MessageType::Otap => EndpointKind::OtapGrpcReceiver(node),
-                };
-                pipeline.apply_endpoint(endpoint, port)?;
-            }
-        }
-
-        // Allocate an exporter port per capture, configure the pipeline,
-        // and wire control paths to the corresponding generators.
-        // Captures with a container connection get their port allocated and
-        // mapped to the container instead of wiring the SUV pipeline.
-        let generators = &mut self.generators;
-        for capture in self.captures.values_mut() {
-            if let Some(ref mut conn) = capture.container_connection {
-                conn.allocated_port = Some(allocate_container_port(
-                    containers,
-                    &conn.container_label,
-                    conn.internal_port,
-                    &pick_port,
-                    "capture container connection",
-                )?);
-            } else {
-                if capture.suv_receiver_node.is_empty() {
-                    return Err(ValidationError::Config(
-                        "capture missing suv receiver node name".into(),
-                    ));
-                }
-
-                let port = pick_port("capture wiring")?;
-                capture.suv_port = port;
-
-                let node = capture.suv_receiver_node.clone();
-                let endpoint = match capture.suv_receiver_type {
-                    MessageType::Otlp => EndpointKind::OtlpGrpcExporter(node),
-                    MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
-                };
-                pipeline.apply_endpoint(endpoint, port)?;
-            }
-
-            for gen_label in &capture.control_streams {
-                let control_port = pick_port("control wiring")?;
-                capture.control_ports.push(control_port);
-                generators
-                    .get_mut(gen_label.as_str())
-                    .ok_or_else(|| {
-                        ValidationError::Config(format!("unknown generator: {gen_label}"))
-                    })?
-                    .control_ports
-                    .push(control_port);
-            }
-        }
-
-        // Wire pipeline nodes that connect directly to containers.
-        // Take the connections out of pipeline to avoid simultaneous
-        // immutable (iterator) and mutable (set_node_config_value) borrows.
-        let pipeline_conns = std::mem::take(&mut pipeline.container_connections);
-        for conn in &pipeline_conns {
-            let host_port = allocate_container_port(
-                containers,
-                &conn.container_label,
-                conn.internal_port,
+        let mut plans = Vec::with_capacity(self.stages.len());
+        for (stage_label, stage) in &mut self.stages {
+            let plan = Self::build_one_stage_plan(
+                stage_label,
+                stage,
+                &self.admin_addr,
+                &mut self.containers,
+                &mut suv_receiver_ports,
+                &mut suv_exporter_ports,
+                &mut control_ports,
                 &pick_port,
-                "pipeline container connection",
+                multi_stage,
             )?;
-            let address = conn.render_address(host_port)?;
-            pipeline.set_node_config_value(&conn.node_name, &conn.config_key_path, &address)?;
+            plans.push(plan);
         }
 
         // Resolve templated environment variables now that all connection
-        // ports are allocated. For any templated env var whose internal_port
-        // has no mapping yet, allocate a new host port and add the mapping.
-        for (label, container) in containers.iter_mut() {
+        // ports are allocated (single-stage container path only).
+        for (label, container) in self.containers.iter_mut() {
             if let Some(ref tevs) = container.templated_env_vars {
                 for tev in tevs {
                     if let std::collections::hash_map::Entry::Vacant(e) =
@@ -376,19 +333,243 @@ impl Scenario {
             container.resolve_templated_env_vars()?;
         }
 
-        self.admin_addr = format!("127.0.0.1:{}", pick_port("admin")?);
-
-        Ok(())
+        Ok(plans)
     }
 
-    /// Render the capture pipelines.
-    fn render_captures(&self) -> Result<String, ValidationError> {
+    /// Wire and render a single stage, returning its executable plan.
+    #[allow(clippy::too_many_arguments)]
+    fn build_one_stage_plan(
+        stage_label: &str,
+        stage: &mut Stage,
+        admin_addr: &str,
+        containers: &mut HashMap<String, ContainerConfig>,
+        suv_receiver_ports: &mut HashMap<String, u16>,
+        suv_exporter_ports: &mut HashMap<String, u16>,
+        control_ports: &mut HashMap<(String, String), u16>,
+        pick_port: &impl Fn(&str) -> Result<u16, ValidationError>,
+        multi_stage: bool,
+    ) -> Result<StagePlan, ValidationError> {
+        if stage.generators.is_empty() {
+            return Err(ValidationError::Config(format!(
+                "stage '{stage_label}': no generators configured"
+            )));
+        }
+        if stage.captures.is_empty() {
+            return Err(ValidationError::Config(format!(
+                "stage '{stage_label}': no captures configured"
+            )));
+        }
+
+        let pipeline = stage.pipeline.as_mut().ok_or_else(|| {
+            ValidationError::Config(format!("stage '{stage_label}': pipeline not provided"))
+        })?;
+
+        // Wire generators to the SUV pipeline using stable per-label ports.
+        for (gen_label, generator) in stage.generators.iter_mut() {
+            if let Some(ref mut conn) = generator.container_connection {
+                if multi_stage {
+                    return Err(ValidationError::Config(
+                        "container connections are not supported in multi-stage scenarios".into(),
+                    ));
+                }
+                conn.allocated_port = Some(allocate_container_port(
+                    containers,
+                    &conn.container_label,
+                    conn.internal_port,
+                    pick_port,
+                    "generator container connection",
+                )?);
+            } else {
+                if generator.suv_exporter_node.is_empty() {
+                    return Err(ValidationError::Config(format!(
+                        "stage '{stage_label}': generator '{gen_label}' missing suv exporter node name"
+                    )));
+                }
+                let port = match suv_receiver_ports.get(gen_label) {
+                    Some(&p) => p,
+                    None => {
+                        let p = pick_port("generator wiring")?;
+                        let _ = suv_receiver_ports.insert(gen_label.clone(), p);
+                        p
+                    }
+                };
+                generator.suv_port = port;
+                generator.control_ports.clear();
+
+                let node = generator.suv_exporter_node.clone();
+                let endpoint = match generator.suv_exporter_type {
+                    MessageType::Otlp => EndpointKind::OtlpGrpcReceiver(node),
+                    MessageType::Otap => EndpointKind::OtapGrpcReceiver(node),
+                };
+                pipeline.apply_endpoint(endpoint, port)?;
+            }
+        }
+
+        // Wire captures to the SUV pipeline and control paths to generators.
+        for (cap_label, capture) in stage.captures.iter_mut() {
+            if let Some(ref mut conn) = capture.container_connection {
+                if multi_stage {
+                    return Err(ValidationError::Config(
+                        "container connections are not supported in multi-stage scenarios".into(),
+                    ));
+                }
+                conn.allocated_port = Some(allocate_container_port(
+                    containers,
+                    &conn.container_label,
+                    conn.internal_port,
+                    pick_port,
+                    "capture container connection",
+                )?);
+            } else {
+                if capture.suv_receiver_node.is_empty() {
+                    return Err(ValidationError::Config(format!(
+                        "stage '{stage_label}': capture '{cap_label}' missing suv receiver node name"
+                    )));
+                }
+                let port = match suv_exporter_ports.get(cap_label) {
+                    Some(&p) => p,
+                    None => {
+                        let p = pick_port("capture wiring")?;
+                        let _ = suv_exporter_ports.insert(cap_label.clone(), p);
+                        p
+                    }
+                };
+                capture.suv_port = port;
+
+                let node = capture.suv_receiver_node.clone();
+                let endpoint = match capture.suv_receiver_type {
+                    MessageType::Otlp => EndpointKind::OtlpGrpcExporter(node),
+                    MessageType::Otap => EndpointKind::OtapGrpcExporter(node),
+                };
+                pipeline.apply_endpoint(endpoint, port)?;
+            }
+
+            capture.control_ports.clear();
+            for gen_label in capture.control_streams.clone() {
+                if !stage.generators.contains_key(gen_label.as_str()) {
+                    return Err(ValidationError::Config(format!(
+                        "stage '{stage_label}': unknown generator: {gen_label}"
+                    )));
+                }
+                let key = (cap_label.clone(), gen_label.clone());
+                let control_port = match control_ports.get(&key) {
+                    Some(&p) => p,
+                    None => {
+                        let p = pick_port("control wiring")?;
+                        let _ = control_ports.insert(key, p);
+                        p
+                    }
+                };
+                capture.control_ports.push(control_port);
+                if let Some(generator) = stage.generators.get_mut(gen_label.as_str()) {
+                    generator.control_ports.push(control_port);
+                }
+            }
+        }
+
+        // Wire pipeline nodes that connect directly to containers.
+        let pipeline_conns = std::mem::take(&mut pipeline.container_connections);
+        if multi_stage && !pipeline_conns.is_empty() {
+            return Err(ValidationError::Config(
+                "container connections are not supported in multi-stage scenarios".into(),
+            ));
+        }
+        for conn in &pipeline_conns {
+            let host_port = allocate_container_port(
+                containers,
+                &conn.container_label,
+                conn.internal_port,
+                pick_port,
+                "pipeline container connection",
+            )?;
+            let address = conn.render_address(host_port)?;
+            pipeline.set_node_config_value(&conn.node_name, &conn.config_key_path, &address)?;
+        }
+
+        // Render the full stage group YAML and extract each pipeline config.
+        let rendered = Self::render_stage(stage_label, stage, admin_addr)?;
+        let pipeline_configs = Self::extract_pipeline_configs(stage_label, &rendered)?;
+
+        let expected_signals: HashMap<String, u64> = stage
+            .generators
+            .iter()
+            .map(|(label, g)| (label.clone(), g.max_signal_count as u64))
+            .collect();
+        let capture_labels: Vec<String> = stage.captures.keys().cloned().collect();
+
+        Ok(StagePlan {
+            label: stage_label.to_string(),
+            rendered_group: rendered,
+            pipeline_configs,
+            expected_signals,
+            capture_labels,
+            expected_action: stage.expected_action,
+            step_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
+            drain_timeout_secs: DEFAULT_RECONFIGURE_TIMEOUT_SECS,
+        })
+    }
+
+    /// Parse a rendered stage group and return each pipeline's config keyed by
+    /// pipeline id (`suv` plus every generator/capture label).
+    fn extract_pipeline_configs(
+        stage_label: &str,
+        rendered: &str,
+    ) -> Result<HashMap<String, PipelineConfig>, ValidationError> {
+        let spec = OtelDataflowSpec::from_yaml(rendered)
+            .map_err(|e| ValidationError::Config(format!("stage '{stage_label}': {e}")))?;
+        let group = spec.groups.get(VALIDATION_GROUP_ID).ok_or_else(|| {
+            ValidationError::Config(format!(
+                "stage '{stage_label}': rendered group '{VALIDATION_GROUP_ID}' missing"
+            ))
+        })?;
+        Ok(group
+            .pipelines
+            .iter()
+            .map(|(id, cfg)| (id.as_ref().to_string(), cfg.clone()))
+            .collect())
+    }
+
+    /// Render one stage into the final pipeline group YAML.
+    fn render_stage(
+        stage_label: &str,
+        stage: &Stage,
+        admin_addr: &str,
+    ) -> Result<String, ValidationError> {
+        let pipeline = stage.pipeline.as_ref().ok_or_else(|| {
+            ValidationError::Config(format!("stage '{stage_label}': pipeline missing"))
+        })?;
+        let pipeline_yaml = pipeline.to_yaml_string()?;
+        let (suv_core_start, suv_core_end) = (pipeline.core_start, pipeline.core_end);
+        let suv_transport_headers_policy = pipeline.transport_headers_policy_yaml()?;
+        let capture_pipeline = Self::render_captures(&stage.captures, stage_label)?;
+        let generator_pipeline = Self::render_generators(&stage.generators, stage_label)?;
+        render_jinja(
+            VALIDATION_TEMPLATE,
+            context! {
+                suv_pipeline => pipeline_yaml,
+                admin_bind_address => admin_addr,
+                capture_pipeline => capture_pipeline,
+                generator_pipeline => generator_pipeline,
+                suv_core_start => suv_core_start,
+                suv_core_end => suv_core_end,
+                suv_transport_headers_policy => suv_transport_headers_policy,
+            },
+        )
+    }
+
+    /// Render the capture pipelines for a stage.
+    ///
+    /// `stage_nonce` is stamped into the validation exporter config (a field it
+    /// ignores) so that reconfiguring into a new stage always differs from the
+    /// prior stage's capture config, forcing a live-update replace and thus a
+    /// fresh validation exporter per stage.
+    fn render_captures(
+        captures: &HashMap<String, Capture>,
+        stage_nonce: &str,
+    ) -> Result<String, ValidationError> {
         let mut captures_rendered: Vec<String> = vec![];
 
-        for (label, capture) in self.captures.iter() {
-            // Render custom receiver template if this capture has a
-            // container connection; otherwise pass an empty string so
-            // the main template falls through to the built-in receiver.
+        for (label, capture) in captures.iter() {
             let custom_suv_receiver = match capture.container_connection {
                 Some(ref conn) => conn.render()?,
                 None => String::new(),
@@ -407,20 +588,28 @@ impl Scenario {
                     custom_suv_receiver => &custom_suv_receiver,
                     idle_timeout_secs => capture.idle_timeout,
                     capture_header_keys => &capture.capture_header_keys,
+                    stage_nonce => stage_nonce,
                 },
             )?);
         }
         Ok(captures_rendered.join("\n"))
     }
 
-    /// Render the generator pipelines.
-    fn render_generators(&self) -> Result<String, ValidationError> {
+    /// Render the generator pipelines for a stage.
+    ///
+    /// `stage_nonce` is stamped into the traffic generator's
+    /// `resource_attributes` so that reconfiguring into a new stage always
+    /// differs from the prior stage's generator config, forcing a live-update
+    /// replace and thus a fresh traffic run per stage. The attribute is added
+    /// identically to both the SUV and control streams, so signal equivalence
+    /// is unaffected.
+    fn render_generators(
+        generators: &HashMap<String, Generator>,
+        stage_nonce: &str,
+    ) -> Result<String, ValidationError> {
         let mut generators_rendered: Vec<String> = vec![];
 
-        for (label, generator) in self.generators.iter() {
-            // Render custom exporter template if this generator has a
-            // container connection; otherwise pass an empty string so
-            // the main template falls through to the built-in exporter.
+        for (label, generator) in generators.iter() {
             let custom_suv_exporter = match generator.container_connection {
                 Some(ref conn) => conn.render()?,
                 None => String::new(),
@@ -451,8 +640,6 @@ impl Scenario {
                 .as_ref()
                 .map_or("localhost", |t| t.server_name.as_str());
 
-            // Only pass transport_headers when non-empty; the template checks
-            // for truthiness so an empty map would be falsy.
             let transport_headers = if generator.transport_headers.is_empty() {
                 None
             } else {
@@ -483,6 +670,7 @@ impl Scenario {
                     tls_server_name => tls_server_name,
                     custom_suv_exporter => &custom_suv_exporter,
                     transport_headers => transport_headers,
+                    stage_nonce => stage_nonce,
                 },
             )?);
         }
@@ -494,177 +682,286 @@ impl Scenario {
 mod tests {
     use super::*;
     use crate::pipeline::{Pipeline, PipelineContainerConnection};
+    use crate::stage::{RolloutAction, Stage};
     use crate::traffic::ContainerConnection;
 
     fn sample_yaml() -> &'static str {
         r#"
 nodes:
   receiver:
+    type: "receiver:otlp"
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
   exporter:
+    type: "exporter:otlp_grpc"
     config:
       grpc_endpoint: "http://default-export"
-  otap_recv:
-    config:
-      listening_addr: "127.0.0.1:4420"
-  otap_exp:
-    config:
-      grpc_endpoint: "http://default-otap-export"
+connections:
+  - from: receiver
+    to: exporter
 "#
     }
 
+    /// Scenario: a scenario with no stages is executed.
+    /// Guarantees: planning rejects an empty scenario with a config error
+    /// rather than silently starting an engine with nothing to validate.
     #[test]
-    fn render_template_requires_pipeline() {
-        let scenario = Scenario::new();
+    fn build_stage_plans_requires_stage() {
+        let mut scenario = Scenario::new();
         let err = scenario
-            .render_template()
-            .expect_err("missing pipeline should error");
+            .build_stage_plans()
+            .expect_err("missing stage should error");
         assert!(matches!(err, ValidationError::Config(_)));
-        assert!(err.to_string().contains("pipeline missing"));
+        assert!(err.to_string().contains("no stages configured"));
     }
 
+    /// Scenario: the legacy flat builder is used without any explicit stage.
+    /// Guarantees: `pipeline`/`add_generator`/`add_capture` populate exactly
+    /// one implicit stage so single-stage scenarios remain fully supported.
     #[test]
-    fn render_template_requires_connected_labels() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
-        let generator = Generator::logs().otlp_grpc("receiver");
-        let capture = Capture::default()
-            .otap_grpc("exporter")
-            .control_streams(["missing_gen"]);
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_generator("gen", generator)
-            .add_capture("cap", capture);
+    fn flat_builder_creates_single_implicit_stage() {
+        let scenario = Scenario::new()
+            .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture(
+                "cap",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .control_streams(["gen"]),
+            );
+        assert_eq!(scenario.stages.len(), 1);
+        let (label, stage) = &scenario.stages[0];
+        assert_eq!(label, "stage0");
+        assert!(stage.pipeline.is_some());
+        assert!(stage.generators.contains_key("gen"));
+        assert!(stage.captures.contains_key("cap"));
+    }
 
+    /// Scenario: a stage references a control stream generator that does not
+    /// exist in that stage.
+    /// Guarantees: planning fails with an explicit unknown-generator error.
+    #[test]
+    fn stage_requires_connected_labels() {
+        let mut scenario = Scenario::new().add_stage(
+            "s0",
+            Stage::new()
+                .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+                .add_capture(
+                    "cap",
+                    Capture::default()
+                        .otap_grpc("exporter")
+                        .control_streams(["missing_gen"]),
+                ),
+        );
         let err = scenario
-            .update_configs()
+            .build_stage_plans()
             .expect_err("unknown generator label should error");
-
         assert!(matches!(err, ValidationError::Config(_)));
         assert!(err.to_string().contains("unknown generator: missing_gen"));
     }
 
+    /// Scenario: a two-stage scenario is planned end to end.
+    /// Guarantees: each stage renders to a parseable group exposing the `suv`
+    /// pipeline plus its generator and capture pipelines, and shared labels
+    /// reuse the same stable ports across stages.
     #[test]
-    fn render_template_includes_added_generator_and_capture() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
-        let generator = Generator::logs().otlp_grpc("receiver");
-        let capture = Capture::default()
-            .otap_grpc("exporter")
-            .control_streams(["gen"]);
-
-        let rendered = Scenario::new()
-            .pipeline(pipeline)
-            .add_generator("gen", generator)
-            .add_capture("cap", capture)
-            .render_template()
-            .expect("template should render");
-
-        assert!(rendered.contains("gen:"));
-        assert!(rendered.contains("cap:"));
-    }
-
-    #[test]
-    fn add_container_stores_config() {
-        let scenario = Scenario::new()
-            .add_container(
-                "redis",
-                ContainerConfig::new("redis", "7.2.4").env("FOO", "bar"),
-            )
-            .add_container("kafka", ContainerConfig::new("kafka", "3.6"));
-
-        assert_eq!(scenario.containers.len(), 2);
-        let redis = scenario.containers.get("redis").expect("redis missing");
-        assert_eq!(redis.image, "redis");
-        assert_eq!(redis.tag, "7.2.4");
-        assert_eq!(redis.env_vars, vec![("FOO".into(), "bar".into())]);
-        let kafka = scenario.containers.get("kafka").expect("kafka missing");
-        assert_eq!(kafka.image, "kafka");
-        assert_eq!(kafka.tag, "3.6");
-    }
-
-    #[test]
-    fn update_configs_no_generators_errors() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
+    fn two_stage_plan_reuses_ports_and_extracts_configs() {
         let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_capture("cap", Capture::default().otap_grpc("exporter"));
+            .add_stage(
+                "baseline",
+                Stage::new()
+                    .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                    .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+                    .add_capture(
+                        "cap",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .control_streams(["gen"]),
+                    ),
+            )
+            .add_stage(
+                "next",
+                Stage::new()
+                    .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                    .expect_rollout(RolloutAction::Replace)
+                    .add_generator(
+                        "gen",
+                        Generator::logs().fixed_count(10).otlp_grpc("receiver"),
+                    )
+                    .add_capture(
+                        "cap",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .control_streams(["gen"]),
+                    ),
+            );
 
+        let plans = scenario.build_stage_plans().expect("plan should build");
+        assert_eq!(plans.len(), 2);
+        for plan in &plans {
+            assert!(plan.pipeline_configs.contains_key(SUV_PIPELINE_ID));
+            assert!(plan.pipeline_configs.contains_key("gen"));
+            assert!(plan.pipeline_configs.contains_key("cap"));
+            assert!(plan.capture_labels.contains(&"cap".to_string()));
+            assert_eq!(
+                plan.expected_signals.get("gen").copied(),
+                Some(if plan.label == "next" { 10 } else { 2000 })
+            );
+        }
+        assert_eq!(plans[0].expected_action, None);
+        assert_eq!(plans[1].expected_action, Some(RolloutAction::Replace));
+    }
+
+    /// Scenario: a stage is missing its generators.
+    /// Guarantees: planning fails with a per-stage no-generators error.
+    #[test]
+    fn stage_without_generators_errors() {
+        let mut scenario = Scenario::new().add_stage(
+            "s0",
+            Stage::new()
+                .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                .add_capture("cap", Capture::default().otap_grpc("exporter")),
+        );
         let err = scenario
-            .update_configs()
+            .build_stage_plans()
             .expect_err("should error without generators");
         assert!(matches!(err, ValidationError::Config(_)));
         assert!(err.to_string().contains("no generators configured"));
     }
 
+    /// Scenario: a stage is missing its captures.
+    /// Guarantees: planning fails with a per-stage no-captures error.
     #[test]
-    fn update_configs_no_captures_errors() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_generator("gen", Generator::logs().otlp_grpc("receiver"));
-
+    fn stage_without_captures_errors() {
+        let mut scenario = Scenario::new().add_stage(
+            "s0",
+            Stage::new()
+                .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                .add_generator("gen", Generator::logs().otlp_grpc("receiver")),
+        );
         let err = scenario
-            .update_configs()
+            .build_stage_plans()
             .expect_err("should error without captures");
         assert!(matches!(err, ValidationError::Config(_)));
         assert!(err.to_string().contains("no captures configured"));
     }
 
+    /// Scenario: a stage is missing its pipeline.
+    /// Guarantees: planning fails with a per-stage pipeline-not-provided error.
     #[test]
-    fn update_configs_no_pipeline_errors() {
-        let mut scenario = Scenario::new()
-            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
-            .add_capture("cap", Capture::default().otap_grpc("exporter"));
-
+    fn stage_without_pipeline_errors() {
+        let mut scenario = Scenario::new().add_stage(
+            "s0",
+            Stage::new()
+                .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+                .add_capture("cap", Capture::default().otap_grpc("exporter")),
+        );
         let err = scenario
-            .update_configs()
+            .build_stage_plans()
             .expect_err("should error without pipeline");
         assert!(matches!(err, ValidationError::Config(_)));
         assert!(err.to_string().contains("pipeline not provided"));
     }
 
+    /// Scenario: a multi-stage scenario declares a container connection.
+    /// Guarantees: planning rejects container connections in multi-stage mode
+    /// because container wiring is only supported for single-stage runs.
+    #[test]
+    fn multi_stage_rejects_container_connection() {
+        let mut scenario = Scenario::new()
+            .add_container("redis", ContainerConfig::new("redis", "7.2.4"))
+            .add_stage(
+                "s0",
+                Stage::new()
+                    .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                    .add_generator(
+                        "gen",
+                        Generator::logs().to_container(
+                            ContainerConnection::new("redis")
+                                .internal_port(6379)
+                                .node_template("type: fake"),
+                        ),
+                    )
+                    .add_capture(
+                        "cap",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .control_streams(["gen"]),
+                    ),
+            )
+            .add_stage(
+                "s1",
+                Stage::new()
+                    .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+                    .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+                    .add_capture(
+                        "cap",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .control_streams(["gen"]),
+                    ),
+            );
+        let err = scenario
+            .build_stage_plans()
+            .expect_err("container connection in multi-stage should error");
+        assert!(matches!(err, ValidationError::Config(_)));
+        assert!(
+            err.to_string()
+                .contains("container connections are not supported in multi-stage")
+        );
+    }
+
+    /// Scenario: `expect_within` overrides the default runtime budget.
+    /// Guarantees: the configured runtime is stored on the scenario.
     #[test]
     fn expect_within_overrides_runtime() {
         let scenario = Scenario::new().expect_within(42);
         assert_eq!(scenario.runtime, Duration::from_secs(42));
     }
 
-    #[test]
-    fn update_configs_wires_pipeline_container_connection() {
-        let pipeline = Pipeline::from_yaml(
-            r#"
+    fn kafka_style_yaml() -> &'static str {
+        r#"
 nodes:
   receiver:
+    type: "receiver:otlp"
     config:
       protocols:
         grpc:
           listening_addr: "127.0.0.1:4317"
-  kafka_sink:
-    config:
-      broker: "placeholder:9092"
-      topic: "otlp-logs"
   exporter:
+    type: "exporter:otlp_grpc"
     config:
-      grpc_endpoint: "http://default-export"
-"#,
-        )
-        .unwrap()
-        .connect_container(
-            PipelineContainerConnection::new("kafka")
-                .internal_port(9092)
-                .node("kafka_sink")
-                .config_key("broker")
-                .address_template("127.0.0.1:{{ port }}"),
-        );
+      grpc_endpoint: "http://placeholder:9092"
+connections:
+  - from: receiver
+    to: exporter
+"#
+    }
+
+    /// Scenario: a single-stage scenario wires a pipeline container connection.
+    /// Guarantees: the container gets a mapped host port and the pipeline YAML
+    /// is rewritten with the allocated port, preserving legacy behavior.
+    #[test]
+    fn single_stage_wires_pipeline_container_connection() {
+        let pipeline = Pipeline::from_yaml(kafka_style_yaml())
+            .unwrap()
+            .connect_container(
+                PipelineContainerConnection::new("kafka")
+                    .internal_port(9092)
+                    .node("exporter")
+                    .config_key("grpc_endpoint")
+                    .address_template("http://127.0.0.1:{{ port }}"),
+            );
 
         let mut scenario = Scenario::new()
-            .pipeline(pipeline)
             .add_container(
                 "kafka",
                 ContainerConfig::new("confluentinc/cp-kafka", "7.5.0"),
             )
+            .pipeline(pipeline)
             .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
             .add_capture(
                 "cap",
@@ -673,31 +970,119 @@ nodes:
                     .control_streams(["gen"]),
             );
 
-        scenario
-            .update_configs()
-            .expect("update_configs should succeed");
+        let _ = scenario
+            .build_stage_plans()
+            .expect("build_stage_plans should succeed");
 
-        // The kafka container should have a mapped port for internal port 9092.
         let kafka = scenario.containers.get("kafka").unwrap();
         assert_eq!(kafka.mapped_ports.len(), 1);
         let host_port = kafka.mapped_ports[&9092];
         assert_ne!(host_port, 0);
 
-        // The pipeline YAML should have been rewritten with the allocated port.
-        let yaml_str = scenario
+        let yaml_str = scenario.stages[0]
+            .1
             .pipeline
             .as_ref()
             .unwrap()
             .to_yaml_string()
             .unwrap();
         let doc: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
-        let broker = &doc["nodes"]["kafka_sink"]["config"]["broker"];
+        let endpoint = &doc["nodes"]["exporter"]["config"]["grpc_endpoint"];
         assert_eq!(
-            broker,
-            &serde_yaml::Value::from(format!("127.0.0.1:{host_port}"))
+            endpoint,
+            &serde_yaml::Value::from(format!("http://127.0.0.1:{host_port}"))
         );
     }
 
+    /// Scenario: a single-stage container declares a templated env var that
+    /// shares an internal port with a pipeline connection.
+    /// Guarantees: the shared internal port maps to a single host port and the
+    /// templated env var is resolved with that host port.
+    #[test]
+    fn single_stage_resolves_templated_env_vars() {
+        let pipeline = Pipeline::from_yaml(kafka_style_yaml())
+            .unwrap()
+            .connect_container(
+                PipelineContainerConnection::new("kafka")
+                    .internal_port(9092)
+                    .node("exporter")
+                    .config_key("grpc_endpoint")
+                    .address_template("http://127.0.0.1:{{ port }}"),
+            );
+
+        let mut scenario = Scenario::new()
+            .add_container(
+                "kafka",
+                ContainerConfig::new("confluentinc/cp-kafka", "7.5.0").env_host_port(
+                    "KAFKA_ADVERTISED_LISTENERS",
+                    "PLAINTEXT://127.0.0.1:{{ host_port }}",
+                    9092,
+                ),
+            )
+            .pipeline(pipeline)
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture(
+                "cap",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .control_streams(["gen"]),
+            );
+
+        let _ = scenario
+            .build_stage_plans()
+            .expect("build_stage_plans should succeed");
+
+        let kafka = scenario.containers.get("kafka").unwrap();
+        let host_port = kafka.mapped_ports[&9092];
+        assert_ne!(host_port, 0);
+        assert!(kafka.templated_env_vars.is_none());
+        assert!(kafka.env_vars.contains(&(
+            "KAFKA_ADVERTISED_LISTENERS".into(),
+            format!("PLAINTEXT://127.0.0.1:{host_port}")
+        )));
+    }
+
+    /// Scenario: a single-stage container declares a templated env var whose
+    /// internal port is not referenced by any connection.
+    /// Guarantees: the framework auto-allocates a host port for that internal
+    /// port and resolves the templated env var with it.
+    #[test]
+    fn single_stage_auto_allocates_for_templated_env_var() {
+        let mut scenario = Scenario::new()
+            .add_container(
+                "db",
+                ContainerConfig::new("postgres", "16").env_host_port(
+                    "PG_HOST_PORT",
+                    "{{ host_port }}",
+                    5432,
+                ),
+            )
+            .pipeline(Pipeline::from_yaml(sample_yaml()).unwrap())
+            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
+            .add_capture(
+                "cap",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .control_streams(["gen"]),
+            );
+
+        let _ = scenario
+            .build_stage_plans()
+            .expect("build_stage_plans should succeed");
+
+        let db = scenario.containers.get("db").unwrap();
+        assert!(db.mapped_ports.contains_key(&5432));
+        let host_port = db.mapped_ports[&5432];
+        assert_ne!(host_port, 0);
+        assert!(db.templated_env_vars.is_none());
+        assert!(
+            db.env_vars
+                .contains(&("PG_HOST_PORT".into(), format!("{host_port}")))
+        );
+    }
+
+    /// Scenario: `Scenario::default` and `Scenario::new` are compared.
+    /// Guarantees: both constructors produce identical baseline settings.
     #[test]
     fn default_matches_new() {
         let from_new = Scenario::new();
@@ -707,136 +1092,5 @@ nodes:
         assert_eq!(from_new.ready_backoff, from_default.ready_backoff);
         assert!(from_new.containers.is_empty());
         assert!(from_default.containers.is_empty());
-    }
-
-    #[test]
-    fn update_configs_missing_internal_port_errors() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
-        // ContainerConnection without .internal_port() -- should fail validation.
-        let generator = Generator::logs()
-            .to_container(ContainerConnection::new("redis").node_template("type: fake"));
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_container("redis", ContainerConfig::new("redis", "7.2.4"))
-            .add_generator("gen", generator)
-            .add_capture(
-                "cap",
-                Capture::default()
-                    .otlp_grpc("exporter")
-                    .control_streams(["gen"]),
-            );
-
-        let err = scenario
-            .update_configs()
-            .expect_err("missing internal_port should error");
-        assert!(matches!(err, ValidationError::Config(_)));
-        assert!(err.to_string().contains("missing internal_port"));
-    }
-
-    #[test]
-    fn update_configs_resolves_templated_env_vars() {
-        let pipeline = Pipeline::from_yaml(
-            r#"
-nodes:
-  receiver:
-    config:
-      protocols:
-        grpc:
-          listening_addr: "127.0.0.1:4317"
-  kafka_sink:
-    config:
-      broker: "placeholder:9092"
-      topic: "otlp-logs"
-  exporter:
-    config:
-      grpc_endpoint: "http://default-export"
-"#,
-        )
-        .unwrap()
-        .connect_container(
-            PipelineContainerConnection::new("kafka")
-                .internal_port(9092)
-                .node("kafka_sink")
-                .config_key("broker")
-                .address_template("127.0.0.1:{{ port }}"),
-        );
-
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_container(
-                "kafka",
-                ContainerConfig::new("confluentinc/cp-kafka", "7.5.0").env_host_port(
-                    "KAFKA_ADVERTISED_LISTENERS",
-                    "PLAINTEXT://127.0.0.1:{{ host_port }}",
-                    9092,
-                ),
-            )
-            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
-            .add_capture(
-                "cap",
-                Capture::default()
-                    .otlp_grpc("exporter")
-                    .control_streams(["gen"]),
-            );
-
-        scenario
-            .update_configs()
-            .expect("update_configs should succeed");
-
-        let kafka = scenario.containers.get("kafka").unwrap();
-
-        // The pipeline connection and the templated env var share the same
-        // internal port 9092, so they must use the same host port.
-        let host_port = kafka.mapped_ports[&9092];
-        assert_ne!(host_port, 0);
-
-        // The templated env var should have been resolved and moved to env_vars.
-        assert!(kafka.templated_env_vars.is_none());
-        assert!(kafka.env_vars.contains(&(
-            "KAFKA_ADVERTISED_LISTENERS".into(),
-            format!("PLAINTEXT://127.0.0.1:{host_port}")
-        )));
-    }
-
-    #[test]
-    fn update_configs_auto_allocates_for_templated_env_var() {
-        let pipeline = Pipeline::from_yaml(sample_yaml()).unwrap();
-
-        let mut scenario = Scenario::new()
-            .pipeline(pipeline)
-            .add_container(
-                "db",
-                ContainerConfig::new("postgres", "16").env_host_port(
-                    "PG_HOST_PORT",
-                    "{{ host_port }}",
-                    5432,
-                ),
-            )
-            .add_generator("gen", Generator::logs().otlp_grpc("receiver"))
-            .add_capture(
-                "cap",
-                Capture::default()
-                    .otap_grpc("exporter")
-                    .control_streams(["gen"]),
-            );
-
-        scenario
-            .update_configs()
-            .expect("update_configs should succeed");
-
-        let db = scenario.containers.get("db").unwrap();
-
-        // The internal port 5432 was not referenced by any connection, so
-        // the framework should have auto-allocated a host port.
-        assert!(db.mapped_ports.contains_key(&5432));
-        let host_port = db.mapped_ports[&5432];
-        assert_ne!(host_port, 0);
-
-        // The templated env var should be resolved with the auto-allocated port.
-        assert!(db.templated_env_vars.is_none());
-        assert!(
-            db.env_vars
-                .contains(&("PG_HOST_PORT".into(), format!("{host_port}")))
-        );
     }
 }

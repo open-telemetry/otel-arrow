@@ -1,13 +1,30 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
+//! Engine lifecycle for multi-stage validation scenarios.
+//!
+//! The engine is started once from the first stage's rendered group. Each
+//! subsequent stage is reached with the live-update (reconfigure) API: the
+//! `suv` pipeline plus every generator and capture pipeline are reconfigured in
+//! place, so the engine is never restarted between stages.
+//!
+//! Because a live update relaunches a pipeline instance (and drains the old
+//! one), every stage runs with a fresh traffic generator and a fresh validation
+//! exporter. Stage completion is detected edge-triggered against a per-stage
+//! baseline of the cumulative `produced` and `finished` counters, which is
+//! robust to the cumulative, per-instance nature of the metrics.
+
 use crate::error::ValidationError;
 use crate::metrics_types::{MetricSetSnapshot, MetricsSnapshot};
+use crate::scenario::{SUV_PIPELINE_ID, VALIDATION_GROUP_ID};
+use crate::stage::RolloutAction;
 use otap_df_admin_api::{
     AdminClient, AdminEndpoint, HttpAdminClientSettings, engine::ProbeStatus,
-    groups::ShutdownStatus, operations::OperationOptions, telemetry::MetricsOptions,
+    groups::ShutdownStatus, operations::OperationOptions, pipelines::ReconfigureOutcome,
+    pipelines::ReconfigureRequest, telemetry::MetricsOptions,
 };
 use otap_df_config::engine::OtelDataflowSpec;
+use otap_df_config::pipeline::PipelineConfig;
 use otap_df_controller::Controller;
 use otap_df_otap::OTAP_PIPELINE_FACTORY;
 use std::collections::HashMap;
@@ -21,28 +38,84 @@ const VALIDATION_METRIC_SET: &str = "exporter.validation";
 const VALIDATION_METRIC_NAME: &str = "valid";
 const VALIDATION_FINISHED_METRIC_NAME: &str = "finished";
 
-pub(crate) async fn run_pipelines_with_timeout(
-    rendered_group: String,
+/// A single executable validation stage produced by the scenario builder.
+///
+/// It carries the rendered group YAML (the first stage's YAML starts the
+/// engine), the per-pipeline configs used to reconfigure into this stage, and
+/// the expectations used to detect and assert stage completion.
+#[derive(Debug)]
+pub(crate) struct StagePlan {
+    /// Human-readable stage label (also used in error messages).
+    pub(crate) label: String,
+    /// Full `validation_test` group YAML rendered for this stage.
+    pub(crate) rendered_group: String,
+    /// Per-pipeline configs keyed by pipeline id (`suv` plus each generator and
+    /// capture label). Used to build reconfigure requests.
+    pub(crate) pipeline_configs: HashMap<String, PipelineConfig>,
+    /// Expected produced-signal count per generator label for this stage.
+    pub(crate) expected_signals: HashMap<String, u64>,
+    /// Capture pipeline labels whose validation exporters must finish+pass.
+    pub(crate) capture_labels: Vec<String>,
+    /// Optional assertion on the `suv` rollout classification for this stage.
+    pub(crate) expected_action: Option<RolloutAction>,
+    /// Per-core admission/ready timeout for reconfigure into this stage.
+    pub(crate) step_timeout_secs: u64,
+    /// Graceful drain timeout for reconfigure into this stage.
+    pub(crate) drain_timeout_secs: u64,
+}
+
+/// Run every stage in order against a single engine, transitioning between
+/// stages with the live-update API. The engine is started from the first
+/// stage and shut down only after the final stage's validation completes.
+pub(crate) async fn run_stages_with_timeout(
+    stages: Vec<StagePlan>,
     admin_base: String,
-    expected_generator_signals: HashMap<String, u64>,
     timeout: Duration,
     ready_max_attempts: usize,
     ready_backoff: Duration,
     metrics_poll: Duration,
 ) -> Result<(), ValidationError> {
-    let pipeline_simulator = PipelineSimulator::new(rendered_group.as_str())?;
-    let _pipeline_handle = std::thread::spawn(move || pipeline_simulator.run());
+    let first = stages
+        .first()
+        .ok_or_else(|| ValidationError::Config("no stages to run".into()))?;
+    let simulator = PipelineSimulator::new(first.rendered_group.as_str())?;
+    let _pipeline_handle = std::thread::spawn(move || simulator.run());
     let admin_client = admin_client(&admin_base)?;
 
     wait_for_ready(&admin_client, ready_max_attempts, ready_backoff).await?;
+
     tokio::time::timeout(timeout, async {
-        wait_for_loadgen(&admin_client, &expected_generator_signals, metrics_poll).await?;
-        let result = wait_for_validation_finished(&admin_client, metrics_poll).await;
-        shutdown_pipeline(&admin_client).await?;
-        result
+        for (index, stage) in stages.iter().enumerate() {
+            // Transition into this stage with a live update (stages after the
+            // first). The reconfigure waits for the target generation to serve
+            // and the previous generation to drain, so by the time it returns
+            // only this stage's fresh instances report telemetry.
+            if index > 0 {
+                reconfigure_stage(&admin_client, stage).await?;
+            }
+
+            wait_for_loadgen(&admin_client, &stage.expected_signals, metrics_poll)
+                .await
+                .map_err(|e| stage_error(&stage.label, e))?;
+
+            wait_for_validation_finished(&admin_client, &stage.capture_labels, metrics_poll)
+                .await
+                .map_err(|e| stage_error(&stage.label, e))?;
+        }
+        shutdown_pipeline(&admin_client).await
     })
     .await
     .map_err(|_| ValidationError::Validation(format!("scenario timed out after {timeout:?}")))?
+}
+
+/// Prefix a stage-scoped error with the stage label for easier diagnosis.
+fn stage_error(label: &str, err: ValidationError) -> ValidationError {
+    match err {
+        ValidationError::Validation(msg) => {
+            ValidationError::Validation(format!("stage '{label}': {msg}"))
+        }
+        other => other,
+    }
 }
 
 struct PipelineSimulator {
@@ -61,6 +134,86 @@ impl PipelineSimulator {
         let engine_config = self.engine_config.clone();
         let _ = controller.run_till_shutdown(engine_config);
     }
+}
+
+/// Reconfigure the `suv` pipeline plus every generator and capture pipeline
+/// into the target stage. Captures are reconfigured first (so downstream
+/// receivers are ready), then the `suv` pipeline, then generators.
+async fn reconfigure_stage(client: &AdminClient, stage: &StagePlan) -> Result<(), ValidationError> {
+    // Deterministic order: captures, then suv, then remaining (generators).
+    let mut ordered: Vec<&String> = stage.pipeline_configs.keys().collect();
+    ordered.sort_by_key(|id| {
+        if stage.capture_labels.iter().any(|c| c == *id) {
+            0
+        } else if id.as_str() == SUV_PIPELINE_ID {
+            1
+        } else {
+            2
+        }
+    });
+
+    for pipeline_id in ordered {
+        let config = stage
+            .pipeline_configs
+            .get(pipeline_id)
+            .expect("pipeline id came from the same map");
+        let request = ReconfigureRequest {
+            pipeline: config.clone(),
+            step_timeout_secs: stage.step_timeout_secs,
+            drain_timeout_secs: stage.drain_timeout_secs,
+        };
+        let options = OperationOptions {
+            wait: true,
+            timeout_secs: stage.step_timeout_secs.max(stage.drain_timeout_secs) + 10,
+        };
+        let outcome = client
+            .pipelines()
+            .reconfigure(VALIDATION_GROUP_ID, pipeline_id, &request, &options)
+            .await
+            .map_err(|e| {
+                ValidationError::Reconfigure(format!(
+                    "stage '{}': reconfigure of '{pipeline_id}' failed: {e}",
+                    stage.label
+                ))
+            })?;
+
+        match outcome {
+            ReconfigureOutcome::Completed(status) => {
+                if pipeline_id.as_str() == SUV_PIPELINE_ID {
+                    assert_expected_action(stage, &status.action)?;
+                }
+            }
+            ReconfigureOutcome::Accepted(status) => {
+                return Err(ValidationError::Reconfigure(format!(
+                    "stage '{}': reconfigure of '{pipeline_id}' returned Accepted (rollout {}) \
+                     but a terminal result was requested",
+                    stage.label, status.rollout_id
+                )));
+            }
+            ReconfigureOutcome::Failed(status) | ReconfigureOutcome::TimedOut(status) => {
+                return Err(ValidationError::Reconfigure(format!(
+                    "stage '{}': reconfigure of '{pipeline_id}' did not succeed: state={:?} reason={:?}",
+                    stage.label, status.state, status.failure_reason
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Assert the `suv` rollout classification matches the stage expectation.
+fn assert_expected_action(stage: &StagePlan, observed_action: &str) -> Result<(), ValidationError> {
+    if let Some(expected) = stage.expected_action {
+        let observed = RolloutAction::from_wire(observed_action);
+        if observed != Some(expected) {
+            return Err(ValidationError::Reconfigure(format!(
+                "stage '{}': expected rollout action {} but engine classified it as {observed_action}",
+                stage.label,
+                expected.as_str()
+            )));
+        }
+    }
+    Ok(())
 }
 
 async fn wait_for_ready(
@@ -106,7 +259,13 @@ async fn fetch_metrics(client: &AdminClient) -> Result<MetricsSnapshot, Validati
     .map_err(|e| ValidationError::Http(e.to_string()))
 }
 
-/// loop until traffic generation is done
+/// Poll until each generator label of the current stage has produced at least
+/// its expected number of signals.
+///
+/// A live-update reconfigure waits for the previous generation to drain before
+/// returning, so once a stage is active only this stage's fresh generator
+/// instances report telemetry and their counters start from zero. Absolute
+/// thresholds are therefore correct per stage.
 async fn wait_for_loadgen(
     client: &AdminClient,
     expected_generator_signals: &HashMap<String, u64>,
@@ -121,16 +280,16 @@ async fn wait_for_loadgen(
     }
 }
 
-/// Poll metrics until every validation exporter reports `finished == 1`,
-/// then check the `valid` gauge from the same snapshot. This replaces the
-/// previous fixed propagation-delay sleep followed by a single metrics check.
+/// Poll until every capture's validation exporter for the current stage reports
+/// `finished >= 1`, then evaluate `valid`.
 async fn wait_for_validation_finished(
     client: &AdminClient,
+    capture_labels: &[String],
     metrics_poll: Duration,
 ) -> Result<(), ValidationError> {
     loop {
         let snapshot = fetch_metrics(client).await?;
-        match validation_finished_and_passed(&snapshot) {
+        match validation_finished_and_passed(&snapshot, capture_labels) {
             ValidationPollResult::NotFinished => {
                 sleep(metrics_poll).await;
             }
@@ -144,7 +303,7 @@ async fn wait_for_validation_finished(
     }
 }
 
-/// shutdown pipeline after running
+/// shutdown pipeline after running all stages
 async fn shutdown_pipeline(client: &AdminClient) -> Result<(), ValidationError> {
     let response = client
         .groups()
@@ -182,7 +341,6 @@ fn metric_value(set: &MetricSetSnapshot, metric_name: &str) -> Option<u64> {
 }
 
 // get value from attribute with key node.id
-// basically gets the name of the node from metrics via metric attributes
 fn attribute_node_id(
     attributes: &HashMap<String, otap_df_telemetry::attributes::AttributeValue>,
 ) -> Option<String> {
@@ -193,6 +351,43 @@ fn attribute_node_id(
     }
 }
 
+/// Total produced signals per generator label (summed across all instances,
+/// including any old drained instance sharing the same `node.id`).
+fn loadgen_totals(snapshot: &MetricsSnapshot) -> HashMap<String, u64> {
+    let mut totals = HashMap::new();
+    for set in snapshot
+        .metric_sets
+        .iter()
+        .filter(|set| set.name == LOADGEN_METRIC_SET)
+    {
+        if let Some(label) = attribute_node_id(&set.attributes) {
+            let produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
+                + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
+                + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
+            *totals.entry(label).or_insert(0) += produced;
+        }
+    }
+    totals
+}
+
+/// Total `finished` per capture label (summed across instances).
+fn finished_totals(snapshot: &MetricsSnapshot) -> HashMap<String, u64> {
+    let mut totals = HashMap::new();
+    for set in snapshot
+        .metric_sets
+        .iter()
+        .filter(|set| set.name == VALIDATION_METRIC_SET)
+    {
+        if let Some(label) = attribute_node_id(&set.attributes) {
+            let finished = metric_value(set, VALIDATION_FINISHED_METRIC_NAME).unwrap_or(0);
+            *totals.entry(label).or_insert(0) += finished;
+        }
+    }
+    totals
+}
+
+/// True when every expected generator label has produced at least its expected
+/// count of signals for the current stage.
 fn loadgen_reached_limit(
     snapshot: &MetricsSnapshot,
     expected_per_gen: &HashMap<String, u64>,
@@ -200,72 +395,72 @@ fn loadgen_reached_limit(
     if expected_per_gen.is_empty() {
         return true;
     }
-
-    let mut iter = snapshot
-        .metric_sets
+    let totals = loadgen_totals(snapshot);
+    // Require every expected generator to have reported telemetry and reached
+    // its target so a not-yet-started generator is not treated as complete.
+    expected_per_gen
         .iter()
-        .filter(|set| set.name == LOADGEN_METRIC_SET)
-        .filter_map(|set| attribute_node_id(&set.attributes).map(|label| (set, label)))
-        .peekable();
-
-    // No loadgen metric sets found yet -- generators have not reported their
-    // first telemetry tick. Keep polling.
-    if iter.peek().is_none() {
-        return false;
-    }
-
-    iter.all(|(set, label)| {
-        let loadgen_signals_produced = metric_value(set, LOADGEN_METRIC_NAME_LOGS).unwrap_or(0)
-            + metric_value(set, LOADGEN_METRIC_NAME_METRICS).unwrap_or(0)
-            + metric_value(set, LOADGEN_TRACE_NAME_SPANS).unwrap_or(0);
-        loadgen_signals_produced >= *expected_per_gen.get(&label).unwrap_or(&0u64)
-    })
+        .all(|(label, expected)| totals.get(label).copied().unwrap_or(0) >= *expected)
 }
 
-/// Result of checking whether all validation exporters have finished.
+/// Result of checking whether all validation exporters have finished for the
+/// current stage.
 #[derive(Debug)]
 enum ValidationPollResult {
-    /// At least one exporter has not signaled `finished` yet.
+    /// At least one exporter has not incremented `finished` past its baseline.
     NotFinished,
-    /// All exporters finished and all report `valid >= 1`.
+    /// All expected exporters finished and all report `valid >= 1`.
     FinishedAndPassed,
-    /// All exporters finished but one or more report `valid < 1`.
+    /// All expected exporters finished but one or more report `valid < 1`.
     FinishedWithFailures(String),
 }
 
-/// Check a single metrics snapshot for the `finished` and `valid` gauges of
-/// every validation exporter. Returns a single result covering all exporters
-/// so that the caller can decide to keep polling or report success/failure.
-fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollResult {
-    let mut failed_validation_exporters = vec![];
-
-    let mut iter = snapshot
-        .metric_sets
-        .iter()
-        .filter(|set: &&MetricSetSnapshot| set.name == VALIDATION_METRIC_SET)
-        .peekable();
-
-    if iter.peek().is_none() {
-        return ValidationPollResult::NotFinished;
+/// Check a metrics snapshot for the `finished` and `valid` gauges of every
+/// expected capture label of the current stage.
+///
+/// After a live-update reconfigure the previous generation has drained, so
+/// each capture label maps to a single fresh validation exporter whose
+/// `finished` gauge transitions from 0 to 1 once the stage settles.
+fn validation_finished_and_passed(
+    snapshot: &MetricsSnapshot,
+    capture_labels: &[String],
+) -> ValidationPollResult {
+    if capture_labels.is_empty() {
+        return ValidationPollResult::FinishedAndPassed;
     }
 
-    for set in iter {
-        // If any exporter has not yet signaled finished, keep waiting.
-        if metric_value(set, VALIDATION_FINISHED_METRIC_NAME).is_none_or(|v| v < 1) {
-            return ValidationPollResult::NotFinished;
-        }
-        // Exporter is finished -- check its validation result in the same pass.
-        if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
-            if let Some(label) = attribute_node_id(&set.attributes) {
-                failed_validation_exporters.push(label);
+    let finished_now = finished_totals(snapshot);
+
+    // Highest `valid` gauge observed per capture label across its instances.
+    let mut valid_by_label: HashMap<&str, u64> = HashMap::new();
+    for set in snapshot
+        .metric_sets
+        .iter()
+        .filter(|set| set.name == VALIDATION_METRIC_SET)
+    {
+        if let Some(label) = attribute_node_id(&set.attributes) {
+            let valid = metric_value(set, VALIDATION_METRIC_NAME).unwrap_or(0);
+            if let Some(expected) = capture_labels.iter().find(|c| c.as_str() == label) {
+                let entry = valid_by_label.entry(expected.as_str()).or_insert(0);
+                *entry = (*entry).max(valid);
             }
         }
     }
 
-    if failed_validation_exporters.is_empty() {
+    let mut failed = Vec::new();
+    for label in capture_labels {
+        if finished_now.get(label).copied().unwrap_or(0) < 1 {
+            return ValidationPollResult::NotFinished;
+        }
+        if valid_by_label.get(label.as_str()).copied().unwrap_or(0) < 1 {
+            failed.push(label.clone());
+        }
+    }
+
+    if failed.is_empty() {
         ValidationPollResult::FinishedAndPassed
     } else {
-        ValidationPollResult::FinishedWithFailures(failed_validation_exporters.join(", "))
+        ValidationPollResult::FinishedWithFailures(failed.join(", "))
     }
 }
 
@@ -299,32 +494,34 @@ mod tests {
         }
     }
 
+    /// Scenario: two generators are checked against their per-stage targets.
+    /// Guarantees: load-gen completion sums produced signals across instances
+    /// of the same generator label and compares against the target count.
     #[test]
-    fn loadgen_reached_limit_uses_labels() {
+    fn loadgen_reached_limit_uses_targets() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 10, "genA"),
-                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 4, "genB"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 110, "genA"),
+                set_with_node(LOADGEN_METRIC_SET, LOADGEN_METRIC_NAME_LOGS, 54, "genB"),
             ],
         };
-        let mut expected = HashMap::new();
-        _ = expected.insert("genA".into(), 5);
-        _ = expected.insert("genB".into(), 4);
+        let expected = HashMap::from([("genA".to_string(), 100), ("genB".to_string(), 50)]);
         assert!(loadgen_reached_limit(&snap, &expected));
 
-        _ = expected.insert("genB".into(), 5);
-        assert!(!loadgen_reached_limit(&snap, &expected));
+        let expected_high = HashMap::from([("genA".to_string(), 200), ("genB".to_string(), 50)]);
+        assert!(!loadgen_reached_limit(&snap, &expected_high));
     }
 
+    /// Scenario: no generator metric sets have been reported yet.
+    /// Guarantees: load-gen is not considered complete when metrics are absent.
     #[test]
     fn loadgen_empty_snapshot_returns_false() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![],
         };
-        let mut expected = HashMap::new();
-        _ = expected.insert("genA".into(), 5);
+        let expected = HashMap::from([("genA".to_string(), 5)]);
         assert!(!loadgen_reached_limit(&snap, &expected));
     }
 
@@ -359,6 +556,8 @@ mod tests {
         }]
     }
 
+    /// Scenario: a capture has not yet reported `finished` for the stage.
+    /// Guarantees: the detector keeps polling until the exporter finishes.
     #[test]
     fn not_finished_keeps_polling() {
         let snap = MetricsSnapshot {
@@ -366,11 +565,13 @@ mod tests {
             metric_sets: validation_set(0, 0, "cap1"),
         };
         assert!(matches!(
-            validation_finished_and_passed(&snap),
+            validation_finished_and_passed(&snap, &["cap1".to_string()]),
             ValidationPollResult::NotFinished
         ));
     }
 
+    /// Scenario: a capture reports finished and valid for the stage.
+    /// Guarantees: the detector reports success for the stage.
     #[test]
     fn finished_and_passed_returns_ok() {
         let snap = MetricsSnapshot {
@@ -378,11 +579,13 @@ mod tests {
             metric_sets: validation_set(1, 1, "cap1"),
         };
         assert!(matches!(
-            validation_finished_and_passed(&snap),
+            validation_finished_and_passed(&snap, &["cap1".to_string()]),
             ValidationPollResult::FinishedAndPassed
         ));
     }
 
+    /// Scenario: two captures finish but one reports invalid.
+    /// Guarantees: the detector names the failing capture label.
     #[test]
     fn finished_with_failures_reports_labels() {
         let mut sets = validation_set(1, 1, "cap1");
@@ -391,7 +594,8 @@ mod tests {
             timestamp: "t".into(),
             metric_sets: sets,
         };
-        match validation_finished_and_passed(&snap) {
+        let labels = vec!["cap1".to_string(), "cap2".to_string()];
+        match validation_finished_and_passed(&snap, &labels) {
             ValidationPollResult::FinishedWithFailures(failed) => {
                 assert_eq!(failed, "cap2");
             }
@@ -399,6 +603,8 @@ mod tests {
         }
     }
 
+    /// Scenario: one of two captures has not finished for this stage.
+    /// Guarantees: the detector keeps polling until all captures finish.
     #[test]
     fn mixed_finished_returns_not_finished() {
         let mut sets = validation_set(1, 1, "cap1");
@@ -407,41 +613,32 @@ mod tests {
             timestamp: "t".into(),
             metric_sets: sets,
         };
+        let labels = vec!["cap1".to_string(), "cap2".to_string()];
         assert!(matches!(
-            validation_finished_and_passed(&snap),
+            validation_finished_and_passed(&snap, &labels),
             ValidationPollResult::NotFinished
         ));
     }
 
+    /// Scenario: no capture labels are expected for a stage.
+    /// Guarantees: validation is trivially complete when there is nothing to
+    /// assert.
     #[test]
-    fn empty_snapshot_returns_not_finished() {
+    fn no_capture_labels_returns_passed() {
         let snap = MetricsSnapshot {
             timestamp: "t".into(),
             metric_sets: vec![],
         };
         assert!(matches!(
-            validation_finished_and_passed(&snap),
-            ValidationPollResult::NotFinished
+            validation_finished_and_passed(&snap, &[]),
+            ValidationPollResult::FinishedAndPassed
         ));
     }
 
-    #[test]
-    fn no_matching_metric_sets_returns_not_finished() {
-        let snap = MetricsSnapshot {
-            timestamp: "t".into(),
-            metric_sets: vec![set_with_node(
-                LOADGEN_METRIC_SET,
-                LOADGEN_METRIC_NAME_LOGS,
-                100,
-                "genA",
-            )],
-        };
-        assert!(matches!(
-            validation_finished_and_passed(&snap),
-            ValidationPollResult::NotFinished
-        ));
-    }
-
+    /// Scenario: the harness drives readiness, load-gen, and shutdown against a
+    /// mocked admin API using the multi-stage helpers.
+    /// Guarantees: the readiness, metrics, and shutdown helpers still speak the
+    /// existing admin wire contract.
     #[tokio::test]
     async fn admin_client_helpers_follow_existing_validation_flow() {
         let server = MockServer::start().await;
@@ -492,7 +689,7 @@ mod tests {
         let snapshot = fetch_metrics(&client).await.expect("metrics should decode");
         assert!(loadgen_reached_limit(
             &snapshot,
-            &HashMap::from([(String::from("genA"), 7)])
+            &HashMap::from([(String::from("genA"), 7)]),
         ));
         shutdown_pipeline(&client)
             .await

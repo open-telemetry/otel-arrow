@@ -1,0 +1,28 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: enhancement
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: engine
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Add multi-stage validation scenarios that transition between stages using the live-update (reconfigure) API instead of restarting the engine.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: []
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  The validation framework now supports `Scenario::add_stage` with a new `Stage`
+  builder. Each stage bundles a system-under-validation pipeline, its traffic
+  generators, and its captures (assertions). Stages are transitioned in place by
+  reconfiguring the `suv`, generator, and capture pipelines via the admin
+  reconfigure API, so a single engine process is reused across stages. A stage
+  may assert the live-update classification of its `suv` transition via
+  `Stage::expect_rollout` (create/noop/replace/resize). The existing single-stage
+  builder (`pipeline`/`add_generator`/`add_capture`) is preserved as sugar over an
+  implicit first stage.

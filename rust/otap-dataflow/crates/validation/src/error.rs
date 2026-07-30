@@ -23,6 +23,9 @@ pub enum ValidationError {
     Validation(String),
     /// Docker container lifecycle errors (start, stop, port resolution).
     Container(String),
+    /// A live-update (reconfigure) transition between stages failed, timed out,
+    /// or classified into an action other than the one asserted by the stage.
+    Reconfigure(String),
 }
 
 impl std::error::Error for ValidationError {}
@@ -37,6 +40,7 @@ impl fmt::Display for ValidationError {
             ValidationError::Ready(e) => write!(f, "ready check failed: {e}"),
             ValidationError::Validation(e) => write!(f, "validation failed: {e}"),
             ValidationError::Container(e) => write!(f, "container error: {e}"),
+            ValidationError::Reconfigure(e) => write!(f, "reconfigure failed: {e}"),
         }
     }
 }

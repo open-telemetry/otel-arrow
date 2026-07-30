@@ -877,3 +877,93 @@ Scenario::new()
     .expect_within(30)
     .run()?;
 ```
+
+## Multi-stage scenarios (live update)
+
+A scenario can define more than one **stage**. Each stage bundles a
+system-under-validation pipeline, its generators, and its captures (assertions).
+The first stage starts the engine; every subsequent stage is reached with the
+engine's live-update (reconfigure) API instead of restarting the engine. This
+provides a consistent way to test the live-update feature in a realistic
+scenario and to assert that a running pipeline is reconfigured correctly.
+
+Each stage is independent: on every transition the framework reconfigures all
+three pipeline families (the `suv` pipeline plus one pipeline per generator
+label and one per capture label), so every stage runs with fresh traffic and a
+fresh validation exporter. Stages are advanced sequentially -- the framework
+waits for a stage's load generation and validation to complete before
+reconfiguring into the next stage.
+
+```rust
+use otap_df_validation::scenario::Scenario;
+use otap_df_validation::stage::{RolloutAction, Stage};
+use otap_df_validation::traffic::{Capture, Generator};
+use otap_df_validation::pipeline::Pipeline;
+use otap_df_validation::ValidationInstructions;
+
+Scenario::new()
+    .add_stage(
+        "passthrough",
+        Stage::new()
+            .pipeline(Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")?)
+            .add_generator(
+                "traffic_gen",
+                Generator::logs().fixed_count(500).otlp_grpc("receiver").core_range(1, 1),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otlp_grpc("exporter")
+                    .validate(vec![ValidationInstructions::Equivalence])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            ),
+    )
+    .add_stage(
+        "with_filter",
+        Stage::new()
+            .pipeline(Pipeline::from_file("./validation_pipelines/filter-processor.yaml")?)
+            .expect_rollout(RolloutAction::Replace) // optional: assert the suv rollout
+            .add_generator(
+                "traffic_gen",
+                Generator::logs().fixed_count(500).otlp_grpc("receiver").core_range(1, 1),
+            )
+            .add_capture(
+                "validate",
+                Capture::default()
+                    .otap_grpc("exporter")
+                    .validate(vec![ValidationInstructions::SignalDrop {
+                        min_drop_ratio: None,
+                        max_drop_ratio: None,
+                    }])
+                    .control_streams(["traffic_gen"])
+                    .core_range(2, 2),
+            ),
+    )
+    .expect_within(120)
+    .run()?;
+```
+
+- `add_stage("label", Stage)` - append a stage; stages run in order.
+- `Stage::new()` - start a stage; use `pipeline`, `add_generator`, and
+  `add_capture` exactly as on the single-stage builder.
+- `Stage::expect_rollout(RolloutAction)` - optionally assert how the engine
+  classifies the `suv` transition into this stage. `RolloutAction` is one of
+  `Create`, `NoOp`, `Replace`, or `Resize`. If the observed classification
+  differs, the scenario fails with `ValidationError::Reconfigure`.
+- `Scenario::reconfigure_timeouts(step_secs, drain_secs)` - tune the per-core
+  step and drain timeouts used for the reconfigure between stages.
+
+Notes and limitations:
+
+- The legacy single-stage builder (`Scenario::pipeline`/`add_generator`/
+  `add_capture`) is preserved as sugar over an implicit first stage; existing
+  single-stage scenarios behave exactly as before.
+- Transitions are **whole-pipeline replaces**. The engine's live-update API
+  operates at whole-logical-pipeline granularity, so changing any node's config
+  relaunches the pipeline graph (per core) and drains the old instance. In-place
+  single-node updates are not supported by the engine and are therefore out of
+  scope for the framework.
+- Pipeline endpoints that are shared across stages (by generator/capture label)
+  reuse stable ports, so reconfigured pipelines reconnect cleanly.
+- Docker test containers are only supported in single-stage scenarios.

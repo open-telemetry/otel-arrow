@@ -19,6 +19,8 @@ pub mod pipeline;
 pub mod scenario;
 /// internal pipeline simulation utilities
 mod simulate;
+/// multi-stage validation building blocks (Stage, RolloutAction)
+pub mod stage;
 /// shared Jinja2 template rendering helper
 mod template;
 /// define structs to describe the traffic being created and captured for validation
@@ -30,6 +32,7 @@ pub mod validation_types;
 
 pub use container::ContainerConfig;
 pub use error::ValidationError;
+pub use stage::{RolloutAction, Stage};
 pub use validation_types::ValidationInstructions;
 
 #[cfg(test)]
@@ -1447,6 +1450,139 @@ header_propagation:
             )
             .run()
             .expect("transport headers validation failed");
+    }
+
+    /// Scenario: a scenario runs two stages against one engine, transitioning
+    /// from an OTLP passthrough pipeline to a filter pipeline using the
+    /// live-update API instead of restarting the engine.
+    /// Guarantees: the engine transitions from a stage that asserts
+    /// equivalence to a stage that asserts signal drop without a restart,
+    /// exercising the live-update path end to end.
+    #[test]
+    fn validation_multi_stage_passthrough_then_filter() {
+        use crate::stage::{RolloutAction, Stage};
+
+        Scenario::new()
+            .add_stage(
+                "passthrough",
+                Stage::new()
+                    .pipeline(
+                        Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
+                            .expect("failed to read passthrough pipeline yaml"),
+                    )
+                    .add_generator(
+                        "traffic_gen",
+                        Generator::logs()
+                            .fixed_count(500)
+                            .otlp_grpc("receiver")
+                            .core_range(1, 1)
+                            .static_signals(),
+                    )
+                    .add_capture(
+                        "validate",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .validate(vec![ValidationInstructions::Equivalence])
+                            .control_streams(["traffic_gen"])
+                            .core_range(2, 2),
+                    ),
+            )
+            .add_stage(
+                "filter",
+                Stage::new()
+                    .pipeline(
+                        Pipeline::from_file("./validation_pipelines/filter-processor.yaml")
+                            .expect("failed to read filter pipeline yaml"),
+                    )
+                    .expect_rollout(RolloutAction::Replace)
+                    .add_generator(
+                        "traffic_gen",
+                        Generator::logs()
+                            .fixed_count(500)
+                            .otlp_grpc("receiver")
+                            .core_range(1, 1)
+                            .static_signals(),
+                    )
+                    .add_capture(
+                        "validate",
+                        Capture::default()
+                            .otap_grpc("exporter")
+                            .validate(vec![ValidationInstructions::SignalDrop {
+                                min_drop_ratio: None,
+                                max_drop_ratio: None,
+                            }])
+                            .control_streams(["traffic_gen"])
+                            .core_range(2, 2),
+                    ),
+            )
+            .expect_within(120)
+            .run()
+            .expect("multi-stage passthrough-then-filter validation failed");
+    }
+
+    /// Scenario: a two-stage scenario transitions the SUV pipeline from an
+    /// OTLP exporter to an OTAP exporter and asserts the live update
+    /// classifies as `replace`.
+    /// Guarantees: a runtime graph change to the `suv` pipeline is applied via
+    /// a live-update replace (a fresh generation) rather than an engine
+    /// restart, and the second stage runs with a fresh validation exporter.
+    #[test]
+    fn validation_multi_stage_replace_classification() {
+        use crate::stage::{RolloutAction, Stage};
+
+        Scenario::new()
+            .add_stage(
+                "otlp_out",
+                Stage::new()
+                    .pipeline(
+                        Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
+                            .expect("failed to read otlp-otlp pipeline yaml"),
+                    )
+                    .add_generator(
+                        "traffic_gen",
+                        Generator::logs()
+                            .fixed_count(200)
+                            .otlp_grpc("receiver")
+                            .core_range(1, 1)
+                            .static_signals(),
+                    )
+                    .add_capture(
+                        "validate",
+                        Capture::default()
+                            .otlp_grpc("exporter")
+                            .validate(vec![ValidationInstructions::Equivalence])
+                            .control_streams(["traffic_gen"])
+                            .core_range(2, 2),
+                    ),
+            )
+            .add_stage(
+                "otap_out",
+                Stage::new()
+                    .pipeline(
+                        Pipeline::from_file("./validation_pipelines/otlp-otap.yaml")
+                            .expect("failed to read otlp-otap pipeline yaml"),
+                    )
+                    .expect_rollout(RolloutAction::Replace)
+                    .add_generator(
+                        "traffic_gen",
+                        Generator::logs()
+                            .fixed_count(200)
+                            .otlp_grpc("receiver")
+                            .core_range(1, 1)
+                            .static_signals(),
+                    )
+                    .add_capture(
+                        "validate",
+                        Capture::default()
+                            .otap_grpc("exporter")
+                            .validate(vec![ValidationInstructions::Equivalence])
+                            .control_streams(["traffic_gen"])
+                            .core_range(2, 2),
+                    ),
+            )
+            .expect_within(120)
+            .run()
+            .expect("multi-stage replace-classification validation failed");
     }
 }
 
