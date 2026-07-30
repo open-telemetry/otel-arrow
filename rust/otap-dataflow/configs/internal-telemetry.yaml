@@ -95,6 +95,16 @@ engine:
         console:
           type: "exporter:console"
           config: {}
+          # To emit internal logs as NDJSON, replace the empty config above with:
+          # config:
+          #   format: record_json
+          #   record_json:
+          #     timestamp_format: rfc3339  # rfc3339 (default) or unix_nano
+          #     body_field: body           # body (default) or message
+          #     int64_format: number       # number (default) or string
+          #     resource: false            # Include resource attributes; default: false
+          #     scope: true                # Include scope context; default: true
+          #     otel: false                # Include OTel bookkeeping; default: false
         noop:
           type: "exporter:noop"
           config: {}
