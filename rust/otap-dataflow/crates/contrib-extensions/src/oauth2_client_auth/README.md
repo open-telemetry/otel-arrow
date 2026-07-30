@@ -25,7 +25,7 @@ the first successful token publish.
 
 For the full design -- problem, goals, lifecycle, configuration reference, and
 security considerations -- see
-[`docs/oauth2-client-auth-extension.md`](../../../../docs/oauth2-client-auth-extension.md).
+[`design.md`](./design.md).
 
 ## Crypto provider requirement
 

@@ -5,7 +5,7 @@
 //!
 //! Acquires and refreshes OAuth 2.0 access tokens using the client-credentials
 //! grant and exposes them to data-path nodes through the `BearerTokenProvider`
-//! capability. See `docs/oauth2-client-auth-extension.md` for the design.
+//! capability. See `design.md` for the design.
 
 mod auth;
 pub mod config;
