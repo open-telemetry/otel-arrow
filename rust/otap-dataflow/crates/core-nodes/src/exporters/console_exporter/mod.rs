@@ -305,6 +305,13 @@ impl ConsoleFormatter {
             return;
         }
 
+        // Note: each per-core exporter currently creates a new Tokio stdout handle for every
+        // payload. Because stdout is a process-global serialized sink, concurrent handles still
+        // contend, and large writes can be reordered or interleaved. A future implementation
+        // could move each core's complete formatted buffers through a bounded channel to one
+        // dedicated process-wide writer thread, preserving backpressure while keeping blocking
+        // I/O off the core threads. A filelog exporter could avoid this serialization by letting
+        // each core write its logs to a separate file in parallel.
         use tokio::io::AsyncWriteExt;
         if let Err(err) = tokio::io::stdout().write_all(&output).await {
             otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
