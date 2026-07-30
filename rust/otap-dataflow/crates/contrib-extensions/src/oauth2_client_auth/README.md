@@ -11,11 +11,13 @@
 | **Capability** | `bearer_token_provider` |
 | **Execution model** | Active + Shared |
 
-Acquires and refreshes OAuth 2.0 access tokens using the client-credentials
-grant and exposes them to data-path nodes through the `BearerTokenProvider`
-capability, so nodes never construct credentials or manage token refresh
-themselves. The token endpoint is reached over TLS via the engine's shared
-`TlsClientConfig`, and `client_id` / `client_secret` may be supplied inline or
+Acquires and refreshes OAuth 2.0 access tokens and exposes them to data-path
+nodes through the `BearerTokenProvider` capability, so nodes never construct
+credentials or manage token refresh themselves. Two grants are supported: the
+client-credentials grant (RFC 6749 section 4.4, client id + secret) and the
+JWT-bearer grant (RFC 7523 section 2.1, a signed JWT assertion). The token
+endpoint is reached over TLS via the engine's shared `TlsClientConfig`, and the
+`client_id` / `client_secret` / signing-key material may be supplied inline or
 via files that are re-read on each acquisition for rotation without a restart.
 Tokens are cached and refreshed ahead of expiry in a background task, concurrent
 cache misses are coalesced onto a single token request, and startup is gated on
