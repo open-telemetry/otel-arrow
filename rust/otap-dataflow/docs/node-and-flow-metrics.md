@@ -47,10 +47,11 @@ emits message outcome counters on its existing `node.consumer` and
 `consumed.messages` and `produced.messages` are available for every node at
 the normal level. `consumed.items` and `produced.items` are available for every
 node at the detailed level, or only nodes with `item_counts: true` at the normal
-level. The `signal` and `outcome` data-point attributes identify the message
-counters; the item counters use the bounded `signal` attribute with values
-`logs`, `metrics`, or `traces`. The metric-set entity attributes identify the
-pipeline and node, so group by those attributes when comparing nodes.
+level. Both message and item counters have bounded `signal` and `outcome`
+data-point attributes. `signal` is one of `logs`, `metrics`, or `traces`.
+`outcome` is the terminal result recorded during ACK/NACK unwinding.
+The metric-set entity attributes identify the pipeline and node, so group by
+those attributes when comparing nodes.
 
 ### Enable Item Counts
 
@@ -154,7 +155,11 @@ multiple flows use the shared `flow` scope. For example, a view can select
 rename or route only transformation-flow metrics.
 
 The metrics have a bounded `signal` data-point attribute with values `logs`,
-`metrics`, and `traces`.
+`metrics`, and `traces`. They intentionally do not have an `outcome` attribute.
+Flow metrics are recorded while a PData batch moves forward through the
+processor range, before its terminal ACK/NACK outcome is known. They describe
+range traversal and decision-node drops, independently of the eventual node
+outcome.
 
 | Metric | Meaning |
 | --- | --- |
