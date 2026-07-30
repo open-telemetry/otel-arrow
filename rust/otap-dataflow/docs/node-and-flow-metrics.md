@@ -37,6 +37,13 @@ With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
 emits message outcome counters on its existing `node.consumer` and
 `node.producer` metric sets:
 
+### Messages and Items
+
+A message is the PData batch that moves between nodes. An item is an individual
+log record, metric data point, or span in that batch. One message can contain
+multiple items, so message counts measure batch traffic while item counts
+measure the volume of telemetry data inside those batches.
+
 | Metric | Meaning | Emitted by | Availability |
 | --- | --- | --- | --- |
 | `consumed.messages` | Messages received by a node | `node.consumer` | `normal` or `detailed` |
@@ -44,13 +51,11 @@ emits message outcome counters on its existing `node.consumer` and
 | `consumed.items` | Items a node receives | `node.consumer` | `detailed`, or `normal` plus item-count opt-in |
 | `produced.items` | Items a node emits | `node.producer` | `detailed`, or `normal` plus item-count opt-in |
 
-A message is the PData batch that moves between nodes. An item is an individual
-log record, metric data point, or span in that batch. Both message and item
-counters have bounded `signal` and `outcome` data-point attributes. `signal` is
-one of `logs`, `metrics`, or `traces`; `outcome` is `success`, `failure`, or
-`refused`, recorded during terminal ACK/NACK unwinding. The metric-set entity
-attributes identify the pipeline and node, so group by those attributes when
-comparing nodes.
+Both message and item counters have bounded `signal` and `outcome` data-point
+attributes. `signal` is one of `logs`, `metrics`, or `traces`; `outcome` is
+`success`, `failure`, or `refused`, recorded during terminal ACK/NACK
+unwinding. The metric-set entity attributes identify the pipeline and node, so
+group by those attributes when comparing nodes.
 
 ### Enable Item Counts
 
