@@ -17,13 +17,6 @@ issues: [3435]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Introduces the runtime surface of RFC 0001 (component inventory): a
-  `#[component_inventory]` proc macro in `otap-df-engine-macros` plus a
-  `ComponentMeta`/`Category`/`COMPONENT_INVENTORY` distributed slice in
-  `otap-df-engine`, mirroring the existing `#[capability]` ->
-  `KNOWN_CAPABILITIES` mechanism. The macro re-emits the annotated item
-  unchanged and registers one link-time inventory entry; it is zero-cost and
-  read only by offline tooling. Phase 1 ships the four factory categories
-  (Receiver/Exporter/Processor/Extension); the non-factory categories and the
-  `cargo xtask component-inventory` command follow in later phases. No runtime,
-  API, or config behavior changes for existing components.
+  Adds a zero-cost, offline-tooling inventory for receiver, exporter, processor,
+  and extension factories. It does not change runtime, API, or configuration
+  behavior for existing components.

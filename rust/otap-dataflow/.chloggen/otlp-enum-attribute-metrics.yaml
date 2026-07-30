@@ -2,6 +2,7 @@
 
 change_type: breaking
 component: pipeline
-note: Consolidate shared exporter outcome and OTLP receiver metrics into bounded signal, outcome, protocol, and error type dimensions.
+note: Replace shared PData exporter outcome and OTLP receiver metric series with bounded metric sets.
 issues: [3300]
-subtext:
+subtext: |
+  Migration: Update dashboards, alerts, and queries to use `exporter.pdata.exports.messages` and the `receiver.otlp` metric sets, filtering on `signal`, `outcome`, `protocol`, and `error.type` instead of the removed metric names.
