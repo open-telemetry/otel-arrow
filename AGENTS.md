@@ -39,6 +39,11 @@ Required fields: `change_type` (one of `breaking`, `deprecation`,
 `new_component`, `enhancement`, `bug_fix`), `component` (must be listed in the
 directory's `config.yaml`), `note`, and `issues`.
 
+Changelog eligibility currently tracks user-facing behavior, not API
+compatibility. The project does not publish crates or make an API stability
+promise, so an API change alone is not a `breaking` change. Choose the entry
+type that describes the user-facing impact instead.
+
 Changelog entries must use ASCII characters only. Replace typographic punctuation
 and other non-ASCII characters with ASCII equivalents.
 

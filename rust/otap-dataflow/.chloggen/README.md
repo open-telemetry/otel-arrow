@@ -23,6 +23,11 @@ issues: [1234]                 # issue or PR number(s)
 subtext:                       # optional multi-line details
 ```
 
+Changelog eligibility currently tracks user-facing behavior, not API
+compatibility. The project does not publish crates or make an API stability
+promise, so an API change alone is not a `breaking` change. Choose the entry
+type that describes the user-facing impact instead.
+
 Breaking entries must use `subtext` for a `Migration:` section and state both
 what consumers must replace and the action they must take. Keep notes to 200
 characters and subtext to 300 characters.
