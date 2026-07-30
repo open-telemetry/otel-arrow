@@ -242,6 +242,7 @@ nested field. The process-wide memory limiter is only supported at top-level
 
 For detailed policy guides, see:
 
+- [Node and flow metrics](node-and-flow-metrics.md)
 - [Transport header policies](transport-headers.md)
 - [Memory limiter policy](memory-limiter-phase1.md)
 
@@ -531,6 +532,8 @@ Useful adjacent docs:
   feature-gated node implementations.
 - [Configuration model reference](configuration-model.md): exact field
   semantics, defaults, precedence, and validation behavior.
+- [Node and flow metrics](node-and-flow-metrics.md): configure and interpret
+  universal node item metrics and bounded processor flow metrics.
 - [URN reference](urns.md): node type and extension type syntax.
 - [Processor behavior taxonomy](processors.md): processor behavior categories.
 - [Transport header policies](transport-headers.md): inbound header capture and
