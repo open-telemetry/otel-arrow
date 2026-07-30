@@ -13,6 +13,9 @@ pub mod error;
 mod extension;
 mod metrics;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use linkme::distributed_slice;
