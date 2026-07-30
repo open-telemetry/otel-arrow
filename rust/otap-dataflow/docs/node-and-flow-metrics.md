@@ -26,12 +26,12 @@ configuration.
 
 | Question | Use |
 | --- | --- |
-| Which node changed the count of logs, metrics, or traces? | Universal node item metrics |
+| Which node changed the count of logs, metrics, or traces? | Node item metrics |
 | What is the aggregate compute time for selected processor stages? | Flow metrics |
-| Which decision processor dropped items within a bounded processing path? | Flow metrics |
-| How many items did a receiver admit or exporter emit? | Universal node item metrics |
+| Which decision processor dropped items within a processor range? | Flow metrics |
+| How many items did a receiver admit or exporter emit? | Node item metrics |
 
-## Universal Node Metrics
+## Node Metrics
 
 With `policies.telemetry.runtime_metrics: normal` or `detailed`, every node
 emits message outcome counters on its existing `node.consumer` and
@@ -44,14 +44,13 @@ emits message outcome counters on its existing `node.consumer` and
 | `consumed.items` | Items a node receives | `node.consumer` | `detailed`, or `normal` plus item-count opt-in |
 | `produced.items` | Items a node emits | `node.producer` | `detailed`, or `normal` plus item-count opt-in |
 
-`consumed.messages` and `produced.messages` are available for every node at
-the normal level. `consumed.items` and `produced.items` are available for every
-node at the detailed level, or only nodes with `item_counts: true` at the normal
-level. Both message and item counters have bounded `signal` and `outcome`
-data-point attributes. `signal` is one of `logs`, `metrics`, or `traces`.
-`outcome` is the terminal result recorded during ACK/NACK unwinding.
-The metric-set entity attributes identify the pipeline and node, so group by
-those attributes when comparing nodes.
+A message is the PData batch that moves between nodes. An item is an individual
+log record, metric data point, or span in that batch. Both message and item
+counters have bounded `signal` and `outcome` data-point attributes. `signal` is
+one of `logs`, `metrics`, or `traces`; `outcome` is `success`, `failure`, or
+`refused`, recorded during terminal ACK/NACK unwinding. The metric-set entity
+attributes identify the pipeline and node, so group by those attributes when
+comparing nodes.
 
 ### Enable Item Counts
 
@@ -131,10 +130,11 @@ policies:
           - dropped_items
 ```
 
-The range includes both boundary processors. The engine validates that the end
-node is reachable from the start node and rejects interleaved flow ranges.
-Omit `metrics` to enable every supported flow metric. When `metrics` is
-present, it must not be empty and must not repeat a metric.
+The `start_node` and `end_node` fields name processors; the range includes both
+boundary processors. The engine validates that the end processor is reachable
+from the start processor and rejects interleaved flow ranges. Omit `metrics` to
+enable every supported flow metric. When present, it must not be empty and must
+not repeat a metric.
 
 ### Flow Metrics and Attributes
 
@@ -161,12 +161,12 @@ processor range, before its terminal ACK/NACK outcome is known. They describe
 range traversal and decision-node drops, independently of the eventual node
 outcome.
 
-| Metric | Meaning |
-| --- | --- |
-| `consumed.items` | Signal items entering the start processor. |
-| `compute.duration` | Aggregate processor compute duration in the range. |
-| `produced.items` | Signal items leaving the end processor. |
-| `dropped.items` | Signal items a decision processor in the range chose to drop. |
+| Configuration value | Emitted metric | Meaning |
+| --- | --- | --- |
+| `consumed_items` | `consumed.items` | Signal items entering the start processor. |
+| `compute_duration` | `compute.duration` | Aggregate processor compute duration in the range. |
+| `produced_items` | `produced.items` | Signal items leaving the end processor. |
+| `dropped_items` | `dropped.items` | Signal items a decision processor in the range chose to drop. |
 
 For a linear flow, the sum of `dropped.items` across
 `flow.node.decision` equals `consumed.items - produced.items`. There is no

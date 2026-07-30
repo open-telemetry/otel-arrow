@@ -605,7 +605,7 @@ Telemetry policy notes:
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
 - See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
-  interpret universal node item metrics and bounded processor flow metrics.
+  interpret node item metrics and processor flow metrics.
 
 Resolution semantics:
 

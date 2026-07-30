@@ -533,7 +533,7 @@ Useful adjacent docs:
 - [Configuration model reference](configuration-model.md): exact field
   semantics, defaults, precedence, and validation behavior.
 - [Node and flow metrics](node-and-flow-metrics.md): configure and interpret
-  universal node item metrics and bounded processor flow metrics.
+  node item metrics and processor flow metrics.
 - [URN reference](urns.md): node type and extension type syntax.
 - [Processor behavior taxonomy](processors.md): processor behavior categories.
 - [Transport header policies](transport-headers.md): inbound header capture and
