@@ -15,7 +15,7 @@ use wiremock::matchers::{body_string_contains, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::auth::Auth;
-use super::config::{Config, GrantType};
+use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::extension::{self, OAuth2ClientAuthExtension};
 use super::metrics::{OAuth2ClientAuthMetrics, OAuth2ClientAuthMetricsTracker};
 use super::*;
@@ -73,6 +73,15 @@ async fn start_failing_server() -> MockServer {
         .mount(&server)
         .await;
     server
+}
+
+/// Generates a throwaway 2048-bit RSA keypair (private + public PEM) at runtime,
+/// so no key material is ever committed to the repository.
+fn generate_test_rsa_keypair() -> (String, String) {
+    let key_pair =
+        rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_2048)
+            .expect("generate test RSA key pair");
+    (key_pair.serialize_pem(), key_pair.public_key_pem())
 }
 
 // -- Config tests ----------------------------------------------
@@ -622,4 +631,159 @@ async fn jitter_refresh_stays_within_bounds() {
             "jitter must not precede the min-interval floor"
         );
     }
+}
+
+// -- JWT-bearer grant tests ------------------------------------
+
+// Scenario: A valid jwt-bearer config with all optional fields is deserialized.
+// Guarantees: The grant and signature algorithm parse, so operators can select the jwt-bearer flow.
+#[test]
+fn jwt_bearer_config_parses() {
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "grant_type": "jwt-bearer",
+        "client_id": "id",
+        "client_certificate_key": "test-signing-key",
+        "signature_algorithm": "RS384",
+        "client_certificate_key_id": "kid-1",
+        "iss": "issuer",
+        "audience": "https://aud.example.com",
+        "claims": { "foo": "bar" },
+    }))
+    .expect("valid jwt-bearer config");
+    assert_eq!(cfg.grant_type, GrantType::JwtBearer);
+    assert_eq!(cfg.signature_algorithm, Some(SignatureAlgorithm::Rs384));
+}
+
+// Scenario: A jwt-bearer config omits both signing-key fields.
+// Guarantees: Validation rejects it, since the grant cannot sign an assertion without a key.
+#[test]
+fn jwt_bearer_requires_signing_key() {
+    let err = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "grant_type": "jwt-bearer",
+        "client_id": "id",
+    }))
+    .expect_err("missing signing key must be rejected");
+    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+}
+
+// Scenario: A jwt-bearer config also sets a client secret.
+// Guarantees: Validation rejects the client_credentials-only field for the jwt-bearer grant.
+#[test]
+fn jwt_bearer_rejects_client_secret() {
+    let err = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "grant_type": "jwt-bearer",
+        "client_id": "id",
+        "client_certificate_key": "test-signing-key",
+        "client_secret": "nope",
+    }))
+    .expect_err("client_secret must be rejected for jwt-bearer");
+    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+}
+
+// Scenario: A client_credentials config sets a jwt-bearer-only field (`iss`).
+// Guarantees: Validation rejects the jwt-bearer-only field for the client_credentials grant.
+#[test]
+fn client_credentials_rejects_jwt_fields() {
+    let err = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "client_id": "id",
+        "client_secret": "secret",
+        "iss": "issuer",
+    }))
+    .expect_err("jwt-bearer fields must be rejected for client_credentials");
+    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+}
+
+// Scenario: A jwt-bearer acquisition signs an assertion and posts it to the token endpoint.
+// Guarantees: The request carries the jwt-bearer grant_type and an `assertion` that verifies against
+// the public key and carries the expected iss/sub/aud/exp/jti claims; the token response is returned.
+#[tokio::test]
+async fn jwt_bearer_signs_assertion_and_acquires_token() {
+    let (private_key_pem, public_key_pem) = generate_test_rsa_keypair();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=urn"))
+        .and(body_string_contains("assertion="))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "jwt-tok",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        })))
+        .mount(&server)
+        .await;
+
+    let token_url = format!("{}/token", server.uri());
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": token_url.clone(),
+        "grant_type": "jwt-bearer",
+        "client_id": "svc-account",
+        "client_certificate_key": private_key_pem,
+        "scopes": ["telemetry.write"],
+    }))
+    .expect("valid jwt-bearer config");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let (tx, _rx) = watch::channel(None);
+    let ext =
+        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+
+    let token = ext.get_token().await.expect("jwt-bearer token acquired");
+    assert_eq!(token.expose_token(), "jwt-tok");
+
+    // Recover the assertion the extension sent and verify its signature + claims.
+    let requests = server.received_requests().await.expect("requests recorded");
+    let body = String::from_utf8(requests[0].body.clone()).expect("utf8 request body");
+    let assertion = body
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("assertion="))
+        .expect("assertion parameter present");
+
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::RS256);
+    // The audience is asserted explicitly below rather than through the validator.
+    validation.validate_aud = false;
+    let decoded = jsonwebtoken::decode::<serde_json::Value>(
+        assertion,
+        &jsonwebtoken::DecodingKey::from_rsa_pem(public_key_pem.as_bytes())
+            .expect("public key parses"),
+        &validation,
+    )
+    .expect("assertion verifies against the public key");
+    let claims = decoded.claims;
+    assert_eq!(claims["iss"], "svc-account");
+    assert_eq!(claims["sub"], "svc-account");
+    assert_eq!(claims["aud"], serde_json::Value::String(token_url));
+    assert!(claims.get("jti").is_some(), "assertion carries a jti");
+    assert!(claims.get("exp").is_some(), "assertion carries an exp");
+}
+
+// Scenario: A jwt-bearer config supplies the signing key via `client_certificate_key_file`.
+// Guarantees: The key is read from the file and used to sign the assertion, yielding a token.
+#[tokio::test]
+async fn jwt_bearer_reads_signing_key_from_file() {
+    let (private_key_pem, _) = generate_test_rsa_keypair();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key_path = dir.path().join("signing_key.pem");
+    std::fs::write(&key_path, &private_key_pem).expect("write signing key");
+
+    let server = start_token_server("jwt-tok", 3600).await;
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "grant_type": "jwt-bearer",
+        "client_id": "svc-account",
+        "client_certificate_key_file": key_path.to_string_lossy(),
+    }))
+    .expect("valid jwt-bearer config");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let (tx, _rx) = watch::channel(None);
+    let ext =
+        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+
+    let token = ext
+        .get_token()
+        .await
+        .expect("token acquired via key file");
+    assert_eq!(token.expose_token(), "jwt-tok");
 }

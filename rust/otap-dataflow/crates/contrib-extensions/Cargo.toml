@@ -48,6 +48,7 @@ oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:js
 [dev-dependencies]
 otap-df-engine = { workspace = true, features = ["test-utils"] }
 otap-df-otap = { workspace = true, features = ["crypto-ring"] }
+rcgen = { workspace = true, features = ["aws_lc_rs"] }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
