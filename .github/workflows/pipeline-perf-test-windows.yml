@@ -1,3 +1,39 @@
+# Pipeline Performance Tests - Windows
+#
+# STATUS: EXPERIMENTAL / NON-GATING (informational only).
+#   Hosted GitHub Windows runners are shared, noisy environments with no
+#   dedicated perf hardware. These results are for feasibility and directional
+#   sanity, NOT for absolute regression claims. Every measurement step runs with
+#   `continue-on-error: true` so a failure or a noisy sample never blocks a PR.
+#
+# TEST OBJECTIVE:
+#   Determine whether a meaningful subset of the pipeline perf suite (starting
+#   with idle-state resource usage) is feasible to run on hosted Windows CI,
+#   and characterize the variance so we know how much to trust the numbers.
+#
+# ACCEPTANCE / STABILITY CRITERIA (informational thresholds, see `env` below):
+#   - Job completes within the job `timeout-minutes` budget.
+#   - Idle-memory coefficient of variation (CV = stddev/mean) across
+#     MEASURED_ITERATIONS runs is <= MAX_CV_PERCENT. Above that, results are
+#     treated as directional only.
+#   - Linear memory-scaling fit (R squared) across 1/2/4 cores is reported for
+#     directional sanity, compared to prior Windows runs and the Linux baseline.
+#
+# METHODOLOGY:
+#   - Environment matches the original setup (no pinned versions): the
+#     windows-latest image, whatever Python the runner ships, and the stable
+#     Rust toolchain (as declared in rust-toolchain.toml, same as every other
+#     workflow). Exact runner details are captured in the metadata artifact.
+#   - WARMUP_ITERATIONS discarded warmup run(s) before measurement.
+#   - MEASURED_ITERATIONS repeated samples; report median / p95 / stddev / CV
+#     rather than a single datapoint or a bare mean.
+#   - Raw per-run JSON plus machine metadata uploaded as artifacts every run.
+#
+# PROMOTION CRITERIA (when this may become gating):
+#   Once several weeks of history show CV consistently <= MAX_CV_PERCENT and a
+#   stable median across runs, define absolute pass/fail thresholds and remove
+#   the `continue-on-error` markers. Until then this stays experimental.
+
 name: Pipeline Performance Tests - Windows
 permissions:
   contents: read
@@ -6,13 +42,26 @@ on:
   pull_request:
     paths:
       - '.github/workflows/pipeline-perf-test-windows.yml'
+      - '.github/workflows/scripts/analyze-idle-state-scaling.py'
+      - '.github/workflows/scripts/analyze-idle-state-variance.py'
       - 'rust/otap-dataflow/**'
       - 'tools/pipeline_perf_test/**'
   workflow_dispatch:
 
+# Tunable statistical parameters. These control measurement rigor only; they do
+# not pin any tool/runtime versions. Adjust here, not per-step.
+env:
+  # Warmup + repetition for statistical rigor.
+  WARMUP_ITERATIONS: "1"
+  MEASURED_ITERATIONS: "5"
+  # Informational stability threshold (percent). CV above this => "noisy".
+  MAX_CV_PERCENT: "15"
+
 jobs:
   pipeline-perf-test-windows:
     runs-on: windows-latest
+    # Bound total runtime; hard cap so a hung run cannot burn the whole budget.
+    timeout-minutes: 60
     steps:
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@a90bcbc6539c36a85cdfeb73f7e2f433735f215b # v2.15.0
@@ -48,6 +97,39 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Capture runner metadata
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path tools/pipeline_perf_test/results | Out-Null
+          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+          $os = Get-CimInstance Win32_OperatingSystem
+          $meta = [ordered]@{
+            timestamp_utc    = (Get-Date).ToUniversalTime().ToString("o")
+            commit_sha       = "${{ github.sha }}"
+            ref              = "${{ github.ref }}"
+            runner_os        = "${{ runner.os }}"
+            runner_image     = "windows-latest"
+            os_version       = $os.Version
+            os_caption       = $os.Caption
+            cpu_model        = $cpu.Name
+            logical_cores    = [Environment]::ProcessorCount
+            physical_cores   = $cpu.NumberOfCores
+            total_memory_gb  = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
+            rust_version     = (rustc --version)
+            python_version   = (python --version)
+            warmup_iters     = "${{ env.WARMUP_ITERATIONS }}"
+            measured_iters   = "${{ env.MEASURED_ITERATIONS }}"
+            max_cv_percent   = "${{ env.MAX_CV_PERCENT }}"
+          }
+          $json = $meta | ConvertTo-Json -Depth 4
+          $json | Out-File -Encoding utf8 tools/pipeline_perf_test/results/windows-runner-metadata.json
+          Write-Host $json
+          echo "### Windows Perf Runner Metadata" >> $env:GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $env:GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $env:GITHUB_STEP_SUMMARY
+          foreach ($k in $meta.Keys) { echo "| $k | $($meta[$k]) |" >> $env:GITHUB_STEP_SUMMARY }
+
       - name: Build df_engine.exe
         shell: pwsh
         working-directory: ./rust/otap-dataflow
@@ -77,15 +159,59 @@ jobs:
           python -m pip install --user -r tools/pipeline_perf_test/orchestrator/requirements.txt
           python -m pip install --user -r tools/pipeline_perf_test/load_generator/requirements.txt
 
-      - name: Run idle state test (1 core)
+      # Warmup + repeated measurement for the 1-core idle test. Warmup runs are
+      # discarded (fill caches / JIT / Docker layer warmup); measured runs are
+      # collected per-iteration so we can report median / p95 / CV instead of a
+      # single, easily-misled datapoint.
+      - name: Run idle state test (1 core) - warmup + repeated samples
         if: ${{ !cancelled() }}
+        continue-on-error: true
         shell: pwsh
+        working-directory: ./tools/pipeline_perf_test
         run: |
-          cd tools/pipeline_perf_test
-          python orchestrator/run_orchestrator.py --config test_suites/integration/nightly-windows/idle-state-docker.yaml
+          $ErrorActionPreference = 'Stop'
+          $warmup = [int]"${{ env.WARMUP_ITERATIONS }}"
+          $iterations = [int]"${{ env.MEASURED_ITERATIONS }}"
+          $config = "test_suites/integration/nightly-windows/idle-state-docker.yaml"
+          $src = "results/windows_idle_state_1core/gh-actions-benchmark"
+          $varianceDir = "results/windows_idle_variance"
+          if (Test-Path $varianceDir) { Remove-Item -Recurse -Force $varianceDir }
+          New-Item -ItemType Directory -Force -Path $varianceDir | Out-Null
+
+          for ($w = 1; $w -le $warmup; $w++) {
+            Write-Host "=== Warmup iteration $w/$warmup (discarded) ==="
+            python orchestrator/run_orchestrator.py --config $config
+          }
+
+          for ($i = 1; $i -le $iterations; $i++) {
+            Write-Host "=== Measured iteration $i/$iterations ==="
+            if (Test-Path $src) { Remove-Item -Recurse -Force $src }
+            python orchestrator/run_orchestrator.py --config $config
+            $iterDir = Join-Path $varianceDir ("iter_{0:D2}" -f $i)
+            New-Item -ItemType Directory -Force -Path $iterDir | Out-Null
+            Copy-Item "$src/*.json" $iterDir -Force
+          }
+
+      - name: Analyze idle state variance (1 core)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python .github/workflows/scripts/analyze-idle-state-variance.py `
+            tools/pipeline_perf_test/results/windows_idle_variance `
+            tools/pipeline_perf_test/results/windows-idle-variance.json `
+            "${{ env.MAX_CV_PERCENT }}" `
+            | Tee-Object -Variable varianceReport
+          echo "### Windows Idle State Variance (1 core, N=${{ env.MEASURED_ITERATIONS }})" >> $env:GITHUB_STEP_SUMMARY
+          echo '```' >> $env:GITHUB_STEP_SUMMARY
+          $varianceReport >> $env:GITHUB_STEP_SUMMARY
+          echo '```' >> $env:GITHUB_STEP_SUMMARY
 
       - name: Run idle state test (2 cores)
         if: ${{ !cancelled() }}
+        continue-on-error: true
         shell: pwsh
         run: |
           cd tools/pipeline_perf_test
@@ -93,6 +219,7 @@ jobs:
 
       - name: Run idle state test (4 cores)
         if: ${{ !cancelled() }}
+        continue-on-error: true
         shell: pwsh
         run: |
           cd tools/pipeline_perf_test
@@ -100,6 +227,7 @@ jobs:
 
       - name: Analyze memory scaling
         if: ${{ !cancelled() }}
+        continue-on-error: true
         shell: pwsh
         env:
           PYTHONUTF8: "1"
@@ -116,10 +244,18 @@ jobs:
 
       - name: Run 100kLRPS OTLP-OTLP test
         if: ${{ !cancelled() }}
+        continue-on-error: true
         shell: pwsh
         run: |
           cd tools/pipeline_perf_test
           python orchestrator/run_orchestrator.py --config test_suites/integration/nightly-windows/100klrps-docker.yaml
+
+      - name: Upload runner metadata
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: windows-runner-metadata
+          path: tools/pipeline_perf_test/results/windows-runner-metadata.json
 
       - name: Upload idle state results
         if: ${{ !cancelled() }}
@@ -128,6 +264,8 @@ jobs:
           name: windows-idle-state-results
           path: |
             tools/pipeline_perf_test/results/windows_idle_state_*/gh-actions-benchmark/*.json
+            tools/pipeline_perf_test/results/windows_idle_variance/**/*.json
+            tools/pipeline_perf_test/results/windows-idle-variance.json
             tools/pipeline_perf_test/results/windows-idle-memory-scaling.json
 
       - name: Upload 100kLRPS results
