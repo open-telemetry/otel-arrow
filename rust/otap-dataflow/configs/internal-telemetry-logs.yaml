@@ -31,7 +31,7 @@ engine:
           pipeline_metrics: false
           tokio_metrics: false
           runtime_metrics: none
-      # Internal telemetry pipeline
+      # Internal logs telemetry pipeline
       # Runs on a single thread (controller-managed) and can use dedicated policies.
       nodes:
         telemetry:

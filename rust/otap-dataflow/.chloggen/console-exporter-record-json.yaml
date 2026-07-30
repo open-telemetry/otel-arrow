@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Add pretty and record_json output formats to the console exporter, including newline-delimited structured log records.
+note: Add pretty and record_json output formats to the console exporter, including newline-delimited structured log records and separate internal telemetry log and metric example configurations.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3611]

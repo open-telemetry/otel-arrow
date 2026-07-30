@@ -13,7 +13,7 @@ future.
 
 ## Available Configurations
 
-### `internal-telemetry.yaml`
+### `internal-telemetry-logs.yaml`
 
 Routes only the engine's own logs through the Internal Telemetry System:
 
@@ -25,8 +25,8 @@ Routes only the engine's own logs through the Internal Telemetry System:
 Validate the configuration, then run the demo on one core:
 
 ```bash
-cargo run -- --config configs/internal-telemetry.yaml --validate-and-exit
-cargo run -- --config configs/internal-telemetry.yaml --num-cores 1
+cargo run -- --config configs/internal-telemetry-logs.yaml --validate-and-exit
+cargo run -- --config configs/internal-telemetry-logs.yaml --num-cores 1
 ```
 
 ### `internal-telemetry-metrics.yaml`
