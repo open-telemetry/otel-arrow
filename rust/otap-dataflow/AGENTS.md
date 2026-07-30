@@ -148,8 +148,17 @@ Required fields: `change_type` (one of `breaking`, `deprecation`,
 `new_component`, `enhancement`, `bug_fix`), `component` (must be listed in
 [`.chloggen/config.yaml`](.chloggen/config.yaml)), `note`, and `issues`.
 
+Changelog eligibility currently tracks user-facing behavior, not API
+compatibility. The project does not publish crates or make an API stability
+promise, so an API change alone is not a `breaking` change. Choose the entry
+type that describes the user-facing impact instead.
+
 Changelog entries must use ASCII characters only. Replace typographic punctuation
 and other non-ASCII characters with ASCII equivalents.
+
+Breaking entries must include a `Migration:` section with the consumer action.
+Keep `note` values to 200 characters and `subtext` to 300 characters;
+`make chlog-validate` enforces these limits.
 
 Skip the entry only when the change is not user-facing. In that case include
 `chore` in the PR title.
