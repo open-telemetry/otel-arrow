@@ -24,6 +24,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    /// Signing the JWT-bearer assertion failed.
+    #[error("failed to sign JWT assertion: {message}")]
+    JwtSigning {
+        /// Human-readable cause.
+        message: String,
+    },
+
     /// Acquiring a token from the token endpoint failed.
     #[error("token acquisition failed: {message}")]
     TokenAcquisition {

@@ -33,6 +33,10 @@ pub enum GrantType {
     #[serde(rename = "client_credentials")]
     #[default]
     ClientCredentials,
+    /// JWT-bearer authorization grant (RFC 7523 section 2.1): the client signs
+    /// a JWT and sends it as the `assertion` parameter instead of a secret.
+    #[serde(rename = "jwt-bearer")]
+    JwtBearer,
 }
 
 impl GrantType {
@@ -41,6 +45,7 @@ impl GrantType {
     pub fn as_str(self) -> &'static str {
         match self {
             GrantType::ClientCredentials => "client_credentials",
+            GrantType::JwtBearer => "jwt-bearer",
         }
     }
 }
@@ -49,6 +54,21 @@ impl std::fmt::Display for GrantType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// RSA algorithm used to sign the JWT-bearer assertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+pub enum SignatureAlgorithm {
+    /// RSASSA-PKCS1-v1_5 using SHA-256.
+    #[serde(rename = "RS256")]
+    #[default]
+    Rs256,
+    /// RSASSA-PKCS1-v1_5 using SHA-384.
+    #[serde(rename = "RS384")]
+    Rs384,
+    /// RSASSA-PKCS1-v1_5 using SHA-512.
+    #[serde(rename = "RS512")]
+    Rs512,
 }
 
 /// Configuration for the OAuth 2.0 Client Auth extension.
@@ -110,6 +130,37 @@ pub struct Config {
     /// Accepts human-readable durations (e.g. `30s`, `1m`). Must be non-zero.
     #[serde(with = "humantime_serde", default = "default_startup_timeout")]
     pub startup_timeout: Duration,
+
+    // -- JWT-bearer grant fields (rejected for `client_credentials`) --
+    /// Private key (PEM) used to sign the JWT-bearer assertion. Required for
+    /// the `jwt-bearer` grant unless `client_certificate_key_file` is set.
+    #[serde(default)]
+    pub client_certificate_key: Option<String>,
+
+    /// Path to a file holding the signing key. Re-read on each acquisition and
+    /// takes precedence over `client_certificate_key`.
+    #[serde(default)]
+    pub client_certificate_key_file: Option<PathBuf>,
+
+    /// RSA algorithm used to sign the assertion. Defaults to `RS256`.
+    #[serde(default)]
+    pub signature_algorithm: Option<SignatureAlgorithm>,
+
+    /// Optional `kid` header placed on the signed assertion.
+    #[serde(default)]
+    pub client_certificate_key_id: Option<String>,
+
+    /// Assertion issuer (`iss` claim). Defaults to `client_id`.
+    #[serde(default)]
+    pub iss: Option<String>,
+
+    /// Assertion audience (`aud` claim). Defaults to `token_url`.
+    #[serde(default)]
+    pub audience: Option<String>,
+
+    /// Extra claims added to the signed assertion.
+    #[serde(default)]
+    pub claims: HashMap<String, String>,
 }
 
 impl Config {
@@ -148,16 +199,53 @@ impl Config {
             return Err("either `client_id` or `client_id_file` must be set".to_string());
         }
 
-        // The client-credentials grant authenticates with a secret.
-        if self.grant_type == GrantType::ClientCredentials
-            && self.client_secret.is_none()
-            && self.client_secret_file.is_none()
-        {
-            return Err(
-                "either `client_secret` or `client_secret_file` must be set for the \
-                 `client_credentials` grant"
-                    .to_string(),
-            );
+        // Grant-specific rules: each grant requires its own credential material
+        // and rejects the fields that belong only to the other grant.
+        let jwt_fields_set = self.client_certificate_key.is_some()
+            || self.client_certificate_key_file.is_some()
+            || self.signature_algorithm.is_some()
+            || self.client_certificate_key_id.is_some()
+            || self.iss.is_some()
+            || self.audience.is_some()
+            || !self.claims.is_empty();
+        let secret_fields_set = self.client_secret.is_some() || self.client_secret_file.is_some();
+
+        match self.grant_type {
+            GrantType::ClientCredentials => {
+                if !secret_fields_set {
+                    return Err(
+                        "either `client_secret` or `client_secret_file` must be set for the \
+                         `client_credentials` grant"
+                            .to_string(),
+                    );
+                }
+                if jwt_fields_set {
+                    return Err(
+                        "`jwt-bearer` fields (`client_certificate_key`, `signature_algorithm`, \
+                         `client_certificate_key_id`, `iss`, `audience`, `claims`) are not valid \
+                         for the `client_credentials` grant"
+                            .to_string(),
+                    );
+                }
+            }
+            GrantType::JwtBearer => {
+                if self.client_certificate_key.is_none()
+                    && self.client_certificate_key_file.is_none()
+                {
+                    return Err(
+                        "either `client_certificate_key` or `client_certificate_key_file` must be \
+                         set for the `jwt-bearer` grant"
+                            .to_string(),
+                    );
+                }
+                if secret_fields_set {
+                    return Err(
+                        "`client_secret`/`client_secret_file` are not valid for the `jwt-bearer` \
+                         grant"
+                            .to_string(),
+                    );
+                }
+            }
         }
 
         Ok(())
