@@ -291,6 +291,7 @@ pub async fn get_logs(
 /// Query parameters:
 /// - `reset` (bool, default false): whether to reset metrics after reading.
 /// - `format` (string, default "prometheus"): output format, one of "json", "json_compact", "line_protocol", "prometheus".
+/// - `keep_all_zeroes` (bool, default false): whether JSON formats include all-zero metric sets.
 async fn get_metrics(
     State(state): State<AppState>,
     Query(q): Query<MetricsQuery>,
@@ -318,9 +319,9 @@ async fn get_metrics(
         }
         OutputFormat::JsonCompact => {
             let metric_sets = if q.reset {
-                collect_compact_snapshot_and_reset(&state.metrics_registry)
+                collect_compact_snapshot_and_reset(&state.metrics_registry, q.keep_all_zeroes)
             } else {
-                collect_compact_snapshot(&state.metrics_registry)
+                collect_compact_snapshot(&state.metrics_registry, q.keep_all_zeroes)
             };
 
             let response = AllMetrics {
@@ -1122,7 +1123,10 @@ fn collect_metrics_snapshot_and_reset(
 }
 
 /// Compact snapshot without resetting.
-fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec<MetricSet> {
+fn collect_compact_snapshot(
+    telemetry_registry: &TelemetryRegistryHandle,
+    keep_all_zeroes: bool,
+) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
     telemetry_registry.visit_current_metrics_with_item_attrs(
@@ -1147,7 +1151,7 @@ fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec
                 });
             }
         },
-        false,
+        keep_all_zeroes,
     );
 
     metric_sets
@@ -1156,6 +1160,7 @@ fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec
 /// Compact snapshot with resetting.
 fn collect_compact_snapshot_and_reset(
     telemetry_registry: &TelemetryRegistryHandle,
+    keep_all_zeroes: bool,
 ) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
@@ -1180,7 +1185,7 @@ fn collect_compact_snapshot_and_reset(
                 });
             }
         },
-        false,
+        keep_all_zeroes,
     );
 
     metric_sets
@@ -2370,6 +2375,7 @@ mod tests {
     };
     use otap_df_telemetry::instrument::MmscSnapshot;
     use otap_df_telemetry::metrics::MetricSetHandler;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
     use tower::ServiceExt;
 
@@ -3599,6 +3605,51 @@ mod tests {
 
         fn attribute_values(&self) -> &[AttributeValue] {
             &self.values
+        }
+    }
+
+    /// Scenario: compact JSON requests retain an unobserved all-zero metric set.
+    /// Guarantees: `keep_all_zeroes` is honored with and without resetting metrics.
+    #[tokio::test]
+    async fn metrics_handler_compact_json_honors_keep_all_zeroes() {
+        for reset in [false, true] {
+            let state = test_app_state();
+            let _metric_set =
+                state
+                    .metrics_registry
+                    .register_metric_set::<E2eMetricSet>(E2eAttributeSet {
+                        values: vec![AttributeValue::String("GET".to_string())],
+                    });
+
+            let response = get_metrics(
+                State(state),
+                Query(MetricsQuery {
+                    reset,
+                    format: Some(OutputFormat::JsonCompact),
+                    keep_all_zeroes: true,
+                }),
+            )
+            .await
+            .expect("compact JSON metrics should render");
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("compact JSON metrics body should collect");
+            let metrics: api::CompactMetricsResponse = serde_json::from_slice(&body)
+                .expect("compact JSON metrics response should deserialize");
+
+            assert_eq!(metrics.metric_sets.len(), 1);
+            assert_eq!(metrics.metric_sets[0].name, "http_server");
+            assert_eq!(
+                metrics.metric_sets[0].metrics,
+                BTreeMap::from([
+                    (
+                        "http_request_duration".to_string(),
+                        api::MetricValue::F64(0.0)
+                    ),
+                    ("http_requests".to_string(), api::MetricValue::U64(0)),
+                    ("memory_usage".to_string(), api::MetricValue::U64(0)),
+                ])
+            );
         }
     }
 
