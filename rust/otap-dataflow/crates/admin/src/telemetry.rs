@@ -1727,12 +1727,14 @@ fn build_prom_metric_name(base_name: &str, unit: &str, instrument: Instrument) -
     name
 }
 
-/// Returns true if `name` ends with `_<word>`. `word` is compared byte-wise
-/// (ASCII). Avoids allocating a temporary `String` for the suffix check.
+/// Returns true if `name` equals `word` or ends with `_<word>`. `word` is
+/// compared byte-wise (ASCII). Avoids allocating a temporary `String` for the
+/// suffix check.
 fn ends_with_underscore_word(name: &str, word: &str) -> bool {
-    name.len() > word.len()
-        && name.ends_with(word)
-        && name.as_bytes()[name.len() - word.len() - 1] == b'_'
+    name == word
+        || (name.len() > word.len()
+            && name.ends_with(word)
+            && name.as_bytes()[name.len() - word.len() - 1] == b'_')
 }
 
 /// Returns true if `name` already ends with `_total` as a proper suffix
@@ -3198,6 +3200,16 @@ mod tests {
         assert_eq!(
             build_prom_metric_name("http_request_duration", "s", Instrument::Counter),
             "http_request_duration_seconds_total"
+        );
+    }
+
+    /// Scenario: A counter name exactly matches the Prometheus word for its UCUM unit.
+    /// Guarantees: The unit word is not duplicated before the counter `_total` suffix.
+    #[test]
+    fn test_build_prom_metric_name_counter_named_for_unit() {
+        assert_eq!(
+            build_prom_metric_name("bytes", "By", Instrument::Counter),
+            "bytes_total"
         );
     }
 
