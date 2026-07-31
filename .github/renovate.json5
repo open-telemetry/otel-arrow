@@ -22,8 +22,7 @@
   // preset (which extends :dependencyDashboard).
   "dependencyDashboardOSVVulnerabilitySummary": "unresolved",
   "extends": [
-    "config:recommended",
-    "docker:pinDigests",
+    "config:best-practices",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
   // NOTE: Rule ordering matters here
