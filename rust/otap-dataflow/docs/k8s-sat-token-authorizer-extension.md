@@ -51,16 +51,17 @@ its first production implementation.
 
 - Validate an inbound SAT via the Kubernetes `TokenReview` API
   (**authentication**).
-- Admit the resulting identity via one of two strategies (**admission**): a
-  static service-account allow-list, or a Kubernetes RBAC check via
-  `SubjectAccessReview`.
+- Admit the resulting identity per audience (**admission**): each audience is
+  bound to one strategy -- a static service-account allow-list or a Kubernetes
+  RBAC check via `SubjectAccessReview` -- so an identity is only trusted for the
+  audience it was minted for (no cross-tenant admission).
 - Return a single `AuthzDecision` (`Allow` carrying an `AuthorizedIdentity`, or a
   coarse `Deny`), behind one `authorize` call, so receivers do not orchestrate
   the steps themselves.
 - **Fail closed**: any undetermined outcome (API server unreachable) is an
   `Err`, which callers must treat as a deny.
-- Bound load on the API server by caching reached decisions, keyed by the opaque
-  token.
+- Bound load on the API server by caching reached decisions, keyed by the token's
+  SHA-256 digest.
 
 ## Non-goals
 
@@ -136,19 +137,21 @@ extensions is a future enhancement).
 
 1. **Empty credential** short-circuits to `Deny(MissingCredential)` without any
    API call.
-2. **Cache hit** (a still-valid decision keyed by the opaque token) is returned
-   directly.
+2. **Cache hit** (a still-valid decision keyed by the token's SHA-256 digest) is
+   returned directly.
 3. **Client init** builds the Kubernetes client on first use; a build failure is
    undetermined and returns an `Err` -- fail closed (the next request retries).
-4. **`TokenReview`** is submitted for the token with the configured audiences.
-   The API server answer maps to:
+4. **`TokenReview`** is submitted for the token with the union of all entry
+   audiences. The API server answer maps to:
    - authenticated -> **admission** (below);
    - not authenticated -> `Deny(InvalidCredential)` with the API server's
      message as log-only detail;
    - request failure / missing status -> `Err` (undetermined; not cached).
-5. **Admission** (only when authenticated): allow-list / audience-only admission
-   is decided in-process, while RBAC admission issues a second API call
-   (`SubjectAccessReview`); an RBAC request failure is `Err` (undetermined; not
+5. **Admission** (only when authenticated): the entry for the audience the API
+   server *confirmed* is selected; its allow-list / audience-only admission is
+   decided in-process, while RBAC admission issues a second API call
+   (`SubjectAccessReview`). A token whose confirmed audience has no entry is
+   `Deny(NotPermitted)`; an RBAC request failure is `Err` (undetermined; not
    cached).
 6. The reached decision (allow or deny) is cached and returned.
 
@@ -157,11 +160,20 @@ No lock is held across the API-server awaits; the cache uses short
 
 ### Admission
 
-Admission runs after authentication and uses exactly one strategy (the two
-config fields are mutually exclusive):
+Admission is **per audience**. Each configured entry ties one audience to one
+admission strategy, and admission uses the entry for the audience `TokenReview`
+actually confirmed -- **not** a global list. This binds a service account to the
+audience it was minted for and closes cross-tenant admission: with two tenants,
+a token minted by tenant A's SA for tenant A's audience cannot be admitted
+through tenant B's entry, even if that SA also appears elsewhere. `TokenReview`
+still requests the union of audiences; only the admission step keys off the
+matched one.
 
-- **Audience-only** (neither field set): any authenticated service account is
-  admitted.
+Within a entry, admission uses exactly one strategy (the two fields are
+mutually exclusive):
+
+- **Audience-only** (neither field set): any account authenticated for this
+  audience is admitted.
 - **Allow-list** (`allowed_service_accounts`): the returned username
   (`system:serviceaccount:<namespace>:<name>`) must be a member, else
   `Deny(NotPermitted)`. Entries accept three shapes -- the full username,
@@ -174,35 +186,55 @@ config fields are mutually exclusive):
   with the API server's reason as log-only detail. A failed `SubjectAccessReview`
   call is undetermined and fails closed.
 
-An `Allow` carries an `AuthorizedIdentity` whose `subject` is the SA username and
-whose `audience` is the confirmed audience, so downstream per-tenant/route
-authorization can consume it.
+An `Allow` carries an `AuthorizedIdentity` holding every claim the `TokenReview`
+verified, so a downstream tenant / per-route authorization resolver can match on
+them without re-parsing anything:
+
+- `scheme` = `k8s_sat`, `principal` = the SA username (best-effort, for logs).
+- `sub` = SA username; `aud` = the matched audience.
+- `k8s.namespace` / `k8s.serviceaccount` = parsed from the SA username.
+- `uid`; `groups` (multi-valued); and any `extra` attributes as `extra.<key>`.
+
+The extension deliberately emits the full verified claim set and does **not**
+itself resolve a tenant -- tenant resolution is a separate, configurable concern
+that consumes these claims. Claim names follow the shared
+`capability::auth::AuthorizedIdentity` vocabulary (standard `sub`/`aud`/`groups`,
+otherwise namespaced), so a resolver written against them is not specific to this
+authorizer.
 
 ### Decision cache
 
-Reached decisions are cached in a bounded map keyed by the opaque token, with a
-configurable TTL (`cache_ttl`) and entry cap (`cache_max_entries`). On insert at
-capacity, expired entries are reclaimed first; if the map is still full of live
-entries the new decision is returned but not cached, so the cache never exceeds
-its bound. `Allow` decisions are cached for up to `cache_ttl`, so a token
-revoked at the API server may continue to be admitted until its cached decision
-expires -- decision freshness is deliberately the implementation's concern (the
-capability's `Allow` carries no validity window).
+Reached decisions are cached in a bounded map keyed by the token's **SHA-256
+digest** (never the plaintext token), with a configurable TTL (`cache_ttl`) and
+entry cap (`cache_max_entries`). Keying on the digest means no live credential is
+retained in the cache -- a memory or core dump exposes only 32-byte digests --
+and lookups compare unpredictable digests rather than secret bytes. SHA-256 is
+collision-resistant, so distinct tokens never share an entry.
+
+On insert at capacity, expired entries are reclaimed first; if the map is still
+full of live entries the new decision is returned but not cached, so the cache
+never exceeds its bound. `Allow` decisions are cached for up to `cache_ttl`, so a
+token revoked at the API server may continue to be admitted until its cached
+decision expires -- decision freshness is deliberately the implementation's
+concern (the capability's `Allow` carries no validity window).
 
 ### Configuration
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `audiences` | list of strings | *required* | Audiences requested on `TokenReview`; the token must be valid for at least one. Must be non-empty. |
-| `allowed_service_accounts` | list of strings | `[]` | Allow-list admission. Admitted service accounts (`system:serviceaccount:<ns>:<name>`, `<ns>/<name>`, or `<ns>:<name>`). Mutually exclusive with `resource_attributes`. |
-| `resource_attributes` | object | *unset* | RBAC admission via `SubjectAccessReview`. `resource` and `verb` are required; `group`, `version`, `namespace`, `name`, `subresource` are optional. Mutually exclusive with `allowed_service_accounts`. |
-| `cache_ttl` | duration | `5m` | How long a reached decision is cached, keyed by the opaque token. Must be non-zero. |
+| `audiences` | list of audiences | *required* | Per-audience admission audiences. Must be non-empty, with a unique `audience` per entry. |
+| `cache_ttl` | duration | `5m` | How long a reached decision is cached, keyed by the token's SHA-256 digest. Must be non-zero. |
 | `cache_max_entries` | integer | `1024` | Upper bound on cached decisions. Must be greater than zero. |
 
-When neither `allowed_service_accounts` nor `resource_attributes` is set, any
-authenticated service account is admitted (audience-only).
+Each **entry**:
 
-Allow-list example:
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `audience` | string | *required* | The audience this entry admits. A token is admitted through this entry only when `TokenReview` confirms it for this exact audience. |
+| `allowed_service_accounts` | list of strings | `[]` | Allow-list admission for this audience (`system:serviceaccount:<ns>:<name>`, `<ns>/<name>`, or `<ns>:<name>`). Empty admits any account authenticated for this audience. Mutually exclusive with `resource_attributes`. |
+| `resource_attributes` | object | *unset* | RBAC admission via `SubjectAccessReview`. `resource` and `verb` are required; `group`, `version`, `namespace`, `name`, `subresource` are optional. Mutually exclusive with `allowed_service_accounts`. |
+
+Multi-tenant example (allow-list and RBAC per audience):
 
 ```yaml
 extensions:
@@ -210,26 +242,16 @@ extensions:
     urn: urn:otel:extension:k8s_sat_token_authorizer
     config:
       audiences:
-        - https://my-collector.observability.svc
-      allowed_service_accounts:
-        - workloads/otlp-sender
+        - audience: https://tenant-a.observability.svc
+          allowed_service_accounts:
+            - tenant-a/otlp-sender
+        - audience: https://tenant-b.observability.svc
+          resource_attributes:
+            group: telemetry.opentelemetry.io
+            resource: telemetry
+            verb: export
+            namespace: tenant-b
       cache_ttl: 5m
-```
-
-RBAC example:
-
-```yaml
-extensions:
-  k8s_authz:
-    urn: urn:otel:extension:k8s_sat_token_authorizer
-    config:
-      audiences:
-        - https://my-collector.observability.svc
-      resource_attributes:
-        group: telemetry.opentelemetry.io
-        resource: telemetry
-        verb: export
-        namespace: observability
 ```
 
 A receiver binds it via its `capabilities:` map (see
@@ -266,9 +288,9 @@ extensions is a planned enhancement.
 
 - **Fail closed.** An unreachable API server yields an `Err`, never an allow.
 - **Secret handling.** The token is carried by the secret-protecting
-  `BearerToken`; it is exposed only to build the `TokenReview` request. The token
-  string is used as a cache key and thus held in memory for up to `cache_ttl`;
-  the cache is capped and never logged.
+  `BearerToken`; it is exposed only to build the `TokenReview` request and to
+  compute its SHA-256 cache key. No plaintext token is retained -- the cache
+  keys on the digest -- and nothing token-derived is logged.
 - **No policy leak.** Deny reasons are coarse, low-cardinality
   (`MissingCredential`, `InvalidCredential`, `NotPermitted`); per-request detail
   goes only to logs, never to metric labels or untrusted callers.
