@@ -212,6 +212,10 @@ pub struct TenantTokenRegistry {
     /// `retain: true`. A slot is populated only when one of them resolves, so
     /// a value never travels without the evidence that justified carrying it.
     retain_mask: Vec<u64>,
+    /// A well-formed context in which nothing resolved, built once so that a
+    /// node minting a value mid-pipeline for a request that arrived without
+    /// tenant context pays an `Arc` clone instead of a resolve.
+    empty: Arc<[u64]>,
 }
 
 /// How a key acquires its value.
@@ -671,7 +675,7 @@ impl TenantTokenRegistryBuilder {
             });
         }
 
-        Ok(TenantTokenRegistry {
+        let mut registry = TenantTokenRegistry {
             epoch,
             key_names: self.key_names,
             tokens: self.tokens,
@@ -693,7 +697,18 @@ impl TenantTokenRegistryBuilder {
             bag_field: self.bag_field.unwrap_or(attribute_field::SCOPE),
             value_slot,
             retain_mask,
-        })
+            empty: Arc::from(Vec::new()),
+        };
+
+        // Pack with nothing resolved. Every signature word is zero, and no
+        // condition can pack to zero because each one constrains at least one
+        // key to a declared literal, whose symbol is never SYMBOL_ABSENT. The
+        // empty context therefore matches nothing, which is the fail-closed
+        // answer for a request that carried no tenant evidence.
+        let mut scratch = TokenScratch::new();
+        scratch.reset(&registry);
+        registry.empty = registry.pack(&mut scratch, 0);
+        Ok(registry)
     }
 }
 
@@ -1143,6 +1158,15 @@ impl TenantTokenRegistry {
     #[must_use]
     pub fn slot_key(&self, value_slot: u16) -> KeyId {
         self.retained[usize::from(value_slot)]
+    }
+
+    /// A shared context in which no token resolved and no value travels.
+    ///
+    /// Callers that mint a value mid-pipeline use this as the source to
+    /// [`rewrite`](Self::rewrite) when the request arrived without one.
+    #[must_use]
+    pub fn empty_context(&self) -> &Arc<[u64]> {
+        &self.empty
     }
 
     /// Value slot a key occupies, or `None` when the key is match-only and its
