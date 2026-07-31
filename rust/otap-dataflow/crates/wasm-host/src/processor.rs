@@ -206,9 +206,8 @@ impl local::Processor<OtapPdata> for WasmProcessor {
 
                 // Drain per-call kernel counters outside the closure so they
                 // are captured for successful and error-return guest calls.
-                let (kc, ku) = self.store.data_mut().drain_kernel_counters();
+                let kc = self.store.data_mut().drain_kernel_counters();
                 self.metrics.pdata.kernel_calls.add(kc);
-                self.metrics.pdata.kernel_unsupported_calls.add(ku);
 
                 let output = output?;
 

@@ -13,7 +13,7 @@ use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 
 /// Non-signal-partitioned operational metrics for the WASM processor node.
-#[metric_set(name = "processor.wasm.pdata")]
+#[metric_set(name = "processor.wasm_processor.pdata")]
 #[derive(Debug, Default, Clone)]
 pub struct WasmProcessorMetrics {
     // ---- guest process call tracking ----
@@ -31,14 +31,11 @@ pub struct WasmProcessorMetrics {
     /// Total host kernel invocations dispatched by the guest.
     #[metric(unit = "{item}")]
     pub kernel_calls: Counter<u64>,
-    /// Host kernel invocations that trapped due to an unsupported scope or operation.
-    #[metric(unit = "{item}")]
-    pub kernel_unsupported_calls: Counter<u64>,
 }
 
 /// Record throughput metrics partitioned by OpenTelemetry signal type.
 #[metric_set(
-    name = "processor.wasm.pdata.records",
+    name = "processor.wasm_processor.pdata.records",
     measurement_attributes = SignalAttributes
 )]
 #[derive(Debug, Default, Clone)]

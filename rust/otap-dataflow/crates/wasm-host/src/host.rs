@@ -39,8 +39,6 @@ pub struct HostState {
     /// Accumulator for total host kernel invocations during a single guest call.
     /// Drained and added to telemetry counters after each `run_guest` return.
     pub kernel_calls: u64,
-    /// Accumulator for kernel invocations that trapped due to unsupported scope/operation.
-    pub kernel_unsupported_calls: u64,
 }
 
 impl HostState {
@@ -51,18 +49,15 @@ impl HostState {
             table: ResourceTable::new(),
             id_bitmap_pool: IdBitmapPool::new(),
             kernel_calls: 0,
-            kernel_unsupported_calls: 0,
         }
     }
 
-    /// Drain per-call kernel counters, returning `(kernel_calls, kernel_unsupported_calls)`
-    /// and resetting both to zero.
-    pub fn drain_kernel_counters(&mut self) -> (u64, u64) {
+    /// Drain the per-call kernel call counter, returning the accumulated count
+    /// and resetting to zero.
+    pub fn drain_kernel_counters(&mut self) -> u64 {
         let calls = self.kernel_calls;
-        let unsupported = self.kernel_unsupported_calls;
         self.kernel_calls = 0;
-        self.kernel_unsupported_calls = 0;
-        (calls, unsupported)
+        calls
     }
 }
 
@@ -448,8 +443,7 @@ mod tests {
 
     /// Scenario: Guest calls `pdata-num-rows` or `filter-by-attribute-eq`
     /// with record scope.
-    /// Guarantees: Each kernel invocation increments `kernel_calls` by one and
-    /// `kernel_unsupported_calls` remains zero.
+    /// Guarantees: Each kernel invocation increments `kernel_calls` by one.
     #[test]
     fn kernel_calls_incremented_per_invocation() {
         let mut host = HostState::new();
@@ -464,7 +458,6 @@ mod tests {
             .expect("push batch");
         let _ = <HostState as otel_kernels::Host>::pdata_num_rows(&mut host, h0);
         assert_eq!(host.kernel_calls, 1);
-        assert_eq!(host.kernel_unsupported_calls, 0);
 
         // filter_by_attribute_eq (record scope) also counts as one kernel call.
         let h1 = host
@@ -480,26 +473,19 @@ mod tests {
         );
         let _ = host.table.delete(out_handle).expect("delete output handle");
         assert_eq!(host.kernel_calls, 2);
-        assert_eq!(host.kernel_unsupported_calls, 0);
     }
 
     /// Scenario: `drain_kernel_counters` is called after accumulating counts.
-    /// Guarantees: The returned values equal the accumulated counts and the
-    /// accumulators are reset to zero for the next call.
+    /// Guarantees: The returned value equals the accumulated count and the
+    /// accumulator is reset to zero for the next call.
     #[test]
     fn drain_kernel_counters_resets_to_zero() {
         let mut host = HostState::new();
         host.kernel_calls = 5;
-        host.kernel_unsupported_calls = 2;
 
-        let (calls, unsupported) = host.drain_kernel_counters();
+        let calls = host.drain_kernel_counters();
         assert_eq!(calls, 5);
-        assert_eq!(unsupported, 2);
         assert_eq!(host.kernel_calls, 0, "kernel_calls must reset after drain");
-        assert_eq!(
-            host.kernel_unsupported_calls, 0,
-            "kernel_unsupported_calls must reset after drain"
-        );
     }
 
     /// Scenario: Guest requests `resource` or `scope` filtering in the current
@@ -563,7 +549,6 @@ mod tests {
     fn host_state_default_matches_new() {
         let from_default = HostState::default();
         assert_eq!(from_default.kernel_calls, 0);
-        assert_eq!(from_default.kernel_unsupported_calls, 0);
     }
 
     /// Scenario: A dictionary-encoded column uses `LargeUtf8` values rather
