@@ -1451,6 +1451,101 @@ impl TenantTokenRegistry {
         ))
     }
 
+    /// Rebuild a context with one key's value replaced.
+    ///
+    /// This is how a node mints tenant material of its own mid-pipeline: the
+    /// partition processor, for example, derives one outbound context per
+    /// partition from a single inbound one. The packed buffer is immutable and
+    /// shared, so the value cannot be patched in place; a fresh context is
+    /// built instead, at one allocation per call. That is still cheaper than
+    /// what the header world charged for the same operation, where appending
+    /// to a shared `Arc<Vec<TransportHeader>>` deep-cloned every header.
+    ///
+    /// The rewritten key's symbol is re-resolved against the declared literals
+    /// and its fields in every affected signature word are rewritten with it.
+    /// Leaving the old symbol in place would be the dangerous thing: routing
+    /// would keep matching the value the context no longer carries.
+    ///
+    /// Returns `None` when `key` has no value slot -- a match-only key holds no
+    /// bytes to replace, and inventing a slot for it would silently change what
+    /// the configuration asked to travel.
+    #[must_use]
+    pub fn rewrite(
+        &self,
+        scratch: &mut TokenScratch,
+        view: &TenantView<'_>,
+        key: KeyId,
+        value: &[u8],
+    ) -> Option<Arc<[u64]>> {
+        let target = self.value_slot(key)?;
+
+        // Carry every other slot across unchanged. Values live only in the
+        // blob, so restaging from the view reproduces them exactly; match-only
+        // keys have nothing to restage, which is why their symbols have to come
+        // from the existing signature words below.
+        scratch.restage(self.retained.len());
+        for slot in 0..self.retained.len() {
+            let slot_u16 = u16::try_from(slot).expect("slot fits");
+            let bytes = if slot_u16 == target {
+                Some(value)
+            } else {
+                view.slot_value(slot_u16)
+            };
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            let range = scratch.stage(bytes);
+            scratch.slots[slot] = StagedSlot {
+                off: range.0,
+                len: range.1,
+                kind: ValueKind::Text,
+                present: true,
+                bagged: self.bagged[slot],
+            };
+        }
+
+        // Re-resolve the new value to a symbol by exact lookup, exactly as
+        // resolution does, so an undeclared value lands on SYMBOL_UNKNOWN
+        // rather than impersonating a declared one.
+        let symbol = if self.key_literals[usize::from(key)].is_empty() {
+            SYMBOL_UNKNOWN
+        } else {
+            self.key_literals[usize::from(key)]
+                .get(value)
+                .copied()
+                .unwrap_or(SYMBOL_UNKNOWN)
+        };
+
+        // Every other key's symbol is already encoded in the existing words, so
+        // only the rewritten key's fields move.
+        scratch.fingerprints.clear();
+        for (pair, (_, signature)) in self.pairs.iter().enumerate() {
+            let layout = &self.layouts[usize::from(*signature)];
+            let mut word = view.signature_word(u16::try_from(pair).expect("pair fits"));
+            for (k, shift, mask) in layout.fixed.iter() {
+                if *k == key {
+                    word &= !(mask << shift);
+                    word |= (u64::from(symbol) & mask) << shift;
+                }
+            }
+            for (k, shift) in layout.wildcard.iter() {
+                if *k == key {
+                    // The key is present by construction: it was just written.
+                    word |= 1u64 << shift;
+                }
+            }
+            scratch.fingerprints.push(word);
+        }
+
+        Some(pack_words(
+            scratch,
+            view.resolved_mask(),
+            self.epoch,
+            self.bag_field,
+            self.slot_names(),
+        ))
+    }
+
     /// Build a consumer's probe tables for its ordered conditions.
     ///
     /// Called once at node construction, never on the hot path. `tokens` names
@@ -1682,6 +1777,13 @@ impl<'a> TenantView<'a> {
         self.words[1] != 0
     }
 
+    /// The full resolved-token mask, needed when deriving a context from this
+    /// one so the derived context reports the same tokens as resolved.
+    #[must_use]
+    pub fn resolved_mask(&self) -> u64 {
+        self.words[1]
+    }
+
     /// Packed symbol word for one applicable (token, signature) pair.
     ///
     /// This is a dictionary encoding of the request's values, not a digest of
@@ -1798,6 +1900,81 @@ mod tests {
             TokenInputs::new(headers.iter().map(|(k, v)| (*k, *v))),
         )
         .expect("token resolves")
+    }
+
+    /// Build a registry whose `tenant_id` is retained, so it has a value slot
+    /// that can be rewritten, and whose `env` is match-only.
+    fn rewritable(conditions: &[Condition]) -> TenantTokenRegistry {
+        let extractors = vec![
+            Extractor::TransportHeader {
+                key: "tenant_id".to_owned(),
+                transport_header: "x-tenant-id".to_owned(),
+                retain: true,
+                bag: false,
+            },
+            Extractor::TransportHeader {
+                key: "env".to_owned(),
+                transport_header: "x-env".to_owned(),
+                retain: false,
+                bag: false,
+            },
+        ];
+        let mut tokens = TenantTokens::default();
+        let _ = tokens.insert("gateway".to_owned(), TenantTokenSpec { extractors });
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        builder
+            .declare_conditions(None, conditions)
+            .expect("conditions declare");
+        builder.build(1).expect("layout fits")
+    }
+
+    /// Scenario: a node derives a new context from an existing one by replacing
+    /// one retained key's value, where both the old and the new value are
+    /// declared literals of competing conditions.
+    /// Guarantees: the derived context routes by its new value and never by the
+    /// value it replaced, other keys (including match-only keys, whose bytes
+    /// never travelled) keep their original matching behavior, and the derived
+    /// value reads back byte-for-byte.
+    #[test]
+    fn rewrite_moves_matching_to_the_new_value() {
+        let conds = [
+            condition(&[("tenant_id", "acme"), ("env", "prod")]),
+            condition(&[("tenant_id", "globex"), ("env", "prod")]),
+            condition(&[("tenant_id", "globex"), ("env", "dev")]),
+        ];
+        let reg = rewritable(&conds);
+        let set = reg.condition_set(None, &conds).expect("conditions bind");
+
+        let words = resolve(&reg, &[("x-tenant-id", b"acme"), ("x-env", b"prod")]);
+        assert_eq!(set.first_match(&TenantView::new(&words)), Some(0));
+
+        let key = reg.key_id("tenant_id").expect("declared");
+        let mut scratch = TokenScratch::new();
+        let derived = reg
+            .rewrite(&mut scratch, &TenantView::new(&words), key, b"globex")
+            .expect("tenant_id is retained");
+        let view = TenantView::new(&derived);
+
+        // Routing follows the new value, and `env` still decides between the
+        // two globex conditions even though its bytes never travelled.
+        assert_eq!(set.first_match(&view), Some(1));
+        assert_eq!(reg.retained_value(&view, key), Some(b"globex".as_slice()));
+        assert_eq!(
+            view.resolved_mask(),
+            TenantView::new(&words).resolved_mask()
+        );
+
+        // A value no condition declares must not impersonate one that is.
+        let unknown = reg
+            .rewrite(&mut scratch, &TenantView::new(&words), key, b"acme-2")
+            .expect("tenant_id is retained");
+        let unknown = TenantView::new(&unknown);
+        assert_eq!(set.first_match(&unknown), None);
+        assert_eq!(
+            reg.retained_value(&unknown, key),
+            Some(b"acme-2".as_slice())
+        );
     }
 
     /// Scenario: requests are probed against conditions whose declared literals
