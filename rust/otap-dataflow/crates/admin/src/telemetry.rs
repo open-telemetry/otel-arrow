@@ -80,6 +80,9 @@ struct MetricDataPointWithMetadata {
     /// Descriptor for retrieving metric metadata
     #[serde(flatten)]
     metadata: MetricsField,
+    /// Attributes that identify this metric data point.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    attributes: HashMap<String, AttributeValue>,
     /// Current value.
     value: MetricValue,
 }
@@ -95,6 +98,8 @@ struct AllMetrics {
 struct MetricSet {
     name: String,
     attributes: HashMap<String, AttributeValue>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    data_point_attributes: HashMap<String, AttributeValue>,
     metrics: HashMap<String, MetricValue>,
 }
 
@@ -545,6 +550,7 @@ fn groups_with_metadata(groups: &[AggregateGroup]) -> Vec<MetricSetWithMetadata>
             if let Some(val) = g.metrics.get(field.name) {
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
+                    attributes: HashMap::new(),
                     value: *val,
                 });
             }
@@ -567,6 +573,7 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
         out.push(MetricSet {
             name: g.name.clone(),
             attributes: g.attributes.clone(),
+            data_point_attributes: HashMap::new(),
             metrics: g.metrics.clone(),
         });
     }
@@ -1040,13 +1047,15 @@ fn collect_metrics_snapshot(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_current_metrics_with_zeroes(
-        |descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_current_metrics_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let data_point_attributes = data_point_attributes(item_attributes);
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
+                    attributes: data_point_attributes.clone(),
                     value,
                 });
             }
@@ -1079,13 +1088,15 @@ fn collect_metrics_snapshot_and_reset(
 ) -> Vec<MetricSetWithMetadata> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_admin_metrics_and_reset_with_zeroes(
-        |descriptor, attributes, metrics_iter| {
+    telemetry_registry.visit_admin_metrics_and_reset_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let data_point_attributes = data_point_attributes(item_attributes);
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
+                    attributes: data_point_attributes.clone(),
                     value,
                 });
             }
@@ -1114,26 +1125,30 @@ fn collect_metrics_snapshot_and_reset(
 fn collect_compact_snapshot(telemetry_registry: &TelemetryRegistryHandle) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_current_metrics(|descriptor, attributes, metrics_iter| {
-        let mut metrics = HashMap::new();
-        for (field, value) in metrics_iter {
-            let _ = metrics.insert(field.name.to_string(), value);
-        }
-
-        if !metrics.is_empty() {
-            // include attributes in compact format
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+    telemetry_registry.visit_current_metrics_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let mut metrics = HashMap::new();
+            for (field, value) in metrics_iter {
+                let _ = metrics.insert(field.name.to_string(), value);
             }
 
-            metric_sets.push(MetricSet {
-                name: descriptor.name.to_string(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                // include attributes in compact format
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSet {
+                    name: descriptor.name.to_string(),
+                    attributes: attrs_map,
+                    data_point_attributes: data_point_attributes(item_attributes),
+                    metrics,
+                });
+            }
+        },
+        false,
+    );
 
     metric_sets
 }
@@ -1144,27 +1159,43 @@ fn collect_compact_snapshot_and_reset(
 ) -> Vec<MetricSet> {
     let mut metric_sets = Vec::new();
 
-    telemetry_registry.visit_admin_metrics_and_reset(|descriptor, attributes, metrics_iter| {
-        let mut metrics = HashMap::new();
-        for (field, value) in metrics_iter {
-            let _ = metrics.insert(field.name.to_string(), value);
-        }
-
-        if !metrics.is_empty() {
-            let mut attrs_map = HashMap::new();
-            for (key, value) in attributes.iter_attributes() {
-                let _ = attrs_map.insert(key.to_string(), value.clone());
+    telemetry_registry.visit_admin_metrics_and_reset_with_item_attrs(
+        |descriptor, attributes, item_attributes, metrics_iter| {
+            let mut metrics = HashMap::new();
+            for (field, value) in metrics_iter {
+                let _ = metrics.insert(field.name.to_string(), value);
             }
 
-            metric_sets.push(MetricSet {
-                name: descriptor.name.to_string(),
-                attributes: attrs_map,
-                metrics,
-            });
-        }
-    });
+            if !metrics.is_empty() {
+                let mut attrs_map = HashMap::new();
+                for (key, value) in attributes.iter_attributes() {
+                    let _ = attrs_map.insert(key.to_string(), value.clone());
+                }
+
+                metric_sets.push(MetricSet {
+                    name: descriptor.name.to_string(),
+                    attributes: attrs_map,
+                    data_point_attributes: data_point_attributes(item_attributes),
+                    metrics,
+                });
+            }
+        },
+        false,
+    );
 
     metric_sets
+}
+
+fn data_point_attributes(item_attributes: &[(&str, &str)]) -> HashMap<String, AttributeValue> {
+    item_attributes
+        .iter()
+        .map(|(key, value)| {
+            (
+                (*key).to_string(),
+                AttributeValue::String((*value).to_string()),
+            )
+        })
+        .collect()
 }
 
 fn format_line_protocol(
@@ -3672,6 +3703,135 @@ mod tests {
             output.matches(r#"otel_scope_foo="scope;value""#).count(),
             2,
             "scope and item collisions should merge values:\n{output}"
+        );
+    }
+
+    /// Scenario: a metric data point has measurement attributes in an admin JSON response.
+    /// Guarantees: verbose JSON preserves data point attributes separately from scope attributes.
+    #[tokio::test]
+    async fn metrics_handler_json_preserves_measurement_item_attributes() {
+        let state = test_app_state();
+        let registry = state.metrics_registry.clone();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut metrics = registry
+            .register_metric_set_with_measurement_attributes::<DatapointSignalMetrics>(
+                PrometheusScopeAttributes {
+                    foo: "scope".to_string(),
+                },
+            );
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: SignalType::Logs,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(7);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("measurement metrics should report");
+
+        while let Ok(snapshot) = receiver.try_recv() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let response = get_metrics(
+            State(state),
+            Query(MetricsQuery {
+                format: Some(OutputFormat::Json),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("JSON metrics should render");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("JSON metrics body should collect");
+        let metrics: api::MetricsResponse =
+            serde_json::from_slice(&body).expect("JSON metrics response should deserialize");
+
+        assert_eq!(metrics.metric_sets.len(), 1);
+        assert_eq!(
+            metrics.metric_sets[0].attributes.get("foo"),
+            Some(&api::AttributeValue::String("scope".to_string()))
+        );
+        assert_eq!(metrics.metric_sets[0].metrics.len(), 1);
+        assert_eq!(
+            metrics.metric_sets[0].metrics[0].attributes.get("signal"),
+            Some(&api::AttributeValue::String("logs".to_string()))
+        );
+        assert_eq!(
+            metrics.metric_sets[0].metrics[0]
+                .attributes
+                .get("otel.scope.foo"),
+            Some(&api::AttributeValue::String("value".to_string()))
+        );
+    }
+
+    /// Scenario: a metric data point has measurement attributes in compact admin JSON.
+    /// Guarantees: compact JSON preserves data point attributes separately from scope attributes.
+    #[tokio::test]
+    async fn metrics_handler_compact_json_preserves_measurement_item_attributes() {
+        let state = test_app_state();
+        let registry = state.metrics_registry.clone();
+        let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(1);
+        let mut metrics = registry
+            .register_metric_set_with_measurement_attributes::<DatapointSignalMetrics>(
+                PrometheusScopeAttributes {
+                    foo: "scope".to_string(),
+                },
+            );
+        metrics
+            .with(DatapointSignalAttributes {
+                signal: SignalType::Logs,
+                scope_foo: DatapointCollision::Value,
+            })
+            .events
+            .add(7);
+        reporter
+            .report_measurement(&mut metrics)
+            .expect("measurement metrics should report");
+
+        while let Ok(snapshot) = receiver.try_recv() {
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
+        }
+
+        let response = get_metrics(
+            State(state),
+            Query(MetricsQuery {
+                format: Some(OutputFormat::JsonCompact),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("compact JSON metrics should render");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("compact JSON metrics body should collect");
+        let metrics: api::CompactMetricsResponse = serde_json::from_slice(&body)
+            .expect("compact JSON metrics response should deserialize");
+
+        assert_eq!(metrics.metric_sets.len(), 1);
+        assert_eq!(
+            metrics.metric_sets[0].attributes.get("foo"),
+            Some(&api::AttributeValue::String("scope".to_string()))
+        );
+        assert_eq!(
+            metrics.metric_sets[0].data_point_attributes.get("signal"),
+            Some(&api::AttributeValue::String("logs".to_string()))
+        );
+        assert_eq!(
+            metrics.metric_sets[0]
+                .data_point_attributes
+                .get("otel.scope.foo"),
+            Some(&api::AttributeValue::String("value".to_string()))
         );
     }
 
