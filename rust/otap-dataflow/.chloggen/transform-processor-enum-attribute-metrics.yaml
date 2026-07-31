@@ -6,4 +6,4 @@ subtext: |
   Migration: Update dashboards, alerts, and queries to use
   `processor.transform.operations` and `processor.transform.failures`, filtering
   on `language`, `signal`, `outcome`, and `error.type`, instead of the removed
-  `msgs_transformed` and `msgs_transform_failed` counters.
+  `processor.transform.msgs.transformed` and `processor.transform.msgs.transform.failed` counters.
