@@ -465,10 +465,8 @@ impl<PData> ExporterWrapper<PData> {
     ///
     /// The registry is what lets an exporter name outbound headers from the
     /// packed context, so it must reach the exporter before it starts.
-    pub(crate) fn with_tenant_registry(
-        self,
-        tenant_registry: Option<Arc<TenantTokenRegistry>>,
-    ) -> Self {
+    #[must_use]
+    pub fn with_tenant_registry(self, tenant_registry: Option<Arc<TenantTokenRegistry>>) -> Self {
         match self {
             ExporterWrapper::Local {
                 node_id,

@@ -12,8 +12,8 @@
 
 The Kafka exporter produces OpenTelemetry traces, metrics, and logs to
 Apache Kafka topics. It supports OTLP and OTAP protobuf encodings,
-per-signal topic and encoding configuration, dynamic topic routing via
-transport headers, SASL authentication (PLAIN, SCRAM, AWS MSK IAM), TLS,
+per-signal topic and encoding configuration, dynamic topic routing from the
+tenant context, SASL authentication (PLAIN, SCRAM, AWS MSK IAM), TLS,
 configurable partitioning strategies, and producer tuning knobs.
 
 ## Getting Started
@@ -53,6 +53,24 @@ config:
 | `message_format_header` | string | `"MessageFormat"` | Kafka header key for the message format indicator. Each outgoing message includes a header with this key and value `otlp` or `otap`, allowing consumers to detect the encoding. |
 | `debug` | list | *none* | List of librdkafka debug contexts: `generic`, `broker`, `topic`, `metadata`, `feature`, `queue`, `msg`, `protocol`, `cgrp`, `security`, `fetch`, `interceptor`, `plugin`, `consumer`, `admin`, `eos`, `mock`, `assignor`, `conf`, `telemetry`, `all`. |
 | `log_level` | string | *none* | Librdkafka log level: `emerg`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, `debug`. When omitted, inferred from the application's log configuration. |
+| `tenant_headers` | list | *none* | Tenant values to write onto every outbound record. See [Tenant Headers](#tenant-headers). |
+
+### Tenant Headers
+
+Each entry names a tenant `key` and the record `header` to write it under:
+
+```yaml
+tenant_headers:
+  - key: tenant_id
+    header: x-tenant-id
+```
+
+Values are written as-is, because Kafka headers are opaque byte sequences with
+string keys -- unlike gRPC, which requires a `-bin` suffix for binary metadata.
+
+A key that the tenant token configuration does not retain carries no bytes to
+write, so it is reported and skipped. Unlike a routing key, a missing header
+only drops decoration and cannot misdeliver data.
 
 ### Per-Signal Configuration
 
@@ -65,35 +83,37 @@ permanently nack it (non-retryable).
 | --- | --- | --- | --- |
 | `topic` | string | **required** | Kafka topic to produce messages to (static fallback). |
 | `encoding` | string | `"otlp_proto"` | Encoding format: `otlp_proto` or `otap_proto`. |
-| `topic_from_transport_header` | string | *none* | Transport header name for dynamic topic routing. When set and the header is present with a valid topic, its value overrides `topic`; if the header is absent the static `topic` is used, and if present but invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
-| `partition_by_transport_headers` | bool | `false` | Serialize all transport headers into a Kafka record key. See [Partitioning](#partitioning). |
+| `topic_from_tenant_key` | string | *none* | Tenant key name for dynamic topic routing. When set and the key holds a value that is a valid topic, that value overrides `topic`; if the key holds no value the static `topic` is used, and if the value is invalid the batch is permanently nacked. See [Dynamic Topic Routing](#dynamic-topic-routing). |
+| `partition_by_tenant_context` | bool | `false` | Hash the request's tenant context into a Kafka record key. See [Partitioning](#partitioning). |
 
 ### Dynamic Topic Routing
 
-Each signal can optionally specify a `topic_from_transport_header` field.
-When set, the exporter checks the incoming pdata context for a transport
-header matching the configured transport header name. If the header is present,
-its value is used as the Kafka destination topic instead of the static
-`topic` field.
+Each signal can optionally specify a `topic_from_tenant_key` field. When set,
+the exporter reads that key from the request's tenant context. If the key holds
+a value, that value is used as the Kafka destination topic instead of the
+static `topic` field.
 
 **Priority hierarchy:**
 
-1. Transport header value (if `topic_from_transport_header` is configured
-   and the header is present)
+1. Tenant context value (if `topic_from_tenant_key` is configured and the key
+   holds a value)
 2. Static `topic` from config (fallback)
 
-Each signal type can use a different header key (or none at all), allowing
-independent dynamic routing per signal. If the header is not present on a
+Each signal type can route on a different tenant key (or none at all), allowing
+independent dynamic routing per signal. If the key holds no value on a
 particular message, the static `topic` is used as a fallback.
 
-The configured `topic_from_transport_header` value is lowercased during config
-validation to match how captured transport header names are normalized on
-ingress (lowercase, dashes preserved). For example, `X-Target-Topic` is
-matched as `x-target-topic`. If a capture policy stores a header under a custom
-`store_as` name, set this value to that stored name.
+The key name is an operator-declared identifier from the engine's tenant token
+configuration, not a wire header name, so it is matched exactly -- case and all.
+It must name a key declared with `retain: true`, because only retained keys
+carry their bytes past the receiver; a key that is not retained fails the
+exporter at startup rather than silently falling back to the static topic.
 
-If a transport header *is* present but supplies an invalid Kafka topic name,
-the batch is **permanently nacked** rather than silently routed to the static
+The name is resolved to a value slot once, when the exporter starts, so routing
+a batch costs an indexed read rather than a scan.
+
+If the key *does* hold a value but it is not a valid Kafka topic name, the
+batch is **permanently nacked** rather than silently routed to the static
 `topic`. This avoids misdelivering data that explicitly requested a different
 (but unusable) destination.
 
@@ -212,13 +232,19 @@ hashed to partition numbers. The default is `consistent_random`.
 | `fnv1a` | FNV-1a hash of key. NULL keys are mapped to a single partition. |
 | `fnv1a_random` | FNV-1a hash of key. NULL keys are randomly partitioned. |
 
-#### Partition by Transport Headers
+#### Partition by Tenant Context
 
-When `partition_by_transport_headers` is enabled on a signal, the exporter
-hashes the request's transport headers to derive the Kafka record key, so
-requests carrying the same headers (e.g. same tenant ID) are routed to the same
+When `partition_by_tenant_context` is enabled on a signal, the exporter hashes
+the request's packed tenant context to derive the Kafka record key, so requests
+carrying the same tenant values (e.g. same tenant ID) are routed to the same
 partition. This setting is per-signal -- each of `traces`, `metrics`, and `logs`
 can independently opt in.
+
+The packed context is positional: a key's slot is fixed by the engine's tenant
+token configuration, not by the order values arrived in. Equal contexts are
+therefore byte-equal, and the key is stable without any sorting or normalizing
+step. A request with no tenant context gets no key, and is partitioned by the
+configured strategy's null-key behavior.
 
 ### Producer Tuning
 
@@ -291,14 +317,14 @@ The Go exporter also exports a `profiles` signal. This exporter supports
 | Capability | Go | Here |
 | --- | --- | --- |
 | Static per-signal `topic` | yes | yes |
-| Topic from transport header | no (uses context topic / attribute) | yes (per-signal `topic_from_transport_header`) |
+| Topic from request metadata | no (uses context topic / attribute) | yes (per-signal `topic_from_tenant_key`) |
 | `topic_from_metadata_key` (arbitrary request-metadata key) | yes | no |
 | `topic_from_attribute` (resource attribute) | yes | no |
 | `message_key_from_metadata_key` | yes | no |
 | `partition_traces_by_id` | yes | no (planned) |
 | `partition_*_by_resource_attributes` | yes | no |
 | `partition_logs_by_trace_id` | yes | no |
-| Partition key from hashed transport headers | no | yes (`partition_by_transport_headers`) |
+| Partition key from hashed request metadata | no | yes (`partition_by_tenant_context`) |
 
 #### Partitioning model
 
@@ -313,10 +339,10 @@ The Go exporter selects a `record_partitioner` (`sticky_key` with a
 
 The Go exporter supports `record_headers` (static headers written on every
 record) and `include_metadata_keys` (propagate request-metadata values as Kafka
-record headers). This exporter has **neither** as config fields: the only
-always-written header is the encoding indicator (`message_format_header`), and
-transport-header propagation onto Kafka records is driven by a pipeline-level
-`header_propagation` policy rather than an exporter config field.
+record headers). This exporter has no `record_headers` equivalent. The
+always-written header is the encoding indicator (`message_format_header`);
+beyond that, `tenant_headers` names the tenant keys to write onto every
+outbound record, which covers what `include_metadata_keys` does.
 
 #### Producer and connection settings
 
@@ -367,7 +393,7 @@ nack -- which the retry processor forwards immediately without retrying -- for:
 
 - an **encoding failure** (the payload cannot be serialized);
 - a pdata message for an **unconfigured signal type**; and
-- an **invalid dynamic topic** supplied via a transport header (see
+- an **invalid dynamic topic** supplied by the tenant context (see
   [Dynamic Topic Routing](#dynamic-topic-routing)).
 
 The retry processor's backoff fields map onto Go's `retry_on_failure`:
@@ -455,15 +481,15 @@ config:
   traces:
     topic: "otlp_spans"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x-traces-topic"
-    partition_by_transport_headers: true
+    topic_from_tenant_key: "traces-topic"
+    partition_by_tenant_context: true
   metrics:
     topic: "otlp_metrics"
     encoding: "otap_proto"
   logs:
     topic: "otlp_logs"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x-logs-topic"
+    topic_from_tenant_key: "logs-topic"
 ```
 
 ### Full Configuration
@@ -477,17 +503,17 @@ config:
   traces:
     topic: "otlp_spans"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x-traces-topic"
-    partition_by_transport_headers: true
+    topic_from_tenant_key: "traces-topic"
+    partition_by_tenant_context: true
   metrics:
     topic: "otlp_metrics"
     encoding: "otlp_proto"
-    partition_by_transport_headers: true
+    partition_by_tenant_context: true
   logs:
     topic: "otlp_logs"
     encoding: "otlp_proto"
-    topic_from_transport_header: "x-logs-topic"
-    partition_by_transport_headers: true
+    topic_from_tenant_key: "logs-topic"
+    partition_by_tenant_context: true
   timeout_ms: 5000
   compression: "zstd"
   required_acks: "all"
@@ -526,7 +552,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `exporter.kafka.traces_failed` | `{span}` | Number of trace spans that failed to export to Kafka. |
 | `exporter.kafka.acks_received` | `{batch}` | Number of acks received from downstream. |
 | `exporter.kafka.nacks_received` | `{batch}` | Number of nacks received from downstream. |
-| `exporter.kafka.topic_from_header` | `{batch}` | Batches where topic was resolved from a transport header. |
+| `exporter.kafka.topic_from_tenant` | `{batch}` | Batches where topic was resolved from the tenant context. |
 | `exporter.kafka.topic_from_static_config` | `{batch}` | Batches where topic was resolved from static per-signal config. |
 
 ### Events
@@ -553,5 +579,5 @@ This node does not emit structured events.
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
-- [Transport headers](../../../../../docs/transport-headers.md)
+- [Multitenant token propagation](../../../../../docs/multitenant-token-propagation.md)
 - [Contrib node catalog](../../../README.md)

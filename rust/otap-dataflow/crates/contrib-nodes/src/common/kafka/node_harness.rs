@@ -142,6 +142,7 @@ mod exporter_harness {
     use std::time::{Duration, Instant};
 
     use otap_df_config::node::NodeUserConfig;
+    use otap_df_config::tenant::compiled::TenantTokenRegistry;
     use otap_df_engine::Interests;
     use otap_df_engine::config::ExporterConfig;
     use otap_df_engine::control::{
@@ -174,7 +175,17 @@ mod exporter_harness {
     impl KafkaExporterHarness {
         /// Starts the exporter with an explicit `cfg` (its `bootstrap.servers`
         /// must already point at `cluster`). Spawns onto the current `LocalSet`.
-        pub(crate) fn start(_cluster: &KafkaTestCluster, cfg: KafkaExporterConfig) -> Self {
+        pub(crate) fn start(cluster: &KafkaTestCluster, cfg: KafkaExporterConfig) -> Self {
+            Self::start_with_tenant(cluster, cfg, None)
+        }
+
+        /// Starts the exporter with the engine's compiled tenant tokens, which
+        /// is how it resolves configured key names to value slots at start.
+        pub(crate) fn start_with_tenant(
+            _cluster: &KafkaTestCluster,
+            cfg: KafkaExporterConfig,
+            tenant_registry: Option<Arc<TenantTokenRegistry>>,
+        ) -> Self {
             let pipeline_ctx = test_pipeline_context();
             let node_config = Arc::new(NodeUserConfig::new_exporter_config(KAFKA_EXPORTER_URN));
             let exporter_config = ExporterConfig::new("test-kafka-exporter");
@@ -185,7 +196,8 @@ mod exporter_harness {
                 node_id.clone(),
                 node_config,
                 &exporter_config,
-            );
+            )
+            .with_tenant_registry(tenant_registry);
 
             let control_tx = exporter.control_sender();
 

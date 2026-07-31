@@ -10,6 +10,7 @@ use crate::common::kafka::{
     DebugContext, LogLevel, MessageFormat, debug_list_to_string, default_message_format_header,
     validate_kafka_topic,
 };
+use otap_df_config::tenant::TenantHeader;
 use rdkafka::ClientConfig;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -54,32 +55,31 @@ pub struct SignalConfig {
     #[serde(default)]
     encoding: MessageFormat,
 
-    /// Transport header name to look up for dynamic topic routing.
+    /// Tenant key name to read for dynamic topic routing.
     ///
     /// When set and the header is present in the pdata context, its value
     /// becomes the Kafka destination topic instead of the static `topic` field.
     ///
-    /// The lookup matches on the header's normalized logical name. Captured
-    /// transport headers are lowercased on ingress, so this value is lowercased
-    /// during config validation ([`KafkaExporterConfig::try_from`]) to match --
-    /// e.g., `"X-Target-Topic"` is stored as `"x-target-topic"`. If a capture
-    /// policy stores the header under a custom `store_as` name, this value must
-    /// equal that stored name.
+    /// The value must name a key declared at engine scope under
+    /// `tenant_tokens` with `retain: true`, so that a value is actually
+    /// carried for the exporter to read. The key is resolved to a value slot
+    /// once at exporter start, so routing costs a slot read per request rather
+    /// than a name comparison per header.
     #[serde(default)]
-    topic_from_transport_header: Option<String>,
+    topic_from_tenant_key: Option<String>,
 
-    /// Enable partitioning by transport headers (default: false).
+    /// Enable partitioning by the tenant context (default: false).
     ///
-    /// When `true`, all transport headers from the pdata context are hashed
-    /// (by normalized name and raw value) to produce a deterministic partition
-    /// key. This ensures that requests carrying the same set of transport
-    /// headers (e.g., same tenant ID, same auth token) are routed to the same
-    /// Kafka partition, regardless of original header casing.
+    /// When `true`, the request's packed tenant context is hashed to produce a
+    /// deterministic partition key, so requests carrying the same tenant
+    /// values are routed to the same Kafka partition. The packed layout is
+    /// positional and canonical, so equal contexts are byte-equal and no
+    /// sorting or normalization is needed to make the key stable.
     ///
     /// Combine with [`KafkaExporterConfig::partitioning_strategy`] to control
     /// which hashing algorithm librdkafka uses to map the key to a partition.
     #[serde(default)]
-    partition_by_transport_headers: bool,
+    partition_by_tenant_context: bool,
 }
 
 impl SignalConfig {
@@ -89,8 +89,8 @@ impl SignalConfig {
         Self {
             topic,
             encoding,
-            topic_from_transport_header: None,
-            partition_by_transport_headers: false,
+            topic_from_tenant_key: None,
+            partition_by_tenant_context: false,
         }
     }
 
@@ -106,29 +106,29 @@ impl SignalConfig {
         self.encoding
     }
 
-    /// The transport header name for dynamic topic routing, if set.
+    /// The tenant key name for dynamic topic routing, if set.
     #[must_use]
-    pub fn topic_from_transport_header(&self) -> Option<&str> {
-        self.topic_from_transport_header.as_deref()
+    pub fn topic_from_tenant_key(&self) -> Option<&str> {
+        self.topic_from_tenant_key.as_deref()
     }
 
-    /// Set the transport header name for dynamic topic routing.
+    /// Set the tenant key name for dynamic topic routing.
     #[must_use]
-    pub fn with_topic_from_transport_header(mut self, key: impl Into<String>) -> Self {
-        self.topic_from_transport_header = Some(key.into());
+    pub fn with_topic_from_tenant_key(mut self, key: impl Into<String>) -> Self {
+        self.topic_from_tenant_key = Some(key.into());
         self
     }
 
-    /// Whether partitioning by transport headers is enabled for this signal.
+    /// Whether partitioning by the tenant context is enabled for this signal.
     #[must_use]
-    pub fn partition_by_transport_headers(&self) -> bool {
-        self.partition_by_transport_headers
+    pub fn partition_by_tenant_context(&self) -> bool {
+        self.partition_by_tenant_context
     }
 
-    /// Set the partition by transport headers flag.
+    /// Set the partition-by-tenant-context flag.
     #[must_use]
-    pub fn with_partition_by_transport_headers(mut self, enabled: bool) -> Self {
-        self.partition_by_transport_headers = enabled;
+    pub fn with_partition_by_tenant_context(mut self, enabled: bool) -> Self {
+        self.partition_by_tenant_context = enabled;
         self
     }
 }
@@ -238,6 +238,11 @@ pub struct KafkaExporterConfigBuilder {
     #[serde(default = "default_partitioning_strategy")]
     partitioning_strategy: PartitionerStrategy,
 
+    /// Tenant values to write onto every outbound Kafka record, each naming a
+    /// key the tenant context retains and the record header to write it under.
+    #[serde(default)]
+    tenant_headers: Vec<TenantHeader>,
+
     /// Kafka header key for the message format indicator.
     ///
     /// The exporter writes the encoding format (`otlp` or `otap`) under this
@@ -311,6 +316,7 @@ impl KafkaExporterConfigBuilder {
             auth: None,
             tls: None,
             partitioning_strategy: default_partitioning_strategy(),
+            tenant_headers: Vec::new(),
             message_format_header: default_message_format_header(),
             debug: None,
             log_level: None,
@@ -395,7 +401,14 @@ impl KafkaExporterConfigBuilder {
         self
     }
 
-    /// Set the partitioner strategy.
+    /// Set the tenant values written onto every outbound record.
+    #[must_use]
+    pub fn with_tenant_headers(mut self, headers: Vec<TenantHeader>) -> Self {
+        self.tenant_headers = headers;
+        self
+    }
+
+    /// Set the partitioning strategy.
     #[must_use]
     pub fn with_partitioning_strategy(mut self, strategy: PartitionerStrategy) -> Self {
         self.partitioning_strategy = strategy;
@@ -505,7 +518,7 @@ pub struct KafkaExporterConfig(KafkaExporterConfigBuilder);
 impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
     type Error = String;
 
-    fn try_from(mut builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
+    fn try_from(builder: KafkaExporterConfigBuilder) -> Result<Self, Self::Error> {
         if builder.client_id.is_empty() {
             return Err("client_id can't be empty".to_string());
         }
@@ -564,25 +577,6 @@ impl TryFrom<KafkaExporterConfigBuilder> for KafkaExporterConfig {
             tls.validate().map_err(|e| format!("tls: {e}"))?;
         }
 
-        // Normalize each signal's dynamic-routing header key to match how
-        // transport headers store their logical names. Captured headers are
-        // lowercased on ingress (`wire_name.to_ascii_lowercase()`), so a natural
-        // config like `X-Target-Topic` would otherwise never match and silently
-        // fall back to the static topic. Normalizing once here means the router
-        // can do a plain equality check without re-normalizing per message.
-        for signal in [
-            builder.traces.as_mut(),
-            builder.metrics.as_mut(),
-            builder.logs.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            if let Some(header) = signal.topic_from_transport_header.as_mut() {
-                *header = header.to_ascii_lowercase();
-            }
-        }
-
         Ok(Self(builder))
     }
 }
@@ -600,7 +594,13 @@ impl KafkaExporterConfig {
         &self.0.client_id
     }
 
-    /// Get the traces signal configuration, if set.
+    /// The tenant values written onto every outbound record.
+    #[must_use]
+    pub fn tenant_headers(&self) -> &[TenantHeader] {
+        &self.0.tenant_headers
+    }
+
+    /// Per-signal configuration for traces, if configured.
     #[must_use]
     pub fn traces(&self) -> Option<&SignalConfig> {
         self.0.traces.as_ref()
@@ -1573,23 +1573,23 @@ mod tests {
     // ---- Dynamic topic routing fields (per-signal) ----
 
     #[test]
-    fn test_signal_config_with_topic_from_transport_header() {
+    fn test_signal_config_with_topic_from_tenant_key() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
             "logs": {
                 "topic": "otlp_logs",
-                "topic_from_transport_header": "x_target_topic"
+                "topic_from_tenant_key": "x_target_topic"
             }
         }"#;
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         let logs = config.logs().expect("logs should be configured");
-        assert_eq!(logs.topic_from_transport_header(), Some("x_target_topic"));
+        assert_eq!(logs.topic_from_tenant_key(), Some("x_target_topic"));
     }
 
     #[test]
-    fn test_signal_config_topic_from_transport_header_defaults_to_none() {
+    fn test_signal_config_topic_from_tenant_key_defaults_to_none() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
@@ -1598,33 +1598,33 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         let logs = config.logs().expect("logs should be configured");
-        assert!(logs.topic_from_transport_header().is_none());
+        assert!(logs.topic_from_tenant_key().is_none());
     }
 
     #[test]
-    fn test_signal_config_builder_with_topic_from_transport_header() {
+    fn test_signal_config_builder_with_topic_from_tenant_key() {
         let signal = SignalConfig::new("otlp_logs".into(), MessageFormat::OtlpProto)
-            .with_topic_from_transport_header("x_target_topic");
+            .with_topic_from_tenant_key("x_target_topic");
 
-        assert_eq!(signal.topic_from_transport_header(), Some("x_target_topic"));
+        assert_eq!(signal.topic_from_tenant_key(), Some("x_target_topic"));
         assert_eq!(signal.topic(), "otlp_logs");
     }
 
     #[test]
-    fn test_per_signal_topic_from_transport_header() {
+    fn test_per_signal_topic_from_tenant_key() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
             "traces": {
                 "topic": "otlp_spans",
-                "topic_from_transport_header": "x_traces_topic"
+                "topic_from_tenant_key": "x_traces_topic"
             },
             "metrics": {
                 "topic": "otlp_metrics"
             },
             "logs": {
                 "topic": "otlp_logs",
-                "topic_from_transport_header": "x_logs_topic"
+                "topic_from_tenant_key": "x_logs_topic"
             }
         }"#;
 
@@ -1633,37 +1633,29 @@ mod tests {
         let metrics = config.metrics().expect("metrics configured");
         let logs = config.logs().expect("logs configured");
 
-        assert_eq!(traces.topic_from_transport_header(), Some("x_traces_topic"));
-        assert!(metrics.topic_from_transport_header().is_none());
-        assert_eq!(logs.topic_from_transport_header(), Some("x_logs_topic"));
+        assert_eq!(traces.topic_from_tenant_key(), Some("x_traces_topic"));
+        assert!(metrics.topic_from_tenant_key().is_none());
+        assert_eq!(logs.topic_from_tenant_key(), Some("x_logs_topic"));
     }
 
     #[test]
-    fn test_topic_from_transport_header_is_lowercased_on_validation() {
-        // A natural mixed-case header name must be normalized (lowercased) so it
-        // matches captured transport header names, which are lowercased on
-        // ingress. Dashes are preserved (capture uses `to_ascii_lowercase`).
+    fn test_topic_from_tenant_key_preserves_case() {
+        // Tenant key names are operator-declared identifiers, not wire header
+        // names, so they must be carried through verbatim. Lowercasing them
+        // would silently change which declared key the exporter reads.
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
             "traces": {
                 "topic": "otlp_spans",
-                "topic_from_transport_header": "X-Traces-Topic"
-            },
-            "logs": {
-                "topic": "otlp_logs",
-                "topic_from_transport_header": "X-Target-Topic"
+                "topic_from_tenant_key": "Traces-Topic"
             }
         }"#;
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         assert_eq!(
-            config.traces().unwrap().topic_from_transport_header(),
-            Some("x-traces-topic")
-        );
-        assert_eq!(
-            config.logs().unwrap().topic_from_transport_header(),
-            Some("x-target-topic")
+            config.traces().unwrap().topic_from_tenant_key(),
+            Some("Traces-Topic")
         );
     }
 
@@ -1791,26 +1783,26 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ---- partition_by_transport_headers (per-signal) ----
+    // ---- partition_by_tenant_context (per-signal) ----
 
     #[test]
-    fn test_signal_config_partition_by_transport_headers_deserialization() {
+    fn test_signal_config_partition_by_tenant_context_deserialization() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
             "traces": {
                 "topic": "otlp_spans",
-                "partition_by_transport_headers": true
+                "partition_by_tenant_context": true
             }
         }"#;
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         let traces = config.traces().expect("traces configured");
-        assert!(traces.partition_by_transport_headers());
+        assert!(traces.partition_by_tenant_context());
     }
 
     #[test]
-    fn test_signal_config_partition_by_transport_headers_defaults_to_false() {
+    fn test_signal_config_partition_by_tenant_context_defaults_to_false() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
@@ -1819,30 +1811,30 @@ mod tests {
 
         let config: KafkaExporterConfig = serde_json::from_str(json).expect("valid config");
         let logs = config.logs().expect("logs configured");
-        assert!(!logs.partition_by_transport_headers());
+        assert!(!logs.partition_by_tenant_context());
     }
 
     #[test]
-    fn test_signal_config_builder_with_partition_by_transport_headers() {
+    fn test_signal_config_builder_with_partition_by_tenant_context() {
         let signal = SignalConfig::new("otlp_spans".into(), MessageFormat::OtlpProto)
-            .with_partition_by_transport_headers(true);
+            .with_partition_by_tenant_context(true);
 
-        assert!(signal.partition_by_transport_headers());
+        assert!(signal.partition_by_tenant_context());
         assert_eq!(signal.topic(), "otlp_spans");
     }
 
     #[test]
-    fn test_per_signal_partition_by_transport_headers() {
+    fn test_per_signal_partition_by_tenant_context() {
         let json = r#"{
             "brokers": "kafka:9092",
             "client_id": "test",
             "traces": {
                 "topic": "otlp_spans",
-                "partition_by_transport_headers": true
+                "partition_by_tenant_context": true
             },
             "metrics": {
                 "topic": "otlp_metrics",
-                "partition_by_transport_headers": true
+                "partition_by_tenant_context": true
             },
             "logs": {
                 "topic": "otlp_logs"
@@ -1854,9 +1846,9 @@ mod tests {
         let metrics = config.metrics().expect("metrics configured");
         let logs = config.logs().expect("logs configured");
 
-        assert!(traces.partition_by_transport_headers());
-        assert!(metrics.partition_by_transport_headers());
-        assert!(!logs.partition_by_transport_headers());
+        assert!(traces.partition_by_tenant_context());
+        assert!(metrics.partition_by_tenant_context());
+        assert!(!logs.partition_by_tenant_context());
     }
 
     #[test]
@@ -1867,15 +1859,15 @@ mod tests {
             "partitioning_strategy": "murmur2_random",
             "traces": {
                 "topic": "otlp_spans",
-                "partition_by_transport_headers": true
+                "partition_by_tenant_context": true
             },
             "logs": {
                 "topic": "otlp_logs",
-                "partition_by_transport_headers": true
+                "partition_by_tenant_context": true
             },
             "metrics": {
                 "topic": "otlp_metrics",
-                "partition_by_transport_headers": true
+                "partition_by_tenant_context": true
             }
         }"#;
 
@@ -1884,8 +1876,8 @@ mod tests {
             config.partitioning_strategy(),
             PartitionerStrategy::Murmur2Random
         );
-        assert!(config.traces().unwrap().partition_by_transport_headers());
-        assert!(config.logs().unwrap().partition_by_transport_headers());
-        assert!(config.metrics().unwrap().partition_by_transport_headers());
+        assert!(config.traces().unwrap().partition_by_tenant_context());
+        assert!(config.logs().unwrap().partition_by_tenant_context());
+        assert!(config.metrics().unwrap().partition_by_tenant_context());
     }
 }

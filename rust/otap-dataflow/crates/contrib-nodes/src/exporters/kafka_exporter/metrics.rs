@@ -49,9 +49,9 @@ pub struct KafkaExporterMetrics {
     /// Number of nacks received from downstream.
     #[metric(unit = "{batch}")]
     pub nacks_received: Counter<u64>,
-    /// Batches where topic was resolved from a transport header.
+    /// Batches where topic was resolved from the tenant context.
     #[metric(unit = "{batch}")]
-    pub topic_from_header: Counter<u64>,
+    pub topic_from_tenant: Counter<u64>,
     /// Batches where topic was resolved from static per-signal config.
     #[metric(unit = "{batch}")]
     pub topic_from_static_config: Counter<u64>,
@@ -86,9 +86,9 @@ impl KafkaExporterMetrics {
         self.nacks_received.inc();
     }
 
-    /// Increment counter when topic was resolved from a transport header.
-    pub fn inc_topic_from_header(&mut self) {
-        self.topic_from_header.inc();
+    /// Increment counter when topic was resolved from the tenant context.
+    pub fn inc_topic_from_tenant(&mut self) {
+        self.topic_from_tenant.inc();
     }
 
     /// Increment counter when topic was resolved from static per-signal config.
@@ -167,7 +167,7 @@ mod tests {
         m.inc_failed(SignalType::Traces);
         m.inc_ack();
         m.inc_nack();
-        m.inc_topic_from_header();
+        m.inc_topic_from_tenant();
         m.inc_topic_from_static_config();
 
         assert_eq!(m.traces_exported.get(), 1);
@@ -178,16 +178,16 @@ mod tests {
         assert_eq!(m.logs_failed.get(), 0);
         assert_eq!(m.acks_received.get(), 1);
         assert_eq!(m.nacks_received.get(), 1);
-        assert_eq!(m.topic_from_header.get(), 1);
+        assert_eq!(m.topic_from_tenant.get(), 1);
         assert_eq!(m.topic_from_static_config.get(), 1);
     }
 
     #[test]
-    fn inc_topic_from_header() {
+    fn inc_topic_from_tenant() {
         let mut m = KafkaExporterMetrics::default();
-        m.inc_topic_from_header();
-        m.inc_topic_from_header();
-        assert_eq!(m.topic_from_header.get(), 2);
+        m.inc_topic_from_tenant();
+        m.inc_topic_from_tenant();
+        assert_eq!(m.topic_from_tenant.get(), 2);
         assert_eq!(m.topic_from_static_config.get(), 0);
     }
 
@@ -197,6 +197,6 @@ mod tests {
         m.inc_topic_from_static_config();
         m.inc_topic_from_static_config();
         assert_eq!(m.topic_from_static_config.get(), 2);
-        assert_eq!(m.topic_from_header.get(), 0);
+        assert_eq!(m.topic_from_tenant.get(), 0);
     }
 }

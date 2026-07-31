@@ -23,6 +23,7 @@ use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::validation::validate_typed_config;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
@@ -30,6 +31,7 @@ use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::Error as EngineError;
+use otap_df_engine::error::ExporterErrorKind;
 use otap_df_engine::exporter::ExporterWrapper;
 use otap_df_engine::local::exporter::{EffectHandler, Exporter};
 use otap_df_engine::message::{ExporterInbox, Message};
@@ -39,6 +41,7 @@ use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer as PdataProducer;
 use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::otel_debug;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
@@ -56,6 +59,13 @@ pub enum KafkaExporterError {
     #[error("Kafka exporter configuration error: {0}")]
     Configuration(String),
 
+    /// A configured tenant key is not retained by the engine's tenant tokens.
+    #[error(
+        "tenant key `{0}` is not declared by any extractor with `retain: true`, \
+         so no value is carried for the exporter to read"
+    )]
+    TenantKeyNotRetained(String),
+
     /// Missing topic configuration for a signal type.
     #[error("No topic configured for signal type: {0:?}")]
     MissingTopic(SignalType),
@@ -68,8 +78,8 @@ pub enum KafkaExporterError {
     #[error("Encoding error: {0}")]
     Encoding(#[from] EncodingError),
 
-    /// Dynamic topic routing error (e.g. invalid topic supplied via a
-    /// transport header).
+    /// Dynamic topic routing error (e.g. an invalid topic supplied by the
+    /// tenant context).
     #[error("Topic routing error: {0}")]
     TopicRouting(#[from] TopicRoutingError),
 }
@@ -140,10 +150,10 @@ impl<'a> AckNackReporter for EffectHandlerReporter<'a> {
 ///
 /// Exports telemetry data (traces, metrics, logs) to Apache Kafka topics using the rdkafka client.
 ///
-/// Supports dynamic topic routing via transport headers, with a priority
-/// hierarchy: transport header > static topic. The static topic is used only
-/// when the configured header is absent; a header present with an invalid
-/// topic value causes a permanent nack rather than a fallback.
+/// Supports dynamic topic routing from the tenant context, with a priority
+/// hierarchy: tenant value > static topic. The static topic is used only when
+/// the configured key holds no value; a value present but invalid as a topic
+/// causes a permanent nack rather than a fallback.
 ///
 /// Error handling follows a "log and continue" policy:
 /// - Export failures are logged via the effect handler and recorded in metrics.
@@ -156,6 +166,80 @@ pub struct KafkaExporter {
     producer: ExporterFutureProducer<DefaultClientContext>,
     pdata_producer: PdataProducer,
     metrics: MetricSet<KafkaExporterMetrics>,
+    /// Tenant keys resolved to value slots once at start. Empty until then,
+    /// and empty for the whole run if the engine declares no tenant tokens.
+    tenant: TenantEgress,
+}
+
+/// The exporter's tenant configuration, resolved against the engine registry.
+///
+/// Every name-to-slot lookup happens once here rather than per record: the
+/// registry resolves a key name by scanning its key table, which is fine at
+/// start and would not be on the export path.
+#[derive(Default)]
+struct TenantEgress {
+    /// Per signal, the value slot the destination topic is read from.
+    topic_slot: [Option<u16>; 3],
+    /// Outbound Kafka header name and the value slot it is written from.
+    headers: Vec<(String, u16)>,
+}
+
+impl TenantEgress {
+    const fn signal_index(signal: SignalType) -> usize {
+        match signal {
+            SignalType::Traces => 0,
+            SignalType::Metrics => 1,
+            SignalType::Logs => 2,
+        }
+    }
+
+    const fn topic_slot(&self, signal: SignalType) -> Option<u16> {
+        self.topic_slot[Self::signal_index(signal)]
+    }
+
+    /// Resolve the configured tenant key names against the engine registry.
+    ///
+    /// Routing keys and header keys are treated differently on purpose. An
+    /// unresolvable topic key fails the exporter, because falling back to the
+    /// static topic would send one tenant's data to another tenant's topic --
+    /// the same misdelivery the router refuses to perform at runtime. An
+    /// unresolvable header key only drops decoration, so it is reported and
+    /// skipped.
+    fn compile(
+        config: &KafkaExporterConfig,
+        registry: Option<&Arc<TenantTokenRegistry>>,
+    ) -> Result<Self, KafkaExporterError> {
+        let mut egress = Self::default();
+        let slot_of = |key: &str| -> Option<u16> {
+            registry
+                .and_then(|r| r.key_id(key).map(|k| (r, k)))
+                .and_then(|(r, k)| r.value_slot(k))
+        };
+
+        for signal in [SignalType::Traces, SignalType::Metrics, SignalType::Logs] {
+            let Ok(cfg) = KafkaExporter::get_signal_config(config, signal) else {
+                continue;
+            };
+            if let Some(key) = cfg.topic_from_tenant_key() {
+                let slot = slot_of(key)
+                    .ok_or_else(|| KafkaExporterError::TenantKeyNotRetained(key.to_owned()))?;
+                egress.topic_slot[Self::signal_index(signal)] = Some(slot);
+            }
+        }
+
+        for entry in config.tenant_headers() {
+            match slot_of(&entry.key) {
+                Some(slot) => egress.headers.push((entry.header.clone(), slot)),
+                None => otel_debug!(
+                    "kafka.exporter.tenant_header_skip",
+                    reason = "key is not retained by the tenant token registry",
+                    key = entry.key.as_str()
+                ),
+            }
+        }
+
+        Ok(egress)
+    }
 }
 
 /// Factory registration for the Kafka exporter.
@@ -233,6 +317,8 @@ impl KafkaExporter {
             producer,
             pdata_producer: PdataProducer::default(),
             metrics: pipeline_ctx.register_metrics::<KafkaExporterMetrics>(),
+            // Resolved in `start`, where the engine's registry is reachable.
+            tenant: TenantEgress::default(),
         })
     }
 
@@ -269,16 +355,16 @@ impl KafkaExporter {
         .ok_or(KafkaExporterError::MissingTopic(signal_type))
     }
 
-    /// Builds the Kafka record headers (format header + propagated transport headers).
+    /// Builds the Kafka record headers (format header + tenant headers).
     ///
     /// The encoding format (`otlp` or `otap`) is always written under the
-    /// `format_header_key`. Any propagated transport header with the same
-    /// name is skipped to avoid collision.
+    /// `format_header_key`. Any tenant header with the same name is skipped to
+    /// avoid collision.
     fn build_kafka_headers(
         encoding: MessageFormat,
         format_header_key: &str,
         context: &otap_df_otap::pdata::Context,
-        effect_handler: Option<&EffectHandler<OtapPdata>>,
+        tenant: &TenantEgress,
     ) -> OwnedHeaders {
         let mut headers = OwnedHeaders::new();
 
@@ -292,19 +378,22 @@ impl KafkaExporter {
             value: Some(format_value),
         });
 
-        // Propagate transport headers onto the Kafka record if a propagation
-        // policy is configured and the pdata context carries transport headers.
-        if let Some(policy) = effect_handler.and_then(|eh| eh.propagation_policy()) {
-            if let Some(transport_headers) = context.transport_headers() {
-                for propagated in policy.propagate(transport_headers) {
-                    // Skip propagated headers that collide with the format header.
-                    if propagated.header_name == format_header_key {
+        // Write the configured tenant headers, reading each value straight out
+        // of its slot. The names were resolved to slots at start, so nothing
+        // here compares or allocates a header name.
+        if !tenant.headers.is_empty() {
+            if let Some(view) = context.tenant_view() {
+                for (name, slot) in &tenant.headers {
+                    // Skip tenant headers that collide with the format header.
+                    if name == format_header_key {
                         continue;
                     }
-                    headers = headers.insert(Header {
-                        key: propagated.header_name,
-                        value: Some(propagated.value),
-                    });
+                    if let Some(value) = view.slot_value(*slot) {
+                        headers = headers.insert(Header {
+                            key: name.as_str(),
+                            value: Some(value),
+                        });
+                    }
                 }
             }
         }
@@ -315,20 +404,17 @@ impl KafkaExporter {
     /// Exports a single PData message to Kafka with Ack/Nack support.
     ///
     /// Uses the [`TopicRouter`] to resolve the destination topic:
-    /// 1. Transport header (highest priority): used when the configured header
-    ///    key is present in the pdata context. If the key is present but its
-    ///    value is not a valid Kafka topic, the batch is permanently nacked
-    ///    (no fallback to the static topic).
-    /// 2. Static per-signal topic: fallback used only when the configured header
-    ///    key is absent (or no header routing is configured).
+    /// 1. Tenant context (highest priority): used when the configured key
+    ///    holds a value on the request. If the value is not a valid Kafka
+    ///    topic, the batch is permanently nacked (no fallback to the static
+    ///    topic).
+    /// 2. Static per-signal topic: fallback used only when the configured key
+    ///    holds no value (or no tenant routing is configured).
     ///
-    /// When the exporter's [`EffectHandler`] has a propagation policy and the
-    /// pdata context carries transport headers, matching headers are emitted as
-    /// Kafka record headers alongside the mandatory `MessageFormat` header.
-    ///
-    /// Both text and binary transport header values are emitted as-is since
-    /// Kafka headers are opaque byte sequences with string keys (unlike gRPC,
-    /// which requires a `-bin` suffix convention for binary metadata).
+    /// Each key named in `tenant_headers` is emitted as a Kafka record header
+    /// alongside the mandatory `MessageFormat` header. Values are written as-is
+    /// because Kafka headers are opaque byte sequences with string keys (unlike
+    /// gRPC, which requires a `-bin` suffix convention for binary metadata).
     async fn export_pdata(
         &mut self,
         pdata: OtapPdata,
@@ -361,9 +447,14 @@ impl KafkaExporter {
         let encoding = signal_config.encoding();
 
         // Resolve topic via the dynamic topic router *before* doing any encoding
-        // work. If a transport header supplied an invalid topic,
+        // work. If the tenant context supplied an invalid topic,
         // permanently nack the batch
-        let topic = match TopicRouter::resolve(signal_config, &context, &mut self.metrics) {
+        let topic = match TopicRouter::resolve(
+            signal_config,
+            self.tenant.topic_slot(signal_type),
+            &context,
+            &mut self.metrics,
+        ) {
             Ok(t) => t,
             Err(e) => {
                 self.metrics.inc_failed(signal_type);
@@ -376,10 +467,10 @@ impl KafkaExporter {
 
         let partition_key = partitioner::partition_key_for_signal(signal_config, &context);
 
-        // Build Kafka headers (format header + propagated transport headers)
+        // Build Kafka headers (format header + tenant headers)
         let format_header_key = self.config.message_format_header();
         let headers =
-            Self::build_kafka_headers(encoding, format_header_key, &context, effect_handler);
+            Self::build_kafka_headers(encoding, format_header_key, &context, &self.tenant);
 
         // Encode payload to bytes using the per-signal encoding.
         // This block borrows &mut self.pdata_producer so it must complete
@@ -512,6 +603,16 @@ impl Exporter<OtapPdata> for KafkaExporter {
             ))
             .await;
 
+        // Resolve the configured tenant key names to value slots now, so the
+        // export path never looks a key up by name.
+        self.tenant = TenantEgress::compile(&self.config, effect_handler.tenant_registry())
+            .map_err(|e| EngineError::ExporterError {
+                exporter: effect_handler.exporter_id(),
+                kind: ExporterErrorKind::Configuration,
+                error: e.to_string(),
+                source_detail: String::new(),
+            })?;
+
         // Start periodic telemetry collection so exporter metrics are flushed into
         // the shared registry via CollectTelemetry control messages.
         let timer_cancel_handle = effect_handler
@@ -634,15 +735,38 @@ pub mod test_support {
         OtapPdata::new(Context::default(), proto.into())
     }
 
-    /// Produces a small OTLP payload carrying a single transport header.
-    #[must_use]
-    pub fn sample_pdata_with_header(
-        signal_type: SignalType,
-        header_wire_name: &str,
-        header_value: &str,
-    ) -> OtapPdata {
-        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
+    /// The tenant keys these tests route and decorate on. Each is read from
+    /// the wire header of the same name and retained, so it has a value slot.
+    pub const TEST_TENANT_KEYS: [&str; 2] = ["x-target-topic", "x-tenant-id"];
 
+    /// A compiled registry declaring [`TEST_TENANT_KEYS`].
+    #[must_use]
+    pub fn test_registry() -> Arc<TenantTokenRegistry> {
+        use otap_df_config::tenant::compiled::TenantTokenRegistryBuilder;
+        use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
+
+        let mut tokens = TenantTokens::default();
+        for key in TEST_TENANT_KEYS {
+            let _ = tokens.insert(
+                key.to_owned(),
+                TenantTokenSpec {
+                    extractors: vec![Extractor::TransportHeader {
+                        key: key.to_owned(),
+                        transport_header: key.to_owned(),
+                        retain: true,
+                        bag: false,
+                    }],
+                },
+            );
+        }
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        Arc::new(builder.build(1).expect("layout fits"))
+    }
+
+    /// Produces a small OTLP payload carrying a single tenant value.
+    #[must_use]
+    pub fn sample_pdata_with_tenant(signal_type: SignalType, key: &str, value: &str) -> OtapPdata {
         let bytes = Bytes::from_static(b"payload");
         let proto = match signal_type {
             SignalType::Traces => otap_df_pdata::OtlpProtoBytes::ExportTracesRequest(bytes.clone()),
@@ -652,17 +776,32 @@ pub mod test_support {
             SignalType::Logs => otap_df_pdata::OtlpProtoBytes::ExportLogsRequest(bytes),
         };
 
-        let mut headers = TransportHeaders::new();
-        headers.push(TransportHeader {
-            name: header_wire_name.to_ascii_lowercase(),
-            wire_name: header_wire_name.to_string(),
-            value_kind: ValueKind::Text,
-            value: header_value.as_bytes().to_vec(),
-        });
+        let tenant = otap_df_otap::tenant_resolve::resolve_pairs(
+            &test_registry(),
+            [(key, value.as_bytes())],
+            None,
+        )
+        .expect("declared key resolves");
+
         let mut context = Context::default();
-        context.set_transport_headers(headers);
+        context.set_tenant(tenant);
 
         OtapPdata::new(context, proto.into())
+    }
+
+    /// Builds an exporter whose tenant egress is already resolved against
+    /// [`test_registry`], as `start` would have done.
+    #[must_use]
+    pub fn exporter_with_tenant(
+        pipeline_ctx: PipelineContext,
+        config: KafkaExporterConfig,
+    ) -> KafkaExporter {
+        let egress = TenantEgress::compile(&config, Some(&test_registry()))
+            .expect("test tenant keys are retained");
+        let mut exporter =
+            KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
+        exporter.tenant = egress;
+        exporter
     }
 
     /// Recorder that tracks Ack and Nack notifications.
@@ -774,9 +913,8 @@ pub mod test_support {
         use super::*;
         use crate::exporters::kafka_exporter::config::PartitionerStrategy;
         use crate::exporters::kafka_exporter::config::TlsConfig;
-        use crate::exporters::kafka_exporter::partitioner::partition_key_from_transport_headers;
+        use crate::exporters::kafka_exporter::partitioner::partition_key_from_tenant;
         use bytes::Bytes;
-        use otap_df_config::transport_headers::{TransportHeader, TransportHeaders, ValueKind};
         use otap_df_otap::pdata::Context;
         use otap_df_pdata::OtlpProtoBytes;
         use prost::Message as _;
@@ -1038,22 +1176,21 @@ pub mod test_support {
         #[tokio::test]
         async fn test_export_invalid_dynamic_topic_is_permanently_nacked() {
             let pipeline_ctx = pipeline_context();
-            // Logs configured to resolve their topic from a transport header.
+            // Logs configured to resolve their topic from a tenant key.
             let config: KafkaExporterConfig =
                 KafkaExporterConfigBuilder::new("localhost:9092", "test-client")
                     .with_logs(
                         SignalConfig::new("test-logs".into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic"),
+                            .with_topic_from_tenant_key("x-target-topic"),
                     )
                     .try_into()
                     .expect("test config should be valid");
-            let mut exporter =
-                KafkaExporter::new(pipeline_ctx, config).expect("config should be valid");
+            let mut exporter = exporter_with_tenant(pipeline_ctx, config);
 
             let reporter = RecordingReporter::new();
-            // Header supplies an invalid topic ("bad topic/name" contains a space and slash).
+            // The tenant value is an invalid topic (a space and a slash).
             let pdata =
-                sample_pdata_with_header(SignalType::Logs, "X-Target-Topic", "bad topic/name");
+                sample_pdata_with_tenant(SignalType::Logs, "x-target-topic", "bad topic/name");
 
             let result = export_once(&mut exporter, pdata, &reporter).await;
             assert!(result.is_err());
@@ -1118,19 +1255,18 @@ pub mod test_support {
         }
 
         /// Wraps OTLP logs bytes into an [`OtapPdata`], optionally carrying a
-        /// single transport header.
-        fn logs_pdata(bytes: Vec<u8>, header: Option<(&str, &str)>) -> OtapPdata {
+        /// single tenant value.
+        fn logs_pdata(bytes: Vec<u8>, tenant: Option<(&str, &str)>) -> OtapPdata {
             let proto = OtlpProtoBytes::ExportLogsRequest(Bytes::from(bytes));
             let mut context = Context::default();
-            if let Some((wire_name, value)) = header {
-                let mut headers = TransportHeaders::new();
-                headers.push(TransportHeader {
-                    name: wire_name.to_ascii_lowercase(),
-                    wire_name: wire_name.to_string(),
-                    value_kind: ValueKind::Text,
-                    value: value.as_bytes().to_vec(),
-                });
-                context.set_transport_headers(headers);
+            if let Some((key, value)) = tenant {
+                let words = otap_df_otap::tenant_resolve::resolve_pairs(
+                    &test_registry(),
+                    [(key, value.as_bytes())],
+                    None,
+                )
+                .expect("declared key resolves");
+                context.set_tenant(words);
             }
             OtapPdata::new(context, proto.into())
         }
@@ -1332,12 +1468,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario: route a record to a topic named by a transport header while
+        /// Scenario: route a record to a topic named by the tenant context while
         /// a different static topic is configured.
         /// Guarantees: the record is produced to the header-specified dynamic
         /// topic (the consumer only subscribes to that topic).
         #[tokio::test]
-        async fn routes_to_topic_from_transport_header() {
+        async fn routes_to_topic_from_tenant_key() {
             let static_topic = "it-static-topic";
             let dynamic_topic = "it-dynamic-topic";
             with_cluster(
@@ -1349,13 +1485,17 @@ pub mod test_support {
                     let cfg = logs_config(
                         cluster.bootstrap_servers(),
                         SignalConfig::new(static_topic.into(), MessageFormat::OtlpProto)
-                            .with_topic_from_transport_header("x-target-topic"),
+                            .with_topic_from_tenant_key("x-target-topic"),
                     );
-                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    let exporter = KafkaExporterHarness::start_with_tenant(
+                        &cluster,
+                        cfg,
+                        Some(test_registry()),
+                    );
 
                     let payload = logs_request_bytes();
                     exporter
-                        .send_pdata(logs_pdata(payload, Some(("X-Target-Topic", dynamic_topic))))
+                        .send_pdata(logs_pdata(payload, Some(("x-target-topic", dynamic_topic))))
                         .await
                         .expect("send pdata");
 
@@ -1371,12 +1511,12 @@ pub mod test_support {
             .await;
         }
 
-        /// Scenario: derive the record partition key from transport headers with
-        /// a Murmur2Random partitioner.
+        /// Scenario: derive the record partition key from the tenant context
+        /// with a Murmur2Random partitioner.
         /// Guarantees: the produced record's key matches the key computed by
-        /// `partition_key_from_transport_headers` for the same headers.
+        /// `partition_key_from_tenant` for the same context.
         #[tokio::test]
-        async fn sets_partition_key_from_transport_headers() {
+        async fn sets_partition_key_from_tenant_context() {
             let topic = "it-partition-key";
             with_cluster(
                 KafkaTestCluster::builder().topic(topic),
@@ -1386,22 +1526,26 @@ pub mod test_support {
                         KafkaExporterConfigBuilder::new(cluster.bootstrap_servers(), "it-client")
                             .with_logs(
                                 SignalConfig::new(topic.into(), MessageFormat::OtlpProto)
-                                    .with_partition_by_transport_headers(true),
+                                    .with_partition_by_tenant_context(true),
                             )
                             .with_partitioning_strategy(PartitionerStrategy::Murmur2Random)
                             .try_into()
                             .expect("config should be valid");
-                    let exporter = KafkaExporterHarness::start(&cluster, cfg);
+                    let exporter = KafkaExporterHarness::start_with_tenant(
+                        &cluster,
+                        cfg,
+                        Some(test_registry()),
+                    );
 
                     let payload = logs_request_bytes();
-                    let pdata = logs_pdata(payload, Some(("X-Tenant-Id", "tenant-123")));
+                    let pdata = logs_pdata(payload, Some(("x-tenant-id", "tenant-123")));
                     let expected_key = {
                         let (context, _payload) = pdata.clone().into_parts();
-                        let headers = context
-                            .transport_headers()
-                            .expect("pdata should carry transport headers");
-                        partition_key_from_transport_headers(headers)
-                            .expect("headers should produce a partition key")
+                        let words = context
+                            .tenant()
+                            .expect("pdata should carry a tenant context");
+                        partition_key_from_tenant(words)
+                            .expect("a resolved context should produce a partition key")
                     };
 
                     exporter.send_pdata(pdata).await.expect("send pdata");
