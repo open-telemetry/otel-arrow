@@ -135,10 +135,10 @@ through `PipelineContext::tenant_token_registry()`.
    clearing `key_mask` bits as extractors are satisfied.
 3. A token whose word reached `0` is resolved. If none resolved, the request
    carries no tenant context at all and the whole feature costs one branch.
-4. Compute one xxh3 fingerprint per allocated `PairSlot`, projecting the
-   resolved values onto the signature's `fixed_keys` **in signature order**.
-   Build and probe share one `fingerprint_term` helper so the two layouts
-   cannot drift.
+4. Resolve each key's value to a **symbol** by exact dictionary lookup, then
+   pack one word per allocated `PairSlot`, projecting the symbols onto the
+   signature's `fixed_keys` **in signature order**. Build and probe share one
+   `pack_symbols` helper and one `SignatureLayout`, so the two cannot drift.
 
 Token resolution being all-or-nothing yields a useful simplification: if a
 signature applies to a resolved token, every wildcard key it requires is
@@ -146,9 +146,13 @@ necessarily present, so no per-request wildcard presence mask is needed.
 
 ### Probe phase (per condition evaluation)
 
-`ConditionSet::first_match` is one bit test plus one hash lookup per bound
+`ConditionSet::first_match` is one bit test plus one integer lookup per bound
 `(token, signature)` pair, keeping the lowest matching `ConditionIdx` so
 first-match-wins is preserved across signatures. It allocates nothing.
+
+The integer it looks up is a packed tuple of dictionary symbols, not a digest,
+so the lookup decides equality exactly -- see
+[Matching is exact](#matching-is-exact-no-collision-can-cross-wires).
 
 ### The packed request context
 
@@ -164,7 +168,7 @@ name, key id or descriptor travels with it:
 ```text
 word 0     : n_fp:16 | n_slots:16 | epoch:16 | bag_len:16
 word 1     : resolved token bitmask
-words 2..  : n_fp fingerprints, indexed by PairSlot
+words 2..  : n_fp packed symbol words, indexed by PairSlot
 then       : ceil(n_slots/2) words holding n_slots u32 offsets, indexed by
              registry value slot; each addresses a length-delimited AnyValue,
              or is EMPTY_OFFSET
@@ -179,9 +183,11 @@ entry delimits itself, so the trailing zero padding is simply never addressed.
 
 A key gets a value slot only if some compiled consumer propagates its value.
 The rest are **match-only**: they are decided entirely by their contribution to
-a fingerprint, so their bytes are never copied into a context at all. That is
-the only distinction the layout draws between keys, and it is a build-time
-property, not a per-entry flag.
+a packed symbol word, so their bytes are never copied into a context at all.
+Their values are still matched exactly -- the comparison happens at the
+receiver against the registry's copy of the literal -- so this costs no
+strictness. That is the only distinction the layout draws between keys, and it
+is a build-time property, not a per-entry flag.
 
 Reading a key's value is therefore an array index --
 `registry.value_slot(key)` then `view.slot_value(slot)` -- rather than a scan
@@ -206,7 +212,7 @@ What makes that safe is not shared construction, it is agreement: token
 definitions are engine-wide and interned in sorted order before any
 group-specific work, so every group derives the same key ids and the same
 value slots. Conditions differ per group and pair slots with them, which does
-not matter across a boundary because fingerprints are not exported.
+not matter across a boundary because symbol words are not exported.
 
 That agreement is an invariant, so it is stated rather than assumed. `epoch`
 is the deployment generation mixed with a digest of the ordered value-slot
@@ -280,17 +286,96 @@ field, and the 5ns is the memcpy.
 
 Limits: `MAX_TOKENS = 64`, `MAX_TOKEN_KEYS = 64`, `MAX_VALUE_BYTES = 65535`.
 
-### Conditions never compare values
+### Matching is exact: no collision can cross wires
 
-`first_match` compares fingerprints and stops. The values behind them are not
-re-checked, so a condition over match-only keys costs one hash lookup and
-touches no bytes.
+**A tenant condition matches only when the request's values are equal, byte
+for byte, to the values the operator declared.** No hash comparison decides
+routing. This is the property everything else in this section is arranged to
+protect, because the failure it prevents is one tenant's data being delivered
+to another tenant's pipeline.
 
-This is a deliberate trust in the 64-bit fingerprint rather than an oversight,
-and it needs no configuration option: a deployment that wants values verified
-can give the conditioned keys a value slot by propagating them, at which point
-the values are present to compare. The prototype does not implement that
-comparison, and the option should not exist.
+An earlier version of this design did not have that property, and it is
+recorded here because the reasoning that removed it is the reasoning that
+should keep it out. Conditions were compiled to a 64-bit `xxh3` fingerprint of
+their literals, resolution fingerprinted the request the same way, and
+`first_match` looked the fingerprint up in a map and stopped. Values were never
+re-checked. For match-only keys nothing was carried, so downstream they *could
+not* be re-checked -- the evidence was gone by construction.
+
+That is a hash join with the verification step deleted. A database does not do
+this. A hash join uses the hash to choose a bucket and then compares the actual
+join keys, because the hash is an index, never the predicate. Skipping the
+comparison converts a 64-bit coincidence into a routing decision.
+
+The odds argument is not good enough here. `xxh3` is not collision resistant --
+it is not meant to be -- so an attacker who can set a header does not wait for
+a coincidence, they search for one offline against a public function and then
+replay it forever. A boundary that separates tenants cannot rest on that.
+
+#### Symbols, not digests
+
+The fix is the same move a database makes: dictionary-encode the join keys.
+
+Every literal any condition can test is known at build time, since conditions
+are declared to the registry before it is frozen. Each key therefore gets a
+dictionary from literal to a small integer **symbol**, with two reserved
+values:
+
+| symbol | meaning |
+| --- | --- |
+| 0 | the request did not carry this key |
+| 1 | the request carried a value no condition declares |
+| 2.. | one declared literal each |
+
+Resolution looks each value up in its key's dictionary. **The dictionary owns
+the literal bytes and compares them**, so a lookup that lands in the same
+bucket by hash still fails on the byte comparison. A value that is not found
+takes symbol 1.
+
+A signature then packs its keys' symbols into one word, giving each key
+exactly as many bits as its declared literal count needs. That packing is
+**injective**: distinct symbol tuples cannot produce the same word. So
+comparing two words is comparing two symbol tuples, and comparing two symbol
+tuples is comparing two sets of verified values.
+
+The hot path is unchanged in shape -- `first_match` is still one integer
+lookup per pair, and the packed context still carries one word per pair. What
+changed is that the word is now a dictionary encoding rather than a digest, so
+the lookup is exact instead of probabilistic.
+
+Two things fail closed:
+
+- A condition testing a literal the registry never interned is **rejected at
+  build time**. Such a literal would otherwise take symbol 1, which every
+  unrecognized request value also takes, and the condition would match all of
+  them at once. This is the one dangerous case the design creates, so it is an
+  error rather than a warning.
+- A signature whose symbols do not fit in one word is rejected at build time
+  rather than narrowed, since narrowing is exactly the collision this section
+  exists to prevent. The budget is generous: four keys with 65,000 declared
+  values each, or sixteen keys with sixteen values each.
+
+#### Why match-only keys still cost zero bytes
+
+The property that worried the reader -- `retain: false` carries no bytes, so
+how can anything be verified? -- survives, because **verification happens where
+the value already is**.
+
+The receiver holds the header value in hand at resolve time. That is where the
+dictionary lookup happens, and what it compares against is the registry's own
+copy of the operator's literal, which exists once at build time rather than
+once per request. Downstream nodes never need the value because they are not
+deciding equality; that decision was already made, exactly, and its result is
+the symbol.
+
+So a match-only key costs zero per-request bytes *and* is matched exactly.
+Those were never in tension; the earlier design just gave up the second one
+without needing to.
+
+A symbol is also less revealing than a fingerprint was. A fingerprint is a
+digest of the tenant's actual value, and an attacker who observes one can
+search for the input. A symbol is an index into the operator's own
+configuration, which says only *which* declared value matched.
 
 ## Boundaries
 
@@ -326,7 +411,7 @@ arrived in the request.
 This is not only a propagation bug. Fingerprints are computed per
 `(token, signature)` pair, but each one reads the shared per-key cell, so token
 A's condition can be evaluated against a value that token B's extractor stored.
-The cross-product is honoured at fingerprint time and violated at staging time.
+The cross-product is honoured at symbol time and violated at staging time.
 
 The build now rejects it:
 
@@ -426,7 +511,7 @@ The inbound context is treated as **evidence, not identity**. It is never
 adopted. `BoundaryFilter::admits` screens by key id -- the two registries
 agree on key ids, so this is a flag lookup, not a name match -- then
 `resolve_imported` re-runs the resolve phase over the admitted values plus this
-pipeline's static extractors, producing a context whose tokens and fingerprints
+pipeline's static extractors, producing a context whose tokens and symbol words
 belong to the local pipeline. A dedicated tenant pipeline can therefore combine
 an imported value with a `generic_key` identity of its own in a single token.
 
@@ -535,7 +620,7 @@ key:
 
 | demand | stored |
 | --- | --- |
-| match-only | nothing; the fingerprint decides |
+| match-only | nothing; the symbol decides |
 | a consumer propagates the value | `<vlen> <AnyValue>` |
 | a consumer reads the whole bag | `0A <klen> <key> 12 <vlen> <AnyValue>` |
 
@@ -600,28 +685,28 @@ It is also the honest modelling. The tenant context describes the conditions
 under which the pipeline produced this telemetry, not a property of each
 individual record, which is what an instrumentation scope is for.
 
-### Fingerprints stay on the raw bytes
+### Symbols are resolved from the raw bytes
 
-An earlier draft of this section proposed fingerprinting the encoded
-`AnyValue` instead of the raw value. Implementing it showed that to be the
-wrong trade, so it is recorded here as a rejected option rather than quietly
-dropped.
+An earlier draft proposed matching on the encoded `AnyValue` rather than the
+raw value, back when matching was a hash comparison. Both halves of that idea
+are now gone -- matching is a dictionary lookup, and the lookup happens on raw
+bytes -- but the ordering argument that decided it still holds and is worth
+keeping.
 
-The order of work is what decides it. Resolve stages raw bytes and hashes them
-immediately; pack runs afterwards and encodes only the values that survived
-gating. Fingerprinting the encoded form would invert that, forcing every
-condition-participating key to be encoded on the hot path -- including
-match-only keys, whose entire point is that their bytes never travel.
+Resolve stages raw bytes and resolves symbols immediately; pack runs
+afterwards and encodes only the values that survived gating. Matching on the
+encoded form would invert that, forcing every condition-participating key to
+be encoded on the hot path -- including match-only keys, whose entire point is
+that their bytes never travel.
 
 The gain it offered was distinguishing the integer `5` from the string `"5"`.
 That distinction is empty here: condition literals come from YAML as strings
 and are compared against transport header bytes, so no term is ever an
-integer. Paying an encode per matched key to separate two cases that cannot
-arise is not a trade worth making.
+integer.
 
-The cost of keeping raw fingerprints is one decode in `resolve_imported` --
-skip a tag byte and two varints -- on the boundary path only, which is not the
-hot path.
+The cost of resolving on raw bytes is one decode in `resolve_imported` -- skip
+a tag byte and two varints -- on the boundary path only, which is not the hot
+path.
 
 ### Demand is declared per extractor
 
@@ -927,7 +1012,7 @@ matters, since first-match-wins means it catches only what the two specific
 routes did not.
 
 Cost is unchanged by the extra key. Both keys belong to one signature, so the
-whole check is still one fingerprint at resolve time and one hash lookup per
+whole check is still one symbol word at resolve time and one integer lookup per
 probe. The authorization matrix is data in a hash table, not a chain of
 comparisons, and it stays flat as customers and projects are added.
 
@@ -1115,7 +1200,7 @@ pub trait IdentitySink {
 ```
 
 The extension contributes inputs; only the engine declares them complete, which
-it must, since fingerprints are valid only once every input is known. A
+it must, since symbol words are valid only once every input is known. A
 borrowed slice out of an already-parsed certificate or JWT goes straight into
 the scratch arena, so the one-allocation-per-request property survives. Fields
 no token declared an extractor for fail the key lookup and are dropped, so what
@@ -1228,7 +1313,7 @@ and evaluating one there is a configuration error rather than a miss. This is
 the same reachability analysis the baseline already requires for scoping pair
 slots, applied to node order rather than graph connectivity.
 
-And the fork itself must pay for the resolve: N outputs means N fingerprints
+And the fork itself must pay for the resolve: N outputs means N symbol words
 per allocated pair, not one. That is the honest cost of a data-driven fork, and
 it argues for keeping the number of tokens carrying node-defined keys small.
 
@@ -1236,7 +1321,7 @@ it argues for keeping the number of tokens carrying node-defined keys small.
 
 If `customer_id` is only used to choose a Kafka topic and never emitted as a
 header, drop `retain: true`. It gets no value slot, and the fork writes a
-fingerprint per output and copies zero bytes. Partitioning on an attribute and
+symbol word per output and copies zero bytes. Partitioning on an attribute and
 routing on it is then free of any per-value allocation -- which is the same
 payoff match-only keys give everywhere else, arriving here without the design
 having to do anything special.

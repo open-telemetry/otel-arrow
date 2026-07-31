@@ -64,11 +64,41 @@ fn config_error(error: impl Into<String>) -> Error {
 
 /// Serialize one `key: value` term into the fingerprint buffer. Build side and
 /// probe side both go through here so the two layouts cannot drift.
-fn fingerprint_term(buf: &mut Vec<u8>, key: KeyId, value: &[u8]) {
-    buf.extend_from_slice(&key.to_le_bytes());
-    let len = u32::try_from(value.len()).unwrap_or(u32::MAX);
-    buf.extend_from_slice(&len.to_le_bytes());
-    buf.extend_from_slice(value);
+/// Symbol meaning "the request did not carry this key at all".
+const SYMBOL_ABSENT: u16 = 0;
+
+/// Symbol meaning "the request carried a value no condition declares".
+///
+/// Every unrecognized value collapses to this one symbol, which is safe
+/// because no condition can ever ask for it: conditions are built only from
+/// declared literals, whose symbols start at [`FIRST_SYMBOL`].
+const SYMBOL_UNKNOWN: u16 = 1;
+
+/// First symbol assigned to a declared literal.
+const FIRST_SYMBOL: u16 = 2;
+
+/// Pack a signature's symbols into one word using its build-time layout.
+///
+/// Wildcard keys contribute a presence bit; fixed keys contribute their
+/// symbol. The layout reserves enough bits for every symbol a key can take,
+/// so distinct tuples always produce distinct words.
+fn pack_symbols(layout: &SignatureLayout, symbol: impl Fn(KeyId) -> u16) -> u64 {
+    let mut word = 0u64;
+    for (key, shift, mask) in layout.fixed.iter() {
+        word |= (u64::from(symbol(*key)) & mask) << shift;
+    }
+    for (key, shift) in layout.wildcard.iter() {
+        if symbol(*key) != SYMBOL_ABSENT {
+            word |= 1u64 << shift;
+        }
+    }
+    word
+}
+
+/// Bits needed to hold every symbol up to and including `max`.
+const fn symbol_width(max: u16) -> u32 {
+    let bits = u16::BITS - max.leading_zeros();
+    if bits == 0 { 1 } else { bits }
 }
 
 // -- Build-side structures ---------------------------------------------------
@@ -106,10 +136,24 @@ struct CompiledToken {
     keys: Box<[KeyId]>,
 }
 
+/// How one signature's symbols pack into a single word.
+///
+/// Widths come from the number of literals each key actually declares, so the
+/// packing is injective: two different symbol tuples cannot produce the same
+/// word. That is what makes an equality test on the word an equality test on
+/// the values.
+#[derive(Debug, Clone, Default)]
+struct SignatureLayout {
+    /// `(key, shift, mask)` per fixed key.
+    fixed: Box<[(KeyId, u32, u64)]>,
+    /// `(key, shift)` per wildcard key; one bit recording presence.
+    wildcard: Box<[(KeyId, u32)]>,
+}
+
 /// Layout shared by every condition that tests the same set of keys.
 ///
-/// The key order here defines the fingerprint layout, so the build side and
-/// the probe side agree byte for byte.
+/// The key order here defines the symbol layout, so the build side and the
+/// probe side agree bit for bit.
 #[derive(Debug)]
 struct Signature {
     /// Keys carrying a literal value, sorted. These form the fingerprint.
@@ -138,6 +182,12 @@ pub struct TenantTokenRegistry {
     header_probe: u64,
     static_extractors: Vec<StaticExtractor>,
     signatures: Vec<Signature>,
+    /// Per key id: declared literal -> symbol. The map owns the literal, so a
+    /// lookup verifies byte equality against the operator's configured value
+    /// and a hash collision cannot produce a match.
+    key_literals: Vec<AHashMap<Box<[u8]>, u16>>,
+    /// Per signature: the bit layout its symbols pack into.
+    layouts: Vec<SignatureLayout>,
     /// Dense (token, signature) pairs; the index is the [`PairSlot`].
     pairs: Vec<(TokenIdx, SignatureId)>,
     /// Reverse lookup used at node construction, never on the hot path.
@@ -211,6 +261,7 @@ pub struct TenantTokenRegistryBuilder {
     header_index: AHashMap<Box<str>, HeaderSlot>,
     static_extractors: Vec<StaticExtractor>,
     signatures: Vec<Signature>,
+    key_literals: Vec<AHashMap<Box<[u8]>, u16>>,
     signature_ids: AHashMap<(Vec<KeyId>, Vec<KeyId>), SignatureId>,
     pairs: Vec<(TokenIdx, SignatureId)>,
     pair_index: AHashMap<(TokenIdx, SignatureId), PairSlot>,
@@ -245,6 +296,7 @@ impl TenantTokenRegistryBuilder {
         self.request_binding.push(None);
         self.import_binding.push(None);
         self.key_retain_mask.push(0);
+        self.key_literals.push(AHashMap::new());
         let _ = self.key_ids.insert(boxed, id);
         id
     }
@@ -446,6 +498,18 @@ impl TenantTokenRegistryBuilder {
         let bound = self.resolve_bound_tokens(tokens)?;
         for condition in conditions {
             let signature = self.intern_signature(condition)?;
+            // Every literal a condition can match on becomes a symbol, so
+            // resolution can decide membership by exact lookup rather than by
+            // trusting a hash.
+            for entry in &condition.entries {
+                let Some(value) = entry.value.as_deref() else {
+                    continue;
+                };
+                let key = self.intern_key(&entry.key);
+                let table = &mut self.key_literals[usize::from(key)];
+                let next = FIRST_SYMBOL + u16::try_from(table.len()).unwrap_or(u16::MAX);
+                let _ = table.entry(value.as_bytes().into()).or_insert(next);
+            }
             for token in &bound {
                 self.allocate_pair(*token, signature);
             }
@@ -527,8 +591,10 @@ impl TenantTokenRegistryBuilder {
     /// only readable by a registry that agrees on what each slot means. Two
     /// registries built from the same token definitions agree and get the same
     /// epoch; two that do not, disagree loudly rather than misreading slots.
-    #[must_use]
-    pub fn build(self, generation: u16) -> TenantTokenRegistry {
+    ///
+    /// Fails when a signature's symbols do not fit one word, which would cost
+    /// the guarantee that comparing words is comparing values.
+    pub fn build(self, generation: u16) -> Result<TenantTokenRegistry, Error> {
         let n_keys = self.key_names.len();
         let mut value_slot = vec![NO_VALUE_SLOT; n_keys];
         for (idx, key) in self.retained.iter().enumerate() {
@@ -549,7 +615,51 @@ impl TenantTokenRegistryBuilder {
         for (key, slots) in self.import_by_key {
             import_by_key[usize::from(key)] = slots;
         }
-        TenantTokenRegistry {
+
+        // Assign each signature a bit layout wide enough for every symbol its
+        // keys can take. Injectivity is the whole point, so a layout that does
+        // not fit is a configuration error rather than a silent narrowing.
+        let mut layouts: Vec<SignatureLayout> = Vec::with_capacity(self.signatures.len());
+        for sig in &self.signatures {
+            let mut shift = 0u32;
+            let mut fixed = Vec::with_capacity(sig.fixed_keys.len());
+            for key in sig.fixed_keys.iter() {
+                let declared = self.key_literals[usize::from(*key)].len();
+                let max = u16::try_from(declared)
+                    .ok()
+                    .and_then(|n| n.checked_add(FIRST_SYMBOL))
+                    .map_or(u16::MAX, |n| n.saturating_sub(1))
+                    .max(SYMBOL_UNKNOWN);
+                let width = symbol_width(max);
+                fixed.push((*key, shift, (1u64 << width) - 1));
+                shift += width;
+            }
+            let mut wildcard = Vec::with_capacity(sig.wildcard_keys.len());
+            for key in sig.wildcard_keys.iter() {
+                wildcard.push((*key, shift));
+                shift += 1;
+            }
+            if shift > u64::BITS {
+                let names: Vec<&str> = sig
+                    .required_keys
+                    .iter()
+                    .map(|k| self.key_names[usize::from(*k)].as_ref())
+                    .collect();
+                return Err(config_error(format!(
+                    "tenant condition over keys [{}] needs {shift} bits of symbol \
+                     space but only {} are available; reduce the number of keys \
+                     or the number of declared values per key",
+                    names.join(", "),
+                    u64::BITS,
+                )));
+            }
+            layouts.push(SignatureLayout {
+                fixed: fixed.into_boxed_slice(),
+                wildcard: wildcard.into_boxed_slice(),
+            });
+        }
+
+        Ok(TenantTokenRegistry {
             epoch,
             key_names: self.key_names,
             tokens: self.tokens,
@@ -561,6 +671,8 @@ impl TenantTokenRegistryBuilder {
             header_index: self.header_index,
             static_extractors: self.static_extractors,
             signatures: self.signatures,
+            key_literals: self.key_literals,
+            layouts,
             pairs: self.pairs,
             pair_index: self.pair_index,
             import_by_key,
@@ -569,7 +681,7 @@ impl TenantTokenRegistryBuilder {
             bag_field: self.bag_field.unwrap_or(attribute_field::SCOPE),
             value_slot,
             retain_mask,
-        }
+        })
     }
 }
 
@@ -617,7 +729,9 @@ pub struct TokenScratch {
     values: Vec<ValueRef>,
     /// Staging bytes for carried values and legacy header names.
     arena: Vec<u8>,
-    fingerprint_buf: Vec<u8>,
+    /// Per key id: the symbol its value resolved to.
+    symbols: Vec<u16>,
+    /// Per pair slot: the packed symbol word. Named for its role in the join.
     fingerprints: Vec<u64>,
     /// One entry per registry value slot, in slot order.
     slots: Vec<StagedSlot>,
@@ -922,7 +1036,8 @@ impl TokenScratch {
         self.values
             .resize(registry.key_names.len(), ValueRef::default());
         self.arena.clear();
-        self.fingerprint_buf.clear();
+        self.symbols.clear();
+        self.symbols.resize(registry.key_names.len(), SYMBOL_ABSENT);
         self.fingerprints.clear();
         self.fingerprints.resize(registry.pairs.len(), 0);
         self.slots.clear();
@@ -1187,30 +1302,37 @@ impl TenantTokenRegistry {
             return None;
         }
 
-        // Probe side of the hash join: one fingerprint per allocated pair.
+        // Probe side of the join. Each key's value is first resolved to a
+        // symbol by exact lookup against the declared literals -- the map owns
+        // those bytes and compares them, so a hash collision cannot manufacture
+        // a match. Only then are symbols packed into the per-pair word.
         let TokenScratch {
             values,
             arena,
-            fingerprint_buf,
+            symbols,
             fingerprints,
             ..
         } = scratch;
+        for (key, r) in values.iter().enumerate() {
+            symbols[key] = if r.present {
+                let start = r.off as usize;
+                let end = start + r.len as usize;
+                self.key_literals[key]
+                    .get(&arena[start..end])
+                    .copied()
+                    .unwrap_or(SYMBOL_UNKNOWN)
+            } else {
+                SYMBOL_ABSENT
+            };
+        }
+
         for (slot, (token, signature)) in self.pairs.iter().enumerate() {
             if resolved & (1u64 << *token) == 0 {
                 continue;
             }
-            let sig = &self.signatures[usize::from(*signature)];
-            fingerprint_buf.clear();
-            for key in sig.fixed_keys.iter() {
-                let r = values[usize::from(*key)];
-                if !r.present {
-                    continue;
-                }
-                let start = r.off as usize;
-                let end = start + r.len as usize;
-                fingerprint_term(fingerprint_buf, *key, &arena[start..end]);
-            }
-            fingerprints[slot] = xxh3_64(fingerprint_buf);
+            fingerprints[slot] = pack_symbols(&self.layouts[usize::from(*signature)], |key| {
+                symbols[usize::from(key)]
+            });
         }
 
         Some(self.pack(scratch, resolved))
@@ -1342,7 +1464,7 @@ impl TenantTokenRegistry {
             let condition_idx = ConditionIdx::try_from(condition_idx)
                 .map_err(|_| config_error("too many tenant conditions"))?;
             let signature = self.lookup_signature(condition)?;
-            let fingerprint = self.literal_fingerprint(condition, signature);
+            let word = self.literal_word(condition, signature)?;
 
             let position = groups.iter().position(|g| g.signature == signature);
             let group = match position {
@@ -1367,7 +1489,7 @@ impl TenantTokenRegistry {
                 }
             };
             // First match wins: keep the lowest condition index per key.
-            let entry = group.table.entry(fingerprint).or_insert(condition_idx);
+            let entry = group.table.entry(word).or_insert(condition_idx);
             if condition_idx < *entry {
                 *entry = condition_idx;
             }
@@ -1408,22 +1530,47 @@ impl TenantTokenRegistry {
 
     /// Build-side fingerprint: hash the condition's literal values in the
     /// signature's key order, matching the probe-side layout exactly.
-    fn literal_fingerprint(&self, condition: &Condition, signature: SignatureId) -> u64 {
-        let sig = &self.signatures[usize::from(signature)];
-        let mut buf: Vec<u8> = Vec::new();
-        for key in sig.fixed_keys.iter() {
+    /// The word a request must produce to satisfy `condition`.
+    ///
+    /// Built from the same symbols and the same layout as the request side, so
+    /// the comparison in [`ConditionSet::first_match`] is an equality test on
+    /// values rather than on a digest of them.
+    fn literal_word(&self, condition: &Condition, signature: SignatureId) -> Result<u64, Error> {
+        let layout = &self.layouts[usize::from(signature)];
+        // Fail closed on an undeclared literal. It would otherwise take
+        // SYMBOL_UNKNOWN, which is the symbol every unrecognized request value
+        // takes, and the condition would match all of them at once.
+        for (key, _, _) in layout.fixed.iter() {
             let name = self.key_name(*key);
-            let Some(entry) = condition
+            let literal = condition
                 .entries
                 .iter()
-                .find(|e| e.key.as_str() == name && e.value.is_some())
-            else {
-                continue;
-            };
-            let value = entry.value.as_deref().unwrap_or_default();
-            fingerprint_term(&mut buf, *key, value.as_bytes());
+                .find(|e| e.key.as_str() == name)
+                .and_then(|e| e.value.as_deref())
+                .unwrap_or_default();
+            if !self.key_literals[usize::from(*key)].contains_key(literal.as_bytes()) {
+                return Err(config_error(format!(
+                    "tenant condition tests '{name}' against a value that was \
+                     never declared to the registry; every literal a condition \
+                     can match must be interned at build time so that matching \
+                     is an equality test rather than a hash comparison"
+                )));
+            }
         }
-        xxh3_64(&buf)
+        Ok(pack_symbols(layout, |key| {
+            let name = self.key_name(key);
+            condition
+                .entries
+                .iter()
+                .find(|e| e.key.as_str() == name)
+                .and_then(|e| e.value.as_deref())
+                .map_or(SYMBOL_UNKNOWN, |value| {
+                    self.key_literals[usize::from(key)]
+                        .get(value.as_bytes())
+                        .copied()
+                        .unwrap_or(SYMBOL_UNKNOWN)
+                })
+        }))
     }
 }
 
@@ -1457,7 +1604,7 @@ impl ConditionSet {
                 if !view.token_resolved(*token) {
                     continue;
                 }
-                if let Some(idx) = group.table.get(&view.fingerprint(*slot)) {
+                if let Some(idx) = group.table.get(&view.signature_word(*slot)) {
                     best = Some(match best {
                         Some(current) if current <= *idx => current,
                         _ => *idx,
@@ -1518,9 +1665,12 @@ impl<'a> TenantView<'a> {
         self.words[1] != 0
     }
 
-    /// Precomputed fingerprint for one applicable (token, signature) pair.
+    /// Packed symbol word for one applicable (token, signature) pair.
+    ///
+    /// This is a dictionary encoding of the request's values, not a digest of
+    /// them: comparing two words compares the values exactly.
     #[must_use]
-    pub fn fingerprint(&self, slot: PairSlot) -> u64 {
+    pub fn signature_word(&self, slot: PairSlot) -> u64 {
         self.words[HEADER_WORDS + usize::from(slot)]
     }
 

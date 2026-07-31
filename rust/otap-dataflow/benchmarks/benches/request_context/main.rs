@@ -165,7 +165,7 @@ fn registry(n_keys: usize, bag: bool) -> TenantTokenRegistry {
     let _ = tokens.insert("gateway".to_owned(), TenantTokenSpec { extractors });
     let mut builder = TenantTokenRegistryBuilder::new().with_bag_field(attribute_field::SCOPE);
     builder.add_tokens(&tokens).expect("registry builds");
-    builder.build(1)
+    builder.build(1).expect("layout fits")
 }
 
 /// The exporter side: the logical keys an exporter re-emits, paired with the
