@@ -21,8 +21,9 @@
 //!   host-managed `pdata` resource handle; bulk Arrow data never crosses the
 //!   WASM boundary. Kernels run natively on the host's Arrow arrays.
 //! - **Valid OTel data.** The kernel surface is OTel-semantic (filter by
-//!   attribute), and the reconstructed batch is validated against OTAP schema
-//!   invariants (via [`otap_df_pdata`]'s `set`) before forwarding downstream.
+//!   attribute). Host kernel implementations are trusted to produce
+//!   structurally valid OTAP output; no additional bridge-level schema
+//!   re-validation is performed before forwarding downstream.
 //! - **No hot-path compilation.** The `.wasm` component is compiled once at
 //!   startup and instantiated into a long-running, per-core instance.
 //!
