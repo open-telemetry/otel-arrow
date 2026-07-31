@@ -30,6 +30,11 @@ use std::hint::black_box;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use otap_df_config::tenant::compiled::{
+    TenantTokenRegistry, TenantTokenRegistryBuilder, TenantView, TokenInputs, TokenScratch,
+    attribute_field,
+};
+use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
 use otap_df_config::transport_headers::TransportHeaders;
 use otap_df_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationDefault,
@@ -134,6 +139,55 @@ fn propagation_policy() -> HeaderPropagationPolicy {
     )
 }
 
+/// The tenant-token equivalent of `capture_policy`: one token whose `n`
+/// extractors read the same wire headers and retain the same logical names.
+///
+/// `bag` decides whether key names are encoded alongside the values, which is
+/// what makes the run appendable to telemetry as OTLP attributes.
+fn registry(n_keys: usize, bag: bool) -> TenantTokenRegistry {
+    let names = [
+        ("x-tenant-id", "tenant_id"),
+        ("x-project-id", "project_id"),
+        ("x-request-id", "request_id"),
+        ("traceparent", "traceparent"),
+    ];
+    let extractors = names
+        .iter()
+        .take(n_keys)
+        .map(|(wire, key)| Extractor::TransportHeader {
+            key: (*key).to_owned(),
+            transport_header: (*wire).to_owned(),
+            retain: true,
+            bag,
+        })
+        .collect();
+    let mut tokens = TenantTokens::default();
+    let _ = tokens.insert("gateway".to_owned(), TenantTokenSpec { extractors });
+    let mut builder = TenantTokenRegistryBuilder::new().with_bag_field(attribute_field::SCOPE);
+    builder.add_tokens(&tokens).expect("registry builds");
+    builder.build(1)
+}
+
+/// The exporter side: the logical keys an exporter re-emits, paired with the
+/// wire names it chooses. Resolved once at build time, exactly as a compiled
+/// exporter would.
+fn egress_map(reg: &TenantTokenRegistry, n_keys: usize) -> Vec<(u16, &'static str)> {
+    let names = [
+        ("tenant_id", "x-acme-tenant"),
+        ("project_id", "x-acme-project"),
+        ("request_id", "x-acme-request"),
+        ("traceparent", "traceparent"),
+    ];
+    names
+        .iter()
+        .take(n_keys)
+        .filter_map(|(key, wire)| {
+            let id = reg.key_id(key)?;
+            Some((reg.value_slot(id)?, *wire))
+        })
+        .collect()
+}
+
 /// Counts of matched headers to sweep. One is the degenerate case a router
 /// needs; four is a realistic gateway that also forwards tracing context.
 const MATCHED: [usize; 3] = [1, 2, 4];
@@ -215,6 +269,123 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_tenant(c: &mut Criterion) {
+    let mut group = c.benchmark_group("request_context/tenant_resolve");
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let pairs = inbound();
+        let mut scratch = TokenScratch::new();
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                black_box(reg.resolve(
+                    &mut scratch,
+                    TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+                ))
+            });
+        });
+    }
+    group.finish();
+
+    let mut group = c.benchmark_group("request_context/tenant_carry");
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let pairs = inbound();
+        let mut scratch = TokenScratch::new();
+        let words = reg
+            .resolve(
+                &mut scratch,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+            .expect("resolves");
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(words.clone()));
+        });
+    }
+    group.finish();
+
+    let mut group = c.benchmark_group("request_context/tenant_propagate");
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let egress = egress_map(&reg, n);
+        let pairs = inbound();
+        let mut scratch = TokenScratch::new();
+        let words = reg
+            .resolve(
+                &mut scratch,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+            .expect("resolves");
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                let view = TenantView::new(&words);
+                let mut emitted = 0usize;
+                for (slot, wire) in &egress {
+                    if let Some(value) = view.slot_value(*slot) {
+                        emitted += black_box(wire.len()) + black_box(value.len());
+                    }
+                }
+                emitted
+            });
+        });
+    }
+    group.finish();
+
+    // One receiver resolve, two node hops, one exporter read: the same shape
+    // as `bench_end_to_end`, so the totals are directly comparable.
+    let mut group = c.benchmark_group("request_context/tenant_end_to_end");
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let egress = egress_map(&reg, n);
+        let pairs = inbound();
+        let mut scratch = TokenScratch::new();
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                let words = reg
+                    .resolve(
+                        &mut scratch,
+                        TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+                    )
+                    .expect("resolves");
+                let hop1 = words.clone();
+                let hop2 = hop1.clone();
+                let view = TenantView::new(&hop2);
+                let mut emitted = 0usize;
+                for (slot, _) in &egress {
+                    if let Some(value) = view.slot_value(*slot) {
+                        emitted += value.len();
+                    }
+                }
+                black_box(emitted)
+            });
+        });
+    }
+    group.finish();
+
+    // Instrumenting a request with its tenant context. The baseline has no
+    // equivalent: it would have to encode a KeyValue per header.
+    let mut group = c.benchmark_group("request_context/tenant_attributes");
+    for n in MATCHED {
+        let reg = registry(n, true);
+        let pairs = inbound();
+        let mut scratch = TokenScratch::new();
+        let words = reg
+            .resolve(
+                &mut scratch,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+            .expect("resolves");
+        let mut dst = Vec::with_capacity(1024);
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| {
+                dst.clear();
+                dst.extend_from_slice(TenantView::new(&words).attributes());
+                black_box(dst.len())
+            });
+        });
+    }
+    group.finish();
+}
+
 /// Report allocations per request for each phase.
 ///
 /// This is the number the representation change is meant to move, and it is
@@ -269,6 +440,83 @@ fn alloc_report(_c: &mut Criterion) {
         });
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "end_to_end");
     }
+
+    println!("\nrequest_context allocations per request (tenant token)");
+    println!(
+        "{:<12} {:>8} {:>10} {:>10}",
+        "phase", "matched", "allocs", "bytes"
+    );
+
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let egress = egress_map(&reg, n);
+        let mut scratch = TokenScratch::new();
+
+        let (a, b) = measure(ITERS, || {
+            reg.resolve(
+                &mut scratch,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+        });
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "capture");
+
+        let words = reg
+            .resolve(
+                &mut scratch,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+            .expect("resolves");
+        let (a, b) = measure(ITERS, || words.clone());
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "carry");
+
+        let (a, b) = measure(ITERS, || {
+            let view = TenantView::new(&words);
+            let mut emitted = 0usize;
+            for (slot, wire) in &egress {
+                if let Some(value) = view.slot_value(*slot) {
+                    emitted += wire.len() + value.len();
+                }
+            }
+            emitted
+        });
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "propagate");
+
+        let (a, b) = measure(ITERS, || {
+            let w = reg
+                .resolve(
+                    &mut scratch,
+                    TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+                )
+                .expect("resolves");
+            let hop1 = w.clone();
+            let hop2 = hop1.clone();
+            let view = TenantView::new(&hop2);
+            let mut emitted = 0usize;
+            for (slot, _) in &egress {
+                if let Some(value) = view.slot_value(*slot) {
+                    emitted += value.len();
+                }
+            }
+            emitted
+        });
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "end_to_end");
+
+        let bag = registry(n, true);
+        let mut s2 = TokenScratch::new();
+        let bw = bag
+            .resolve(
+                &mut s2,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+            .expect("resolves");
+        let mut dst = Vec::with_capacity(1024);
+        let (a, b) = measure(ITERS, || {
+            dst.clear();
+            dst.extend_from_slice(TenantView::new(&bw).attributes());
+            dst.len()
+        });
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "attributes");
+    }
     println!();
 }
 
@@ -278,6 +526,7 @@ criterion_group!(
     bench_carry,
     bench_propagate,
     bench_end_to_end,
+    bench_tenant,
     alloc_report,
 );
 criterion_main!(benches);

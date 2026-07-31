@@ -224,21 +224,59 @@ which is why the feature is net-negative on memory. The `request_context`
 benchmark measures where that cost actually sits, and the answer is narrower
 than it first appears:
 
-| phase | matched | allocs | bytes |
-| --- | --- | --- | --- |
-| capture | 1 | 5.00 | 388.0 |
-| capture | 2 | 8.00 | 421.0 |
-| capture | 4 | 14.00 | 546.0 |
-| carry | any | 0.00 | 0.0 |
-| propagate | any | 0.00 | 0.0 |
+Allocations and bytes per request, base = baseline, tok = tenant token:
 
-Capture costs `2 + 3n` -- an `Arc`, a `Vec`, and a name, wire name and value
-per header -- and the target is exactly **1**. Carry and propagation are
-already free: `TransportHeaders` is an `Arc<Vec<TransportHeader>>`, so a hop is
-an `Arc` bump at about 10ns regardless of header count, and propagation
-borrows. The win is per request, not per hop, and claiming otherwise would
-overstate it. `Context` itself grows 8 bytes, since a fat slice pointer
-replaces a thin one.
+| phase | matched | base allocs | tok allocs | base bytes | tok bytes |
+| --- | --- | --- | --- | --- | --- |
+| capture | 1 | 5 | 1 | 388 | 56 |
+| capture | 2 | 8 | 1 | 421 | 72 |
+| capture | 4 | 14 | 1 | 546 | 160 |
+| carry | any | 0 | 0 | 0 | 0 |
+| propagate | any | 0 | 0 | 0 | 0 |
+| attributes | any | n/a | 0 | n/a | 0 |
+
+Capture cost `2 + 3n` -- an `Arc`, a `Vec`, and a name, wire name and value
+per header. It is now **1**, flat, and the bytes fall with it because a value
+slot spends no name and no descriptor.
+
+Carry and propagation were already free: `TransportHeaders` is an
+`Arc<Vec<TransportHeader>>`, so a hop was an `Arc` bump and propagation
+borrowed. The win is per request, not per hop, and claiming otherwise would
+overstate it.
+
+Wall time, same run, mean nanoseconds:
+
+| phase | matched | baseline | tenant |
+| --- | --- | --- | --- |
+| capture / resolve | 1 | 126 | 77 |
+| capture / resolve | 2 | 229 | 115 |
+| capture / resolve | 4 | 485 | 149 |
+| carry (per hop) | any | 10 | 13 |
+| propagate | 4 | 14 | 16 |
+| end to end | 1 | 157 | 104 |
+| end to end | 2 | 244 | 158 |
+| end to end | 4 | 552 | 207 |
+| attributes | 4 | n/a | 5 |
+
+Resolution beats capture at every width, by 39% at one key and 69% at four,
+and end to end is 34% to 63% faster. Two things pay for that. Registered
+header names are screened by a one-word Bloom filter over length and first
+byte before anything is hashed, so the four headers a pipeline does not want
+-- content type, user agent, encoding, timeouts -- are rejected without a map
+lookup. And since gRPC and HTTP/2 already require lowercase names, case
+folding is skipped unless a name actually needs it.
+
+Two costs went **up**, and both are worth stating. A hop is 3ns dearer,
+because `Arc<[u64]>` is a fat pointer where `Arc<Vec<_>>` was thin; against
+roughly 300ns saved per request at four keys, that pays for itself until
+about a hundred hops. Reading one value is about 2ns dearer, because a slot
+addresses an encoded `AnyValue` and the read skips a tag and two varints
+rather than indexing a struct field.
+
+`attributes` has no baseline row because the baseline cannot do it: emitting
+the request's context as telemetry attributes would mean encoding a
+`KeyValue` per header. Here it is a borrow of an already formed repeated
+field, and the 5ns is the memcpy.
 
 Limits: `MAX_TOKENS = 64`, `MAX_TOKEN_KEYS = 64`, `MAX_VALUE_BYTES = 65535`.
 

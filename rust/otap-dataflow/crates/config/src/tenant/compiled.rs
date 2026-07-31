@@ -134,6 +134,8 @@ pub struct TenantTokenRegistry {
     tokens: Vec<CompiledToken>,
     /// Lowercased transport header name to the extractors it satisfies.
     header_index: AHashMap<Box<str>, HeaderSlot>,
+    /// Bloom filter over registered header names, probed before hashing.
+    header_probe: u64,
     static_extractors: Vec<StaticExtractor>,
     signatures: Vec<Signature>,
     /// Dense (token, signature) pairs; the index is the [`PairSlot`].
@@ -551,6 +553,11 @@ impl TenantTokenRegistryBuilder {
             epoch,
             key_names: self.key_names,
             tokens: self.tokens,
+            header_probe: self
+                .header_index
+                .keys()
+                .map(|name| 1u64 << header_probe_bit(name.as_bytes()))
+                .fold(0, |acc, bit| acc | bit),
             header_index: self.header_index,
             static_extractors: self.static_extractors,
             signatures: self.signatures,
@@ -696,6 +703,19 @@ pub mod attribute_field {
 
     /// `Span.attributes`.
     pub const SPAN: u32 = 9;
+}
+
+/// Cheap discriminator over a header name, used as a one-word Bloom filter.
+///
+/// A request carries far more headers than any pipeline registers -- content
+/// type, user agent, encoding, timeouts -- and hashing all of them to discover
+/// that is the dominant cost of resolution. Length and first byte separate
+/// real header names well and are available without touching the rest of the
+/// string, so an unregistered name is usually rejected before it is hashed or
+/// case-folded.
+fn header_probe_bit(name: &[u8]) -> u32 {
+    let first = name.first().copied().unwrap_or(0).to_ascii_lowercase();
+    ((u32::from(first).wrapping_mul(31)) ^ (name.len() as u32).wrapping_mul(7)) & 63
 }
 
 /// Append a base-128 varint.
@@ -1076,10 +1096,21 @@ impl TenantTokenRegistry {
         // One pass over the request headers.
         let mut lower: SmallVec<[u8; 64]> = SmallVec::new();
         for (name, value) in inputs.headers {
-            lower.clear();
-            lower.extend(name.as_bytes().iter().map(u8::to_ascii_lowercase));
-            let Ok(lower_str) = std::str::from_utf8(&lower) else {
+            let bytes = name.as_bytes();
+            if self.header_probe & (1u64 << header_probe_bit(bytes)) == 0 {
                 continue;
+            }
+            // gRPC and HTTP/2 require lowercase names, so the copy is usually
+            // avoidable; only fold a name that actually needs it.
+            let lower_str = if bytes.iter().any(u8::is_ascii_uppercase) {
+                lower.clear();
+                lower.extend(bytes.iter().map(u8::to_ascii_lowercase));
+                let Ok(folded) = std::str::from_utf8(&lower) else {
+                    continue;
+                };
+                folded
+            } else {
+                name
             };
             let Some(header_slot) = self.header_index.get(lower_str) else {
                 continue;
