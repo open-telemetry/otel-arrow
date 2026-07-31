@@ -41,6 +41,7 @@ ring = { workspace = true, optional = true }
 secrecy = { workspace = true, optional = true }
 kube = { workspace = true, optional = true }
 k8s-openapi = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [features]
 # Umbrella feature enabling all contrib extensions.
@@ -49,7 +50,7 @@ contrib-extensions = ["azure-identity-auth-extension", "k8s-sat-token-authorizer
 azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # Kubernetes service-account-token authorizer extension (BearerTokenAuthorizer
 # capability) validating tokens via the Kubernetes TokenReview API.
-k8s-sat-token-authorizer-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde"]
+k8s-sat-token-authorizer-extension = ["dep:kube", "dep:k8s-openapi", "dep:humantime-serde", "dep:sha2"]
 # OAuth 2.0 Client Auth extension (BearerTokenProvider capability).
 oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
 

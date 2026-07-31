@@ -72,7 +72,6 @@ fn create(
 ) -> Result<ExtensionBundle, ConfigError> {
     // Validate config now so a bad config fails fast at wiring time.
     let config = parse_config(&ext_config.config)?;
-    let allowed = config.allowed_service_account_set();
 
     // Build both capability variants from the same config. The shared variant is
     // `Arc`-backed (Send) and the local variant is `Rc`-backed (lock-free,
@@ -80,16 +79,12 @@ fn create(
     let shared = SharedK8sSatTokenAuthorizer::new(
         &name,
         config.audiences.clone(),
-        allowed.clone(),
-        config.resource_attributes.clone(),
         config.cache_ttl,
         config.cache_max_entries,
     );
     let local = LocalK8sSatTokenAuthorizer::new(
         &name,
-        config.audiences.clone(),
-        allowed,
-        config.resource_attributes.clone(),
+        config.audiences,
         config.cache_ttl,
         config.cache_max_entries,
     );

@@ -9,22 +9,25 @@
 //! own cache (a `Mutex` for the shared variant, a `RefCell` for the local one)
 //! around this common logic.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 
 use otap_df_engine::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as BearerTokenAuthorizerCap;
 use otap_df_engine::capability::auth::{
-    AuthorizedIdentity, AuthzDecision, BearerToken, DenyReason,
+    AuthorizedIdentity, AuthzDecision, BearerToken, ClaimValue, DenyReason,
 };
 use otap_df_engine::capability::{CapabilityError, CapabilityErrorSource};
 use tokio::sync::OnceCell;
 
 use super::cache::DecisionStore;
-use super::config::ResourceAttributesConfig;
+use super::config::{AudienceConfig, ResourceAttributesConfig};
 use super::reviewer::{AccessOutcome, AuthenticatedUser, ReviewOutcome, Reviewer};
 
-/// How an authenticated identity is admitted.
+/// Authentication scheme tag emitted on every identity from this authorizer.
+const SCHEME: &str = "k8s_sat";
+
+/// How an authenticated identity is admitted, per audience.
 pub(crate) enum Admission {
     /// Admit any authenticated service account (audience-only admission).
     Any,
@@ -35,46 +38,56 @@ pub(crate) enum Admission {
     Rbac(ResourceAttributesConfig),
 }
 
+impl Admission {
+    /// Derives the admission strategy for a single audience entry.
+    fn from_audience(entry: &AudienceConfig) -> Self {
+        if let Some(attrs) = &entry.resource_attributes {
+            Admission::Rbac(attrs.clone())
+        } else if let Some(allow_list) = entry.allowed_service_account_set() {
+            Admission::AllowList(allow_list)
+        } else {
+            Admission::Any
+        }
+    }
+}
+
 /// Immutable, thread-safe authorization core shared by both variants.
 ///
 /// `Core` is `Send + Sync`, so the shared variant can place it behind an `Arc`
 /// and the local variant behind an `Rc`; both share this one implementation of
 /// the authenticate + admit logic and the lazily-built Kubernetes client.
 pub(crate) struct Core {
-    /// Audiences requested on every `TokenReview`.
+    /// Union of all configured audiences, requested on every `TokenReview`.
     audiences: Vec<String>,
+    /// Per-audience admission policy. Admission uses the entry for the audience
+    /// `TokenReview` confirms, so an identity is only ever admitted for the
+    /// audience it was minted for (no cross-tenant admission).
+    admission_by_audience: HashMap<String, Admission>,
     /// The Kubernetes reviewer, built on first use. A failed build leaves the
     /// cell empty so the next request retries.
     reviewer: OnceCell<Arc<Reviewer>>,
-    /// How an authenticated identity is admitted.
-    admission: Admission,
     /// Pre-tagged capability error builder.
     cap_err: CapabilityErrorSource<BearerTokenAuthorizerCap>,
 }
 
 impl Core {
-    /// Builds the core from the validated configuration pieces.
+    /// Builds the core from the validated audience entries.
     ///
-    /// `allowed` and `resource_attributes` are mutually exclusive (enforced at
-    /// config validation); when both are `None` any authenticated account is
-    /// admitted.
-    pub(crate) fn new(
-        name: &str,
-        audiences: Vec<String>,
-        allowed: Option<HashSet<String>>,
-        resource_attributes: Option<ResourceAttributesConfig>,
-    ) -> Self {
-        let admission = match (allowed, resource_attributes) {
-            // RBAC takes precedence if somehow both are set; config validation
-            // rejects that combination before we get here.
-            (_, Some(attrs)) => Admission::Rbac(attrs),
-            (Some(allow_list), None) => Admission::AllowList(allow_list),
-            (None, None) => Admission::Any,
-        };
+    /// Each entry contributes its audience to the `TokenReview` request and its
+    /// own admission policy to the per-audience map.
+    pub(crate) fn new(name: &str, audiences: Vec<AudienceConfig>) -> Self {
+        let requested_audiences = audiences
+            .iter()
+            .map(|a| a.audience.trim().to_string())
+            .collect();
+        let admission_by_audience = audiences
+            .iter()
+            .map(|a| (a.audience.trim().to_string(), Admission::from_audience(a)))
+            .collect();
         Self {
-            audiences,
+            audiences: requested_audiences,
+            admission_by_audience,
             reviewer: OnceCell::new(),
-            admission,
             cap_err: CapabilityErrorSource::new(name.to_owned().into()),
         }
     }
@@ -114,7 +127,7 @@ impl Core {
         // Slow path: reach a decision (no lock/borrow held across the await) and
         // cache it.
         let decision = self.decide(token).await?;
-        store.insert(token.to_owned(), decision.clone(), Instant::now());
+        store.insert(token, decision.clone(), Instant::now());
         Ok(decision)
     }
 
@@ -142,26 +155,47 @@ impl Core {
                 }
                 None => AuthzDecision::deny(DenyReason::InvalidCredential),
             },
-            ReviewOutcome::Authenticated(user) => match &self.admission {
-                // RBAC admission needs a second API call (SubjectAccessReview).
-                // A request failure is undetermined: fail closed.
-                Admission::Rbac(attrs) => {
-                    match reviewer
-                        .check_access(&user, attrs)
-                        .await
-                        .map_err(|err| self.cap_err.error(err))?
-                    {
-                        AccessOutcome::Allowed => self.allow(&user),
-                        AccessOutcome::Denied { reason } => match reason {
-                            Some(detail) => {
-                                AuthzDecision::deny_with_detail(DenyReason::NotPermitted, detail)
-                            }
-                            None => AuthzDecision::deny(DenyReason::NotPermitted),
-                        },
+            ReviewOutcome::Authenticated(user) => {
+                // Admit against the entry for the audience TokenReview actually
+                // confirmed, not a global list. This ties the service account to
+                // the audience it was minted for and closes cross-tenant
+                // admission (a token minted for audience A cannot be admitted
+                // through audience B's policy).
+                let matched = user.audiences.iter().find_map(|aud| {
+                    self.admission_by_audience
+                        .get(aud)
+                        .map(|adm| (aud.clone(), adm))
+                });
+                let Some((audience, admission)) = matched else {
+                    // The token authenticated but not for any bound audience.
+                    return Ok(AuthzDecision::deny_with_detail(
+                        DenyReason::NotPermitted,
+                        "token audience is not bound",
+                    ));
+                };
+
+                match admission {
+                    // RBAC admission needs a second API call (SubjectAccessReview).
+                    // A request failure is undetermined: fail closed.
+                    Admission::Rbac(attrs) => {
+                        match reviewer
+                            .check_access(&user, attrs)
+                            .await
+                            .map_err(|err| self.cap_err.error(err))?
+                        {
+                            AccessOutcome::Allowed => Self::allow(&user, &audience),
+                            AccessOutcome::Denied { reason } => match reason {
+                                Some(detail) => AuthzDecision::deny_with_detail(
+                                    DenyReason::NotPermitted,
+                                    detail,
+                                ),
+                                None => AuthzDecision::deny(DenyReason::NotPermitted),
+                            },
+                        }
                     }
+                    _ => Self::admit_non_rbac(&user, &audience, admission),
                 }
-                _ => self.admit_local(&user),
-            },
+            }
         };
         Ok(decision)
     }
@@ -181,33 +215,56 @@ impl Core {
             .map(Arc::clone)
     }
 
-    /// Builds the `Allow` identity for an authenticated user, carrying the SA
-    /// subject and the audience it was accepted for.
-    fn allow(&self, user: &AuthenticatedUser) -> AuthzDecision {
-        let mut identity = AuthorizedIdentity::new();
-        if let Some(subject) = &user.username {
-            identity = identity.with_subject(subject);
+    /// Builds the `Allow` identity for an authenticated user.
+    ///
+    /// Emits every claim the `TokenReview` verified so a downstream tenant /
+    /// authorization resolver can match on them: the SA username as the
+    /// `principal` and `sub` claim, the matched `aud`, the parsed
+    /// `k8s.namespace` / `k8s.serviceaccount`, plus `uid`, `groups`, and any
+    /// `extra` attributes (namespaced `extra.<key>`). Scheme is `k8s_sat`.
+    fn allow(user: &AuthenticatedUser, audience: &str) -> AuthzDecision {
+        let mut identity = AuthorizedIdentity::new()
+            .with_scheme(SCHEME)
+            .with_audience(audience);
+
+        if let Some(username) = &user.username {
+            identity = identity
+                .with_principal(username)
+                .with_subject(username);
+            // The SA username encodes namespace + name; surface them as their
+            // own claims so a resolver need not re-parse the username.
+            if let Some((namespace, name)) = parse_service_account(username) {
+                identity = identity
+                    .with_claim_str("k8s.namespace", namespace)
+                    .with_claim_str("k8s.serviceaccount", name);
+            }
         }
-        // Surface the audience the token was accepted for so downstream routing
-        // can use it; prefer the API server's confirmed audience.
-        if let Some(audience) = user
-            .audiences
-            .first()
-            .cloned()
-            .or_else(|| self.audiences.first().cloned())
-        {
-            identity = identity.with_audience(&audience);
+        if let Some(uid) = &user.uid {
+            identity = identity.with_claim_str("uid", uid);
         }
+        if !user.groups.is_empty() {
+            identity = identity.with_claim_values("groups", user.groups.iter().map(String::as_str));
+        }
+        for (key, values) in &user.extra {
+            identity =
+                identity.with_claim(&format!("extra.{key}"), ClaimValue::Many(values.clone()));
+        }
+
         AuthzDecision::allow(identity)
     }
 
-    /// Admits `user` using the non-RBAC strategies (any / allow-list). The RBAC
-    /// strategy needs an async API call and is handled in [`Core::decide`].
-    fn admit_local(&self, user: &AuthenticatedUser) -> AuthzDecision {
-        match &self.admission {
-            Admission::Any => self.allow(user),
+    /// Admits `user` for `audience` using the non-RBAC strategies (any /
+    /// allow-list). The RBAC strategy needs an async API call and is handled in
+    /// [`Core::decide`].
+    fn admit_non_rbac(
+        user: &AuthenticatedUser,
+        audience: &str,
+        admission: &Admission,
+    ) -> AuthzDecision {
+        match admission {
+            Admission::Any => Self::allow(user, audience),
             Admission::AllowList(allowed) => match &user.username {
-                Some(name) if allowed.contains(name) => self.allow(user),
+                Some(name) if allowed.contains(name) => Self::allow(user, audience),
                 _ => AuthzDecision::deny_with_detail(
                     DenyReason::NotPermitted,
                     "service account not in allow-list",
@@ -219,18 +276,44 @@ impl Core {
     }
 }
 
+/// Parses a service-account username into its `(namespace, name)` parts.
+///
+/// Kubernetes SA usernames have the form
+/// `system:serviceaccount:<namespace>:<name>`. Returns `None` for any other
+/// username shape (e.g. a non-SA user) or when either part is empty.
+fn parse_service_account(username: &str) -> Option<(&str, &str)> {
+    const PREFIX: &str = "system:serviceaccount:";
+    let rest = username.strip_prefix(PREFIX)?;
+    let (namespace, name) = rest.split_once(':')?;
+    if namespace.is_empty() || name.is_empty() {
+        return None;
+    }
+    Some((namespace, name))
+}
+
 #[cfg(test)]
 impl Core {
-    /// Runs the non-RBAC admission step (any / allow-list). Test-only.
-    pub(crate) fn admit_for_test(
-        &self,
-        username: Option<String>,
-        audiences: Vec<String>,
-    ) -> AuthzDecision {
-        self.admit_local(&AuthenticatedUser {
+    /// Runs the non-RBAC admission step for `audience`'s entry. Test-only.
+    ///
+    /// Returns a `NotPermitted` deny when the audience is not bound, mirroring
+    /// the request path.
+    pub(crate) fn admit_for_test(&self, username: Option<String>, audience: &str) -> AuthzDecision {
+        let Some(admission) = self.admission_by_audience.get(audience) else {
+            return AuthzDecision::deny_with_detail(
+                DenyReason::NotPermitted,
+                "token audience is not bound",
+            );
+        };
+        let user = AuthenticatedUser {
             username,
-            audiences,
+            audiences: vec![audience.to_owned()],
             ..Default::default()
-        })
+        };
+        Self::admit_non_rbac(&user, audience, admission)
+    }
+
+    /// Builds the `Allow` identity for a fully-populated user. Test-only.
+    pub(crate) fn allow_for_test(&self, user: &AuthenticatedUser, audience: &str) -> AuthzDecision {
+        Self::allow(user, audience)
     }
 }
