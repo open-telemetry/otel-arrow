@@ -37,6 +37,8 @@ pub mod pipeline_group;
 pub mod policy;
 /// Engine telemetry settings.
 pub mod settings;
+/// Tenant token configuration and the compiled hot-path representation.
+pub mod tenant;
 /// TLS configuration.
 pub mod tls;
 pub mod topic;

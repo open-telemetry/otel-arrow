@@ -7156,7 +7156,9 @@ dependencies = [
 name = "otap-df-config"
 version = "0.50.0"
 dependencies = [
+ "ahash 0.8.12",
  "byte-unit",
+ "bytemuck",
  "humantime-serde",
  "k8s-openapi",
  "kube",
@@ -7167,10 +7169,12 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "smallvec",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "wiremock",
+ "xxhash-rust",
 ]
 
 [[package]]

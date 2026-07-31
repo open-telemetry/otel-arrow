@@ -162,17 +162,20 @@ is addressed by the **value slot** its key occupies in the registry, and no
 name, key id or descriptor travels with it:
 
 ```text
-word 0     : n_fp:16 | n_slots:16 | epoch:16 | blob_len:16
+word 0     : n_fp:16 | n_slots:16 | epoch:16 | bag_len:16
 word 1     : resolved token bitmask
-word 2     : n_legacy:16
-words 3..  : n_fp fingerprints, indexed by PairSlot
-then       : n_slots words, indexed by registry value slot
-             value_off:16 | value_len:16 | kind:8, or EMPTY_SLOT
-then       : n_legacy pairs of words (captured headers only)
-             wA: name_off:16 | name_len:16 | value_off:16 | value_len:16
-             wB: kind:8 | wire_len:16
+words 2..  : n_fp fingerprints, indexed by PairSlot
+then       : ceil(n_slots/2) words holding n_slots u32 offsets, indexed by
+             registry value slot; each addresses a length-delimited AnyValue,
+             or is EMPTY_OFFSET
 then       : the byte blob, zero padded to a word boundary
 ```
+
+Values are stored as OTLP. A slot holds a single `u32` offset rather than an
+offset and a length, because the encoding is length-delimited and `AnyValue`
+carries its own type -- so the two fields the slot used to spend on `len` and
+`kind` are already in the bytes. The blob needs no stored length either: every
+entry delimits itself, so the trailing zero padding is simply never addressed.
 
 A key gets a value slot only if some compiled consumer propagates its value.
 The rest are **match-only**: they are decided entirely by their contribution to
@@ -184,10 +187,15 @@ Reading a key's value is therefore an array index --
 `registry.value_slot(key)` then `view.slot_value(slot)` -- rather than a scan
 looking for a matching name or key id.
 
-A second, name-bearing region carries the pre-existing `capture:` header
-policy, whose names come from the wire rather than from configuration. Tenant
-token keys never take that path, and the region is scheduled for deletion --
-see [Retiring the capture policy](#retiring-the-capture-policy).
+The blob opens with the **bag**: `bag_len` bytes of complete `KeyValue`
+messages, for the keys whose names are demanded. Value-only entries follow.
+Both forms end in a length-delimited `AnyValue`, and a slot points at that
+length prefix in either case, so `slot_value` reads them identically and does
+not care which region a key landed in.
+
+There is no name-bearing region for captured headers. Every name in the
+context comes from configuration, never from the wire -- see
+[Retiring the capture policy](#retiring-the-capture-policy).
 
 **Contexts are only meaningful to registries that agree on the layout.** A
 registry is built per pipeline group, but topics are declared engine-wide and
@@ -446,9 +454,7 @@ Two further demos exist:
 `configs/engine-conf/tenant_header_mapping.yaml` (single-pipeline
 ingress-to-egress header mapping).
 
-## Proposed: the context as OTLP attributes
-
-This section is a **design proposal**, not implemented work.
+## The context as OTLP attributes
 
 The packed context is a key-value bag with a hand-rolled encoding. The
 `self_tracing` encoder already solved the same problem for log attributes by
@@ -459,7 +465,7 @@ context stops being a re-encode and becomes a copy.
 
 ### The slot becomes one offset
 
-Today a slot is `value_off:16 | value_len:16 | kind:8`. A slot would instead be
+A slot was `value_off:16 | value_len:16 | kind:8`. A slot is instead
 a single `u32` offset pointing at the length varint of a `KeyValue.value`
 field, so the encoding carries its own size and `AnyValue` carries its own
 type. `ValueKind` disappears -- it is a hand-rolled parallel to `AnyValue`, and
@@ -549,19 +555,46 @@ It is also the honest modelling. The tenant context describes the conditions
 under which the pipeline produced this telemetry, not a property of each
 individual record, which is what an instrumentation scope is for.
 
-### Fingerprints move to the encoded form
+### Fingerprints stay on the raw bytes
 
-Fingerprinting the `AnyValue` bytes rather than the raw value is a
-simplification, not a compromise. Condition literals are encoded once at build
-time, and `resolve_imported` stops needing to decode anything -- it hashes the
-slot bytes as they lie. It also makes the integer `5` and the string `"5"`
-distinct terms, which is correct and is not true today.
+An earlier draft of this section proposed fingerprinting the encoded
+`AnyValue` instead of the raw value. Implementing it showed that to be the
+wrong trade, so it is recorded here as a rejected option rather than quietly
+dropped.
+
+The order of work is what decides it. Resolve stages raw bytes and hashes them
+immediately; pack runs afterwards and encodes only the values that survived
+gating. Fingerprinting the encoded form would invert that, forcing every
+condition-participating key to be encoded on the hot path -- including
+match-only keys, whose entire point is that their bytes never travel.
+
+The gain it offered was distinguishing the integer `5` from the string `"5"`.
+That distinction is empty here: condition literals come from YAML as strings
+and are compared against transport header bytes, so no term is ever an
+integer. Paying an encode per matched key to separate two cases that cannot
+arise is not a trade worth making.
+
+The cost of keeping raw fingerprints is one decode in `resolve_imported` --
+skip a tag byte and two varints -- on the boundary path only, which is not the
+hot path.
+
+### Demand is declared per extractor
+
+An extractor carries `bag: true` alongside `retain: true`. `retain` says the
+value travels; `bag` says the *name* travels with it, which is what makes the
+entry appendable as an attribute. `bag` implies `retain`, since a name with no
+value is not an attribute.
+
+This keeps the name in configuration, where full token binding requires it to
+be. The key name encoded into the blob is the registry key name, not anything
+read off the wire.
 
 ### The wildcard extractor
 
 A bag is only useful if something can fill it, and full token binding
 deliberately has no way to capture an undeclared key. A wildcard extractor
-would reintroduce that, and it has to be justified rather than assumed.
+would reintroduce that, and it has to be justified rather than assumed. It is
+**not implemented**; `bag: true` on a declared extractor is.
 
 The distinction that makes it acceptable is that a wildcard is **declared**.
 The rejected `capture:` plus `preserve` combination let an inbound request
@@ -578,13 +611,12 @@ should have to say so.
 
 ## Retiring the capture policy
 
-This section is a **migration plan**, not implemented work. It enumerates every
-component that still depends on the name-bearing region of the packed layout.
+This section is a **migration plan**. The name-bearing region of the packed
+layout is already gone; what remains is to move every component still calling
+`set_transport_headers` / `transport_headers()` onto the compiled context.
 
-The packed layout still carries a second, name-bearing region for the
-pre-existing `capture:` header policy. It exists only because that policy has
-callers, and it should not survive: **a name that travels is a name nobody
-declared**.
+The principle that removed the region is the one that governs the migration:
+**a name that travels is a name nobody declared**.
 
 The security posture is the argument. Under `capture:`, a receiver matches
 `match_names` and stores whatever it found, wire name included, and an exporter
@@ -601,9 +633,11 @@ build time and the egress name is created fresh from the exporter's own map.
 An operator who wants a header forwarded must say so; the default is that
 nothing propagates.
 
-Deleting the region also deletes the last variable-shaped part of the layout:
-words 2 and the legacy descriptor pairs disappear, `TenantView::iter` and
-`find_by_name` go with them, and `CarriedValue` reduces to a value slot read.
+Deleting the region also deleted the last variable-shaped part of the layout.
+Word 2 and the descriptor pairs are gone, `TenantView::iter`, `find_by_name`,
+`CarriedValue` and `RequestContextBuilder` went with them, and reading a value
+is now a slot index. What survives of naming is `bag: true`, which encodes the
+*registry* key name -- still a declared name, never a captured one.
 
 Each component below needs one change to get there.
 
