@@ -63,6 +63,8 @@ pub mod crypto;
 
 /// Protocol-neutral transport header abstraction for end-to-end header
 /// propagation through the pipeline.
+/// Receiver-side tenant context resolution.
+pub mod tenant_resolve;
 pub mod transport_headers;
 
 /// TLS utilities

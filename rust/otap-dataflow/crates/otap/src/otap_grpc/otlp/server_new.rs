@@ -382,7 +382,8 @@ impl UnaryService<OtapPdata> for OtapBatchService {
 
         // Propagate the receiver-observed peer address so downstream processors
         // (e.g. k8sattributes) can correlate telemetry with the originating socket.
-        if let Some(addr) = peer_addr_from_extensions(&extensions) {
+        let peer_addr = peer_addr_from_extensions(&extensions);
+        if let Some(addr) = peer_addr {
             otap_batch.set_peer_addr(addr);
         }
 
@@ -390,6 +391,17 @@ impl UnaryService<OtapPdata> for OtapBatchService {
             .effect_handler
             .take()
             .expect("`OtapBatchService` is not reused for multiple calls");
+
+        // Resolve the tenant context synchronously, before the effect handler
+        // moves into the async block. Header values are only materialized for
+        // names some token declared, so unwanted `-bin` headers are never
+        // decoded.
+        if let Some(registry) = effect_handler.tenant_registry()
+            && let Some(tenant) =
+                crate::tenant_resolve::resolve_grpc(registry, &metadata, peer_addr)
+        {
+            otap_batch.set_tenant(tenant);
+        }
 
         // Capture transport headers synchronously before moving the effect handler
         // into the async block, avoiding a clone of the capture policy.

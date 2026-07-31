@@ -734,6 +734,20 @@ impl HttpHandler {
             let mut pdata = OtapPdata::new(context, payload.into());
             pdata.set_peer_addr(self.peer_addr);
 
+            // HTTP header values are already decoded bytes, so resolution never
+            // has to materialize anything beyond the packed context itself.
+            if let Some(registry) = self.effect_handler.tenant_registry()
+                && let Some(tenant) = crate::tenant_resolve::resolve_pairs(
+                    registry,
+                    headers
+                        .iter()
+                        .map(|(name, value)| (name.as_str(), value.as_bytes())),
+                    Some(self.peer_addr),
+                )
+            {
+                pdata.set_tenant(tenant);
+            }
+
             // Capture transport headers from HTTP headers when a capture policy is configured.
             if let Some(policy) = self.effect_handler.capture_policy() {
                 let mut transport_headers = TransportHeaders::new();

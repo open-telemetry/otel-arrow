@@ -41,11 +41,13 @@ use crate::message::ExporterInbox;
 use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// A trait for egress exporters (!Send definition).
@@ -100,6 +102,9 @@ pub struct EffectHandler<PData> {
     /// Propagation policy for filtering captured headers on egress.
     /// `None` when no propagation policy is configured (zero overhead).
     propagation_policy: Option<HeaderPropagationPolicy>,
+    /// Compiled tenant tokens for this engine, or `None` when none are
+    /// declared. Exporters use it to name outbound headers.
+    tenant_registry: Option<Arc<TenantTokenRegistry>>,
 }
 
 impl<PData> EffectHandler<PData> {
@@ -111,6 +116,7 @@ impl<PData> EffectHandler<PData> {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
             propagation_policy: None,
+            tenant_registry: None,
         }
     }
 
@@ -137,6 +143,17 @@ impl<PData> EffectHandler<PData> {
     /// Sets the propagation policy for transport header filtering.
     pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
         self.propagation_policy = policy;
+    }
+
+    /// Returns the engine's compiled tenant tokens, if any were declared.
+    #[must_use]
+    pub fn tenant_registry(&self) -> Option<&Arc<TenantTokenRegistry>> {
+        self.tenant_registry.as_ref()
+    }
+
+    /// Sets the compiled tenant tokens used to name outbound headers.
+    pub fn set_tenant_registry(&mut self, registry: Option<Arc<TenantTokenRegistry>>) {
+        self.tenant_registry = registry;
     }
 
     /// Print an info message to stdout.

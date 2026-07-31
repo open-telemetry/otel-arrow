@@ -28,6 +28,7 @@ use crate::terminal_state::TerminalState;
 use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::sync::Arc;
@@ -57,6 +58,8 @@ pub enum ExporterWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Pre-resolved propagation policy for transport header forwarding.
         propagation_policy: Option<HeaderPropagationPolicy>,
+        /// Compiled tenant tokens shared by the whole engine.
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
     },
     /// An exporter with a `Send` implementation.
     Shared {
@@ -78,6 +81,8 @@ pub enum ExporterWrapper<PData> {
         telemetry: Option<NodeTelemetryGuard>,
         /// Pre-resolved propagation policy for transport header forwarding.
         propagation_policy: Option<HeaderPropagationPolicy>,
+        /// Compiled tenant tokens shared by the whole engine.
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
     },
 }
 
@@ -119,6 +124,7 @@ impl<PData> ExporterWrapper<PData> {
             pdata_receiver: None, // This will be set later
             telemetry: None,
             propagation_policy: None,
+            tenant_registry: None,
         }
     }
 
@@ -146,6 +152,7 @@ impl<PData> ExporterWrapper<PData> {
             pdata_receiver: None, // This will be set later
             telemetry: None,
             propagation_policy: None,
+            tenant_registry: None,
         }
     }
 
@@ -160,6 +167,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 propagation_policy,
+                tenant_registry,
                 ..
             } => ExporterWrapper::Local {
                 node_id,
@@ -171,6 +179,7 @@ impl<PData> ExporterWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 propagation_policy,
+                tenant_registry,
             },
             ExporterWrapper::Shared {
                 node_id,
@@ -181,6 +190,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 propagation_policy,
+                tenant_registry,
                 ..
             } => ExporterWrapper::Shared {
                 node_id,
@@ -192,6 +202,7 @@ impl<PData> ExporterWrapper<PData> {
                 pdata_receiver,
                 telemetry: Some(guard),
                 propagation_policy,
+                tenant_registry,
             },
         }
     }
@@ -220,6 +231,7 @@ impl<PData> ExporterWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 propagation_policy,
+                tenant_registry,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -243,6 +255,7 @@ impl<PData> ExporterWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     propagation_policy,
+                    tenant_registry,
                 }
             }
             ExporterWrapper::Shared {
@@ -255,6 +268,7 @@ impl<PData> ExporterWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 propagation_policy,
+                tenant_registry,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -278,6 +292,7 @@ impl<PData> ExporterWrapper<PData> {
                     pdata_receiver,
                     telemetry,
                     propagation_policy,
+                    tenant_registry,
                 }
             }
         }
@@ -317,6 +332,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_receiver,
                     pdata_receiver,
                     propagation_policy,
+                    tenant_registry,
                     ..
                 },
                 metrics_reporter,
@@ -340,6 +356,7 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics.clone());
                 effect_handler.set_propagation_policy(propagation_policy);
+                effect_handler.set_tenant_registry(tenant_registry);
                 let inbox = ExporterInbox::new(
                     Receiver::Local(control_receiver),
                     pdata_rx,
@@ -355,6 +372,7 @@ impl<PData> ExporterWrapper<PData> {
                     control_receiver,
                     pdata_receiver,
                     propagation_policy,
+                    tenant_registry,
                     ..
                 },
                 metrics_reporter,
@@ -378,6 +396,7 @@ impl<PData> ExporterWrapper<PData> {
                     .core
                     .set_completion_emission_metrics(completion_emission_metrics);
                 effect_handler.set_propagation_policy(propagation_policy);
+                effect_handler.set_tenant_registry(tenant_registry);
                 let inbox = shared::ExporterInbox::new(
                     control_receiver,
                     pdata_rx,
@@ -402,6 +421,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 telemetry,
+                tenant_registry,
                 ..
             } => ExporterWrapper::Local {
                 node_id,
@@ -413,6 +433,7 @@ impl<PData> ExporterWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 propagation_policy: policy,
+                tenant_registry,
             },
             ExporterWrapper::Shared {
                 node_id,
@@ -423,6 +444,7 @@ impl<PData> ExporterWrapper<PData> {
                 control_receiver,
                 pdata_receiver,
                 telemetry,
+                tenant_registry,
                 ..
             } => ExporterWrapper::Shared {
                 node_id,
@@ -434,6 +456,65 @@ impl<PData> ExporterWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 propagation_policy: policy,
+                tenant_registry,
+            },
+        }
+    }
+
+    /// Returns the wrapper carrying the engine's compiled tenant tokens.
+    ///
+    /// The registry is what lets an exporter name outbound headers from the
+    /// packed context, so it must reach the exporter before it starts.
+    pub(crate) fn with_tenant_registry(
+        self,
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
+    ) -> Self {
+        match self {
+            ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                propagation_policy,
+                ..
+            } => ExporterWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                propagation_policy,
+                tenant_registry: tenant_registry.clone(),
+            },
+            ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                propagation_policy,
+                ..
+            } => ExporterWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                exporter,
+                control_sender,
+                control_receiver,
+                pdata_receiver,
+                telemetry,
+                propagation_policy,
+                tenant_registry: tenant_registry.clone(),
             },
         }
     }

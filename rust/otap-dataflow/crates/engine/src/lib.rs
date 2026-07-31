@@ -1967,7 +1967,8 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
-        .with_propagation_policy(propagation_policy);
+        .with_propagation_policy(propagation_policy)
+        .with_tenant_registry(pipeline_ctx.tenant_registry().cloned());
 
         otel_debug!(
             "exporter.create.complete",
