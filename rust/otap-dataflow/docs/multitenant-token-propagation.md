@@ -353,7 +353,7 @@ Two things fail closed:
 - A signature whose symbols do not fit in one word is rejected at build time
   rather than narrowed, since narrowing is exactly the collision this section
   exists to prevent. The budget is generous: four keys with 65,000 declared
-  values each, or sixteen keys with sixteen values each.
+  values each, eight keys with 254 each, or sixteen keys with fourteen each.
 
 #### Why match-only keys still cost zero bytes
 
