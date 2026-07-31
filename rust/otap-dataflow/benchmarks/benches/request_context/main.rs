@@ -40,6 +40,8 @@ use otap_df_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationDefault,
     PropagationSelector, PropagationSelectorType,
 };
+use otap_df_otap::tenant_resolve::resolve_grpc;
+use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 
 /// Global allocator that counts allocations so the benchmark can report
 /// allocations per request rather than only wall time.
@@ -223,6 +225,44 @@ fn egress_map(reg: &TenantTokenRegistry, n_keys: usize) -> Vec<(u16, &'static st
             Some((reg.value_slot(id)?, *wire))
         })
         .collect()
+}
+
+/// The same inbound headers as a tonic `MetadataMap`, which is what a gRPC
+/// receiver is actually handed.
+///
+/// Measuring from here rather than from a slice of pairs is the point of the
+/// integrated comparison: the baseline has to materialize its own `Vec` of
+/// owned values before its capture policy can look at anything, and that cost
+/// is invisible if the benchmark starts from pairs that already exist.
+fn inbound_metadata() -> MetadataMap {
+    let mut md = MetadataMap::new();
+    for (name, value) in inbound() {
+        let key: MetadataKey<tonic::metadata::Ascii> = name.parse().expect("valid key");
+        let value = MetadataValue::try_from(value).expect("valid value");
+        let _ = md.append(key, value);
+    }
+    md
+}
+
+/// The baseline receiver path, verbatim: collect every header into an owned
+/// `Vec<(&str, Vec<u8>)>`, then run the capture policy over it.
+///
+/// This mirrors what the OTLP gRPC receiver did before tenant tokens, and it
+/// is the allocation profile the packed context has to beat.
+fn baseline_receive(policy: &HeaderCapturePolicy, md: &MetadataMap) -> TransportHeaders {
+    let pairs: Vec<(&str, Vec<u8>)> = md
+        .iter()
+        .filter_map(|kv| match kv {
+            KeyAndValueRef::Ascii(key, value) => Some((key.as_str(), value.as_bytes().to_vec())),
+            KeyAndValueRef::Binary(key, value) => value
+                .to_bytes()
+                .ok()
+                .map(|decoded| (key.as_str(), decoded.to_vec())),
+        })
+        .collect();
+    let mut out = TransportHeaders::default();
+    let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, v.as_slice())), &mut out);
+    out
 }
 
 /// Counts of matched headers to sweep. One is the degenerate case a router
@@ -457,11 +497,36 @@ fn bench_tenant_match(c: &mut Criterion) {
 /// This is the number the representation change is meant to move, and it is
 /// printed rather than timed so a before and after can be compared directly
 /// without reading Criterion's statistics.
+/// The integrated comparison: one gRPC request's metadata, from tonic's
+/// `MetadataMap` to the context the pipeline will carry, on both paths.
+fn bench_receiver(c: &mut Criterion) {
+    let md = inbound_metadata();
+
+    let mut group = c.benchmark_group("request_context/receive_baseline");
+    for n in MATCHED {
+        let policy = capture_policy(n);
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(baseline_receive(&policy, &md)));
+        });
+    }
+    group.finish();
+
+    let mut group = c.benchmark_group("request_context/receive_tenant");
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(resolve_grpc(&reg, &md, None)));
+        });
+    }
+    group.finish();
+}
+
 #[allow(clippy::print_stdout)]
 fn alloc_report(_c: &mut Criterion) {
     const ITERS: u64 = 20_000;
     let egress = propagation_policy();
     let pairs = inbound();
+    let md = inbound_metadata();
 
     println!("\nrequest_context allocations per request (baseline)");
     println!(
@@ -505,6 +570,9 @@ fn alloc_report(_c: &mut Criterion) {
             emitted
         });
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "end_to_end");
+
+        let (a, b) = measure(ITERS, || baseline_receive(&policy, &md));
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "receive");
     }
 
     println!("\nrequest_context allocations per request (tenant token)");
@@ -582,6 +650,9 @@ fn alloc_report(_c: &mut Criterion) {
             dst.len()
         });
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "attributes");
+
+        let (a, b) = measure(ITERS, || resolve_grpc(&reg, &md, None));
+        println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "receive");
     }
     println!();
 }
@@ -594,6 +665,7 @@ criterion_group!(
     bench_end_to_end,
     bench_tenant,
     bench_tenant_match,
+    bench_receiver,
     alloc_report,
 );
 criterion_main!(benches);

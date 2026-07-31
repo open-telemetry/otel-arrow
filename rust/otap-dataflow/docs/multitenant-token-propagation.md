@@ -382,6 +382,31 @@ largest single line and is pure setup; each retained value is copied three
 times (into the arena, into the blob, then into the `Arc`) where two would
 do; and the wide pointer above.
 
+#### Measured from the receiver's own entry point
+
+The numbers above start from a slice of header pairs, which flatters the
+baseline: a gRPC receiver is handed a tonic `MetadataMap`, and before its
+capture policy can look at anything it has to materialize every header into
+an owned `Vec<(&str, Vec<u8>)>` -- one `Vec` plus one allocation per header
+present, whether or not any rule wants it. Starting the measurement one step
+earlier, at the `MetadataMap`, is what the two paths actually cost a receiver.
+
+Same run, nine inbound headers, mean nanoseconds:
+
+| matched | baseline ns | tenant ns | baseline allocs | tenant allocs |
+| --- | --- | --- | --- | --- |
+| 1 | 517 | 108 | 15 (1018 B) | 1 (64 B) |
+| 2 | 589 | 146 | 18 (1051 B) | 1 (80 B) |
+| 4 | 856 | 189 | 24 (1176 B) | 1 (168 B) |
+
+Four to five times faster, and twenty-four allocations become one. Ten of the
+baseline's allocations are the eager materialization alone, and they scale
+with headers *received* rather than headers *wanted* -- a request carrying
+headers no rule mentions still pays for all of them. The tenant path never
+materializes a value until the registry confirms some token declared that
+name, so its cost scales with what the configuration asked for. That is also
+why the tenant column is flat in allocations: one, at every width.
+
 Limits: `MAX_TOKENS = 64`, `MAX_TOKEN_KEYS = 64`, `MAX_VALUE_BYTES = 65535`.
 
 ### Matching is exact: no collision can cross wires

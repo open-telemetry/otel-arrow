@@ -1,0 +1,41 @@
+version: otel_dataflow/v1
+
+# Live check for tenant context: the OTLP receiver packs two inbound headers
+# into one positional context, and the OTLP exporter re-emits them under
+# different names. Nothing in between knows the names.
+engine:
+  tenant_tokens:
+    acme:
+      extractors:
+        - key: tenant_id
+          transport_header: x-tenant-id
+          retain: true
+        - key: project_id
+          transport_header: x-project-id
+          retain: true
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: receiver:otlp
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+
+          exporter:
+            type: exporter:otlp_grpc
+            config:
+              grpc_endpoint: "http://127.0.0.1:4319"
+              tenant_headers:
+                - key: tenant_id
+                  header: x-acme-tenant
+                - key: project_id
+                  header: x-acme-project
+
+        connections:
+          - from: receiver
+            to: exporter
