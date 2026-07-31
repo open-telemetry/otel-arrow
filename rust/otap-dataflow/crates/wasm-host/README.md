@@ -52,8 +52,8 @@ wasmtime dependency. Enable `wasm` to build and register the processor.
 
 The guest issues OTel-semantic kernel commands over an opaque `pdata`
 resource handle; the host executes them natively on Arrow arrays and
-validates the reconstructed batch against OTAP schema invariants before
-forwarding downstream.
+forwards returned OTAP records without additional bridge-level schema
+re-validation.
 
 The WIT contract (`wit/plugin.wit`) freezes only the tiny surface this
 slice needs:
@@ -72,7 +72,8 @@ Current experimental behavior is intentionally narrow:
 - Record-scope filtering preserves OTAP parent/child relationships by applying
   the same selection to root and child batches.
 - The processor reports minimal telemetry on `CollectTelemetry` for guest
-  process calls, guest process errors, and guest-driven drops.
+  process calls, guest process errors, guest-driven drops, kernel invocation
+  counters, and per-signal `records_in`/`records_out`.
 
 ## Configuration
 

@@ -165,10 +165,10 @@ impl local::Processor<OtapPdata> for WasmProcessor {
                 let processor_id = effect_handler.processor_id();
                 let (context, payload) = pdata.into_parts();
                 let signal_type = payload.signal_type();
-                self.metrics.pdata.guest_process_calls.add(1);
                 let output = bridge::run_on_otap_records(
                     OtapPdata::new(context.clone(), payload),
                     |records| {
+                        self.metrics.pdata.guest_process_calls.add(1);
                         // Count rows entering the guest before consuming records.
                         let rows_in = records
                             .root_record_batch()
@@ -205,7 +205,7 @@ impl local::Processor<OtapPdata> for WasmProcessor {
                 );
 
                 // Drain per-call kernel counters outside the closure so they
-                // are captured even when run_guest panics and unwinds.
+                // are captured for successful and error-return guest calls.
                 let (kc, ku) = self.store.data_mut().drain_kernel_counters();
                 self.metrics.pdata.kernel_calls.add(kc);
                 self.metrics.pdata.kernel_unsupported_calls.add(ku);
