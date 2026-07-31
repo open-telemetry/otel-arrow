@@ -68,15 +68,18 @@ engine-owned metrics.
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
 | `processor.retry.retries.scheduled` | `{retry}` | `signal` | Number of retries successfully scheduled after a downstream refusal. |
-| `processor.retry.requests.recovered` | `{request}` | `signal` | Number of requests accepted downstream after at least one retry. |
+| `processor.retry.messages.recovered` | `{message}` | `signal` | Number of PData messages accepted downstream after at least one retry. |
 
 The `signal` attribute is bounded to `traces`, `metrics`, or `logs`.
 
-#### `processor.retry.requests`
+#### `processor.retry.messages`
 
 | Metric | Unit | Attributes | Description |
 | --- | --- | --- | --- |
-| `processor.retry.requests.terminated` | `{request}` | `signal`, `reason` | Number of requests the retry processor stopped retrying. |
+| `processor.retry.messages.terminated` | `{message}` | `signal`, `reason` | Number of PData messages the retry processor stopped retrying. |
+
+Both message lifecycle counters use the `{message}` unit and the `messages`
+namespace.
 
 The `reason` attribute is bounded to:
 
@@ -87,8 +90,7 @@ The `reason` attribute is bounded to:
 | `payload_missing` | Downstream did not return the payload required for a retry. |
 | `retry_limit` | The retry-count safety limit was reached. |
 | `deadline` | The next retry would exceed the configured elapsed-time deadline. |
-| `scheduling_failure` | The processor-local delayed-resume queue rejected the retry. |
-| `send_failure` | The processor could not send the request or convert the failure into a NACK. |
+| `send_failure` | The processor could not send the PData message or convert the failure into a NACK. |
 
 ### Events
 

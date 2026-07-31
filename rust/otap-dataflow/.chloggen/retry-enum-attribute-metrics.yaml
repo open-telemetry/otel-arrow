@@ -2,6 +2,7 @@
 
 change_type: breaking
 component: pipeline
-note: Replace retry processor metric-name dimensions with bounded enum attributes, add retry recovery and termination metrics, and use engine-owned item outcome metrics.
-issues: [3300]
-subtext: Local retry scheduling failures are now forwarded upstream instead of being routed back to the retry processor.
+note: Replace retry processor per-signal item-outcome and retry-attempt counters with engine node metrics and bounded scheduled, recovered, and terminated metrics.
+issues: [3530]
+subtext: |
+  Migration: Replace `processor.retry.{consumed_items_*,produced_items_*}` with `node.{consumer,producer}` message/item metrics. Replace `processor.retry.retry_attempts_*` with `processor.retry.retries.scheduled{signal}`; use `processor.retry.messages.{recovered,terminated}` for message outcomes.
