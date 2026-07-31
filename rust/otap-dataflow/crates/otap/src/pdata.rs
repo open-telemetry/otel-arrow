@@ -30,6 +30,8 @@ use otap_df_engine::{
 use otap_df_pdata::OtapPayload;
 
 use crate::transport_headers::TransportHeaders;
+use otap_df_config::tenant::compiled::TenantView;
+use std::sync::Arc;
 
 /// Context for OTAP requests.
 ///
@@ -51,6 +53,13 @@ pub struct Context {
     /// `None` when no headers have been captured (the common case, zero
     /// additional allocation).
     transport_headers: Option<TransportHeaders>,
+    /// Compiled tenant context resolved at the receiver, when the pipeline
+    /// declares tenant tokens.
+    ///
+    /// One allocation holds every resolved token's signature words and every
+    /// retained value, so a hop copies a single pointer. `None` when the
+    /// pipeline declares no tokens or none resolved.
+    tenant: Option<Arc<[u64]>>,
     /// Peer address observed by the receiving socket at request acceptance
     /// time. `None` for receivers without a real socket.
     peer_addr: Option<SocketAddr>,
@@ -81,6 +90,7 @@ impl Context {
         Self {
             stack: Vec::with_capacity(capacity),
             transport_headers: None,
+            tenant: None,
             peer_addr: None,
             flow_compute_ns: None,
             signal: None,
@@ -376,6 +386,23 @@ impl Context {
         self.transport_headers = Some(headers);
     }
 
+    /// Returns the packed tenant context resolved at the receiver, if any.
+    #[must_use]
+    pub fn tenant(&self) -> Option<&Arc<[u64]>> {
+        self.tenant.as_ref()
+    }
+
+    /// Returns a borrowed view over the packed tenant context, if any.
+    #[must_use]
+    pub fn tenant_view(&self) -> Option<TenantView<'_>> {
+        self.tenant.as_deref().map(TenantView::new)
+    }
+
+    /// Set the packed tenant context for this context.
+    pub fn set_tenant(&mut self, tenant: Arc<[u64]>) {
+        self.tenant = Some(tenant);
+    }
+
     /// Returns the peer address observed by the receiving socket, if any.
     #[must_use]
     pub fn peer_addr(&self) -> Option<SocketAddr> {
@@ -640,6 +667,7 @@ impl OtapPdata {
             context: Context {
                 stack: Vec::new(),
                 transport_headers: self.context.transport_headers.clone(),
+                tenant: self.context.tenant.clone(),
                 peer_addr: self.context.peer_addr,
                 flow_compute_ns: None,
                 signal: None,
@@ -780,6 +808,24 @@ impl OtapPdata {
     /// Set transport headers on this pdata's context.
     pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
         self.context.set_transport_headers(headers);
+    }
+
+    /// Builder-style method to attach a packed tenant context.
+    #[must_use]
+    pub fn with_tenant(mut self, tenant: Arc<[u64]>) -> Self {
+        self.context.set_tenant(tenant);
+        self
+    }
+
+    /// Returns a borrowed view over the packed tenant context, if any.
+    #[must_use]
+    pub fn tenant_view(&self) -> Option<TenantView<'_>> {
+        self.context.tenant_view()
+    }
+
+    /// Set the packed tenant context.
+    pub fn set_tenant(&mut self, tenant: Arc<[u64]>) {
+        self.context.set_tenant(tenant);
     }
 
     /// Builder-style method to attach transport headers.

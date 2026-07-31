@@ -24,6 +24,7 @@ use otap_df_admin::{
     PipelineRolloutSummary as ApiPipelineRolloutSummary, ReconfigureRequest, RolloutCoreStatus,
     RolloutStatus, ShutdownCoreStatus, ShutdownStatus,
 };
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_state::conditions::ConditionStatus;
 use otap_df_state::phase::PipelinePhase;
 use otap_df_state::pipeline_status::{PipelineRolloutState, PipelineRolloutSummary};
@@ -32,6 +33,7 @@ use std::backtrace::Backtrace;
 use std::collections::VecDeque;
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -75,6 +77,9 @@ pub(super) struct ControllerRuntime<PData: 'static + Clone + Send + Sync + std::
     metrics_reporter: MetricsReporter,
     /// Topic registry shared by all runtime instances.
     declared_topics: DeclaredTopics<PData>,
+    /// Compiled tenant tokens shared by all runtime instances. `None` when the
+    /// engine config declares no tokens.
+    tenant_registry: Option<Arc<TenantTokenRegistry>>,
     /// Controller-wide core ids available for policy-based allocation.
     available_core_ids: Vec<CoreId>,
     /// Tracing setup cloned into launched runtime threads.
@@ -124,6 +129,7 @@ impl<
         engine_event_reporter: ObservedEventReporter,
         metrics_reporter: MetricsReporter,
         declared_topics: DeclaredTopics<PData>,
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
         available_core_ids: Vec<CoreId>,
         engine_tracing_setup: TracingSetup,
         telemetry_reporting_interval: Duration,
@@ -138,6 +144,7 @@ impl<
             engine_event_reporter,
             metrics_reporter,
             declared_topics,
+            tenant_registry,
             available_core_ids,
             engine_tracing_setup,
             telemetry_reporting_interval,
@@ -221,6 +228,11 @@ impl<
     /// Returns the declared-topic registry shared with launched pipelines.
     pub(super) fn declared_topics(&self) -> &DeclaredTopics<PData> {
         &self.declared_topics
+    }
+
+    /// Returns the compiled tenant tokens shared with launched pipelines.
+    pub(super) fn tenant_registry(&self) -> Option<&Arc<TenantTokenRegistry>> {
+        self.tenant_registry.as_ref()
     }
 
     /// Exposes the runtime as the admin control-plane trait object.

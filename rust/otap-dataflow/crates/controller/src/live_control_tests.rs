@@ -278,6 +278,7 @@ fn test_runtime_with_factory(
         engine_event_reporter,
         metrics_reporter,
         declared_topics,
+        None,
         available_core_ids(),
         TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
         Duration::from_secs(1),

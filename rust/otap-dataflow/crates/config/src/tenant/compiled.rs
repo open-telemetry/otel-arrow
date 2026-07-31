@@ -33,6 +33,7 @@ use crate::error::Error;
 use crate::tenant::{Condition, Extractor, TenantBoundaryPolicy, TenantTokenSpec, TenantTokens};
 use ahash::AHashMap;
 use smallvec::SmallVec;
+use std::borrow::Cow;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use xxhash_rust::xxh3::xxh3_64;
@@ -1103,6 +1104,32 @@ impl TokenScratch {
     }
 }
 
+/// A header value resolution materializes only if some token wants the name.
+///
+/// Transports differ in what a value costs to produce. A gRPC ASCII value is
+/// already bytes and borrows for free, but a `-bin` value is base64 on the
+/// wire and has to be decoded into an allocation. Yielding the *value* eagerly
+/// would pay that cost for every header on the request, including the many a
+/// pipeline never asked for. Resolution therefore takes the name first and
+/// calls [`HeaderValue::bytes`] only after the name has passed the screen and
+/// matched a declared extractor.
+pub trait HeaderValue {
+    /// The value's bytes, decoded if the transport stores an encoded form.
+    fn bytes(&self) -> Cow<'_, [u8]>;
+}
+
+impl HeaderValue for &[u8] {
+    fn bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self)
+    }
+}
+
+impl HeaderValue for Cow<'_, [u8]> {
+    fn bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(self.as_ref())
+    }
+}
+
 /// Borrowed inputs a receiver hands to token resolution.
 ///
 /// `headers` is an iterator over the receiver's own header representation, so
@@ -1110,7 +1137,8 @@ impl TokenScratch {
 /// tenant material (authorization data, for example) are added here rather
 /// than at every receiver call site.
 pub struct TokenInputs<I> {
-    /// Header name and raw value pairs, in arrival order.
+    /// Header name and value pairs, in arrival order. Values are produced
+    /// lazily through [`HeaderValue`].
     pub headers: I,
     /// Peer socket address, when the receiver has a real socket.
     pub peer_addr: Option<SocketAddr>,
@@ -1221,13 +1249,14 @@ impl TenantTokenRegistry {
     ///
     /// Returns `None` when no token resolved, in which case the request
     /// carries no tenant context at all.
-    pub fn resolve<'a, I>(
+    pub fn resolve<'a, I, V>(
         &self,
         scratch: &mut TokenScratch,
         inputs: TokenInputs<I>,
     ) -> Option<Arc<[u64]>>
     where
-        I: IntoIterator<Item = (&'a str, &'a [u8])>,
+        I: IntoIterator<Item = (&'a str, V)>,
+        V: HeaderValue,
     {
         scratch.reset(self);
 
@@ -1268,8 +1297,10 @@ impl TenantTokenRegistry {
             let Some(header_slot) = self.header_index.get(lower_str) else {
                 continue;
             };
+            // The name is wanted, so the value is worth materializing now.
+            let bytes = value.bytes();
             for slot in &header_slot.any_value {
-                scratch.store(slot.key, value);
+                scratch.store(slot.key, bytes.as_ref());
                 scratch.unsatisfied[usize::from(slot.token)] &= !(1u64 << slot.bit);
             }
         }

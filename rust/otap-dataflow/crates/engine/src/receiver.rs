@@ -29,6 +29,7 @@ use otap_df_channel::error::SendError;
 use otap_df_channel::mpsc;
 use otap_df_config::PortName;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
@@ -65,6 +66,8 @@ pub enum ReceiverWrapper<PData> {
         source_tag: SourceTagging,
         /// Pre-resolved capture policy for transport header extraction.
         capture_policy: Option<HeaderCapturePolicy>,
+        /// Compiled tenant tokens shared by the whole engine.
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
     },
     /// A receiver with a `Send` implementation.
     Shared {
@@ -91,6 +94,8 @@ pub enum ReceiverWrapper<PData> {
         source_tag: SourceTagging,
         /// Pre-resolved capture policy for transport header extraction.
         capture_policy: Option<HeaderCapturePolicy>,
+        /// Compiled tenant tokens shared by the whole engine.
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
     },
 }
 
@@ -133,6 +138,7 @@ impl<PData> ReceiverWrapper<PData> {
             telemetry: None,
             source_tag: SourceTagging::Disabled,
             capture_policy: None,
+            tenant_registry: None,
         }
     }
 
@@ -161,6 +167,7 @@ impl<PData> ReceiverWrapper<PData> {
             telemetry: None,
             source_tag: SourceTagging::Disabled,
             capture_policy: None,
+            tenant_registry: None,
         }
     }
 
@@ -177,6 +184,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 source_tag,
                 capture_policy,
+                tenant_registry,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -190,6 +198,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry: Some(guard),
                 source_tag,
                 capture_policy,
+                tenant_registry,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -202,6 +211,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 source_tag,
                 capture_policy,
+                tenant_registry,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -215,6 +225,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry: Some(guard),
                 source_tag,
                 capture_policy,
+                tenant_registry,
             },
         }
     }
@@ -245,6 +256,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy,
+                tenant_registry,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -270,6 +282,7 @@ impl<PData> ReceiverWrapper<PData> {
                     telemetry,
                     source_tag,
                     capture_policy,
+                    tenant_registry,
                 }
             }
             ReceiverWrapper::Shared {
@@ -284,6 +297,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy,
+                tenant_registry,
                 ..
             } => {
                 let (control_sender, control_receiver) =
@@ -309,6 +323,7 @@ impl<PData> ReceiverWrapper<PData> {
                     telemetry,
                     source_tag,
                     capture_policy,
+                    tenant_registry,
                 }
             }
         }
@@ -333,6 +348,7 @@ impl<PData> ReceiverWrapper<PData> {
                     user_config,
                     source_tag,
                     capture_policy,
+                    tenant_registry,
                     ..
                 },
                 metrics_reporter,
@@ -358,6 +374,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
+                effect_handler.set_tenant_registry(tenant_registry);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -373,6 +390,7 @@ impl<PData> ReceiverWrapper<PData> {
                     user_config,
                     source_tag,
                     capture_policy,
+                    tenant_registry,
                     ..
                 },
                 metrics_reporter,
@@ -398,6 +416,7 @@ impl<PData> ReceiverWrapper<PData> {
                 );
                 effect_handler.set_source_tagging(source_tag);
                 effect_handler.set_capture_policy(capture_policy);
+                effect_handler.set_tenant_registry(tenant_registry);
                 effect_handler
                     .core
                     .set_pipeline_completion_msg_sender(pipeline_completion_msg_tx);
@@ -510,6 +529,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
+                tenant_registry,
                 ..
             } => ReceiverWrapper::Local {
                 node_id,
@@ -523,6 +543,7 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy: policy,
+                tenant_registry,
             },
             ReceiverWrapper::Shared {
                 node_id,
@@ -535,6 +556,7 @@ impl<PData> ReceiverWrapper<PData> {
                 pdata_receiver,
                 telemetry,
                 source_tag,
+                tenant_registry,
                 ..
             } => ReceiverWrapper::Shared {
                 node_id,
@@ -548,6 +570,73 @@ impl<PData> ReceiverWrapper<PData> {
                 telemetry,
                 source_tag,
                 capture_policy: policy,
+                tenant_registry,
+            },
+        }
+    }
+
+    /// Returns the wrapper carrying the engine's compiled tenant tokens.
+    ///
+    /// The registry is what lets a receiver turn request metadata into a single
+    /// packed context, so it must reach the receiver before it starts.
+    pub(crate) fn with_tenant_registry(
+        self,
+        tenant_registry: Option<Arc<TenantTokenRegistry>>,
+    ) -> Self {
+        match self {
+            ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                ..
+            } => ReceiverWrapper::Local {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                tenant_registry: tenant_registry.clone(),
+            },
+            ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                ..
+            } => ReceiverWrapper::Shared {
+                node_id,
+                user_config,
+                runtime_config,
+                receiver,
+                control_sender,
+                control_receiver,
+                pdata_senders,
+                pdata_receiver,
+                telemetry,
+                source_tag,
+                capture_policy,
+                tenant_registry: tenant_registry.clone(),
             },
         }
     }

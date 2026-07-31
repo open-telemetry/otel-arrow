@@ -49,6 +49,7 @@ use otap_df_config::engine::{
     OtelDataflowSpec, ResolvedPipelineConfig, ResolvedPipelineRole,
     SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
+use otap_df_config::error::Error as TenantError;
 use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
 use otap_df_config::node::{NodeKind, NodeUserConfig};
 use otap_df_config::pipeline::telemetry::AttributeValue;
@@ -58,6 +59,7 @@ use otap_df_config::policy::{
     ChannelCapacityPolicy, CoreAllocation, CoreAllocationStrategy, RuntimeRecoveryPolicy,
     TelemetryPolicy,
 };
+use otap_df_config::tenant::compiled::{TenantTokenRegistry, TenantTokenRegistryBuilder};
 use otap_df_config::topic::{
     TopicAckPropagationMode, TopicBackendKind, TopicBroadcastAckMode, TopicBroadcastOnLagPolicy,
     TopicImplSelectionPolicy, TopicSpec,
@@ -1063,6 +1065,30 @@ impl<
         })
     }
 
+    /// Compiles the engine's declared tenant tokens into the shared registry.
+    ///
+    /// Compilation happens once, before any pipeline thread starts, because the
+    /// registry assigns the key numbering that every node in the engine reads
+    /// positionally. Compiling per pipeline would risk two groups disagreeing
+    /// about what slot 3 means.
+    fn declare_tenant_tokens(
+        config: &OtelDataflowSpec,
+    ) -> Result<Option<Arc<TenantTokenRegistry>>, Error> {
+        let tokens = &config.engine.tenant_tokens;
+        if tokens.is_empty() {
+            return Ok(None);
+        }
+        let mut builder = TenantTokenRegistryBuilder::new();
+        let compile_error = |e: TenantError| Error::PipelineRuntimeError {
+            source: Box::new(EngineError::InternalError {
+                message: format!("invalid tenant token configuration: {e}"),
+            }),
+        };
+        builder.add_tokens(tokens).map_err(compile_error)?;
+        let registry = builder.build(0).map_err(compile_error)?;
+        Ok(Some(Arc::new(registry)))
+    }
+
     fn declare_topics(config: &OtelDataflowSpec) -> Result<DeclaredTopics<PData>, Error> {
         let broker = TopicBroker::<PData>::new();
         let (global_names, group_names) = Self::build_declared_topic_name_maps(config)?;
@@ -1385,6 +1411,9 @@ impl<
         }
         // Declare all topics up front before any pipeline thread starts.
         let declared_topics = Self::declare_topics(&engine_config)?;
+        // Tenant tokens are compiled once for the engine; see the note on
+        // `declare_tenant_tokens` for why the numbering must be shared.
+        let tenant_registry = Self::declare_tenant_tokens(&engine_config)?;
 
         for pipeline_entry in &pipelines {
             let pipeline_key = PipelineKey::new(
@@ -1421,6 +1450,7 @@ impl<
             engine_evt_reporter.clone(),
             metrics_reporter.clone(),
             declared_topics,
+            tenant_registry,
             all_cores.clone(),
             telemetry_system.engine_tracing_setup(),
             telemetry_reporting_interval,
@@ -2089,6 +2119,14 @@ impl<
             pipeline_key.core_id,
         )?;
         pipeline_ctx.set_topic_set(topic_set);
+        // Tenant tokens are compiled once for the engine; every pipeline thread
+        // shares that one registry so key numbering agrees across topic hops.
+        if let Some(registry) = runtime
+            .upgrade()
+            .and_then(|rt| rt.tenant_registry().cloned())
+        {
+            pipeline_ctx.set_tenant_registry(registry);
+        }
         let (runtime_ctrl_msg_tx, runtime_ctrl_msg_rx) =
             runtime_ctrl_msg_channel(channel_capacity_policy.control.pipeline);
         let (pipeline_completion_msg_tx, pipeline_completion_msg_rx) =

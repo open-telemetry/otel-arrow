@@ -45,12 +45,14 @@ use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 
@@ -106,6 +108,9 @@ pub struct EffectHandler<PData> {
     /// Capture policy for extracting transport headers from inbound metadata.
     /// `None` when no capture policy is configured (zero overhead).
     capture_policy: Option<HeaderCapturePolicy>,
+    /// Compiled tenant tokens for this engine, or `None` when none are
+    /// declared. Receivers use it to pack request metadata into one context.
+    tenant_registry: Option<Arc<TenantTokenRegistry>>,
 }
 
 /// Implementation for the `Send` effect handler.
@@ -129,6 +134,7 @@ impl<PData> EffectHandler<PData> {
             core,
             router,
             capture_policy: None,
+            tenant_registry: None,
         }
     }
 
@@ -173,6 +179,17 @@ impl<PData> EffectHandler<PData> {
     /// Sets the capture policy for transport header extraction.
     pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
         self.capture_policy = policy;
+    }
+
+    /// Returns the engine's compiled tenant tokens, if any were declared.
+    #[must_use]
+    pub fn tenant_registry(&self) -> Option<&Arc<TenantTokenRegistry>> {
+        self.tenant_registry.as_ref()
+    }
+
+    /// Sets the compiled tenant tokens used to resolve request context.
+    pub fn set_tenant_registry(&mut self, registry: Option<Arc<TenantTokenRegistry>>) {
+        self.tenant_registry = registry;
     }
 
     /// Sends a message to the next node(s) in the pipeline.

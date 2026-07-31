@@ -14,6 +14,7 @@ use crate::memory_limiter::MemoryPressureState;
 use crate::node::NodeId as EngineNodeId;
 use otap_df_config::node::NodeKind;
 use otap_df_config::pipeline::telemetry::TelemetryAttribute;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::{NodeId as ConfigNodeId, NodeUrn, PipelineGroupId, PipelineId};
 use otap_df_telemetry::InternalTelemetrySettings;
 use otap_df_telemetry::metrics::MetricSetRegistrar;
@@ -152,6 +153,13 @@ pub struct PipelineContext {
     /// Optional pipeline-scoped topic set injected by the controller.
     /// ToDo: Make PipelineContext generic over a TopicSet type to avoid dynamic typing here.
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
+    /// Compiled tenant token registry, injected by the controller.
+    ///
+    /// The registry is engine-scoped, not pipeline-scoped: a topic hop moves a
+    /// packed context between groups, and the receiving side can only read it
+    /// if both sides agree on the key numbering. Every pipeline in the engine
+    /// therefore shares one compiled registry.
+    tenant_registry: Option<Arc<TenantTokenRegistry>>,
 }
 
 /// Registrar that binds generated metric-set registration to an existing entity.
@@ -315,6 +323,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
             topic_set: None,
+            tenant_registry: None,
         }
     }
 
@@ -394,6 +403,20 @@ impl PipelineContext {
             .as_ref()
             .and_then(|resource| resource.downcast_ref::<crate::topic::TopicSet<T>>())
             .cloned()
+    }
+
+    /// Sets the engine-scoped compiled tenant token registry.
+    pub fn set_tenant_registry(&mut self, registry: Arc<TenantTokenRegistry>) {
+        self.tenant_registry = Some(registry);
+    }
+
+    /// Returns the compiled tenant token registry, if tokens were declared.
+    ///
+    /// Receivers use it to resolve a request context; exporters use it to name
+    /// the headers they write back out.
+    #[must_use]
+    pub fn tenant_registry(&self) -> Option<&Arc<TenantTokenRegistry>> {
+        self.tenant_registry.as_ref()
     }
 
     /// Returns the pipeline index for the given node name, if it exists.
@@ -705,6 +728,7 @@ impl PipelineContext {
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),
+            tenant_registry: self.tenant_registry.clone(),
         }
     }
 }

@@ -17,6 +17,7 @@ use crate::pipeline::telemetry::TelemetryConfig;
 use crate::pipeline::{PipelineConfig, PipelineConnection, PipelineNodes};
 use crate::pipeline_group::PipelineGroupConfig;
 use crate::policy::{ChannelCapacityPolicy, Policies, TelemetryPolicy};
+use crate::tenant::TenantTokens;
 use crate::topic::{TopicImplSelectionPolicy, TopicSpec};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -98,6 +99,15 @@ pub struct EngineConfig {
     /// Engine-wide topic runtime settings.
     #[serde(default)]
     pub topics: EngineTopicsConfig,
+
+    /// Tenant token definitions, shared by every pipeline group.
+    ///
+    /// Tokens are engine-scoped because a topic hop connects groups, and two
+    /// groups can only exchange a packed context if they agree on the key
+    /// numbering. Declaring tokens here is what makes that agreement
+    /// structural rather than a convention.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tenant_tokens: TenantTokens,
 
     /// Controller-owned runtime extensions.
     #[serde(default, skip_serializing_if = "EngineControllerConfig::is_empty")]
