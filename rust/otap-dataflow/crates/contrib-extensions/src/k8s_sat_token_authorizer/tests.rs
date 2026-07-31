@@ -22,8 +22,8 @@ fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
 }
 
-/// Scenario: parse a minimal config with a single audience binding.
-/// Guarantees: cache fields take their defaults and the binding defaults to an
+/// Scenario: parse a minimal config with a single audience entry.
+/// Guarantees: cache fields take their defaults and the entry defaults to an
 /// empty allow-list and no RBAC (audience-only admission).
 #[test]
 fn config_defaults_apply() {
@@ -40,11 +40,11 @@ fn config_defaults_apply() {
 }
 
 /// Scenario: parse configs that omit `audiences`, supply an empty list, or a
-/// binding with a blank audience.
+/// entry with a blank audience.
 /// Guarantees: all are rejected, so a token is never admitted without an
-/// audience-scoped binding.
+/// audience-scoped entry.
 #[test]
-fn bindings_are_required_and_non_empty() {
+fn audiences_are_required_and_non_empty() {
     assert!(
         config_from_json(serde_json::json!({})).is_err(),
         "missing audiences must be rejected"
@@ -55,15 +55,15 @@ fn bindings_are_required_and_non_empty() {
     );
     assert!(
         config_from_json(serde_json::json!({ "audiences": [{ "audience": "  " }] })).is_err(),
-        "blank binding audience must be rejected"
+        "blank entry audience must be rejected"
     );
 }
 
-/// Scenario: parse a config with two audiences sharing the same audience.
+/// Scenario: parse a config with two entries sharing the same audience.
 /// Guarantees: the duplicate is rejected, so admission for an audience is never
 /// ambiguous.
 #[test]
-fn duplicate_binding_audience_is_rejected() {
+fn duplicate_audience_is_rejected() {
     assert!(
         config_from_json(serde_json::json!({
             "audiences": [
@@ -72,7 +72,7 @@ fn duplicate_binding_audience_is_rejected() {
             ],
         }))
         .is_err(),
-        "duplicate binding audiences must be rejected"
+        "duplicate duplicate audiences must be rejected"
     );
 }
 
@@ -100,7 +100,7 @@ fn zero_valued_fields_are_rejected() {
 }
 
 /// Scenario: parse configs carrying a field name the schema does not define, at
-/// the top level and inside a binding.
+/// the top level and inside an entry.
 /// Guarantees: an unknown field is rejected (deny_unknown_fields), catching
 /// typos rather than silently ignoring them.
 #[test]
@@ -118,7 +118,7 @@ fn unknown_field_is_rejected() {
             "audiences": [{ "audience": "a", "typo": true }],
         }))
         .is_err(),
-        "unknown binding field must be rejected"
+        "unknown entry field must be rejected"
     );
 }
 
@@ -134,7 +134,7 @@ fn human_readable_durations_parse() {
     assert_eq!(cfg.cache_ttl, Duration::from_secs(90));
 }
 
-/// Scenario: parse a binding whose `allowed_service_accounts` contains a
+/// Scenario: parse an entry whose `allowed_service_accounts` contains a
 /// malformed entry (empty name).
 /// Guarantees: validation fails at wiring time rather than silently never
 /// matching the entry at request time.
@@ -151,7 +151,7 @@ fn malformed_allow_list_entry_is_rejected() {
 
 // ── RBAC (SubjectAccessReview) config tests ────────────────
 
-/// Scenario: parse a binding with a valid `resource_attributes` RBAC block.
+/// Scenario: parse an entry with a valid `resource_attributes` RBAC block.
 /// Guarantees: the required `resource`/`verb` and optional fields deserialize.
 #[test]
 fn resource_attributes_parses() {
@@ -212,10 +212,10 @@ fn resource_attributes_requires_resource_and_verb() {
     );
 }
 
-/// Scenario: parse a binding that sets both `allowed_service_accounts` and
+/// Scenario: parse an entry that sets both `allowed_service_accounts` and
 /// `resource_attributes`.
 /// Guarantees: the two admission strategies are rejected together, so exactly
-/// one admission model is active per binding.
+/// one admission model is active per entry.
 #[test]
 fn allow_list_and_rbac_are_mutually_exclusive() {
     assert!(
@@ -227,7 +227,7 @@ fn allow_list_and_rbac_are_mutually_exclusive() {
             }],
         }))
         .is_err(),
-        "allow-list and RBAC must be mutually exclusive within a binding"
+        "allow-list and RBAC must be mutually exclusive within an entry"
     );
 }
 
@@ -263,7 +263,7 @@ fn normalize_rejects_malformed() {
     assert!(normalize_service_account("system:serviceaccount:default").is_err());
 }
 
-/// Scenario: build the canonical allow-list set of a binding from mixed-shape
+/// Scenario: build the canonical allow-list set of an entry from mixed-shape
 /// entries, and from an empty list.
 /// Guarantees: the set contains the canonical usernames, and an empty list
 /// yields `None` (admit any authenticated account for that audience).
@@ -308,7 +308,7 @@ fn factory_is_registered_with_capability() {
     let capabilities = K8S_SAT_TOKEN_AUTHORIZER_EXTENSION
         .capabilities
         .as_ref()
-        .expect("active extension advertises capabilities");
+        .expect("extension advertises capabilities");
     assert!(
         capabilities.shared.contains(&"bearer_token_authorizer"),
         "BearerTokenAuthorizer must be advertised as a shared capability"
@@ -329,7 +329,7 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
 
 // ── Admission tests (Core) ─────────────────────────────────
 
-/// Builds a single-binding core for audience `my-service` with an optional
+/// Builds a single-entry core for audience `my-service` with an optional
 /// allow-list.
 fn make_core(allowed: Option<Vec<&str>>) -> Core {
     let allowed_service_accounts = allowed
@@ -465,7 +465,7 @@ fn admit_denies_service_account_absent_from_allow_list() {
     assert!(!no_user.is_allowed());
 }
 
-/// Scenario: admit against an audience that has no configured binding.
+/// Scenario: admit against an audience that has no configured entry.
 /// Guarantees: it is denied with `NotPermitted`, so a token authenticated for an
 /// unbound audience is never admitted.
 #[test]
@@ -478,12 +478,12 @@ fn admit_denies_unbound_audience() {
     assert!(!decision.is_allowed());
 }
 
-/// Scenario: two tenants, each binding its own audience to its own allow-list; a
+/// Scenario: two tenants, each mapping its own audience to its own allow-list; a
 /// service account allowed for tenant A is checked against tenant B's audience.
-/// Guarantees: admission keys off the matched audience's binding, so tenant A's
+/// Guarantees: admission keys off the matched audience's entry, so tenant A's
 /// SA is denied under tenant B's audience -- no cross-tenant admission.
 #[test]
-fn admit_is_scoped_per_audience_binding() {
+fn admit_is_scoped_per_audience() {
     let core = Core::new(
         "test-authorizer",
         vec![
@@ -510,6 +510,95 @@ fn admit_is_scoped_per_audience_binding() {
     assert!(
         !core.admit_for_test(Some(sa_a), "aud-tenant-b").is_allowed(),
         "a tenant's SA must not be admitted through another tenant's audience"
+    );
+}
+
+/// Builds a two-audience core (tenant A + tenant B), each with its own
+/// allow-list, for audience-matching tests.
+fn two_audience_core() -> Core {
+    Core::new(
+        "test-authorizer",
+        vec![
+            AudienceConfig {
+                audience: "aud-tenant-a".to_string(),
+                allowed_service_accounts: vec!["ns-a:sa-a".to_string()],
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: "aud-tenant-b".to_string(),
+                allowed_service_accounts: vec!["ns-b:sa-b".to_string()],
+                resource_attributes: None,
+            },
+        ],
+    )
+}
+
+/// Scenario: `TokenReview` confirms exactly one configured audience.
+/// Guarantees: that audience is selected deterministically.
+#[test]
+fn match_audience_selects_single_bound() {
+    let core = two_audience_core();
+    assert_eq!(
+        core.match_audience_for_test(&["aud-tenant-a".to_string()]),
+        Ok("aud-tenant-a".to_string())
+    );
+}
+
+/// Scenario: `TokenReview` confirms an audience that is not configured (plus
+/// none that are).
+/// Guarantees: it is denied as unbound, so an authenticated token for an
+/// unconfigured audience is never admitted.
+#[test]
+fn match_audience_denies_unbound() {
+    let core = two_audience_core();
+    let result = core.match_audience_for_test(&["aud-unconfigured".to_string()]);
+    assert!(matches!(
+        result,
+        Err(AuthzDecision::Deny {
+            reason: DenyReason::NotPermitted,
+            ..
+        })
+    ));
+}
+
+/// Scenario: a single token is confirmed for TWO configured audiences whose
+/// policies differ (the multi-audience case; `status.audiences` order is
+/// unspecified by Kubernetes).
+/// Guarantees: admission fails closed with `NotPermitted` rather than
+/// nondeterministically applying one tenant's policy -- preserving cross-tenant
+/// isolation.
+#[test]
+fn match_audience_denies_ambiguous_multi_bound() {
+    let core = two_audience_core();
+    // Both orders must deny identically (no dependence on response ordering).
+    for confirmed in [
+        vec!["aud-tenant-a".to_string(), "aud-tenant-b".to_string()],
+        vec!["aud-tenant-b".to_string(), "aud-tenant-a".to_string()],
+    ] {
+        let result = core.match_audience_for_test(&confirmed);
+        assert!(
+            matches!(
+                result,
+                Err(AuthzDecision::Deny {
+                    reason: DenyReason::NotPermitted,
+                    ..
+                })
+            ),
+            "a token confirmed for two bound audiences must fail closed, got {result:?}"
+        );
+    }
+}
+
+/// Scenario: the confirmed-audience list repeats the same bound audience.
+/// Guarantees: a duplicated audience is deduplicated, not mistaken for an
+/// ambiguous multi-match, so a legitimate single-audience token is still
+/// admitted.
+#[test]
+fn match_audience_dedups_repeated_audience() {
+    let core = two_audience_core();
+    assert_eq!(
+        core.match_audience_for_test(&["aud-tenant-a".to_string(), "aud-tenant-a".to_string()]),
+        Ok("aud-tenant-a".to_string())
     );
 }
 
@@ -635,8 +724,8 @@ fn it_token() -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
-/// Builds a single-binding config for the integration-test audience.
-fn it_bindings(
+/// Builds a single-entry config for the integration-test audience.
+fn it_audience_entries(
     allowed: Vec<String>,
     resource_attributes: Option<ResourceAttributesConfig>,
 ) -> Vec<AudienceConfig> {
@@ -653,7 +742,7 @@ fn it_extension(
 ) -> SharedK8sSatTokenAuthorizer {
     SharedK8sSatTokenAuthorizer::new(
         "it-authorizer",
-        it_bindings(allowed, resource_attributes),
+        it_audience_entries(allowed, resource_attributes),
         Duration::from_secs(300),
         1024,
     )
@@ -710,7 +799,7 @@ async fn it_local_variant_admits_valid_token() {
     };
     let ext = LocalK8sSatTokenAuthorizer::new(
         "it-local-authorizer",
-        it_bindings(vec![], None),
+        it_audience_entries(vec![], None),
         Duration::from_secs(300),
         1024,
     );
@@ -843,12 +932,12 @@ async fn it_rbac_allows_permitted_and_denies_unpermitted() {
     );
 }
 
-/// Scenario: two audience audiences against a live cluster; a token minted for
+/// Scenario: two audience entries against a live cluster; a token minted for
 /// audience A is presented while the service account is allow-listed only under
 /// a *different* audience B.
 /// Guarantees: admission keys off the audience `TokenReview` confirms (A), so the
-/// token is admitted when A's binding allows it and the returned identity carries
-/// audience A -- and it is denied when only B's binding lists the SA, proving one
+/// token is admitted when A's entry allows it and the returned identity carries
+/// audience A -- and it is denied when only B's entry lists the SA, proving one
 /// tenant's identity cannot be admitted through another tenant's audience.
 #[tokio::test]
 #[ignore = "requires a live Kubernetes cluster and K8S_SAT_TOKEN"]
@@ -862,7 +951,7 @@ async fn it_multi_tenant_scopes_admission_to_matched_audience() {
     let other_audience = "https://other-tenant.sat-authz-test.example".to_string();
 
     // Bind the token's audience (A) to an allow-list containing the SA, plus an
-    // unrelated binding (B). The token is admitted through A and the identity
+    // unrelated entry (B). The token is admitted through A and the identity
     // reports audience A.
     let ext = SharedK8sSatTokenAuthorizer::new(
         "it-multitenant",
@@ -896,7 +985,7 @@ async fn it_multi_tenant_scopes_admission_to_matched_audience() {
     );
 
     // Now allow-list the SA only under audience B; the token (valid only for A)
-    // must be denied, since admission uses A's binding, not B's.
+    // must be denied, since admission uses A's entry, not B's.
     let ext = SharedK8sSatTokenAuthorizer::new(
         "it-multitenant",
         vec![
@@ -923,5 +1012,64 @@ async fn it_multi_tenant_scopes_admission_to_matched_audience() {
     assert!(
         !decision.is_allowed(),
         "a SA allow-listed only under another tenant's audience must not be admitted"
+    );
+}
+
+/// The secondary audience used by the multi-audience ambiguity test; override
+/// with `K8S_SAT_AUDIENCE_2`.
+fn it_second_audience() -> String {
+    std::env::var("K8S_SAT_AUDIENCE_2")
+        .unwrap_or_else(|_| "https://sat-authz-test-2.example".to_string())
+}
+
+/// The multi-audience token (valid for both `it_audience()` and
+/// `it_second_audience()`), or `None` when `K8S_SAT_MULTI_TOKEN` is unset.
+fn it_multi_token() -> Option<String> {
+    std::env::var("K8S_SAT_MULTI_TOKEN")
+        .ok()
+        .filter(|t| !t.trim().is_empty())
+}
+
+/// Scenario: a single token minted for TWO audiences is presented while both
+/// audiences are configured entries (with differing policies) against a live
+/// cluster.
+/// Guarantees: `TokenReview` confirms both audiences, and admission fails closed
+/// with a deny (ambiguous) rather than nondeterministically applying one
+/// entry's policy -- the runtime side of cross-tenant isolation.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster and K8S_SAT_MULTI_TOKEN (a token minted for two audiences)"]
+async fn it_multi_audience_token_is_denied_ambiguous() {
+    let Some(token) = it_multi_token() else {
+        eprintln!("skipping: set K8S_SAT_MULTI_TOKEN to run this integration test");
+        return;
+    };
+    let subject = it_subject();
+
+    // Both audiences allow-list the SA, so if a single policy were (wrongly)
+    // selected the request would be admitted; the ambiguity guard must deny.
+    let ext = SharedK8sSatTokenAuthorizer::new(
+        "it-ambiguous",
+        vec![
+            AudienceConfig {
+                audience: it_audience(),
+                allowed_service_accounts: vec![subject.clone()],
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: it_second_audience(),
+                allowed_service_accounts: vec![subject],
+                resource_attributes: None,
+            },
+        ],
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token))
+        .await
+        .expect("decision");
+    assert!(
+        !decision.is_allowed(),
+        "a token confirmed for two configured audiences must fail closed (ambiguous)"
     );
 }

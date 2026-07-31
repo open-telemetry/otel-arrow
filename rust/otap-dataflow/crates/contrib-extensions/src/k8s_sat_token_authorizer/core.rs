@@ -156,23 +156,15 @@ impl Core {
                 None => AuthzDecision::deny(DenyReason::InvalidCredential),
             },
             ReviewOutcome::Authenticated(user) => {
-                // Admit against the entry for the audience TokenReview actually
-                // confirmed, not a global list. This ties the service account to
-                // the audience it was minted for and closes cross-tenant
-                // admission (a token minted for audience A cannot be admitted
-                // through audience B's policy).
-                let matched = user.audiences.iter().find_map(|aud| {
-                    self.admission_by_audience
-                        .get(aud)
-                        .map(|adm| (aud.clone(), adm))
-                });
-                let Some((audience, admission)) = matched else {
-                    // The token authenticated but not for any bound audience.
-                    return Ok(AuthzDecision::deny_with_detail(
-                        DenyReason::NotPermitted,
-                        "token audience is not bound",
-                    ));
+                // Admit against the entry for the confirmed audience, not a
+                // global list, so a service account is only trusted for the
+                // audience it was minted for. `match_audience` resolves the
+                // single bound audience and fails closed on ambiguity.
+                let audience = match self.match_audience(&user.audiences) {
+                    Ok(audience) => audience,
+                    Err(deny) => return Ok(deny),
                 };
+                let admission = &self.admission_by_audience[&audience];
 
                 match admission {
                     // RBAC admission needs a second API call (SubjectAccessReview).
@@ -198,6 +190,43 @@ impl Core {
             }
         };
         Ok(decision)
+    }
+
+    /// Selects the single configured audience among those `TokenReview`
+    /// confirmed, or returns the deny decision to use.
+    ///
+    /// A token can be confirmed for several configured audiences at once; their
+    /// order in `confirmed` is unspecified by Kubernetes. To keep policy
+    /// selection deterministic and preserve cross-tenant isolation, this admits
+    /// only an unambiguous single match:
+    ///
+    /// - exactly one configured audience matched -> `Ok(audience)`;
+    /// - none matched -> `Err(Deny(NotPermitted, "token audience is not bound"))`;
+    /// - two or more distinct configured audiences matched -> `Err(Deny(..))`
+    ///   ("ambiguous policy"), failing closed rather than picking one tenant's
+    ///   policy nondeterministically.
+    fn match_audience(&self, confirmed: &[String]) -> Result<String, AuthzDecision> {
+        // Distinct confirmed audiences that are configured. Dedup so a repeated
+        // audience in the response is not mistaken for an ambiguous match.
+        let mut matched: Vec<&str> = confirmed
+            .iter()
+            .map(String::as_str)
+            .filter(|aud| self.admission_by_audience.contains_key(*aud))
+            .collect();
+        matched.sort_unstable();
+        matched.dedup();
+
+        match matched.as_slice() {
+            [] => Err(AuthzDecision::deny_with_detail(
+                DenyReason::NotPermitted,
+                "token audience is not bound",
+            )),
+            [audience] => Ok((*audience).to_owned()),
+            _ => Err(AuthzDecision::deny_with_detail(
+                DenyReason::NotPermitted,
+                "token confirmed for multiple bound audiences; ambiguous policy",
+            )),
+        }
     }
 
     /// Returns the lazily-built reviewer, constructing the Kubernetes client on
@@ -315,5 +344,14 @@ impl Core {
     /// Builds the `Allow` identity for a fully-populated user. Test-only.
     pub(crate) fn allow_for_test(&self, user: &AuthenticatedUser, audience: &str) -> AuthzDecision {
         Self::allow(user, audience)
+    }
+
+    /// Resolves the confirmed audiences to a single bound audience, or the deny.
+    /// Test-only wrapper over [`Core::match_audience`].
+    pub(crate) fn match_audience_for_test(
+        &self,
+        confirmed: &[String],
+    ) -> Result<String, AuthzDecision> {
+        self.match_audience(confirmed)
     }
 }
