@@ -169,7 +169,17 @@ through tenant B's entry, even if that SA also appears elsewhere. `TokenReview`
 still requests the union of audiences; only the admission step keys off the
 matched one.
 
-Within a entry, admission uses exactly one strategy (the two fields are
+A token can be confirmed for **several** configured audiences at once (a
+projected token minted for multiple audiences; `TokenReview` returns the
+intersection, whose order Kubernetes does not specify). Admission requires an
+**unambiguous single match**: exactly one confirmed audience must be configured.
+If two or more configured audiences match, the request is denied
+(`NotPermitted`, "ambiguous policy") rather than nondeterministically applying
+one entry's policy -- so a token valid for two tenants is never silently admitted
+under whichever policy happens to sort first. A confirmed audience that is not
+configured is likewise denied (`NotPermitted`, "token audience is not bound").
+
+Within an entry, admission uses exactly one strategy (the two fields are
 mutually exclusive):
 
 - **Audience-only** (neither field set): any account authenticated for this

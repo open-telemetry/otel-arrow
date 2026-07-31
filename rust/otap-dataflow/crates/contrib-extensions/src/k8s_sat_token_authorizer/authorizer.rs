@@ -3,23 +3,17 @@
 
 //! The two capability variants of the Kubernetes SAT authorizer, side by side.
 //!
-//! There are intentionally **two** parallel implementations of the same
-//! authorizer:
+//! Both delegate to [`Core::authorize`](super::core::Core::authorize), which
+//! holds the entire request flow; each variant only picks the cache's
+//! interior-mutability strategy via [`DecisionStore`](super::cache::DecisionStore):
 //!
-//! - [`SharedK8sSatTokenAuthorizer`] -- `Send`, state behind [`Arc`], cache
-//!   guarded by a `std::sync::Mutex`. Registered as the shared capability
-//!   variant (the shared instance factory requires `Send`).
-//! - [`LocalK8sSatTokenAuthorizer`] -- `!Send`, state behind [`Rc`], cache in a
-//!   `RefCell` (lock-free). Registered as the local variant so thread-per-core
-//!   consumers avoid the shared `Mutex` and cross-core contention.
+//! - [`SharedK8sSatTokenAuthorizer`]: `Send`, `Arc` + `Mutex` cache. The shared
+//!   capability variant (the shared instance factory requires `Send`).
+//! - [`LocalK8sSatTokenAuthorizer`]: `!Send`, `Rc` + lock-free `RefCell` cache.
+//!   The local variant, so thread-per-core consumers avoid the `Mutex`.
 //!
-//! They are deliberately kept in one file so the pair is obvious. The **entire
-//! decision flow lives once** in [`Core::authorize`](super::core::Core::authorize):
-//! each variant below is a one-line delegation that only chooses the
-//! interior-mutability strategy via [`DecisionStore`](super::cache::DecisionStore)
-//! (`Mutex` vs `RefCell`). Because neither wrapper carries request logic, the two
-//! cannot drift. When you change one wrapper's *shape* (fields, constructor),
-//! mirror it in the other.
+//! Kept in one file so the pair is obvious; since neither carries request logic
+//! they cannot drift, but mirror any change to one wrapper's shape in the other.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -75,8 +69,7 @@ impl SharedK8sSatTokenAuthorizer {
 #[async_trait]
 impl SharedBearerTokenAuthorizer for SharedK8sSatTokenAuthorizer {
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError> {
-        // All logic lives in Core::authorize; keep this in sync with the local
-        // variant below (they must stay identical).
+        // Delegates to Core::authorize; keep identical to the local variant.
         self.inner
             .core
             .authorize(credential, &self.inner.cache)
@@ -126,8 +119,7 @@ impl LocalK8sSatTokenAuthorizer {
 #[async_trait(?Send)]
 impl LocalBearerTokenAuthorizer for LocalK8sSatTokenAuthorizer {
     async fn authorize(&self, credential: &BearerToken) -> Result<AuthzDecision, CapabilityError> {
-        // All logic lives in Core::authorize; keep this in sync with the shared
-        // variant above (they must stay identical).
+        // Delegates to Core::authorize; keep identical to the shared variant.
         self.inner
             .core
             .authorize(credential, &self.inner.cache)
