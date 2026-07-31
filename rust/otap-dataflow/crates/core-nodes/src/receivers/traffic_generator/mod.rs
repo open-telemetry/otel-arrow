@@ -11,7 +11,7 @@ use linkme::distributed_slice;
 use metrics::TrafficGeneratorReceiverMetrics;
 use otap_df_channel::error::{RecvError, SendError};
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_engine::MessageSourceLocalEffectHandlerExtension;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -26,6 +26,7 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
+use otap_df_otap::tenant_resolve::resolve_pairs;
 use otap_df_pdata::OtapPayload;
 #[cfg(test)]
 use otap_df_pdata::TryIntoWithOptions;
@@ -141,7 +142,7 @@ impl TrafficGeneratorReceiver {
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
         mut batch_ticker: Interval,
-        transport_headers: Option<TransportHeaders>,
+        tenant: Option<Arc<[u64]>>,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         let mut next_pdata: Option<OtapPdata> = None;
@@ -230,7 +231,7 @@ impl TrafficGeneratorReceiver {
                                     .record(elapsed_nanos(generate_start));
 
                                 let send_start = StdInstant::now();
-                                let result = self.handle_payload(handler, payload, &transport_headers)?;
+                                let result = self.handle_payload(handler, payload, &tenant)?;
                                 self.metrics
                                     .smooth_payload_send_duration_ns
                                     .record(elapsed_nanos(send_start));
@@ -259,7 +260,7 @@ impl TrafficGeneratorReceiver {
         handler: &local::EffectHandler<OtapPdata>,
         mut producer: TrafficProducer,
         mut run_ticker: Interval,
-        transport_headers: Option<TransportHeaders>,
+        tenant: Option<Arc<[u64]>>,
     ) -> Result<TerminalState, Error> {
         let mut run_produced: u64 = 0;
         'start: loop {
@@ -305,7 +306,7 @@ impl TrafficGeneratorReceiver {
                                     break;
                                 };
 
-                               self.handle_payload(handler, payload, &transport_headers)?
+                               self.handle_payload(handler, payload, &tenant)?
                             }
                         };
 
@@ -348,7 +349,7 @@ impl TrafficGeneratorReceiver {
         &mut self,
         handler: &local::EffectHandler<OtapPdata>,
         payload: Result<OtapPayload, GenerateError>,
-        transport_headers: &Option<TransportHeaders>,
+        tenant: &Option<Arc<[u64]>>,
     ) -> Result<Result<u64, OtapPdata>, Error> {
         let payload = match payload {
             Ok(payload) => payload,
@@ -363,8 +364,8 @@ impl TrafficGeneratorReceiver {
         };
 
         let mut pdata = OtapPdata::new_todo_context(payload);
-        if let Some(headers) = transport_headers {
-            pdata.set_transport_headers(headers.clone());
+        if let Some(words) = tenant {
+            pdata.set_tenant(words.clone());
         }
         if self.config.enable_ack_nack() {
             handler.subscribe_to(
@@ -415,58 +416,47 @@ impl TrafficGeneratorReceiver {
     }
 }
 
-/// Builds transport headers from the user-configured map.
+/// Resolves the configured tenant values into one packed context, once.
 ///
-/// Keys with `Some(value)` produce fixed header values.
-/// Keys with `None` produce a random value once at startup: a 16-char
-/// random alphabetical string for text headers, or 16 raw random bytes
-/// for binary headers (keys ending in `-bin`).
+/// Keys with `Some(value)` produce that value. Keys with `None` produce a
+/// random 16-byte printable-ASCII value, generated here at startup rather
+/// than per request, so the generator measures the pipeline rather than its
+/// own random number generator.
 ///
-/// Returns `None` when the config map is empty (zero overhead).
-fn build_transport_headers(
-    config_headers: &HashMap<String, Option<String>>,
-) -> Option<TransportHeaders> {
-    if config_headers.is_empty() {
+/// Because every generated message carries the same tenant values, the packed
+/// context is built once and shared: attaching it to a message is an `Arc`
+/// bump, not a resolve. Returns `None` when nothing is configured, or when no
+/// configured key is declared by the engine's tenant tokens.
+fn build_tenant_context(
+    registry: Option<&Arc<TenantTokenRegistry>>,
+    config_values: &HashMap<String, Option<String>>,
+) -> Option<Arc<[u64]>> {
+    if config_values.is_empty() {
         return None;
     }
-    let mut headers = TransportHeaders::with_capacity(config_headers.len());
-    for (key, value) in config_headers {
-        // Infer the value kind from the key name, matching the convention
-        // used by the header capture policy: keys ending in `-bin` are
-        // treated as binary (the gRPC binary metadata convention).
-        if key.ends_with("-bin") {
-            let resolved_value = match value {
+    let registry = registry?;
+    let resolved: Vec<(&str, Vec<u8>)> = config_values
+        .iter()
+        .map(|(key, value)| {
+            let bytes = match value {
                 Some(v) => v.as_bytes().to_vec(),
                 None => {
-                    let mut buf = [0u8; 16];
-                    rand::RngExt::fill(&mut rand::rng(), &mut buf);
-                    buf.to_vec()
-                }
-            };
-            headers.push(TransportHeader::binary(
-                key.clone(),
-                key.clone(),
-                resolved_value,
-            ));
-        } else {
-            let resolved_value = match value {
-                Some(v) => v.as_bytes().to_vec(),
-                None => {
-                    // Generate bytes in ASCII printable range (space..tilde)
+                    // Printable ASCII (space..tilde), so failures are legible.
                     let mut rng = rand::rng();
                     (0..16)
                         .map(|_| rand::RngExt::random_range(&mut rng, 32u8..127))
                         .collect()
                 }
             };
-            headers.push(TransportHeader::text(
-                key.clone(),
-                key.clone(),
-                resolved_value,
-            ));
-        }
-    }
-    Some(headers)
+            (key.as_str(), bytes)
+        })
+        .collect();
+
+    resolve_pairs(
+        registry,
+        resolved.iter().map(|(k, v)| (*k, v.as_slice())),
+        None,
+    )
 }
 
 /// Waits for a terminal control message after the producer has finished.
@@ -533,7 +523,10 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                 source_detail: String::new(),
             })?;
 
-        let transport_headers = build_transport_headers(self.config.transport_headers());
+        let tenant = build_tenant_context(
+            effect_handler.tenant_registry(),
+            self.config.tenant_values(),
+        );
 
         let run_len = producer.run_len();
 
@@ -572,7 +565,7 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                         producer,
                         run_ticker,
                         batch_ticker,
-                        transport_headers,
+                        tenant,
                     )
                     .await
                 } else {
@@ -580,25 +573,13 @@ impl local::Receiver<OtapPdata> for TrafficGeneratorReceiver {
                         "traffic_generator.smooth_fallback_open",
                         reason = "smooth batch interval is zero"
                     );
-                    self.run_open(
-                        ctrl_msg_recv,
-                        &effect_handler,
-                        producer,
-                        run_ticker,
-                        transport_headers,
-                    )
-                    .await
+                    self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker, tenant)
+                        .await
                 }
             }
             config::ProductionMode::Open => {
-                self.run_open(
-                    ctrl_msg_recv,
-                    &effect_handler,
-                    producer,
-                    run_ticker,
-                    transport_headers,
-                )
-                .await
+                self.run_open(ctrl_msg_recv, &effect_handler, producer, run_ticker, tenant)
+                    .await
             }
         }
     }
@@ -611,7 +592,6 @@ mod tests {
 
     use crate::receivers::traffic_generator::config::{Config, TrafficConfig};
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers::ValueKind;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::testing::{
@@ -1336,10 +1316,47 @@ mod tests {
             .run_validation(ctrl_validation);
     }
 
-    /// Verifies that pdata messages contain transport headers with fixed values
-    /// when `transport_headers` is configured with explicit values.
+    /// The tenant keys these tests generate values for.
+    const GENERATED_KEYS: [&str; 2] = ["x-tenant-id", "x-request-id"];
+
+    /// A registry declaring [`GENERATED_KEYS`], each retained so its bytes
+    /// travel with the request and can be read back.
+    fn test_registry() -> Arc<TenantTokenRegistry> {
+        use otap_df_config::tenant::compiled::TenantTokenRegistryBuilder;
+        use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
+
+        let mut tokens = TenantTokens::default();
+        for key in GENERATED_KEYS {
+            let _ = tokens.insert(
+                key.to_owned(),
+                TenantTokenSpec {
+                    extractors: vec![Extractor::TransportHeader {
+                        key: key.to_owned(),
+                        transport_header: key.to_owned(),
+                        retain: true,
+                        bag: false,
+                    }],
+                },
+            );
+        }
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        Arc::new(builder.build(1).expect("layout fits"))
+    }
+
+    /// Read a generated tenant value back out of a produced message.
+    fn tenant_value(pdata: &OtapPdata, key: &str) -> Option<Vec<u8>> {
+        let registry = test_registry();
+        let view = pdata.tenant_view()?;
+        let key = registry.key_id(key)?;
+        registry.retained_value(&view, key).map(<[u8]>::to_vec)
+    }
+
+    /// Scenario: `tenant_values` configured with an explicit value.
+    /// Guarantees: every generated message carries that exact value under the
+    /// configured tenant key.
     #[test]
-    fn test_fake_data_transport_headers_fixed_value() {
+    fn test_fake_data_tenant_values_fixed_value() {
         let test_runtime = TestRuntime::new();
 
         let registry_path = VirtualDirectoryPath::GitRepo {
@@ -1359,7 +1376,7 @@ mod tests {
         let config = Config::new(traffic_config, registry_path)
             .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh)
-            .with_transport_headers(HashMap::from([(
+            .with_tenant_values(HashMap::from([(
                 "x-tenant-id".to_string(),
                 Some("acme".to_string()),
             )]));
@@ -1374,10 +1391,11 @@ mod tests {
 
         let receiver = ReceiverWrapper::local(
             TrafficGeneratorReceiver::new(pipeline_ctx, config),
-            test_node("fake_receiver_transport_headers"),
+            test_node("fake_receiver_tenant_values"),
             node_config,
             test_runtime.config(),
-        );
+        )
+        .with_tenant_registry(Some(test_registry()));
 
         let scenario = move |ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
@@ -1392,19 +1410,10 @@ mod tests {
             Box::pin(async move {
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
-                let headers = pdata
-                    .transport_headers()
-                    .expect("pdata should have transport headers");
-                let tenant: Vec<_> = headers.find_by_name("x-tenant-id").collect();
                 assert_eq!(
-                    tenant.len(),
-                    1,
-                    "should have exactly one x-tenant-id header"
-                );
-                assert_eq!(
-                    tenant[0].value_as_str(),
-                    Some("acme"),
-                    "fixed header value should be 'acme'"
+                    tenant_value(&pdata, "x-tenant-id").as_deref(),
+                    Some(&b"acme"[..]),
+                    "the fixed tenant value should reach the pipeline verbatim"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
@@ -1415,10 +1424,11 @@ mod tests {
             .run_validation(validation);
     }
 
-    /// Verifies that pdata messages contain transport headers with random values
-    /// when `transport_headers` is configured with null values.
+    /// Scenario: `tenant_values` configured with a null value.
+    /// Guarantees: a random 16-byte printable value is generated once and the
+    /// same value reaches the pipeline on every message.
     #[test]
-    fn test_fake_data_transport_headers_random_value() {
+    fn test_fake_data_tenant_values_random_value() {
         let test_runtime = TestRuntime::new();
 
         let registry_path = VirtualDirectoryPath::GitRepo {
@@ -1427,18 +1437,14 @@ mod tests {
             refspec: None,
         };
 
-        let traffic_config = TrafficConfig::new(
-            Some(MESSAGE_PER_SECOND),
-            Some(MAX_SIGNALS),
-            MAX_BATCH,
-            0,
-            0,
-            1,
-        );
+        // One signal per batch, so the run produces several messages and the
+        // test can show the generated value is the same on each.
+        let traffic_config =
+            TrafficConfig::new(Some(MESSAGE_PER_SECOND), Some(MAX_SIGNALS), 1, 0, 0, 1);
         let config = Config::new(traffic_config, registry_path)
             .with_data_source(DataSource::Synthetic)
             .with_generation_strategy(GenerationStrategy::Fresh)
-            .with_transport_headers(HashMap::from([("x-request-id".to_string(), None)]));
+            .with_tenant_values(HashMap::from([("x-request-id".to_string(), None)]));
 
         let node_config = Arc::new(NodeUserConfig::new_receiver_config(
             TRAFFIC_GENERATOR_RECEIVER_URN,
@@ -1450,10 +1456,11 @@ mod tests {
 
         let receiver = ReceiverWrapper::local(
             TrafficGeneratorReceiver::new(pipeline_ctx, config),
-            test_node("fake_receiver_random_headers"),
+            test_node("fake_receiver_random_tenant_values"),
             node_config,
             test_runtime.config(),
-        );
+        )
+        .with_tenant_registry(Some(test_registry()));
 
         let scenario = move |ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
@@ -1468,28 +1475,20 @@ mod tests {
             Box::pin(async move {
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
-                let headers = pdata
-                    .transport_headers()
-                    .expect("pdata should have transport headers");
-                let request_id: Vec<_> = headers.find_by_name("x-request-id").collect();
-                assert_eq!(
-                    request_id.len(),
-                    1,
-                    "should have exactly one x-request-id header"
-                );
-                assert_eq!(
-                    request_id[0].value.len(),
-                    16,
-                    "random value should be 16 bytes"
-                );
-                assert_eq!(
-                    request_id[0].value_kind,
-                    ValueKind::Text,
-                    "non-bin key should produce a Text header"
-                );
+                let request_id =
+                    tenant_value(&pdata, "x-request-id").expect("the key should hold a value");
+                assert_eq!(request_id.len(), 16, "random value should be 16 bytes");
                 assert!(
-                    request_id[0].value_as_str().is_some(),
-                    "text header random value should be valid UTF-8 (printable)"
+                    request_id.iter().all(|b| (32..127).contains(b)),
+                    "random value should be printable ASCII"
+                );
+
+                // Generated once at startup, so the next message repeats it.
+                let next = ctx.recv().await.expect("should receive a second pdata");
+                assert_eq!(
+                    tenant_value(&next, "x-request-id"),
+                    Some(request_id),
+                    "the value should be generated once, not per message"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
@@ -1500,92 +1499,11 @@ mod tests {
             .run_validation(validation);
     }
 
-    /// Verifies that pdata messages contain binary transport headers with random
-    /// values when `transport_headers` is configured with null values and keys
-    /// ending in `-bin`.
+    /// Scenario: no `tenant_values` configured.
+    /// Guarantees: generated messages carry no tenant context at all, so the
+    /// generator costs nothing when the feature is unused.
     #[test]
-    fn test_fake_data_transport_headers_binary_random_value() {
-        let test_runtime = TestRuntime::new();
-
-        let registry_path = VirtualDirectoryPath::GitRepo {
-            url: "https://github.com/open-telemetry/semantic-conventions.git".to_owned(),
-            sub_folder: Some("model".to_owned()),
-            refspec: None,
-        };
-
-        let traffic_config = TrafficConfig::new(
-            Some(MESSAGE_PER_SECOND),
-            Some(MAX_SIGNALS),
-            MAX_BATCH,
-            0,
-            0,
-            1,
-        );
-        let config = Config::new(traffic_config, registry_path)
-            .with_data_source(DataSource::Synthetic)
-            .with_generation_strategy(GenerationStrategy::Fresh)
-            .with_transport_headers(HashMap::from([("x-trace-bin".to_string(), None)]));
-
-        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            TRAFFIC_GENERATOR_RECEIVER_URN,
-        ));
-        let telemetry_registry_handle = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
-        let pipeline_ctx =
-            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
-
-        let receiver = ReceiverWrapper::local(
-            TrafficGeneratorReceiver::new(pipeline_ctx, config),
-            test_node("fake_receiver_binary_headers"),
-            node_config,
-            test_runtime.config(),
-        );
-
-        let scenario = move |ctx: TestContext<OtapPdata>| {
-            Box::pin(async move {
-                sleep(Duration::from_millis(RUN_TILL_SHUTDOWN)).await;
-                ctx.send_shutdown(std::time::Instant::now(), "Test complete")
-                    .await
-                    .expect("Failed to send shutdown");
-            }) as Pin<Box<dyn Future<Output = ()>>>
-        };
-
-        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
-            Box::pin(async move {
-                let pdata = ctx.recv().await.expect("should receive at least one pdata");
-
-                let headers = pdata
-                    .transport_headers()
-                    .expect("pdata should have transport headers");
-                let trace_bin: Vec<_> = headers.find_by_name("x-trace-bin").collect();
-                assert_eq!(
-                    trace_bin.len(),
-                    1,
-                    "should have exactly one x-trace-bin header"
-                );
-                assert_eq!(
-                    trace_bin[0].value.len(),
-                    16,
-                    "random binary value should be 16 bytes"
-                );
-                assert_eq!(
-                    trace_bin[0].value_kind,
-                    ValueKind::Binary,
-                    "-bin key should produce a Binary header"
-                );
-            }) as Pin<Box<dyn Future<Output = ()>>>
-        };
-
-        test_runtime
-            .set_receiver(receiver)
-            .run_test(scenario)
-            .run_validation(validation);
-    }
-
-    /// Verifies that pdata messages do NOT have transport headers when
-    /// `transport_headers` is absent from the config.
-    #[test]
-    fn test_fake_data_transport_headers_empty_by_default() {
+    fn test_fake_data_tenant_values_empty_by_default() {
         let test_runtime = TestRuntime::new();
 
         let registry_path = VirtualDirectoryPath::GitRepo {
@@ -1616,7 +1534,7 @@ mod tests {
 
         let receiver = ReceiverWrapper::local(
             TrafficGeneratorReceiver::new(pipeline_ctx, config),
-            test_node("fake_receiver_no_headers"),
+            test_node("fake_receiver_no_tenant_values"),
             node_config,
             test_runtime.config(),
         );
@@ -1635,8 +1553,8 @@ mod tests {
                 let pdata = ctx.recv().await.expect("should receive at least one pdata");
 
                 assert!(
-                    pdata.transport_headers().is_none(),
-                    "pdata should NOT have transport headers when config has no transport_headers"
+                    pdata.tenant_view().is_none(),
+                    "no tenant context when the config declares no tenant_values"
                 );
             }) as Pin<Box<dyn Future<Output = ()>>>
         };

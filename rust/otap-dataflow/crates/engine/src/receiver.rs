@@ -579,10 +579,8 @@ impl<PData> ReceiverWrapper<PData> {
     ///
     /// The registry is what lets a receiver turn request metadata into a single
     /// packed context, so it must reach the receiver before it starts.
-    pub(crate) fn with_tenant_registry(
-        self,
-        tenant_registry: Option<Arc<TenantTokenRegistry>>,
-    ) -> Self {
+    #[must_use]
+    pub fn with_tenant_registry(self, tenant_registry: Option<Arc<TenantTokenRegistry>>) -> Self {
         match self {
             ReceiverWrapper::Local {
                 node_id,

@@ -53,8 +53,11 @@ config:
   resource_attributes:
     - service.name: load-generator
 
-  # Fixed or generated transport headers (default: {}).
-  transport_headers:
+  # Fixed or generated tenant values (default: {}). Keys name tenant token
+  # keys as an inbound request would have supplied them; an empty value is
+  # filled with a random 16-byte printable value once, at startup. Only keys
+  # the engine's tenant tokens declare take effect.
+  tenant_values:
     x-tenant-id: demo
 
   # Signal rate, batch size, and signal weights (required).
