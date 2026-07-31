@@ -22,7 +22,6 @@
 //! mirror it in the other.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -34,7 +33,7 @@ use otap_df_engine::local::capability::auth::bearer_token_authorizer::BearerToke
 use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTokenAuthorizer as SharedBearerTokenAuthorizer;
 
 use super::cache::DecisionCache;
-use super::config::ResourceAttributesConfig;
+use super::config::AudienceConfig;
 use super::core::Core;
 
 // ── Shared variant (Send; Arc + Mutex) ─────────────────────────────────────
@@ -60,20 +59,13 @@ impl SharedK8sSatTokenAuthorizer {
     /// Builds a new shared-variant instance.
     pub(crate) fn new(
         name: &str,
-        audiences: Vec<String>,
-        allowed_service_accounts: Option<HashSet<String>>,
-        resource_attributes: Option<ResourceAttributesConfig>,
+        audiences: Vec<AudienceConfig>,
         cache_ttl: Duration,
         cache_max_entries: usize,
     ) -> Self {
         Self {
             inner: Arc::new(SharedInner {
-                core: Core::new(
-                    name,
-                    audiences,
-                    allowed_service_accounts,
-                    resource_attributes,
-                ),
+                core: Core::new(name, audiences),
                 cache: Mutex::new(DecisionCache::new(cache_ttl, cache_max_entries)),
             }),
         }
@@ -118,20 +110,13 @@ impl LocalK8sSatTokenAuthorizer {
     /// Builds a new local-variant instance.
     pub(crate) fn new(
         name: &str,
-        audiences: Vec<String>,
-        allowed_service_accounts: Option<HashSet<String>>,
-        resource_attributes: Option<ResourceAttributesConfig>,
+        audiences: Vec<AudienceConfig>,
         cache_ttl: Duration,
         cache_max_entries: usize,
     ) -> Self {
         Self {
             inner: Rc::new(LocalInner {
-                core: Core::new(
-                    name,
-                    audiences,
-                    allowed_service_accounts,
-                    resource_attributes,
-                ),
+                core: Core::new(name, audiences),
                 cache: RefCell::new(DecisionCache::new(cache_ttl, cache_max_entries)),
             }),
         }

@@ -3,7 +3,6 @@
 
 //! Unit tests for the Kubernetes SAT authorizer extension.
 
-use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use otap_df_config::error::Error as ConfigError;
@@ -13,7 +12,7 @@ use otap_df_engine::shared::capability::auth::bearer_token_authorizer::BearerTok
 
 use super::authorizer::{LocalK8sSatTokenAuthorizer, SharedK8sSatTokenAuthorizer};
 use super::cache::DecisionCache;
-use super::config::{Config, ResourceAttributesConfig, normalize_service_account};
+use super::config::{AudienceConfig, Config, ResourceAttributesConfig, normalize_service_account};
 use super::core::Core;
 use super::*;
 
@@ -23,25 +22,29 @@ fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
 }
 
-/// Scenario: parse a minimal config specifying only the required `audiences`.
-/// Guarantees: every optional field takes its documented default (cache TTL
-/// 300s, cache max 1024, empty allow-list).
+/// Scenario: parse a minimal config with a single audience binding.
+/// Guarantees: cache fields take their defaults and the binding defaults to an
+/// empty allow-list and no RBAC (audience-only admission).
 #[test]
 fn config_defaults_apply() {
-    let cfg = config_from_json(serde_json::json!({ "audiences": ["my-service"] }))
-        .expect("minimal config is valid");
-    assert_eq!(cfg.audiences, vec!["my-service".to_string()]);
-    assert!(cfg.allowed_service_accounts.is_empty());
+    let cfg = config_from_json(serde_json::json!({
+        "audiences": [{ "audience": "my-service" }],
+    }))
+    .expect("minimal config is valid");
+    assert_eq!(cfg.audiences.len(), 1);
+    assert_eq!(cfg.audiences[0].audience, "my-service");
+    assert!(cfg.audiences[0].allowed_service_accounts.is_empty());
+    assert!(cfg.audiences[0].resource_attributes.is_none());
     assert_eq!(cfg.cache_ttl, Duration::from_secs(300));
     assert_eq!(cfg.cache_max_entries, 1024);
 }
 
-/// Scenario: parse configs that omit `audiences` entirely and that supply an
-/// empty `audiences` list.
-/// Guarantees: both are rejected, so a token is never admitted without an
-/// audience constraint.
+/// Scenario: parse configs that omit `audiences`, supply an empty list, or a
+/// binding with a blank audience.
+/// Guarantees: all are rejected, so a token is never admitted without an
+/// audience-scoped binding.
 #[test]
-fn audiences_are_required_and_non_empty() {
+fn bindings_are_required_and_non_empty() {
     assert!(
         config_from_json(serde_json::json!({})).is_err(),
         "missing audiences must be rejected"
@@ -51,8 +54,25 @@ fn audiences_are_required_and_non_empty() {
         "empty audiences must be rejected"
     );
     assert!(
-        config_from_json(serde_json::json!({ "audiences": ["  "] })).is_err(),
-        "whitespace-only audience must be rejected"
+        config_from_json(serde_json::json!({ "audiences": [{ "audience": "  " }] })).is_err(),
+        "blank binding audience must be rejected"
+    );
+}
+
+/// Scenario: parse a config with two audiences sharing the same audience.
+/// Guarantees: the duplicate is rejected, so admission for an audience is never
+/// ambiguous.
+#[test]
+fn duplicate_binding_audience_is_rejected() {
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": [
+                { "audience": "dup", "allowed_service_accounts": ["ns:a"] },
+                { "audience": "dup", "allowed_service_accounts": ["ns:b"] },
+            ],
+        }))
+        .is_err(),
+        "duplicate binding audiences must be rejected"
     );
 }
 
@@ -62,24 +82,44 @@ fn audiences_are_required_and_non_empty() {
 #[test]
 fn zero_valued_fields_are_rejected() {
     assert!(
-        config_from_json(serde_json::json!({ "audiences": ["a"], "cache_ttl": "0s" })).is_err(),
+        config_from_json(serde_json::json!({
+            "audiences": [{ "audience": "a" }],
+            "cache_ttl": "0s",
+        }))
+        .is_err(),
         "zero cache_ttl must be rejected"
     );
     assert!(
-        config_from_json(serde_json::json!({ "audiences": ["a"], "cache_max_entries": 0 }))
-            .is_err(),
+        config_from_json(serde_json::json!({
+            "audiences": [{ "audience": "a" }],
+            "cache_max_entries": 0,
+        }))
+        .is_err(),
         "zero cache_max_entries must be rejected"
     );
 }
 
-/// Scenario: parse a config carrying a field name the schema does not define.
+/// Scenario: parse configs carrying a field name the schema does not define, at
+/// the top level and inside a binding.
 /// Guarantees: an unknown field is rejected (deny_unknown_fields), catching
 /// typos rather than silently ignoring them.
 #[test]
 fn unknown_field_is_rejected() {
-    let err = config_from_json(serde_json::json!({ "audiences": ["a"], "typo": true }))
-        .expect_err("unknown field must be rejected");
-    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": [{ "audience": "a" }],
+            "typo": true,
+        }))
+        .is_err(),
+        "unknown top-level field must be rejected"
+    );
+    assert!(
+        config_from_json(serde_json::json!({
+            "audiences": [{ "audience": "a", "typo": true }],
+        }))
+        .is_err(),
+        "unknown binding field must be rejected"
+    );
 }
 
 /// Scenario: parse a human-readable duration for `cache_ttl`.
@@ -87,14 +127,14 @@ fn unknown_field_is_rejected() {
 #[test]
 fn human_readable_durations_parse() {
     let cfg = config_from_json(serde_json::json!({
-        "audiences": ["a"],
+        "audiences": [{ "audience": "a" }],
         "cache_ttl": "90s",
     }))
     .expect("durations parse");
     assert_eq!(cfg.cache_ttl, Duration::from_secs(90));
 }
 
-/// Scenario: parse a config whose `allowed_service_accounts` contains a
+/// Scenario: parse a binding whose `allowed_service_accounts` contains a
 /// malformed entry (empty name).
 /// Guarantees: validation fails at wiring time rather than silently never
 /// matching the entry at request time.
@@ -102,8 +142,7 @@ fn human_readable_durations_parse() {
 fn malformed_allow_list_entry_is_rejected() {
     assert!(
         config_from_json(serde_json::json!({
-            "audiences": ["a"],
-            "allowed_service_accounts": ["default:"],
+            "audiences": [{ "audience": "a", "allowed_service_accounts": ["default:"] }],
         }))
         .is_err(),
         "allow-list entry with empty name must be rejected"
@@ -112,22 +151,25 @@ fn malformed_allow_list_entry_is_rejected() {
 
 // ── RBAC (SubjectAccessReview) config tests ────────────────
 
-/// Scenario: parse a config with a valid `resource_attributes` RBAC block.
+/// Scenario: parse a binding with a valid `resource_attributes` RBAC block.
 /// Guarantees: the required `resource`/`verb` and optional fields deserialize.
 #[test]
 fn resource_attributes_parses() {
     let cfg = config_from_json(serde_json::json!({
-        "audiences": ["a"],
-        "resource_attributes": {
-            "group": "telemetry.opentelemetry.io",
-            "resource": "telemetry",
-            "verb": "export",
-            "namespace": "observability",
-        },
+        "audiences": [{
+            "audience": "a",
+            "resource_attributes": {
+                "group": "telemetry.opentelemetry.io",
+                "resource": "telemetry",
+                "verb": "export",
+                "namespace": "observability",
+            },
+        }],
     }))
     .expect("valid RBAC config parses");
-    let ra = cfg
+    let ra = cfg.audiences[0]
         .resource_attributes
+        .as_ref()
         .expect("resource_attributes present");
     assert_eq!(ra.resource, "telemetry");
     assert_eq!(ra.verb, "export");
@@ -144,8 +186,7 @@ fn resource_attributes_requires_resource_and_verb() {
     // Missing verb (deserialization: required field absent).
     assert!(
         config_from_json(serde_json::json!({
-            "audiences": ["a"],
-            "resource_attributes": { "resource": "telemetry" },
+            "audiences": [{ "audience": "a", "resource_attributes": { "resource": "telemetry" } }],
         }))
         .is_err(),
         "missing verb must be rejected"
@@ -153,8 +194,7 @@ fn resource_attributes_requires_resource_and_verb() {
     // Missing resource.
     assert!(
         config_from_json(serde_json::json!({
-            "audiences": ["a"],
-            "resource_attributes": { "verb": "export" },
+            "audiences": [{ "audience": "a", "resource_attributes": { "verb": "export" } }],
         }))
         .is_err(),
         "missing resource must be rejected"
@@ -162,28 +202,32 @@ fn resource_attributes_requires_resource_and_verb() {
     // Blank verb (validation).
     assert!(
         config_from_json(serde_json::json!({
-            "audiences": ["a"],
-            "resource_attributes": { "resource": "telemetry", "verb": "  " },
+            "audiences": [{
+                "audience": "a",
+                "resource_attributes": { "resource": "telemetry", "verb": "  " },
+            }],
         }))
         .is_err(),
         "blank verb must be rejected"
     );
 }
 
-/// Scenario: parse a config that sets both `allowed_service_accounts` and
+/// Scenario: parse a binding that sets both `allowed_service_accounts` and
 /// `resource_attributes`.
 /// Guarantees: the two admission strategies are rejected together, so exactly
-/// one admission model is active.
+/// one admission model is active per binding.
 #[test]
 fn allow_list_and_rbac_are_mutually_exclusive() {
     assert!(
         config_from_json(serde_json::json!({
-            "audiences": ["a"],
-            "allowed_service_accounts": ["default/reader"],
-            "resource_attributes": { "resource": "telemetry", "verb": "export" },
+            "audiences": [{
+                "audience": "a",
+                "allowed_service_accounts": ["default/reader"],
+                "resource_attributes": { "resource": "telemetry", "verb": "export" },
+            }],
         }))
         .is_err(),
-        "allow-list and RBAC must be mutually exclusive"
+        "allow-list and RBAC must be mutually exclusive within a binding"
     );
 }
 
@@ -219,25 +263,35 @@ fn normalize_rejects_malformed() {
     assert!(normalize_service_account("system:serviceaccount:default").is_err());
 }
 
-/// Scenario: build the canonical allow-list set from mixed-shape entries, and
-/// from an empty list.
+/// Scenario: build the canonical allow-list set of a binding from mixed-shape
+/// entries, and from an empty list.
 /// Guarantees: the set contains the canonical usernames, and an empty list
-/// yields `None` (admit any authenticated account).
+/// yields `None` (admit any authenticated account for that audience).
 #[test]
 fn allowed_set_canonicalizes_and_empty_is_none() {
     let cfg = config_from_json(serde_json::json!({
-        "audiences": ["a"],
-        "allowed_service_accounts": ["default/reader", "system:serviceaccount:kube-system:writer"],
+        "audiences": [{
+            "audience": "a",
+            "allowed_service_accounts": [
+                "default/reader",
+                "system:serviceaccount:kube-system:writer",
+            ],
+        }],
     }))
     .expect("valid config");
-    let set = cfg
+    let set = cfg.audiences[0]
         .allowed_service_account_set()
         .expect("non-empty allow-list");
     assert!(set.contains("system:serviceaccount:default:reader"));
     assert!(set.contains("system:serviceaccount:kube-system:writer"));
 
-    let cfg_empty = config_from_json(serde_json::json!({ "audiences": ["a"] })).unwrap();
-    assert!(cfg_empty.allowed_service_account_set().is_none());
+    let cfg_empty =
+        config_from_json(serde_json::json!({ "audiences": [{ "audience": "a" }] })).unwrap();
+    assert!(
+        cfg_empty.audiences[0]
+            .allowed_service_account_set()
+            .is_none()
+    );
 }
 
 // ── Factory registration tests ─────────────────────────────
@@ -267,7 +321,7 @@ fn factory_is_registered_with_capability() {
 /// required audiences.
 #[test]
 fn validate_config_hook_accepts_valid_and_rejects_invalid() {
-    assert!(validate_config(&serde_json::json!({ "audiences": ["svc"] })).is_ok());
+    assert!(validate_config(&serde_json::json!({ "audiences": [{ "audience": "svc" }] })).is_ok());
     assert!(validate_config(&serde_json::json!({})).is_err());
 }
 
@@ -275,24 +329,31 @@ fn validate_config_hook_accepts_valid_and_rejects_invalid() {
 
 // ── Admission tests (Core) ─────────────────────────────────
 
-fn make_core(allowed: Option<HashSet<String>>) -> Core {
+/// Builds a single-binding core for audience `my-service` with an optional
+/// allow-list.
+fn make_core(allowed: Option<Vec<&str>>) -> Core {
+    let allowed_service_accounts = allowed
+        .map(|v| v.into_iter().map(String::from).collect())
+        .unwrap_or_default();
     Core::new(
         "test-authorizer",
-        vec!["my-service".to_string()],
-        allowed,
-        None,
+        vec![AudienceConfig {
+            audience: "my-service".to_string(),
+            allowed_service_accounts,
+            resource_attributes: None,
+        }],
     )
 }
 
 /// Scenario: admit an authenticated identity when no allow-list is configured.
 /// Guarantees: the request is allowed and the returned identity carries the
-/// authenticated subject and the audience.
+/// authenticated subject and the matched audience.
 #[test]
 fn admit_without_allow_list_allows_any_authenticated() {
     let core = make_core(None);
     let decision = core.admit_for_test(
         Some("system:serviceaccount:default:my-sa".to_string()),
-        vec!["my-service".to_string()],
+        "my-service",
     );
     assert!(decision.is_allowed());
     let identity = decision.identity().expect("allow carries identity");
@@ -301,19 +362,80 @@ fn admit_without_allow_list_allows_any_authenticated() {
         Some("system:serviceaccount:default:my-sa")
     );
     assert_eq!(identity.audience(), Some("my-service"));
+    // The identity is tagged with the scheme and a best-effort principal, and
+    // the SA username is parsed into namespace / serviceaccount claims.
+    assert_eq!(identity.scheme(), Some("k8s_sat"));
+    assert_eq!(
+        identity.principal(),
+        Some("system:serviceaccount:default:my-sa")
+    );
+    assert_eq!(identity.claim_str("k8s.namespace"), Some("default"));
+    assert_eq!(identity.claim_str("k8s.serviceaccount"), Some("my-sa"));
+}
+
+/// Scenario: admit a fully-populated authenticated user (username, uid, groups,
+/// extra) and inspect the emitted identity.
+/// Guarantees: every verified `TokenReview` attribute is surfaced as a claim a
+/// downstream resolver can match -- `sub`/`principal`, `aud`, parsed
+/// `k8s.namespace`/`k8s.serviceaccount`, `uid`, multi-valued `groups`, and
+/// namespaced `extra.<key>` entries.
+#[test]
+fn allow_emits_full_verified_claims() {
+    use super::reviewer::AuthenticatedUser;
+    use std::collections::BTreeMap;
+
+    let core = make_core(None);
+    let mut extra = BTreeMap::new();
+    let _ = extra.insert(
+        "authentication.kubernetes.io/pod-name".to_string(),
+        vec!["sender-abc".to_string()],
+    );
+    let user = AuthenticatedUser {
+        username: Some("system:serviceaccount:team-a:sender".to_string()),
+        uid: Some("uid-123".to_string()),
+        groups: vec![
+            "system:serviceaccounts".to_string(),
+            "system:serviceaccounts:team-a".to_string(),
+        ],
+        extra,
+        audiences: vec!["my-service".to_string()],
+    };
+
+    let decision = core.allow_for_test(&user, "my-service");
+    let identity = decision.identity().expect("allow carries identity");
+
+    assert_eq!(identity.scheme(), Some("k8s_sat"));
+    assert_eq!(
+        identity.principal(),
+        Some("system:serviceaccount:team-a:sender")
+    );
+    assert_eq!(
+        identity.subject(),
+        Some("system:serviceaccount:team-a:sender")
+    );
+    assert_eq!(identity.audience(), Some("my-service"));
+    assert_eq!(identity.claim_str("k8s.namespace"), Some("team-a"));
+    assert_eq!(identity.claim_str("k8s.serviceaccount"), Some("sender"));
+    assert_eq!(identity.claim_str("uid"), Some("uid-123"));
+
+    let groups = identity.claim("groups").expect("groups claim present");
+    assert!(groups.contains("system:serviceaccounts:team-a"));
+    assert_eq!(groups.as_slice().len(), 2);
+
+    let pod = identity
+        .claim("extra.authentication.kubernetes.io/pod-name")
+        .expect("extra claim present");
+    assert!(pod.contains("sender-abc"));
 }
 
 /// Scenario: admit an identity that is present in the configured allow-list.
 /// Guarantees: the matching service account is allowed.
 #[test]
 fn admit_allows_service_account_in_allow_list() {
-    let allowed: HashSet<String> = ["system:serviceaccount:default:my-sa".to_string()]
-        .into_iter()
-        .collect();
-    let core = make_core(Some(allowed));
+    let core = make_core(Some(vec!["system:serviceaccount:default:my-sa"]));
     let decision = core.admit_for_test(
         Some("system:serviceaccount:default:my-sa".to_string()),
-        vec!["my-service".to_string()],
+        "my-service",
     );
     assert!(decision.is_allowed());
 }
@@ -324,14 +446,11 @@ fn admit_allows_service_account_in_allow_list() {
 /// successful authentication).
 #[test]
 fn admit_denies_service_account_absent_from_allow_list() {
-    let allowed: HashSet<String> = ["system:serviceaccount:default:allowed".to_string()]
-        .into_iter()
-        .collect();
-    let core = make_core(Some(allowed));
+    let core = make_core(Some(vec!["system:serviceaccount:default:allowed"]));
 
     let denied = core.admit_for_test(
         Some("system:serviceaccount:default:other".to_string()),
-        vec!["my-service".to_string()],
+        "my-service",
     );
     assert!(!denied.is_allowed());
     assert_eq!(
@@ -342,8 +461,56 @@ fn admit_denies_service_account_absent_from_allow_list() {
         )
     );
 
-    let no_user = core.admit_for_test(None, vec!["my-service".to_string()]);
+    let no_user = core.admit_for_test(None, "my-service");
     assert!(!no_user.is_allowed());
+}
+
+/// Scenario: admit against an audience that has no configured binding.
+/// Guarantees: it is denied with `NotPermitted`, so a token authenticated for an
+/// unbound audience is never admitted.
+#[test]
+fn admit_denies_unbound_audience() {
+    let core = make_core(None);
+    let decision = core.admit_for_test(
+        Some("system:serviceaccount:default:my-sa".to_string()),
+        "some-other-audience",
+    );
+    assert!(!decision.is_allowed());
+}
+
+/// Scenario: two tenants, each binding its own audience to its own allow-list; a
+/// service account allowed for tenant A is checked against tenant B's audience.
+/// Guarantees: admission keys off the matched audience's binding, so tenant A's
+/// SA is denied under tenant B's audience -- no cross-tenant admission.
+#[test]
+fn admit_is_scoped_per_audience_binding() {
+    let core = Core::new(
+        "test-authorizer",
+        vec![
+            AudienceConfig {
+                audience: "aud-tenant-a".to_string(),
+                allowed_service_accounts: vec!["ns-a:sa-a".to_string()],
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: "aud-tenant-b".to_string(),
+                allowed_service_accounts: vec!["ns-b:sa-b".to_string()],
+                resource_attributes: None,
+            },
+        ],
+    );
+
+    let sa_a = "system:serviceaccount:ns-a:sa-a".to_string();
+    // sa-a is admitted for its own tenant's audience...
+    assert!(
+        core.admit_for_test(Some(sa_a.clone()), "aud-tenant-a")
+            .is_allowed()
+    );
+    // ...but denied when presented for tenant B's audience.
+    assert!(
+        !core.admit_for_test(Some(sa_a), "aud-tenant-b").is_allowed(),
+        "a tenant's SA must not be admitted through another tenant's audience"
+    );
 }
 
 /// Scenario: authorize an empty credential through the shared variant.
@@ -353,9 +520,11 @@ fn admit_denies_service_account_absent_from_allow_list() {
 async fn authorize_empty_credential_is_missing_shared() {
     let ext = SharedK8sSatTokenAuthorizer::new(
         "test-authorizer",
-        vec!["my-service".to_string()],
-        None,
-        None,
+        vec![AudienceConfig {
+            audience: "my-service".to_string(),
+            allowed_service_accounts: Vec::new(),
+            resource_attributes: None,
+        }],
         Duration::from_secs(300),
         1024,
     );
@@ -374,9 +543,11 @@ async fn authorize_empty_credential_is_missing_shared() {
 async fn authorize_empty_credential_is_missing_local() {
     let ext = LocalK8sSatTokenAuthorizer::new(
         "test-authorizer",
-        vec!["my-service".to_string()],
-        None,
-        None,
+        vec![AudienceConfig {
+            audience: "my-service".to_string(),
+            allowed_service_accounts: Vec::new(),
+            resource_attributes: None,
+        }],
         Duration::from_secs(300),
         1024,
     );
@@ -398,7 +569,7 @@ fn cache_returns_fresh_and_drops_expired() {
     let mut cache = DecisionCache::new(Duration::from_secs(300), 1024);
     let now = Instant::now();
     let decision = AuthzDecision::allow_anonymous();
-    cache.insert("tok".to_string(), decision.clone(), now);
+    cache.insert("tok", decision.clone(), now);
 
     assert_eq!(cache.get("tok", now), Some(decision));
     // Just past the 300s TTL the entry is gone.
@@ -414,7 +585,7 @@ fn cache_respects_max_entries() {
     let mut cache = DecisionCache::new(Duration::from_secs(300), 2);
     let now = Instant::now();
     for i in 0..10 {
-        cache.insert(format!("tok-{i}"), AuthzDecision::allow_anonymous(), now);
+        cache.insert(&format!("tok-{i}"), AuthzDecision::allow_anonymous(), now);
     }
     assert!(
         cache.len() <= 2,
@@ -464,15 +635,25 @@ fn it_token() -> Option<String> {
         .filter(|t| !t.trim().is_empty())
 }
 
+/// Builds a single-binding config for the integration-test audience.
+fn it_bindings(
+    allowed: Vec<String>,
+    resource_attributes: Option<ResourceAttributesConfig>,
+) -> Vec<AudienceConfig> {
+    vec![AudienceConfig {
+        audience: it_audience(),
+        allowed_service_accounts: allowed,
+        resource_attributes,
+    }]
+}
+
 fn it_extension(
-    allowed: Option<HashSet<String>>,
+    allowed: Vec<String>,
     resource_attributes: Option<ResourceAttributesConfig>,
 ) -> SharedK8sSatTokenAuthorizer {
     SharedK8sSatTokenAuthorizer::new(
         "it-authorizer",
-        vec![it_audience()],
-        allowed,
-        resource_attributes,
+        it_bindings(allowed, resource_attributes),
         Duration::from_secs(300),
         1024,
     )
@@ -489,16 +670,30 @@ async fn it_valid_token_is_admitted_audience_only() {
         eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
         return;
     };
-    let ext = it_extension(None, None);
+    let ext = it_extension(vec![], None);
     let decision = ext
         .authorize(&BearerToken::without_expiry(token))
         .await
         .expect("TokenReview must reach a decision");
     assert!(decision.is_allowed(), "valid token must be admitted");
+    let identity = decision.identity().expect("allow carries identity");
     assert_eq!(
-        decision.identity().and_then(|i| i.subject()),
+        identity.subject(),
         Some(it_subject().as_str()),
         "identity subject must be the authenticated service account"
+    );
+    // The real TokenReview response is mapped into verified claims: scheme,
+    // parsed namespace/serviceaccount, and the group every SA belongs to.
+    assert_eq!(identity.scheme(), Some("k8s_sat"));
+    assert_eq!(
+        identity.claim_str("k8s.namespace"),
+        Some(it_namespace().as_str())
+    );
+    assert_eq!(identity.claim_str("k8s.serviceaccount"), Some("sat-tester"));
+    let groups = identity.claim("groups").expect("groups claim present");
+    assert!(
+        groups.contains("system:serviceaccounts"),
+        "every SA is a member of system:serviceaccounts, got {groups:?}"
     );
 }
 
@@ -515,9 +710,7 @@ async fn it_local_variant_admits_valid_token() {
     };
     let ext = LocalK8sSatTokenAuthorizer::new(
         "it-local-authorizer",
-        vec![it_audience()],
-        None,
-        None,
+        it_bindings(vec![], None),
         Duration::from_secs(300),
         1024,
     );
@@ -546,7 +739,7 @@ async fn it_bogus_token_is_denied_invalid() {
         eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
         return;
     }
-    let ext = it_extension(None, None);
+    let ext = it_extension(vec![], None);
     let decision = ext
         .authorize(&BearerToken::without_expiry("not.a.real.token".to_string()))
         .await
@@ -576,8 +769,7 @@ async fn it_allow_list_admits_and_denies() {
         return;
     };
 
-    let permitted: HashSet<String> = [it_subject()].into_iter().collect();
-    let ext = it_extension(Some(permitted), None);
+    let ext = it_extension(vec![it_subject()], None);
     assert!(
         ext.authorize(&BearerToken::without_expiry(token.clone()))
             .await
@@ -586,10 +778,10 @@ async fn it_allow_list_admits_and_denies() {
         "subject in the allow-list must be admitted"
     );
 
-    let other: HashSet<String> = ["system:serviceaccount:sat-authz-test:someone-else".to_string()]
-        .into_iter()
-        .collect();
-    let ext = it_extension(Some(other), None);
+    let ext = it_extension(
+        vec!["system:serviceaccount:sat-authz-test:someone-else".to_string()],
+        None,
+    );
     let decision = ext
         .authorize(&BearerToken::without_expiry(token))
         .await
@@ -622,7 +814,7 @@ async fn it_rbac_allows_permitted_and_denies_unpermitted() {
         name: None,
         subresource: None,
     };
-    let ext = it_extension(None, Some(permitted));
+    let ext = it_extension(vec![], Some(permitted));
     assert!(
         ext.authorize(&BearerToken::without_expiry(token.clone()))
             .await
@@ -640,7 +832,7 @@ async fn it_rbac_allows_permitted_and_denies_unpermitted() {
         name: None,
         subresource: None,
     };
-    let ext = it_extension(None, Some(unpermitted));
+    let ext = it_extension(vec![], Some(unpermitted));
     let decision = ext
         .authorize(&BearerToken::without_expiry(token))
         .await
@@ -648,5 +840,88 @@ async fn it_rbac_allows_permitted_and_denies_unpermitted() {
     assert!(
         !decision.is_allowed(),
         "RBAC must deny an unpermitted verb (delete pods)"
+    );
+}
+
+/// Scenario: two audience audiences against a live cluster; a token minted for
+/// audience A is presented while the service account is allow-listed only under
+/// a *different* audience B.
+/// Guarantees: admission keys off the audience `TokenReview` confirms (A), so the
+/// token is admitted when A's binding allows it and the returned identity carries
+/// audience A -- and it is denied when only B's binding lists the SA, proving one
+/// tenant's identity cannot be admitted through another tenant's audience.
+#[tokio::test]
+#[ignore = "requires a live Kubernetes cluster and K8S_SAT_TOKEN"]
+async fn it_multi_tenant_scopes_admission_to_matched_audience() {
+    let Some(token) = it_token() else {
+        eprintln!("skipping: set K8S_SAT_TOKEN to run this integration test");
+        return;
+    };
+    let subject = it_subject();
+    // A second audience the presented token is NOT valid for.
+    let other_audience = "https://other-tenant.sat-authz-test.example".to_string();
+
+    // Bind the token's audience (A) to an allow-list containing the SA, plus an
+    // unrelated binding (B). The token is admitted through A and the identity
+    // reports audience A.
+    let ext = SharedK8sSatTokenAuthorizer::new(
+        "it-multitenant",
+        vec![
+            AudienceConfig {
+                audience: it_audience(),
+                allowed_service_accounts: vec![subject.clone()],
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: other_audience.clone(),
+                allowed_service_accounts: Vec::new(),
+                resource_attributes: None,
+            },
+        ],
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token.clone()))
+        .await
+        .expect("decision");
+    assert!(
+        decision.is_allowed(),
+        "token must be admitted under its own audience"
+    );
+    assert_eq!(
+        decision.identity().and_then(|i| i.audience()),
+        Some(it_audience().as_str()),
+        "identity must carry the matched (tenant) audience"
+    );
+
+    // Now allow-list the SA only under audience B; the token (valid only for A)
+    // must be denied, since admission uses A's binding, not B's.
+    let ext = SharedK8sSatTokenAuthorizer::new(
+        "it-multitenant",
+        vec![
+            AudienceConfig {
+                audience: it_audience(),
+                allowed_service_accounts: vec![
+                    "system:serviceaccount:sat-authz-test:someone-else".to_string(),
+                ],
+                resource_attributes: None,
+            },
+            AudienceConfig {
+                audience: other_audience,
+                allowed_service_accounts: vec![subject],
+                resource_attributes: None,
+            },
+        ],
+        Duration::from_secs(300),
+        1024,
+    );
+    let decision = ext
+        .authorize(&BearerToken::without_expiry(token))
+        .await
+        .expect("decision");
+    assert!(
+        !decision.is_allowed(),
+        "a SA allow-listed only under another tenant's audience must not be admitted"
     );
 }
