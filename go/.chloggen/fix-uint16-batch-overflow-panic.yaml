@@ -19,7 +19,5 @@ issues: [1883]
 subtext: |
   The uint16 record-ID counters used by the metrics, logs, and traces producers
   previously wrapped past their maximum value, causing the delta ID builder to
-  panic with "value is less than previous value". These builders now return
-  ErrTooManyRecords ("OTel Arrow components do not currently support batch sizes
-  larger than 65535"), and the delta builders return errors rather than
-  panicking.
+  panic. These builders now return ErrTooManyRecords ("OTel Arrow components do 
+  not currently support batch sizes larger than 65535").
