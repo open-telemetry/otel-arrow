@@ -339,7 +339,7 @@ mod receiver_harness {
 
     use otap_df_channel::mpsc;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+    use otap_df_config::tenant::compiled::TenantTokenRegistry;
     use otap_df_engine::control::NackMsg;
     use otap_df_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, RuntimeCtrlMsgReceiver, runtime_ctrl_msg_channel,
@@ -377,13 +377,14 @@ mod receiver_harness {
 
     impl KafkaReceiverHarness {
         /// Starts the receiver with an explicit `cfg` (its `bootstrap.servers`
-        /// must already point at `cluster`). An optional `capture_policy` is
-        /// installed on the effect handler before start. Spawns onto the
+        /// must already point at `cluster`). An optional tenant token registry
+        /// is installed on the effect handler before start, standing in for the
+        /// engine-scoped registry the controller would inject. Spawns onto the
         /// current `LocalSet`.
-        pub(crate) fn start_with_capture(
+        pub(crate) fn start_with_tenant(
             _cluster: &KafkaTestCluster,
             cfg: KafkaReceiverConfig,
-            capture_policy: Option<HeaderCapturePolicy>,
+            tenant_registry: Option<Arc<TenantTokenRegistry>>,
         ) -> Self {
             let pipeline_ctx = test_pipeline_context();
             let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
@@ -410,7 +411,7 @@ mod receiver_harness {
                 pipeline_ctrl_msg_tx,
                 metrics_reporter,
             );
-            effect_handler.set_capture_policy(capture_policy);
+            effect_handler.set_tenant_registry(tenant_registry);
 
             let keep_alive =
                 KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
@@ -430,7 +431,7 @@ mod receiver_harness {
 
         /// Starts the receiver with an explicit `cfg` and no capture policy.
         pub(crate) fn start(cluster: &KafkaTestCluster, cfg: KafkaReceiverConfig) -> Self {
-            Self::start_with_capture(cluster, cfg, None)
+            Self::start_with_tenant(cluster, cfg, None)
         }
 
         /// Starts the receiver with a default OTLP-proto config for `topics`.

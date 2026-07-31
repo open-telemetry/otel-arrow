@@ -20,8 +20,7 @@ use bytes::Bytes;
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_config::validation::validate_typed_config;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -34,6 +33,7 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{Interests, ProducerEffectHandlerExtension, ReceiverFactory};
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::{Context, OtapPdata};
+use otap_df_otap::tenant_resolve::resolve_pairs;
 use otap_df_pdata::Consumer as PdataConsumer;
 use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
@@ -304,14 +304,14 @@ impl KafkaReceiver {
     /// allows the caller to track the offset even when decoding fails (poison
     /// pill handling).
     ///
-    /// When a [`HeaderCapturePolicy`] is provided, matching Kafka message
-    /// headers are captured into [`TransportHeaders`] and attached to the
-    /// returned [`OtapPdata`] context. This is independent of the
-    /// `resource_attrs_from_headers` config which injects headers into resource attributes.
+    /// Message headers are resolved against the engine's tenant tokens and
+    /// attached to the returned [`OtapPdata`] context. This is independent of
+    /// the `resource_attrs_from_headers` config, which injects headers into
+    /// resource attributes.
     fn process_kafka(
         &mut self,
         kafka_message: BorrowedMessage<'_>,
-        capture_policy: Option<&HeaderCapturePolicy>,
+        tenant_registry: Option<&TenantTokenRegistry>,
     ) -> Result<OtapPdata, DecodeError> {
         let topic = kafka_message.topic();
 
@@ -397,7 +397,7 @@ impl KafkaReceiver {
             ))
         }?;
 
-        capture_transport_headers(&kafka_message, capture_policy, &mut pdata);
+        resolve_tenant_context(&kafka_message, tenant_registry, &mut pdata);
 
         Ok(pdata)
     }
@@ -647,9 +647,9 @@ impl KafkaReceiver {
         let manual_commit = !self.config.is_auto_commit();
         let idempotent = manual_commit && self.config.is_idempotent();
 
-        // Retrieve the capture policy (if configured) for extracting Kafka
-        // headers into the OtapPdata context as TransportHeaders.
-        let capture_policy = effect_handler.capture_policy();
+        // The engine's compiled tenant tokens, used to resolve each message's
+        // headers into the OtapPdata context.
+        let tenant_registry = effect_handler.tenant_registry().map(Arc::as_ref);
 
         // Safety-net timer: periodically commit offsets even if no acks
         // arrive for a while. Only started when manual commit is active
@@ -831,7 +831,7 @@ impl KafkaReceiver {
                                 continue;
                             }
 
-                            match self.process_kafka(data, capture_policy) {
+                            match self.process_kafka(data, tenant_registry) {
                                 Ok(mut otap_data) => {
                                     if manual_commit {
                                         // Stamp the record with this partition's
@@ -1125,31 +1125,24 @@ fn decode_with_extractions(
     decode(data, message_format)
 }
 
-/// Apply the capture policy (if configured) to extract Kafka message headers
-/// into [`TransportHeaders`] on the [`OtapPdata`] context.
+/// Resolve a Kafka message's headers into the tenant context on [`OtapPdata`].
 ///
-/// This is independent of the `resource_attrs_from_headers` mechanism which injects
-/// headers into resource attributes.
-fn capture_transport_headers(
+/// A topic hop is a transport boundary like any other, so the consuming
+/// pipeline resolves headers with the same registry the producing pipeline
+/// emitted them under. This is independent of the
+/// `resource_attrs_from_headers` mechanism, which injects headers into
+/// resource attributes.
+fn resolve_tenant_context(
     kafka_message: &BorrowedMessage<'_>,
-    capture_policy: Option<&HeaderCapturePolicy>,
+    tenant_registry: Option<&TenantTokenRegistry>,
     pdata: &mut OtapPdata,
 ) {
-    if let Some(policy) = capture_policy {
-        if let Some(headers) = kafka_message.headers() {
-            let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
-            let mut transport_headers = TransportHeaders::new();
-            let stats = policy.capture_from_pairs(pairs, &mut transport_headers);
-            if let Some(stats) = stats {
-                otel_error!(
-                    "kafka.capture_policy.limits_exceeded",
-                    stats = %stats,
-                );
-            }
-            if !transport_headers.is_empty() {
-                pdata.set_transport_headers(transport_headers);
-            }
-        }
+    let (Some(registry), Some(headers)) = (tenant_registry, kafka_message.headers()) else {
+        return;
+    };
+    let pairs = headers.iter().filter_map(|h| h.value.map(|v| (h.key, v)));
+    if let Some(words) = resolve_pairs(registry, pairs, None) {
+        pdata.set_tenant(words);
     }
 }
 
@@ -1215,7 +1208,6 @@ mod tests {
     use crate::common::kafka::test::producer::SendRecord;
     use crate::common::kafka::test::wait::poll_until;
     use crate::common::kafka::test::with_cluster;
-    use otap_df_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
     use otap_df_engine::context::ControllerContext;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::Producer;
@@ -2798,26 +2790,8 @@ mod tests {
                     .await
                     .expect("Failed to send message");
 
-                // Set up a capture policy that captures X-Tenant-Id and X-Request-Id
-                // but not X-Unrelated.
-                let capture_policy = HeaderCapturePolicy::new(
-                    CaptureDefaults::default(),
-                    vec![
-                        CaptureRule {
-                            match_names: vec!["X-Tenant-Id".to_string()],
-                            store_as: Some("tenant_id".to_string()),
-                            sensitive: false,
-                            value_kind: None,
-                        },
-                        CaptureRule {
-                            match_names: vec!["X-Request-Id".to_string()],
-                            store_as: None, // defaults to lowercased wire name
-                            sensitive: false,
-                            value_kind: None,
-                        },
-                    ],
-                );
-
+                // The registry declares X-Tenant-Id and X-Request-Id, but not
+                // X-Unrelated.
                 let cfg = auto_config(
                     cluster.bootstrap_servers(),
                     &[TOPIC],
@@ -2827,49 +2801,22 @@ mod tests {
                     HashMap::new(),
                 );
                 let mut receiver =
-                    KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+                    KafkaReceiverHarness::start_with_tenant(&cluster, cfg, Some(tenant_registry()));
 
                 let pdata = receiver.recv_pdata().await;
 
-                // Verify transport headers were captured.
-                let transport_headers = pdata
-                    .transport_headers()
-                    .expect("transport_headers should be set");
-
-                // Two headers should be captured (X-Tenant-Id and X-Request-Id).
                 assert_eq!(
-                    transport_headers.len(),
-                    2,
-                    "expected 2 captured headers, got {}",
-                    transport_headers.len()
-                );
-
-                // Check X-Tenant-Id was stored as "tenant_id".
-                let tenant_headers: Vec<_> = transport_headers.find_by_name("tenant_id").collect();
-                assert_eq!(tenant_headers.len(), 1, "expected one tenant_id header");
-                assert_eq!(
-                    tenant_headers[0].value_as_str(),
-                    Some("acme-corp"),
-                    "tenant_id value mismatch"
+                    tenant_value(&pdata, "tenant_id").as_deref(),
+                    Some(b"acme-corp".as_slice())
                 );
                 assert_eq!(
-                    tenant_headers[0].wire_name, "X-Tenant-Id",
-                    "wire_name should be preserved"
+                    tenant_value(&pdata, "x-request-id").as_deref(),
+                    Some(b"req-12345".as_slice())
                 );
 
-                // Check X-Request-Id was stored as "x-request-id" (lowercased).
-                let request_headers: Vec<_> =
-                    transport_headers.find_by_name("x-request-id").collect();
-                assert_eq!(request_headers.len(), 1, "expected one x-request-id header");
-                assert_eq!(
-                    request_headers[0].value_as_str(),
-                    Some("req-12345"),
-                    "x-request-id value mismatch"
-                );
-
-                // X-Unrelated should NOT be captured (not in the policy).
-                let unrelated: Vec<_> = transport_headers.find_by_name("x-unrelated").collect();
-                assert!(unrelated.is_empty(), "X-Unrelated should not be captured");
+                // An undeclared header has no key to be resolved into, so it
+                // cannot travel.
+                assert!(tenant_registry().key_id("x-unrelated").is_none());
 
                 receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
@@ -2878,12 +2825,49 @@ mod tests {
         .await;
     }
 
+    /// A registry declaring the two keys these tests expect a Kafka message to
+    /// carry, as an engine's `tenant_tokens` block would.
+    fn tenant_registry() -> Arc<TenantTokenRegistry> {
+        use otap_df_config::tenant::compiled::TenantTokenRegistryBuilder;
+        use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
+
+        let mut tokens = TenantTokens::default();
+        for (header, key) in [
+            ("X-Tenant-Id", "tenant_id"),
+            ("X-Request-Id", "x-request-id"),
+        ] {
+            let _ = tokens.insert(
+                key.to_owned(),
+                TenantTokenSpec {
+                    extractors: vec![Extractor::TransportHeader {
+                        key: key.to_owned(),
+                        transport_header: header.to_owned(),
+                        retain: true,
+                        bag: false,
+                    }],
+                },
+            );
+        }
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        Arc::new(builder.build(1).expect("layout fits"))
+    }
+
+    /// Read a retained tenant value out of a received pdata.
+    fn tenant_value(pdata: &OtapPdata, key: &str) -> Option<Vec<u8>> {
+        let registry = tenant_registry();
+        let view = pdata.tenant_view()?;
+        let key = registry.key_id(key)?;
+        registry.retained_value(&view, key).map(<[u8]>::to_vec)
+    }
+
     /// Scenario: a record carries a Kafka header but the receiver is started
-    /// without any capture policy.
-    /// Guarantees: transport headers are left unset on the OtapPdata context
-    /// (existing behavior is preserved when capture is not configured).
+    /// without any tenant token registry.
+    /// Guarantees: no tenant context is attached to the OtapPdata, so a
+    /// pipeline that declares no tokens pays no per-message cost and carries
+    /// no metadata it was not asked to carry.
     #[tokio::test]
-    async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
+    async fn test_kafka_receiver_no_registry_no_tenant_context() {
         const TOPIC: &str = "test-no-capture-policy";
         with_cluster(
             KafkaTestCluster::builder().topic(TOPIC),
@@ -2919,8 +2903,8 @@ mod tests {
 
                 // Transport headers should NOT be set when no capture policy is configured.
                 assert!(
-                    pdata.transport_headers().is_none(),
-                    "transport_headers should be None when no capture policy is configured"
+                    pdata.tenant_view().is_none(),
+                    "tenant context should be unset when no registry is configured"
                 );
 
                 receiver.shutdown(Duration::from_secs(5));
@@ -2969,15 +2953,6 @@ mod tests {
                 );
 
                 // Configure capture policy: X-Tenant-Id -> transport header "tenant_id"
-                let capture_policy = HeaderCapturePolicy::new(
-                    CaptureDefaults::default(),
-                    vec![CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
-                        sensitive: false,
-                        value_kind: None,
-                    }],
-                );
 
                 let cfg = auto_config(
                     cluster.bootstrap_servers(),
@@ -2988,17 +2963,15 @@ mod tests {
                     resource_attrs_from_headers,
                 );
                 let mut receiver =
-                    KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+                    KafkaReceiverHarness::start_with_tenant(&cluster, cfg, Some(tenant_registry()));
 
                 let mut pdata = receiver.recv_pdata().await;
 
-                // 1. Verify transport headers were captured (capture policy).
-                let transport_headers = pdata
-                    .transport_headers()
-                    .expect("transport_headers should be set");
-                let tenant_headers: Vec<_> = transport_headers.find_by_name("tenant_id").collect();
-                assert_eq!(tenant_headers.len(), 1);
-                assert_eq!(tenant_headers[0].value_as_str(), Some("acme-corp"));
+                // 1. Verify the tenant context resolved.
+                assert_eq!(
+                    tenant_value(&pdata, "tenant_id").as_deref(),
+                    Some(b"acme-corp".as_slice())
+                );
 
                 // 2. Verify resource attributes were injected (resource_attrs_from_headers).
                 let proto: OtlpProtoBytes = pdata
@@ -3062,16 +3035,6 @@ mod tests {
                     .await
                     .expect("Failed to send message");
 
-                let capture_policy = HeaderCapturePolicy::new(
-                    CaptureDefaults::default(),
-                    vec![CaptureRule {
-                        match_names: vec!["X-Tenant-Id".to_string()],
-                        store_as: Some("tenant_id".to_string()),
-                        sensitive: false,
-                        value_kind: None,
-                    }],
-                );
-
                 let cfg = auto_config(
                     cluster.bootstrap_servers(),
                     &[TOPIC],
@@ -3081,25 +3044,18 @@ mod tests {
                     HashMap::new(),
                 );
                 let mut receiver =
-                    KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+                    KafkaReceiverHarness::start_with_tenant(&cluster, cfg, Some(tenant_registry()));
 
                 let pdata = receiver.recv_pdata().await;
 
-                // Verify transport headers were captured for OTAP format.
-                let transport_headers = pdata
-                    .transport_headers()
-                    .expect("transport_headers should be set for OTAP messages");
-                let tenant_headers: Vec<_> = transport_headers.find_by_name("tenant_id").collect();
-                assert_eq!(tenant_headers.len(), 1);
-                assert_eq!(tenant_headers[0].value_as_str(), Some("acme-corp"));
-
-                // The MessageFormat header should NOT be captured (not in policy).
-                let format_headers: Vec<_> =
-                    transport_headers.find_by_name("messageformat").collect();
-                assert!(
-                    format_headers.is_empty(),
-                    "MessageFormat header should not be captured"
+                // Verify the tenant context resolved for OTAP format too.
+                assert_eq!(
+                    tenant_value(&pdata, "tenant_id").as_deref(),
+                    Some(b"acme-corp".as_slice())
                 );
+
+                // MessageFormat is not a declared key, so it cannot travel.
+                assert!(tenant_registry().key_id("messageformat").is_none());
 
                 receiver.shutdown(Duration::from_secs(5));
                 receiver.await_stopped().await;
