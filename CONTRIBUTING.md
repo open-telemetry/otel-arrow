@@ -101,6 +101,11 @@ appropriate directory. Copy the `TEMPLATE.yaml` in the appropriate
 `arrow-encoder-fix-null-handling.yaml`) and fill in the fields
 (`change_type`, `component`, `note`, `issues`).
 
+Changelog eligibility currently tracks user-facing behavior, not API
+compatibility. The project does not publish crates or make an API stability
+promise, so an API change alone is not a `breaking` change. Choose the entry
+type that describes the user-facing impact instead.
+
 You can validate or preview entries locally:
 
 ```bash
