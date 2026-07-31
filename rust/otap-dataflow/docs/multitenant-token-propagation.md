@@ -234,9 +234,9 @@ Allocations and bytes per request, base = baseline, tok = tenant token:
 
 | phase | matched | base allocs | tok allocs | base bytes | tok bytes |
 | --- | --- | --- | --- | --- | --- |
-| capture | 1 | 5 | 1 | 388 | 56 |
-| capture | 2 | 8 | 1 | 421 | 72 |
-| capture | 4 | 14 | 1 | 546 | 160 |
+| capture | 1 | 5 | 1 | 388 | 64 |
+| capture | 2 | 8 | 1 | 421 | 80 |
+| capture | 4 | 14 | 1 | 546 | 168 |
 | carry | any | 0 | 0 | 0 | 0 |
 | propagate | any | 0 | 0 | 0 | 0 |
 | attributes | any | n/a | 0 | n/a | 0 |
@@ -250,39 +250,80 @@ Carry and propagation were already free: `TransportHeaders` is an
 borrowed. The win is per request, not per hop, and claiming otherwise would
 overstate it.
 
-Wall time, same run, mean nanoseconds:
+Wall time, same run, mean nanoseconds. The measurements below declare a
+router's worth of conditions -- eight tenants, two projects each -- because a
+registry with no conditions leaves every symbol dictionary empty and never
+exercises the probe at all:
 
 | phase | matched | baseline | tenant |
 | --- | --- | --- | --- |
-| capture / resolve | 1 | 126 | 77 |
-| capture / resolve | 2 | 229 | 115 |
-| capture / resolve | 4 | 485 | 149 |
-| carry (per hop) | any | 10 | 13 |
-| propagate | 4 | 14 | 16 |
-| end to end | 1 | 157 | 104 |
-| end to end | 2 | 244 | 158 |
-| end to end | 4 | 552 | 207 |
+| capture / resolve | 1 | 125 | 113 |
+| capture / resolve | 2 | 200 | 148 |
+| capture / resolve | 4 | 486 | 203 |
+| carry (per hop) | any | 10 | 18 |
+| propagate | 4 | 13 | 15 |
+| end to end | 1 | 185 | 109 |
+| end to end | 2 | 246 | 149 |
+| end to end | 4 | 581 | 194 |
+| match | any | n/a | 9 to 11 |
 | attributes | 4 | n/a | 5 |
 
-Resolution beats capture at every width, by 39% at one key and 69% at four,
-and end to end is 34% to 63% faster. Two things pay for that. Registered
+Resolution beats capture at every width, by 10% at one key and 58% at four,
+and end to end is 39% to 67% faster. Three things pay for that. Registered
 header names are screened by a one-word Bloom filter over length and first
 byte before anything is hashed, so the four headers a pipeline does not want
 -- content type, user agent, encoding, timeouts -- are rejected without a map
-lookup. And since gRPC and HTTP/2 already require lowercase names, case
-folding is skipped unless a name actually needs it.
+lookup. Since gRPC and HTTP/2 already require lowercase names, case folding is
+skipped unless a name actually needs it. And a key no condition tests by value
+skips the dictionary lookup entirely, since that lookup could only miss.
 
-Two costs went **up**, and both are worth stating. A hop is 3ns dearer,
-because `Arc<[u64]>` is a fat pointer where `Arc<Vec<_>>` was thin; against
-roughly 300ns saved per request at four keys, that pays for itself until
-about a hundred hops. Reading one value is about 2ns dearer, because a slot
-addresses an encoded `AnyValue` and the read skips a tag and two varints
-rather than indexing a struct field.
+`match` is flat in the number of keys and has no baseline row, because the
+baseline has no routing to compare against. Flatness is the design claim: one
+lookup per bound pair, independent of how many conditions were declared.
+
+Two costs went **up**. A hop is dearer, because `Arc<[u64]>` is a wide
+pointer -- the element count travels in the pointer -- where `Arc<Vec<_>>` was
+thin. Against roughly 380ns saved per request at four keys that pays for
+itself over any plausible pipeline depth, but the length is redundant with
+`n_slots` and `bag_len`, which word 0 already carries, so a thin-pointer
+representation would recover it. Reading one value is about 2ns dearer,
+because a slot addresses an encoded `AnyValue` and the read skips a tag and
+two varints rather than indexing a struct field.
 
 `attributes` has no baseline row because the baseline cannot do it: emitting
 the request's context as telemetry attributes would mean encoding a
 `KeyValue` per header. Here it is a borrow of an already formed repeated
 field, and the 5ns is the memcpy.
+
+#### Where the remaining time goes
+
+Wall time on a shared machine moves by more than the effects being measured,
+so these came from an ablation ladder -- the same binary with one stage
+stubbed out at a time, run interleaved, best of several rounds -- rather than
+from comparing runs. At four keys:
+
+| stage | cost |
+| --- | --- |
+| scratch reset | 12ns |
+| screening 8 header names | 47ns |
+| 4 header map lookups | 12ns |
+| 4 value copies into the arena | 7ns |
+| symbol resolution and packing | 25ns |
+| encoding the blob | 35ns |
+| the one allocation | 25ns |
+
+The allocation the design is built around is a quarter of the cost, which is
+the useful surprise: the remaining work is all shaping bytes, not obtaining
+memory. Two things were found and fixed here. Copying the blob into the word
+buffer eight bytes at a time cost more than the memcpy it replaced, because
+the trailing partial chunk made every iteration a variable-length call; one
+bulk copy removed 16% at four keys. And symbol resolution hashed every value
+even for keys with an empty dictionary.
+
+What is left, in the order worth attacking: screening 8 header names is the
+largest single line and is pure setup; each retained value is copied three
+times (into the arena, into the blob, then into the `Arc`) where two would
+do; and the wide pointer above.
 
 Limits: `MAX_TOKENS = 64`, `MAX_TOKEN_KEYS = 64`, `MAX_VALUE_BYTES = 65535`.
 

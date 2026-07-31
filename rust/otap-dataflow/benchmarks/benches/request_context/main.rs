@@ -34,7 +34,7 @@ use otap_df_config::tenant::compiled::{
     TenantTokenRegistry, TenantTokenRegistryBuilder, TenantView, TokenInputs, TokenScratch,
     attribute_field,
 };
-use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
+use otap_df_config::tenant::{Condition, Entry, Extractor, TenantTokenSpec, TenantTokens};
 use otap_df_config::transport_headers::TransportHeaders;
 use otap_df_config::transport_headers_policy::{
     CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationDefault,
@@ -165,7 +165,44 @@ fn registry(n_keys: usize, bag: bool) -> TenantTokenRegistry {
     let _ = tokens.insert("gateway".to_owned(), TenantTokenSpec { extractors });
     let mut builder = TenantTokenRegistryBuilder::new().with_bag_field(attribute_field::SCOPE);
     builder.add_tokens(&tokens).expect("registry builds");
+    builder
+        .declare_conditions(None, &conditions(n_keys))
+        .expect("conditions declare");
     builder.build(1).expect("layout fits")
+}
+
+/// The routes a topic router would declare over these tokens.
+///
+/// Without conditions every symbol dictionary is empty, so resolution never
+/// exercises the value-to-symbol lookup and the probe is never measured at
+/// all. Routing is on identity keys only: nobody routes on a request id or a
+/// traceparent, so the conditions stay at two keys however many are carried.
+fn conditions(n_keys: usize) -> Vec<Condition> {
+    const TENANTS: [&str; 8] = [
+        "tenant-a", "tenant-b", "tenant-c", "tenant-d", "tenant-e", "tenant-f", "tenant-g",
+        "tenant-h",
+    ];
+    const PROJECTS: [&str; 2] = ["proj-40f1c2", "proj-8b31de"];
+
+    let entry = |key: &str, value: &str| Entry {
+        key: key.to_owned(),
+        value: Some(value.to_owned()),
+    };
+    let mut out = Vec::new();
+    for tenant in TENANTS {
+        if n_keys >= 2 {
+            for project in PROJECTS {
+                out.push(Condition {
+                    entries: vec![entry("tenant_id", tenant), entry("project_id", project)],
+                });
+            }
+        } else {
+            out.push(Condition {
+                entries: vec![entry("tenant_id", tenant)],
+            });
+        }
+    }
+    out
 }
 
 /// The exporter side: the logical keys an exporter re-emits, paired with the
@@ -386,6 +423,35 @@ fn bench_tenant(c: &mut Criterion) {
     group.finish();
 }
 
+/// Evaluate a router's conditions against a resolved request.
+///
+/// This is the step the old design decided with an unverified hash lookup and
+/// the new one decides by exact symbol equality, so it is the one to watch.
+fn bench_tenant_match(c: &mut Criterion) {
+    let mut group = c.benchmark_group("request_context/tenant_match");
+    for n in MATCHED {
+        let reg = registry(n, false);
+        let routes = conditions(n);
+        let set = reg
+            .condition_set(None, &routes)
+            .expect("condition set builds");
+        let pairs = inbound();
+        let mut scratch = TokenScratch::new();
+        let words = reg
+            .resolve(
+                &mut scratch,
+                TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+            )
+            .expect("resolves");
+        let view = TenantView::new(&words);
+        assert!(set.first_match(&view).is_some(), "request should match");
+        let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
+            b.iter(|| black_box(set.first_match(black_box(&view))));
+        });
+    }
+    group.finish();
+}
+
 /// Report allocations per request for each phase.
 ///
 /// This is the number the representation change is meant to move, and it is
@@ -527,6 +593,7 @@ criterion_group!(
     bench_propagate,
     bench_end_to_end,
     bench_tenant,
+    bench_tenant_match,
     alloc_report,
 );
 criterion_main!(benches);

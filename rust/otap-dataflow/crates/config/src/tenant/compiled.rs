@@ -1019,11 +1019,13 @@ fn pack_words<'n>(
         out.push(lo | (hi << 32));
     }
 
-    for chunk in blob.chunks(8) {
-        let mut word = [0u8; 8];
-        word[..chunk.len()].copy_from_slice(chunk);
-        out.push(u64::from_le_bytes(word));
-    }
+    // One bulk copy into a zero-padded tail. Feeding the words eight bytes at
+    // a time costs more than the memcpy it replaces: the trailing partial
+    // chunk makes every iteration a variable-length copy, so the compiler
+    // cannot reduce any of them to a plain load.
+    let tail = out.len();
+    out.resize(tail + blob.len().div_ceil(8), 0);
+    bytemuck::cast_slice_mut::<u64, u8>(&mut out[tail..])[..blob.len()].copy_from_slice(blob);
 
     Arc::from(out.as_slice())
 }
@@ -1326,15 +1328,18 @@ impl TenantTokenRegistry {
             ..
         } = scratch;
         for (key, r) in values.iter().enumerate() {
-            symbols[key] = if r.present {
-                let start = r.off as usize;
-                let end = start + r.len as usize;
+            symbols[key] = if !r.present {
+                SYMBOL_ABSENT
+            } else if self.key_literals[key].is_empty() {
+                // No condition tests this key by value, so the lookup can only
+                // miss. Skipping it avoids hashing the value for keys that are
+                // carried but never matched on.
+                SYMBOL_UNKNOWN
+            } else {
                 self.key_literals[key]
-                    .get(&arena[start..end])
+                    .get(&arena[r.off as usize..(r.off + r.len) as usize])
                     .copied()
                     .unwrap_or(SYMBOL_UNKNOWN)
-            } else {
-                SYMBOL_ABSENT
             };
         }
 
@@ -1880,6 +1885,41 @@ mod tests {
             format!("{err:?}").contains("never declared"),
             "unexpected error: {err:?}"
         );
+    }
+
+    /// Scenario: a bagged key is packed into the request context and read back
+    /// through `attributes()`.
+    /// Guarantees: the bytes are a complete, correctly tagged OTLP repeated
+    /// `KeyValue` field for the destination the registry was built for, so a
+    /// consumer can copy them without inspecting or rewriting them.
+    #[test]
+    fn bagged_attributes_are_wire_exact() {
+        let extractors = vec![Extractor::TransportHeader {
+            key: "tenant_id".to_owned(),
+            transport_header: "x-tenant-id".to_owned(),
+            retain: false,
+            bag: true,
+        }];
+        let mut tokens = TenantTokens::default();
+        let _ = tokens.insert("gateway".to_owned(), TenantTokenSpec { extractors });
+        let mut builder = TenantTokenRegistryBuilder::new().with_bag_field(attribute_field::SCOPE);
+        builder.add_tokens(&tokens).expect("tokens compile");
+        let reg = builder.build(1).expect("layout fits");
+
+        let words = resolve(&reg, &[("x-tenant-id", b"tenant-a")]);
+        let view = TenantView::new(&words);
+
+        // ScopeAttributes: field 3, length-delimited.
+        let mut expected = vec![(3u8 << 3) | 2, 23];
+        // KeyValue.key: field 1, "tenant_id".
+        expected.extend_from_slice(&[0x0a, 9]);
+        expected.extend_from_slice(b"tenant_id");
+        // KeyValue.value: field 2, an AnyValue holding a string.
+        expected.extend_from_slice(&[0x12, 10, 0x0a, 8]);
+        expected.extend_from_slice(b"tenant-a");
+
+        assert_eq!(view.attributes(), expected.as_slice());
+        assert!(view.has_attributes());
     }
 
     /// Scenario: every declared value tuple is packed into the one-word
