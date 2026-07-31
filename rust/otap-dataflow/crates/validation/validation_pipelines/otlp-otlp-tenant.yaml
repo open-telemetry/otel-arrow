@@ -1,0 +1,24 @@
+# OTLP in, OTLP out, with the tenant context put back on the wire.
+#
+# A tenant token says nothing about the header name its retained value is
+# re-emitted under, so the exporter names it here. This one round-trips:
+# `tenant_id` goes back out as `x-tenant-id`, which is the header the next
+# hop's tenant tokens read it from.
+nodes:
+  receiver:
+    type: "receiver:otlp"
+    config:
+      protocols:
+        grpc:
+          listening_addr: 127.0.0.1:4317
+
+  exporter:
+    type: "exporter:otlp_grpc"
+    config:
+      grpc_endpoint: http://127.0.0.1:4318
+      tenant_headers:
+        - key: tenant_id
+          header: x-tenant-id
+connections:
+  - from: receiver
+    to: exporter

@@ -5,12 +5,13 @@
 //! system-under-validation outputs and records pass/fail metrics.
 
 use crate::ValidationInstructions;
+use crate::validation_types::tenant::TenantCapture;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::NodeId as NodeName;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::node::NodeUserConfig;
-use otap_df_config::transport_headers::TransportHeaders;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
 use otap_df_engine::context::PipelineContext;
@@ -87,10 +88,15 @@ pub struct ValidationExporter {
     validations: Vec<ValidationInstructions>,
     control_msgs: Vec<OtlpProtoMessage>,
     suv_msgs: Vec<(OtlpProtoMessage, Duration)>,
-    /// Transport headers extracted from each SUV message's pipeline context.
-    /// Stored separately from signal data since header validation is
-    /// independent of the OTLP payload.
-    suv_transport_headers: Vec<Option<TransportHeaders>>,
+    /// The packed tenant context carried by each SUV message. Stored
+    /// separately from signal data since tenant validation is independent of
+    /// the OTLP payload. Cloning one is an `Arc` bump, so capturing every
+    /// message costs nothing beyond the vector.
+    suv_tenant: Vec<Option<Arc<[u64]>>>,
+    /// The engine's compiled tenant tokens, taken from the effect handler at
+    /// start. Without it the packed words cannot be interpreted, because the
+    /// registry is what assigns each key its slot.
+    tenant_registry: Option<Arc<TenantTokenRegistry>>,
     metrics: MetricSet<ValidationExporterMetrics>,
     /// Duration to wait with no incoming messages before declaring the stream
     /// settled and performing the final validation.
@@ -133,7 +139,10 @@ impl ValidationExporter {
                 &self.control_msgs,
                 &suv_msgs,
                 &self.suv_msgs,
-                &self.suv_transport_headers,
+                &TenantCapture {
+                    registry: self.tenant_registry.as_ref(),
+                    contexts: &self.suv_tenant,
+                },
             );
         }
 
@@ -179,7 +188,8 @@ impl ValidationExporter {
             metrics,
             control_msgs: Vec::new(),
             suv_msgs: Vec::new(),
-            suv_transport_headers: Vec::new(),
+            suv_tenant: Vec::new(),
+            tenant_registry: None,
             idle_timeout: Duration::from_secs(config.idle_timeout_secs),
         })
     }
@@ -190,8 +200,9 @@ impl Exporter<OtapPdata> for ValidationExporter {
     async fn start(
         mut self: Box<Self>,
         mut msg_chan: ExporterInbox<OtapPdata>,
-        _effect_handler: EffectHandler<OtapPdata>,
+        effect_handler: EffectHandler<OtapPdata>,
     ) -> Result<TerminalState, EngineError> {
+        self.tenant_registry = effect_handler.tenant_registry().cloned();
         let mut time = Instant::now();
         let mut last_message_time = Instant::now();
         loop {
@@ -221,7 +232,7 @@ impl Exporter<OtapPdata> for ValidationExporter {
                     let time_elapsed = time.elapsed();
                     let (context, payload) = pdata.into_parts();
                     let source_node = context.source_node();
-                    let transport_headers = context.transport_headers().cloned();
+                    let tenant = context.tenant().cloned();
                     let msg = OtlpProtoBytes::try_from_with_default(payload)
                         .ok()
                         .and_then(|bytes| OtlpProtoMessage::try_from(bytes).ok());
@@ -230,14 +241,14 @@ impl Exporter<OtapPdata> for ValidationExporter {
                         if let Some(node_index) = source_node {
                             if node_index == self.suv_index {
                                 self.suv_msgs.push((msg, time_elapsed));
-                                self.suv_transport_headers.push(transport_headers);
+                                self.suv_tenant.push(tenant.clone());
                                 time = Instant::now();
                             } else if self.control_indices.contains(&node_index) {
                                 self.control_msgs.push(msg);
                             }
                         } else if self.control_indices.is_empty() {
                             self.suv_msgs.push((msg, time_elapsed));
-                            self.suv_transport_headers.push(transport_headers);
+                            self.suv_tenant.push(tenant.clone());
                             time = Instant::now();
                         } else {
                             otel_error!("validation.missing.source");

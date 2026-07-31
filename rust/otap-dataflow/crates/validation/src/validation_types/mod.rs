@@ -6,22 +6,21 @@
 pub mod attributes;
 mod batch;
 mod signal_dropped;
-pub mod transport_headers;
+pub mod tenant;
 
 use attributes::{
     AttributeDomain, KeyValue, validate_deny_keys, validate_no_duplicate_keys,
     validate_require_key_values, validate_require_keys,
 };
 use batch::{validate_batch_bytes, validate_batch_items};
-use otap_df_config::transport_headers::TransportHeaders;
 use otap_df_pdata::proto::OtlpProtoMessage;
 use otap_df_pdata::testing::equiv::validate_equivalent;
 use serde::{Deserialize, Serialize};
 use signal_dropped::validate_signal_drop;
 use std::time::Duration;
-use transport_headers::{
-    TransportHeaderKeyValue, validate_transport_header_deny_keys,
-    validate_transport_header_require_key_values, validate_transport_header_require_keys,
+use tenant::{
+    TenantCapture, TenantKeyValue, validate_tenant_deny_keys, validate_tenant_require_key_values,
+    validate_tenant_require_keys,
 };
 /// Supported validation instructions executed by the validation exporter.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -85,19 +84,19 @@ pub enum ValidationInstructions {
     },
     /// Ensure no duplicate attribute keys within all attribute lists.
     AttributeNoDuplicate,
-    /// Require specific transport header keys to be present on SUV messages.
-    TransportHeaderRequireKey {
-        /// Header keys (stored/logical names) that must be present.
+    /// Require specific tenant keys to hold a value on SUV messages.
+    TenantRequireKey {
+        /// Tenant key names, as `tenant_tokens` declares them.
         keys: Vec<String>,
     },
-    /// Require specific transport header key/value pairs on SUV messages.
-    TransportHeaderRequireKeyValue {
-        /// Key/value pairs that must be present (values compared as UTF-8 text).
-        pairs: Vec<TransportHeaderKeyValue>,
+    /// Require specific tenant key/value pairs on SUV messages.
+    TenantRequireKeyValue {
+        /// Key/value pairs that must be present (values compared exactly).
+        pairs: Vec<TenantKeyValue>,
     },
-    /// Forbid specific transport header keys on SUV messages.
-    TransportHeaderDeny {
-        /// Header keys (stored/logical names) that must NOT be present.
+    /// Forbid specific tenant keys from holding a value on SUV messages.
+    TenantDeny {
+        /// Tenant key names that must NOT hold a value.
         keys: Vec<String>,
     },
 }
@@ -109,7 +108,7 @@ impl ValidationInstructions {
         control: &[OtlpProtoMessage],
         suv_msgs: &[OtlpProtoMessage],
         suv_with_duration: &[(OtlpProtoMessage, Duration)],
-        transport_headers: &[Option<TransportHeaders>],
+        tenant: &TenantCapture<'_>,
     ) -> bool {
         match self {
             ValidationInstructions::Equivalence => validate_equivalent(control, suv_msgs),
@@ -137,15 +136,13 @@ impl ValidationInstructions {
                 validate_require_key_values(suv_msgs, domains, pairs)
             }
             ValidationInstructions::AttributeNoDuplicate => validate_no_duplicate_keys(suv_msgs),
-            ValidationInstructions::TransportHeaderRequireKey { keys } => {
-                validate_transport_header_require_keys(transport_headers, keys)
+            ValidationInstructions::TenantRequireKey { keys } => {
+                validate_tenant_require_keys(tenant, keys)
             }
-            ValidationInstructions::TransportHeaderRequireKeyValue { pairs } => {
-                validate_transport_header_require_key_values(transport_headers, pairs)
+            ValidationInstructions::TenantRequireKeyValue { pairs } => {
+                validate_tenant_require_key_values(tenant, pairs)
             }
-            ValidationInstructions::TransportHeaderDeny { keys } => {
-                validate_transport_header_deny_keys(transport_headers, keys)
-            }
+            ValidationInstructions::TenantDeny { keys } => validate_tenant_deny_keys(tenant, keys),
         }
     }
 }
@@ -153,8 +150,7 @@ impl ValidationInstructions {
 mod tests {
     use super::*;
     use crate::validation_types::attributes::{AnyValue, KeyValue};
-    use crate::validation_types::transport_headers::TransportHeaderKeyValue;
-    use otap_df_config::transport_headers::{TransportHeader, TransportHeaders};
+    use crate::validation_types::tenant::TenantKeyValue;
     use otap_df_pdata::proto::opentelemetry::common::v1::{
         AnyValue as ProtoAny, KeyValue as ProtoKV, any_value::Value as ProtoVal,
     };
@@ -183,15 +179,29 @@ mod tests {
             .collect()
     }
 
-    fn no_headers(count: usize) -> Vec<Option<TransportHeaders>> {
+    /// A capture with no tenant context at all, for the many instructions
+    /// that do not look at it.
+    fn no_tenant(count: usize) -> Vec<Option<std::sync::Arc<[u64]>>> {
         vec![None; count]
+    }
+
+    fn capture(contexts: &[Option<std::sync::Arc<[u64]>>]) -> TenantCapture<'_> {
+        TenantCapture {
+            registry: None,
+            contexts,
+        }
     }
 
     #[test]
     fn equivalence_true_on_matching() {
         let msgs = vec![logs_with_records(2)];
         let suv = with_duration(&msgs);
-        assert!(ValidationInstructions::Equivalence.validate(&msgs, &msgs, &suv, &no_headers(1)));
+        assert!(ValidationInstructions::Equivalence.validate(
+            &msgs,
+            &msgs,
+            &suv,
+            &capture(&no_tenant(1))
+        ));
     }
 
     #[test]
@@ -246,33 +256,33 @@ mod tests {
             &left,
             &right,
             &right_suv,
-            &no_headers(1)
+            &capture(&no_tenant(1))
         ));
     }
     #[test]
     fn batch_respects_bounds() {
         let msgs = vec![logs_with_records(3)];
         let suv = with_duration(&msgs);
-        let headers = no_headers(1);
+        let contexts = no_tenant(1);
         let instruction = ValidationInstructions::BatchItems {
             min_batch_size: Some(2),
             max_batch_size: Some(5),
             timeout: None,
         };
-        assert!(instruction.validate(&msgs, &msgs, &suv, &headers));
+        assert!(instruction.validate(&msgs, &msgs, &suv, &capture(&contexts)));
         let failing = ValidationInstructions::BatchItems {
             min_batch_size: Some(4),
             max_batch_size: Some(5),
             timeout: None,
         };
-        assert!(!failing.validate(&msgs, &msgs, &suv, &headers));
+        assert!(!failing.validate(&msgs, &msgs, &suv, &capture(&contexts)));
     }
 
     #[test]
     fn batch_bytes_respects_bounds() {
         let msgs = vec![logs_with_records(1)];
         let suv = with_duration(&msgs);
-        let headers = no_headers(1);
+        let contexts = no_tenant(1);
         let mut buf = Vec::new();
         // compute encoded size of the latest SUV message
         let latest = msgs.last().unwrap();
@@ -297,9 +307,9 @@ mod tests {
             timeout: None,
         };
 
-        assert!(pass.validate(&msgs, &msgs, &suv, &headers));
-        assert!(!fail_small.validate(&msgs, &msgs, &suv, &headers));
-        assert!(!fail_large.validate(&msgs, &msgs, &suv, &headers));
+        assert!(pass.validate(&msgs, &msgs, &suv, &capture(&contexts)));
+        assert!(!fail_small.validate(&msgs, &msgs, &suv, &capture(&contexts)));
+        assert!(!fail_large.validate(&msgs, &msgs, &suv, &capture(&contexts)));
     }
 
     #[test]
@@ -326,12 +336,12 @@ mod tests {
         let msg = OtlpProtoMessage::Logs(logs);
         let suv_msgs = vec![msg.clone()];
         let suv = vec![(msg, Duration::from_secs(0))];
-        let headers = no_headers(1);
+        let contexts = no_tenant(1);
         let check = ValidationInstructions::AttributeRequireKeyValue {
             domains: vec![AttributeDomain::Signal],
             pairs: vec![KeyValue::new("foo".into(), AnyValue::String("bar".into()))],
         };
-        assert!(check.validate(&[], &suv_msgs, &suv, &headers));
+        assert!(check.validate(&[], &suv_msgs, &suv, &capture(&contexts)));
     }
     #[test]
     fn attribute_deny_blocks_key() {
@@ -357,12 +367,12 @@ mod tests {
         let msg = OtlpProtoMessage::Logs(logs);
         let suv_msgs = vec![msg.clone()];
         let suv = vec![(msg, Duration::from_secs(0))];
-        let headers = no_headers(1);
+        let contexts = no_tenant(1);
         let check = ValidationInstructions::AttributeDeny {
             domains: vec![AttributeDomain::Signal],
             keys: vec!["deny".into()],
         };
-        assert!(!check.validate(&[], &suv_msgs, &suv, &headers));
+        assert!(!check.validate(&[], &suv_msgs, &suv, &capture(&contexts)));
     }
     #[test]
     fn attribute_no_duplicate_detects_duplicates() {
@@ -396,16 +406,16 @@ mod tests {
         let msg = OtlpProtoMessage::Logs(logs);
         let suv_msgs = vec![msg.clone()];
         let suv = vec![(msg, Duration::from_secs(0))];
-        let headers = no_headers(1);
+        let contexts = no_tenant(1);
         let check = ValidationInstructions::AttributeNoDuplicate;
-        assert!(!check.validate(&[], &suv_msgs, &suv, &headers));
+        assert!(!check.validate(&[], &suv_msgs, &suv, &capture(&contexts)));
     }
     #[test]
     fn signal_drop_with_ratio_bounds() {
         let before = vec![logs_with_records(10)];
         let after_msgs = vec![logs_with_records(4)];
         let after = with_duration(&after_msgs);
-        let headers = no_headers(1);
+        let contexts = no_tenant(1);
         // drop ratio = 0.6
         let pass = ValidationInstructions::SignalDrop {
             min_drop_ratio: Some(0.5),
@@ -419,39 +429,40 @@ mod tests {
             min_drop_ratio: None,
             max_drop_ratio: Some(0.4),
         };
-        assert!(pass.validate(&before, &after_msgs, &after, &headers));
-        assert!(!fail_min.validate(&before, &after_msgs, &after, &headers));
-        assert!(!fail_max.validate(&before, &after_msgs, &after, &headers));
+        assert!(pass.validate(&before, &after_msgs, &after, &capture(&contexts)));
+        assert!(!fail_min.validate(&before, &after_msgs, &after, &capture(&contexts)));
+        assert!(!fail_max.validate(&before, &after_msgs, &after, &capture(&contexts)));
     }
 
     #[test]
-    fn transport_header_require_key_serialization_check() {
-        let instruction = ValidationInstructions::TransportHeaderRequireKey {
-            keys: vec!["x-tenant-id".into()],
+    fn tenant_require_key_serialization_check() {
+        let instruction = ValidationInstructions::TenantRequireKey {
+            keys: vec!["tenant_id".into()],
         };
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");
         assert_eq!(back, instruction);
 
-        // Validate that both the original and round-tripped instruction
-        // produce identical results when executed.
-        let mut headers = TransportHeaders::default();
-        headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
-        let transport = vec![Some(headers)];
+        // Both the original and round-tripped instruction must execute the
+        // same way. With no registry the value cannot be read, so both must
+        // fail closed rather than one of them passing vacuously.
+        let contexts = no_tenant(1);
         let control: Vec<OtlpProtoMessage> = vec![];
         let suv_msgs: Vec<OtlpProtoMessage> = vec![];
         let suv_with_dur: Vec<(OtlpProtoMessage, Duration)> = vec![];
 
-        let result_original = instruction.validate(&control, &suv_msgs, &suv_with_dur, &transport);
-        let result_roundtrip = back.validate(&control, &suv_msgs, &suv_with_dur, &transport);
-        assert!(result_original);
+        let result_original =
+            instruction.validate(&control, &suv_msgs, &suv_with_dur, &capture(&contexts));
+        let result_roundtrip =
+            back.validate(&control, &suv_msgs, &suv_with_dur, &capture(&contexts));
+        assert!(!result_original);
         assert_eq!(result_original, result_roundtrip);
     }
 
     #[test]
-    fn transport_header_require_key_value_serialization_check() {
-        let instruction = ValidationInstructions::TransportHeaderRequireKeyValue {
-            pairs: vec![TransportHeaderKeyValue::new("x-tenant-id", "acme")],
+    fn tenant_require_key_value_serialization_check() {
+        let instruction = ValidationInstructions::TenantRequireKeyValue {
+            pairs: vec![TenantKeyValue::new("tenant_id", "acme")],
         };
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");
@@ -459,9 +470,9 @@ mod tests {
     }
 
     #[test]
-    fn transport_header_deny_serialization_check() {
-        let instruction = ValidationInstructions::TransportHeaderDeny {
-            keys: vec!["x-secret".into()],
+    fn tenant_deny_serialization_check() {
+        let instruction = ValidationInstructions::TenantDeny {
+            keys: vec!["secret".into()],
         };
         let yaml = serde_yaml::to_string(&instruction).expect("serialize");
         let back: ValidationInstructions = serde_yaml::from_str(&yaml).expect("deserialize");

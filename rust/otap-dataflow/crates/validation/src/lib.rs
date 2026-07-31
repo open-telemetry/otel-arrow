@@ -1386,36 +1386,44 @@ mod tests {
             .expect("traces otap-to-otap validation failed");
     }
 
-    /// End-to-end validation: transport headers injected by the fake data
-    /// generator survive the full pipeline chain (generator -> SUV -> capture)
-    /// and can be asserted via transport header validation instructions.
+    /// End-to-end validation: tenant values injected by the traffic generator
+    /// survive the full pipeline chain (generator -> SUV -> capture) and can
+    /// be asserted at the far end.
     ///
-    /// Only OTLP receivers and exporters support transport header
-    /// capture/propagation, so every hop in the chain uses OTLP gRPC.
+    /// Tenant tokens are engine scoped, so one declaration covers all three
+    /// pipelines: the generator resolves the values at ingress, the SUV
+    /// carries them, and the capture pipeline reads them back. Every hop uses
+    /// OTLP gRPC, which is where the values cross a real wire.
+    ///
+    /// `project_id` is declared but never supplied, so the deny assertion
+    /// proves the capture reports absence rather than inventing a value.
     #[test]
-    fn validation_transport_headers() {
-        use crate::validation_types::transport_headers::TransportHeaderKeyValue;
+    fn validation_tenant_context() {
+        use crate::validation_types::tenant::TenantKeyValue;
 
-        let header_key = "x-tenant-id";
-        let header_value = "test-tenant";
+        let header = "x-tenant-id";
+        let key = "tenant_id";
+        let value = "test-tenant";
 
         Scenario::new()
-            .pipeline(
-                Pipeline::from_file("./validation_pipelines/otlp-otlp.yaml")
-                    .expect("failed to read in pipeline yaml")
-                    .with_transport_headers_policy_yaml(
-                        r#"
-header_capture:
-  headers:
-    - match_names: ["x-tenant-id"]
-header_propagation:
-  default:
-    selector:
-      type: all_captured
-    action: propagate
+            .with_tenant_tokens_yaml(
+                r#"
+tenant_id:
+  extractors:
+    - key: tenant_id
+      transport_header: x-tenant-id
+      retain: true
+project_id:
+  extractors:
+    - key: project_id
+      transport_header: x-project-id
+      retain: true
 "#,
-                    )
-                    .expect("failed to parse transport headers policy"),
+            )
+            .expect("failed to parse tenant tokens")
+            .pipeline(
+                Pipeline::from_file("./validation_pipelines/otlp-otlp-tenant.yaml")
+                    .expect("failed to read in pipeline yaml"),
             )
             .add_generator(
                 "traffic_gen",
@@ -1424,29 +1432,28 @@ header_propagation:
                     .otlp_grpc("receiver")
                     .core_range(1, 1)
                     .static_signals()
-                    .with_transport_headers([(header_key, Some(header_value))]),
+                    .with_tenant_values([(header, Some(value))]),
             )
             .add_capture(
                 "validate",
                 Capture::default()
                     .otlp_grpc("exporter")
-                    .with_capture_header_keys([header_key])
                     .validate(vec![
-                        ValidationInstructions::TransportHeaderRequireKey {
-                            keys: vec![header_key.into()],
+                        ValidationInstructions::TenantRequireKey {
+                            keys: vec![key.into()],
                         },
-                        ValidationInstructions::TransportHeaderRequireKeyValue {
-                            pairs: vec![TransportHeaderKeyValue::new(header_key, header_value)],
+                        ValidationInstructions::TenantRequireKeyValue {
+                            pairs: vec![TenantKeyValue::new(key, value)],
                         },
-                        ValidationInstructions::TransportHeaderDeny {
-                            keys: vec!["x-should-not-exist".into()],
+                        ValidationInstructions::TenantDeny {
+                            keys: vec!["project_id".into()],
                         },
                     ])
                     .control_streams(["traffic_gen"])
                     .core_range(2, 2),
             )
             .run()
-            .expect("transport headers validation failed");
+            .expect("tenant context validation failed");
     }
 }
 

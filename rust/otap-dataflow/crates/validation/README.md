@@ -115,6 +115,13 @@ e.g. `receiver`, `exporter`.
   - optional; used for test container scenarios
   - the label is referenced by `ContainerConnection` and `PipelineContainerConnection`
   - see [Test Containers](#test-containers) for details
+- `with_tenant_tokens_yaml(yaml_str)` - declare the engine's tenant tokens
+  - optional; returns `Result<Self, ValidationError>`
+  - the same declaration is rendered into every pipeline the scenario builds
+    (generator, system-under-validation, capture), because tenant tokens are
+    engine scoped
+  - required when using tenant validation instructions
+  - see [Tenant Context](#tenant-context) for details
 - `expect_within(u64)` - set max runtime in seconds
   - optional; default: 25s
 - `run()` - renders template, launches pipelines, waits for readiness
@@ -142,14 +149,6 @@ e.g. `receiver`, `exporter`.
   - each `${KEY}` in the YAML is replaced with the corresponding value
   - returns an error if any `${...}` placeholders remain unresolved
   - useful for injecting TLS cert/key paths at test time (see [TLS / mTLS](#tls--mtls))
-- `with_transport_headers_policy(TransportHeadersPolicy)` - set a transport
-  headers policy on the SUV pipeline from a typed struct
-  - controls header capture at receivers and header propagation at exporters
-  - optional; see [Transport Headers](#transport-headers) for details
-- `with_transport_headers_policy_yaml(yaml_str)` - set a transport headers
-  policy from a YAML string
-  - returns `Result<Self, ValidationError>` (YAML parsing can fail)
-  - alternative to the typed struct method
 - `connect_container(PipelineContainerConnection)` - declare a connection between
   a node in the SUV pipeline and a test container
   - the framework rewrites the specified config key with the container's allocated
@@ -189,12 +188,13 @@ e.g. `receiver`, `exporter`.
 - `with_tls(TlsConfig)` - enable TLS on the generator's exporter
   - optional; see [TLS / mTLS](#tls--mtls) for details
   - uses the built-in TLS support
-- `with_transport_headers(headers)` - configure transport headers to inject
-  into generated traffic
-  - each key is a header name; the value is an optional fixed string
-  - when the value is `None`, the traffic generator assigns a random value
-    at startup
-  - only meaningful when the pipeline uses OTLP receivers/exporters
+- `with_tenant_values(values)` - seed the tenant context attached to generated
+  traffic
+  - each key is an inbound header name named by a declared extractor; the
+    value is an optional fixed string
+  - when the value is `None`, the traffic generator picks a random value once
+    at startup and reuses it for every message
+  - see [Tenant Context](#tenant-context) for details
 - `to_container(ContainerConnection)` - use a custom exporter that sends to a
   test container instead of directly to the SUV pipeline receiver
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -390,11 +390,6 @@ should receive control signals from
   waits without receiving any messages before declaring the data stream
   settled and performing the final validation
   - default: 3 seconds
-- `with_capture_header_keys(keys)` - configure transport header keys to capture
-  from inbound signals
-  - each key becomes a `match_names` rule in the capture pipeline's
-    `header_capture` policy
-  - required when using transport header validation instructions
 - `from_container(ContainerConnection)` - use a custom receiver that reads from
   a test container instead of directly from the SUV pipeline exporter
   - mutually exclusive with `otlp_grpc()` / `otap_grpc()`
@@ -436,21 +431,19 @@ count per message; `min/max` optional; `timeout` optional
   - `domains` accepts `AttributeDomain::Resource`, `Scope`, or `Signal`
   - `pairs` accepts `Vec<KeyValue>`
 - `AttributeNoDuplicate`: check that there are no duplicate attributes
-- `TransportHeaderRequireKey { keys }`: specified transport header keys must be
-  present on every SUV message. Fails if any message is missing transport
-  headers entirely.
-- `TransportHeaderRequireKeyValue { pairs }`: specified transport header
-  key/value pairs must be present on every SUV message. Values are compared as
-  UTF-8 text (case-sensitive). When duplicate header keys exist, the check
-  passes if any entry with that key matches the expected value.
-  - `pairs` accepts `Vec<TransportHeaderKeyValue>`
-- `TransportHeaderDeny { keys }`: specified transport header keys must NOT
-  appear on any SUV message. Messages without transport headers are acceptable
-  for this check.
+- `TenantRequireKey { keys }`: the named tenant keys must carry a value on
+  every SUV message. Fails if any message resolved no tenant context at all.
+- `TenantRequireKeyValue { pairs }`: the named tenant keys must carry exactly
+  the given values on every SUV message. Values are compared as raw bytes, so
+  the check is case-sensitive. A tenant key holds one value, so there is no
+  duplicate-key ambiguity.
+  - `pairs` accepts `Vec<TenantKeyValue>`
+- `TenantDeny { keys }`: the named tenant keys must NOT carry a value on any
+  SUV message. A message that resolved no tenant context is acceptable.
 
-> See [Transport Headers](#transport-headers) for setup and a full example.
+> See [Tenant Context](#tenant-context) for setup and a full example.
 
-(see `validation_types::attributes`, `validation_types::transport_headers`,
+(see `validation_types::attributes`, `validation_types::tenant`,
 and `validation_types`)
 
 > NOTE: Some ValidationInstructions require control signals. Use
@@ -479,66 +472,77 @@ it should receive control signals from
   to receive from two generators
   - each generator label must match a label passed to `add_generator`
 
-### Transport Headers
+### Tenant Context
 
-Validate that transport headers survive the full pipeline chain from generator
+Validate that tenant values survive the full pipeline chain from generator
 through the system-under-validation to the capture pipeline.
 
-> **NOTE:** Only OTLP (`otlp_grpc`) receivers and exporters currently support
-> transport header capture and propagation. OTAP receivers/exporters do **not**
-> yet support transport headers.
+A tenant token is a compiled rule: it names one or more keys, says where each
+key's value is extracted from, and says whether that value is retained. When a
+receiver resolves a token, the retained values are packed into a single
+positional context that rides with the request. Nothing else travels; the
+inbound headers themselves are not carried.
 
-For these headers to flow through the pipeline chain, each
-stage needs to be appropriately configured:
+> **NOTE:** Only OTLP (`otlp_grpc`) receivers and exporters currently resolve
+> and re-emit tenant context. OTAP receivers/exporters do **not** yet.
 
-1. **Generator pipeline** -- automatically adds a `header_propagation` policy
-   (propagate all headers) when `with_transport_headers` is configured.
-2. **SUV pipeline** -- requires a `transport_headers` policy with both
-   `header_capture` (to extract headers from inbound gRPC metadata) and
-   `header_propagation` (to re-emit headers on the outbound gRPC connection).
-   Configure via `Pipeline::with_transport_headers_policy_yaml()` or
-   `Pipeline::with_transport_headers_policy()`.
-3. **Capture pipeline** -- requires `with_capture_header_keys` to specify which
-   headers to extract from inbound gRPC metadata for validation.
+Tenant tokens are **engine scoped**, so a single `with_tenant_tokens_yaml`
+declaration on the `Scenario` is rendered into all three pipelines. What each
+stage still has to do:
 
-#### Transport header validation instructions
+1. **Generator pipeline** -- `with_tenant_values` names the inbound headers to
+   synthesize. The framework wires the generator's exporter to re-emit each
+   declared key under its extractor's header name, so the SUV sees them on the
+   wire.
+2. **SUV pipeline** -- its receiver resolves the tokens automatically. Its
+   exporter must declare `tenant_headers`, which maps each key to the outbound
+   header it is written under. A token says nothing about the wire name its
+   value is re-emitted with, so this mapping is always explicit.
+3. **Capture pipeline** -- its receiver resolves the same tokens, and the
+   validation exporter reads the packed context back. No extra configuration.
+
+#### Tenant validation instructions
 
 | Instruction | Behavior |
 | ----------- | -------- |
-| `TransportHeaderRequireKey { keys }` | Assert specified header keys exist on every SUV message |
-| `TransportHeaderRequireKeyValue { pairs }` | Assert specified key/value pairs exist on every SUV message |
-| `TransportHeaderDeny { keys }` | Assert specified header keys do NOT exist on any SUV message |
+| `TenantRequireKey { keys }` | Assert the named keys carry a value on every SUV message |
+| `TenantRequireKeyValue { pairs }` | Assert the named keys carry exactly these values on every SUV message |
+| `TenantDeny { keys }` | Assert the named keys carry no value on any SUV message |
 
-For `RequireKey` and `RequireKeyValue`, every SUV message must carry transport
-headers (`Some`). A single message without headers causes immediate failure.
+For `RequireKey` and `RequireKeyValue`, every SUV message must have resolved a
+tenant context. A single message that resolved none causes immediate failure,
+as does a scenario that declared no tenant tokens: these checks fail closed.
 
-For `Deny`, messages without transport headers are acceptable -- a signal that
-never received headers cannot contain a forbidden key.
+For `Deny`, a message that resolved no tenant context is acceptable -- a signal
+that never carried tenant values cannot carry a forbidden one. A key that is
+not declared by any token reads as absent.
 
-#### Example: transport headers validation
+#### Example: tenant context validation
 
 ```rust
 use otap_df_validation::ValidationInstructions;
 use otap_df_validation::pipeline::Pipeline;
 use otap_df_validation::scenario::Scenario;
 use otap_df_validation::traffic::{Capture, Generator};
-use otap_df_validation::validation_types::transport_headers::TransportHeaderKeyValue;
+use otap_df_validation::validation_types::tenant::TenantKeyValue;
 
 Scenario::new()
-    .pipeline(
-        Pipeline::from_file("./validation_pipelines/no-processor.yaml")
-            .expect("load pipeline")
-            .with_transport_headers_policy_yaml(r#"
-header_capture:
-  headers:
-    - match_names: ["x-tenant-id"]
-header_propagation:
-  default:
-    selector:
-      type: all_captured
-    action: propagate
+    .with_tenant_tokens_yaml(r#"
+tenant_id:
+  extractors:
+    - key: tenant_id
+      transport_header: x-tenant-id
+      retain: true
+project_id:
+  extractors:
+    - key: project_id
+      transport_header: x-project-id
+      retain: true
 "#)
-            .expect("parse policy"),
+    .expect("parse tenant tokens")
+    .pipeline(
+        Pipeline::from_file("./validation_pipelines/otlp-otlp-tenant.yaml")
+            .expect("load pipeline"),
     )
     .add_generator(
         "traffic_gen",
@@ -546,28 +550,42 @@ header_propagation:
             .fixed_count(500)
             .otlp_grpc("receiver")
             .static_signals()
-            .with_transport_headers([("x-tenant-id", Some("test-tenant"))]),
+            .with_tenant_values([("x-tenant-id", Some("test-tenant"))]),
     )
     .add_capture(
         "validate",
         Capture::default()
             .otlp_grpc("exporter")
-            .with_capture_header_keys(["x-tenant-id"])
             .validate(vec![
-                ValidationInstructions::TransportHeaderRequireKey {
-                    keys: vec!["x-tenant-id".into()],
+                ValidationInstructions::TenantRequireKey {
+                    keys: vec!["tenant_id".into()],
                 },
-                ValidationInstructions::TransportHeaderRequireKeyValue {
-                    pairs: vec![TransportHeaderKeyValue::new("x-tenant-id", "test-tenant")],
+                ValidationInstructions::TenantRequireKeyValue {
+                    pairs: vec![TenantKeyValue::new("tenant_id", "test-tenant")],
                 },
-                ValidationInstructions::TransportHeaderDeny {
-                    keys: vec!["x-should-not-exist".into()],
+                ValidationInstructions::TenantDeny {
+                    keys: vec!["project_id".into()],
                 },
             ])
             .control_streams(["traffic_gen"]),
     )
     .run()
-    .expect("transport headers validation failed");
+    .expect("tenant context validation failed");
+```
+
+`project_id` is declared but never supplied, so the `Deny` assertion proves the
+capture reports absence rather than inventing a value.
+
+The SUV pipeline's exporter carries the egress mapping:
+
+```yaml
+exporter:
+  type: urn:otel:exporter:otlp_grpc
+  config:
+    grpc_endpoint: http://127.0.0.1:4318
+    tenant_headers:
+      - key: tenant_id
+        header: x-tenant-id
 ```
 
 ### Test Containers

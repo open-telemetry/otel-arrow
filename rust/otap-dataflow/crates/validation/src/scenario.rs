@@ -12,6 +12,7 @@ use crate::template::render_jinja;
 use crate::traffic::MessageType;
 use crate::traffic::{Capture, Generator, TlsConfig};
 use minijinja::context;
+use otap_df_config::tenant::{Extractor, TenantTokens};
 use otap_df_test_net::try_pick_unused_loopback_tcp_port;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -62,6 +63,12 @@ pub struct Scenario {
     captures: HashMap<String, Capture>,
     containers: HashMap<String, ContainerConfig>,
     admin_addr: String,
+    /// Engine-wide tenant token declarations, rendered under `engine:`.
+    ///
+    /// Tenant tokens are engine scoped, not pipeline scoped: one declaration
+    /// covers the generator, the SUV, and the capture pipeline, which is what
+    /// lets a value resolved at ingress be asserted at the far end.
+    tenant_tokens: Option<TenantTokens>,
     ready_max_attempts: usize,
     ready_backoff: Duration,
     metrics_poll: Duration,
@@ -84,6 +91,7 @@ impl Scenario {
             captures: HashMap::new(),
             containers: HashMap::new(),
             admin_addr: DEFAULT_ADMIN_ADDR.to_string(),
+            tenant_tokens: None,
             ready_max_attempts: DEFAULT_READY_MAX_ATTEMPTS,
             ready_backoff: DEFAULT_READY_BACKOFF,
             metrics_poll: DEFAULT_METRICS_POLL,
@@ -96,6 +104,62 @@ impl Scenario {
     pub fn pipeline(mut self, pipeline: Pipeline) -> Self {
         self.pipeline = Some(pipeline);
         self
+    }
+
+    /// Declare the engine's tenant tokens from a YAML string.
+    ///
+    /// The YAML is the same `tenant_tokens` mapping the engine config takes,
+    /// so a scenario declares tokens exactly as a deployment would.
+    pub fn with_tenant_tokens_yaml(
+        mut self,
+        tokens_yaml: impl AsRef<str>,
+    ) -> Result<Self, ValidationError> {
+        let tokens: TenantTokens = serde_yaml::from_str(tokens_yaml.as_ref())
+            .map_err(|e| ValidationError::Config(format!("invalid tenant tokens yaml: {e}")))?;
+        self.tenant_tokens = Some(tokens);
+        Ok(self)
+    }
+
+    /// Serialize the tenant tokens as YAML for template injection. Returns an
+    /// empty string when the scenario declares none.
+    fn tenant_tokens_yaml(&self) -> Result<String, ValidationError> {
+        match &self.tenant_tokens {
+            Some(tokens) => serde_yaml::to_string(tokens).map_err(|e| {
+                ValidationError::Config(format!("failed to serialize tenant tokens: {e}"))
+            }),
+            None => Ok(String::new()),
+        }
+    }
+
+    /// The `key -> outbound header` pairs an exporter needs to put the
+    /// retained tenant values back on the wire.
+    ///
+    /// A token says nothing about the wire name its value is re-emitted
+    /// under, so an exporter must be told. For a scenario the useful default
+    /// is round-tripping: emit each retained value under the same header it
+    /// was read from, so what the next hop resolves is what the previous hop
+    /// carried. Keys that are not retained have no bytes to emit and are
+    /// skipped.
+    fn tenant_egress(&self) -> Vec<(String, String)> {
+        let Some(tokens) = &self.tenant_tokens else {
+            return Vec::new();
+        };
+        let mut egress = Vec::new();
+        for spec in tokens.values() {
+            for extractor in &spec.extractors {
+                if let Extractor::TransportHeader {
+                    key,
+                    transport_header,
+                    retain,
+                    bag,
+                } = extractor
+                    && (*retain || *bag)
+                {
+                    egress.push((key.clone(), transport_header.clone()));
+                }
+            }
+        }
+        egress
     }
 
     /// Add a traffic generator labeled for wiring.
@@ -196,7 +260,7 @@ impl Scenario {
             .ok_or_else(|| ValidationError::Config("pipeline missing".into()))?;
         let pipeline_yaml = pipeline.to_yaml_string()?;
         let (suv_core_start, suv_core_end) = (pipeline.core_start, pipeline.core_end);
-        let suv_transport_headers_policy = pipeline.transport_headers_policy_yaml()?;
+        let tenant_tokens = self.tenant_tokens_yaml()?;
         let capture_pipeline = self.render_captures()?;
         let generator_pipeline = self.render_generators()?;
         render_jinja(
@@ -208,7 +272,7 @@ impl Scenario {
                 generator_pipeline => generator_pipeline,
                 suv_core_start => suv_core_start,
                 suv_core_end => suv_core_end,
-                suv_transport_headers_policy => suv_transport_headers_policy,
+                tenant_tokens => tenant_tokens,
             },
         )
     }
@@ -406,7 +470,6 @@ impl Scenario {
                     capture_label => label,
                     custom_suv_receiver => &custom_suv_receiver,
                     idle_timeout_secs => capture.idle_timeout,
-                    capture_header_keys => &capture.capture_header_keys,
                 },
             )?);
         }
@@ -451,12 +514,12 @@ impl Scenario {
                 .as_ref()
                 .map_or("localhost", |t| t.server_name.as_str());
 
-            // Only pass transport_headers when non-empty; the template checks
+            // Only pass tenant_values when non-empty; the template checks
             // for truthiness so an empty map would be falsy.
-            let transport_headers = if generator.transport_headers.is_empty() {
+            let tenant_values = if generator.tenant_values.is_empty() {
                 None
             } else {
-                Some(&generator.transport_headers)
+                Some(&generator.tenant_values)
             };
 
             generators_rendered.push(render_jinja(
@@ -482,7 +545,8 @@ impl Scenario {
                     mtls_enabled => mtls_enabled,
                     tls_server_name => tls_server_name,
                     custom_suv_exporter => &custom_suv_exporter,
-                    transport_headers => transport_headers,
+                    tenant_values => tenant_values,
+                    tenant_egress => self.tenant_egress(),
                 },
             )?);
         }

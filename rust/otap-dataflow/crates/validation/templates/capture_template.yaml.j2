@@ -19,14 +19,6 @@
         set:
           - start: {{ capture_core_start }}
             end: {{ capture_core_end }}
-{% if capture_header_keys | length > 0 %}
-    transport_headers:
-      header_capture:
-        headers:
-{% for key in capture_header_keys %}
-          - match_names: ["{{ key }}"]
-{% endfor %}
-{% endif %}
   nodes:
 {% if custom_suv_receiver %}
     suv_receiver:
