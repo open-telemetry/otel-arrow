@@ -55,28 +55,42 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 ### Metric Sets
 
+Message outcomes are reported by the engine through
+`node.consumer.consumed.messages` and `node.producer.produced.messages`.
+Per-signal item outcomes are available through
+`node.consumer.consumed.items` and `node.producer.produced.items` when detailed
+runtime metrics are enabled or the node opts in with
+`policies.telemetry.item_counts`. The processor does not duplicate these
+engine-owned metrics.
+
 #### `processor.retry`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.retry.consumed_items_logs_success` | `{item}` | Number of items consumed (logs) with outcome=success. |
-| `processor.retry.consumed_items_metrics_success` | `{item}` | Number of items consumed (metrics) with outcome=success. |
-| `processor.retry.consumed_items_traces_success` | `{item}` | Number of items consumed (traces) with outcome=success. |
-| `processor.retry.consumed_items_logs_failure` | `{item}` | Number of items consumed (logs) with outcome=failure. |
-| `processor.retry.consumed_items_metrics_failure` | `{item}` | Number of items consumed (metrics) with outcome=failure. |
-| `processor.retry.consumed_items_traces_failure` | `{item}` | Number of items consumed (traces) with outcome=failure. |
-| `processor.retry.consumed_items_logs_refused` | `{item}` | Number of items consumed (logs) with outcome=refused. |
-| `processor.retry.consumed_items_metrics_refused` | `{item}` | Number of items consumed (metrics) with outcome=refused. |
-| `processor.retry.consumed_items_traces_refused` | `{item}` | Number of items consumed (traces) with outcome=refused. |
-| `processor.retry.produced_items_logs_success` | `{item}` | Number of items produced (logs) with outcome=success. |
-| `processor.retry.produced_items_metrics_success` | `{item}` | Number of items produced (metrics) with outcome=success. |
-| `processor.retry.produced_items_traces_success` | `{item}` | Number of items produced (traces) with outcome=success. |
-| `processor.retry.produced_items_logs_refused` | `{item}` | Number of items produced (logs) with outcome=refused (downstream error) |
-| `processor.retry.produced_items_metrics_refused` | `{item}` | Number of items produced (metrics) with outcome=refused (downstream error) |
-| `processor.retry.produced_items_traces_refused` | `{item}` | Number of items produced (traces) with outcome=refused (downstream error) |
-| `processor.retry.retry_attempts_logs` | `{event}` | Number of retry attempts scheduled as a result of NACKs, logs. |
-| `processor.retry.retry_attempts_traces` | `{event}` | Number of retry attempts scheduled as a result of NACKs, traces. |
-| `processor.retry.retry_attempts_metrics` | `{event}` | Number of retry attempts scheduled as a result of NACKs, metrics. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.retry.retries.scheduled` | `{retry}` | `signal` | Number of retries successfully scheduled after a downstream refusal. |
+| `processor.retry.messages.recovered` | `{message}` | `signal` | Number of PData messages accepted downstream after at least one retry. |
+
+The `signal` attribute is bounded to `traces`, `metrics`, or `logs`.
+
+#### `processor.retry.messages`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.retry.messages.terminated` | `{message}` | `signal`, `reason` | Number of PData messages the retry processor stopped retrying. |
+
+Both message lifecycle counters use the `{message}` unit and the `messages`
+namespace.
+
+The `reason` attribute is bounded to:
+
+| Value | Description |
+| --- | --- |
+| `invalid_state` | Retry state in call data was absent or malformed. |
+| `permanent_refusal` | Downstream permanently refused the request. |
+| `payload_missing` | Downstream did not return the payload required for a retry. |
+| `retry_limit` | The retry-count safety limit was reached. |
+| `deadline` | The next retry would exceed the configured elapsed-time deadline. |
+| `send_failure` | The processor could not send the PData message or convert the failure into a NACK. |
 
 ### Events
 
