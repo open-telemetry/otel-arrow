@@ -16,6 +16,8 @@ use futures::stream::{FuturesUnordered, StreamExt};
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::tenant::TenantHeader;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_engine::ConsumerEffectHandlerExtension;
 use otap_df_engine::ExporterFactory;
 use otap_df_engine::config::ExporterConfig;
@@ -70,6 +72,78 @@ pub struct Config {
     /// receiver uses `SO_REUSEPORT` across cores. Defaults to 1.
     #[serde(default = "default_num_connections")]
     pub num_connections: usize,
+    /// Outbound headers written from the request's tenant context.
+    ///
+    /// This is the egress half of replacing transport headers: the receiver
+    /// packed named request metadata into a positional context, and these
+    /// entries say which slots travel back out and under what names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tenant_headers: Vec<TenantHeader>,
+}
+
+/// A tenant header resolved against the registry once, at exporter start.
+///
+/// Resolution costs a name lookup and a key parse, neither of which belongs on
+/// the per-request path, so the slot index and the parsed metadata key are
+/// computed here and only read later.
+enum CompiledTenantHeader {
+    /// ASCII metadata written verbatim from the slot value.
+    Ascii(u16, MetadataKey<tonic::metadata::Ascii>),
+    /// Binary metadata; tonic base64-encodes the slot value on the wire.
+    Binary(u16, MetadataKey<tonic::metadata::Binary>),
+}
+
+/// Resolves configured tenant headers against the engine's compiled registry.
+///
+/// Entries naming a key the registry does not retain are dropped with a debug
+/// event rather than failing the exporter: the registry is engine-scoped, so a
+/// key that is meaningful to one pipeline may legitimately be absent here.
+fn compile_tenant_headers(
+    registry: Option<&Arc<TenantTokenRegistry>>,
+    configured: &[TenantHeader],
+) -> Vec<CompiledTenantHeader> {
+    let Some(registry) = registry else {
+        return Vec::new();
+    };
+    let mut compiled = Vec::new();
+    for entry in configured {
+        let Some(slot) = registry
+            .key_id(&entry.key)
+            .and_then(|k| registry.value_slot(k))
+        else {
+            otel_debug!(
+                "otlp.exporter.grpc.tenant_header_skip",
+                reason = "key is not retained by the tenant token registry",
+                key = entry.key.as_str()
+            );
+            continue;
+        };
+        if entry.binary {
+            let name = if entry.header.ends_with("-bin") {
+                entry.header.clone()
+            } else {
+                format!("{}-bin", entry.header)
+            };
+            match name.parse::<MetadataKey<tonic::metadata::Binary>>() {
+                Ok(key) => compiled.push(CompiledTenantHeader::Binary(slot, key)),
+                Err(_) => otel_debug!(
+                    "otlp.exporter.grpc.tenant_header_skip",
+                    reason = "invalid binary metadata key",
+                    header_name = entry.header.as_str()
+                ),
+            }
+        } else {
+            match entry.header.parse::<MetadataKey<tonic::metadata::Ascii>>() {
+                Ok(key) => compiled.push(CompiledTenantHeader::Ascii(slot, key)),
+                Err(_) => otel_debug!(
+                    "otlp.exporter.grpc.tenant_header_skip",
+                    reason = "invalid ascii metadata key",
+                    header_name = entry.header.as_str()
+                ),
+            }
+        }
+    }
+    compiled
 }
 
 pub(crate) const fn default_max_in_flight() -> usize {
@@ -209,6 +283,14 @@ impl Exporter<OtapPdata> for OTLPExporter {
         // the zero-allocation fast path in `build_grpc_metadata`.
         let static_metadata = self.config.grpc.build_static_metadata();
 
+        // Resolve tenant header names to slot indices ONCE: the registry is
+        // fixed for the exporter's lifetime, so the per-request path only ever
+        // reads a slot.
+        let tenant_headers = compile_tenant_headers(
+            effect_handler.tenant_registry(),
+            &self.config.tenant_headers,
+        );
+
         // reuse the encoder and the buffer across pdatas
         let mut logs_proto_encoder = LogsProtoBytesEncoder::new();
         let mut metrics_proto_encoder = MetricsProtoBytesEncoder::new();
@@ -324,8 +406,12 @@ impl Exporter<OtapPdata> for OTLPExporter {
                     // any propagated transport headers. Computed once before
                     // signal dispatch; the static template is cloned only when
                     // present so the no-metadata case stays allocation-free.
-                    let metadata =
-                        build_grpc_metadata(&effect_handler, &context, static_metadata.as_ref());
+                    let metadata = build_grpc_metadata(
+                        &effect_handler,
+                        &context,
+                        static_metadata.as_ref(),
+                        &tenant_headers,
+                    );
 
                     // Dispatch based on signal type and the concrete payload representation.
                     match (signal_type, payload) {
@@ -791,13 +877,20 @@ fn build_grpc_metadata(
     effect_handler: &EffectHandler<OtapPdata>,
     context: &Context,
     static_metadata: Option<&MetadataMap>,
+    tenant_headers: &[CompiledTenantHeader],
 ) -> Option<MetadataMap> {
     let propagation = effect_handler
         .propagation_policy()
         .zip(context.transport_headers());
+    // Tenant headers only produce output when the request actually carries a
+    // context, so a pipeline that declares them still pays nothing for
+    // requests that resolved no token.
+    let tenant_view = (!tenant_headers.is_empty())
+        .then(|| context.tenant_view())
+        .flatten();
 
     // Zero-alloc fast path: nothing static configured and nothing to propagate.
-    if static_metadata.is_none() && propagation.is_none() {
+    if static_metadata.is_none() && propagation.is_none() && tenant_view.is_none() {
         return None;
     }
 
@@ -805,6 +898,39 @@ fn build_grpc_metadata(
         Some(static_metadata) => static_metadata.clone(),
         None => MetadataMap::new(),
     };
+
+    if let Some(view) = tenant_view {
+        for header in tenant_headers {
+            match header {
+                CompiledTenantHeader::Ascii(slot, key) => {
+                    let Some(value) = view.slot_value(*slot) else {
+                        continue;
+                    };
+                    // Static config wins, exactly as it does for propagated
+                    // headers: a configured backend credential must not be
+                    // displaced by tenant material.
+                    if static_metadata.is_some_and(|s| s.contains_key(key.as_str())) {
+                        continue;
+                    }
+                    let Ok(value) = MetadataValue::try_from(value) else {
+                        otel_debug!(
+                            "otlp.exporter.grpc.tenant_header_skip",
+                            reason = "value is not valid ascii metadata",
+                            header_name = key.as_str()
+                        );
+                        continue;
+                    };
+                    let _ = metadata.append(key.clone(), value);
+                }
+                CompiledTenantHeader::Binary(slot, key) => {
+                    let Some(value) = view.slot_value(*slot) else {
+                        continue;
+                    };
+                    let _ = metadata.append_bin(key.clone(), MetadataValue::from_bytes(value));
+                }
+            }
+        }
+    }
 
     if let Some((policy, transport_headers)) = propagation {
         for header in policy.propagate(transport_headers) {
@@ -1348,6 +1474,7 @@ mod tests {
                     },
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
+                    tenant_headers: Vec::new(),
                 },
                 pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
@@ -1472,6 +1599,7 @@ mod tests {
                     },
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
+                    tenant_headers: Vec::new(),
                 },
                 pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
@@ -1544,6 +1672,7 @@ mod tests {
                     },
                     max_in_flight: 32,
                     num_connections: default_num_connections(),
+                    tenant_headers: Vec::new(),
                 },
                 pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
@@ -2106,6 +2235,7 @@ mod tests {
                     },
                     max_in_flight: 1,
                     num_connections: default_num_connections(),
+                    tenant_headers: Vec::new(),
                 },
                 pdata_metrics: ExporterPDataExportMetrics::register(&pipeline_ctx),
             },
@@ -2366,7 +2496,7 @@ mod tests {
         headers.push(TransportHeader::text("x-tenant-id", "x-tenant-id", b"acme"));
         let context = context_with_headers(headers);
 
-        let result = build_grpc_metadata(&handler, &context, None);
+        let result = build_grpc_metadata(&handler, &context, None, &[]);
         assert!(result.is_none(), "should return None when no policy is set");
     }
 
@@ -2375,7 +2505,7 @@ mod tests {
         let handler = make_effect_handler_with_policy(Some(propagate_all_policy()));
         let context = context_without_headers();
 
-        let result = build_grpc_metadata(&handler, &context, None);
+        let result = build_grpc_metadata(&handler, &context, None, &[]);
         assert!(
             result.is_none(),
             "should return None when context has no transport headers"
@@ -2399,7 +2529,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None)
+        let metadata = build_grpc_metadata(&handler, &context, None, &[])
             .expect("should produce metadata for text headers");
 
         let tenant = metadata
@@ -2443,7 +2573,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None)
+        let metadata = build_grpc_metadata(&handler, &context, None, &[])
             .expect("should produce metadata (authorization dropped, x-tenant-id remains)");
 
         assert!(
@@ -2469,7 +2599,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None)
+        let metadata = build_grpc_metadata(&handler, &context, None, &[])
             .expect("should produce metadata for binary headers");
 
         let bin_val = metadata
@@ -2496,7 +2626,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None)
+        let metadata = build_grpc_metadata(&handler, &context, None, &[])
             .expect("should produce metadata for binary header without -bin suffix");
 
         let bin_val = metadata
@@ -2527,7 +2657,7 @@ mod tests {
         ));
         let context = context_with_headers(headers);
 
-        let metadata = build_grpc_metadata(&handler, &context, None)
+        let metadata = build_grpc_metadata(&handler, &context, None, &[])
             .expect("should produce metadata with duplicate headers");
 
         let values: Vec<&str> = metadata
@@ -2561,7 +2691,7 @@ mod tests {
         headers.push(TransportHeader::text("x-tenant-id", "X-Tenant-Id", b"acme"));
         let context = context_with_headers(headers);
 
-        let result = build_grpc_metadata(&handler, &context, None);
+        let result = build_grpc_metadata(&handler, &context, None, &[]);
         assert!(
             result.is_none(),
             "should return None when policy drops all headers"
@@ -2584,7 +2714,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata), &[])
             .expect("should produce metadata from static headers alone");
         assert_eq!(
             metadata.get("authorization").unwrap().to_str().unwrap(),
@@ -2614,7 +2744,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata), &[])
             .expect("should merge static and propagated headers");
         assert_eq!(
             metadata.get("authorization").unwrap().to_str().unwrap(),
@@ -2652,7 +2782,7 @@ mod tests {
         .build_static_metadata()
         .expect("static metadata should be present");
 
-        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata))
+        let metadata = build_grpc_metadata(&handler, &context, Some(&static_metadata), &[])
             .expect("should produce metadata");
 
         let values: Vec<&str> = metadata
