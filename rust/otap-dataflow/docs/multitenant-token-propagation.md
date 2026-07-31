@@ -187,11 +187,13 @@ Reading a key's value is therefore an array index --
 `registry.value_slot(key)` then `view.slot_value(slot)` -- rather than a scan
 looking for a matching name or key id.
 
-The blob opens with the **bag**: `bag_len` bytes of complete `KeyValue`
-messages, for the keys whose names are demanded. Value-only entries follow.
-Both forms end in a length-delimited `AnyValue`, and a slot points at that
-length prefix in either case, so `slot_value` reads them identically and does
-not care which region a key landed in.
+The blob opens with the **bag**: `bag_len` bytes for the keys whose names are
+demanded, each written as `<tag> <len> <KeyValue>` -- already tagged, so the
+region is a complete OTLP repeated field rather than an input to an encoder.
+Value-only entries follow as bare `<len> <AnyValue>`. Both forms end in a
+length-delimited `AnyValue`, and a slot points at that length prefix in either
+case, so `slot_value` reads them identically and does not care which region a
+key landed in.
 
 There is no name-bearing region for captured headers. Every name in the
 context comes from configuration, never from the wire -- see
@@ -507,7 +509,7 @@ that nothing propagates.
 Bag-level keys must be contiguous, so the layout grows a bag region whose
 entries are adjacent and whose slots point inside it.
 
-### The consumer supplies the field number
+### The consumer bakes in the field number
 
 OTLP does not use a single field number for attributes:
 
@@ -519,25 +521,30 @@ OTLP does not use a single field number for attributes:
 | `Exemplar.filtered_attributes` | 7 |
 | `Span.attributes` | 9 |
 
-So the run is stored **untagged** -- `<len> <KeyValue body>` repeated, no field
-tag -- and the caller says where it is going:
+An earlier draft stored the run **untagged** and had the consumer supply the
+field number per call, pushing a tag byte before each entry. That is still a
+per-entry walk, and it means the stored bytes are an *input to an encoder*
+rather than a payload.
+
+The consumer is also the initializer. The SDK sets the pipeline up and later
+reads the bytes back, so the destination is known at build time, and the tag
+can simply be encoded in place:
 
 ```rust
-/// Append the carried keys as OTLP `KeyValue` entries under `field`.
-///
-/// The stored run carries no field tag, so one context serves scope
-/// attributes, span attributes and exemplars without re-encoding.
-pub fn append_attributes<B: BoundedBuf>(
-    &self,
-    dst: &mut B,
-    field: u64,
-) -> EncodeResult
+let mut builder = TenantTokenRegistryBuilder::new()
+    .with_bag_field(attribute_field::SCOPE);
 ```
 
-Per attribute that is one tag byte pushed and one `extend_from_slice`. Every
-field number above is under 16, so the tag is always a single byte and the cost
-does not depend on the destination. Nothing is re-encoded and nothing is
-allocated.
+```rust
+/// The bagged keys, as a complete OTLP repeated `KeyValue` field.
+pub fn attributes(&self) -> &'a [u8]
+```
+
+Reading is then a borrow, and writing is one `extend_from_slice` of the whole
+region. Nothing is walked per entry, nothing is re-tagged, nothing is
+allocated. A different destination is a different registry, not a rewrite --
+which is the honest shape, since the pipeline that produced the context and the
+SDK that consumes it are configured together.
 
 ### Scope attributes amortize the copy
 

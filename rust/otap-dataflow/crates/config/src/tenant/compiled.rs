@@ -150,6 +150,9 @@ pub struct TenantTokenRegistry {
     retained: Vec<KeyId>,
     /// Per value slot: whether the key name travels with the value.
     bagged: Vec<bool>,
+    /// OTLP field number the bagged run is tagged with, fixed at build time
+    /// by the consumer that initialized the registry.
+    bag_field: u32,
     /// Reverse of `retained`, indexed by key id; [`NO_VALUE_SLOT`] for keys
     /// that are match-only.
     value_slot: Vec<u16>,
@@ -220,6 +223,7 @@ pub struct TenantTokenRegistryBuilder {
     key_retain_mask: Vec<u64>,
     retained: Vec<KeyId>,
     bagged: Vec<bool>,
+    bag_field: Option<u32>,
 }
 
 impl TenantTokenRegistryBuilder {
@@ -300,6 +304,18 @@ impl TenantTokenRegistryBuilder {
                 Ok(())
             }
         }
+    }
+
+    /// Declare the OTLP field number the bagged attributes are tagged with.
+    ///
+    /// The consumer of the bag is also what initializes the registry -- the
+    /// SDK sets up the pipeline and later reads the bytes back -- so the
+    /// destination is known here, and the run can be encoded already tagged.
+    /// Defaults to scope attributes.
+    #[must_use]
+    pub fn with_bag_field(mut self, field: u32) -> Self {
+        self.bag_field = Some(field);
+        self
     }
 
     /// Add every token definition from the engine configuration.
@@ -543,6 +559,7 @@ impl TenantTokenRegistryBuilder {
             import_by_key,
             retained: self.retained,
             bagged: self.bagged,
+            bag_field: self.bag_field.unwrap_or(attribute_field::SCOPE),
             value_slot,
             retain_mask,
         }
@@ -656,6 +673,31 @@ mod otlp {
     pub const ANY_VALUE_BYTES_TAG: u8 = (7 << 3) | 2;
 }
 
+/// OTLP attributes field numbers a bagged context can be tagged with.
+///
+/// These are the destinations a consumer chooses between when initializing a
+/// registry. They differ in field number and in nothing else, which is why one
+/// encoding serves all of them.
+pub mod attribute_field {
+    /// `Resource.attributes`.
+    pub const RESOURCE: u32 = 1;
+
+    /// `InstrumentationScope.attributes`. The default: scope attributes are
+    /// shared by every record under one `ScopeLogs`/`ScopeSpans`, and batches
+    /// are already partitioned by tenant conditions, so one batch means one
+    /// scope means one copy.
+    pub const SCOPE: u32 = 3;
+
+    /// `LogRecord.attributes`.
+    pub const LOG_RECORD: u32 = 6;
+
+    /// `Exemplar.filtered_attributes`.
+    pub const EXEMPLAR: u32 = 7;
+
+    /// `Span.attributes`.
+    pub const SPAN: u32 = 9;
+}
+
 /// Append a base-128 varint.
 fn put_varint(buf: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
@@ -746,12 +788,15 @@ fn any_value_bytes(blob: &[u8], at: usize) -> Option<&[u8]> {
 /// ```
 ///
 /// The blob opens with the bag: `bag_len` bytes holding a run of
-/// `<len> <KeyValue>` entries carrying no field tag, so a consumer chooses the
-/// destination field. Value-only entries follow as bare `<len> <AnyValue>`.
+/// `<tag> <len> <KeyValue>` entries already tagged with the consumer's
+/// attributes field, so the region is a complete repeated field and is read
+/// whole rather than entry by entry. Value-only entries follow as bare
+/// `<len> <AnyValue>`, which no consumer reads as a run.
 fn pack_words<'n>(
     scratch: &mut TokenScratch,
     resolved: u64,
     epoch: u16,
+    bag_field: u32,
     slot_name: impl Fn(usize) -> &'n str,
 ) -> Arc<[u64]> {
     let TokenScratch {
@@ -781,6 +826,7 @@ fn pack_words<'n>(
             + 1
             + varint_len(any_value_len(value.len()) as u64)
             + any_value_len(value.len());
+        put_varint(blob, (u64::from(bag_field) << 3) | 2);
         put_varint(blob, inner as u64);
         blob.push(otlp::KEY_VALUE_KEY_TAG);
         put_varint(blob, name.len() as u64);
@@ -1166,7 +1212,13 @@ impl TenantTokenRegistry {
                 }
             };
         }
-        pack_words(scratch, resolved, self.epoch, self.slot_names())
+        pack_words(
+            scratch,
+            resolved,
+            self.epoch,
+            self.bag_field,
+            self.slot_names(),
+        )
     }
 
     /// Value carried for a token key, if the key has a value slot and the
@@ -1220,7 +1272,13 @@ impl TenantTokenRegistry {
         if !any {
             return None;
         }
-        Some(pack_words(scratch, 0, self.epoch, self.slot_names()))
+        Some(pack_words(
+            scratch,
+            0,
+            self.epoch,
+            self.bag_field,
+            self.slot_names(),
+        ))
     }
 
     /// Build a consumer's probe tables for its ordered conditions.
@@ -1478,34 +1536,15 @@ impl<'a> TenantView<'a> {
         any_value_bytes(self.blob(), at)
     }
 
-    /// Append the bagged keys to `dst` as repeated `KeyValue` under `field`.
+    /// The bagged keys, as a complete OTLP repeated `KeyValue` field.
     ///
-    /// The bag is stored without a field tag precisely so the consumer picks
-    /// the destination -- resource, scope, log record, span, or exemplar
-    /// attributes all differ in field number and in nothing else. Each entry
-    /// is copied verbatim; nothing is re-encoded.
-    ///
-    /// Returns the number of attributes appended.
-    pub fn append_attributes(&self, dst: &mut Vec<u8>, field: u32) -> usize {
-        let bag = &self.blob()[..self.bag_len()];
-        let tag = (u64::from(field) << 3) | 2;
-        let mut at = 0usize;
-        let mut count = 0usize;
-        while at < bag.len() {
-            let Some((len, body)) = get_varint(bag, at) else {
-                break;
-            };
-            let Ok(len) = usize::try_from(len) else { break };
-            let Some(entry) = bag.get(body..body + len) else {
-                break;
-            };
-            put_varint(dst, tag);
-            put_varint(dst, len as u64);
-            dst.extend_from_slice(entry);
-            at = body + len;
-            count += 1;
-        }
-        count
+    /// The run is already tagged with the field number the registry was
+    /// initialized with, so this is the payload itself and not an input to an
+    /// encoder: a consumer splices the slice in with one copy, or borrows it
+    /// outright. Nothing here is re-encoded, re-tagged or walked per entry.
+    #[must_use]
+    pub fn attributes(&self) -> &'a [u8] {
+        &self.blob()[..self.bag_len()]
     }
 
     /// True when any key was captured into the bag.
