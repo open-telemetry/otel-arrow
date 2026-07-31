@@ -44,8 +44,8 @@ wasmtime dependency. Enable `wasm` to build and register the processor.
   (URN `urn:otel:processor:wasm_processor`).
 - Passes an opaque, **host-managed pdata resource** across the host-guest
   boundary. Bulk Arrow data never crosses the WASM boundary; the host owns
-  the underlying `RecordBatch` data and runs kernels natively.
-- Bridges `OtapPdata` <-> Arrow `RecordBatch` while preserving the pdata
+  OTAP records and runs kernels natively.
+- Bridges `OtapPdata` <-> OTAP records while preserving the pdata
   `Context` (Ack/Nack routing and transport headers).
 
 ## Host-kernel orchestration model
@@ -69,8 +69,10 @@ Current experimental behavior is intentionally narrow:
 - `resource` and `scope` are rejected until they are implemented.
 - Invalid pdata handles and invalid filter operations are rejected rather than
   silently treated as no-ops.
-- Filtering currently targets the root record batch only; child-batch
-  relationship filtering is deferred.
+- Record-scope filtering preserves OTAP parent/child relationships by applying
+  the same selection to root and child batches.
+- The processor reports minimal telemetry on `CollectTelemetry` for guest
+  process calls, guest process errors, and guest-driven drops.
 
 ## Configuration
 

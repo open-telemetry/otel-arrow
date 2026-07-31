@@ -34,6 +34,8 @@ mod bridge;
 #[cfg(feature = "wasm")]
 mod host;
 #[cfg(feature = "wasm")]
+mod metrics;
+#[cfg(feature = "wasm")]
 mod processor;
 
 /// Generated component-model bindings for the `kernel-processor` world.
