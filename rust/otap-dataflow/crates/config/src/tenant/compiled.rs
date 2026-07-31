@@ -507,7 +507,19 @@ impl TenantTokenRegistryBuilder {
                 };
                 let key = self.intern_key(&entry.key);
                 let table = &mut self.key_literals[usize::from(key)];
-                let next = FIRST_SYMBOL + u16::try_from(table.len()).unwrap_or(u16::MAX);
+                // Recycling a symbol would let two distinct literals compare
+                // equal, so exhausting the space is an error rather than a wrap.
+                let next = u16::try_from(table.len())
+                    .ok()
+                    .and_then(|n| n.checked_add(FIRST_SYMBOL))
+                    .ok_or_else(|| {
+                        config_error(format!(
+                            "tenant key '{}' declares more distinct values than \
+                             the symbol space holds ({} max)",
+                            entry.key,
+                            u16::MAX - FIRST_SYMBOL,
+                        ))
+                    })?;
                 let _ = table.entry(value.as_bytes().into()).or_insert(next);
             }
             for token in &bound {
@@ -1732,5 +1744,181 @@ impl<'a> TenantView<'a> {
     #[must_use]
     pub fn has_attributes(&self) -> bool {
         self.bag_len() > 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tenant::{Condition, Entry, TenantTokenSpec, TenantTokens};
+
+    fn entry(key: &str, value: &str) -> Entry {
+        Entry {
+            key: key.to_owned(),
+            value: Some(value.to_owned()),
+        }
+    }
+
+    fn condition(pairs: &[(&str, &str)]) -> Condition {
+        Condition {
+            entries: pairs.iter().map(|(k, v)| entry(k, v)).collect(),
+        }
+    }
+
+    /// Build a registry over two match-only keys read from transport headers.
+    fn fixture(conditions: &[Condition]) -> TenantTokenRegistry {
+        let extractors = [("x-tenant-id", "tenant_id"), ("x-env", "env")]
+            .iter()
+            .map(|(wire, key)| Extractor::TransportHeader {
+                key: (*key).to_owned(),
+                transport_header: (*wire).to_owned(),
+                retain: false,
+                bag: false,
+            })
+            .collect();
+        let mut tokens = TenantTokens::default();
+        let _ = tokens.insert("gateway".to_owned(), TenantTokenSpec { extractors });
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        builder
+            .declare_conditions(None, conditions)
+            .expect("conditions declare");
+        builder.build(1).expect("layout fits")
+    }
+
+    fn resolve(reg: &TenantTokenRegistry, headers: &[(&str, &[u8])]) -> Arc<[u64]> {
+        let mut scratch = TokenScratch::new();
+        reg.resolve(
+            &mut scratch,
+            TokenInputs::new(headers.iter().map(|(k, v)| (*k, *v))),
+        )
+        .expect("token resolves")
+    }
+
+    /// Scenario: requests are probed against conditions whose declared literals
+    /// share keys, including values that differ only in one byte or in length.
+    /// Guarantees: a condition matches a request only when every declared
+    /// `key: value` pair is byte-for-byte equal to the value the request
+    /// carried, so no request can be routed to another tenant's condition.
+    #[test]
+    fn matching_is_exact() {
+        let conditions = [
+            condition(&[("tenant_id", "acme"), ("env", "prod")]),
+            condition(&[("tenant_id", "globex"), ("env", "prod")]),
+            condition(&[("tenant_id", "acme"), ("env", "staging")]),
+        ];
+        let reg = fixture(&conditions);
+        let set = reg
+            .condition_set(None, &conditions)
+            .expect("condition set builds");
+
+        let cases: [(&[u8], &[u8], Option<u16>); 8] = [
+            // Each declared combination selects its own condition, and never
+            // the one that shares a key with it.
+            (b"acme", b"prod", Some(0)),
+            (b"globex", b"prod", Some(1)),
+            (b"acme", b"staging", Some(2)),
+            // A combination no condition declares matches nothing, even though
+            // both of its values are declared elsewhere.
+            (b"globex", b"staging", None),
+            // Near misses: one byte differs, a prefix, and a suffix.
+            (b"acmf", b"prod", None),
+            (b"acm", b"prod", None),
+            (b"acme ", b"prod", None),
+            // An undeclared value collapses to SYMBOL_UNKNOWN, which no
+            // condition can name.
+            (b"initech", b"prod", None),
+        ];
+        for (tenant, env, expected) in cases {
+            let words = resolve(&reg, &[("x-tenant-id", tenant), ("x-env", env)]);
+            let view = TenantView::new(&words);
+            assert_eq!(
+                set.first_match(&view),
+                expected,
+                "tenant={:?} env={:?}",
+                String::from_utf8_lossy(tenant),
+                String::from_utf8_lossy(env),
+            );
+        }
+    }
+
+    /// Scenario: the keys a condition tests are declared with `retain: false`,
+    /// so the request context carries none of their bytes.
+    /// Guarantees: matching stays exact without carrying the values, because
+    /// verification happens at the receiver against the registry's own copy of
+    /// each literal rather than against anything held in the request.
+    #[test]
+    fn match_only_keys_carry_no_bytes() {
+        let conditions = [condition(&[("tenant_id", "acme"), ("env", "prod")])];
+        let reg = fixture(&conditions);
+        let set = reg
+            .condition_set(None, &conditions)
+            .expect("condition set builds");
+
+        let words = resolve(&reg, &[("x-tenant-id", b"acme"), ("x-env", b"prod")]);
+        let view = TenantView::new(&words);
+        assert_eq!(set.first_match(&view), Some(0));
+        assert!(view.is_empty(), "match-only keys must carry no bytes");
+        assert!(!view.has_attributes());
+    }
+
+    /// Scenario: a consumer builds a condition set testing a literal that was
+    /// never interned by `declare_conditions`.
+    /// Guarantees: the build fails instead of assigning the literal the same
+    /// symbol every unrecognized request value takes, which would otherwise
+    /// make the condition match all of them at once.
+    #[test]
+    fn undeclared_literal_is_rejected() {
+        let declared = [condition(&[("tenant_id", "acme"), ("env", "prod")])];
+        let reg = fixture(&declared);
+
+        let undeclared = [condition(&[("tenant_id", "initech"), ("env", "prod")])];
+        let err = reg
+            .condition_set(None, &undeclared)
+            .expect_err("undeclared literal must fail closed");
+        assert!(
+            format!("{err:?}").contains("never declared"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// Scenario: every declared value tuple is packed into the one-word
+    /// signature used as the probe key, with enough declared values per key
+    /// that a narrowed bit field would force two tuples to share a word.
+    /// Guarantees: the packing is injective over declared values, so equality
+    /// of packed words is equality of the underlying values and the word can
+    /// serve as a hash key without risking a cross-tenant match.
+    #[test]
+    fn signature_packing_is_injective() {
+        const TENANTS: [&str; 3] = ["acme", "globex", "initech"];
+        const ENVS: [&str; 3] = ["prod", "staging", "dev"];
+
+        let conditions: Vec<Condition> = TENANTS
+            .iter()
+            .zip(ENVS.iter())
+            .map(|(t, e)| condition(&[("tenant_id", t), ("env", e)]))
+            .collect();
+        let reg = fixture(&conditions);
+
+        let mut seen: AHashMap<u64, (&str, &str)> = AHashMap::new();
+        for tenant in TENANTS {
+            for env in ENVS {
+                let words = resolve(
+                    &reg,
+                    &[
+                        ("x-tenant-id", tenant.as_bytes()),
+                        ("x-env", env.as_bytes()),
+                    ],
+                );
+                let view = TenantView::new(&words);
+                let previous = seen.insert(view.signature_word(0), (tenant, env));
+                assert!(
+                    previous.is_none(),
+                    "declared tuples must pack to distinct words: \
+                     {tenant}/{env} collided with {previous:?}",
+                );
+            }
+        }
+        assert_eq!(seen.len(), TENANTS.len() * ENVS.len());
     }
 }

@@ -343,7 +343,7 @@ lookup per pair, and the packed context still carries one word per pair. What
 changed is that the word is now a dictionary encoding rather than a digest, so
 the lookup is exact instead of probabilistic.
 
-Two things fail closed:
+Three things fail closed:
 
 - A condition testing a literal the registry never interned is **rejected at
   build time**. Such a literal would otherwise take symbol 1, which every
@@ -354,6 +354,31 @@ Two things fail closed:
   rather than narrowed, since narrowing is exactly the collision this section
   exists to prevent. The budget is generous: four keys with 65,000 declared
   values each, eight keys with 254 each, or sixteen keys with fourteen each.
+- A key declaring more distinct literals than the symbol space holds is
+  rejected at build time. Wrapping the counter would recycle a symbol, letting
+  two distinct literals compare equal -- the same cross-wire by a different
+  route.
+
+#### Where hashing remains
+
+Dictionary encoding does not remove hashing, and it is not meant to. It
+restores the step that makes hashing safe. Both lookups on the path are hash
+lookups, and **both verify**:
+
+- **Value to symbol, at resolve.** The raw value bytes are hashed to find a
+  bucket; the dictionary then compares them against the literal it owns.
+- **Signature word to condition, at probe.** The packed word is hashed to find
+  a bucket; the map then compares the whole word.
+
+In each case the hash selects a bucket and a comparison decides the answer,
+which is the discipline a hash join follows. The second comparison is exact
+*because* the packing is injective: the word is not a lossy summary of the
+values, it is a complete encoding of them, so `==` on words is `==` on values.
+
+The earlier design had the same two-level shape but no verification at either
+level, because the map's key *was* the digest. Its internal comparison
+confirmed only that two digests agreed, which is the thing that was already
+assumed.
 
 #### Why match-only keys still cost zero bytes
 
@@ -1362,16 +1387,16 @@ Paths below are relative to `crates/`.
 
 ## Prototype limitations
 
-- No tests were written for this prototype; validation was by full-suite
-  regression plus live end-to-end runs.
-- Token resolution is wired into the OTLP/HTTP receiver only. Other receivers
-  still use the capture policy. `TokenInputs` is the extension point: new
-  sources of tenant material are added there rather than at every receiver.
+- Tests cover the matching boundary only: exact matching including near
+  misses, zero-byte match-only keys, fail-closed rejection of an undeclared
+  literal, and injective signature packing. Each was checked by mutation --
+  breaking the invariant makes them fail -- since a boundary test that cannot
+  fail is worth nothing. Everything else is validated by targeted checks,
+  benchmarks and live runs.
+- Token resolution is not yet wired into any receiver; the capture policy is
+  still the live path. `TokenInputs` is the extension point: new sources of
+  tenant material are added there rather than at every receiver.
 - Only `exporter:otlp_grpc` implements `tenant_headers`.
-- The name-bearing capture region still exists in the packed layout, so a wire
-  name can still reach an egress boundary without being declared. Closing that
-  hole is the migration described in
-  [Retiring the capture policy](#retiring-the-capture-policy).
 - Conditions are compiled against the union of all conditions declared in a
   group; graph reachability is not considered, so an unreachable node still
   contributes pair slots. The baseline requires the reachable cross-product:
