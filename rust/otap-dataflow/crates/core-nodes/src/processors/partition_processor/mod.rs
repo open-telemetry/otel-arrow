@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::SignalType;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_config::tenant::compiled::{KeyId, TenantTokenRegistry, TenantView, TokenScratch};
 use otap_df_engine::config::ProcessorConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
@@ -29,7 +30,6 @@ use otap_df_otap::OTAP_PROCESSOR_FACTORIES;
 use otap_df_otap::accessory::context::split_contexts::Contexts;
 use otap_df_otap::accessory::slots::Key;
 use otap_df_otap::pdata::{Context, OtapPdata};
-use otap_df_otap::transport_headers::{TransportHeader, ValueKind};
 use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otap_df_query_engine::parser::default_parser_options;
 use otap_df_query_engine::pipeline::partition::{PartitionValue, Partitioner};
@@ -102,9 +102,44 @@ pub static PARTITION_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 pub struct PartitionProcessor {
     contexts: Contexts,
     partitioner: Partitioner,
-    header_name: String,
-    serialization_strategy: PartitionValueSerializeStrategy,
+    /// Everything needed to name a partition, kept in its own field so that
+    /// naming borrows disjointly from the partitioner that yields the values.
+    namer: PartitionNamer,
     metrics: MetricSet<Metrics>,
+}
+
+/// Writes a partition value onto the tenant key this processor names.
+struct PartitionNamer {
+    /// The engine's compiled tenant tokens, and the key this processor writes.
+    ///
+    /// Resolving the key once at startup keeps the per-partition path down to
+    /// a slot write; the key name itself never travels.
+    registry: Arc<TenantTokenRegistry>,
+    key: KeyId,
+    /// Reused across partitions so serializing a value costs no allocation.
+    value_buf: Vec<u8>,
+    scratch: TokenScratch,
+    serialization_strategy: PartitionValueSerializeStrategy,
+}
+
+impl PartitionNamer {
+    /// Build the outbound context for one partition by naming its value.
+    ///
+    /// One allocation per partition, for the derived context itself; the key
+    /// name does not travel and the value buffer is reused, so nothing else
+    /// on this path touches the allocator.
+    fn name(&mut self, source: &Context, value: PartitionValue) -> Arc<[u64]> {
+        self.value_buf.clear();
+        serialize_partition_value(&self.serialization_strategy, value, &mut self.value_buf);
+        let words = match source.tenant() {
+            Some(words) => words.as_ref(),
+            None => self.registry.empty_context().as_ref(),
+        };
+        let view = TenantView::new(words);
+        self.registry
+            .rewrite(&mut self.scratch, &view, self.key, &self.value_buf)
+            .expect("partition key was verified to hold a value slot at startup")
+    }
 }
 
 impl PartitionProcessor {
@@ -134,11 +169,39 @@ impl PartitionProcessor {
             }
         };
 
+        let registry = pipeline_ctx.tenant_registry().cloned().ok_or_else(|| {
+            otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "partition processor writes the tenant key `{}`, but this engine \
+                     declares no `tenant_tokens`",
+                    config.partition_key
+                ),
+            }
+        })?;
+        // Fail at startup rather than dropping partition values at runtime: a
+        // key that is undeclared, or declared without a retained value, has
+        // nowhere to carry the partition value the processor computes.
+        let partition_key = registry
+            .key_id(&config.partition_key)
+            .filter(|key| registry.value_slot(*key).is_some())
+            .ok_or_else(|| otap_df_config::error::Error::InvalidUserConfig {
+                error: format!(
+                    "partition processor writes the tenant key `{}`, which is not \
+                     declared by any extractor with `retain: true`",
+                    config.partition_key
+                ),
+            })?;
+
         Ok(Self {
             partitioner,
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
-            header_name: config.partition_header_name,
-            serialization_strategy: config.header_serialization_strategy,
+            namer: PartitionNamer {
+                registry,
+                key: partition_key,
+                value_buf: Vec::new(),
+                scratch: TokenScratch::new(),
+                serialization_strategy: config.header_serialization_strategy,
+            },
             metrics: pipeline_ctx.register_metrics(),
         })
     }
@@ -264,15 +327,8 @@ impl Processor<OtapPdata> for PartitionProcessor {
                         // partition so call to `next` will be `Some`
                         let partition = partitions.next().expect("at least one partition");
 
-                        // update the header values
-                        let mut headers =
-                            inbound_context.take_transport_headers().unwrap_or_default();
-                        headers.push(partition_value_to_transport_header(
-                            self.header_name.clone(),
-                            &self.serialization_strategy,
-                            partition.value,
-                        ));
-                        inbound_context.set_transport_headers(headers);
+                        let derived = self.namer.name(&inbound_context, partition.value);
+                        inbound_context.set_tenant(derived);
 
                         let pdata = OtapPdata::new(
                             inbound_context,
@@ -326,21 +382,13 @@ impl Processor<OtapPdata> for PartitionProcessor {
                                 }
                             })?;
 
-                            // set the transport header
-                            let mut pdata_context = Context::default();
-                            let mut headers = inbound_context
-                                .transport_headers()
-                                .cloned()
-                                .unwrap_or_default();
-                            headers.push(partition_value_to_transport_header(
-                                self.header_name.clone(),
-                                &self.serialization_strategy,
-                                partition.value,
-                            ));
-                            pdata_context.set_transport_headers(headers);
-                            if let Some(peer_addr) = inbound_context.peer_addr() {
-                                pdata_context.set_peer_addr(peer_addr);
-                            }
+                            // Fork the request-scoped metadata, then name this
+                            // partition. Building the context by hand here was
+                            // how the tenant context came to be dropped on this
+                            // path but kept on the single-partition path.
+                            let mut pdata_context = inbound_context.fork_request_scoped();
+                            let derived = self.namer.name(&pdata_context, partition.value);
+                            pdata_context.set_tenant(derived);
 
                             let outbound_batch_num_items = partition.batch.num_items();
                             let mut pdata = OtapPdata::new(pdata_context, partition.batch.into());
@@ -393,77 +441,48 @@ impl Processor<OtapPdata> for PartitionProcessor {
     }
 }
 
-fn partition_value_to_transport_header(
-    name: String,
+fn serialize_partition_value(
     strategy: &PartitionValueSerializeStrategy,
     partition_value: PartitionValue,
-) -> TransportHeader {
+    out: &mut Vec<u8>,
+) {
     match strategy {
-        PartitionValueSerializeStrategy::ToBytesLossy {
-            text_as_binary_header,
-        } => {
-            let value_kind = if matches!(partition_value, PartitionValue::String(_))
-                && !*text_as_binary_header
-            {
-                ValueKind::Text
-            } else {
-                ValueKind::Binary
-            };
-
-            let header_bytes = match partition_value {
-                PartitionValue::String(s) => s.into_bytes(),
-                PartitionValue::Binary(b) => b,
-                PartitionValue::Float(f) => f.to_le_bytes().to_vec(),
-                PartitionValue::Int(i) => i.to_le_bytes().to_vec(),
-                PartitionValue::UInt(i) => i.to_le_bytes().to_vec(),
-                PartitionValue::Boolean(b) => vec![if b { 1 } else { 0 }],
-                PartitionValue::Null => Vec::new(),
-            };
-
-            TransportHeader {
-                wire_name: name.clone(),
-                name,
-                value_kind,
-                value: header_bytes,
-            }
-        }
+        PartitionValueSerializeStrategy::ToBytesLossy => match partition_value {
+            PartitionValue::String(s) => out.extend_from_slice(s.as_bytes()),
+            PartitionValue::Binary(b) => out.extend_from_slice(&b),
+            PartitionValue::Float(f) => out.extend_from_slice(&f.to_le_bytes()),
+            PartitionValue::Int(i) => out.extend_from_slice(&i.to_le_bytes()),
+            PartitionValue::UInt(i) => out.extend_from_slice(&i.to_le_bytes()),
+            PartitionValue::Boolean(b) => out.push(u8::from(b)),
+            PartitionValue::Null => {}
+        },
         PartitionValueSerializeStrategy::Json => {
-            let header_bytes = match partition_value {
-                PartitionValue::String(str) => {
-                    serde_json::to_vec(&str).expect("can json serialize string")
+            // `Vec<u8>` is an `io::Write`, so serializing appends in place and
+            // the reused buffer keeps this path allocation-free.
+            let ok = match partition_value {
+                PartitionValue::String(v) => serde_json::to_writer(&mut *out, &v),
+                PartitionValue::Binary(v) => serde_json::to_writer(&mut *out, &v),
+                PartitionValue::Boolean(v) => serde_json::to_writer(&mut *out, &v),
+                PartitionValue::Int(v) => serde_json::to_writer(&mut *out, &v),
+                PartitionValue::UInt(v) => serde_json::to_writer(&mut *out, &v),
+                PartitionValue::Null => serde_json::to_writer(&mut *out, &Value::Null),
+                // JSON has no encoding for these, so they keep the textual
+                // forms the previous transport-header path produced.
+                PartitionValue::Float(f) if f.is_nan() => {
+                    out.extend_from_slice(b"NaN");
+                    Ok(())
                 }
-                PartitionValue::Binary(bin) => {
-                    serde_json::to_vec(&bin).expect("can json serialize byte arr")
-                }
-                PartitionValue::Boolean(bool) => {
-                    serde_json::to_vec(&bool).expect("can json serialize bool")
-                }
-                PartitionValue::Float(float) => {
-                    if float.is_nan() {
-                        "NaN".as_bytes().to_vec()
-                    } else if float.is_infinite() {
-                        if float.is_sign_negative() {
-                            "-Inf".as_bytes().to_vec()
-                        } else {
-                            "Inf".as_bytes().to_vec()
-                        }
+                PartitionValue::Float(f) if f.is_infinite() => {
+                    out.extend_from_slice(if f.is_sign_negative() {
+                        b"-Inf".as_slice()
                     } else {
-                        serde_json::to_vec(&float).expect("can json serialize float")
-                    }
+                        b"Inf".as_slice()
+                    });
+                    Ok(())
                 }
-                PartitionValue::Int(i) => serde_json::to_vec(&i).expect("can json serialize int"),
-                PartitionValue::UInt(i) => serde_json::to_vec(&i).expect("can json serialize int"),
-                PartitionValue::Null => {
-                    serde_json::to_vec(&Value::Null).expect("can serialize null")
-                }
+                PartitionValue::Float(f) => serde_json::to_writer(&mut *out, &f),
             };
-
-            TransportHeader {
-                wire_name: name.clone(),
-                name,
-                value_kind: ValueKind::Text,
-                value: header_bytes,
-            }
+            ok.expect("writing json to a Vec cannot fail");
         }
     }
 }
@@ -474,6 +493,7 @@ mod test {
 
     use super::*;
 
+    use otap_df_config::tenant::compiled::{TenantTokenRegistryBuilder, TokenInputs};
     use otap_df_engine::{
         capability::registry::Capabilities,
         context::ControllerContext,
@@ -504,6 +524,58 @@ mod test {
     };
     use prost::Message as _;
 
+    /// Name the partition processor writes, and a second key standing in for
+    /// request metadata that arrived at the receiver and must survive.
+    const PARTITION_KEY: &str = "partition-header";
+    const CARRIED_KEY: &str = "h1";
+
+    /// A registry declaring both keys with retained values, as an engine's
+    /// `tenant_tokens` block would. Each key gets its own token, since a token
+    /// resolves only when every one of its extractors is satisfied.
+    fn test_registry() -> Arc<TenantTokenRegistry> {
+        use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
+
+        let mut tokens = TenantTokens::default();
+        for key in [PARTITION_KEY, CARRIED_KEY] {
+            let _ = tokens.insert(
+                key.to_owned(),
+                TenantTokenSpec {
+                    extractors: vec![Extractor::TransportHeader {
+                        key: key.to_owned(),
+                        transport_header: format!("x-{key}"),
+                        retain: true,
+                        bag: false,
+                    }],
+                },
+            );
+        }
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        Arc::new(builder.build(1).expect("layout fits"))
+    }
+
+    /// Read a retained tenant value back out of an outbound context.
+    fn tenant_value(context: &Context, key: &str) -> Option<Vec<u8>> {
+        let registry = test_registry();
+        let view = TenantView::new(context.tenant()?.as_ref());
+        let key = registry.key_id(key)?;
+        registry.retained_value(&view, key).map(<[u8]>::to_vec)
+    }
+
+    /// An inbound context as a receiver would have produced it.
+    fn context_with_tenant(pairs: &[(&str, &[u8])]) -> Context {
+        let registry = test_registry();
+        let mut scratch = TokenScratch::new();
+        let mut context = Context::default();
+        if let Some(words) = registry.resolve(
+            &mut scratch,
+            TokenInputs::new(pairs.iter().map(|(k, v)| (*k, *v))),
+        ) {
+            context.set_tenant(words);
+        }
+        context
+    }
+
     fn create_processor_with_config(
         config: Value,
         runtime: &TestRuntime<OtapPdata>,
@@ -520,6 +592,8 @@ mod test {
             1,
             0,
         );
+        let mut pipeline_context = pipeline_context;
+        pipeline_context.set_tenant_registry(test_registry());
         let node_id = test_node("partition_processor");
         create_partition_processor(
             pipeline_context,
@@ -583,7 +657,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
             }),
             &runtime,
         )
@@ -647,16 +721,9 @@ mod test {
                 for (partition_value, expected_log_records) in expected {
                     let emitted_batch = out.pop_front().unwrap();
                     let (context, payload) = emitted_batch.into_parts();
-                    let headers = context.transport_headers().unwrap();
-                    let header = headers.find_by_name(header_name).next().unwrap();
                     assert_eq!(
-                        header,
-                        &TransportHeader {
-                            name: header_name.to_string(),
-                            wire_name: header_name.to_string(),
-                            value_kind: ValueKind::Text,
-                            value: partition_value.as_bytes().to_vec()
-                        }
+                        tenant_value(&context, header_name).as_deref(),
+                        Some(partition_value.as_bytes())
                     );
                     outbound_contexts.push(context);
 
@@ -724,7 +791,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
             }),
             &runtime,
         )
@@ -772,16 +839,9 @@ mod test {
 
                 let emitted_batch = out.pop_front().unwrap();
                 let (context, payload) = emitted_batch.into_parts();
-                let headers = context.transport_headers().unwrap();
-                let header = headers.find_by_name(header_name).next().unwrap();
                 assert_eq!(
-                    header,
-                    &TransportHeader {
-                        name: header_name.to_string(),
-                        wire_name: header_name.to_string(),
-                        value_kind: ValueKind::Text,
-                        value: "0".as_bytes().to_vec()
-                    }
+                    tenant_value(&context, header_name).as_deref(),
+                    Some("0".as_bytes())
                 );
 
                 let proto_bytes = OtlpProtoBytes::try_from_with_default(payload).unwrap();
@@ -809,7 +869,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
             }),
             &runtime,
         )
@@ -863,7 +923,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
             }),
             &runtime,
         )
@@ -901,10 +961,7 @@ mod test {
                     )],
                 }));
 
-                let mut context = Context::default();
-                let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text("h1", "header1", "hello world"));
-                context.set_transport_headers(headers);
+                let mut context = context_with_tenant(&[("x-h1", b"hello world")]);
                 context.set_peer_addr("10.0.0.1:5005".parse().unwrap());
                 let mut pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
                 pdata.start_flow_metric();
@@ -915,21 +972,26 @@ mod test {
 
                 for mut out in ctx.drain_pdata().await {
                     let flow_counter = out.take_flow_compute();
-                    let (mut context, _) = out.into_parts();
-                    let headers = context.take_transport_headers().unwrap();
-                    assert!(headers.find_by_name("h1").next().is_some());
+                    let (context, _) = out.into_parts();
+                    // The value the receiver resolved must survive the fan-out;
+                    // building each outbound context by hand is what used to
+                    // drop it on this path but not the single-partition one.
+                    assert_eq!(
+                        tenant_value(&context, CARRIED_KEY).as_deref(),
+                        Some(b"hello world".as_slice())
+                    );
                     assert_eq!(context.peer_addr(), Some("10.0.0.1:5005".parse().unwrap()));
 
                     // assert the flow counter is distributed outbound batches in proportion
                     // to their size relative to the input
-                    let partition_header = headers.find_by_name(header_name).next().unwrap();
-                    if partition_header.value == "0".as_bytes().to_vec() {
+                    let partition = tenant_value(&context, header_name).unwrap();
+                    if partition == b"0" {
                         assert_eq!(flow_counter, Some(4));
                     }
-                    if partition_header.value == "1".as_bytes().to_vec() {
+                    if partition == b"1" {
                         assert_eq!(flow_counter, Some(2));
                     }
-                    if partition_header.value == "2".as_bytes().to_vec() {
+                    if partition == b"2" {
                         assert_eq!(flow_counter, Some(2));
                     }
                 }
@@ -954,10 +1016,7 @@ mod test {
                         )],
                     )],
                 }));
-                let mut context = Context::default();
-                let mut headers = context.take_transport_headers().unwrap_or_default();
-                headers.push(TransportHeader::text("h1", "header1", "hello world"));
-                context.set_transport_headers(headers);
+                let context = context_with_tenant(&[("x-h1", b"hello world")]);
                 let pdata = OtapPdata::new(context, OtapPayload::OtapArrowRecords(otap_batch));
                 ctx.process(Message::PData(pdata))
                     .await
@@ -965,9 +1024,15 @@ mod test {
                 let out = ctx.drain_pdata().await.into_iter().collect::<Vec<_>>();
                 assert_eq!(out.len(), 1);
                 let out = out.into_iter().next().unwrap();
-                let (mut context, _) = out.into_parts();
-                let headers = context.take_transport_headers().unwrap();
-                assert!(headers.find_by_name("h1").next().is_some());
+                let (context, _) = out.into_parts();
+                assert_eq!(
+                    tenant_value(&context, CARRIED_KEY).as_deref(),
+                    Some(b"hello world".as_slice())
+                );
+                assert_eq!(
+                    tenant_value(&context, header_name).as_deref(),
+                    Some(b"1".as_slice())
+                );
             })
             .validate(|_ctx| async move {})
     }
@@ -980,7 +1045,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
             }),
             &runtime,
         )
@@ -1073,247 +1138,69 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
-    #[test]
-    fn test_partition_value_to_transport_header_to_bytes_lossy() {
-        let header_name = "partition";
-        let strategy = PartitionValueSerializeStrategy::ToBytesLossy {
-            text_as_binary_header: false,
-        };
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::String("test".to_string()),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "test".as_bytes().to_vec()
-            }
-        );
-
-        // ensure we also encode as Binary if configured ...
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &PartitionValueSerializeStrategy::ToBytesLossy {
-                text_as_binary_header: true,
-            },
-            PartitionValue::String("test".to_string()),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: "test".as_bytes().to_vec()
-            }
-        );
-
-        // check other header types ...
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Int(514),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: 514i64.to_le_bytes().to_vec()
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Float(14.7),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: 14.7f64.to_le_bytes().to_vec()
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Boolean(true),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![1]
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Boolean(false),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![0]
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Binary(vec![4, 1, 8]),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![4, 1, 8],
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Null,
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Binary,
-                value: vec![]
-            }
-        );
+    fn serialized(strategy: &PartitionValueSerializeStrategy, value: PartitionValue) -> Vec<u8> {
+        let mut out = Vec::new();
+        serialize_partition_value(strategy, value, &mut out);
+        out
     }
 
+    /// Scenario: every `PartitionValue` variant is serialized with the lossy
+    /// byte strategy.
+    /// Guarantees: strings and binary keep their bytes verbatim, numbers use
+    /// little-endian, booleans are a single 0 or 1 byte, and null is empty --
+    /// so a partition value round-trips to the same bytes a downstream
+    /// exporter would have written as a header.
     #[test]
-    fn test_partition_value_to_transport_header_json() {
-        let header_name = "partition";
-        let strategy = PartitionValueSerializeStrategy::Json;
+    fn to_bytes_lossy_serialization() {
+        let s = PartitionValueSerializeStrategy::ToBytesLossy;
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::String("test".to_string()),
+        assert_eq!(
+            serialized(&s, PartitionValue::String("test".into())),
+            b"test"
         );
         assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "\"test\"".as_bytes().to_vec()
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Int(514),
+            serialized(&s, PartitionValue::Binary(vec![1, 2, 3])),
+            [1, 2, 3]
         );
         assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "514".as_bytes().to_vec()
-            }
+            serialized(&s, PartitionValue::Int(-2)),
+            (-2i64).to_le_bytes()
         );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Float(14.7),
-        );
+        assert_eq!(serialized(&s, PartitionValue::UInt(7)), 7u64.to_le_bytes());
         assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "14.7".as_bytes().to_vec()
-            }
+            serialized(&s, PartitionValue::Float(1.5)),
+            1.5f64.to_le_bytes()
         );
+        assert_eq!(serialized(&s, PartitionValue::Boolean(true)), [1]);
+        assert_eq!(serialized(&s, PartitionValue::Boolean(false)), [0]);
+        assert!(serialized(&s, PartitionValue::Null).is_empty());
+    }
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Boolean(true),
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "true".as_bytes().to_vec()
-            }
-        );
+    /// Scenario: every `PartitionValue` variant is serialized with the JSON
+    /// strategy, including the floats JSON cannot represent.
+    /// Guarantees: values are written as JSON scalars, and NaN and the
+    /// infinities keep the textual forms the transport-header path produced
+    /// rather than silently becoming `null`.
+    #[test]
+    fn json_serialization() {
+        let s = PartitionValueSerializeStrategy::Json;
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Boolean(false),
-        );
         assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "false".as_bytes().to_vec()
-            }
+            serialized(&s, PartitionValue::String("test".into())),
+            br#""test""#
         );
+        assert_eq!(serialized(&s, PartitionValue::Binary(vec![1, 2])), b"[1,2]");
+        assert_eq!(serialized(&s, PartitionValue::Int(-2)), b"-2");
+        assert_eq!(serialized(&s, PartitionValue::UInt(7)), b"7");
+        assert_eq!(serialized(&s, PartitionValue::Float(1.5)), b"1.5");
+        assert_eq!(serialized(&s, PartitionValue::Boolean(true)), b"true");
+        assert_eq!(serialized(&s, PartitionValue::Null), b"null");
 
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Binary(vec![4, 1, 8]),
-        );
+        assert_eq!(serialized(&s, PartitionValue::Float(f64::NAN)), b"NaN");
+        assert_eq!(serialized(&s, PartitionValue::Float(f64::INFINITY)), b"Inf");
         assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "[4,1,8]".as_bytes().to_vec()
-            }
-        );
-
-        let header = partition_value_to_transport_header(
-            header_name.to_string(),
-            &strategy,
-            PartitionValue::Null,
-        );
-        assert_eq!(
-            header,
-            TransportHeader {
-                name: header_name.to_string(),
-                wire_name: header_name.to_string(),
-                value_kind: ValueKind::Text,
-                value: "null".as_bytes().to_vec()
-            }
+            serialized(&s, PartitionValue::Float(f64::NEG_INFINITY)),
+            b"-Inf"
         );
     }
 
@@ -1333,7 +1220,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
                 "outbound_request_limit": 1,
             }),
             &runtime,
@@ -1431,7 +1318,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
                 "inbound_request_limit": 2,
                 "outbound_request_limit": 2,
             }),
@@ -1540,7 +1427,7 @@ mod test {
         let processor = create_processor_with_config(
             serde_json::json!({
                 "partition_by": { "opl_expression": expression },
-                "partition_header_name": header_name,
+                "partition_key": header_name,
                 "inbound_request_limit": 1,
                 "outbound_request_limit": 10,
             }),

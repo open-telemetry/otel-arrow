@@ -10,8 +10,12 @@ pub struct Config {
     /// configuration for how to compute the partition
     pub partition_by: PartitionByConfig,
 
-    /// name of the transport header to which the partition value will be written
-    pub partition_header_name: String,
+    /// Name of the tenant token key to which the partition value is written.
+    ///
+    /// The key must be declared under `engine.tenant_tokens` with a value the
+    /// context retains; an exporter then decides what wire header, topic, or
+    /// partition it drives.
+    pub partition_key: String,
 
     /// strategy to use when serializing partition results.
     #[serde(default)]
@@ -39,7 +43,7 @@ pub enum PartitionByConfig {
 /// so there needs to be a conversion. Different strategies may optimize for performance,
 /// vs preserving type information
 ///
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PartitionValueSerializeStrategy {
     /// Simply convert the header value to Binary by taking the bytes.
@@ -55,34 +59,11 @@ pub enum PartitionValueSerializeStrategy {
     /// This is a good strategy to use when, for example, there is some a-priori knowledge that
     /// all the types produced by the expression are the same, or when the serialization collisions
     /// between different types don't matter to downstream consumers.
-    ///
-    /// The header `value_kind` will be set to `Binary` for all non-string partition values.
-    /// When the value is a string value, the value_kind is controlled by the
-    /// `text_as_binary_header` flag.
-    ToBytesLossy {
-        /// Whether to set the `value_kind` as `Binary` in cases where the partition value is
-        /// a string value. When `false`, the value_kind will be set to `Text`.
-        /// When `true`, the value_kind will be set to `Binary` as it is for all other types.
-        #[serde(default = "default_text_as_binary_header")]
-        text_as_binary_header: bool,
-    },
+    #[default]
+    ToBytesLossy,
 
-    /// Partition values serialized as JSON string.
-    ///
-    /// This will produce headers with value_kind `Text`
+    /// Partition values serialized as a JSON scalar.
     Json,
-}
-
-impl Default for PartitionValueSerializeStrategy {
-    fn default() -> Self {
-        Self::ToBytesLossy {
-            text_as_binary_header: default_text_as_binary_header(),
-        }
-    }
-}
-
-const fn default_text_as_binary_header() -> bool {
-    false
 }
 
 const fn default_inbound_request_limit() -> NonZeroUsize {
@@ -101,7 +82,7 @@ mod test {
     fn test_deserialize_defaults() {
         let config: Config = serde_json::from_value(serde_json::json!({
             "partition_by": { "opl_expression": "name" },
-            "partition_header_name": "part.name"
+            "partition_key": "part.name"
         }))
         .unwrap();
 
@@ -109,10 +90,8 @@ mod test {
             config,
             Config {
                 partition_by: PartitionByConfig::OplExpression("name".to_string()),
-                partition_header_name: "part.name".to_string(),
-                header_serialization_strategy: PartitionValueSerializeStrategy::ToBytesLossy {
-                    text_as_binary_header: false,
-                },
+                partition_key: "part.name".to_string(),
+                header_serialization_strategy: PartitionValueSerializeStrategy::ToBytesLossy,
                 inbound_request_limit: NonZeroUsize::new(1024).unwrap(),
                 outbound_request_limit: NonZeroUsize::new(2048).unwrap(),
             }
@@ -123,7 +102,7 @@ mod test {
     fn test_choose_partition_serialization_strategy_json() {
         let config: Config = serde_json::from_value(serde_json::json!({
             "partition_by": { "opl_expression": "name" },
-            "partition_header_name": "part.name",
+            "partition_key": "part.name",
             "header_serialization_strategy": "json"
         }))
         .unwrap();
@@ -138,20 +117,14 @@ mod test {
     fn test_choose_partition_serialization_strategy_to_bytes_lossy() {
         let config: Config = serde_json::from_value(serde_json::json!({
             "partition_by": { "opl_expression": "name" },
-            "partition_header_name": "part.name",
-            "header_serialization_strategy":  {
-                "to_bytes_lossy": {
-                    "text_as_binary_header": true
-                }
-            }
+            "partition_key": "part.name",
+            "header_serialization_strategy": "to_bytes_lossy"
         }))
         .unwrap();
 
         assert_eq!(
             config.header_serialization_strategy,
-            PartitionValueSerializeStrategy::ToBytesLossy {
-                text_as_binary_header: true
-            }
+            PartitionValueSerializeStrategy::ToBytesLossy
         )
     }
 }

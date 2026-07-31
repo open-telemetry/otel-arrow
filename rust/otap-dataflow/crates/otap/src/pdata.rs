@@ -97,6 +97,27 @@ impl Context {
         }
     }
 
+    /// Fork the request-scoped metadata of this context, leaving Ack/Nack
+    /// routing state, flow metrics and signal at their defaults.
+    ///
+    /// A node that fans one request out into several -- the partition
+    /// processor is the motivating case -- needs each outbound to inherit what
+    /// describes the *request* (tenant context, peer address) while taking its
+    /// own subscription state. Enumerating those fields at the call site is
+    /// how they get silently dropped when a new one is added, so the list
+    /// lives here beside the fields themselves.
+    #[must_use]
+    pub fn fork_request_scoped(&self) -> Self {
+        Self {
+            stack: Vec::new(),
+            transport_headers: self.transport_headers.clone(),
+            tenant: self.tenant.clone(),
+            peer_addr: self.peer_addr,
+            flow_compute_ns: None,
+            signal: None,
+        }
+    }
+
     /// Subscribe to a set of interests.
     pub(crate) fn subscribe_to(
         &mut self,
@@ -664,14 +685,7 @@ impl OtapPdata {
     #[must_use]
     pub fn clone_without_context(&self) -> Self {
         Self {
-            context: Context {
-                stack: Vec::new(),
-                transport_headers: self.context.transport_headers.clone(),
-                tenant: self.context.tenant.clone(),
-                peer_addr: self.context.peer_addr,
-                flow_compute_ns: None,
-                signal: None,
-            },
+            context: self.context.fork_request_scoped(),
             payload: self.payload.clone(),
         }
     }

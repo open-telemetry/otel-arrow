@@ -12,19 +12,45 @@
 
 The partition processor can split a single batch into multiple partitions, each
 consisting of the records that have the same value for some evaluated
-partitioning expression. The value will be also be added as a header.
+partitioning expression. The value is written onto the request's tenant
+context, where exporters can read it to choose a wire header, a topic, or a
+partition key.
 
 ## Getting started
 
-Write the expression to use when partitioning telemetry batches, and choose the
-name of the header to which you'd like to have the partition value inserted.
+Write the expression to use when partitioning telemetry batches, and name the
+tenant key the partition value should be written to. That key must be declared
+at engine scope with `retain: true`, because the value has to travel with the
+request; the processor refuses to start otherwise, rather than dropping
+partition values at runtime.
+
+```yaml
+engine:
+  tenant_tokens:
+    k8s_namespace:
+      extractors:
+        - transport_header: x-k8s-ns
+          key: k8s-ns
+          retain: true
+```
 
 ```yaml
 type: processor.partition
 config:
   partition_by:
     opl_expression: resource.attributes["k8s.namespace.name"]
-  partition_header_name: k8s-ns
+  partition_key: k8s-ns
+```
+
+An exporter then decides how the value leaves the pipeline, so whether it goes
+out as text or binary metadata is settled there rather than here:
+
+```yaml
+type: exporter.otlp
+config:
+  tenant_headers:
+    - key: k8s-ns
+      header: x-k8s-ns
 ```
 
 The `opl_expression` can be any expression supported by the
