@@ -712,7 +712,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel.clone();
         let store_clone = store.clone();
-        let _ = tokio::spawn(async move {
+        let _handle = tokio::spawn(async move {
             let _ = store_clone.run(cancel_clone).await;
         });
 
@@ -784,7 +784,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_clone = cancel.clone();
         let store_clone = store.clone();
-        let _ = tokio::spawn(async move {
+        let _handle = tokio::spawn(async move {
             let _ = store_clone.run(cancel_clone).await;
         });
 
