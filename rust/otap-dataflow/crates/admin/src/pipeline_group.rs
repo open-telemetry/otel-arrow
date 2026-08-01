@@ -290,7 +290,6 @@ mod tests {
             Err(ControlPlaneError::PipelineNotFound)
         }
 
-
         fn pipeline_details(
             &self,
             _pipeline_group_id: &str,
@@ -706,10 +705,8 @@ mod tests {
     #[tokio::test]
     async fn shutdown_returns_ok_when_snapshot_is_non_empty_and_all_terminated() {
         let metrics_registry = TelemetryRegistryHandle::new();
-        let store = ObservedStateStore::new(
-            &ObservedStateSettings::default(),
-            metrics_registry.clone(),
-        );
+        let store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
         let reporter = store.reporter(otap_df_config::observed_state::SendPolicy::default());
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -719,18 +716,39 @@ mod tests {
             let _ = store_clone.run(cancel_clone).await;
         });
 
-        let key = otap_df_config::DeployedPipelineKey { pipeline_group_id: "default".into(), pipeline_id: "main".into(), core_id: 0, deployment_generation: 1 };
-        reporter.report(otap_df_telemetry::event::EngineEvent::admitted(key.clone(), None));
-        reporter.report(otap_df_telemetry::event::EngineEvent::ready(key.clone(), None));
-        reporter.report(otap_df_telemetry::event::EngineEvent::shutdown_requested(key.clone(), None));
-        reporter.report(otap_df_telemetry::event::EngineEvent::drained(key.clone(), None));
+        let key = otap_df_config::DeployedPipelineKey {
+            pipeline_group_id: "default".into(),
+            pipeline_id: "main".into(),
+            core_id: 0,
+            deployment_generation: 1,
+        };
+        reporter.report(otap_df_telemetry::event::EngineEvent::admitted(
+            key.clone(),
+            None,
+        ));
+        reporter.report(otap_df_telemetry::event::EngineEvent::ready(
+            key.clone(),
+            None,
+        ));
+        reporter.report(otap_df_telemetry::event::EngineEvent::shutdown_requested(
+            key.clone(),
+            None,
+        ));
+        reporter.report(otap_df_telemetry::event::EngineEvent::drained(
+            key.clone(),
+            None,
+        ));
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let app_state = AppState {
             observed_state_store: store.handle(),
             metrics_registry,
-            controller: stub(Ok(None), Ok(PipelineGroupConfig::new()), Ok(delete_status("succeeded"))),
+            controller: stub(
+                Ok(None),
+                Ok(PipelineGroupConfig::new()),
+                Ok(delete_status("succeeded")),
+            ),
             terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
@@ -739,7 +757,10 @@ mod tests {
 
         let response = shutdown_all_pipelines(
             State(app_state),
-            Query(OperationOptions { wait: true, timeout_secs: 1 }),
+            Query(OperationOptions {
+                wait: true,
+                timeout_secs: 1,
+            }),
         )
         .await
         .into_response();
@@ -756,10 +777,8 @@ mod tests {
     #[tokio::test]
     async fn shutdown_times_out_when_snapshot_is_non_empty_but_not_all_terminated() {
         let metrics_registry = TelemetryRegistryHandle::new();
-        let store = ObservedStateStore::new(
-            &ObservedStateSettings::default(),
-            metrics_registry.clone(),
-        );
+        let store =
+            ObservedStateStore::new(&ObservedStateSettings::default(), metrics_registry.clone());
         let reporter = store.reporter(otap_df_config::observed_state::SendPolicy::default());
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -769,16 +788,31 @@ mod tests {
             let _ = store_clone.run(cancel_clone).await;
         });
 
-        let key = otap_df_config::DeployedPipelineKey { pipeline_group_id: "default".into(), pipeline_id: "main".into(), core_id: 0, deployment_generation: 1 };
-        reporter.report(otap_df_telemetry::event::EngineEvent::admitted(key.clone(), None));
-        reporter.report(otap_df_telemetry::event::EngineEvent::ready(key.clone(), None));
+        let key = otap_df_config::DeployedPipelineKey {
+            pipeline_group_id: "default".into(),
+            pipeline_id: "main".into(),
+            core_id: 0,
+            deployment_generation: 1,
+        };
+        reporter.report(otap_df_telemetry::event::EngineEvent::admitted(
+            key.clone(),
+            None,
+        ));
+        reporter.report(otap_df_telemetry::event::EngineEvent::ready(
+            key.clone(),
+            None,
+        ));
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let app_state = AppState {
             observed_state_store: store.handle(),
             metrics_registry,
-            controller: stub(Ok(None), Ok(PipelineGroupConfig::new()), Ok(delete_status("succeeded"))),
+            controller: stub(
+                Ok(None),
+                Ok(PipelineGroupConfig::new()),
+                Ok(delete_status("succeeded")),
+            ),
             terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
@@ -787,7 +821,10 @@ mod tests {
 
         let response = shutdown_all_pipelines(
             State(app_state),
-            Query(OperationOptions { wait: true, timeout_secs: 1 }),
+            Query(OperationOptions {
+                wait: true,
+                timeout_secs: 1,
+            }),
         )
         .await
         .into_response();

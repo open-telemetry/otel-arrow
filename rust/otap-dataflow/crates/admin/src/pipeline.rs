@@ -650,7 +650,7 @@ mod tests {
         fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
             Ok(())
         }
-        
+
         fn has_active_instances(&self) -> bool {
             false
         }
