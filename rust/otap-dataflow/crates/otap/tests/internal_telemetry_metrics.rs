@@ -310,7 +310,6 @@ groups: {{}}
             observability_pipeline.pipeline,
             channel_capacity.clone(),
             telemetry_policy,
-            None,
             Some(internal_settings),
         )
         .expect("real internal telemetry receiver should build with injected settings");

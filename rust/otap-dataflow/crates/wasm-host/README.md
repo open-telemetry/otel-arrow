@@ -46,7 +46,7 @@ wasmtime dependency. Enable `wasm` to build and register the processor.
   boundary. Bulk Arrow data never crosses the WASM boundary; the host owns
   the underlying `RecordBatch` data and runs kernels natively.
 - Bridges `OtapPdata` <-> Arrow `RecordBatch` while preserving the pdata
-  `Context` (Ack/Nack routing and transport headers).
+  `Context` (Ack/Nack routing and tenant context).
 
 ## Host-kernel orchestration model
 

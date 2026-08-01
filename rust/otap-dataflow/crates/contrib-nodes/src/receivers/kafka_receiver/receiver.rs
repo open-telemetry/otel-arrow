@@ -2767,7 +2767,7 @@ mod tests {
     /// OtapPdata transport headers with their configured store-names and
     /// preserved wire names, and the unmatched header is dropped.
     #[tokio::test]
-    async fn test_kafka_receiver_capture_policy_captures_headers() {
+    async fn test_kafka_receiver_resolves_tenant_context() {
         const TOPIC: &str = "test-capture-policy";
         with_cluster(
             KafkaTestCluster::builder().topic(TOPIC),
@@ -2920,7 +2920,7 @@ mod tests {
     /// Guarantees: the transport header and the injected resource attribute are
     /// produced independently and simultaneously from the same record.
     #[tokio::test]
-    async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_headers() {
+    async fn test_kafka_receiver_tenant_context_coexists_with_resource_attrs_from_headers() {
         const TOPIC: &str = "test-capture-and-extract";
         with_cluster(
             KafkaTestCluster::builder().topic(TOPIC),
@@ -3016,7 +3016,7 @@ mod tests {
     /// header even for OTAP payloads, while the `MessageFormat` control header is
     /// not captured.
     #[tokio::test]
-    async fn test_kafka_receiver_capture_policy_otap_format() {
+    async fn test_kafka_receiver_tenant_context_otap_format() {
         const TOPIC: &str = "test-capture-policy-otap";
         with_cluster(
             KafkaTestCluster::builder().topic(TOPIC),

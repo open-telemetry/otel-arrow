@@ -140,5 +140,5 @@ Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
 
 - [OTLP receiver design](../../../../../docs/otlp-receiver.md)
 - [Configuration model](../../../../../docs/configuration-model.md)
-- [Transport headers](../../../../../docs/transport-headers.md)
+- [Tenant tokens](../../../../../docs/tenant-tokens.md)
 - [Core node catalog](../../../README.md)

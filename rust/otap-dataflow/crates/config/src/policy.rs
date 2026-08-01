@@ -5,7 +5,6 @@
 
 use crate::byte_units;
 use crate::health::HealthPolicy;
-use crate::transport_headers_policy::TransportHeadersPolicy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -46,13 +45,6 @@ pub struct Policies {
     /// default applies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) runtime_recovery: Option<RuntimeRecoveryPolicy>,
-    /// Transport headers policy controlling header capture at receivers
-    /// and propagation at exporters.
-    ///
-    /// When absent, transport headers are not captured or propagated
-    /// (the feature is entirely opt-in).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) transport_headers: Option<TransportHeadersPolicy>,
 }
 
 impl Policies {
@@ -75,7 +67,6 @@ impl Policies {
         let mut runtime_recovery = None;
         let mut telemetry = None;
         let mut resources = None;
-        let mut transport_headers = None;
         for scope in scopes {
             if channel_capacity.is_none() {
                 channel_capacity = scope.channel_capacity.as_ref();
@@ -92,9 +83,6 @@ impl Policies {
             if resources.is_none() {
                 resources = scope.resources.as_ref();
             }
-            if transport_headers.is_none() {
-                transport_headers = scope.transport_headers.as_ref();
-            }
         }
         ResolvedPolicies {
             channel_capacity: channel_capacity.cloned().unwrap_or_default(),
@@ -102,7 +90,6 @@ impl Policies {
             runtime_recovery: runtime_recovery.cloned().unwrap_or_default(),
             telemetry: telemetry.cloned().unwrap_or_default(),
             resources: resources.cloned().unwrap_or_default(),
-            transport_headers: transport_headers.cloned(),
         }
     }
 
@@ -199,13 +186,6 @@ impl Policies {
         if let Some(telemetry) = &self.telemetry {
             errors.extend(telemetry.validation_errors(&format!("{path_prefix}.telemetry")));
         }
-        if let Some(transport_headers) = &self.transport_headers {
-            if let Err(e) = transport_headers.header_propagation.validate() {
-                errors.push(format!(
-                    "{path_prefix}.transport_headers.header_propagation.default.selector: {e}"
-                ));
-            }
-        }
         errors
     }
 }
@@ -224,9 +204,6 @@ pub struct ResolvedPolicies {
     pub runtime_recovery: RuntimeRecoveryPolicy,
     /// Resources policy.
     pub resources: ResourcesPolicy,
-    /// Transport headers policy. `None` when the feature is not configured
-    /// (opt-in only -- no headers are captured or propagated by default).
-    pub transport_headers: Option<TransportHeadersPolicy>,
 }
 
 impl ResolvedPolicies {
@@ -240,7 +217,6 @@ impl ResolvedPolicies {
             telemetry: self_telemetry,
             runtime_recovery: self_runtime_recovery,
             resources: _,
-            transport_headers: self_transport_headers,
         } = self;
         let Self {
             channel_capacity: other_channel_capacity,
@@ -248,14 +224,12 @@ impl ResolvedPolicies {
             telemetry: other_telemetry,
             runtime_recovery: other_runtime_recovery,
             resources: _,
-            transport_headers: other_transport_headers,
         } = other;
 
         self_channel_capacity == other_channel_capacity
             && self_health == other_health
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
-            && self_transport_headers == other_transport_headers
     }
 }
 
@@ -1383,35 +1357,6 @@ unknown_recovery_option: true
         let errors = policies.validation_errors("policies");
         assert_eq!(errors.len(), 1);
         assert!(errors[0].contains("purge_min_interval must be greater than 0"));
-    }
-
-    #[test]
-    fn validates_transport_headers_selector() {
-        use crate::transport_headers_policy::{
-            HeaderPropagationPolicy, PropagationDefault, PropagationSelector,
-            PropagationSelectorType, TransportHeadersPolicy,
-        };
-
-        let policies = Policies {
-            transport_headers: Some(TransportHeadersPolicy {
-                header_propagation: HeaderPropagationPolicy {
-                    default: PropagationDefault {
-                        selector: PropagationSelector {
-                            selector_type: PropagationSelectorType::Named,
-                            named: None, // Invalid: named type requires named list
-                        },
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let errors = policies.validation_errors("policies");
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("transport_headers.header_propagation.default.selector"));
-        assert!(errors[0].contains("'named' list is required"));
     }
 
     #[test]

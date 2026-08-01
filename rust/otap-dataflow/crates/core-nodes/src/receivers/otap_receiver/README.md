@@ -95,5 +95,5 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
-- [Transport headers](../../../../../docs/transport-headers.md)
+- [Tenant tokens](../../../../../docs/tenant-tokens.md)
 - [Core node catalog](../../../README.md)

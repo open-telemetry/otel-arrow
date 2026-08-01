@@ -22,7 +22,6 @@ use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
 use otap_df_config::SignalType;
-use otap_df_config::transport_headers::TransportHeaders;
 use otap_df_engine::control::{CallData, NackMsg};
 use otap_df_engine::shared::receiver::EffectHandler;
 use otap_df_engine::{
@@ -401,36 +400,6 @@ impl UnaryService<OtapPdata> for OtapBatchService {
                 crate::tenant_resolve::resolve_grpc(registry, &metadata, peer_addr)
         {
             otap_batch.set_tenant(tenant);
-        }
-
-        // Capture transport headers synchronously before moving the effect handler
-        // into the async block, avoiding a clone of the capture policy.
-        if let Some(policy) = effect_handler.capture_policy() {
-            let mut transport_headers = TransportHeaders::new();
-
-            // Collect all metadata pairs, decoding binary values so we store
-            // raw bytes rather than the base64 wire encoding (which would be
-            // double-encoded on downstream gRPC propagation).
-            let pairs: Vec<(&str, Vec<u8>)> = metadata
-                .iter()
-                .filter_map(|kv| match kv {
-                    tonic::metadata::KeyAndValueRef::Ascii(key, value) => {
-                        Some((key.as_str(), value.as_bytes().to_vec()))
-                    }
-                    tonic::metadata::KeyAndValueRef::Binary(key, value) => value
-                        .to_bytes()
-                        .ok()
-                        .map(|decoded| (key.as_str(), decoded.to_vec())),
-                })
-                .collect();
-
-            let _stats = policy.capture_from_pairs(
-                pairs.iter().map(|(k, v)| (*k, v.as_slice())),
-                &mut transport_headers,
-            );
-            if !transport_headers.is_empty() {
-                otap_batch.set_transport_headers(transport_headers);
-            }
         }
 
         let payload_bytes = otap_batch.payload_ref().num_bytes().unwrap_or(0) as u64;

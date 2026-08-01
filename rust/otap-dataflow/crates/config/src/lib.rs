@@ -43,9 +43,7 @@ pub mod tenant;
 pub mod tls;
 pub mod topic;
 /// Transport header core types and capture/propagation engines.
-pub mod transport_headers;
 /// Transport header capture and propagation policy declarations.
-pub mod transport_headers_policy;
 /// Shared URN parsing primitives used by [`node_urn`] and [`extension_urn`].
 mod urn;
 pub use topic::{

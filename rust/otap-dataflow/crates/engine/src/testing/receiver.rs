@@ -20,12 +20,13 @@ use crate::receiver::ReceiverWrapper;
 use crate::shared::message::{SharedReceiver, SharedSender};
 use crate::testing::{CtrlMsgCounters, setup_test_runtime};
 use otap_df_channel::error::RecvError;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
+use otap_df_config::tenant::compiled::TenantTokenRegistry;
 use otap_df_telemetry::reporter::MetricsReporter;
 use serde_json::Value;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::task::LocalSet;
 use tokio::time::sleep;
@@ -235,10 +236,14 @@ impl<PData: Clone + Debug + 'static> Default for TestRuntime<PData> {
 }
 
 impl<PData: Debug + 'static> TestPhase<PData> {
-    /// Sets a capture policy on the receiver wrapper for transport header testing.
+    /// Hands the receiver the engine's compiled tenant tokens.
+    ///
+    /// A receiver only resolves a tenant context when it has a registry, so a
+    /// test that asserts on ingress has to supply one the way the engine does
+    /// at build time.
     #[must_use]
-    pub fn with_capture_policy(mut self, policy: Option<HeaderCapturePolicy>) -> Self {
-        self.receiver = self.receiver.with_capture_policy(policy);
+    pub fn with_tenant_registry(mut self, registry: Option<Arc<TenantTokenRegistry>>) -> Self {
+        self.receiver = self.receiver.with_tenant_registry(registry);
         self
     }
 

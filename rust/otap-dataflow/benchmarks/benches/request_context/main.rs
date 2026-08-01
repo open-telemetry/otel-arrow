@@ -35,11 +35,6 @@ use otap_df_config::tenant::compiled::{
     attribute_field,
 };
 use otap_df_config::tenant::{Condition, Entry, Extractor, TenantTokenSpec, TenantTokens};
-use otap_df_config::transport_headers::TransportHeaders;
-use otap_df_config::transport_headers_policy::{
-    CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy, PropagationDefault,
-    PropagationSelector, PropagationSelectorType,
-};
 use otap_df_otap::tenant_resolve::resolve_grpc;
 use tonic::metadata::{KeyAndValueRef, MetadataKey, MetadataMap, MetadataValue};
 
@@ -108,6 +103,60 @@ fn inbound() -> Vec<(&'static str, &'static [u8])> {
     ]
 }
 
+/// The pre-tenant-token representation, reproduced here.
+///
+/// The engine no longer carries transport headers, but the benchmark still
+/// needs the shape it replaced: an owned name/value pair per captured header,
+/// in a growable vector, cloned at every hop. This is deliberately the *lean*
+/// version of what shipped -- no sensitivity flags, no value-kind inference,
+/// no case folding beyond the match -- so the comparison understates rather
+/// than inflates the cost the packed context removes.
+#[derive(Clone, Default)]
+struct TransportHeaders(Vec<BaselineHeader>);
+
+#[derive(Clone)]
+struct BaselineHeader {
+    header_name: String,
+    value: Vec<u8>,
+}
+
+/// A capture policy: the wire name to match and the name to store it under.
+struct HeaderCapturePolicy(Vec<(String, String)>);
+
+impl HeaderCapturePolicy {
+    /// Walks the request's headers once per rule-matching header, cloning both
+    /// the stored name and the value into owned storage.
+    fn capture_from_pairs<'a>(
+        &self,
+        pairs: impl Iterator<Item = (&'a str, &'a [u8])>,
+        out: &mut TransportHeaders,
+    ) {
+        for (name, value) in pairs {
+            for (wire, stored) in &self.0 {
+                if wire.eq_ignore_ascii_case(name) {
+                    out.0.push(BaselineHeader {
+                        header_name: stored.clone(),
+                        value: value.to_vec(),
+                    });
+                    break;
+                }
+            }
+        }
+    }
+}
+
+/// A propagation policy that re-emits everything that was captured.
+struct HeaderPropagationPolicy;
+
+impl HeaderPropagationPolicy {
+    fn propagate<'a>(
+        &self,
+        headers: &'a TransportHeaders,
+    ) -> impl Iterator<Item = &'a BaselineHeader> {
+        headers.0.iter()
+    }
+}
+
 fn capture_policy(n_rules: usize) -> HeaderCapturePolicy {
     let names = [
         ("x-tenant-id", "tenant_id"),
@@ -115,30 +164,17 @@ fn capture_policy(n_rules: usize) -> HeaderCapturePolicy {
         ("x-request-id", "request_id"),
         ("traceparent", "traceparent"),
     ];
-    let rules = names
-        .iter()
-        .take(n_rules)
-        .map(|(wire, stored)| CaptureRule {
-            match_names: vec![(*wire).to_owned()],
-            store_as: Some((*stored).to_owned()),
-            sensitive: false,
-            value_kind: None,
-        })
-        .collect();
-    HeaderCapturePolicy::new(CaptureDefaults::default(), rules)
+    HeaderCapturePolicy(
+        names
+            .iter()
+            .take(n_rules)
+            .map(|(wire, stored)| ((*wire).to_owned(), (*stored).to_owned()))
+            .collect(),
+    )
 }
 
 fn propagation_policy() -> HeaderPropagationPolicy {
-    HeaderPropagationPolicy::new(
-        PropagationDefault {
-            selector: PropagationSelector {
-                selector_type: PropagationSelectorType::AllCaptured,
-                named: None,
-            },
-            ..Default::default()
-        },
-        Vec::new(),
-    )
+    HeaderPropagationPolicy
 }
 
 /// The tenant-token equivalent of `capture_policy`: one token whose `n`
@@ -261,7 +297,7 @@ fn baseline_receive(policy: &HeaderCapturePolicy, md: &MetadataMap) -> Transport
         })
         .collect();
     let mut out = TransportHeaders::default();
-    let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, v.as_slice())), &mut out);
+    policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, v.as_slice())), &mut out);
     out
 }
 
@@ -277,8 +313,7 @@ fn bench_capture(c: &mut Criterion) {
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 let mut out = TransportHeaders::default();
-                let _ = policy
-                    .capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), black_box(&mut out));
+                policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), black_box(&mut out));
                 out
             });
         });
@@ -292,7 +327,7 @@ fn bench_carry(c: &mut Criterion) {
         let policy = capture_policy(n);
         let pairs = inbound();
         let mut headers = TransportHeaders::default();
-        let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| black_box(headers.clone()));
         });
@@ -307,7 +342,7 @@ fn bench_propagate(c: &mut Criterion) {
         let policy = capture_policy(n);
         let pairs = inbound();
         let mut headers = TransportHeaders::default();
-        let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 let mut emitted = 0usize;
@@ -331,8 +366,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 let mut headers = TransportHeaders::default();
-                let _ =
-                    policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+                policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
                 let hop1 = headers.clone();
                 let hop2 = hop1.clone();
                 let mut emitted = 0usize;
@@ -539,13 +573,13 @@ fn alloc_report(_c: &mut Criterion) {
 
         let (a, b) = measure(ITERS, || {
             let mut out = TransportHeaders::default();
-            let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut out);
+            policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut out);
             out
         });
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "capture");
 
         let mut headers = TransportHeaders::default();
-        let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
         let (a, b) = measure(ITERS, || headers.clone());
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "carry");
 
@@ -560,7 +594,7 @@ fn alloc_report(_c: &mut Criterion) {
 
         let (a, b) = measure(ITERS, || {
             let mut h = TransportHeaders::default();
-            let _ = policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut h);
+            policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut h);
             let hop1 = h.clone();
             let hop2 = hop1.clone();
             let mut emitted = 0usize;

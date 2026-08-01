@@ -46,7 +46,6 @@ use async_trait::async_trait;
 use otap_df_channel::error::RecvError;
 use otap_df_config::PortName;
 use otap_df_config::tenant::compiled::TenantTokenRegistry;
-use otap_df_config::transport_headers_policy::HeaderCapturePolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -107,7 +106,6 @@ pub struct EffectHandler<PData> {
     pub router: OutputRouter<SharedSender<PData>>,
     /// Capture policy for extracting transport headers from inbound metadata.
     /// `None` when no capture policy is configured (zero overhead).
-    capture_policy: Option<HeaderCapturePolicy>,
     /// Compiled tenant tokens for this engine, or `None` when none are
     /// declared. Receivers use it to pack request metadata into one context.
     tenant_registry: Option<Arc<TenantTokenRegistry>>,
@@ -133,7 +131,6 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core,
             router,
-            capture_policy: None,
             tenant_registry: None,
         }
     }
@@ -166,19 +163,6 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
-    }
-
-    /// Returns the capture policy if a header capture policy is configured.
-    ///
-    /// Returns `None` when no capture policy is active (zero overhead).
-    #[must_use]
-    pub fn capture_policy(&self) -> Option<&HeaderCapturePolicy> {
-        self.capture_policy.as_ref()
-    }
-
-    /// Sets the capture policy for transport header extraction.
-    pub fn set_capture_policy(&mut self, policy: Option<HeaderCapturePolicy>) {
-        self.capture_policy = policy;
     }
 
     /// Returns the engine's compiled tenant tokens, if any were declared.

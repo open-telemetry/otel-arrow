@@ -1270,8 +1270,6 @@ mod tests {
                 "destinations": destinations_cfg,
             }),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
 
@@ -1330,8 +1328,6 @@ mod tests {
                 "await_ack": "primary"
             }),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         }
     }
@@ -1382,8 +1378,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         let err = cfg
@@ -1423,8 +1417,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1457,8 +1449,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1483,8 +1473,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         assert!(cfg.validate(&node_cfg).is_err());
@@ -1520,8 +1508,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         let err = cfg
@@ -1556,8 +1542,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         let err = cfg
@@ -1605,8 +1589,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         let err = cfg
@@ -1650,8 +1632,6 @@ mod tests {
             default_output: None,
             config: json!({}),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
         let err = cfg
@@ -1704,8 +1684,6 @@ mod tests {
                 "await_ack": "primary"
             }),
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
 
@@ -2569,8 +2547,6 @@ mod tests {
             default_output: None,
             config,
             capabilities: HashMap::new(),
-            header_capture: None,
-            header_propagation: None,
             policies: None,
         };
 

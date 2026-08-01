@@ -183,8 +183,6 @@ Common node fields:
   selecting a port.
 - `capabilities`: optional bindings from capability name to pipeline extension.
 - `entity`: optional node entity enrichment metadata.
-- `header_capture`: receiver-only transport header capture override.
-- `header_propagation`: exporter-only transport header propagation override.
 
 Core node types are listed in the
 [core-node catalog](../crates/core-nodes/README.md). Each node links to a
@@ -242,7 +240,7 @@ nested field. The process-wide memory limiter is only supported at top-level
 
 For detailed policy guides, see:
 
-- [Transport header policies](transport-headers.md)
+- [Tenant tokens](tenant-tokens.md)
 - [Memory limiter policy](memory-limiter-phase1.md)
 
 ## Connections and Output Ports
@@ -533,8 +531,8 @@ Useful adjacent docs:
   semantics, defaults, precedence, and validation behavior.
 - [URN reference](urns.md): node type and extension type syntax.
 - [Processor behavior taxonomy](processors.md): processor behavior categories.
-- [Transport header policies](transport-headers.md): inbound header capture and
-  outbound header propagation.
+- [Tenant tokens](tenant-tokens.md): request identity resolved at receivers
+  and re-emitted at exporters.
 - [TLS examples](../configs/README.md): `test-tls-only.yaml` and
   `test-mtls.yaml`.
 - [Proxy support](proxy-support.md): outbound proxy behavior.
@@ -561,8 +559,6 @@ Common validation checks include:
 - `backend: quiver` topics are rejected by the current runtime.
 - Node `config` fields must match the selected node type.
 - Node types must be registered in the `df_engine` binary.
-- Node-level `header_capture` is receiver-only.
-- Node-level `header_propagation` is exporter-only.
 
 Use `--validate-and-exit` while editing:
 
@@ -584,5 +580,5 @@ in the root model, use the
 - [Configuration model reference](configuration-model.md)
 - [URN reference](urns.md)
 - [Processor behavior taxonomy](processors.md)
-- [Transport header policies](transport-headers.md)
+- [Tenant tokens](tenant-tokens.md)
 - [Memory limiter policy](memory-limiter-phase1.md)

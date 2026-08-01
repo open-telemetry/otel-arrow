@@ -100,7 +100,6 @@ impl<
             resolved_pipeline.pipeline.clone(),
             resolved_pipeline.policies.channel_capacity.clone(),
             resolved_pipeline.policies.telemetry.clone(),
-            resolved_pipeline.policies.transport_headers.clone(),
             self.controller_context.clone(),
             self.metrics_reporter.clone(),
             self.engine_event_reporter.clone(),

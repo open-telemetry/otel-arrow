@@ -65,7 +65,6 @@ pub mod crypto;
 /// propagation through the pipeline.
 /// Receiver-side tenant context resolution.
 pub mod tenant_resolve;
-pub mod transport_headers;
 
 /// TLS utilities
 pub mod tls_utils;

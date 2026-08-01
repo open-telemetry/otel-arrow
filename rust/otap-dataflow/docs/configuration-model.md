@@ -26,7 +26,7 @@ details plus custom node config guidance, see:
 - Node URN syntax: [docs/urns.md](urns.md).
 - Processor behavior taxonomy: [docs/processors.md](processors.md).
 - Runnable configuration examples: [configs/README.md](../configs/README.md).
-- Transport header policies: [docs/transport-headers.md](transport-headers.md).
+- Tenant tokens: [docs/tenant-tokens.md](tenant-tokens.md).
 - Memory limiter policy: [docs/memory-limiter-phase1.md](memory-limiter-phase1.md).
 - Admin live pipeline reconfiguration:
   [docs/admin/live-reconfiguration.md](admin/live-reconfiguration.md).
@@ -316,9 +316,6 @@ At node level:
 - `default_output` (optional): explicit default output port for implicit sends
 - `capabilities` (optional): capability bindings to pipeline extensions
 - `entity` (optional): node entity enrichment metadata
-- `header_capture` (optional): receiver-only transport header capture override
-- `header_propagation` (optional): exporter-only transport header propagation
-  override
 
 At connection level:
 
@@ -489,7 +486,7 @@ engine:
 ## Policy Hierarchy
 
 Policies include channel capacity, health, runtime telemetry, resources
-controls, runtime recovery, and transport headers:
+controls, and runtime recovery:
 
 ```yaml
 policies:
@@ -520,19 +517,7 @@ policies:
     max_backoff: 30s
     startup_timeout: 30s
     reset_after: 60s
-  transport_headers:
-    header_capture:
-      headers:
-        - match_names: ["x-tenant-id"]
-          store_as: tenant_id
-    header_propagation:
-      default:
-        selector:
-          type: all_captured
 ```
-
-For full transport header policy documentation, see
-[transport-headers.md](transport-headers.md).
 
 Resolution order:
 
@@ -558,7 +543,6 @@ Defaults at top-level:
 - `runtime_recovery.max_backoff = 30s`
 - `runtime_recovery.startup_timeout = 30s`
 - `runtime_recovery.reset_after = 60s`
-- `transport_headers = not set` (opt-in; no headers captured or propagated)
 
 Runtime recovery notes:
 

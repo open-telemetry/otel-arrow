@@ -42,7 +42,6 @@ use crate::node::NodeId;
 use crate::terminal_state::TerminalState;
 use async_trait::async_trait;
 use otap_df_config::tenant::compiled::TenantTokenRegistry;
-use otap_df_config::transport_headers_policy::HeaderPropagationPolicy;
 use otap_df_telemetry::error::Error as TelemetryError;
 use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
 use otap_df_telemetry::reporter::MetricsReporter;
@@ -101,7 +100,6 @@ pub struct EffectHandler<PData> {
     _pd: PhantomData<PData>,
     /// Propagation policy for filtering captured headers on egress.
     /// `None` when no propagation policy is configured (zero overhead).
-    propagation_policy: Option<HeaderPropagationPolicy>,
     /// Compiled tenant tokens for this engine, or `None` when none are
     /// declared. Exporters use it to name outbound headers.
     tenant_registry: Option<Arc<TenantTokenRegistry>>,
@@ -115,7 +113,6 @@ impl<PData> EffectHandler<PData> {
         EffectHandler {
             core: EffectHandlerCore::new(node_id, metrics_reporter),
             _pd: PhantomData,
-            propagation_policy: None,
             tenant_registry: None,
         }
     }
@@ -130,19 +127,6 @@ impl<PData> EffectHandler<PData> {
     #[must_use]
     pub fn node_interests(&self) -> Interests {
         self.core.node_interests()
-    }
-
-    /// Returns the propagation policy if a header propagation policy is configured.
-    ///
-    /// Returns `None` when no propagation policy is active (zero overhead).
-    #[must_use]
-    pub fn propagation_policy(&self) -> Option<&HeaderPropagationPolicy> {
-        self.propagation_policy.as_ref()
-    }
-
-    /// Sets the propagation policy for transport header filtering.
-    pub fn set_propagation_policy(&mut self, policy: Option<HeaderPropagationPolicy>) {
-        self.propagation_policy = policy;
     }
 
     /// Returns the engine's compiled tenant tokens, if any were declared.

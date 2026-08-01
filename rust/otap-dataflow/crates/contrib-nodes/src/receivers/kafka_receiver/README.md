@@ -14,7 +14,7 @@ The Kafka receiver consumes OpenTelemetry traces, metrics, and logs from
 Apache Kafka topics. It supports OTLP and OTAP protobuf encodings,
 per-signal topic routing, SASL authentication (PLAIN, SCRAM, AWS MSK IAM),
 TLS, manual and automatic offset commit modes, and Kafka message header
-extraction into resource attributes or pipeline transport headers.
+extraction into resource attributes or the request's tenant context.
 
 ## Getting Started
 
@@ -257,7 +257,7 @@ use. This receiver does **not** place those values into the pdata context; the
 topic/partition/offset are used internally for offset routing and appear only on
 log events. (Header values can still be surfaced via
 [`resource_attrs_from_headers`](#header-extraction) or
-[transport header capture](#transport-header-capture).)
+[tenant context](#tenant-context).)
 
 ##### Telemetry differences
 
@@ -588,16 +588,16 @@ In this example, when a Kafka message contains a header named `x-tenant-id`, its
 
 Header values are always read as raw bytes, decoded as UTF-8, and then parsed according to the specified `value_type`. If UTF-8 decoding or type parsing fails, the attribute is skipped and an error is logged.
 
-### Transport Header Capture
+### Tenant Context
 
-In addition to `resource_attrs_from_headers` (which injects header values into resource attributes), the Kafka receiver supports the framework's **transport header capture policy**. When a `header_capture` policy is configured at the pipeline or node level, the receiver extracts matching Kafka message headers and stores them in the `OtapPdata` context as `TransportHeaders`. These headers flow through the pipeline and can be propagated by exporters using a corresponding `header_propagation` policy.
+In addition to `resource_attrs_from_headers` (which injects header values into resource attributes), the Kafka receiver resolves the engine's [tenant tokens](../../../../../docs/tenant-tokens.md) from Kafka message headers, exactly as the OTLP receivers resolve them from gRPC metadata. Retained values ride with the request as one packed context and can be re-emitted by exporters, used to name partitions, or used to route topics.
 
 The two mechanisms are independent and can be used simultaneously:
 
 | Mechanism | Configured via | Stores in | Purpose |
 | --- | --- | --- | --- |
 | `resource_attrs_from_headers` | Receiver `config` block | Resource attributes in the telemetry payload | Enrich telemetry data with Kafka header values |
-| `header_capture` | Pipeline or node-level `transport_headers` policy | `OtapPdata.context.transport_headers` | End-to-end header propagation through the pipeline |
+| `tenant_tokens` | The `engine` block | The request's packed tenant context | End-to-end request identity through the pipeline |
 
 ### Validation Rules
 
@@ -740,22 +740,23 @@ config:
       value_type: bool
 ```
 
-### Transport Header Capture Example
+### Tenant Context Example
 
-An example using pipeline-level transport header capture alongside the Kafka receiver:
+An example resolving engine-scoped tenant tokens from Kafka message headers:
 
 ```yaml
-policies:
-  transport_headers:
-    header_capture:
-      headers:
-        - match_names: ["X-Tenant-Id"]
-          store_as: "tenant_id"
-        - match_names: ["X-Request-Id"]
-    header_propagation:
-      default:
-        selector: all_captured
-        action: propagate
+engine:
+  tenant_tokens:
+    tenant:
+      extractors:
+        - key: tenant_id
+          transport_header: X-Tenant-Id
+          retain: true
+    request:
+      extractors:
+        - key: request_id
+          transport_header: X-Request-Id
+          retain: true
 
 pipelines:
   - receiver:
@@ -768,9 +769,14 @@ pipelines:
       type: exporter:otlp_grpc
       config:
         endpoint: "collector:4317"
+        tenant_headers:
+          - key: tenant_id
+            header: X-Tenant-Id
+          - key: request_id
+            header: X-Request-Id
 ```
 
-In this example, the Kafka receiver captures `X-Tenant-Id` and `X-Request-Id` headers from each Kafka message and attaches them to the pipeline context. The OTLP gRPC exporter then propagates all captured headers onto outbound gRPC requests.
+In this example, the Kafka receiver resolves `tenant_id` and `request_id` from each Kafka message's headers. The OTLP gRPC exporter names the outbound headers those retained values are written under -- here round-tripping them to the names they arrived with.
 
 ### At-Least-Once with the Retry Processor
 
@@ -897,7 +903,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `kafka.message.unmarshal_failed` | `error` | A consumed message failed to unmarshal (includes `signal` field: traces, metrics, or logs). |
 | `kafka.partition_eof` | `info` | Consumer reached end of a partition. |
 | `kafka.transport_error` | `error` | A Kafka transport-level error occurred (non-fatal, consumer continues). |
-| `kafka.capture_policy.limits_exceeded` | `error` | Transport header capture exceeded configured limits. |
 | `kafka.topic_id.exhausted` | `error` | The topic ID space was exhausted; the message was dropped to avoid a colliding ID. |
 
 ## Limits
@@ -920,6 +925,6 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 ## Related Docs
 
 - [Configuration model](../../../../../docs/configuration-model.md)
-- [Transport headers](../../../../../docs/transport-headers.md)
+- [Tenant tokens](../../../../../docs/tenant-tokens.md)
 - [Contrib node catalog](../../../README.md)
 - [Retry processor](../../../../core-nodes/src/processors/retry_processor/README.md)

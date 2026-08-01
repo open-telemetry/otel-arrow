@@ -29,7 +29,6 @@ use otap_df_engine::{
 };
 use otap_df_pdata::OtapPayload;
 
-use crate::transport_headers::TransportHeaders;
 use otap_df_config::tenant::compiled::TenantView;
 use std::sync::Arc;
 
@@ -38,8 +37,9 @@ use std::sync::Arc;
 /// Carries three independent concerns:
 /// - **Routing stack**: Ack/Nack routing frames used by the pipeline engine
 ///   for result notification. Reset at transport boundaries (topic hops).
-/// - **Transport headers**: Protocol-neutral request-scoped metadata captured
-///   from inbound transport headers. Preserved across transport boundaries.
+/// - **Tenant context**: The compiled, request-scoped metadata the engine's
+///   tenant tokens declared, packed into one allocation at the receiver.
+///   Preserved across transport boundaries.
 /// - **Peer address**: Optional socket address observed by the receiving
 ///   socket at request acceptance time. Populated by receivers that have a
 ///   real socket (OTLP gRPC/HTTP, OTAP gRPC, syslog/CEF) and left `None` by
@@ -48,11 +48,6 @@ use std::sync::Arc;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Context {
     stack: Vec<Frame>,
-    /// Transport headers captured from inbound protocol metadata.
-    ///
-    /// `None` when no headers have been captured (the common case, zero
-    /// additional allocation).
-    transport_headers: Option<TransportHeaders>,
     /// Compiled tenant context resolved at the receiver, when the pipeline
     /// declares tenant tokens.
     ///
@@ -89,7 +84,6 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             stack: Vec::with_capacity(capacity),
-            transport_headers: None,
             tenant: None,
             peer_addr: None,
             flow_compute_ns: None,
@@ -110,7 +104,6 @@ impl Context {
     pub fn fork_request_scoped(&self) -> Self {
         Self {
             stack: Vec::new(),
-            transport_headers: self.transport_headers.clone(),
             tenant: self.tenant.clone(),
             peer_addr: self.peer_addr,
             flow_compute_ns: None,
@@ -388,23 +381,6 @@ impl Context {
             produced_items: 0,
             consumed_items: 0,
         });
-    }
-
-    /// Returns a reference to the captured transport headers, if any.
-    #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
-        self.transport_headers.as_ref()
-    }
-
-    /// Takes and returns the captured transport headers, if any.
-    #[must_use]
-    pub fn take_transport_headers(&mut self) -> Option<TransportHeaders> {
-        self.transport_headers.take()
-    }
-
-    /// Set the transport headers for this context.
-    pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.transport_headers = Some(headers);
     }
 
     /// Returns the packed tenant context resolved at the receiver, if any.
@@ -813,17 +789,6 @@ impl OtapPdata {
         self.context.has_ack_or_nack_subscribers()
     }
 
-    /// Returns a reference to the captured transport headers, if any.
-    #[must_use]
-    pub fn transport_headers(&self) -> Option<&TransportHeaders> {
-        self.context.transport_headers()
-    }
-
-    /// Set transport headers on this pdata's context.
-    pub fn set_transport_headers(&mut self, headers: TransportHeaders) {
-        self.context.set_transport_headers(headers);
-    }
-
     /// Builder-style method to attach a packed tenant context.
     #[must_use]
     pub fn with_tenant(mut self, tenant: Arc<[u64]>) -> Self {
@@ -840,13 +805,6 @@ impl OtapPdata {
     /// Set the packed tenant context.
     pub fn set_tenant(&mut self, tenant: Arc<[u64]>) {
         self.context.set_tenant(tenant);
-    }
-
-    /// Builder-style method to attach transport headers.
-    #[must_use]
-    pub fn with_transport_headers(mut self, headers: TransportHeaders) -> Self {
-        self.context.set_transport_headers(headers);
-        self
     }
 
     /// Returns the peer address observed by the receiving socket, if any.

@@ -829,9 +829,7 @@ mod tests {
 
     use otap_df_channel::error::RecvError;
     use otap_df_config::node::NodeUserConfig;
-    use otap_df_config::transport_headers_policy::{
-        CaptureDefaults, CaptureRule, HeaderCapturePolicy,
-    };
+    use otap_df_config::tenant::compiled::{TenantTokenRegistry, TenantTokenRegistryBuilder};
     use otap_df_engine::Interests;
     use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
     use otap_df_engine::ProducerEffectHandlerExtension;
@@ -1947,7 +1945,7 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {
                 let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
@@ -2038,7 +2036,7 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        let validation = |mut ctx: NotSendValidateContext<OtapPdata>| {
+        let validation = move |mut ctx: NotSendValidateContext<OtapPdata>| {
             Box::pin(async move {
                 let logs_pdata = timeout(Duration::from_secs(3), ctx.recv())
                     .await
@@ -3612,22 +3610,40 @@ mod tests {
         }
     }
 
-    // -- Transport header capture tests ----------------------------------------
+    // -- Tenant context ingress tests ------------------------------------------
 
-    /// Helper: builds a capture policy that matches the given header names.
-    fn capture_policy_for(header_names: &[&str]) -> HeaderCapturePolicy {
-        HeaderCapturePolicy::new(
-            CaptureDefaults::default(),
-            header_names
-                .iter()
-                .map(|name| CaptureRule {
-                    match_names: vec![name.to_string()],
-                    store_as: None,
-                    sensitive: false,
-                    value_kind: None,
-                })
-                .collect(),
-        )
+    /// Helper: compiles a registry that retains one key per inbound header.
+    ///
+    /// Each header gets its own token, since a token resolves only when every
+    /// one of its extractors is satisfied.
+    fn registry_for(header_names: &[&str]) -> Arc<TenantTokenRegistry> {
+        use otap_df_config::tenant::{Extractor, TenantTokenSpec, TenantTokens};
+
+        let mut tokens = TenantTokens::default();
+        for name in header_names {
+            let key = name.trim_start_matches("x-").replace('-', "_");
+            let _ = tokens.insert(
+                key.clone(),
+                TenantTokenSpec {
+                    extractors: vec![Extractor::TransportHeader {
+                        key,
+                        transport_header: (*name).to_owned(),
+                        retain: true,
+                        bag: false,
+                    }],
+                },
+            );
+        }
+        let mut builder = TenantTokenRegistryBuilder::new();
+        builder.add_tokens(&tokens).expect("tokens compile");
+        Arc::new(builder.build(1).expect("layout fits"))
+    }
+
+    /// Helper: reads a retained value back out of a resolved pdata.
+    fn retained(pdata: &OtapPdata, registry: &TenantTokenRegistry, key: &str) -> Option<Vec<u8>> {
+        let view = pdata.tenant_view()?;
+        let key = registry.key_id(key)?;
+        registry.retained_value(&view, key).map(<[u8]>::to_vec)
     }
 
     /// Helper: sends an HTTP POST with additional custom headers.
@@ -3661,12 +3677,13 @@ mod tests {
         Ok((status, body))
     }
 
-    /// Verifies that the OTLP gRPC receiver captures transport headers from gRPC
-    /// metadata when a capture policy is configured, and attaches them to the
-    /// `OtapPdata` context.
+    /// Scenario: a gRPC request arrives carrying an ASCII metadata entry that
+    /// a declared tenant token extracts and retains.
+    /// Guarantees: the receiver resolves the token from real gRPC metadata and
+    /// attaches the packed context to the outbound pdata.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
-    fn test_otlp_grpc_transport_header_capture() {
+    fn test_otlp_grpc_tenant_context_resolved() {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
@@ -3694,7 +3711,8 @@ mod tests {
             test_runtime.config(),
         );
 
-        let capture_policy = capture_policy_for(&["x-tenant-id"]);
+        let registry = registry_for(&["x-tenant-id"]);
+        let assert_registry = registry.clone();
 
         let scenario = move |ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
@@ -3740,20 +3758,10 @@ mod tests {
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                // Verify transport headers were captured.
-                let headers = pdata
-                    .transport_headers()
-                    .expect("pdata should have transport headers when capture policy is set");
-                let tenant_headers: Vec<_> = headers.find_by_name("x-tenant-id").collect();
                 assert_eq!(
-                    tenant_headers.len(),
-                    1,
-                    "should capture exactly one x-tenant-id header"
-                );
-                assert_eq!(
-                    tenant_headers[0].value_as_str(),
-                    Some("acme"),
-                    "captured header value should match"
+                    retained(&pdata, &assert_registry, "tenant_id").as_deref(),
+                    Some(b"acme".as_slice()),
+                    "the declared key should hold the value the request sent"
                 );
 
                 // ACK to unblock the gRPC handler.
@@ -3767,18 +3775,18 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver)
-            .with_capture_policy(Some(capture_policy))
+            .with_tenant_registry(Some(registry))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that the OTLP gRPC receiver correctly decodes binary metadata
-    /// values (keys ending in `-bin`) and stores the raw bytes rather than the
-    /// base64 wire encoding. Storing the wire form would cause double-encoding
-    /// on downstream gRPC propagation.
+    /// Scenario: a gRPC request carries a `-bin` metadata entry, whose wire
+    /// form is base64, and a token retains it.
+    /// Guarantees: the receiver stores the decoded raw bytes, so re-emitting
+    /// the value downstream cannot double-encode it.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
-    fn test_otlp_grpc_transport_header_capture_binary() {
+    fn test_otlp_grpc_tenant_context_binary_value() {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
@@ -3806,7 +3814,8 @@ mod tests {
             test_runtime.config(),
         );
 
-        let capture_policy = capture_policy_for(&["x-trace-bin"]);
+        let registry = registry_for(&["x-trace-bin"]);
+        let assert_registry = registry.clone();
 
         let raw_bytes: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let raw_bytes_for_validation = raw_bytes.clone();
@@ -3856,20 +3865,10 @@ mod tests {
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                // Verify transport headers contain the raw decoded bytes,
-                // not the base64 wire encoding.
-                let headers = pdata
-                    .transport_headers()
-                    .expect("pdata should have transport headers when capture policy is set");
-                let trace_headers: Vec<_> = headers.find_by_name("x-trace-bin").collect();
                 assert_eq!(
-                    trace_headers.len(),
-                    1,
-                    "should capture exactly one x-trace-bin header"
-                );
-                assert_eq!(
-                    trace_headers[0].value, raw_bytes_for_validation,
-                    "captured binary header should contain raw decoded bytes, not base64 wire form"
+                    retained(&pdata, &assert_registry, "trace_bin").as_deref(),
+                    Some(raw_bytes_for_validation.as_slice()),
+                    "the retained value should be the decoded bytes, not the base64 wire form"
                 );
 
                 // ACK to unblock the gRPC handler.
@@ -3883,17 +3882,18 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver)
-            .with_capture_policy(Some(capture_policy))
+            .with_tenant_registry(Some(registry))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that when no capture policy is configured, the OTLP gRPC receiver
-    /// does NOT attach transport headers to `OtapPdata` even when gRPC metadata
-    /// contains matching headers.
+    /// Scenario: a gRPC request carries metadata a token would have matched,
+    /// but the engine declared no tenant tokens at all.
+    /// Guarantees: no context is attached, so a pipeline that declares nothing
+    /// pays nothing and carries nothing.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
-    fn test_otlp_grpc_no_transport_headers_without_policy() {
+    fn test_otlp_grpc_no_tenant_context_without_registry() {
         let test_runtime = TestRuntime::new();
 
         let grpc_addr = "127.0.0.1";
@@ -3964,10 +3964,9 @@ mod tests {
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                // Without a capture policy, transport headers should be absent.
                 assert!(
-                    pdata.transport_headers().is_none(),
-                    "pdata should NOT have transport headers when no capture policy is set"
+                    pdata.tenant_view().is_none(),
+                    "pdata should carry no tenant context when no tokens are declared"
                 );
 
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
@@ -3978,18 +3977,20 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        // Note: no `.with_capture_policy()` call -- policy is None by default.
+        // Note: no `.with_tenant_registry()` call -- the registry is None by default.
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that the OTLP HTTP receiver captures transport headers from HTTP
-    /// request headers when a capture policy is configured.
+    /// Scenario: the same declared token, but the request arrives over the
+    /// OTLP HTTP receiver rather than gRPC.
+    /// Guarantees: tenant resolution is a property of the receiver, not of the
+    /// gRPC transport, so both ingress paths produce the same context.
     #[cfg_attr(any(windows), ignore = "Skipping on Windows due to flakiness")]
     #[test]
-    fn test_otlp_http_transport_header_capture() {
+    fn test_otlp_http_tenant_context_resolved() {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
@@ -4026,7 +4027,8 @@ mod tests {
             test_runtime.config(),
         );
 
-        let capture_policy = capture_policy_for(&["x-tenant-id"]);
+        let registry = registry_for(&["x-tenant-id"]);
+        let assert_registry = registry.clone();
 
         let scenario = move |ctx: TestContext<OtapPdata>| {
             Box::pin(async move {
@@ -4058,20 +4060,10 @@ mod tests {
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                // Verify transport headers were captured from HTTP headers.
-                let headers = pdata
-                    .transport_headers()
-                    .expect("pdata should have transport headers when capture policy is set");
-                let tenant_headers: Vec<_> = headers.find_by_name("x-tenant-id").collect();
                 assert_eq!(
-                    tenant_headers.len(),
-                    1,
-                    "should capture exactly one x-tenant-id header"
-                );
-                assert_eq!(
-                    tenant_headers[0].value_as_str(),
-                    Some("acme"),
-                    "captured header value should match"
+                    retained(&pdata, &assert_registry, "tenant_id").as_deref(),
+                    Some(b"acme".as_slice()),
+                    "the declared key should hold the value the request sent"
                 );
 
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
@@ -4084,15 +4076,17 @@ mod tests {
 
         test_runtime
             .set_receiver(receiver)
-            .with_capture_policy(Some(capture_policy))
+            .with_tenant_registry(Some(registry))
             .run_test(scenario)
             .run_validation_concurrent(validation);
     }
 
-    /// Verifies that the OTLP HTTP receiver does NOT attach transport headers
-    /// when no capture policy is configured.
+    /// Scenario: an HTTP request carries a header a token would have matched,
+    /// but the engine declared no tenant tokens.
+    /// Guarantees: the HTTP path fails closed the same way gRPC does -- no
+    /// declaration, no context.
     #[test]
-    fn test_otlp_http_no_transport_headers_without_policy() {
+    fn test_otlp_http_no_tenant_context_without_registry() {
         let test_runtime = TestRuntime::new();
 
         let addr = "127.0.0.1";
@@ -4149,10 +4143,9 @@ mod tests {
                     .expect("Timed out waiting for logs message")
                     .expect("No logs message received");
 
-                // Without a capture policy, transport headers should be absent.
                 assert!(
-                    pdata.transport_headers().is_none(),
-                    "pdata should NOT have transport headers when no capture policy is set"
+                    pdata.tenant_view().is_none(),
+                    "pdata should carry no tenant context when no tokens are declared"
                 );
 
                 if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
@@ -4163,7 +4156,7 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = ()>>>
         };
 
-        // No capture policy set.
+        // No tenant registry set.
         test_runtime
             .set_receiver(receiver)
             .run_test(scenario)

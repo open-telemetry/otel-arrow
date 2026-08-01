@@ -1946,7 +1946,6 @@ fn build_test_runtime_pipeline(
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
             None,
-            None,
         )
         .expect("pipeline builds");
     (runtime_pipeline, pipeline_ctx, entity_key, telemetry_system)
@@ -4228,7 +4227,6 @@ fn build_runtime_pipeline_with_ready_gate(
             config,
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
-            None,
             None,
         )
         .expect("pipeline builds");

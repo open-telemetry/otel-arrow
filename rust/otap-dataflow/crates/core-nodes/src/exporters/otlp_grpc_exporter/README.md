@@ -77,8 +77,8 @@ Validation at config load rejects:
   `te`, `user-agent`, and any name with the spec-reserved `grpc-` prefix
   (e.g. `grpc-timeout`, `grpc-encoding`).
 
-When [header propagation](../../../../../docs/transport-headers.md) is also
-enabled, statically configured headers take precedence: a propagated header
+When [tenant headers](../../../../../docs/tenant-tokens.md) are also
+configured, statically configured headers take precedence: a tenant header
 whose key matches a configured one is dropped, so a configured routing header
 (e.g. `x-scope-orgid`) is never overridden or duplicated.
 
@@ -119,7 +119,7 @@ by the exporter.
 | `otlp.exporter.grpc.receive` | `debug` | A pdata batch was received by the exporter loop. |
 | `otlp.exporter.grpc.shutdown` | `info` | Exporter shutdown. |
 | `otlp.exporter.http.export_error` | `warn` | A gRPC export request did not complete successfully. |
-| `otlp.exporter.grpc.header_skip` | `debug` | A propagated transport header was skipped while building gRPC metadata. |
+| `otlp.exporter.grpc.tenant_header_skip` | `debug` | A tenant header was skipped: its key is not retained, its name is not valid metadata, or a static header already occupies the name. |
 
 ## Limits
 
@@ -133,5 +133,5 @@ by the exporter.
 
 - [Configuration model](../../../../../docs/configuration-model.md)
 - [Proxy support](../../../../../docs/proxy-support.md)
-- [Transport headers](../../../../../docs/transport-headers.md)
+- [Tenant tokens](../../../../../docs/tenant-tokens.md)
 - [Core node catalog](../../../README.md)
