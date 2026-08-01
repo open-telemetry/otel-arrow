@@ -240,6 +240,8 @@ mod tests {
         assert_eq!(m.operational_metrics.nacks_received.get(), 1);
     }
 
+    /// Scenario: Export, ACK, NACK, and topic routing events occur simultaneously.
+    /// Guarantees: All counters increment independently without interfering with each other.
     #[test]
     fn counters_are_independent() {
         let mut m = new_metrics();
