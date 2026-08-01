@@ -104,7 +104,6 @@ impl otel_kernels::Host for HostState {
 
         let result = match scope {
             AttrScope::Resource | AttrScope::Scope => {
-                self.kernel_unsupported_calls += 1;
                 panic!(
                     "unsupported attr scope {scope:?}: this experimental slice currently supports only record scope"
                 )
