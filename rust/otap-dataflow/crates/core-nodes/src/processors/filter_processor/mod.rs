@@ -29,7 +29,8 @@ use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::SignalAttributes;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -41,7 +42,7 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
     config: Config,
-    metrics: MetricSet<FilterPdataMetrics>,
+    metrics: MeasurementMetricSet<FilterPdataMetrics>,
     compute_duration: ComputeDuration,
     /// Reusable paged-bitmap pool for filtering metric child batches across
     /// successive `Message::PData` calls. Storing the pool on the processor
@@ -205,20 +206,9 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         }
                     })?;
 
-                match signal {
-                    SignalType::Metrics => {
-                        self.metrics.metric_signals_consumed.add(signals_consumed);
-                        self.metrics.metric_signals_filtered.add(signals_filtered);
-                    }
-                    SignalType::Logs => {
-                        self.metrics.log_signals_consumed.add(signals_consumed);
-                        self.metrics.log_signals_filtered.add(signals_filtered);
-                    }
-                    SignalType::Traces => {
-                        self.metrics.span_signals_consumed.add(signals_consumed);
-                        self.metrics.span_signals_filtered.add(signals_filtered);
-                    }
-                }
+                let metric = self.metrics.with(SignalAttributes { signal });
+                metric.signals_consumed.add(signals_consumed);
+                metric.signals_filtered.add(signals_filtered);
 
                 // Record the drop flow-metric. A no-op unless this node is
                 // a decision node in a flow that enables `dropped.items`.
