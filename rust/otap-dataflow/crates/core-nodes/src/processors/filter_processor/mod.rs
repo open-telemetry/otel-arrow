@@ -91,7 +91,7 @@ impl FilterProcessor {
     #[must_use]
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         FilterProcessor {
             config,
@@ -103,7 +103,7 @@ impl FilterProcessor {
 
     /// Creates a new FilterProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -137,7 +137,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     mut metrics_reporter,
                 } = control
                 {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.metrics);
                     self.compute_duration.report(&mut metrics_reporter);
                 }
                 Ok(())
