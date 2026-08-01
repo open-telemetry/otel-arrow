@@ -21,7 +21,7 @@ use otap_df_telemetry_macros::metric_set;
 )]
 #[derive(Debug, Default, Clone)]
 pub struct KafkaExporterExportMetrics {
-    /// Number of items resolved by export outcome.
+    /// Number of exported items partitioned by `signal` and `outcome` (`success` or `failure`).
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
 }
@@ -57,7 +57,10 @@ impl KafkaExporterMetrics {
         }
     }
 
-    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), otap_df_telemetry::error::Error> {
+    pub fn report(
+        &mut self,
+        reporter: &mut MetricsReporter,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
         reporter
             .report(&mut self.operational_metrics)
             .and_then(|()| reporter.report_measurement(&mut self.export_metrics))
@@ -116,49 +119,117 @@ mod tests {
         KafkaExporterMetrics::register(&pipeline_context())
     }
 
+    /// Scenario: Traces are exported successfully.
+    /// Guarantees: The traces success counter is incremented.
     #[test]
     fn inc_exported_traces() {
         let mut m = new_metrics();
         m.inc_exported(SignalType::Traces);
         m.inc_exported(SignalType::Traces);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Success }).items.get(), 2);
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Traces,
+                    outcome: Outcome::Success
+                })
+                .items
+                .get(),
+            2
+        );
     }
 
+    /// Scenario: Metrics are exported successfully.
+    /// Guarantees: The metrics success counter is incremented.
     #[test]
     fn inc_exported_metrics() {
         let mut m = new_metrics();
         m.inc_exported(SignalType::Metrics);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Metrics, outcome: Outcome::Success }).items.get(), 1);
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Metrics,
+                    outcome: Outcome::Success
+                })
+                .items
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Logs are exported successfully.
+    /// Guarantees: The logs success counter is incremented.
     #[test]
     fn inc_exported_logs() {
         let mut m = new_metrics();
         m.inc_exported(SignalType::Logs);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Logs, outcome: Outcome::Success }).items.get(), 1);
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success
+                })
+                .items
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Traces export fails.
+    /// Guarantees: The traces failure counter is incremented.
     #[test]
     fn inc_failed_traces() {
         let mut m = new_metrics();
         m.inc_failed(SignalType::Traces);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Failure }).items.get(), 1);
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Traces,
+                    outcome: Outcome::Failure
+                })
+                .items
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Metrics export fails.
+    /// Guarantees: The metrics failure counter is incremented.
     #[test]
     fn inc_failed_metrics() {
         let mut m = new_metrics();
         m.inc_failed(SignalType::Metrics);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Metrics, outcome: Outcome::Failure }).items.get(), 1);
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Metrics,
+                    outcome: Outcome::Failure
+                })
+                .items
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Logs export fails.
+    /// Guarantees: The logs failure counter is incremented.
     #[test]
     fn inc_failed_logs() {
         let mut m = new_metrics();
         m.inc_failed(SignalType::Logs);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Logs, outcome: Outcome::Failure }).items.get(), 1);
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Failure
+                })
+                .items
+                .get(),
+            1
+        );
     }
 
+    /// Scenario: Acks and nacks are received.
+    /// Guarantees: Operational counters for acks and nacks are incremented correctly.
     #[test]
     fn inc_ack_and_nack() {
         let mut m = new_metrics();
@@ -181,17 +252,55 @@ mod tests {
         m.inc_topic_from_header();
         m.inc_topic_from_static_config();
 
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Success }).items.get(), 1);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Metrics, outcome: Outcome::Success }).items.get(), 1);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Logs, outcome: Outcome::Success }).items.get(), 1);
-        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Failure }).items.get(), 1);
-        
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Traces,
+                    outcome: Outcome::Success
+                })
+                .items
+                .get(),
+            1
+        );
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Metrics,
+                    outcome: Outcome::Success
+                })
+                .items
+                .get(),
+            1
+        );
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Logs,
+                    outcome: Outcome::Success
+                })
+                .items
+                .get(),
+            1
+        );
+        assert_eq!(
+            m.export_metrics
+                .with(SignalOutcomeAttributes {
+                    signal: SignalType::Traces,
+                    outcome: Outcome::Failure
+                })
+                .items
+                .get(),
+            1
+        );
+
         assert_eq!(m.operational_metrics.acks_received.get(), 1);
         assert_eq!(m.operational_metrics.nacks_received.get(), 1);
         assert_eq!(m.operational_metrics.topic_from_header.get(), 1);
         assert_eq!(m.operational_metrics.topic_from_static_config.get(), 1);
     }
 
+    /// Scenario: Topic is resolved from a header.
+    /// Guarantees: The corresponding operational counter is incremented.
     #[test]
     fn inc_topic_from_header() {
         let mut m = new_metrics();
@@ -201,6 +310,8 @@ mod tests {
         assert_eq!(m.operational_metrics.topic_from_static_config.get(), 0);
     }
 
+    /// Scenario: Topic is resolved from static config.
+    /// Guarantees: The corresponding operational counter is incremented.
     #[test]
     fn inc_topic_from_static_config() {
         let mut m = new_metrics();

@@ -556,7 +556,10 @@ impl Exporter<OtapPdata> for KafkaExporter {
                     self.drain_and_flush(deadline, &effect_handler).await;
 
                     effect_handler.info("Kafka exporter stopped").await;
-                    return Ok(TerminalState::new(deadline, self.metrics.terminal_snapshots()));
+                    return Ok(TerminalState::new(
+                        deadline,
+                        self.metrics.terminal_snapshots(),
+                    ));
                 }
                 Message::Control(_) => {
                     // Ignore other control messages
