@@ -183,7 +183,6 @@ mod tests {
 
     /// Scenario: A valid target topic header is present.
     /// Guarantees: Resolves to the header value and increments the header operational counter.
-
     #[test]
     fn test_resolve_header_present() {
         let config = make_signal_config("fallback-logs", Some("x-target-topic"));
@@ -207,7 +206,6 @@ mod tests {
 
     /// Scenario: Target topic header is absent but another header exists.
     /// Guarantees: Falls back to the static topic and increments the static topic operational counter.
-
     #[test]
     fn test_resolve_header_absent() {
         let config = make_signal_config("fallback-logs", Some("x-target-topic"));
@@ -228,7 +226,6 @@ mod tests {
 
     /// Scenario: Context contains no transport headers at all.
     /// Guarantees: Falls back to the static topic and increments the static topic operational counter.
-
     #[test]
     fn test_resolve_header_no_transport_headers_on_context() {
         let config = make_signal_config("fallback-logs", Some("x-target-topic"));
@@ -248,7 +245,6 @@ mod tests {
 
     /// Scenario: The header routing is not configured for the signal.
     /// Guarantees: Falls back to the static topic ignoring present headers.
-
     #[test]
     fn test_resolve_header_not_configured() {
         let config = make_signal_config("fallback-logs", None);
@@ -268,7 +264,6 @@ mod tests {
 
     /// Scenario: Both static topic and transport header are available.
     /// Guarantees: The transport header value takes precedence.
-
     #[test]
     fn test_resolve_header_wins_over_static() {
         let config = make_signal_config("static-topic", Some("x-target-topic"));
@@ -291,7 +286,6 @@ mod tests {
 
     /// Scenario: Static fallback is chosen.
     /// Guarantees: Returns a Cow::Borrowed, avoiding allocation.
-
     #[test]
     fn test_resolve_static_path_returns_borrowed() {
         let config = make_signal_config("my-topic", None);
@@ -310,7 +304,6 @@ mod tests {
 
     /// Scenario: Dynamic header topic is chosen.
     /// Guarantees: Returns a Cow::Owned of the header topic.
-
     #[test]
     fn test_resolve_header_path_returns_owned() {
         let config = make_signal_config("fallback", Some("x-topic"));
@@ -329,7 +322,6 @@ mod tests {
 
     /// Scenario: Different signals use different header keys for routing.
     /// Guarantees: Topics are correctly resolved based on per-signal configurations.
-
     #[test]
     fn test_per_signal_header_keys() {
         let traces_config = make_signal_config("otlp_spans", Some("x-traces-topic"));
@@ -366,7 +358,6 @@ mod tests {
 
     /// Scenario: A signal's specifically configured header key is absent.
     /// Guarantees: Falls back to the static topic for that signal.
-
     #[test]
     fn test_per_signal_header_key_absent_falls_back() {
         let config = make_signal_config("fallback-logs", Some("x-logs-topic"));
@@ -388,7 +379,6 @@ mod tests {
 
     /// Scenario: The specified transport header provides an empty topic.
     /// Guarantees: Returns an InvalidHeaderTopic error without falling back.
-
     #[test]
     fn test_resolve_invalid_header_topic_empty_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
@@ -412,7 +402,6 @@ mod tests {
 
     /// Scenario: The transport header topic is "." which is invalid for Kafka.
     /// Guarantees: Returns an InvalidHeaderTopic error without falling back.
-
     #[test]
     fn test_resolve_invalid_header_topic_dot_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
@@ -435,7 +424,6 @@ mod tests {
 
     /// Scenario: The transport header topic is ".." which is invalid for Kafka.
     /// Guarantees: Returns an InvalidHeaderTopic error without falling back.
-
     #[test]
     fn test_resolve_invalid_header_topic_dotdot_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
@@ -457,7 +445,6 @@ mod tests {
 
     /// Scenario: The transport header topic contains invalid characters.
     /// Guarantees: Returns an InvalidHeaderTopic error without falling back.
-
     #[test]
     fn test_resolve_invalid_header_topic_bad_chars_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
@@ -480,7 +467,6 @@ mod tests {
 
     /// Scenario: The transport header topic exceeds maximum length.
     /// Guarantees: Returns an InvalidHeaderTopic error without falling back.
-
     #[test]
     fn test_resolve_invalid_header_topic_too_long_errors() {
         let long_topic = "a".repeat(250);
@@ -504,7 +490,6 @@ mod tests {
 
     /// Scenario: The transport header topic is not valid UTF-8.
     /// Guarantees: Returns an InvalidHeaderTopic error without falling back.
-
     #[test]
     fn test_resolve_non_utf8_header_topic_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
@@ -537,7 +522,6 @@ mod tests {
 
     /// Scenario: A valid transport header topic is provided.
     /// Guarantees: Resolves to the header value without errors.
-
     #[test]
     fn test_resolve_valid_header_topic_still_works() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
@@ -558,7 +542,6 @@ mod tests {
 
     /// Scenario: The transport header is mixed case but matches normalized lowercase config.
     /// Guarantees: Successfully matches and resolves the header topic.
-
     #[test]
     fn test_resolve_matches_normalized_config_key_for_mixed_case_header() {
         // A header arriving as `X-Target-Topic` is captured (and normalized) as
