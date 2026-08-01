@@ -1,0 +1,35 @@
+# Use this changelog template to create an entry for release notes.
+
+# One of 'breaking', 'deprecation', 'new_component', 'enhancement', 'bug_fix'
+change_type: breaking
+
+# The name of the component, or a single word describing the area of concern, (e.g. engine, otap).
+# Must be one of the components listed in rust/otap-dataflow/.chloggen/config.yaml.
+component: engine
+
+# A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
+note: Replace transport headers with the compiled tenant context throughout the engine.
+
+# Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
+issues: [3583]
+
+# (Optional) One or more lines of additional information to render under the primary note.
+# These lines will be padded with 2 spaces and then inserted directly into the document.
+# Use pipe (|) for multiline entries.
+subtext: |
+  The `header_capture` and `header_propagation` node policies are removed,
+  along with the pipeline, group and engine scopes that resolved them.
+  Request metadata is now declared once under `engine: tenant_tokens:` and
+  read by key.
+
+  Migration:
+
+  - Receivers: a capture rule becomes an extractor. `match_names` becomes
+    `transport_header` and `store_as` becomes `key`.
+  - `exporter:otlp_grpc`: a propagation policy becomes a `tenant_headers`
+    list mapping a key to the outbound header name. Nothing is emitted
+    unless it is named, and an inbound header name is never reused.
+  - `exporter:kafka`: `topic_from_transport_header` becomes `topic_from_key`
+    and `partition_by_transport_headers` becomes `partition_by_keys`.
+  - `processor:partition`: partitions are named on a tenant key instead of
+    on a synthetic transport header.
