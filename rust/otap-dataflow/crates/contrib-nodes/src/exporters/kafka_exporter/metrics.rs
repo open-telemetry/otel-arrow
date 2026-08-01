@@ -7,42 +7,29 @@
 //! from the data-plane admin `/api/v1/metrics` endpoint. They follow the standard
 //! `metric_set` pattern used by other OTAP nodes.
 
+use otap_df_engine::context::PipelineContext;
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
 use otap_df_telemetry::instrument::Counter;
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet};
+use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry_macros::metric_set;
 
-/// Metrics for the Kafka exporter.
-///
-/// Tracks success and failure counts for each signal type (logs, metrics, traces).
-///
-/// Metric set name: `exporter.kafka`
-///
-/// Individual metric names (after field name translation `_` -> `.`):
-/// - `logs.exported` / `logs.failed`
-/// - `metrics.exported` / `metrics.failed`
-/// - `traces.exported` / `traces.failed`
-/// - `acks.received`
-/// - `nacks.received`
+/// Signal-specific export completion metrics.
+#[metric_set(
+    name = "exporter.kafka.exports",
+    measurement_attributes = SignalOutcomeAttributes
+)]
+#[derive(Debug, Default, Clone)]
+pub struct KafkaExporterExportMetrics {
+    /// Number of items resolved by export outcome.
+    #[metric(unit = "{item}")]
+    pub items: Counter<u64>,
+}
+
+/// Operational metrics for the Kafka exporter.
 #[metric_set(name = "exporter.kafka")]
 #[derive(Debug, Default, Clone)]
-pub struct KafkaExporterMetrics {
-    /// Number of log records successfully exported to Kafka.
-    #[metric(unit = "{log}")]
-    pub logs_exported: Counter<u64>,
-    /// Number of log records that failed to export to Kafka.
-    #[metric(unit = "{log}")]
-    pub logs_failed: Counter<u64>,
-    /// Number of metric data points successfully exported to Kafka.
-    #[metric(unit = "{datapoint}")]
-    pub metrics_exported: Counter<u64>,
-    /// Number of metric data points that failed to export to Kafka.
-    #[metric(unit = "{datapoint}")]
-    pub metrics_failed: Counter<u64>,
-    /// Number of trace spans successfully exported to Kafka.
-    #[metric(unit = "{span}")]
-    pub traces_exported: Counter<u64>,
-    /// Number of trace spans that failed to export to Kafka.
-    #[metric(unit = "{span}")]
-    pub traces_failed: Counter<u64>,
+pub struct KafkaExporterOperationalMetrics {
     /// Number of acks received from downstream.
     #[metric(unit = "{batch}")]
     pub acks_received: Counter<u64>,
@@ -57,110 +44,134 @@ pub struct KafkaExporterMetrics {
     pub topic_from_static_config: Counter<u64>,
 }
 
+pub struct KafkaExporterMetrics {
+    pub export_metrics: MeasurementMetricSet<KafkaExporterExportMetrics>,
+    pub operational_metrics: MetricSet<KafkaExporterOperationalMetrics>,
+}
+
 impl KafkaExporterMetrics {
-    /// Increments the exported counter for the given signal type.
-    pub fn inc_exported(&mut self, signal_type: otap_df_config::SignalType) {
-        match signal_type {
-            otap_df_config::SignalType::Logs => self.logs_exported.inc(),
-            otap_df_config::SignalType::Metrics => self.metrics_exported.inc(),
-            otap_df_config::SignalType::Traces => self.traces_exported.inc(),
+    pub fn register(pipeline_ctx: &PipelineContext) -> Self {
+        Self {
+            export_metrics: KafkaExporterExportMetrics::register(pipeline_ctx),
+            operational_metrics: KafkaExporterOperationalMetrics::register(pipeline_ctx),
         }
     }
 
-    /// Increments the failed counter for the given signal type.
-    pub fn inc_failed(&mut self, signal_type: otap_df_config::SignalType) {
-        match signal_type {
-            otap_df_config::SignalType::Logs => self.logs_failed.inc(),
-            otap_df_config::SignalType::Metrics => self.metrics_failed.inc(),
-            otap_df_config::SignalType::Traces => self.traces_failed.inc(),
-        }
+    pub fn report(&mut self, reporter: &mut MetricsReporter) -> Result<(), otap_df_telemetry::error::Error> {
+        reporter
+            .report(&mut self.operational_metrics)
+            .and_then(|()| reporter.report_measurement(&mut self.export_metrics))
     }
 
-    /// Increment ack counter when downstream confirms a batch.
+    pub fn terminal_snapshots(&mut self) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
+        let mut snapshots = self.operational_metrics.terminal_snapshots();
+        snapshots.extend(self.export_metrics.terminal_snapshots());
+        snapshots
+    }
+
+    pub fn inc_exported(&mut self, signal: otap_df_config::SignalType) {
+        self.export_metrics
+            .with(SignalOutcomeAttributes {
+                signal,
+                outcome: Outcome::Success,
+            })
+            .items
+            .inc();
+    }
+
+    pub fn inc_failed(&mut self, signal: otap_df_config::SignalType) {
+        self.export_metrics
+            .with(SignalOutcomeAttributes {
+                signal,
+                outcome: Outcome::Failure,
+            })
+            .items
+            .inc();
+    }
+
     pub fn inc_ack(&mut self) {
-        self.acks_received.inc();
+        self.operational_metrics.acks_received.inc();
     }
 
-    /// Increment nack counter when downstream rejects a batch.
     pub fn inc_nack(&mut self) {
-        self.nacks_received.inc();
+        self.operational_metrics.nacks_received.inc();
     }
 
-    /// Increment counter when topic was resolved from a transport header.
     pub fn inc_topic_from_header(&mut self) {
-        self.topic_from_header.inc();
+        self.operational_metrics.topic_from_header.inc();
     }
 
-    /// Increment counter when topic was resolved from static per-signal config.
     pub fn inc_topic_from_static_config(&mut self) {
-        self.topic_from_static_config.inc();
+        self.operational_metrics.topic_from_static_config.inc();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exporters::kafka_exporter::exporter::test_support::pipeline_context;
     use otap_df_config::SignalType;
+
+    fn new_metrics() -> KafkaExporterMetrics {
+        KafkaExporterMetrics::register(&pipeline_context())
+    }
 
     #[test]
     fn inc_exported_traces() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_exported(SignalType::Traces);
         m.inc_exported(SignalType::Traces);
-        assert_eq!(m.traces_exported.get(), 2);
-        assert_eq!(m.logs_exported.get(), 0);
-        assert_eq!(m.metrics_exported.get(), 0);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Success }).items.get(), 2);
     }
 
     #[test]
     fn inc_exported_metrics() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_exported(SignalType::Metrics);
-        assert_eq!(m.metrics_exported.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Metrics, outcome: Outcome::Success }).items.get(), 1);
     }
 
     #[test]
     fn inc_exported_logs() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_exported(SignalType::Logs);
-        assert_eq!(m.logs_exported.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Logs, outcome: Outcome::Success }).items.get(), 1);
     }
 
     #[test]
     fn inc_failed_traces() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_failed(SignalType::Traces);
-        assert_eq!(m.traces_failed.get(), 1);
-        assert_eq!(m.traces_exported.get(), 0);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Failure }).items.get(), 1);
     }
 
     #[test]
     fn inc_failed_metrics() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_failed(SignalType::Metrics);
-        assert_eq!(m.metrics_failed.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Metrics, outcome: Outcome::Failure }).items.get(), 1);
     }
 
     #[test]
     fn inc_failed_logs() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_failed(SignalType::Logs);
-        assert_eq!(m.logs_failed.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Logs, outcome: Outcome::Failure }).items.get(), 1);
     }
 
     #[test]
     fn inc_ack_and_nack() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_ack();
         m.inc_ack();
         m.inc_nack();
-        assert_eq!(m.acks_received.get(), 2);
-        assert_eq!(m.nacks_received.get(), 1);
+        assert_eq!(m.operational_metrics.acks_received.get(), 2);
+        assert_eq!(m.operational_metrics.nacks_received.get(), 1);
     }
 
     #[test]
     fn counters_are_independent() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_exported(SignalType::Traces);
         m.inc_exported(SignalType::Metrics);
         m.inc_exported(SignalType::Logs);
@@ -170,33 +181,32 @@ mod tests {
         m.inc_topic_from_header();
         m.inc_topic_from_static_config();
 
-        assert_eq!(m.traces_exported.get(), 1);
-        assert_eq!(m.metrics_exported.get(), 1);
-        assert_eq!(m.logs_exported.get(), 1);
-        assert_eq!(m.traces_failed.get(), 1);
-        assert_eq!(m.metrics_failed.get(), 0);
-        assert_eq!(m.logs_failed.get(), 0);
-        assert_eq!(m.acks_received.get(), 1);
-        assert_eq!(m.nacks_received.get(), 1);
-        assert_eq!(m.topic_from_header.get(), 1);
-        assert_eq!(m.topic_from_static_config.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Success }).items.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Metrics, outcome: Outcome::Success }).items.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Logs, outcome: Outcome::Success }).items.get(), 1);
+        assert_eq!(m.export_metrics.with(SignalOutcomeAttributes { signal: SignalType::Traces, outcome: Outcome::Failure }).items.get(), 1);
+        
+        assert_eq!(m.operational_metrics.acks_received.get(), 1);
+        assert_eq!(m.operational_metrics.nacks_received.get(), 1);
+        assert_eq!(m.operational_metrics.topic_from_header.get(), 1);
+        assert_eq!(m.operational_metrics.topic_from_static_config.get(), 1);
     }
 
     #[test]
     fn inc_topic_from_header() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_topic_from_header();
         m.inc_topic_from_header();
-        assert_eq!(m.topic_from_header.get(), 2);
-        assert_eq!(m.topic_from_static_config.get(), 0);
+        assert_eq!(m.operational_metrics.topic_from_header.get(), 2);
+        assert_eq!(m.operational_metrics.topic_from_static_config.get(), 0);
     }
 
     #[test]
     fn inc_topic_from_static_config() {
-        let mut m = KafkaExporterMetrics::default();
+        let mut m = new_metrics();
         m.inc_topic_from_static_config();
         m.inc_topic_from_static_config();
-        assert_eq!(m.topic_from_static_config.get(), 2);
-        assert_eq!(m.topic_from_header.get(), 0);
+        assert_eq!(m.operational_metrics.topic_from_static_config.get(), 2);
+        assert_eq!(m.operational_metrics.topic_from_header.get(), 0);
     }
 }

@@ -518,16 +518,16 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `exporter.kafka.logs_exported` | `{log}` | Number of log records successfully exported to Kafka. |
-| `exporter.kafka.logs_failed` | `{log}` | Number of log records that failed to export to Kafka. |
-| `exporter.kafka.metrics_exported` | `{datapoint}` | Number of metric data points successfully exported to Kafka. |
-| `exporter.kafka.metrics_failed` | `{datapoint}` | Number of metric data points that failed to export to Kafka. |
-| `exporter.kafka.traces_exported` | `{span}` | Number of trace spans successfully exported to Kafka. |
-| `exporter.kafka.traces_failed` | `{span}` | Number of trace spans that failed to export to Kafka. |
 | `exporter.kafka.acks_received` | `{batch}` | Number of acks received from downstream. |
 | `exporter.kafka.nacks_received` | `{batch}` | Number of nacks received from downstream. |
 | `exporter.kafka.topic_from_header` | `{batch}` | Batches where topic was resolved from a transport header. |
 | `exporter.kafka.topic_from_static_config` | `{batch}` | Batches where topic was resolved from static per-signal config. |
+
+#### `exporter.kafka.exports`
+
+| Metric | Unit | Description |
+| --- | --- | --- |
+| `exporter.kafka.exports.items` | `{item}` | Number of items resolved by export outcome. |
 
 ### Events
 

@@ -188,50 +188,50 @@ mod tests {
             "X-Target-Topic",
             "tenant-a-logs",
         )]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "tenant-a-logs");
         assert!(matches!(topic, Cow::Owned(_)));
-        assert_eq!(metrics.topic_from_header.get(), 1);
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
     }
 
     #[test]
     fn test_resolve_header_absent() {
         let config = make_signal_config("fallback-logs", Some("x-target-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Other-Header", "value")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert!(matches!(topic, Cow::Borrowed(_)));
-        assert_eq!(metrics.topic_from_header.get(), 0);
-        assert_eq!(metrics.topic_from_static_config.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 1);
     }
 
     #[test]
     fn test_resolve_header_no_transport_headers_on_context() {
         let config = make_signal_config("fallback-logs", Some("x-target-topic"));
         let ctx = Context::default();
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert!(matches!(topic, Cow::Borrowed(_)));
-        assert_eq!(metrics.topic_from_static_config.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 1);
     }
 
     #[test]
     fn test_resolve_header_not_configured() {
         let config = make_signal_config("fallback-logs", None);
         let ctx = context_with_headers(vec![make_transport_header("X-Target-Topic", "topic-a")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
         assert!(matches!(topic, Cow::Borrowed(_)));
-        assert_eq!(metrics.topic_from_static_config.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 1);
     }
 
     #[test]
@@ -241,19 +241,19 @@ mod tests {
             "X-Target-Topic",
             "header-topic",
         )]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "header-topic");
-        assert_eq!(metrics.topic_from_header.get(), 1);
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
     }
 
     #[test]
     fn test_resolve_static_path_returns_borrowed() {
         let config = make_signal_config("my-topic", None);
         let ctx = Context::default();
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
         assert_eq!(&*topic, "my-topic");
@@ -267,7 +267,7 @@ mod tests {
     fn test_resolve_header_path_returns_owned() {
         let config = make_signal_config("fallback", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "dynamic")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "dynamic");
@@ -287,7 +287,7 @@ mod tests {
             make_transport_header("X-Traces-Topic", "custom-traces"),
             make_transport_header("X-Logs-Topic", "custom-logs"),
         ]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         // Traces: header present -> dynamic topic
         let topic = TopicRouter::resolve(&traces_config, &ctx, &mut metrics).expect("valid topic");
@@ -302,20 +302,20 @@ mod tests {
         let topic = TopicRouter::resolve(&logs_config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "custom-logs");
 
-        assert_eq!(metrics.topic_from_header.get(), 2);
-        assert_eq!(metrics.topic_from_static_config.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 2);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 1);
     }
 
     #[test]
     fn test_per_signal_header_key_absent_falls_back() {
         let config = make_signal_config("fallback-logs", Some("x-logs-topic"));
         let ctx = Context::default();
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("static topic");
         assert_eq!(&*topic, "fallback-logs");
-        assert_eq!(metrics.topic_from_static_config.get(), 1);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     // ---- Invalid header topic returns an error (no static fallback) ----
@@ -324,7 +324,7 @@ mod tests {
     fn test_resolve_invalid_header_topic_empty_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
         assert!(matches!(
@@ -332,52 +332,52 @@ mod tests {
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         // No fallback to static topic, and no topic routing metric incremented.
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     #[test]
     fn test_resolve_invalid_header_topic_dot_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", ".")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     #[test]
     fn test_resolve_invalid_header_topic_dotdot_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "..")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
     }
 
     #[test]
     fn test_resolve_invalid_header_topic_bad_chars_errors() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "bad topic/name")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     #[test]
@@ -385,15 +385,15 @@ mod tests {
         let long_topic = "a".repeat(250);
         let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", &long_topic)]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
         assert!(matches!(
             result,
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     #[test]
@@ -409,7 +409,7 @@ mod tests {
             value: vec![0xff, 0xfe, 0xfd],
         };
         let ctx = context_with_headers(vec![header]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let result = TopicRouter::resolve(&config, &ctx, &mut metrics);
         assert!(matches!(
@@ -417,21 +417,21 @@ mod tests {
             Err(TopicRoutingError::InvalidHeaderTopic { .. })
         ));
         // No fallback to static topic, and no topic routing metric incremented.
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
-        assert_eq!(metrics.topic_from_header.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 0);
     }
 
     #[test]
     fn test_resolve_valid_header_topic_still_works() {
         let config = make_signal_config("fallback-topic", Some("x-topic"));
         let ctx = context_with_headers(vec![make_transport_header("X-Topic", "valid-topic-123")]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "valid-topic-123");
         assert!(matches!(topic, Cow::Owned(_)));
-        assert_eq!(metrics.topic_from_header.get(), 1);
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
     }
 
     #[test]
@@ -445,11 +445,11 @@ mod tests {
             "X-Target-Topic",
             "tenant-a-logs",
         )]);
-        let mut metrics = KafkaExporterMetrics::default();
+        let mut metrics = KafkaExporterMetrics::register(&crate::exporters::kafka_exporter::exporter::test_support::pipeline_context());
 
         let topic = TopicRouter::resolve(&config, &ctx, &mut metrics).expect("valid topic");
         assert_eq!(&*topic, "tenant-a-logs");
-        assert_eq!(metrics.topic_from_header.get(), 1);
-        assert_eq!(metrics.topic_from_static_config.get(), 0);
+        assert_eq!(metrics.operational_metrics.topic_from_header.get(), 1);
+        assert_eq!(metrics.operational_metrics.topic_from_static_config.get(), 0);
     }
 }
