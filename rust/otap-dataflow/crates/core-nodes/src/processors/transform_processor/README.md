@@ -57,10 +57,34 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `processor.transform`
 
-| Metric | Unit | Description |
-| --- | --- | --- |
-| `processor.transform.msgs_transformed` | `{msg}` | Number of messages successfully transformed. |
-| `processor.transform.msgs_transform_failed` | `{msg}` | Number of failed transform attempts. |
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `processor.transform.operations` | `{operation}` | `language`, `signal`, `outcome` | Number of matching input messages whose local transform operation terminated. |
+| `processor.transform.failures` | `{operation}` | `language`, `signal`, `error.type` | Failed transform operations grouped by actionable error category. |
+
+The bounded `language` attribute is fixed for a processor instance and is one
+of `kql`, `opl`, or `ottl`. The `signal` attribute is one of `traces`,
+`metrics`, or `logs`.
+
+An operation covers all configured transforms that match one input message.
+Messages with no matching transform are passed through without recording an
+operation. The `outcome` is `success` only after the transformed default and
+routed outputs have been accepted by their immediate sends; otherwise it is
+`failure`. Downstream acknowledgements do not change this local outcome.
+
+The bounded `error.type` values are:
+
+- `payload_conversion`: the input could not be converted to OTAP Arrow records.
+- `id_decode`: transport-optimized identifiers could not be decoded.
+- `query_execution`: the configured query pipeline failed while executing.
+- `route_not_configured`: the query referenced an unconfigured output route.
+- `inbound_capacity`: `inbound_request_limit` was exhausted.
+- `outbound_capacity`: `outbound_request_limit` was exhausted.
+- `output_send`: an immediate default or routed output send failed.
+- `internal`: an internal transform processor invariant failed.
+
+Common engine telemetry provides total consumed and produced traffic, dropped
+items, channel send failures, and downstream acknowledgement outcomes.
 
 ### Events
 
