@@ -291,21 +291,22 @@ Allocations and bytes per request, base = baseline, tok = tenant token:
 
 | phase | matched | base allocs | tok allocs | base bytes | tok bytes |
 | --- | --- | --- | --- | --- | --- |
-| capture | 1 | 5 | 1 | 388 | 64 |
-| capture | 2 | 8 | 1 | 421 | 80 |
-| capture | 4 | 14 | 1 | 546 | 168 |
+| capture | 1 | 4 | 1 | 249 | 64 |
+| capture | 2 | 6 | 1 | 270 | 80 |
+| capture | 4 | 10 | 1 | 372 | 168 |
 | carry | any | 0 | 0 | 0 | 0 |
 | propagate | any | 0 | 0 | 0 | 0 |
 | attributes | any | n/a | 0 | n/a | 0 |
 
-Capture cost `2 + 3n` -- an `Arc`, a `Vec`, and a name, wire name and value
-per header. It is now **1**, flat, and the bytes fall with it because a value
-slot spends no name and no descriptor.
+Capture cost `2 + 2n` -- an `Arc`, a `Vec`, and a stored name and value per
+matched header. It is now **1**, flat, and the bytes fall with it because a
+value slot spends no name and no descriptor.
 
-Carry and propagation were already free: `TransportHeaders` is an
+Carry and propagation were already free: `TransportHeaders` was an
 `Arc<Vec<TransportHeader>>`, so a hop was an `Arc` bump and propagation
 borrowed. The win is per request, not per hop, and claiming otherwise would
-overstate it.
+overstate it. The baseline reproduced in the benchmark keeps that `Arc`, so
+carry is measured at zero on both sides.
 
 Wall time, same run, mean nanoseconds. The measurements below declare a
 router's worth of conditions -- eight tenants, two projects each -- because a
@@ -314,43 +315,58 @@ exercises the probe at all:
 
 | phase | matched | baseline | tenant |
 | --- | --- | --- | --- |
-| capture / resolve | 1 | 125 | 113 |
-| capture / resolve | 2 | 200 | 148 |
-| capture / resolve | 4 | 486 | 203 |
-| carry (per hop) | any | 10 | 18 |
-| propagate | 4 | 13 | 15 |
-| end to end | 1 | 185 | 109 |
-| end to end | 2 | 246 | 149 |
-| end to end | 4 | 581 | 194 |
-| match | any | n/a | 9 to 11 |
-| attributes | 4 | n/a | 5 |
+| capture / resolve | 1 | 109 | 125 |
+| capture / resolve | 2 | 152 | 198 |
+| capture / resolve | 4 | 272 | 228 |
+| carry (per hop) | any | 10 to 18 | 18 to 20 |
+| propagate | 4 | 3 | 20 |
+| end to end | 1 | 198 | 151 |
+| end to end | 2 | 304 | 232 |
+| end to end | 4 | 408 | 340 |
+| match | any | n/a | 11 to 13 |
+| attributes | 4 | n/a | 7 |
 
-Resolution beats capture at every width, by 10% at one key and 58% at four,
-and end to end is 39% to 67% faster. Three things pay for that. Registered
-header names are screened by a one-word Bloom filter over length and first
-byte before anything is hashed, so the four headers a pipeline does not want
--- content type, user agent, encoding, timeouts -- are rejected without a map
-lookup. Since gRPC and HTTP/2 already require lowercase names, case folding is
-skipped unless a name actually needs it. And a key no condition tests by value
-skips the dictionary lookup entirely, since that lookup could only miss.
+Read this table carefully, because it does **not** say the packed context is
+uniformly faster. Started from a slice of header pairs that someone else
+already owns, resolution does strictly more work than capture: it interns
+every value to a symbol, packs a routing signature, and encodes an OTLP
+`AnyValue` per slot. At one and two keys that extra work costs 15% to 30%.
+Only at four keys does it come out ahead, and it does so because capture
+scales with matched headers while the parts of resolution that dominate --
+screening and the single allocation -- do not.
+
+The phases the design does claim are `end to end`, where the tenant path is
+17% to 24% faster because the baseline's per-header allocations compound
+across the request, and the allocation counts above, which are flat.
+
+Three things pay for resolution's extra work. Registered header names are
+screened by a one-word Bloom filter over length and first byte before
+anything is hashed, so the four headers a pipeline does not want -- content
+type, user agent, encoding, timeouts -- are rejected without a map lookup.
+Since gRPC and HTTP/2 already require lowercase names, case folding is
+skipped unless a name actually needs it. And a key no condition tests by
+value skips the dictionary lookup entirely, since that lookup could only
+miss.
 
 `match` is flat in the number of keys and has no baseline row, because the
 baseline has no routing to compare against. Flatness is the design claim: one
-lookup per bound pair, independent of how many conditions were declared.
+lookup per bound pair, independent of how many conditions were declared. The
+baseline's cheaper `propagate` is the same story in reverse -- it re-emits a
+borrowed name and value, where the tenant path formats an outbound name per
+declared header -- and at 20ns against a 4000ns gRPC send it is not a cost
+anyone can observe.
 
-Two costs went **up**. A hop is dearer, because `Arc<[u64]>` is a wide
-pointer -- the element count travels in the pointer -- where `Arc<Vec<_>>` was
-thin. Against roughly 380ns saved per request at four keys that pays for
-itself over any plausible pipeline depth, but the length is redundant with
-`n_slots` and `bag_len`, which word 0 already carries, so a thin-pointer
-representation would recover it. Reading one value is about 2ns dearer,
-because a slot addresses an encoded `AnyValue` and the read skips a tag and
-two varints rather than indexing a struct field.
+A hop is also dearer, because `Arc<[u64]>` is a wide pointer -- the element
+count travels in the pointer -- where `Arc<Vec<_>>` was thin. The length is
+redundant with `n_slots` and `bag_len`, which word 0 already carries, so a
+thin-pointer representation would recover it. Reading one value is about 2ns
+dearer, because a slot addresses an encoded `AnyValue` and the read skips a
+tag and two varints rather than indexing a struct field.
 
 `attributes` has no baseline row because the baseline cannot do it: emitting
 the request's context as telemetry attributes would mean encoding a
 `KeyValue` per header. Here it is a borrow of an already formed repeated
-field, and the 5ns is the memcpy.
+field, and the 7ns is the memcpy.
 
 #### Where the remaining time goes
 
@@ -395,17 +411,25 @@ Same run, nine inbound headers, mean nanoseconds:
 
 | matched | baseline ns | tenant ns | baseline allocs | tenant allocs |
 | --- | --- | --- | --- | --- |
-| 1 | 517 | 108 | 15 (1018 B) | 1 (64 B) |
-| 2 | 589 | 146 | 18 (1051 B) | 1 (80 B) |
-| 4 | 856 | 189 | 24 (1176 B) | 1 (168 B) |
+| 1 | 564 | 159 | 14 (879 B) | 1 (64 B) |
+| 2 | 709 | 215 | 16 (900 B) | 1 (80 B) |
+| 4 | 849 | 275 | 20 (1002 B) | 1 (168 B) |
 
-Four to five times faster, and twenty-four allocations become one. Ten of the
-baseline's allocations are the eager materialization alone, and they scale
-with headers *received* rather than headers *wanted* -- a request carrying
-headers no rule mentions still pays for all of them. The tenant path never
-materializes a value until the registry confirms some token declared that
-name, so its cost scales with what the configuration asked for. That is also
-why the tenant column is flat in allocations: one, at every width.
+Three times faster, and twenty allocations become one. This is where the
+design earns its keep, and it is a different result from the isolated
+`capture` row above rather than a restatement of it: ten of the baseline's
+allocations are the eager materialization alone, and they scale with headers
+*received* rather than headers *wanted* -- a request carrying headers no rule
+mentions still pays for all of them. The tenant path never materializes a
+value until the registry confirms some token declared that name, so its cost
+scales with what the configuration asked for. That is also why the tenant
+column is flat in allocations: one, at every width.
+
+The honest summary of the two tables is that packing the context is not free
+-- it is slightly dearer than capture when both are handed the same owned
+pairs -- and that the pairs are the point. Nobody hands a receiver owned
+pairs. A receiver is handed a `MetadataMap`, and the cost of turning that
+into something a capture policy can read is the cost the design removes.
 
 Limits: `MAX_TOKENS = 64`, `MAX_TOKEN_KEYS = 64`, `MAX_VALUE_BYTES = 65535`.
 

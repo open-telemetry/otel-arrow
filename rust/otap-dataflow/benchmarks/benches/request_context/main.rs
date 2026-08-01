@@ -27,6 +27,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::hint::black_box;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
@@ -107,12 +108,24 @@ fn inbound() -> Vec<(&'static str, &'static [u8])> {
 ///
 /// The engine no longer carries transport headers, but the benchmark still
 /// needs the shape it replaced: an owned name/value pair per captured header,
-/// in a growable vector, cloned at every hop. This is deliberately the *lean*
-/// version of what shipped -- no sensitivity flags, no value-kind inference,
-/// no case folding beyond the match -- so the comparison understates rather
-/// than inflates the cost the packed context removes.
+/// sealed behind an `Arc` so a hop is a refcount bump, exactly as
+/// `TransportHeaders(Arc<Vec<TransportHeader>>)` was. This is deliberately
+/// the *lean* version of what shipped -- no sensitivity flags, no value-kind
+/// inference, no case folding beyond the match -- so the comparison
+/// understates rather than inflates the cost the packed context removes.
 #[derive(Clone, Default)]
-struct TransportHeaders(Vec<BaselineHeader>);
+struct TransportHeaders(Arc<Vec<BaselineHeader>>);
+
+/// The growable buffer capture fills before the headers are sealed.
+#[derive(Default)]
+struct CapturedHeaders(Vec<BaselineHeader>);
+
+impl CapturedHeaders {
+    /// Seals the captured headers into the shared form a request carries.
+    fn seal(self) -> TransportHeaders {
+        TransportHeaders(Arc::new(self.0))
+    }
+}
 
 #[derive(Clone)]
 struct BaselineHeader {
@@ -129,7 +142,7 @@ impl HeaderCapturePolicy {
     fn capture_from_pairs<'a>(
         &self,
         pairs: impl Iterator<Item = (&'a str, &'a [u8])>,
-        out: &mut TransportHeaders,
+        out: &mut CapturedHeaders,
     ) {
         for (name, value) in pairs {
             for (wire, stored) in &self.0 {
@@ -296,9 +309,9 @@ fn baseline_receive(policy: &HeaderCapturePolicy, md: &MetadataMap) -> Transport
                 .map(|decoded| (key.as_str(), decoded.to_vec())),
         })
         .collect();
-    let mut out = TransportHeaders::default();
+    let mut out = CapturedHeaders::default();
     policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, v.as_slice())), &mut out);
-    out
+    out.seal()
 }
 
 /// Counts of matched headers to sweep. One is the degenerate case a router
@@ -312,9 +325,9 @@ fn bench_capture(c: &mut Criterion) {
         let pairs = inbound();
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
-                let mut out = TransportHeaders::default();
+                let mut out = CapturedHeaders::default();
                 policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), black_box(&mut out));
-                out
+                out.seal()
             });
         });
     }
@@ -326,8 +339,9 @@ fn bench_carry(c: &mut Criterion) {
     for n in MATCHED {
         let policy = capture_policy(n);
         let pairs = inbound();
-        let mut headers = TransportHeaders::default();
-        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+        let mut captured = CapturedHeaders::default();
+        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut captured);
+        let headers = captured.seal();
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| black_box(headers.clone()));
         });
@@ -341,8 +355,9 @@ fn bench_propagate(c: &mut Criterion) {
     for n in MATCHED {
         let policy = capture_policy(n);
         let pairs = inbound();
-        let mut headers = TransportHeaders::default();
-        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+        let mut captured = CapturedHeaders::default();
+        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut captured);
+        let headers = captured.seal();
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
                 let mut emitted = 0usize;
@@ -365,8 +380,9 @@ fn bench_end_to_end(c: &mut Criterion) {
         let pairs = inbound();
         let _ = group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
-                let mut headers = TransportHeaders::default();
-                policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+                let mut captured = CapturedHeaders::default();
+                policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut captured);
+                let headers = captured.seal();
                 let hop1 = headers.clone();
                 let hop2 = hop1.clone();
                 let mut emitted = 0usize;
@@ -572,14 +588,15 @@ fn alloc_report(_c: &mut Criterion) {
         let policy = capture_policy(n);
 
         let (a, b) = measure(ITERS, || {
-            let mut out = TransportHeaders::default();
+            let mut out = CapturedHeaders::default();
             policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut out);
-            out
+            out.seal()
         });
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "capture");
 
-        let mut headers = TransportHeaders::default();
-        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut headers);
+        let mut captured = CapturedHeaders::default();
+        policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut captured);
+        let headers = captured.seal();
         let (a, b) = measure(ITERS, || headers.clone());
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "carry");
 
@@ -593,8 +610,9 @@ fn alloc_report(_c: &mut Criterion) {
         println!("{:<12} {n:>8} {a:>10.2} {b:>10.1}", "propagate");
 
         let (a, b) = measure(ITERS, || {
-            let mut h = TransportHeaders::default();
+            let mut h = CapturedHeaders::default();
             policy.capture_from_pairs(pairs.iter().map(|(k, v)| (*k, *v)), &mut h);
+            let h = h.seal();
             let hop1 = h.clone();
             let hop2 = hop1.clone();
             let mut emitted = 0usize;
