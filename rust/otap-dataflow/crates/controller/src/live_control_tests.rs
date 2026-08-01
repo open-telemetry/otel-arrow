@@ -3202,3 +3202,26 @@ fn runtime_thread_panic_populates_error_source_in_observed_status() {
     assert!(source.contains("core_id=0"));
     assert!(source.contains("backtrace:"));
 }
+
+#[tokio::test]
+async fn has_active_instances_checks_multiple_state_fields() {
+    let config = engine_config_with_pipeline(simple_pipeline_yaml());
+    let runtime = test_runtime(&config);
+    let control_plane = runtime.control_plane();
+
+    // Initial state: everything is 0/empty
+    assert!(!control_plane.has_active_instances());
+
+    {
+        let mut state = runtime.state.lock().unwrap();
+        state.active_instances = 1;
+    }
+    assert!(control_plane.has_active_instances());
+
+    {
+        let mut state = runtime.state.lock().unwrap();
+        state.active_instances = 0;
+        state.active_engine_operation = Some("foo".to_owned());
+    }
+    assert!(control_plane.has_active_instances());
+}
