@@ -44,12 +44,16 @@ pub struct KafkaExporterOperationalMetrics {
     pub topic_from_static_config: Counter<u64>,
 }
 
+/// Composite metrics for the Kafka exporter.
 pub struct KafkaExporterMetrics {
+    /// Metrics related to export outcomes.
     pub export_metrics: MeasurementMetricSet<KafkaExporterExportMetrics>,
+    /// Operational metrics for the Kafka exporter.
     pub operational_metrics: MetricSet<KafkaExporterOperationalMetrics>,
 }
 
 impl KafkaExporterMetrics {
+    /// Registers the metrics for the Kafka exporter.
     pub fn register(pipeline_ctx: &PipelineContext) -> Self {
         Self {
             export_metrics: KafkaExporterExportMetrics::register(pipeline_ctx),
@@ -57,6 +61,7 @@ impl KafkaExporterMetrics {
         }
     }
 
+    /// Reports the current metrics to the provided reporter.
     pub fn report(
         &mut self,
         reporter: &mut MetricsReporter,
@@ -66,12 +71,14 @@ impl KafkaExporterMetrics {
             .and_then(|()| reporter.report_measurement(&mut self.export_metrics))
     }
 
+    /// Retrieves the terminal snapshots of the metrics.
     pub fn terminal_snapshots(&mut self) -> Vec<otap_df_telemetry::metrics::MetricSetSnapshot> {
         let mut snapshots = self.operational_metrics.terminal_snapshots();
         snapshots.extend(self.export_metrics.terminal_snapshots());
         snapshots
     }
 
+    /// Increments the counter for successfully exported items.
     pub fn inc_exported(&mut self, signal: otap_df_config::SignalType) {
         self.export_metrics
             .with(SignalOutcomeAttributes {
@@ -82,6 +89,7 @@ impl KafkaExporterMetrics {
             .inc();
     }
 
+    /// Increments the counter for failed export attempts.
     pub fn inc_failed(&mut self, signal: otap_df_config::SignalType) {
         self.export_metrics
             .with(SignalOutcomeAttributes {
@@ -92,18 +100,22 @@ impl KafkaExporterMetrics {
             .inc();
     }
 
+    /// Increments the counter for acks received from downstream.
     pub fn inc_ack(&mut self) {
         self.operational_metrics.acks_received.inc();
     }
 
+    /// Increments the counter for nacks received from downstream.
     pub fn inc_nack(&mut self) {
         self.operational_metrics.nacks_received.inc();
     }
 
+    /// Increments the counter for batches where the topic was resolved from a header.
     pub fn inc_topic_from_header(&mut self) {
         self.operational_metrics.topic_from_header.inc();
     }
 
+    /// Increments the counter for batches where the topic was resolved from static configuration.
     pub fn inc_topic_from_static_config(&mut self) {
         self.operational_metrics.topic_from_static_config.inc();
     }

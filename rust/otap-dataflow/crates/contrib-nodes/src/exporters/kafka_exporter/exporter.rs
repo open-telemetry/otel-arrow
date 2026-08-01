@@ -38,7 +38,6 @@ use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::Producer as PdataProducer;
-use otap_df_telemetry::metrics::MetricSet;
 use rdkafka::client::DefaultClientContext;
 use rdkafka::config::FromClientConfigAndContext;
 use rdkafka::message::{Header, OwnedHeaders};
