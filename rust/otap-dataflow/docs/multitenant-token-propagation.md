@@ -913,9 +913,11 @@ should have to say so.
 
 ## Retiring the capture policy
 
-This section is a **migration plan**. The name-bearing region of the packed
-layout is already gone; what remains is to move every component still calling
-`set_transport_headers` / `transport_headers()` onto the compiled context.
+This migration is **done**. `Context.transport_headers`, the `capture:` and
+`propagation:` policies, their three-scope resolution and every accessor are
+deleted; the compiled context is the only per-request metadata the engine
+carries. The before/after pairs below are kept as the migration reference for
+anyone porting a component that was not in the tree when this landed.
 
 The principle that removed the region is the one that governs the migration:
 **a name that travels is a name nobody declared**.
@@ -941,7 +943,28 @@ Word 2 and the descriptor pairs are gone, `TenantView::iter`, `find_by_name`,
 is now a slot index. What survives of naming is `bag: true`, which encodes the
 *registry* key name -- still a declared name, never a captured one.
 
-Each component below needs one change to get there.
+What was converted, and what each conversion proves:
+
+| Call site | Change | What it demonstrates |
+| --- | --- | --- |
+| `receiver:otlp` (gRPC + HTTP) | capture rules become extractors | ingress from a tonic `MetadataMap` and from HTTP headers, including `-bin` values |
+| `receiver:kafka` | same, over Kafka record headers | that "transport" is per protocol, not HTTP |
+| `exporter:otlp_grpc` | `tenant_headers` map | egress names created from configuration, never preserved from the wire |
+| `exporter:kafka` | `topic_from_key`, `partition_by_keys`, header decoration | three consumers of one context in one node |
+| `processor:partition` | partitions named on the context | a non-header consumer; no synthetic header needed |
+| `receiver:traffic_generator` | synthesizes a context directly | load generation without a header round trip |
+| `crates/validation` | `with_tenant_tokens_yaml`, `with_tenant_values` | assertions on slots rather than names |
+
+Two things did **not** need a per-node change, which is the useful negative
+result. Carrying the context across a hop is `Context::fork_request_scoped`,
+so every processor between a receiver and an exporter was already correct
+without knowing tenant tokens exist. And the registry reaches a node through
+its effect handler, so a component opts in by reading it rather than by
+having configuration threaded to it -- which is what let the old policy
+plumbing come out of `PipelineFactory::build`, both wrapper enums and all
+four effect handlers without replacement.
+
+Each component below needed one change to get there.
 
 ### `receiver:otlp`, `receiver:kafka`
 
@@ -1041,16 +1064,31 @@ move to declaring tokens like any other receiver, and asserting on
 `slot_value(registry.value_slot(key))` rather than `find_by_name`. This is the
 largest mechanical diff and the least interesting one.
 
-### What has to be decided first
+### What the migration decided
 
-- **Duplicate names.** Confirm nothing needs them, or add a multi-value key.
-- **`sensitive: true`.** Capture has a flag for headers like `authorization`.
-  Token keys have no such marker, and the natural answer is that a secret
-  should never become a key at all -- it should reach an authorization
-  extension and contribute a derived fact instead.
-- **Skip statistics.** Capture reports headers dropped for exceeding limits.
-  The token equivalent is an unresolved token, which is observable but means
-  something different.
+Three open questions were settled by doing the work rather than by argument.
+
+- **Duplicate names.** Nothing in the tree needed them. A key is one value,
+  and the multi-value key stays unbuilt until something demands it.
+- **`sensitive: true`.** Capture flagged headers like `authorization` so they
+  would not be re-emitted. Token keys have no such marker and do not need
+  one: nothing propagates unless an exporter names it, so the flag was
+  guarding a default that no longer exists. A secret should reach an
+  authorization extension and contribute a derived fact instead of becoming
+  a key -- see [authenticated identity as a token
+  source](#example-authenticated-identity-as-a-token-source).
+- **Skip statistics.** Capture reported headers dropped for exceeding limits.
+  There is no equivalent because there is no limit to exceed -- the set of
+  keys is fixed at compile time. The observable that replaced it is an
+  unresolved token, which says something strictly more useful.
+
+One question is still open. The Kafka exporter deliberately splits its
+failure modes: an unresolvable *topic-routing* key fails at start, because
+falling back to a static topic would misdeliver one tenant's data, while an
+unresolvable *header* key only drops the decoration. The OTLP exporter drops
+silently in both cases. That was defensible when tokens could be declared per
+pipeline; under engine scope an unresolvable key is a configuration error the
+engine can see at build time, so it should probably fail closed too.
 
 ## Component integration patterns
 
@@ -1511,26 +1549,51 @@ removes the fork in the code along with the fork in behaviour.
 
 Paths below are relative to `crates/`.
 
+The work landed as two reviewable changes: the compiler, which touches only
+`config/`, the benchmark and this document and deletes nothing, and the
+integration, which converts every caller and removes transport headers.
+
+Compiler:
+
 - User-facing config types --
   `config/src/tenant.rs`
 - Build, resolve, probe and pack --
   `config/src/tenant/compiled.rs`
-- `Context.request`, accessors, merge helpers --
-  `otap/src/pdata.rs`
+- A/B measurement against the representation it replaces --
+  `benchmarks/benches/request_context/main.rs`
+
+Plumbing:
+
 - Registry compilation per group --
   `controller/src/lib.rs`
-- Registry sharing --
-  `engine/src/context.rs`
-- Ingress resolution --
-  `otap/src/otlp_http.rs`
-- Routing and egress policy --
-  `core-nodes/src/exporters/topic_exporter/mod.rs`
-- Ingress policy and re-resolution --
-  `core-nodes/src/receivers/topic_receiver/mod.rs`
-- Partitioning and context merge --
-  `core-nodes/src/processors/batch_processor/mod.rs`
+- Registry reaching a node through its effect handler --
+  `engine/src/lib.rs`, `engine/src/{local,shared}/{receiver,exporter}.rs`
+- `Context.tenant`, `tenant_view()`, `fork_request_scoped()` --
+  `otap/src/pdata.rs`
+- Protocol-specific resolution helpers --
+  `otap/src/tenant_resolve.rs`
+
+Consumers:
+
+- Ingress, gRPC and HTTP --
+  `otap/src/otap_grpc/otlp/server_new.rs`, `otap/src/otlp_http.rs`,
+  `core-nodes/src/receivers/otlp_receiver/mod.rs`
 - Outbound header naming --
   `core-nodes/src/exporters/otlp_grpc_exporter/mod.rs`
+- Partition naming --
+  `core-nodes/src/processors/partition_processor/mod.rs`
+- Kafka ingress --
+  `contrib-nodes/src/receivers/kafka_receiver/headers.rs`
+- Kafka topic routing, partitioning and header decoration --
+  `contrib-nodes/src/exporters/kafka_exporter/{topic_router,partitioner}.rs`
+- Synthesis and assertions --
+  `core-nodes/src/receivers/traffic_generator/`,
+  `validation/src/validation_types/tenant.rs`
+
+A runnable end-to-end example is `configs/tenant-context-smoke.yaml`: an OTLP
+receiver packs two inbound headers into one context and an OTLP exporter
+re-emits them under different names, with nothing in between aware of either
+name. The user-facing reference is [`tenant-tokens.md`](tenant-tokens.md).
 
 ## Prototype limitations
 
@@ -1540,10 +1603,16 @@ Paths below are relative to `crates/`.
   breaking the invariant makes them fail -- since a boundary test that cannot
   fail is worth nothing. Everything else is validated by targeted checks,
   benchmarks and live runs.
-- Token resolution is not yet wired into any receiver; the capture policy is
-  still the live path. `TokenInputs` is the extension point: new sources of
-  tenant material are added there rather than at every receiver.
-- Only `exporter:otlp_grpc` implements `tenant_headers`.
+- `TokenInputs` is the extension point: new sources of tenant material are
+  added there rather than at every receiver. Four receivers resolve through
+  it today.
+- Only `exporter:otlp_grpc` implements `tenant_headers`. `exporter:otlp_http`
+  still emits static headers only.
+- The components in [Component integration
+  patterns](#component-integration-patterns) -- authenticated identity as a
+  token source, and forking context on a data attribute -- remain design
+  sketches. They are the two that introduce patterns the converted call sites
+  do not, which is why they are written out rather than built.
 - Conditions are compiled against the union of all conditions declared in a
   group; graph reachability is not considered, so an unreachable node still
   contributes pair slots. The baseline requires the reachable cross-product:
