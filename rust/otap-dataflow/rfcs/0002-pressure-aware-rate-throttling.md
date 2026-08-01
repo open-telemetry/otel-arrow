@@ -289,6 +289,13 @@ normal memory so pressure starts from current state. The debt floor keeps a
 scope from accumulating unbounded debt before soft pressure and bounds the
 worst-case lockout after pressure starts to `max_debt / rate`.
 
+`interval` directly scales that recovery time. With `burst` equal to `allow`,
+the burst window equals one interval and the implementation's two-window debt
+ceiling can be reached during normal-pressure observation. If pressure activates
+at that point, admission may take up to one full interval to resume. Operators
+should therefore choose long intervals only when an equally long pressure-onset
+lockout is acceptable.
+
 The first implementation resolves tenant tokens only from trusted transport
 metadata, receiver identity, or static configuration. Resource-attribute
 extractors require decoded request context and are outside the pre-decode path

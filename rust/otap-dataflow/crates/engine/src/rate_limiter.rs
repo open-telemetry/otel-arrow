@@ -240,12 +240,7 @@ impl<P: AdmissionPressure> GenericRateLimiter<P> {
             (RateBucketDecision::OverLimit | RateBucketDecision::Oversized, false) => {
                 RateAdmissionDecision::Admit
             }
-            (RateBucketDecision::OverLimit, true)
-                if self.policy.enforcement == RateLimitEnforcement::ObserveOnly =>
-            {
-                RateAdmissionDecision::WouldThrottle
-            }
-            (RateBucketDecision::Oversized, true)
+            (RateBucketDecision::OverLimit | RateBucketDecision::Oversized, true)
                 if self.policy.enforcement == RateLimitEnforcement::ObserveOnly =>
             {
                 RateAdmissionDecision::WouldThrottle

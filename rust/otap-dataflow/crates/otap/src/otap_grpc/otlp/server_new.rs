@@ -384,18 +384,32 @@ impl Drop for SlotGuard {
     }
 }
 
+fn required_otlp_payload_bytes(size: Option<usize>) -> Result<u64, Status> {
+    let size = size.ok_or_else(|| {
+        Status::internal("OTLP gRPC payload does not expose its encoded byte size")
+    })?;
+    u64::try_from(size)
+        .map_err(|_| Status::internal("OTLP gRPC payload byte size exceeds the supported range"))
+}
+
 impl UnaryService<OtapPdata> for OtapBatchService {
     type Response = ();
     type Future = BoxFuture<'static, Result<tonic::Response<Self::Response>, Status>>;
 
     fn call(&mut self, request: tonic::Request<OtapPdata>) -> Self::Future {
         let (metadata, extensions, mut otap_batch) = request.into_parts();
-        let payload_bytes = otap_batch.payload_ref().num_bytes().unwrap_or(0) as u64;
+        let payload_bytes = match required_otlp_payload_bytes(otap_batch.payload_ref().num_bytes())
+        {
+            Ok(payload_bytes) => payload_bytes,
+            Err(status) => return Box::pin(std::future::ready(Err(status))),
+        };
 
         // Keep the final weighted admission decision at the request-service
-        // boundary, where both transport metadata and decoded payload weight
-        // are available. V1 uses receiver-instance scope; tenant token lookup
-        // can be added here without coupling admission policy to the codec.
+        // boundary, where both transport metadata and the raw payload weight
+        // are available. Tonic has already assembled and decompressed the frame;
+        // this placement adds only the byte-buffer handoff and OtapPdata wrapper
+        // before rejection. Do not move this into the decoder: request metadata
+        // is unavailable there, which would block future tenant-key resolution.
         if let Some(rate_limit) = &self.rate_limit {
             match rate_limit.rate_limiter.check_units(payload_bytes) {
                 RateAdmissionDecision::Admit => {}
@@ -829,6 +843,16 @@ mod tests {
         } else {
             NackMsg::new("transient failure", pdata)
         }
+    }
+
+    /// Scenario: a future payload variant reaches rate admission without an encoded byte size.
+    /// Guarantees: missing weight fails closed instead of being treated as a zero-cost request.
+    #[test]
+    fn grpc_rate_weight_rejects_missing_payload_size() {
+        let status = required_otlp_payload_bytes(None).expect_err("missing size must fail closed");
+
+        assert_eq!(status.code(), Code::Internal);
+        assert!(status.message().contains("does not expose"));
     }
 
     #[test]

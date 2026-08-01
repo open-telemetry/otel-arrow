@@ -315,7 +315,7 @@ impl ResolvedPolicies {
             resources: _,
             transport_headers: self_transport_headers,
             rate_limiters: self_rate_limiters,
-            rate_limiter_scope: self_rate_limiter_scope,
+            rate_limiter_scope: _,
         } = self;
         let Self {
             channel_capacity: other_channel_capacity,
@@ -325,7 +325,7 @@ impl ResolvedPolicies {
             resources: _,
             transport_headers: other_transport_headers,
             rate_limiters: other_rate_limiters,
-            rate_limiter_scope: other_rate_limiter_scope,
+            rate_limiter_scope: _,
         } = other;
 
         self_channel_capacity == other_channel_capacity
@@ -333,8 +333,9 @@ impl ResolvedPolicies {
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
+            // Declaration scope is preserved for future shared-state planning,
+            // but has no V1 runtime effect. Re-add it when scope changes runtime shape.
             && self_rate_limiters == other_rate_limiters
-            && self_rate_limiter_scope == other_rate_limiter_scope
     }
 }
 
@@ -1197,6 +1198,28 @@ mod tests {
         };
 
         assert!(!current.eq_ignoring_resources(&candidate));
+    }
+
+    /// Scenario: an identical effective limiter map moves between declaration scopes.
+    /// Guarantees: V1 runtime equality does not trigger a redeploy for a scope-only change.
+    #[test]
+    fn resolved_policies_equality_ignores_rate_limiter_declaration_scope() {
+        let rate_limiters = BTreeMap::from([("ingress".to_owned(), test_rate_limiter(100))]);
+        let current = super::ResolvedPolicies {
+            rate_limiters: rate_limiters.clone(),
+            rate_limiter_scope: Some(super::RateLimiterDeclarationScope::Engine),
+            ..super::ResolvedPolicies::default()
+        };
+        let candidate = super::ResolvedPolicies {
+            rate_limiters,
+            rate_limiter_scope: Some(super::RateLimiterDeclarationScope::PipelineGroup(
+                crate::PipelineGroupId::from("default"),
+            )),
+            ..super::ResolvedPolicies::default()
+        };
+
+        assert_ne!(current, candidate);
+        assert!(current.eq_ignoring_resources(&candidate));
     }
 
     /// Scenario: all policy families are omitted from configuration.

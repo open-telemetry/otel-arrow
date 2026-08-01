@@ -339,6 +339,13 @@ receiver's existing request-size bound. A non-charging exhausted-bucket check
 rejects subsequent requests before body collection or gRPC message assembly
 while active enforcement and exhaustion continue.
 
+The configured `interval` also determines the burst window. For example,
+`allow: 100`, `interval: 60s`, and `burst: 100` produce a 60-second burst
+window and a debt ceiling of two burst windows. Normal-pressure observation can
+reach that ceiling; if pressure then activates, admission may take up to one
+burst window to recover. Use long intervals only when that lockout behavior is
+acceptable.
+
 An OTLP request larger than the configured `burst` can never fit the bucket
 while pressure gating is active. HTTP rejects it with 413 and no `Retry-After`;
 gRPC returns `RESOURCE_EXHAUSTED` with negative retry pushback. Configure
