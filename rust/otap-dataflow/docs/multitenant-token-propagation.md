@@ -166,20 +166,85 @@ is addressed by the **value slot** its key occupies in the registry, and no
 name, key id or descriptor travels with it:
 
 ```text
-word 0     : n_fp:16 | n_slots:16 | epoch:16 | bag_len:16
-word 1     : resolved token bitmask
-words 2..  : n_fp packed symbol words, indexed by PairSlot
-then       : ceil(n_slots/2) words holding n_slots u32 offsets, indexed by
-             registry value slot; each addresses a length-delimited AnyValue,
-             or is EMPTY_OFFSET
-then       : the byte blob, zero padded to a word boundary
+                     one allocation, one Arc<[u64]>
+
+      +--------------------------------------------------------+
+ w0   | n_fp:16 | n_slots:16 | epoch:16 | bag_len:16            |  2 words,
+      +--------------------------------------------------------+  fixed
+ w1   | resolved:64   one bit per declared token, 1 = matched   |
+      +--------------------------------------------------------+
+ w2   | packed symbol word, PairSlot 0                          |  n_fp
+  :   |                          :                              |  words
+      +--------------------------------------------------------+
+      | offset[slot 0]:u32        | offset[slot 1]:u32          |  ceil(
+      | offset[slot 2]:u32        | offset[slot 3]:u32          |  n_slots
+  :   |            :              |             :               |  / 2)
+      +--------------------------------------------------------+
+      | blob: 8 bytes per word, zero padded to a word boundary  |  ceil(
+  :   |                          :                              |  len / 8)
+      +--------------------------------------------------------+
 ```
 
-Values are stored as OTLP. A slot holds a single `u32` offset rather than an
-offset and a length, because the encoding is length-delimited and `AnyValue`
-carries its own type -- so the two fields the slot used to spend on `len` and
-`kind` are already in the bytes. The blob needs no stored length either: every
-entry delimits itself, so the trailing zero padding is simply never addressed.
+Only the first two words are at fixed offsets. Everything after is placed by
+counts the header carries, so a reader computes three region starts with two
+shifts and an add and then indexes:
+
+```text
+      63          48 47          32 31          16 15           0
+     +--------------+--------------+--------------+--------------+
+ w0  |   bag_len    |    epoch     |   n_slots    |     n_fp     |
+     +--------------+--------------+--------------+--------------+
+```
+
+- **n_fp**: packed symbol words present, one per `PairSlot` a condition binds
+- **n_slots**: value slots the registry declared, so the offset region is a
+  dense array indexed by slot rather than a lookup
+- **epoch**: deployment generation mixed with a digest of the slot layout
+- **bag_len**: bytes of the blob that form the OTLP repeated field, below
+
+A slot holds one `u32` and `EMPTY_OFFSET` (`u32::MAX`) means the key did not
+resolve, which is why a miss costs no branch beyond the compare.
+
+The blob is two regions, and the split is what makes the bag copyable whole:
+
+```text
+      |<-------------- bag_len -------------->|
+      +---------------------------------------+--------------------+
+ blob | bagged entries, tagged and contiguous | value-only entries |
+      +---------------------------------------+--------------------+
+      ^                                       ^
+      attributes() borrows exactly this run   never read as a run
+
+ a bagged entry -- a complete repeated-field element:
+      +-----+-----+------+-----------+------+-----+-----+----------+
+      | tag | len | 0x0a | key bytes | 0x12 | len | tag | value    |
+      +-----+-----+------+-----------+------+-----+-----+----------+
+                                            ^
+                                            offset[slot] points here
+
+ a value-only entry -- the same tail, without the name:
+      +-----+-----+----------+
+      | len | tag | value    |
+      +-----+-----+----------+
+      ^
+      offset[slot] points here
+```
+
+`tag` on a bagged entry is the consumer's own attributes field number, baked
+in at compile time, so the bag region is not an input to an encoder -- it is
+already the bytes an `LogRecord.attributes` or `Span.attributes` field wants.
+`0x0a` and `0x12` are `KeyValue.key` and `KeyValue.value`.
+
+Both entry shapes end in a length-delimited `AnyValue`, and a slot addresses
+that length prefix either way. So `slot_value` reads the two identically and
+never needs to know which region a key landed in -- the regions differ only
+in what precedes the offset.
+
+A slot spends one `u32` rather than an offset and a length because the
+encoding is length-delimited and `AnyValue` carries its own type, so the two
+fields the slot would have spent on `len` and `kind` are already in the bytes.
+The blob needs no stored length either: every entry delimits itself, which is
+why the trailing zero padding in the figure is simply never addressed.
 
 A key gets a value slot only if some compiled consumer propagates its value.
 The rest are **match-only**: they are decided entirely by their contribution to
@@ -192,14 +257,6 @@ is a build-time property, not a per-entry flag.
 Reading a key's value is therefore an array index --
 `registry.value_slot(key)` then `view.slot_value(slot)` -- rather than a scan
 looking for a matching name or key id.
-
-The blob opens with the **bag**: `bag_len` bytes for the keys whose names are
-demanded, each written as `<tag> <len> <KeyValue>` -- already tagged, so the
-region is a complete OTLP repeated field rather than an input to an encoder.
-Value-only entries follow as bare `<len> <AnyValue>`. Both forms end in a
-length-delimited `AnyValue`, and a slot points at that length prefix in either
-case, so `slot_value` reads them identically and does not care which region a
-key landed in.
 
 There is no name-bearing region for captured headers. Every name in the
 context comes from configuration, never from the wire -- see
