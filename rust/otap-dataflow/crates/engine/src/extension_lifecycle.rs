@@ -20,6 +20,7 @@ use crate::extension::ExtensionWrapper;
 use crate::extension_monitor::{
     ExtensionKey, ExtensionLifecycleEvent, ExtensionMetricsMonitor, ExtensionOutcome,
 };
+use crate::terminal_state::TerminalMetricsDeadline;
 use futures::FutureExt;
 use futures::stream::{FuturesUnordered, StreamExt};
 use otap_df_telemetry::otel_warn;
@@ -59,7 +60,7 @@ pub(crate) struct ExtensionLifecycle {
     monitor: ExtensionMetricsMonitor,
     started_rx: mpsc::UnboundedReceiver<ExtensionKey>,
     // Keys we have not yet seen a spawn signal for. Each event (start signal
-    // or task completion) calls `remove`, which is idempotent — so a task
+    // or task completion) calls `remove`, which is idempotent -- so a task
     // that signals and then completes can never under-count its slot.
     pending_starts: HashSet<ExtensionKey>,
     extension_readiness_probes: Vec<(ExtensionKey, crate::extension::ReadinessProbe)>,
@@ -72,6 +73,7 @@ impl ExtensionLifecycle {
         extensions: Vec<(ExtensionWrapper, EntityKey)>,
         local_tasks: &LocalSet,
         metrics_reporter: MetricsReporter,
+        terminal_metrics_deadline: TerminalMetricsDeadline,
         ext_ctx: &ExtensionContext,
         mut monitor: ExtensionMetricsMonitor,
     ) -> Self {
@@ -104,6 +106,7 @@ impl ExtensionLifecycle {
                 extension_readiness_probes.push((key.clone(), probe));
             }
             let ext_metrics_reporter = metrics_reporter.clone();
+            let ext_terminal_metrics_deadline = terminal_metrics_deadline.clone();
             let task_key = key.clone();
             let started_tx = started_tx.clone();
             let fut = async move {
@@ -113,10 +116,22 @@ impl ExtensionLifecycle {
                         crate::runtime_pipeline::report_terminal_metrics(
                             &ext_metrics_reporter,
                             terminal_state,
-                        );
+                            &ext_terminal_metrics_deadline,
+                        )
+                        .await;
                         Ok(())
                     }
                     Err(e) => {
+                        if let Err(flush_error) = ext_metrics_reporter
+                            .flush_until(ext_terminal_metrics_deadline.get())
+                            .await
+                        {
+                            otel_warn!(
+                                "extension.metrics.flush.fail",
+                                extension = task_key.id.as_ref(),
+                                error = flush_error.to_string(),
+                            );
+                        }
                         otel_warn!(
                             "extension.task.error",
                             extension = task_key.id.as_ref(),
@@ -156,7 +171,7 @@ impl ExtensionLifecycle {
     }
 
     /// Yields the next extension completion or monitor tick. Spawn-handshake
-    /// signals on `started_rx` are drained silently — they only exist to
+    /// signals on `started_rx` are drained silently -- they only exist to
     /// power `wait_all_spawned`.
     pub async fn next_event(&mut self) -> LifecycleEvent {
         loop {
@@ -204,7 +219,7 @@ impl ExtensionLifecycle {
     /// before signalling are routed through the normal completion path; the
     /// first surfaced error is returned. A task that signals and then
     /// completes (success or failure) before the barrier observes the
-    /// completion is also surfaced as an error — `Ok(())` upgrades to
+    /// completion is also surfaced as an error -- `Ok(())` upgrades to
     /// `ExtensionExitedBeforeShutdown` via `route_joined`.
     pub async fn wait_all_spawned(&mut self) -> Result<(), Error> {
         loop {
@@ -416,6 +431,16 @@ impl ExtensionLifecycle {
 
     pub fn monitor_tick(&mut self, now: Instant, reporter: &mut MetricsReporter) {
         self.monitor.tick(now, reporter);
+    }
+
+    pub(crate) async fn finish_metrics_reporting_until(
+        &mut self,
+        reporter: &MetricsReporter,
+        deadline: Instant,
+    ) -> Result<(), otap_df_telemetry::error::Error> {
+        self.monitor
+            .finish_reporting_until(reporter, deadline)
+            .await
     }
 
     #[allow(dead_code)]
@@ -810,6 +835,7 @@ mod tests {
                 vec![(passive_w, passive_entity), (active_w, active_entity)],
                 &local_tasks,
                 reporter,
+                TerminalMetricsDeadline::default(),
                 &ext_ctx,
                 monitor,
             );
@@ -999,7 +1025,7 @@ mod tests {
     }
 
     /// After a completion is routed, `initiate_shutdown` must not signal the
-    /// completed extension's oneshot — even if its receiver is still alive.
+    /// completed extension's oneshot -- even if its receiver is still alive.
     #[test]
     fn initiate_shutdown_skips_already_completed_extension() {
         let (rt, local_tasks) = crate::testing::setup_test_runtime();
@@ -1294,6 +1320,7 @@ mod tests {
                 vec![(wrapper, entity_key)],
                 &local_tasks,
                 reporter,
+                TerminalMetricsDeadline::default(),
                 &ext_ctx,
                 monitor,
             );
@@ -1373,6 +1400,7 @@ mod tests {
                 vec![(wrapper, entity_key)],
                 &local_tasks,
                 reporter,
+                TerminalMetricsDeadline::default(),
                 &ext_ctx,
                 monitor,
             );
@@ -1537,7 +1565,7 @@ mod tests {
 
             // Three fast extensions that signal immediately, plus a laggard
             // with the longest timeout that never signals. The gate must wait
-            // for the laggard, so the worst-case wait is the longest timeout —
+            // for the laggard, so the worst-case wait is the longest timeout --
             // and, because probes are awaited in parallel, never the sum.
             let fast = Duration::from_millis(500);
             let longest = Duration::from_secs(1);

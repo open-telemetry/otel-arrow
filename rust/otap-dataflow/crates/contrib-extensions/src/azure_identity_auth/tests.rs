@@ -10,7 +10,7 @@ use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions}
 use azure_core::time::{Duration as AzureDuration, OffsetDateTime};
 use futures::StreamExt;
 use otap_df_config::error::Error as ConfigError;
-use otap_df_engine::shared::capability::BearerTokenProvider as SharedBearerTokenProvider;
+use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::testing::EmptyAttributes;
 use tokio::sync::watch;
@@ -22,7 +22,7 @@ use super::extension::AzureIdentityAuthExtension;
 use super::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
 use super::*;
 
-// ── Config tests ───────────────────────────────────────────
+// -- Config tests -------------------------------------------
 
 fn config_from_json(value: serde_json::Value) -> Result<Config, ConfigError> {
     parse_config(&value)
@@ -137,7 +137,7 @@ fn factory_is_registered_with_capability() {
     );
 }
 
-// ── Credential construction tests ──────────────────────────────
+// -- Credential construction tests ------------------------------
 
 #[test]
 fn managed_identity_system_assigned_credential_constructs() {
@@ -185,7 +185,7 @@ fn workload_identity_credential_construct_is_attempted() {
     }
 }
 
-// ── Token acquisition / cache tests ───────────────────────────
+// -- Token acquisition / cache tests ---------------------------
 
 #[derive(Debug)]
 struct MockCredential {
@@ -252,12 +252,12 @@ async fn get_token_slow_path_then_fast_path_caches() {
     let ext = make_extension(credential);
 
     let first = ext.get_token().await.expect("first acquisition");
-    assert_eq!(first.expose_secret(), "tok");
+    assert_eq!(first.expose_token(), "tok");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Fresh cached token is returned without another credential call.
     let second = ext.get_token().await.expect("cached acquisition");
-    assert_eq!(second.expose_secret(), "tok");
+    assert_eq!(second.expose_token(), "tok");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -314,14 +314,14 @@ async fn clones_share_one_token_cache() {
 
     // Consumer A's first call takes the slow path and fetches exactly once.
     let a = consumer_a.get_token().await.expect("A acquires");
-    assert_eq!(a.expose_secret(), "shared");
+    assert_eq!(a.expose_token(), "shared");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
     // Consumer B (a separate clone) sees the same cached token on the fast
     // path -- no second credential call. This proves clones share one cache
     // and refresh loop rather than each keeping its own.
     let b = consumer_b.get_token().await.expect("B acquires");
-    assert_eq!(b.expose_secret(), "shared");
+    assert_eq!(b.expose_token(), "shared");
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
@@ -335,10 +335,10 @@ async fn clones_share_one_token_cache() {
         .next()
         .await
         .expect("stream yields the shared token");
-    assert_eq!(streamed.expose_secret(), "shared");
+    assert_eq!(streamed.expose_token(), "shared");
 }
 
-// ── Metrics tracker tests ─────────────────────────────────────
+// -- Metrics tracker tests -------------------------------------
 
 #[test]
 fn metrics_tracker_records_snapshots_and_reports() {
@@ -408,7 +408,36 @@ async fn token_stream_yields_published_token() {
     // Acquiring a token publishes it onto the watch channel.
     let _ = ext.get_token().await.expect("token acquired");
     let published = stream.next().await.expect("stream yields a value");
-    assert_eq!(published.expose_secret(), "streamed");
+    assert_eq!(published.expose_token(), "streamed");
+}
+
+// Scenario: A consumer subscribes to token_stream() after a token was already published.
+// Guarantees: The late subscription immediately yields the current token, honoring the
+// BearerTokenProvider contract that a subscriber created after a publish never misses the
+// already-current token (so consumers need no separate get_token() seeding step).
+#[tokio::test]
+async fn token_stream_replays_current_token_to_late_subscriber() {
+    use std::time::Duration;
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let credential = Arc::new(MockCredential {
+        token: "streamed".to_string(),
+        expires_in: AzureDuration::minutes(60),
+        call_count: Arc::clone(&calls),
+    });
+    let ext = make_extension(credential);
+
+    // Publish a token BEFORE anyone subscribes.
+    let _ = ext.get_token().await.expect("token acquired");
+
+    // A subscription created after the publish must still promptly observe the
+    // current token instead of blocking until the next refresh.
+    let mut stream = ext.token_stream();
+    let published = tokio::time::timeout(Duration::from_millis(200), stream.next())
+        .await
+        .expect("late subscriber must receive the current token promptly")
+        .expect("stream is not closed");
+    assert_eq!(published.expose_token(), "streamed");
 }
 
 #[tokio::test]
@@ -438,17 +467,20 @@ async fn token_stream_skips_initial_none() {
         .await
         .expect("stream yields after publish")
         .expect("stream is not closed");
-    assert_eq!(published.expose_secret(), "streamed");
+    assert_eq!(published.expose_token(), "streamed");
 }
 
-// ── schedule_next timing tests ────────────────────────────────
+// -- schedule_next timing tests --------------------------------
 
+/// Scenario: schedule the next refresh for a token expiring in ~1 hour.
+/// Guarantees: the refresh is scheduled TOKEN_EXPIRY_BUFFER_SECS before expiry
+/// (~3301s out), so refresh happens ahead of expiry with buffer to spare.
 #[tokio::test]
 async fn schedule_next_refreshes_before_expiry() {
-    use otap_df_engine::capability::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
     use std::time::{Duration, Instant};
 
-    let token = BearerToken::new(
+    let token = BearerToken::with_expiry(
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(3600)),
     );
@@ -460,14 +492,18 @@ async fn schedule_next_refreshes_before_expiry() {
     assert!((secs - 3301.0).abs() < 5.0, "expected ~3301s, got {secs}");
 }
 
+/// Scenario: schedule the next refresh for a token expiring in only 5s, where
+/// subtracting the expiry buffer would underflow past now.
+/// Guarantees: the schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s)
+/// instead of scheduling in the past.
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
-    use otap_df_engine::capability::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
     use std::time::{Duration, Instant};
 
     // Expires in 5s: the refresh target underflows past `now`, so the
     // MIN_TOKEN_REFRESH_INTERVAL_SECS (10s) floor applies.
-    let token = BearerToken::new(
+    let token = BearerToken::with_expiry(
         "t".to_owned(),
         Some(Instant::now() + Duration::from_secs(5)),
     );
@@ -478,11 +514,14 @@ async fn schedule_next_floors_near_expiry() {
     assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
 }
 
+/// Scenario: schedule the next refresh for a non-expiring token.
+/// Guarantees: the refresh is pushed far into the future (~1 year), so a
+/// non-expiring token is not needlessly refreshed.
 #[tokio::test]
 async fn schedule_next_pushes_non_expiring_far_out() {
-    use otap_df_engine::capability::BearerToken;
+    use otap_df_engine::capability::auth::BearerToken;
 
-    let token = BearerToken::new("t".to_owned(), None);
+    let token = BearerToken::without_expiry("t".to_owned());
     let refresh_at = extension::schedule_next(&token);
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
@@ -494,7 +533,7 @@ async fn schedule_next_pushes_non_expiring_far_out() {
     );
 }
 
-// ── retry backoff tests ───────────────────────────────────────
+// -- retry backoff tests ---------------------------------------
 
 #[test]
 fn retry_backoff_grows_exponentially_and_caps() {
@@ -512,7 +551,7 @@ fn retry_backoff_grows_exponentially_and_caps() {
     assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
 }
 
-// ── jitter_refresh tests ──────────────────────────────────────
+// -- jitter_refresh tests --------------------------------------
 
 #[tokio::test]
 async fn jitter_refresh_preserves_min_interval_floor() {

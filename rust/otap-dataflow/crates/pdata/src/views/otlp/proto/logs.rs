@@ -19,7 +19,7 @@ use otap_df_pdata_views::views::logs::{
     LogRecordView, LogsDataView, ResourceLogsView, ScopeLogsView,
 };
 
-/* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
+/* ----------------------------- VIEW WRAPPERS (zero-alloc) -------------- */
 
 /// Lightweight wrapper around `ResourceLogs` that implements `ResourceLogsView`
 pub type ObjResourceLogs<'a> = GenericObj<'a, ResourceLogs>;
@@ -30,7 +30,7 @@ pub type ObjScope<'a> = GenericObj<'a, ScopeLogs>;
 /// Lightweight wrapper around `LogRecord` that implements `LogRecordView`
 pub type ObjLogRecord<'a> = GenericObj<'a, LogRecord>;
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// Iterator of `ObjResourceLogs`. Used in the implementation of `LogsDataView` to get an iterator
 /// of the resources contained in the log data.
@@ -44,7 +44,7 @@ pub type ScopeIter<'a> = GenericIterator<'a, ScopeLogs, ObjScope<'a>>;
 /// of the logs for some scope.
 pub type LogRecordIter<'a> = GenericIterator<'a, LogRecord, ObjLogRecord<'a>>;
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl LogsDataView for LogsData {
     type ResourceLogs<'a>

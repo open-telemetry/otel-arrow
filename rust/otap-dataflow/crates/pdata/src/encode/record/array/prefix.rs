@@ -37,6 +37,10 @@ impl ArrayPrefixBuilder {
         self.null_buffer_builder.append_non_null();
     }
 
+    pub fn append_values(&mut self, n: usize) {
+        self.null_buffer_builder.append_n_non_nulls(n);
+    }
+
     pub fn append_null(&mut self) {
         self.null_buffer_builder.append_null();
     }

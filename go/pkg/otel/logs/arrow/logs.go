@@ -217,7 +217,12 @@ func (b *LogsBuilder) Append(logs plog.Logs) (err error) {
 		if logAttrs.Len() == 0 {
 			b.ib.AppendNull()
 		} else {
-			b.ib.Append(ID)
+			if logID == math.MaxUint16 {
+				return werror.Wrap(acommon.ErrTooManyRecords)
+			}
+			if err = b.ib.Append(ID); err != nil {
+				return werror.Wrap(err)
+			}
 			logID++
 		}
 

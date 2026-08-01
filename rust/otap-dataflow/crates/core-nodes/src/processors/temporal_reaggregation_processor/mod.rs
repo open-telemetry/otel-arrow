@@ -647,7 +647,7 @@ impl TemporalReaggregationProcessor {
                     // the in-progress builder; remember its peer_addr so the
                     // next flush can compute the merged output peer_addr.
                     self.aggregated_peer.push(pdata.peer_addr());
-                    // Pass data through if there are no subscribers — but we
+                    // Pass data through if there are no subscribers -- but we
                     // still need a wakeup to flush the aggregated portion.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
@@ -706,7 +706,7 @@ impl TemporalReaggregationProcessor {
                     // remember its peer_addr for the next flush.
                     self.aggregated_peer.push(pdata.peer_addr());
                     // Nothing to passthrough and no subscribers so we don't
-                    // care about ack/nack — but we still need a wakeup to
+                    // care about ack/nack -- but we still need a wakeup to
                     // flush the aggregated data.
                     let (inbound_ctx, _) = pdata.into_parts();
                     if !inbound_ctx.has_subscribers() {
@@ -749,7 +749,7 @@ impl TemporalReaggregationProcessor {
 
     /// Flush accumulated metrics up to the given checkpoint and reset state.
     ///
-    /// This is used when a [`process_view`] call fails due to ID overflow —
+    /// This is used when a [`process_view`] call fails due to ID overflow --
     /// the data appended before the checkpoint is clean and should be sent
     /// downstream, while the partial data from the failed call is discarded
     /// by slicing the record batches.
@@ -3474,7 +3474,7 @@ mod tests {
                     interests: Interests::empty(),
                     payload: make_otap_payload_from_metrics(make_n_gauge_metrics(1)),
                 },
-                // Wrong revision — should be silently ignored.
+                // Wrong revision -- should be silently ignored.
                 Action::SendControl(NodeControlMsg::Wakeup {
                     slot: FLUSH_WAKEUP_SLOT,
                     when: Instant::now(),

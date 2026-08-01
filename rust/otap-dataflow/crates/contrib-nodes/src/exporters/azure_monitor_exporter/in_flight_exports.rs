@@ -15,6 +15,7 @@ pub struct CompletedExport {
     pub client: LogsIngestionClient,
     pub result: Result<Duration, Error>,
     pub row_count: u64,
+    pub body_size_bytes: u64,
 }
 
 pub struct InFlightExports {
@@ -102,12 +103,14 @@ impl InFlightExports {
         body: Bytes,
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
+            let body_size_bytes = body.len() as u64;
             let result = client.export(body).await;
             CompletedExport {
                 batch_id,
                 client,
                 result,
                 row_count,
+                body_size_bytes,
             }
         })
     }
@@ -126,12 +129,11 @@ impl InFlightExports {
 #[cfg(test)]
 mod tests {
     use super::super::metrics::{
-        AzureMonitorExporterMetrics, AzureMonitorExporterMetricsRc,
-        AzureMonitorExporterMetricsTracker,
+        AzureMonitorExporterMetricsRc, AzureMonitorExporterMetricsTracker,
     };
     use super::*;
+    use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
     use reqwest::Client;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -141,10 +143,11 @@ mod tests {
 
     fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
         let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-            metric_set,
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx: PipelineContext =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::register(
+            &pipeline_ctx,
         )))
     }
 
@@ -182,6 +185,7 @@ mod tests {
                 client: create_test_client(),
                 result,
                 row_count,
+                body_size_bytes: 0,
             }
         })
     }

@@ -7,7 +7,41 @@
 
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use std::ops::Add;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Pipeline-wide deadline shared by every terminal metrics handoff.
+///
+/// The runtime control manager records the real shutdown deadline as soon as
+/// it accepts shutdown. Error paths that terminate without a shutdown message
+/// lazily establish one finite fallback. Every final reporter then uses the
+/// same absolute deadline instead of receiving a fresh timeout.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct TerminalMetricsDeadline {
+    deadline: Arc<Mutex<Option<Instant>>>,
+}
+
+impl TerminalMetricsDeadline {
+    const FALLBACK: Duration = Duration::from_secs(5);
+
+    /// Records a shutdown deadline, preserving the earliest deadline observed.
+    pub(crate) fn record(&self, deadline: Instant) {
+        let mut current = self
+            .deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = Some(current.map_or(deadline, |current| current.min(deadline)));
+    }
+
+    /// Returns the shared deadline, installing a finite fallback if necessary.
+    pub(crate) fn get(&self) -> Instant {
+        let mut deadline = self
+            .deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *deadline.get_or_insert_with(|| Instant::now() + Self::FALLBACK)
+    }
+}
 
 /// Captures the last metric snapshots produced by a node when it terminates gracefully.
 pub struct TerminalState {
@@ -59,5 +93,31 @@ impl Default for TerminalState {
             deadline: Instant::now().add(Duration::from_secs(1)),
             metrics: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_metrics_deadline_preserves_the_earliest_recorded_deadline() {
+        let deadline = TerminalMetricsDeadline::default();
+        let now = Instant::now();
+        deadline.record(now + Duration::from_secs(2));
+        deadline.record(now + Duration::from_secs(1));
+        deadline.record(now + Duration::from_secs(3));
+
+        assert_eq!(deadline.get(), now + Duration::from_secs(1));
+        assert_eq!(deadline.clone().get(), now + Duration::from_secs(1));
+    }
+
+    #[test]
+    fn terminal_metrics_deadline_installs_only_one_fallback() {
+        let deadline = TerminalMetricsDeadline::default();
+        let fallback = deadline.get();
+
+        assert_eq!(deadline.get(), fallback);
+        assert_eq!(deadline.clone().get(), fallback);
     }
 }

@@ -71,7 +71,7 @@ use tokio::sync::mpsc;
 
 use super::{Config, ProviderConfig, TraceLevel};
 
-// ── QPC → Unix epoch conversion ──────────────────────────────────────────────
+// -- QPC -> Unix epoch conversion ----------------------------------------------
 
 /// Reference point captured once at session start to convert QPC ticks to
 /// Unix epoch nanoseconds.  All three values are sampled on the session
@@ -141,7 +141,7 @@ impl QpcReference {
 /// next event continues to the following core (no retry on another core).
 const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
-// ── Event data transferred across the channel ────────────────────────────────
+// -- Event data transferred across the channel --------------------------------
 
 /// Typed value of a single TDH-decoded ETW field.
 ///
@@ -185,6 +185,52 @@ pub struct DecodedField {
     pub value: EtwAttributeValue,
 }
 
+/// A GUID in canonical (big-endian display) byte order.
+///
+/// The 16 bytes are stored in the exact order they appear in the standard
+/// `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` string form: the first three groups
+/// (`Data1`/`Data2`/`Data3`) are big-endian and the trailing eight bytes
+/// (`Data4`) are kept as-is.
+///
+/// Windows stores `Data1`/`Data2`/`Data3` little-endian in memory, so the byte
+/// swap into display order is applied **once**, here at the session boundary
+/// (see [`CanonicalGuid::from_guid_parts`] and [`From<Guid>`]). Downstream
+/// encoders therefore only perform hex/dash formatting and never need to know
+/// the source byte order, so a value that is already canonical cannot be
+/// silently byte-swapped a second time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CanonicalGuid(pub [u8; 16]);
+
+impl CanonicalGuid {
+    /// Assemble canonical bytes from the standard GUID struct fields
+    /// (`Data1: u32`, `Data2: u16`, `Data3: u16`, `Data4: [u8; 8]`),
+    /// byte-swapping the three numeric fields into big-endian display order.
+    ///
+    /// Both [`one_collect::Guid`] and the Windows `EVENT_RECORD` activity GUID
+    /// share this field layout, so this is the single conversion point for the
+    /// provider and activity IDs alike.
+    fn from_guid_parts(data1: u32, data2: u16, data3: u16, data4: [u8; 8]) -> Self {
+        let mut bytes = [0u8; 16];
+        bytes[0..4].copy_from_slice(&data1.to_be_bytes());
+        bytes[4..6].copy_from_slice(&data2.to_be_bytes());
+        bytes[6..8].copy_from_slice(&data3.to_be_bytes());
+        bytes[8..16].copy_from_slice(&data4);
+        Self(bytes)
+    }
+
+    /// Whether this is the all-zero GUID (e.g. no activity ID was set).
+    #[must_use]
+    pub fn is_zero(&self) -> bool {
+        self.0 == [0u8; 16]
+    }
+}
+
+impl From<Guid> for CanonicalGuid {
+    fn from(g: Guid) -> Self {
+        Self::from_guid_parts(g.data1, g.data2, g.data3, g.data4)
+    }
+}
+
 /// Lightweight snapshot of an ETW event captured in the `ProcessTrace` callback.
 ///
 /// Because the `EVENT_RECORD` pointer is only valid for the duration of the
@@ -192,8 +238,8 @@ pub struct DecodedField {
 /// it across the channel to the async world.
 #[derive(Debug, Clone)]
 pub struct EtwEventData {
-    /// Provider GUID that produced the event (16 raw bytes).
-    pub provider_id: [u8; 16],
+    /// Provider GUID that produced the event, in canonical byte order.
+    pub provider_id: CanonicalGuid,
     /// ETW event timestamp converted to Unix epoch nanoseconds.
     ///
     /// Derived from `EVENT_HEADER.TimeStamp` (QPC ticks) using a reference
@@ -218,10 +264,11 @@ pub struct EtwEventData {
     ///
     /// Empty for manifest-based events or when TDH decoding fails.
     pub event_name: String,
-    /// Activity ID from the event header for correlating related events.
+    /// Activity ID from the event header for correlating related events, in
+    /// canonical byte order.
     ///
     /// All zeros when the provider does not set an activity ID.
-    pub activity_id: [u8; 16],
+    pub activity_id: CanonicalGuid,
     /// TDH-decoded event payload fields.
     ///
     /// Populated for TraceLogging / TraceLoggingDynamic events whose schema
@@ -230,7 +277,7 @@ pub struct EtwEventData {
     pub decoded_fields: Vec<DecodedField>,
 }
 
-// ── GUID parsing ─────────────────────────────────────────────────────────────
+// -- GUID parsing -------------------------------------------------------------
 
 /// Parse a GUID string in the standard `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`
 /// format into a [`one_collect::Guid`].
@@ -305,7 +352,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     }
 
     if let Some(name) = &cfg.name {
-        // TODO: Implement provider name → GUID resolution via
+        // TODO: Implement provider name -> GUID resolution via
         // TdhEnumerateProviders or registry lookup.
         return Err(Error::ConfigError(Box::new(
             otap_df_config::error::Error::InvalidUserConfig {
@@ -321,7 +368,7 @@ fn resolve_provider_guid(cfg: &ProviderConfig) -> Result<Guid, Error> {
     unreachable!("validated upstream: provider must specify either 'name' or 'guid'")
 }
 
-// ── TDH field extraction ─────────────────────────────────────────────────────
+// -- TDH field extraction -----------------------------------------------------
 
 /// Number of 100-nanosecond ticks between the Windows `FILETIME` epoch
 /// (1601-01-01 UTC) and the Unix epoch (1970-01-01 UTC).
@@ -538,7 +585,7 @@ fn extract_decoded_fields(
         .collect()
 }
 
-// ── Per-session telemetry bridge ─────────────────────────────────────────────
+// -- Per-session telemetry bridge ---------------------------------------------
 
 /// Counters written by the `!Send` `ProcessTrace` callback and read by the
 /// async per-core receivers.
@@ -585,7 +632,7 @@ pub(super) struct SessionWideMetrics {
     pub kernel_buffers_written: AtomicU64,
 }
 
-// ── Per-session state ────────────────────────────────────────────────────────
+// -- Per-session state --------------------------------------------------------
 
 /// State for a single ETW session keyed by `session_name`.
 struct SessionEntry {
@@ -737,7 +784,7 @@ fn run_trace_stats_poller_loop<F>(
 ///   `InvalidUserConfig` error instead of silently sharing or failing with
 ///   a misleading "pool exhausted" message.
 ///
-/// We use `Mutex<HashMap<…>>` rather than `OnceLock` / `LazyLock` because:
+/// We use `Mutex<HashMap<...>>` rather than `OnceLock` / `LazyLock` because:
 /// - Initialization is fallible (GUID parsing, thread spawn).
 /// - We need post-init mutation (`Vec::pop`).
 static SESSIONS: Mutex<Option<HashMap<String, SessionEntry>>> = Mutex::new(None);
@@ -858,7 +905,7 @@ fn spawn_etw_session(
                     // default value declared here.
                     let mut level = 0u8;
                     let mut keywords = 0u64;
-                    let mut activity_id = [0u8; 16];
+                    let mut activity_id = CanonicalGuid::default();
                     let mut event_name = String::new();
                     let mut decoded_fields = Vec::new();
 
@@ -866,15 +913,16 @@ fn spawn_etw_session(
                         level = record.EventHeader.EventDescriptor.Level;
                         keywords = record.EventHeader.EventDescriptor.Keyword;
 
-                        // Extract Activity ID from the EVENT_RECORD header.
-                        // The GUID is {data1: u32, data2: u16, data3: u16,
-                        // data4: [u8;8]} which we flatten to 16 bytes in
-                        // standard GUID byte order.
+                        // Extract the Activity ID from the EVENT_RECORD header
+                        // and convert it into canonical (big-endian display)
+                        // byte order once, here at the session boundary. The
+                        // GUID fields {data1: u32, data2: u16, data3: u16,
+                        // data4: [u8;8]} are stored little-endian in memory;
+                        // `from_guid_parts` byte-swaps the first three so the
+                        // encoder only needs to render hex/dashes.
                         let g = &record.EventHeader.ActivityId;
-                        activity_id[0..4].copy_from_slice(&g.data1.to_ne_bytes());
-                        activity_id[4..6].copy_from_slice(&g.data2.to_ne_bytes());
-                        activity_id[6..8].copy_from_slice(&g.data3.to_ne_bytes());
-                        activity_id[8..16].copy_from_slice(&g.data4);
+                        activity_id =
+                            CanonicalGuid::from_guid_parts(g.data1, g.data2, g.data3, g.data4);
 
                         // TDH decode: attempt to decode TraceLogging event
                         // schema.  A failure (NotFound for manifest-based
@@ -903,7 +951,7 @@ fn spawn_etw_session(
                     let qpc_ticks = anc.time();
                     let unix_ns = qpc_ref.qpc_to_unix_ns(qpc_ticks);
                     let data = EtwEventData {
-                        provider_id: anc.provider().to_bytes(),
+                        provider_id: CanonicalGuid::from(anc.provider()),
                         timestamp: unix_ns as u64,
                         process_id: anc.pid(),
                         thread_id: anc.tid(),
@@ -1073,7 +1121,7 @@ fn spawn_etw_session(
     Ok(())
 }
 
-// ── Public API ───────────────────────────────────────────────────────────────
+// -- Public API ---------------------------------------------------------------
 
 /// Acquire one consumer channel from the ETW session for the given
 /// `session_name`.
@@ -1223,7 +1271,7 @@ mod tests {
         }
     }
 
-    // ── Session registry ─────────────────────────────
+    // -- Session registry -----------------------------
 
     #[test]
     fn subscribe_rejects_exhausted_session_name() {
@@ -1335,7 +1383,7 @@ mod tests {
         );
     }
 
-    // ── GUID parsing ─────────────────────────────────
+    // -- GUID parsing ---------------------------------
 
     #[test]
     fn parse_guid_standard_format() {
@@ -1367,7 +1415,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Field value interpretation ───────────────────
+    // -- Field value interpretation -------------------
 
     #[test]
     fn interpret_signed_integers() {
@@ -1482,7 +1530,7 @@ mod tests {
             interpret_field_value("filetime", &FILETIME_TICKS_TO_UNIX_EPOCH.to_ne_bytes()),
             EtwAttributeValue::Int(0)
         );
-        // One second (10,000,000 ticks) past the Unix epoch → 1e9 ns.
+        // One second (10,000,000 ticks) past the Unix epoch -> 1e9 ns.
         let one_sec_after = FILETIME_TICKS_TO_UNIX_EPOCH + 10_000_000;
         assert_eq!(
             interpret_field_value("filetime", &one_sec_after.to_ne_bytes()),
@@ -1524,7 +1572,7 @@ mod tests {
         );
     }
 
-    // ── Trace level mapping ──────────────────────────
+    // -- Trace level mapping --------------------------
 
     #[test]
     fn trace_level_mapping() {
@@ -1541,7 +1589,7 @@ mod tests {
         assert_eq!(trace_level_to_etw(&TraceLevel::Verbose), etw::LEVEL_VERBOSE);
     }
 
-    // ── Single-pass field extraction ─────────────────
+    // -- Single-pass field extraction -----------------
 
     /// Builds an all-fixed-size `u32` schema with the given field names.
     fn u32_schema(names: &[&str]) -> one_collect::event::EventFormat {
@@ -1627,7 +1675,7 @@ mod tests {
         assert_eq!(fields[1].value, EtwAttributeValue::Int(123));
     }
 
-    // ── Trace-stats poller edge cases ──────────────
+    // -- Trace-stats poller edge cases --------------
 
     #[test]
     fn trace_stats_first_poll_after_start_publishes_full_sample() {

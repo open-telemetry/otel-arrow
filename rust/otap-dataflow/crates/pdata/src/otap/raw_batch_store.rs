@@ -15,7 +15,7 @@ use arrow::array::RecordBatch;
 use crate::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 
 // ---------------------------------------------------------------------------
-// Position lookup — maps ArrowPayloadType discriminants to array indices
+// Position lookup -- maps ArrowPayloadType discriminants to array indices
 // ---------------------------------------------------------------------------
 
 /// Sentinel value for unused slots in [`POSITION_LOOKUP`].
@@ -78,7 +78,7 @@ pub const POSITION_LOOKUP: &[usize] = &[
 ];
 
 // ---------------------------------------------------------------------------
-// Constants — type masks and counts for each signal type
+// Constants -- type masks and counts for each signal type
 // ---------------------------------------------------------------------------
 
 /// Bitmask of valid [`ArrowPayloadType`] values for the Logs signal.

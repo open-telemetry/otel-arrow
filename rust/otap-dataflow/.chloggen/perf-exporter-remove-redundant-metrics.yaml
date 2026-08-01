@@ -1,0 +1,6 @@
+change_type: breaking
+component: pipeline
+note: Remove the perf exporter counters `exporter.perf.pdata.logs`, `exporter.perf.pdata.spans`, `exporter.perf.pdata.metrics`, and `exporter.perf.pdata.invalid_batches`.
+issues: [3530]
+subtext: |
+  Migration: If you use these metrics, query `node.consumer.consumed.items` for the perf exporter node with matching `signal` and `outcome=success`. Enable global `runtime_metrics: normal` and per-node `item_counts: true`, or global `runtime_metrics: detailed`.

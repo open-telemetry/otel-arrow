@@ -41,12 +41,12 @@ mod tests {
 
     /// End-to-end test demonstrating the full transport header lifecycle:
     ///
-    /// 1. **Receiver extraction** — Simulate a receiver capturing headers from
+    /// 1. **Receiver extraction** -- Simulate a receiver capturing headers from
     ///    inbound gRPC metadata using `HeaderCapturePolicy`.
-    /// 2. **Pdata context attachment** — Attach captured headers to `OtapPdata`.
-    /// 3. **Processor transparency** — Verify headers survive `clone_without_context()`
+    /// 2. **Pdata context attachment** -- Attach captured headers to `OtapPdata`.
+    /// 3. **Processor transparency** -- Verify headers survive `clone_without_context()`
     ///    (what happens at pipeline boundaries / processor pass-through).
-    /// 4. **Exporter propagation** — Apply `HeaderPropagationPolicy` to filter headers
+    /// 4. **Exporter propagation** -- Apply `HeaderPropagationPolicy` to filter headers
     ///    for egress, including dropping sensitive headers like `authorization`.
     ///    This test exercises the scenario from the design spec:
     /// - `otlp_ingest` captures `x-tenant-id`, `x-request-id`, `authorization`

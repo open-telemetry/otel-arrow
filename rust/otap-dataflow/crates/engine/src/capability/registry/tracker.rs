@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`ConsumedTracker`] — records which capability variants were consumed
+//! [`ConsumedTracker`] -- records which capability variants were consumed
 //! by node factories so the engine can drop unused extension *variants*
 //! after the build phase.
 //!
@@ -10,7 +10,7 @@
 //! extension exposed, did any node bind to it?" If the answer is no, the
 //! engine drops that variant (`drop_local` / `drop_shared`). The
 //! tracker has no opinion on whether the extension itself keeps running
-//! — an extension's `start()` event loop is wholly independent of
+//! -- an extension's `start()` event loop is wholly independent of
 //! tracker state.
 //!
 //! Background extensions (the lifecycle that registers an engine-driven
@@ -36,11 +36,11 @@ use std::rc::Rc;
 /// the same capability are tracked independently. An extension that
 /// exposes N capabilities therefore appears under N distinct keys in
 /// each of [`unconsumed_local`](Self::unconsumed_local) /
-/// [`unconsumed_shared`](Self::unconsumed_shared) — once per
-/// `(TypeId, ExtensionId)` pair — so the same `ExtensionId` shows up
+/// [`unconsumed_shared`](Self::unconsumed_shared) -- once per
+/// `(TypeId, ExtensionId)` pair -- so the same `ExtensionId` shows up
 /// multiple times when iterating, once per capability it provides.
 /// The `Rc<Cell<bool>>` for a given key is shared across all nodes that
-/// bind to that provider — once any of them consumes the capability the
+/// bind to that provider -- once any of them consumes the capability the
 /// cell is set.
 pub(crate) struct ConsumedTracker {
     local: HashMap<(TypeId, ExtensionId), ConsumedEntry>,
@@ -68,7 +68,7 @@ pub(crate) struct ConsumedEntry {
     pub(crate) name: &'static str,
     /// The extension that provides this capability.
     pub(crate) extension_id: ExtensionId,
-    /// Shared flag — set to `true` when any node consumes this variant.
+    /// Shared flag -- set to `true` when any node consumes this variant.
     pub(crate) consumed: Rc<Cell<bool>>,
 }
 
@@ -159,7 +159,7 @@ impl ConsumedTracker {
     /// Returns the set of extension IDs whose local variant had **at
     /// least one** capability consumed by some node. An extension that
     /// exposes multiple local capabilities appears here as long as any
-    /// one of them was bound — the variant is in use and must not be
+    /// one of them was bound -- the variant is in use and must not be
     /// dropped, even if other capabilities it provides went unused.
     pub(crate) fn consumed_local(&self) -> HashSet<ExtensionId> {
         self.local

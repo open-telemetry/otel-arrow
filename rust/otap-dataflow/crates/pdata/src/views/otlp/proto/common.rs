@@ -14,7 +14,7 @@ use otap_df_pdata_views::views::common::{
 };
 use otap_df_pdata_views::{SpanId, TraceId};
 
-/* ───────────────────────────── VIEW WRAPPERS (zero-alloc) ────────────── */
+/* ----------------------------- VIEW WRAPPERS (zero-alloc) -------------- */
 
 /// Lightweight wrapper so that `val()` can return `&Self::Val` without the
 /// double-reference gymnastics.
@@ -50,7 +50,7 @@ impl<'a> ObjInstrumentationScope<'a> {
     }
 }
 
-/* ───────────────────────────── ADAPTER ITERATORS ─────────────────────── */
+/* ----------------------------- ADAPTER ITERATORS ----------------------- */
 
 /// Iterator of Key-Value pairs. Can be used for types that must return an iterator of such
 /// type (for example, as an accessor for some message's attributes).
@@ -97,7 +97,7 @@ impl<'a> Iterator for AnyValueIter<'a> {
     }
 }
 
-/* ───────────────────────────── TRAIT IMPLEMENTATIONS ─────────────────── */
+/* ----------------------------- TRAIT IMPLEMENTATIONS ------------------- */
 
 impl<'a> AnyValueView<'a> for ObjAny<'a> {
     type KeyValue = ObjKeyValue<'a>;
