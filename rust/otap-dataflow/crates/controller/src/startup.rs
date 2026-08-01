@@ -27,6 +27,7 @@ use otap_df_config::pipeline::PipelineConfig;
 use otap_df_config::policy::{CoreAllocation, RateLimiterPolicy, ResourcesPolicy};
 use otap_df_config::{PipelineGroupId, PipelineId};
 use otap_df_engine::PipelineFactory;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use sysinfo::System;
 
@@ -96,7 +97,7 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     pipeline_group_id: &PipelineGroupId,
     pipeline_id: &PipelineId,
     pipeline_cfg: &PipelineConfig,
-    rate_limiter_policy: Option<&RateLimiterPolicy>,
+    rate_limiter_policies: &BTreeMap<String, RateLimiterPolicy>,
     factory: &PipelineFactory<PData>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (node_id, node_cfg) in pipeline_cfg.node_iter() {
@@ -136,13 +137,28 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
                 .into());
             }
             Some(validate_fn) => {
-                if let (NodeKind::Receiver, Some(rate_limiter)) = (kind, rate_limiter_policy) {
+                let rate_limiter = if kind == NodeKind::Receiver {
+                    node_cfg
+                        .resolve_rate_limiter_binding(rate_limiter_policies)
+                        .map_err(|error| {
+                            std::io::Error::other(format!(
+                                "Receiver component `{urn_str}` in pipeline_group={} pipeline={} node={}: {error}",
+                                pipeline_group_id.as_ref(),
+                                pipeline_id.as_ref(),
+                                node_id.as_ref(),
+                            ))
+                        })?
+                } else {
+                    None
+                };
+                if let Some(rate_limiter) = rate_limiter {
                     let receiver_factory = factory
                         .get_receiver_factory_map()
                         .get(urn_str)
                         .expect("receiver factory existence checked above");
                     if !receiver_factory
-                        .supported_rate_units
+                        .capabilities
+                        .rate_limit_units
                         .contains(&rate_limiter.unit)
                     {
                         return Err(std::io::Error::other(format!(
@@ -222,7 +238,7 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
             &resolved.pipeline_group_id,
             &resolved.pipeline_id,
             &resolved.pipeline,
-            resolved.policies.rate_limiter.as_ref(),
+            &resolved.policies.rate_limiters,
             factory,
         )?;
     }
@@ -400,14 +416,16 @@ mod tests {
                 name: "urn:test:receiver:example",
                 create: test_receiver_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                supported_rate_units,
+                capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(
+                    supported_rate_units,
+                ),
                 validate_config: otap_df_config::validation::no_config,
             },
             ReceiverFactory {
                 name: "urn:otel:receiver:internal_telemetry",
                 create: test_receiver_create,
                 wiring_contract: WiringContract::UNRESTRICTED,
-                supported_rate_units: &[],
+                capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[]),
                 validate_config: otap_df_config::validation::no_config,
             },
         ]));
@@ -479,7 +497,7 @@ policies:
       source: auto
     rate_limiters:
       ingress:
-        mode: enforce
+        enforcement: enforce
         aggregation: receiver_instance
         unit: {unit}
         pressure: soft
@@ -559,7 +577,7 @@ extensions:
             &PipelineGroupId::from("g"),
             &PipelineId::from("p"),
             &pipeline_cfg,
-            None,
+            &BTreeMap::new(),
             &factory,
         )
         .expect_err("unknown extension URN must be rejected");
@@ -579,21 +597,69 @@ extensions:
     /// Guarantees: startup validation accepts receiver-specific units through factory capability metadata.
     #[test]
     fn validate_engine_components_accepts_custom_receiver_supported_rate_unit() {
-        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages/second"))
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("messages"))
             .expect("rate-limited config should parse");
-        let factory = test_factory(&[RateLimitUnit::MessagesPerSecond]);
+        let factory = test_factory(&[RateLimitUnit::Messages]);
 
         validate_engine_components(&cfg, &factory)
             .expect("receiver-declared rate-limit unit should validate");
+    }
+
+    /// Scenario: a pipeline declares multiple limiters and a receiver explicitly binds one.
+    /// Guarantees: startup validates only the selected limiter instead of forcing every policy on every receiver.
+    #[test]
+    fn validate_engine_components_uses_explicit_receiver_binding() {
+        let yaml = r#"
+version: otel_dataflow/v1
+policies:
+  resources:
+    memory_limiter:
+      mode: enforce
+      source: auto
+    rate_limiters:
+      bytes:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: request_bytes
+        pressure: soft
+        token_bucket: { allow: 1024, interval: 1s, burst: 1024 }
+      records:
+        enforcement: enforce
+        aggregation: receiver_instance
+        unit: messages
+        pressure: soft
+        token_bucket: { allow: 10, interval: 1s, burst: 10 }
+engine: {}
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          receiver:
+            type: "urn:test:receiver:example"
+            rate_limiters: [records]
+            config: null
+          exporter:
+            type: "urn:test:exporter:example"
+            config: null
+        connections:
+          - from: receiver
+            to: exporter
+"#;
+        let cfg = OtelDataflowSpec::from_yaml(yaml).expect("named binding config should parse");
+        let factory = test_factory(&[RateLimitUnit::Messages]);
+
+        validate_engine_components(&cfg, &factory)
+            .expect("only the explicitly selected limiter should be validated");
     }
 
     /// Scenario: a custom receiver does not declare the configured rate-limit unit.
     /// Guarantees: startup validation rejects unsupported units before building the runtime pipeline.
     #[test]
     fn validate_engine_components_rejects_custom_receiver_unsupported_rate_unit() {
-        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("request_bytes/second"))
+        let cfg = OtelDataflowSpec::from_yaml(&rate_limited_engine_yaml("request_bytes"))
             .expect("rate-limited config should parse");
-        let factory = test_factory(&[RateLimitUnit::MessagesPerSecond]);
+        let factory = test_factory(&[RateLimitUnit::Messages]);
 
         let err = validate_engine_components(&cfg, &factory)
             .expect_err("unsupported receiver rate-limit unit must be rejected");

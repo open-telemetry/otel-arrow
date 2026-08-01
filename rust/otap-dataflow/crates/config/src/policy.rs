@@ -79,7 +79,7 @@ impl Policies {
         let mut core_allocation = None;
         let mut memory_limiter = None;
         let mut transport_headers = None;
-        let mut rate_limiter = None;
+        let mut effective_rate_limiters = None;
         let mut rate_limiters_resolved = false;
         for scope in scopes {
             if channel_capacity.is_none() {
@@ -111,7 +111,7 @@ impl Policies {
                     .as_ref()
                     .and_then(|resources| resources.rate_limiters.as_ref())
             {
-                rate_limiter = rate_limiters.values().next().copied();
+                effective_rate_limiters = Some(rate_limiters.clone());
                 rate_limiters_resolved = true;
             }
         }
@@ -125,7 +125,8 @@ impl Policies {
                 memory_limiter: memory_limiter.cloned(),
             },
             transport_headers: transport_headers.cloned(),
-            rate_limiter,
+            rate_limiters: effective_rate_limiters.unwrap_or_default(),
+            rate_limiter_scope: None,
         }
     }
 
@@ -239,11 +240,6 @@ impl Policies {
             .and_then(|resources| resources.rate_limiters.as_ref())
         {
             let rate_limiters_path = format!("{path_prefix}.resources.rate_limiters");
-            if rate_limiters.len() > 1 {
-                errors.push(format!(
-                    "{rate_limiters_path} supports exactly one named limiter in V1"
-                ));
-            }
             for (name, rate_limiter) in rate_limiters {
                 if name.is_empty() {
                     errors.push(format!("{rate_limiters_path} names must not be empty"));
@@ -274,19 +270,30 @@ pub struct ResolvedPolicies {
     /// Transport headers policy. `None` when the feature is not configured
     /// (opt-in only -- no headers are captured or propagated by default).
     pub transport_headers: Option<TransportHeadersPolicy>,
-    /// Authoritative effective pressure-aware receiver admission rate limiter.
+    /// Effective named pressure-aware receiver admission rate limiters.
     ///
-    /// V1 resolves at most one named limiter into this allocation-free runtime
-    /// representation. The configured name remains a cold-path concern until
-    /// nodes can select multiple named limiters.
-    pub rate_limiter: Option<RateLimiterPolicy>,
+    /// Names remain available to planning for node bindings, telemetry, and
+    /// future shared or tenant-keyed limiter registries.
+    pub rate_limiters: BTreeMap<String, RateLimiterPolicy>,
+    /// Scope that declared the effective named limiter family.
+    pub rate_limiter_scope: Option<RateLimiterDeclarationScope>,
+}
+
+/// Configuration scope that declared an effective named limiter family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RateLimiterDeclarationScope {
+    /// Top-level engine policy scope.
+    Engine,
+    /// Pipeline-group policy scope.
+    PipelineGroup(crate::PipelineGroupId),
+    /// Individual pipeline policy scope.
+    Pipeline(crate::PipelineGroupId, crate::PipelineId),
 }
 
 /// Fully-resolved resource policy used by runtime planning.
 ///
-/// Named rate-limiter declarations are intentionally absent. The selected V1
-/// limiter is represented only by [`ResolvedPolicies::rate_limiter`], avoiding
-/// divergent declaration and runtime state.
+/// Named rate-limiter declarations remain on [`ResolvedPolicies`] because they
+/// affect runtime admission shape rather than placement.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResolvedResourcesPolicy {
     /// Effective CPU core allocation strategy.
@@ -307,7 +314,8 @@ impl ResolvedPolicies {
             runtime_recovery: self_runtime_recovery,
             resources: _,
             transport_headers: self_transport_headers,
-            rate_limiter: self_rate_limiter,
+            rate_limiters: self_rate_limiters,
+            rate_limiter_scope: self_rate_limiter_scope,
         } = self;
         let Self {
             channel_capacity: other_channel_capacity,
@@ -316,7 +324,8 @@ impl ResolvedPolicies {
             runtime_recovery: other_runtime_recovery,
             resources: _,
             transport_headers: other_transport_headers,
-            rate_limiter: other_rate_limiter,
+            rate_limiters: other_rate_limiters,
+            rate_limiter_scope: other_rate_limiter_scope,
         } = other;
 
         self_channel_capacity == other_channel_capacity
@@ -324,7 +333,8 @@ impl ResolvedPolicies {
             && self_telemetry == other_telemetry
             && self_runtime_recovery == other_runtime_recovery
             && self_transport_headers == other_transport_headers
-            && self_rate_limiter == other_rate_limiter
+            && self_rate_limiters == other_rate_limiters
+            && self_rate_limiter_scope == other_rate_limiter_scope
     }
 }
 
@@ -333,7 +343,7 @@ impl ResolvedPolicies {
 #[serde(deny_unknown_fields)]
 pub struct RateLimiterPolicy {
     /// Runtime behavior applied when the scoped rate gate would throttle.
-    pub mode: RateLimitMode,
+    pub enforcement: RateLimitEnforcement,
     /// Runtime aggregation scope. V1 supports only `receiver_instance`.
     pub aggregation: RateLimitAggregation,
     /// Rate unit measured by the receiver admission point, such as OTLP request
@@ -377,10 +387,10 @@ impl U64OrString {
         match self {
             Self::Number(value) => Ok(value),
             Self::String(text) => match unit {
-                RateLimitUnit::RequestBytesPerSecond => parse_byte_count_string(&text),
-                RateLimitUnit::MessagesPerSecond => text.trim().parse::<u64>().map_err(|_| {
+                RateLimitUnit::RequestBytes => parse_byte_count_string(&text),
+                RateLimitUnit::Messages => text.trim().parse::<u64>().map_err(|_| {
                     E::custom(format!(
-                        "{field} for messages/second must be a number without byte units"
+                        "{field} for messages must be a number without byte units"
                     ))
                 }),
             },
@@ -408,7 +418,8 @@ impl<'de> Deserialize<'de> for RateLimiterPolicy {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct RawRateLimiterPolicy {
-            mode: RateLimitMode,
+            #[serde(alias = "mode")]
+            enforcement: RateLimitEnforcement,
             aggregation: RateLimitAggregation,
             unit: RateLimitUnit,
             pressure: RateLimitPressure,
@@ -427,7 +438,7 @@ impl<'de> Deserialize<'de> for RateLimiterPolicy {
 
         let raw = RawRateLimiterPolicy::deserialize(deserializer)?;
         Ok(Self {
-            mode: raw.mode,
+            enforcement: raw.enforcement,
             aggregation: raw.aggregation,
             unit: raw.unit,
             pressure: raw.pressure,
@@ -458,10 +469,6 @@ impl RateLimiterPolicy {
             errors.push(format!(
                 "{path_prefix}.token_bucket.interval must be greater than 0"
             ));
-        } else if self.token_bucket.interval != Duration::from_secs(1) {
-            errors.push(format!(
-                "{path_prefix}.token_bucket.interval must be 1s for per-second rate units"
-            ));
         }
         if matches!(self.token_bucket.burst, Some(0)) {
             errors.push(format!(
@@ -484,7 +491,7 @@ impl RateLimiterPolicy {
 /// Enforcement behavior for scoped rate throttling.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum RateLimitMode {
+pub enum RateLimitEnforcement {
     /// Reject scoped traffic while process pressure is active and the bucket is over limit.
     Enforce,
     /// Record would-throttle decisions but continue admitting traffic.
@@ -503,15 +510,15 @@ pub enum RateLimitAggregation {
     ReceiverInstance,
 }
 
-/// Units supported by receiver rate-limit policies.
+/// Weight dimensions supported by receiver rate-limit policies.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub enum RateLimitUnit {
-    /// Request body bytes per interval.
-    #[serde(rename = "request_bytes/second")]
-    RequestBytesPerSecond,
-    /// Framed messages per interval.
-    #[serde(rename = "messages/second")]
-    MessagesPerSecond,
+    /// Request body bytes per configured interval.
+    #[serde(rename = "request_bytes", alias = "request_bytes/second")]
+    RequestBytes,
+    /// Framed messages per configured interval.
+    #[serde(rename = "messages", alias = "messages/second")]
+    Messages,
 }
 
 impl RateLimitUnit {
@@ -519,8 +526,8 @@ impl RateLimitUnit {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::RequestBytesPerSecond => "request_bytes/second",
-            Self::MessagesPerSecond => "messages/second",
+            Self::RequestBytes => "request_bytes",
+            Self::Messages => "messages",
         }
     }
 }
@@ -1145,9 +1152,9 @@ mod tests {
 
     fn test_rate_limiter(allow: u64) -> super::RateLimiterPolicy {
         super::RateLimiterPolicy {
-            mode: super::RateLimitMode::Enforce,
+            enforcement: super::RateLimitEnforcement::Enforce,
             aggregation: super::RateLimitAggregation::ReceiverInstance,
-            unit: super::RateLimitUnit::MessagesPerSecond,
+            unit: super::RateLimitUnit::Messages,
             pressure: super::RateLimitPressure::Soft,
             token_bucket: super::TokenBucketPolicy {
                 allow,
@@ -1343,9 +1350,9 @@ unknown_recovery_option: true
     #[test]
     fn rate_limit_accepts_numeric_allow_and_burst() {
         let yaml = r#"
-mode: enforce
+enforcement: enforce
 aggregation: receiver_instance
-unit: messages/second
+unit: messages
 pressure: soft
 token_bucket:
   allow: 1000
@@ -1360,13 +1367,13 @@ token_bucket:
     }
 
     /// Scenario: a message-rate policy uses byte-unit suffixes for count fields.
-    /// Guarantees: dimensional byte units are rejected for `messages/second` limits.
+    /// Guarantees: dimensional byte units are rejected for `messages` limits.
     #[test]
     fn rate_limit_rejects_byte_units_for_message_counts() {
         let yaml = r#"
-mode: enforce
+enforcement: enforce
 aggregation: receiver_instance
-unit: messages/second
+unit: messages
 pressure: soft
 token_bucket:
   allow: "1 KiB"
@@ -1383,13 +1390,13 @@ token_bucket:
     }
 
     /// Scenario: a byte-rate policy uses byte-unit suffixes for count fields.
-    /// Guarantees: byte units remain accepted for `request_bytes/second` limits.
+    /// Guarantees: byte units remain accepted for `request_bytes` limits.
     #[test]
     fn rate_limit_accepts_byte_units_for_request_bytes() {
         let yaml = r#"
-mode: enforce
+enforcement: enforce
 aggregation: receiver_instance
-unit: request_bytes/second
+unit: request_bytes
 pressure: soft
 token_bucket:
   allow: "1 KiB"
@@ -1428,18 +1435,18 @@ token_bucket:
         );
     }
 
-    /// Scenario: a per-second rate-limit unit is configured with a longer refill interval.
-    /// Guarantees: validation rejects intervals that would make `/second` unit names misleading.
+    /// Scenario: a dimension-only rate-limit unit is configured with a longer refill interval.
+    /// Guarantees: the interval independently defines the refill period and validates successfully.
     #[test]
-    fn validates_rate_limit_requires_one_second_interval() {
+    fn validates_rate_limit_with_independent_interval() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
                 rate_limiters: Some(BTreeMap::from([(
                     "default".to_owned(),
                     super::RateLimiterPolicy {
-                        mode: super::RateLimitMode::Enforce,
+                        enforcement: super::RateLimitEnforcement::Enforce,
                         aggregation: super::RateLimitAggregation::ReceiverInstance,
-                        unit: super::RateLimitUnit::MessagesPerSecond,
+                        unit: super::RateLimitUnit::Messages,
                         pressure: super::RateLimitPressure::Soft,
                         token_bucket: super::TokenBucketPolicy {
                             allow: 100,
@@ -1454,17 +1461,13 @@ token_bucket:
         };
 
         let errors = policies.validation_errors("policies");
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0].contains("interval must be 1s"),
-            "unexpected validation error: {errors:?}"
-        );
+        assert!(errors.is_empty(), "unexpected validation error: {errors:?}");
     }
 
-    /// Scenario: a policy scope declares two named rate limiters before node selection exists.
-    /// Guarantees: V1 rejects ambiguous multi-limiter configuration instead of silently choosing one.
+    /// Scenario: a policy scope declares two named rate limiters for explicit node selection.
+    /// Guarantees: policy validation preserves both valid declarations for later node binding.
     #[test]
-    fn validates_v1_rejects_multiple_named_rate_limiters() {
+    fn validates_multiple_named_rate_limiters() {
         let policies = Policies {
             resources: Some(super::ResourcesPolicy {
                 rate_limiters: Some(BTreeMap::from([
@@ -1478,8 +1481,7 @@ token_bucket:
 
         let errors = policies.validation_errors("policies");
 
-        assert_eq!(errors.len(), 1);
-        assert!(errors[0].contains("supports exactly one named limiter in V1"));
+        assert!(errors.is_empty(), "unexpected validation error: {errors:?}");
     }
 
     /// Scenario: a narrower scope explicitly declares an empty named limiter collection.
@@ -1507,7 +1509,7 @@ token_bucket:
 
         let resolved = Policies::resolve([&child, &parent]);
 
-        assert!(resolved.rate_limiter.is_none());
+        assert!(resolved.rate_limiters.is_empty());
         assert_eq!(
             resolved.resources.core_allocation,
             super::CoreAllocation::core_count(2)
@@ -1546,7 +1548,10 @@ token_bucket:
             resolved.resources.core_allocation,
             super::CoreAllocation::core_count(4)
         );
-        assert_eq!(resolved.rate_limiter, Some(test_rate_limiter(200)));
+        assert_eq!(
+            resolved.rate_limiters.get("child"),
+            Some(&test_rate_limiter(200))
+        );
     }
 
     /// Scenario: a child scope declares only core allocation while its parent declares a rate limiter.
@@ -1577,7 +1582,10 @@ token_bucket:
             resolved.resources.core_allocation,
             super::CoreAllocation::core_count(2)
         );
-        assert_eq!(resolved.rate_limiter, Some(test_rate_limiter(100)));
+        assert_eq!(
+            resolved.rate_limiters.get("parent"),
+            Some(&test_rate_limiter(100))
+        );
     }
 
     #[test]

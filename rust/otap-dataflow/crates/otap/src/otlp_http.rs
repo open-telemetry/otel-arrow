@@ -15,8 +15,8 @@ use crate::otap_grpc::common::AckRegistry;
 use crate::otap_grpc::otlp::server_new::AckSlot;
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
-use crate::rate_limiter::{RateAdmissionDecision, RateLimiter};
 use crate::socket_options;
+use otap_df_engine::rate_limiter::{RateAdmissionDecision, RateLimiter};
 
 use bytes::Bytes;
 use http::{HeaderValue, Method, Request, Response, StatusCode};
@@ -1638,18 +1638,18 @@ mod tests {
     /// Guarantees: the client receives 503 with Retry-After and the rate-limit counters are updated.
     #[tokio::test]
     async fn rate_limit_rejection_returns_http_retry_after() {
-        use crate::rate_limiter::RateLimiter;
         use http_body_util::Full;
         use hyper::Method;
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
         use otap_df_config::policy::{
-            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
             RateLimiterPolicy, TokenBucketPolicy,
         };
         use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::memory_limiter::MemoryPressureChanged;
+        use otap_df_engine::rate_limiter::RateLimiter;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -1699,9 +1699,9 @@ mod tests {
         });
         let rate_limiter = RateLimiter::new(
             RateLimiterPolicy {
-                mode: RateLimitMode::Enforce,
+                enforcement: RateLimitEnforcement::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
-                unit: RateLimitUnit::RequestBytesPerSecond,
+                unit: RateLimitUnit::RequestBytes,
                 pressure: RateLimitPressure::Soft,
                 token_bucket: TokenBucketPolicy {
                     allow: 1,
@@ -1796,18 +1796,18 @@ mod tests {
     /// Guarantees: rate fast-fail returns Retry-After before waiting behind concurrency semaphores.
     #[tokio::test]
     async fn exhausted_rate_limit_rejects_before_concurrency_wait() {
-        use crate::rate_limiter::RateLimiter;
         use http_body_util::Full;
         use hyper::Method;
         use hyper::client::conn::http1;
         use hyper::header::{CONTENT_TYPE, HOST, RETRY_AFTER};
         use hyper_util::rt::TokioIo;
         use otap_df_config::policy::{
-            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
             RateLimiterPolicy, TokenBucketPolicy,
         };
         use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::memory_limiter::MemoryPressureChanged;
+        use otap_df_engine::rate_limiter::RateLimiter;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -1857,9 +1857,9 @@ mod tests {
         });
         let rate_limiter = RateLimiter::new(
             RateLimiterPolicy {
-                mode: RateLimitMode::Enforce,
+                enforcement: RateLimitEnforcement::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
-                unit: RateLimitUnit::RequestBytesPerSecond,
+                unit: RateLimitUnit::RequestBytes,
                 pressure: RateLimitPressure::Soft,
                 token_bucket: TokenBucketPolicy {
                     allow: 1,

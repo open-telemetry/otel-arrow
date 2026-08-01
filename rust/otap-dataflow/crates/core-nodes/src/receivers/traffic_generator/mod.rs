@@ -109,7 +109,7 @@ pub static TRAFFIC_GENERATOR_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFact
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    supported_rate_units: &[],
+    capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[]),
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 

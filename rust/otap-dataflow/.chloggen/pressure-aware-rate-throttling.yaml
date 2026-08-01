@@ -17,9 +17,7 @@ issues: [3484]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: >-
-  Configure the V1 limiter as one named entry under
-  policies.resources.rate_limiters with token-bucket settings nested under
-  token_bucket. Custom receiver embedders must declare supported rate-limit
-  units on ReceiverFactory and pass the resolved rate limiter policy into
-  pipeline build and validation helpers. Resource members now inherit
-  independently across engine, group, and pipeline scopes.
+  Migration: Use dimension-only units request_bytes or messages, rename limiter
+  mode to enforcement, and bind named limiters with node rate_limiters: [name].
+  An empty node list opts out. ReceiverFactory integrations declare units in
+  ReceiverCapabilities.

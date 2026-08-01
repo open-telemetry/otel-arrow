@@ -450,7 +450,7 @@ connections:
             &pipeline_group_id,
             &pipeline_id,
             &pipeline_cfg,
-            None,
+            &std::collections::BTreeMap::new(),
             &OTAP_PIPELINE_FACTORY,
         )
         .expect_err("semantic component validation should fail");

@@ -4,9 +4,9 @@
 //! Tower middleware that rejects gRPC requests when a receiver rate bucket is exhausted.
 
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
-use crate::rate_limiter::RateLimiter;
 use futures::future::Either;
 use http::{Request, Response};
+use otap_df_engine::rate_limiter::RateLimiter;
 use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use std::future::{Ready, ready};
@@ -130,15 +130,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rate_limiter::RateAdmissionDecision;
     use futures::future;
     use otap_df_config::policy::{
-        RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit, RateLimiterPolicy,
-        TokenBucketPolicy,
+        RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+        RateLimiterPolicy, TokenBucketPolicy,
     };
     use otap_df_engine::memory_limiter::{
         MemoryPressureLevel, MemoryPressureState, SharedReceiverAdmissionState,
     };
+    use otap_df_engine::rate_limiter::RateAdmissionDecision;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -176,11 +176,11 @@ mod tests {
         }
     }
 
-    fn policy_with_mode(mode: RateLimitMode) -> RateLimiterPolicy {
+    fn policy_with_mode(enforcement: RateLimitEnforcement) -> RateLimiterPolicy {
         RateLimiterPolicy {
-            mode,
+            enforcement,
             aggregation: RateLimitAggregation::ReceiverInstance,
-            unit: RateLimitUnit::RequestBytesPerSecond,
+            unit: RateLimitUnit::RequestBytes,
             pressure: RateLimitPressure::Soft,
             token_bucket: TokenBucketPolicy {
                 allow: 10,
@@ -191,7 +191,7 @@ mod tests {
     }
 
     fn policy() -> RateLimiterPolicy {
-        policy_with_mode(RateLimitMode::Enforce)
+        policy_with_mode(RateLimitEnforcement::Enforce)
     }
 
     fn new_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
@@ -234,7 +234,10 @@ mod tests {
     /// Guarantees: both modes delegate unchanged and record no rate-limit rejection.
     #[test]
     fn under_capacity_rate_limit_modes_are_transparent() {
-        for mode in [RateLimitMode::Enforce, RateLimitMode::ObserveOnly] {
+        for mode in [
+            RateLimitEnforcement::Enforce,
+            RateLimitEnforcement::ObserveOnly,
+        ] {
             let state = MemoryPressureState::default();
             state.set_level_for_tests(MemoryPressureLevel::Soft);
             let admission = SharedReceiverAdmissionState::from_process_state(&state);

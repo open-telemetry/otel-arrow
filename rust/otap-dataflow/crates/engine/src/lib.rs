@@ -49,7 +49,7 @@ use std::fmt::Debug;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::OnceLock,
 };
 
@@ -87,6 +87,7 @@ pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
+pub mod rate_limiter;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
@@ -107,6 +108,29 @@ pub trait NamedFactory {
     fn name(&self) -> &'static str;
 }
 
+/// Extension capabilities implemented by a receiver factory.
+///
+/// Keeping optional integration points in this descriptor lets new capabilities
+/// be added without adding another required field to every receiver factory.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ReceiverCapabilities {
+    /// Rate-limit units this receiver can measure at its admission point.
+    pub rate_limit_units: &'static [RateLimitUnit],
+}
+
+impl ReceiverCapabilities {
+    /// No optional receiver capabilities.
+    pub const NONE: Self = Self {
+        rate_limit_units: &[],
+    };
+
+    /// Declares the rate-limit units supported by a receiver.
+    #[must_use]
+    pub const fn with_rate_limit_units(rate_limit_units: &'static [RateLimitUnit]) -> Self {
+        Self { rate_limit_units }
+    }
+}
+
 /// A factory for creating receivers.
 pub struct ReceiverFactory<PData> {
     /// The name of the receiver.
@@ -125,8 +149,8 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
-    /// Rate-limit units this receiver can measure at its admission point.
-    pub supported_rate_units: &'static [RateLimitUnit],
+    /// Optional extension capabilities implemented by this receiver.
+    pub capabilities: ReceiverCapabilities,
     /// Validates the node-specific config statically, without creating the component.
     ///
     /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
@@ -142,7 +166,7 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
-            supported_rate_units: self.supported_rate_units,
+            capabilities: self.capabilities,
             validate_config: self.validate_config,
         }
     }
@@ -729,7 +753,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
-        rate_limiter_policy: Option<RateLimiterPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -956,7 +980,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
                                 &transport_headers_policy,
-                                rate_limiter_policy,
+                                &rate_limiter_policies,
                                 node_capabilities,
                             )
                         },
@@ -1794,7 +1818,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
         transport_headers_policy: &Option<TransportHeadersPolicy>,
-        rate_limiter_policy: Option<RateLimiterPolicy>,
+        rate_limiter_policies: &BTreeMap<String, RateLimiterPolicy>,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -1823,8 +1847,25 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or_else(|| Error::UnknownReceiver {
                 plugin_urn: normalized.clone(),
             })?;
+        let rate_limiter_policy = node_config
+            .resolve_rate_limiter_binding(rate_limiter_policies)
+            .map_err(|error| {
+                Error::ConfigError(Box::new(
+                    otap_df_config::error::Error::InvalidUserConfig {
+                        error: format!(
+                            "Receiver component `{normalized}` in pipeline_group={} pipeline={} node={}: {error}",
+                            pipeline_group_id.as_ref(),
+                            pipeline_id.as_ref(),
+                            name.as_ref(),
+                        ),
+                    },
+                ))
+            })?;
         if let Some(rate_limiter) = &rate_limiter_policy
-            && !factory.supported_rate_units.contains(&rate_limiter.unit)
+            && !factory
+                .capabilities
+                .rate_limit_units
+                .contains(&rate_limiter.unit)
         {
             return Err(Error::ConfigError(Box::new(
                 otap_df_config::error::Error::InvalidUserConfig {
@@ -2655,7 +2696,7 @@ mod test {
         name: "urn:otel:receiver:rate_limit_test",
         create: unreachable_receiver_create,
         wiring_contract: wiring_contract::WiringContract::UNRESTRICTED,
-        supported_rate_units: &[RateLimitUnit::MessagesPerSecond],
+        capabilities: ReceiverCapabilities::with_rate_limit_units(&[RateLimitUnit::Messages]),
         validate_config: no_op_validate,
     }];
 
@@ -2667,7 +2708,7 @@ mod test {
     #[test]
     fn create_receiver_rejects_unsupported_rate_unit() {
         use otap_df_config::policy::{
-            RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit,
+            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
             TokenBucketPolicy,
         };
 
@@ -2677,9 +2718,9 @@ mod test {
         ));
         let node_id = testing::test_node("rate_limit_test");
         let rate_limiter = RateLimiterPolicy {
-            mode: RateLimitMode::Enforce,
+            enforcement: RateLimitEnforcement::Enforce,
             aggregation: RateLimitAggregation::ReceiverInstance,
-            unit: RateLimitUnit::RequestBytesPerSecond,
+            unit: RateLimitUnit::RequestBytes,
             pressure: RateLimitPressure::Soft,
             token_bucket: TokenBucketPolicy {
                 allow: 1024,
@@ -2695,7 +2736,7 @@ mod test {
             8,
             8,
             &None,
-            Some(rate_limiter),
+            &BTreeMap::from([("default".to_owned(), rate_limiter)]),
             &capability::registry::Capabilities::empty(),
         );
         let Err(err) = result else {

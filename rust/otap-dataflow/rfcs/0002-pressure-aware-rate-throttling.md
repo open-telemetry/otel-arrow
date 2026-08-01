@@ -164,15 +164,16 @@ This RFC places named limiter declarations under
 `policies.resources.rate_limiters`, aligned with the generic limiter model
 proposed in [#3583](https://github.com/open-telemetry/otel-arrow/pull/3583).
 That design PR is still under review; this RFC amendment intentionally brings
-the V1 public shape forward for review with the implementation. Compatible
-receivers automatically apply the one effective limiter supported by V1. The
-named collection and implementation-specific `token_bucket` block avoid a
-configuration migration when node selection, multiple limiters, and
-tenant-conditioned buckets are added.
+the V1 public shape forward for review with the implementation. Resolution
+preserves the effective named collection and the scope that declared it. A
+receiver can select one limiter with `rate_limiters: [name]` or opt out with an
+explicit empty list. When exactly one limiter is effective, omitting the node
+binding retains the original implicit behavior. Multiple effective limiters
+require an explicit node binding instead of choosing one by map order.
 
-V1 constrains each policy scope to at most one named pressure-aware rate
-limiter. Composing several rate limits at one admission point remains out of
-scope until nodes can select named limiters explicitly.
+V1 applies at most one named limiter at each receiver admission point.
+Composing several rate limits at one admission point remains out of scope until
+atomic multi-limiter reservation semantics are designed.
 
 #### Runtime aggregation
 
@@ -190,11 +191,13 @@ bucket while reaching 32,000 items/s process-wide. The same tenant sending
 throttled. Distribution may depend on connection topology, core allocation, and
 routing, not only tenant behavior.
 
-This makes v1 a local pressure-relief heuristic, not exact process-wide
-per-tenant fairness. Exact per-tenant rate semantics require tenant affinity or
-shuffle routing to one pipeline, or a shared limiter extension that aggregates
-rate state across instances. Tenant affinity gives exact local semantics but
-trades away parallelism for that tenant.
+This makes v1 receiver-instance rate isolation and a local pressure-relief
+heuristic. It is not group-wide isolation, tenant scheduling, or fairness.
+Per-tenant GCRA buckets would provide tenant rate isolation, but fairness also
+requires queueing or scheduling policy; reject-immediately admission does not
+provide it. Exact per-tenant rate semantics additionally require tenant affinity
+or shuffle routing to one pipeline, or shared state that aggregates buckets
+across instances.
 
 Process-wide or group-wide aggregation is a separate choice and is deferred. It
 can later be added as another `aggregation` value, such as `process`, without
@@ -220,10 +223,10 @@ scanning, that cost must be explicit rather than accidental.
 
 Two useful units are:
 
-- `request_bytes/second` for request or body bytes known before decode,
-- `request_items/second` for normalized telemetry items.
+- `request_bytes` for request or body bytes known before decode,
+- `request_items` for normalized telemetry items.
 
-For `request_items/second`, the counted unit is normalized telemetry items:
+For `request_items`, the counted unit is normalized telemetry items:
 
 - log records for logs,
 - spans for traces,
@@ -236,7 +239,7 @@ scan or decode the receiver would otherwise avoid. OTAP receivers, and receivers
 that already build item-level batches on their admission path, may support item
 rate units more naturally.
 
-V1 OTLP implements only `request_bytes/second`, measured from the decompressed
+V1 OTLP implements only `request_bytes`, measured from the decompressed
 payload. It does not implement OTLP item counting. Because the authoritative
 weight is not known until decompression finishes, the first request that
 crosses the bucket limit pays the bounded body-collection and decompression
@@ -248,7 +251,7 @@ accepted batch. This matters for item-based units because admission happens
 before decode, and the exact item count of a request may only be known after
 decode.
 
-For units known before admission, such as `request_bytes/second`, the receiver
+For units known before admission, such as `request_bytes`, the receiver
 can use a normal token-bucket check because it knows the request weight before
 admission. For item-based units whose weight is known only after decode, the
 receiver should use a **post-charge token bucket with bounded debt**:
@@ -411,9 +414,9 @@ policies:
       source: auto
     rate_limiters:
       ingress:
-        mode: enforce
+        enforcement: enforce
         aggregation: receiver_instance
-        unit: request_bytes/second
+        unit: request_bytes
         # Applies only while process memory is at or above soft pressure.
         pressure: soft
         token_bucket:
@@ -429,19 +432,18 @@ groups:
         nodes:
           otlp:
             type: receiver:otlp
+            rate_limiters: [ingress]
             config:
               tenant_tokens: [customer_tenant]
 ```
 
-This example uses `request_bytes/second` because OTLP request bytes are
+This example uses `request_bytes` because OTLP request bytes are
 available before protobuf inspection. A receiver that can measure item counts on
-its admission path may instead support `request_items/second`. In a shared
-pipeline, the rate buckets come from tenant tokens. If tenants are already
-separated by pipeline or pipeline group, the same named policy can be
-overridden at that scope without extracting a tenant token. The receiver remains
-the admission point in both cases, and each receiver instance keeps its own rate
-state in both cases. Both shapes are the same bucket key described in "Policy
-application and bucket key", with and without the tenant-token component.
+its admission path may later support a dimension such as `request_items`, with
+`interval` defining its period. If tenants are already separated by pipeline or
+pipeline group, the same named policy can be overridden at that scope without
+extracting a tenant token. The receiver remains the admission point, and each
+receiver instance keeps its own rate state.
 
 V1 does not yet subdivide a limiter by tenant token. A future condition block
 will identify which resolved tokens form bucket keys, and a cardinality block
@@ -450,17 +452,17 @@ will bound the number of tracked tenant buckets.
 The V1 schema keeps strict unknown-field rejection, validates declaration
 placement and receiver compatibility, verifies that the receiver supports the
 configured rate unit on its admission path, and rejects unsupported
-pressure-gate combinations. It also rejects more than one named limiter,
-anything other than `aggregation: receiver_instance`, a pressure value other
+pressure-gate combinations. It also rejects more than one limiter bound to a
+node, anything other than `aggregation: receiver_instance`, a pressure value other
 than `soft`, and pressure-aware rate limiting without a process memory pressure
 source. Per-tenant overrides will use ordered conditions from the tenant-token
 policy model when that model is implemented.
 
-V1 is implemented only for OTLP and Syslog / CEF receivers. A limiter inherited
-by a pipeline containing any receiver that does not support its unit, including
-the OTAP receiver, fails startup. Operators must keep such receivers in a
-separate pipeline or explicitly disable inheritance with `rate_limiters: {}`
-until named limiter bindings and OTAP-native units are designed.
+V1 is implemented only for OTLP and Syslog / CEF receivers. Validation applies
+to each receiver's resolved node binding, so mixed receiver pipelines can bind
+different compatible limiter names or opt a receiver out with
+`rate_limiters: []`. An omitted binding is accepted only when zero or one
+limiter is effective.
 
 A live limiter change uses the controller's rolling pipeline replacement path,
 not in-place mutation. The replacement receiver starts with fresh bucket state;

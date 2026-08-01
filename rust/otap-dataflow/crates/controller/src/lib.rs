@@ -98,7 +98,7 @@ use otap_df_telemetry::{
     otel_info_span, otel_warn, self_tracing::LogContext,
 };
 use smallvec::smallvec;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::pin::Pin;
@@ -1593,7 +1593,7 @@ impl<
                     pipeline_entry.policies.channel_capacity.clone(),
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.transport_headers.clone(),
-                    pipeline_entry.policies.rate_limiter,
+                    pipeline_entry.policies.rate_limiters.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -2068,7 +2068,7 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
-        rate_limiter_policy: Option<RateLimiterPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2127,7 +2127,7 @@ impl<
                         channel_capacity_policy,
                         telemetry_policy,
                         transport_headers_policy,
-                        rate_limiter_policy,
+                        rate_limiter_policies,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2212,7 +2212,7 @@ impl<
             channel_capacity_policy,
             telemetry_policy,
             None,
-            None,
+            BTreeMap::new(),
             controller_ctx.clone(),
             metrics_reporter.clone(),
             engine_evt_reporter.clone(),
@@ -2262,7 +2262,7 @@ impl<
         channel_capacity_policy: ChannelCapacityPolicy,
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
-        rate_limiter_policy: Option<RateLimiterPolicy>,
+        rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2321,7 +2321,7 @@ impl<
                     channel_capacity_policy,
                     telemetry_policy,
                     transport_headers_policy,
-                    rate_limiter_policy,
+                    rate_limiter_policies,
                     internal_telemetry_settings,
                 )
                 .map_err(|e| {
@@ -2544,7 +2544,7 @@ connections:
         name: "urn:otel:receiver:internal_telemetry",
         create: create_test_observability_receiver,
         wiring_contract: WiringContract::UNRESTRICTED,
-        supported_rate_units: &[],
+        capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[]),
         validate_config: accept_any_test_config,
     }];
 
@@ -2859,7 +2859,7 @@ groups: {{}}
                         "ingress": {
                             "mode": "enforce",
                             "aggregation": "receiver_instance",
-                            "unit": "request_bytes/second",
+                            "unit": "request_bytes",
                             "pressure": "soft",
                             "token_bucket": {
                                 "allow": 1000,

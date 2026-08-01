@@ -10,6 +10,7 @@ use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::memory_limiter::LocalReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
+use otap_df_engine::rate_limiter::{LocalRateLimiter, RateAdmissionDecision};
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
@@ -19,7 +20,6 @@ use otap_df_engine::{
 };
 use otap_df_otap::OTAP_RECEIVER_FACTORIES;
 use otap_df_otap::pdata::OtapPdata;
-use otap_df_otap::rate_limiter::{LocalRateLimiter, RateAdmissionDecision};
 use otap_df_telemetry::instrument::{Counter, UpDownCounter};
 use otap_df_telemetry::metrics::MetricSet;
 use otap_df_telemetry::{otel_info, otel_warn};
@@ -318,7 +318,9 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    supported_rate_units: &[otap_df_config::policy::RateLimitUnit::MessagesPerSecond],
+    capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[
+        otap_df_config::policy::RateLimitUnit::Messages,
+    ]),
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
@@ -2172,8 +2174,8 @@ mod config_tests {
 mod telemetry_tests {
     use super::*;
     use otap_df_config::policy::{
-        RateLimitAggregation, RateLimitMode, RateLimitPressure, RateLimitUnit, RateLimiterPolicy,
-        TokenBucketPolicy,
+        RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+        RateLimiterPolicy, TokenBucketPolicy,
     };
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::local::receiver::Receiver;
@@ -2199,18 +2201,26 @@ mod telemetry_tests {
         snap.get_metrics()[index].to_u64_lossy()
     }
 
-    fn messages_per_second_policy() -> RateLimiterPolicy {
+    fn messages_per_second_policy_with(
+        enforcement: RateLimitEnforcement,
+        allow: u64,
+        burst: u64,
+    ) -> RateLimiterPolicy {
         RateLimiterPolicy {
-            mode: RateLimitMode::Enforce,
+            enforcement,
             aggregation: RateLimitAggregation::ReceiverInstance,
-            unit: RateLimitUnit::MessagesPerSecond,
+            unit: RateLimitUnit::Messages,
             pressure: RateLimitPressure::Soft,
             token_bucket: TokenBucketPolicy {
-                allow: 1,
+                allow,
                 interval: Duration::from_secs(1),
-                burst: Some(1),
+                burst: Some(burst),
             },
         }
+    }
+
+    fn messages_per_second_policy() -> RateLimiterPolicy {
+        messages_per_second_policy_with(RateLimitEnforcement::Enforce, 1, 1)
     }
 
     fn oversized_syslog_message() -> Vec<u8> {
@@ -2518,6 +2528,217 @@ mod telemetry_tests {
         }));
     }
 
+    fn run_udp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
+            let pipeline = controller.pipeline_context_with(
+                otap_df_config::PipelineGroupId::from("grp".to_string()),
+                otap_df_config::PipelineId::from("pipe".to_string()),
+                0,
+                1,
+                0,
+            );
+            pipeline
+                .memory_pressure_state()
+                .set_level_for_tests(MemoryPressureLevel::Soft);
+
+            let port = otap_df_test_net::pick_unused_loopback_udp_port();
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let mut receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Udp(UdpConfig {
+                        listening_addr: addr,
+                    }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: None,
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
+            );
+            receiver.rate_limiter = Some(LocalRateLimiter::new(
+                messages_per_second_policy_with(enforcement, 2, 2),
+                receiver.admission_state.clone(),
+            ));
+
+            let (out_tx, out_rx) = otap_df_channel::mpsc::Channel::new(8);
+            let mut senders = std::collections::HashMap::new();
+            let _ = senders.insert(
+                "".into(),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(out_tx)),
+            );
+            let (pipe_tx, _pipe_rx) = otap_df_engine::control::runtime_ctrl_msg_channel(10);
+            let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
+            let eh = otap_df_engine::local::receiver::EffectHandler::new(
+                test_node("syslog_udp_rate_limit_under_capacity"),
+                senders,
+                None,
+                pipe_tx,
+                reporter.clone(),
+            );
+            let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(16);
+            let ctrl_rx = otap_df_engine::message::Receiver::Local(
+                otap_df_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
+            );
+            let ctrl_chan = otap_df_engine::local::receiver::ControlChannel::new(ctrl_rx);
+            let handle = tokio::task::spawn_local(async move {
+                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
+            });
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let _ = sock
+                .send_to(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg", addr)
+                .await
+                .unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
+                .await
+                .expect("under-capacity UDP message should be forwarded")
+                .expect("downstream channel should remain open");
+
+            let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            });
+            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "test".into(),
+            });
+            let _ = handle.await;
+
+            let snap = metrics_rx.recv_async().await.unwrap();
+            assert_eq!(metric_value(&snap, "received_logs_total"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 0);
+            assert_eq!(
+                metric_value(&snap, "received_logs_would_refuse_rate_limit"),
+                0
+            );
+        }));
+    }
+
+    /// Scenario: a UDP syslog receiver in enforce mode remains below its rate limit.
+    /// Guarantees: the datagram is forwarded with ordinary metrics and no refusal telemetry.
+    #[test]
+    fn udp_enforce_under_capacity_is_transparent() {
+        run_udp_under_capacity_rate_limit_test(RateLimitEnforcement::Enforce);
+    }
+
+    /// Scenario: a UDP syslog receiver in observe-only mode remains below its rate limit.
+    /// Guarantees: the datagram is forwarded with ordinary metrics and no refusal telemetry.
+    #[test]
+    fn udp_observe_only_under_capacity_is_transparent() {
+        run_udp_under_capacity_rate_limit_test(RateLimitEnforcement::ObserveOnly);
+    }
+
+    fn run_tcp_under_capacity_rate_limit_test(enforcement: RateLimitEnforcement) {
+        let (rt, local) = setup_test_runtime();
+        rt.block_on(local.run_until(async move {
+            let telemetry_registry = TelemetryRegistryHandle::new();
+            let controller = ControllerContext::new(telemetry_registry.clone());
+            let pipeline = controller.pipeline_context_with(
+                otap_df_config::PipelineGroupId::from("grp".to_string()),
+                otap_df_config::PipelineId::from("pipe".to_string()),
+                0,
+                1,
+                0,
+            );
+            pipeline
+                .memory_pressure_state()
+                .set_level_for_tests(MemoryPressureLevel::Soft);
+
+            let port = otap_df_test_net::pick_unused_loopback_tcp_port();
+            let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+            let mut receiver = SyslogCefReceiver::with_pipeline(
+                pipeline,
+                Config {
+                    protocol: Protocol::Tcp(TcpConfig {
+                        listening_addr: addr,
+                        tls: None,
+                    }),
+                    batch: Some(BatchConfig {
+                        max_batch_duration_ms: None,
+                        max_size: NonZeroU16::new(1),
+                    }),
+                },
+            );
+            receiver.rate_limiter = Some(LocalRateLimiter::new(
+                messages_per_second_policy_with(enforcement, 2, 2),
+                receiver.admission_state.clone(),
+            ));
+
+            let (out_tx, out_rx) = otap_df_channel::mpsc::Channel::new(8);
+            let mut senders = std::collections::HashMap::new();
+            let _ = senders.insert(
+                "".into(),
+                Sender::Local(otap_df_engine::local::message::LocalSender::mpsc(out_tx)),
+            );
+            let (pipe_tx, _pipe_rx) = otap_df_engine::control::runtime_ctrl_msg_channel(10);
+            let (metrics_rx, reporter) = MetricsReporter::create_new_and_receiver(4);
+            let eh = otap_df_engine::local::receiver::EffectHandler::new(
+                test_node("syslog_tcp_rate_limit_under_capacity"),
+                senders,
+                None,
+                pipe_tx,
+                reporter.clone(),
+            );
+            let (ctrl_tx, ctrl_rx) = otap_df_channel::mpsc::Channel::new(16);
+            let ctrl_rx = otap_df_engine::message::Receiver::Local(
+                otap_df_engine::local::message::LocalReceiver::mpsc(ctrl_rx),
+            );
+            let ctrl_chan = otap_df_engine::local::receiver::ControlChannel::new(ctrl_rx);
+            let handle = tokio::task::spawn_local(async move {
+                let _ = Box::new(receiver).start(ctrl_chan, eh).await;
+            });
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let mut stream = TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"<34>1 2024-01-15T10:30:45.123Z host app - ID1 msg\n")
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            let _ = tokio::time::timeout(Duration::from_secs(1), out_rx.recv())
+                .await
+                .expect("under-capacity TCP message should be forwarded")
+                .expect("downstream channel should remain open");
+            drop(stream);
+
+            let _ = ctrl_tx.send(NodeControlMsg::CollectTelemetry {
+                metrics_reporter: reporter.clone(),
+            });
+            let _ = ctrl_tx.send(NodeControlMsg::Shutdown {
+                deadline: Instant::now(),
+                reason: "test".into(),
+            });
+            let _ = handle.await;
+
+            let snap = metrics_rx.recv_async().await.unwrap();
+            assert_eq!(metric_value(&snap, "received_logs_total"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
+            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 0);
+            assert_eq!(
+                metric_value(&snap, "received_logs_would_refuse_rate_limit"),
+                0
+            );
+        }));
+    }
+
+    /// Scenario: a TCP syslog receiver in enforce mode remains below its rate limit.
+    /// Guarantees: the framed message is forwarded with ordinary metrics and no refusal telemetry.
+    #[test]
+    fn tcp_enforce_under_capacity_is_transparent() {
+        run_tcp_under_capacity_rate_limit_test(RateLimitEnforcement::Enforce);
+    }
+
+    /// Scenario: a TCP syslog receiver in observe-only mode remains below its rate limit.
+    /// Guarantees: the framed message is forwarded with ordinary metrics and no refusal telemetry.
+    #[test]
+    fn tcp_observe_only_under_capacity_is_transparent() {
+        run_tcp_under_capacity_rate_limit_test(RateLimitEnforcement::ObserveOnly);
+    }
+
     /// Scenario: a UDP syslog receiver exceeds its message-rate bucket under soft pressure.
     /// Guarantees: over-limit datagrams are dropped before parsing and counted as rate refusals.
     #[test]
@@ -2805,10 +3026,10 @@ mod telemetry_tests {
         }));
     }
 
-    /// Scenario: an oversized TCP syslog line is rejected, then its tail arrives after token refill.
-    /// Guarantees: discarded continuation chunks do not inflate log counters and the next line is admitted.
+    /// Scenario: a rejected TCP syslog line continues across three bounded fragments through newline.
+    /// Guarantees: all continuation fragments are uncounted and the next complete message is admitted.
     #[test]
-    fn tcp_rate_rejected_oversized_line_discards_tail_after_refill() {
+    fn tcp_rate_rejected_three_fragment_line_discards_all_continuations() {
         let (rt, local) = setup_test_runtime();
         rt.block_on(local.run_until(async move {
             let telemetry_registry = TelemetryRegistryHandle::new();
@@ -2879,7 +3100,14 @@ mod telemetry_tests {
             stream.write_all(normal_first).await.unwrap();
             stream.flush().await.unwrap();
 
-            let oversized = oversized_syslog_message();
+            let header = b"<34>1 2024-01-15T10:30:45.123Z host app - ID2 ";
+            let mut oversized = Vec::with_capacity((MAX_MESSAGE_SIZE * 2) + 501);
+            oversized.extend_from_slice(header);
+            oversized.extend(std::iter::repeat_n(
+                b'X',
+                (MAX_MESSAGE_SIZE * 2) + 500 - header.len(),
+            ));
+            oversized.push(b'\n');
             stream
                 .write_all(&oversized[..MAX_MESSAGE_SIZE])
                 .await
@@ -2889,7 +3117,14 @@ mod telemetry_tests {
             tokio::time::sleep(Duration::from_millis(1_200)).await;
 
             stream
-                .write_all(&oversized[MAX_MESSAGE_SIZE..])
+                .write_all(&oversized[MAX_MESSAGE_SIZE..MAX_MESSAGE_SIZE * 2])
+                .await
+                .unwrap();
+            stream.flush().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            stream
+                .write_all(&oversized[MAX_MESSAGE_SIZE * 2..])
                 .await
                 .unwrap();
             let normal_second = b"<34>1 2024-01-15T10:30:46.123Z host app - ID2 msg\n";

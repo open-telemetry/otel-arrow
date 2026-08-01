@@ -469,9 +469,9 @@ where
             config.clone(),
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None, // transport_headers_policy
-            None, // rate_limit_policy
-            None, // internal_telemetry
+            None,                              // transport_headers_policy
+            std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 
@@ -763,9 +763,9 @@ where
             config.clone(),
             channel_capacity_policy.clone(),
             TelemetryPolicy::default(),
-            None, // transport_headers_policy
-            None, // rate_limit_policy
-            None, // internal_telemetry
+            None,                              // transport_headers_policy
+            std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
 

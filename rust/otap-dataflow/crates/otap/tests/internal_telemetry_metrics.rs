@@ -311,7 +311,7 @@ groups: {{}}
             channel_capacity.clone(),
             telemetry_policy,
             None,
-            None,
+            std::collections::BTreeMap::new(),
             Some(internal_settings),
         )
         .expect("real internal telemetry receiver should build with injected settings");

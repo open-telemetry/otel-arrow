@@ -5,7 +5,9 @@
 
 use crate::engine::{EngineConfig, OtelDataflowSpec};
 use crate::pipeline::PipelineConfig;
-use crate::policy::{Policies, ResolvedPolicies, ResolvedResourcesPolicy};
+use crate::policy::{
+    Policies, RateLimiterDeclarationScope, ResolvedPolicies, ResolvedResourcesPolicy,
+};
 use crate::topic::TopicSpec;
 use crate::{PipelineGroupId, PipelineId, TopicName};
 
@@ -168,7 +170,37 @@ impl OtelDataflowSpec {
                 .into_iter()
                 .flatten()
                 .collect();
-                let policies = Policies::resolve(scopes);
+                let mut policies = Policies::resolve(scopes);
+                policies.rate_limiter_scope = if pipeline
+                    .policies()
+                    .and_then(Policies::resources)
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+                    .is_some()
+                {
+                    Some(RateLimiterDeclarationScope::Pipeline(
+                        pipeline_group_id.clone(),
+                        pipeline_id.clone(),
+                    ))
+                } else if pipeline_group
+                    .policies
+                    .as_ref()
+                    .and_then(Policies::resources)
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+                    .is_some()
+                {
+                    Some(RateLimiterDeclarationScope::PipelineGroup(
+                        pipeline_group_id.clone(),
+                    ))
+                } else if self
+                    .policies
+                    .resources()
+                    .and_then(|resources| resources.rate_limiters.as_ref())
+                    .is_some()
+                {
+                    Some(RateLimiterDeclarationScope::Engine)
+                } else {
+                    None
+                };
                 ResolvedPipelineConfig {
                     pipeline_group_id,
                     pipeline_id,
@@ -190,7 +222,8 @@ impl OtelDataflowSpec {
         // user-facing receiver policies.
         policies.resources = ResolvedResourcesPolicy::default();
         policies.transport_headers = None;
-        policies.rate_limiter = None;
+        policies.rate_limiters.clear();
+        policies.rate_limiter_scope = None;
         pipelines.push(ResolvedPipelineConfig {
             pipeline_group_id: SYSTEM_PIPELINE_GROUP_ID.into(),
             pipeline_id: SYSTEM_OBSERVABILITY_PIPELINE_ID.into(),

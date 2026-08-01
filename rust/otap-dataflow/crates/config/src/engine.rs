@@ -2822,9 +2822,9 @@ policies:
       source: auto
     rate_limiters:
       ingress:
-        mode: enforce
+        enforcement: enforce
         aggregation: receiver_instance
-        unit: request_bytes/second
+        unit: request_bytes
         pressure: soft
         token_bucket:
           allow: 1000
@@ -2839,9 +2839,9 @@ groups:
           resources:
             rate_limiters:
               ingress:
-                mode: observe_only
+                enforcement: observe_only
                 aggregation: receiver_instance
-                unit: request_bytes/second
+                unit: request_bytes
                 pressure: soft
                 token_bucket:
                   allow: 2000
@@ -2867,12 +2867,19 @@ groups:
             .expect("main pipeline should be resolved");
         let rate_limiter = pipeline
             .policies
-            .rate_limiter
-            .as_ref()
+            .rate_limiters
+            .get("ingress")
             .expect("rate limiter should be resolved");
 
         assert_eq!(rate_limiter.token_bucket.allow, 2000);
         assert_eq!(rate_limiter.token_bucket.burst, Some(2000));
+        assert_eq!(
+            pipeline.policies.rate_limiter_scope,
+            Some(crate::policy::RateLimiterDeclarationScope::Pipeline(
+                PipelineGroupId::from("default"),
+                crate::PipelineId::from("main"),
+            ))
+        );
     }
 
     /// Scenario: a top-level rate limiter is configured with an internal observability pipeline.
@@ -2888,9 +2895,9 @@ policies:
       source: auto
     rate_limiters:
       ingress:
-        mode: enforce
+        enforcement: enforce
         aggregation: receiver_instance
-        unit: request_bytes/second
+        unit: request_bytes
         pressure: soft
         token_bucket:
           allow: 1000
@@ -2933,7 +2940,7 @@ groups:
             .find(|p| p.role == ResolvedPipelineRole::ObservabilityInternal)
             .expect("observability pipeline should be resolved");
         assert!(
-            obs.policies.rate_limiter.is_none(),
+            obs.policies.rate_limiters.is_empty(),
             "observability pipeline should not have a rate limiter"
         );
 
@@ -2943,7 +2950,7 @@ groups:
             .find(|p| p.pipeline_id.as_ref() == "main")
             .expect("main pipeline should be resolved");
         assert!(
-            main.policies.rate_limiter.is_some(),
+            !main.policies.rate_limiters.is_empty(),
             "regular pipelines should inherit the engine-level rate limiter"
         );
     }

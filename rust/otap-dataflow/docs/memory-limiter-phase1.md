@@ -317,17 +317,17 @@ pressure-aware rate throttling, may use `Soft` as their activation signal. The
 behaviors in the table above apply only at `Hard` in `enforce` mode.
 
 For the v1 pressure-aware rate policy, OTLP supports only
-`request_bytes/second`, measured as decompressed OTLP payload bytes at the
+`request_bytes`, measured as decompressed OTLP payload bytes at the
 receiver admission point. V1 does not count OTLP telemetry items. Syslog / CEF
-supports `messages/second`, measured as one UDP datagram or one emitted TCP
+supports `messages`, measured as one UDP datagram or one emitted TCP
 record before parsing. A normal TCP line is one record; a line that exceeds
 `MAX_MESSAGE_SIZE` may be emitted as multiple bounded-read fragments, and each
 emitted fragment is counted separately. The current policy does not measure wire
-bytes. Because one effective rate policy applies to every receiver in a resolved
-pipeline, mixed receiver deployments should scope the policy to the pipeline that
-uses the matching unit. For example, an engine-wide
-`request_bytes/second` default will fail startup for a pipeline whose receiver
-only supports `messages/second`.
+bytes. Named limiter declarations are preserved through policy resolution. A
+receiver can bind one limiter with `rate_limiters: [name]` or opt out with
+`rate_limiters: []`. If exactly one limiter is effective, an omitted binding
+uses that limiter for compatibility. Mixed receiver pipelines can therefore
+bind OTLP and Syslog / CEF receivers to limiters with different units.
 
 The rate state is receiver-local and lock-free. It uses a token-bucket-equivalent
 GCRA state machine with bounded debt, so each receiver instance can continue
@@ -345,12 +345,15 @@ gRPC returns `RESOURCE_EXHAUSTED` with negative retry pushback. Configure
 `burst` at least as large as the largest request the receiver should accept
 during pressure.
 
-V1 supports rate limiting only for OTLP and Syslog / CEF receivers. If a
-resolved pipeline also contains an unsupported receiver, including OTAP,
-startup fails rather than silently leaving that receiver unlimited. Separate
-the receivers into different pipelines or use `rate_limiters: {}` to disable
-the inherited limiter until named receiver bindings and OTAP-native rate units
-are available.
+V1 supports rate limiting only for OTLP and Syslog / CEF receivers. An
+unsupported receiver, including OTAP, must explicitly opt out with
+`rate_limiters: []` when it inherits a limiter. Startup fails rather than
+silently applying an unsupported unit.
+
+V1 state is local to each receiver instance. It provides receiver-instance rate
+isolation and pressure-triggered load shedding, not a group-wide budget, tenant
+scheduling, or fairness. Tenant-keyed limits and shared group/process state need
+additional keying, cardinality, routing, and scheduling designs.
 
 **Syslog / CEF client behavior under Hard pressure:**
 

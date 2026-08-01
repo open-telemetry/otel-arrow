@@ -442,7 +442,7 @@ const PROBE_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
     name: PROBE_RECEIVER_URN,
     create: probe_receiver_create,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    supported_rate_units: &[],
+    capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[]),
     validate_config: otap_df_config::validation::no_config,
 };
 
@@ -1947,7 +1947,7 @@ fn build_test_runtime_pipeline(
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
             None,
-            None,
+            std::collections::BTreeMap::new(),
             None,
         )
         .expect("pipeline builds");
@@ -4231,7 +4231,7 @@ fn build_runtime_pipeline_with_ready_gate(
             ChannelCapacityPolicy::default(),
             TelemetryPolicy::default(),
             None,
-            None,
+            std::collections::BTreeMap::new(),
             None,
         )
         .expect("pipeline builds");

@@ -85,7 +85,7 @@ Exactly one of `protocol.tcp` or `protocol.udp` must be configured.
 `protocol.tcp.tls` enables secure TCP (RFC 5425). `batch.max_batch_duration_ms`
 defaults to `100`, and `batch.max_size` defaults to `100`.
 
-The receiver supports pressure-aware `messages/second` rate limiting when the
+The receiver supports pressure-aware `messages` rate limiting when the
 engine-level memory limiter is configured. UDP counts one datagram as one
 message. TCP normally counts one newline-framed line as one message; if a line
 exceeds `MAX_MESSAGE_SIZE` and is emitted as multiple bounded-read fragments,
