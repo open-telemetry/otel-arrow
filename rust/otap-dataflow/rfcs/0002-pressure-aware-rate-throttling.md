@@ -175,6 +175,10 @@ instead of choosing one by map order. A non-participating component does not
 fail merely because it inherits several limiter declarations; it leaves them
 unconsumed and appears in the aggregated startup binding summary. An explicit
 binding must always be consumed during component construction or startup fails.
+When the sole implicit limiter uses a dimension that a participating component
+cannot measure, that component also leaves the limiter unconsumed and appears
+in the summary. An explicitly selected incompatible limiter remains a startup
+error.
 
 V1 applies at most one named limiter at each receiver admission point.
 Composing several rate limits at one admission point remains out of scope until
@@ -495,11 +499,12 @@ model when that model is implemented.
 
 V1 is implemented only for OTLP and Syslog / CEF receivers. An explicit binding
 that is not consumed during component construction is a startup error. An
-implicitly inherited limiter may remain unconsumed by a non-participating node;
-the engine accepts it and reports the node in one aggregated pipeline startup
-event. Mixed pipelines can bind different compatible limiter names or opt out
-with `rate_limiters: []`. With several effective limiters, a participating node
-must select one explicitly.
+implicitly inherited limiter may remain unconsumed by a non-participating node
+or by a participating node that cannot measure its dimension; the engine
+accepts it and reports the node in one aggregated pipeline startup event. Mixed
+pipelines can bind different compatible limiter names or opt out with
+`rate_limiters: []`. With several effective limiters, a participating node must
+select one explicitly.
 
 A live limiter change uses the controller's rolling pipeline replacement path,
 not in-place mutation. The replacement receiver starts with fresh bucket state;
@@ -518,7 +523,6 @@ A later implementation should define:
 - which declaration scopes accept the policy, and how a multi-level placement is
   validated or rejected,
 - how post-charge debt is represented in the token-bucket limiter,
-- receiver-level override and disable syntax,
 - how the pressure gate is expressed, and how it composes with tenant-token
   conditions,
 - burst and debt bounds.
@@ -540,13 +544,17 @@ checks should cover
 throughput, CPU cost, memory used by per-scope rate state, and the cost of
 measuring the configured rate unit.
 
-The expected cost factors are tenant or scope extraction, bucket lookup,
-per-scope rate-state updates, request byte measurement, optional post-decode
-item counting, scope cardinality, and whether the limiter remains
-receiver-local or later uses shared state. The first implementation should use
-the existing benchmark and performance-test surfaces where possible, including
-receiver throughput tests and the existing item-count benchmark for item-based
-units.
+The V1 characterization isolates three admission-specific paths: small OTLP
+requests with no gate, small OTLP requests with a shared gate enabled under
+normal pressure, and the local Syslog message gate under normal pressure. These
+measure the optional checks, pressure reads, clock read, and bucket update
+without hiding them behind decoding or parsing. End-to-end transport throughput
+remains useful supporting evidence, especially when evaluating shared-bucket
+contention across worker counts.
+
+Future tenant-aware implementations must additionally measure tenant or scope
+extraction, bucket lookup, per-scope state updates, scope cardinality, and any
+shared registry synchronization.
 
 ## Drawbacks
 
@@ -618,15 +626,15 @@ units.
 - How should limits be represented for mixed signal traffic from one scope?
 - Should unidentified traffic share one default bucket, or should missing tenant
   identity reject immediately?
-- Which node-binding syntax should select one or more named limiters once V1's
-  automatic single-limiter application is generalized?
+- How should V1's one-limiter-per-node rule generalize to atomic multi-limiter
+  composition?
 
 ## Future possibilities
 
 - Add more receiver-native rate units beyond request bytes and telemetry items.
 - Add per-signal item-rate limits for logs, traces, and metrics.
-- Add explicit node bindings and allow multiple named
-  `policies.resources.rate_limiters` entries to compose at one admission point.
+- Allow multiple named `policies.resources.rate_limiters` entries to compose at
+  one admission point with atomic reservation semantics.
 - Trigger selective throttling at a threshold below soft pressure, or at a
   separate threshold of its own, instead of reusing the existing soft level.
   The first version uses soft pressure because it already exists and already

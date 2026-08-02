@@ -136,7 +136,9 @@ impl AdmissionBinder {
         let Some(inner) = &self.inner else {
             return Ok(None);
         };
-        inner.validate_dimension(dimension)?;
+        if !inner.validate_dimension(dimension)? {
+            return Ok(None);
+        }
         inner.claim()?;
         Ok(Some(LocalAdmissionGate::new(RateGate::new(
             inner.policy,
@@ -156,7 +158,9 @@ impl AdmissionBinder {
         let Some(inner) = &self.inner else {
             return Ok(None);
         };
-        inner.validate_dimension(dimension)?;
+        if !inner.validate_dimension(dimension)? {
+            return Ok(None);
+        }
         inner.claim()?;
         Ok(Some(SharedAdmissionGate::new(RateGate::new(
             inner.policy,
@@ -251,10 +255,16 @@ impl AdmissionBinder {
 }
 
 impl BindingInner {
-    fn validate_dimension(&self, requested: AdmissionDimension) -> Result<(), AdmissionBindError> {
+    fn validate_dimension(
+        &self,
+        requested: AdmissionDimension,
+    ) -> Result<bool, AdmissionBindError> {
         let supported = AdmissionDimension::from(self.policy.unit);
         if requested == supported {
-            return Ok(());
+            return Ok(true);
+        }
+        if self.provenance == AdmissionBindingProvenance::ImplicitSingleton {
+            return Ok(false);
         }
         Err(AdmissionBindError::UnsupportedDimension {
             requested,
@@ -408,6 +418,29 @@ mod tests {
                 .expect("binding remains available")
                 .is_some()
         );
+    }
+
+    /// Scenario: a participating component inherits one limiter with an incompatible dimension.
+    /// Guarantees: implicit convenience binding skips the limiter without consuming it or failing
+    /// pipeline construction, while the node remains visible as implicitly unbound.
+    #[test]
+    fn implicit_dimension_mismatch_is_left_unbound() {
+        let binder = AdmissionBinder::configured(
+            "ingress",
+            policy(RateLimitUnit::Messages),
+            AdmissionBindingProvenance::ImplicitSingleton,
+        );
+        let pressure =
+            SharedReceiverAdmissionState::from_process_state(&MemoryPressureState::default());
+
+        assert!(
+            binder
+                .bind_shared(AdmissionDimension::Bytes, pressure)
+                .expect("implicit mismatch is not an error")
+                .is_none()
+        );
+        assert!(!binder.was_bound());
+        assert!(binder.is_implicit_unbound());
     }
 
     /// Scenario: an explicitly configured component returns without binding admission.

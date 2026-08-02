@@ -1648,6 +1648,44 @@ token_bucket:
         );
     }
 
+    /// Scenario: a child scope overrides core allocation while its parent configures memory limits.
+    /// Guarantees: resource members resolve independently, so the child retains the process-wide
+    /// memory limiter instead of suppressing it with an unrelated resource override.
+    #[test]
+    fn core_allocation_override_preserves_parent_memory_limiter() {
+        let memory_limiter: MemoryLimiterPolicy = serde_yaml::from_str(
+            r#"
+mode: enforce
+source: auto
+soft_limit: 1 GiB
+hard_limit: 2 GiB
+"#,
+        )
+        .expect("valid memory limiter policy");
+        let parent = Policies {
+            resources: Some(super::ResourcesPolicy {
+                memory_limiter: Some(memory_limiter.clone()),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+        let child = Policies {
+            resources: Some(super::ResourcesPolicy {
+                core_allocation: Some(super::CoreAllocation::core_count(2)),
+                ..super::ResourcesPolicy::default()
+            }),
+            ..Policies::default()
+        };
+
+        let resolved = Policies::resolve([&child, &parent]);
+
+        assert_eq!(
+            resolved.resources.core_allocation,
+            super::CoreAllocation::core_count(2)
+        );
+        assert_eq!(resolved.resources.memory_limiter, Some(memory_limiter));
+    }
+
     #[test]
     fn core_allocation_display_all_cores() {
         assert_eq!(super::CoreAllocation::all_cores().to_string(), "*");
