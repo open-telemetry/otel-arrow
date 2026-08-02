@@ -1074,9 +1074,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
 
             if base_ctx.admission().was_bound() {
                 admission_bound_nodes.push(name.as_ref().to_owned());
-                if let Some(handle) = base_ctx.admission().metrics_handle(&base_ctx) {
-                    build_state.admission_metrics.register(handle);
-                }
             } else if base_ctx.admission().is_implicit_unbound() {
                 admission_implicitly_skipped_nodes.push(name.as_ref().to_owned());
             } else if matches!(node_config.rate_limiters.as_deref(), Some([])) {
@@ -1411,11 +1408,15 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         let wrapper =
             with_node_telemetry_handle(node_telemetry_handle.clone(), || -> Result<W, Error> {
                 let wrapper = create_wrapper()?;
-                Ok(wrapper.with_control_channel_metrics(
+                let wrapper = wrapper.with_control_channel_metrics(
                     base_ctx,
                     &mut build_state.channel_metrics,
                     channel_metrics_enabled,
-                ))
+                );
+                if let Some(handle) = base_ctx.admission().metrics_handle(base_ctx) {
+                    build_state.admission_metrics.register(handle);
+                }
+                Ok(wrapper)
             })?;
         Ok(wrapper
             .with_node_telemetry_guard(node_guard.take().expect("node telemetry guard missing")))
