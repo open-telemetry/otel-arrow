@@ -81,6 +81,27 @@ config:
       listening_addr: "127.0.0.1:4318"
 ```
 
+### Pressure-aware rate admission
+
+Bind one named limiter at the receiver node with `rate_limiters: [name]`.
+Use `rate_limiters: []` to opt out of an inherited limiter. With several
+effective limiters, an explicit single-name binding is required.
+
+```yaml
+otlp:
+  type: receiver:otlp
+  rate_limiters: [ingress]
+  config:
+    protocols:
+      grpc:
+        listening_addr: "127.0.0.1:4317"
+```
+
+The limiter observes request bytes while memory is normal. Under configured
+pressure, `observe_only` reports `would_throttle` without rejecting, while
+`enforce` rejects over-limit requests. V1 creates one bucket per receiver
+instance; it does not implement tenant or group-wide fairness.
+
 ## Telemetry
 
 These tables list telemetry emitted directly by this node. Common engine
@@ -102,11 +123,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | --- | --- | --- | --- |
 | `receiver.otlp.rejections.requests` | `{request}` | `protocol`, `error.type` | Number of requests rejected before pipeline admission. |
 
-#### `receiver.otlp.rate_limit`
-
-| Metric | Unit | Attributes | Description |
-| --- | --- | --- | --- |
-| `receiver.otlp.rate_limit.would_refuse` | `{request}` | `signal`, `protocol` | Number of requests admitted in observe-only mode that would be refused if rate limiting were enforced. |
+Rate-admission outcomes are reported by the engine metric set
+`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
+`dimension=bytes` and `refusal=would_throttle|throttle|oversized`. The metric is
+scoped to the configured node entity, but tenant or request identities are
+never measurement attributes. Protocol-specific enforced rejections remain in
+`receiver.otlp.rejections`.
 
 #### `receiver.otlp.acknowledgements`
 

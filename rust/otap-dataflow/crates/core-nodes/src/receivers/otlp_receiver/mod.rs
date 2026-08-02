@@ -30,6 +30,7 @@ use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
 use otap_df_engine::ReceiverFactory;
+use otap_df_engine::admission::{AdmissionDimension, SharedAdmissionGate};
 use otap_df_engine::clock;
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
@@ -37,7 +38,6 @@ use otap_df_engine::control::{AckMsg, NackMsg, NodeControlMsg};
 use otap_df_engine::error::{Error, ReceiverErrorKind, format_error_sources};
 use otap_df_engine::memory_limiter::SharedReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::rate_limiter::RateLimiter;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::shared::receiver as shared;
 use otap_df_engine::terminal_state::TerminalState;
@@ -186,7 +186,7 @@ pub struct OTLPReceiver {
     // Arc<Mutex<...>> so we can share metrics with the gRPC services which are `Send` due to
     // tonic requirements.
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
-    rate_limiter: Option<RateLimiter>,
+    rate_limiter: Option<SharedAdmissionGate>,
     admission_state: SharedReceiverAdmissionState,
     // Global concurrency cap derived from downstream capacity. When both gRPC and HTTP are
     // enabled, this prevents combined ingress from exceeding what the pipeline can absorb.
@@ -203,8 +203,13 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        let admission = pipeline.admission().clone();
         let mut receiver = OTLPReceiver::from_config(pipeline, &node_config.config)?;
-        receiver.configure_rate_limiter(receiver_config.rate_limiter);
+        receiver.rate_limiter = admission
+            .bind_shared(AdmissionDimension::Bytes, receiver.admission_state.clone())
+            .map_err(|error| otap_df_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            })?;
         receiver.tune_max_concurrent_requests(receiver_config.output_pdata_channel.capacity);
 
         Ok(ReceiverWrapper::shared(
@@ -215,9 +220,6 @@ pub static OTLP_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[
-        otap_df_config::policy::RateLimitUnit::RequestBytes,
-    ]),
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
@@ -277,14 +279,6 @@ impl OTLPReceiver {
             rate_limiter: None,
             global_max_concurrent_requests: None,
         })
-    }
-
-    fn configure_rate_limiter(
-        &mut self,
-        policy: Option<otap_df_config::policy::RateLimiterPolicy>,
-    ) {
-        self.rate_limiter =
-            policy.map(|policy| RateLimiter::new(policy, self.admission_state.clone()));
     }
 
     fn tune_max_concurrent_requests(&mut self, downstream_capacity: usize) {
@@ -868,13 +862,15 @@ mod tests {
     use otap_df_engine::Interests;
     use otap_df_engine::MessageSourceSharedEffectHandlerExtension;
     use otap_df_engine::ProducerEffectHandlerExtension;
+    use otap_df_engine::admission::{
+        AdmissionBinder, AdmissionBindingProvenance, AdmissionContext, AdmissionDecision,
+    };
     use otap_df_engine::clock;
     use otap_df_engine::context::ControllerContext;
     use otap_df_engine::control::NackMsg;
     use otap_df_engine::control::{
         AckMsg, NodeControlMsg, RuntimeControlMsg, runtime_ctrl_msg_channel,
     };
-    use otap_df_engine::rate_limiter::{RateAdmissionDecision, RateLimiter};
     use otap_df_engine::receiver::ReceiverWrapper;
     use otap_df_engine::shared::message::{SharedReceiver, SharedSender};
     use otap_df_engine::shared::receiver as shared_receiver;
@@ -912,6 +908,16 @@ mod tests {
     use std::net::SocketAddr;
     use std::pin::Pin;
     use std::time::{Duration, Instant};
+
+    fn shared_rate_gate(
+        policy: RateLimiterPolicy,
+        admission_state: SharedReceiverAdmissionState,
+    ) -> SharedAdmissionGate {
+        AdmissionBinder::configured("test", policy, AdmissionBindingProvenance::Explicit)
+            .bind_shared(AdmissionDimension::Bytes, admission_state)
+            .expect("bind test admission")
+            .expect("configured test admission")
+    }
     use tokio::time::timeout;
 
     use bytes::Bytes;
@@ -3113,7 +3119,7 @@ mod tests {
         } else {
             request_weight
         };
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = shared_rate_gate(
             RateLimiterPolicy {
                 enforcement: RateLimitEnforcement::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
@@ -3129,8 +3135,8 @@ mod tests {
         );
         if !oversized {
             assert_eq!(
-                rate_limiter.check_units(request_weight),
-                RateAdmissionDecision::Admit
+                rate_limiter.admit(request_weight, AdmissionContext::EMPTY),
+                AdmissionDecision::Admit
             );
         }
 
@@ -3165,7 +3171,7 @@ mod tests {
                 let (expected_message, expected_pushback) = if oversized {
                     ("request exceeds rate limit burst", "-1")
                 } else {
-                    ("rate limit", "7000")
+                    ("rate limit", "1000")
                 };
                 assert_eq!(status.message(), expected_message);
                 assert_eq!(
@@ -3230,7 +3236,7 @@ mod tests {
 
         let request = create_logs_service_request();
         let request_weight = request.encoded_len() as u64;
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = shared_rate_gate(
             RateLimiterPolicy {
                 enforcement,
                 aggregation: RateLimitAggregation::ReceiverInstance,
@@ -3291,13 +3297,6 @@ mod tests {
                                 ReceiverRejectionErrorType::RateLimit,
                             )
                             .requests
-                            .get(),
-                        0
-                    );
-                    assert_eq!(
-                        metrics
-                            .rate_limit_for(SignalType::Logs, OtlpProtocol::Grpc)
-                            .would_refuse
                             .get(),
                         0
                     );
@@ -3380,7 +3379,7 @@ mod tests {
         request.encode(&mut request_bytes).unwrap();
         let expected_request_bytes = request_bytes.clone();
         let request_weight = request_bytes.len() as u64;
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = shared_rate_gate(
             RateLimiterPolicy {
                 enforcement,
                 aggregation: RateLimitAggregation::ReceiverInstance,
@@ -3441,13 +3440,6 @@ mod tests {
                                 ReceiverRejectionErrorType::RateLimit,
                             )
                             .requests
-                            .get(),
-                        0
-                    );
-                    assert_eq!(
-                        metrics
-                            .rate_limit_for(SignalType::Logs, OtlpProtocol::Http)
-                            .would_refuse
                             .get(),
                         0
                     );
@@ -3517,7 +3509,7 @@ mod tests {
         request.encode(&mut request_bytes).unwrap();
         let request_weight = request_bytes.len() as u64;
         assert!(request_weight > 1);
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = shared_rate_gate(
             RateLimiterPolicy {
                 enforcement: RateLimitEnforcement::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,

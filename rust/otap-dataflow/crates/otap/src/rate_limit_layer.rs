@@ -6,7 +6,7 @@
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use futures::future::Either;
 use http::{Request, Response};
-use otap_df_engine::rate_limiter::RateLimiter;
+use otap_df_engine::admission::SharedAdmissionGate;
 use otap_df_telemetry::common_attributes::ReceiverRejectionErrorType;
 use parking_lot::Mutex;
 use std::future::{Ready, ready};
@@ -48,7 +48,7 @@ pub struct RateLimitLayer {
 
 #[derive(Clone)]
 struct RateLimitContext {
-    rate_limiter: RateLimiter,
+    rate_limiter: SharedAdmissionGate,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
 }
 
@@ -56,7 +56,7 @@ impl RateLimitLayer {
     /// Creates a new layer backed by the receiver-local rate limiter.
     #[must_use]
     pub fn new(
-        rate_limiter: Option<RateLimiter>,
+        rate_limiter: Option<SharedAdmissionGate>,
         metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     ) -> Self {
         Self {
@@ -100,7 +100,7 @@ where
         if self
             .rate_limit
             .as_ref()
-            .is_some_and(|context| context.rate_limiter.is_exhausted())
+            .is_some_and(|context| context.rate_limiter.is_instance_saturated())
         {
             self.reject_next_call = true;
             return Poll::Ready(Ok(()));
@@ -114,7 +114,9 @@ where
         self.reject_next_call = false;
 
         if let (true, Some(context)) = (exhausted, self.rate_limit.as_ref()) {
-            let retry_after_secs = context.rate_limiter.retry_after_secs();
+            let retry_after_secs = context
+                .rate_limiter
+                .record_probed_instance_saturation_refusal();
             context
                 .metrics
                 .lock()
@@ -135,10 +137,13 @@ mod tests {
         RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
         RateLimiterPolicy, TokenBucketPolicy,
     };
+    use otap_df_engine::admission::{
+        AdmissionBinder, AdmissionBindingProvenance, AdmissionContext, AdmissionDecision,
+        AdmissionDimension,
+    };
     use otap_df_engine::memory_limiter::{
         MemoryPressureLevel, MemoryPressureState, SharedReceiverAdmissionState,
     };
-    use otap_df_engine::rate_limiter::RateAdmissionDecision;
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use std::convert::Infallible;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -194,6 +199,16 @@ mod tests {
         policy_with_mode(RateLimitEnforcement::Enforce)
     }
 
+    fn rate_gate(
+        policy: RateLimiterPolicy,
+        admission: SharedReceiverAdmissionState,
+    ) -> SharedAdmissionGate {
+        AdmissionBinder::configured("test", policy, AdmissionBindingProvenance::Explicit)
+            .bind_shared(AdmissionDimension::Bytes, admission)
+            .expect("bind test admission")
+            .expect("configured test admission")
+    }
+
     fn new_metrics() -> Arc<Mutex<OtlpReceiverMetrics>> {
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =
@@ -242,7 +257,7 @@ mod tests {
             state.set_level_for_tests(MemoryPressureLevel::Soft);
             let admission = SharedReceiverAdmissionState::from_process_state(&state);
             admission.apply(state.current_update(1));
-            let limiter = RateLimiter::new(policy_with_mode(mode), admission);
+            let limiter = rate_gate(policy_with_mode(mode), admission);
             let metrics = new_metrics();
             let inner = CountingService::new();
             let poll_ready_calls = inner.poll_ready_calls.clone();
@@ -291,8 +306,11 @@ mod tests {
     fn exhausted_rate_limit_short_circuits_before_inner_readiness_and_call() {
         let state = MemoryPressureState::default();
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
-        let limiter = RateLimiter::new(policy(), admission.clone());
-        assert_eq!(limiter.check_units(10), RateAdmissionDecision::Admit);
+        let limiter = rate_gate(policy(), admission.clone());
+        assert_eq!(
+            limiter.admit(10, AdmissionContext::EMPTY),
+            AdmissionDecision::Admit
+        );
 
         state.set_level_for_tests(MemoryPressureLevel::Soft);
         admission.apply(state.current_update(1));
@@ -349,8 +367,11 @@ mod tests {
     fn exhaustion_after_inner_readiness_does_not_skip_inner_call() {
         let state = MemoryPressureState::default();
         let admission = SharedReceiverAdmissionState::from_process_state(&state);
-        let limiter = RateLimiter::new(policy(), admission.clone());
-        assert_eq!(limiter.check_units(10), RateAdmissionDecision::Admit);
+        let limiter = rate_gate(policy(), admission.clone());
+        assert_eq!(
+            limiter.admit(10, AdmissionContext::EMPTY),
+            AdmissionDecision::Admit
+        );
 
         let metrics_registry_handle = TelemetryRegistryHandle::new();
         let controller_ctx =

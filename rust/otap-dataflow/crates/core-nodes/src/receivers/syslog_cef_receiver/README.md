@@ -411,6 +411,29 @@ This batching strategy balances:
 - **Throughput**: Amortized overhead for high-volume streams
 - **Memory**: Bounded buffer size prevents unbounded growth
 
+### Pressure-aware rate admission
+
+Bind one named `messages` limiter at the receiver node with
+`rate_limiters: [name]`. Use `rate_limiters: []` to opt out of an inherited
+limiter.
+
+```yaml
+syslog:
+  type: receiver:syslog_cef
+  rate_limiters: [ingress]
+  config:
+    protocol:
+      udp:
+        listening_addr: "127.0.0.1:5140"
+```
+
+The limiter observes framed messages while memory is normal. Under configured
+pressure, `observe_only` reports `would_throttle` without dropping messages,
+while `enforce` drops over-limit messages. UDP has no rejection response; TCP
+keeps the connection open and emits at most one warning per connection. V1
+creates one bucket per receiver instance and does not provide scheduling
+fairness.
+
 ### Arrow Columnar Format
 
 The receiver converts syslog messages directly into Apache Arrow columnar
@@ -442,9 +465,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.syslog_cef.tcp_connections_active` | `{conn}` | Number of active TCP connections. |
 | `receiver.syslog_cef.tls_handshake_failures` | `{error}` | Number of TLS handshake failures. |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | `{item}` | Number of log records dropped due to process-wide memory pressure. |
-| `receiver.syslog_cef.received_logs_refused_rate_limit` | `{item}` | Number of log records refused by message-rate throttling. |
-| `receiver.syslog_cef.received_logs_would_refuse_rate_limit` | `{item}` | Number of log records that would be refused by observe-only message-rate throttling. |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | `{conn}` | Number of TCP connections rejected or closed due to process-wide memory pressure. |
+
+Rate-admission outcomes are reported by the engine metric set
+`admission.rate_limiter`. Its `refusals` counter uses the bounded attributes
+`dimension=messages` and `refusal=would_throttle|throttle|oversized`. The metric
+is scoped to the configured node entity, but tenant or request identities are
+never measurement attributes.
 
 ### Events
 

@@ -9,7 +9,6 @@
 
 use otap_df_config::ExtensionId;
 use otap_df_config::NodeId;
-use otap_df_config::policy::RateLimiterPolicy;
 
 /// Default control channel capacity used by legacy constructor paths.
 const DEFAULT_CONTROL_CHANNEL_CAPACITY: usize = 32;
@@ -39,8 +38,6 @@ pub struct ReceiverConfig {
     pub control_channel: ControlChannelConfig,
     /// Configuration for output pdata channel.
     pub output_pdata_channel: PdataChannelConfig,
-    /// Optional resolved receiver admission rate policy.
-    pub rate_limiter: Option<RateLimiterPolicy>,
 }
 
 /// Generic configuration for a processor.
@@ -108,15 +105,7 @@ impl ReceiverConfig {
             output_pdata_channel: PdataChannelConfig {
                 capacity: pdata_channel_capacity,
             },
-            rate_limiter: None,
         }
-    }
-
-    /// Attaches an optional resolved rate-limit policy.
-    #[must_use]
-    pub fn with_rate_limiter(mut self, rate_limiter: Option<RateLimiterPolicy>) -> Self {
-        self.rate_limiter = rate_limiter;
-        self
     }
 }
 

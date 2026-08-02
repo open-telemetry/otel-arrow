@@ -102,6 +102,7 @@ impl<
             resolved_pipeline.policies.telemetry.clone(),
             resolved_pipeline.policies.transport_headers.clone(),
             resolved_pipeline.policies.rate_limiters.clone(),
+            resolved_pipeline.policies.rate_limiter_scope.clone(),
             self.controller_context.clone(),
             self.metrics_reporter.clone(),
             self.engine_event_reporter.clone(),

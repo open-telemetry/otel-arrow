@@ -237,7 +237,6 @@ pub static KAFKA_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
     },
     validate_config: validate_typed_config::<KafkaReceiverConfig>,
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[]),
 };
 
 impl KafkaReceiver {

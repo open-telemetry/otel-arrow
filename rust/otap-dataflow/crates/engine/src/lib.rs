@@ -4,6 +4,7 @@
 //! Async Pipeline Engine
 
 use crate::{
+    admission::{AdmissionBinder, AdmissionBindingProvenance},
     channel_metrics::{
         CHANNEL_IMPL_FLUME, CHANNEL_IMPL_INTERNAL, CHANNEL_IMPL_TOKIO, CHANNEL_KIND_PDATA,
         CHANNEL_MODE_LOCAL, CHANNEL_MODE_SHARED, CHANNEL_TYPE_MPMC, CHANNEL_TYPE_MPSC,
@@ -37,7 +38,9 @@ use otap_df_config::{
     engine::INTERNAL_TELEMETRY_RECEIVER_URN,
     node::NodeUserConfig,
     pipeline::{DispatchPolicy, PipelineConfig},
-    policy::{ChannelCapacityPolicy, RateLimitUnit, RateLimiterPolicy, TelemetryPolicy},
+    policy::{
+        ChannelCapacityPolicy, RateLimiterDeclarationScope, RateLimiterPolicy, TelemetryPolicy,
+    },
     transport_headers_policy::{
         HeaderCapturePolicy, HeaderPropagationPolicy, TransportHeadersPolicy,
     },
@@ -53,6 +56,7 @@ use std::{
     sync::OnceLock,
 };
 
+pub mod admission;
 pub mod capability;
 #[doc(hidden)]
 pub mod clock;
@@ -87,7 +91,6 @@ pub mod output_router;
 pub mod pipeline_ctrl;
 mod pipeline_metrics;
 pub mod process_duration;
-pub mod rate_limiter;
 mod route_admission;
 pub mod runtime_pipeline;
 pub mod shared;
@@ -99,6 +102,47 @@ pub use node_local_scheduler::{WakeupError, WakeupSetOutcome};
 pub use processor::{LocalWakeupRequirements, ProcessorRuntimeRequirements};
 pub use route_admission::RouteAdmission;
 
+fn resolve_admission_binding(
+    node_config: &NodeUserConfig,
+    policies: &BTreeMap<String, RateLimiterPolicy>,
+    declaration_scope: Option<RateLimiterDeclarationScope>,
+) -> Result<AdmissionBinder, String> {
+    match node_config.rate_limiters.as_deref() {
+        Some([]) => Ok(AdmissionBinder::none()),
+        Some([limiter_name]) => {
+            let policy = policies.get(limiter_name).copied().ok_or_else(|| {
+                format!("rate limiter binding '{limiter_name}' does not name an effective limiter")
+            })?;
+            Ok(AdmissionBinder::configured_at_scope(
+                limiter_name.clone(),
+                declaration_scope,
+                policy,
+                AdmissionBindingProvenance::Explicit,
+            ))
+        }
+        Some(limiter_names) => Err(format!(
+            "V1 supports at most one rate limiter binding per node; found {}",
+            limiter_names.len()
+        )),
+        None => match policies.len() {
+            0 => Ok(AdmissionBinder::none()),
+            1 => {
+                let (limiter_name, policy) =
+                    policies.iter().next().expect("one limiter checked above");
+                Ok(AdmissionBinder::configured_at_scope(
+                    limiter_name.clone(),
+                    declaration_scope,
+                    *policy,
+                    AdmissionBindingProvenance::ImplicitSingleton,
+                ))
+            }
+            _ => Ok(AdmissionBinder::ambiguous(
+                policies.keys().cloned().collect(),
+            )),
+        },
+    }
+}
+
 /// Trait for factory types that expose a name.
 ///
 /// This trait is used to define a common interface for different types of factories
@@ -106,29 +150,6 @@ pub use route_admission::RouteAdmission;
 pub trait NamedFactory {
     /// Returns the name of the node factory.
     fn name(&self) -> &'static str;
-}
-
-/// Extension capabilities implemented by a receiver factory.
-///
-/// Keeping optional integration points in this descriptor lets new capabilities
-/// be added without adding another required field to every receiver factory.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ReceiverCapabilities {
-    /// Rate-limit units this receiver can measure at its admission point.
-    pub rate_limit_units: &'static [RateLimitUnit],
-}
-
-impl ReceiverCapabilities {
-    /// No optional receiver capabilities.
-    pub const NONE: Self = Self {
-        rate_limit_units: &[],
-    };
-
-    /// Declares the rate-limit units supported by a receiver.
-    #[must_use]
-    pub const fn with_rate_limit_units(rate_limit_units: &'static [RateLimitUnit]) -> Self {
-        Self { rate_limit_units }
-    }
 }
 
 /// A factory for creating receivers.
@@ -149,8 +170,6 @@ pub struct ReceiverFactory<PData> {
     ) -> Result<ReceiverWrapper<PData>, otap_df_config::error::Error>,
     /// Optional wiring constraints enforced during pipeline build.
     pub wiring_contract: wiring_contract::WiringContract,
-    /// Optional extension capabilities implemented by this receiver.
-    pub capabilities: ReceiverCapabilities,
     /// Validates the node-specific config statically, without creating the component.
     ///
     /// Use [`otap_df_config::validation::validate_typed_config`] for components with a
@@ -166,7 +185,6 @@ impl<PData> Clone for ReceiverFactory<PData> {
             name: self.name,
             create: self.create,
             wiring_contract: self.wiring_contract,
-            capabilities: self.capabilities,
             validate_config: self.validate_config,
         }
     }
@@ -754,6 +772,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<RateLimiterDeclarationScope>,
         internal_telemetry: Option<InternalTelemetrySettings>,
     ) -> Result<RuntimePipeline<PData>, Error> {
         let mut receivers = Vec::new();
@@ -938,15 +957,36 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         // so we look them up from `node_ids` instead of calling `next_node_id`.
         // ToDo(LQ): Collect all errors instead of failing fast to provide better feedback.
         let empty_capabilities = capability::registry::Capabilities::empty();
+        let mut admission_bound_nodes = Vec::new();
+        let mut admission_implicitly_skipped_nodes = Vec::new();
+        let mut admission_explicitly_opted_out_nodes = Vec::new();
         for (name, node_config) in config.node_iter() {
             let node_kind = node_config.kind();
             let node_id = node_ids.get(name).expect("allocated in first pass").clone();
-            let base_ctx = pipeline_ctx.with_node_context(
+            let mut base_ctx = pipeline_ctx.with_node_context(
                 name.clone(),
                 node_config.r#type.clone(),
                 node_kind,
                 node_config.identity_attributes(),
             );
+            let invalid_binding = |error: String| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!(
+                        "Component `{}` in pipeline_group={} pipeline={} node={}: {error}",
+                        node_config.r#type.as_ref(),
+                        pipeline_ctx.pipeline_group_id().as_ref(),
+                        pipeline_ctx.pipeline_id().as_ref(),
+                        name.as_ref(),
+                    ),
+                }))
+            };
+            let admission = resolve_admission_binding(
+                node_config,
+                &rate_limiter_policies,
+                rate_limiter_scope.clone(),
+            )
+            .map_err(invalid_binding)?;
+            base_ctx.set_admission(admission);
             // Per-node Capabilities resolved in the build-time pass above.
             // Falls back to empty for nodes that declared no bindings (the
             // resolver populates the map for every node, including those
@@ -959,7 +999,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                 otap_df_config::node::NodeKind::Receiver => {
                     // Inject internal telemetry settings into context if this is the ITR node.
                     // The ITR factory will extract these settings during construction.
-                    let mut base_ctx = base_ctx;
                     if node_config.r#type.as_ref() == INTERNAL_TELEMETRY_RECEIVER_URN {
                         if let Some(ref settings) = internal_telemetry {
                             base_ctx.set_internal_telemetry(settings.clone());
@@ -980,7 +1019,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                                 channel_capacity_policy.control.node,
                                 channel_capacity_policy.pdata,
                                 &transport_headers_policy,
-                                &rate_limiter_policies,
                                 node_capabilities,
                             )
                         },
@@ -1033,6 +1071,30 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
                     unreachable!("rejected in first pass");
                 }
             }
+
+            if base_ctx.admission().was_bound() {
+                admission_bound_nodes.push(name.as_ref().to_owned());
+                if let Some(handle) = base_ctx.admission().metrics_handle(&base_ctx) {
+                    build_state.admission_metrics.register(handle);
+                }
+            } else if base_ctx.admission().is_implicit_unbound() {
+                admission_implicitly_skipped_nodes.push(name.as_ref().to_owned());
+            } else if matches!(node_config.rate_limiters.as_deref(), Some([])) {
+                admission_explicitly_opted_out_nodes.push(name.as_ref().to_owned());
+            }
+        }
+
+        if !admission_bound_nodes.is_empty()
+            || !admission_implicitly_skipped_nodes.is_empty()
+            || !admission_explicitly_opted_out_nodes.is_empty()
+        {
+            otel_info!(
+                "admission.binding.summary",
+                bound_nodes = admission_bound_nodes.join(","),
+                implicitly_skipped_nodes = admission_implicitly_skipped_nodes.join(","),
+                explicitly_opted_out_nodes = admission_explicitly_opted_out_nodes.join(","),
+                message = "Resolved pipeline admission bindings"
+            );
         }
 
         // -- Decide which extension variants to keep --------------------
@@ -1226,6 +1288,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             wiring.apply(&mut pipeline, &pipeline_group_id, &pipeline_id, core_id)?;
         }
         pipeline.set_channel_metrics(build_state.channel_metrics.into_handles());
+        pipeline.set_admission_metrics(build_state.admission_metrics.into_handles());
 
         Ok(pipeline)
     }
@@ -1818,7 +1881,6 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         control_channel_capacity: usize,
         pdata_channel_capacity: usize,
         transport_headers_policy: &Option<TransportHeadersPolicy>,
-        rate_limiter_policies: &BTreeMap<String, RateLimiterPolicy>,
         capabilities: &capability::registry::Capabilities,
     ) -> Result<ReceiverWrapper<PData>, Error> {
         let pipeline_group_id = pipeline_ctx.pipeline_group_id();
@@ -1847,45 +1909,11 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .ok_or_else(|| Error::UnknownReceiver {
                 plugin_urn: normalized.clone(),
             })?;
-        let rate_limiter_policy = node_config
-            .resolve_rate_limiter_binding(rate_limiter_policies)
-            .map_err(|error| {
-                Error::ConfigError(Box::new(
-                    otap_df_config::error::Error::InvalidUserConfig {
-                        error: format!(
-                            "Receiver component `{normalized}` in pipeline_group={} pipeline={} node={}: {error}",
-                            pipeline_group_id.as_ref(),
-                            pipeline_id.as_ref(),
-                            name.as_ref(),
-                        ),
-                    },
-                ))
-            })?;
-        if let Some(rate_limiter) = &rate_limiter_policy
-            && !factory
-                .capabilities
-                .rate_limit_units
-                .contains(&rate_limiter.unit)
-        {
-            return Err(Error::ConfigError(Box::new(
-                otap_df_config::error::Error::InvalidUserConfig {
-                    error: format!(
-                        "Receiver component `{}` in pipeline_group={} pipeline={} node={} does not support rate limiter unit {}",
-                        normalized,
-                        pipeline_group_id.as_ref(),
-                        pipeline_id.as_ref(),
-                        name.as_ref(),
-                        rate_limiter.unit.as_str()
-                    ),
-                },
-            )));
-        }
         let runtime_config = ReceiverConfig::with_channel_capacities(
             name.clone(),
             control_channel_capacity,
             pdata_channel_capacity,
-        )
-        .with_rate_limiter(rate_limiter_policy);
+        );
         let create = factory.create;
 
         let capture_policy = resolve_capture_policy(&node_config, transport_headers_policy);
@@ -1899,6 +1927,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_capture_policy(capture_policy);
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         otel_debug!(
             "receiver.create.complete",
@@ -1945,7 +1981,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .get_processor_factory_map()
             .get(normalized.as_str())
             .ok_or(Error::UnknownProcessor {
-                plugin_urn: normalized,
+                plugin_urn: normalized.clone(),
             })?;
         let processor_config = ProcessorConfig::with_channel_capacities(
             name.clone(),
@@ -1962,6 +1998,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             capabilities,
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?;
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         validate_local_wakeup_requirements(&node_id, processor.runtime_requirements())?;
 
@@ -2011,7 +2055,7 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
             .get_exporter_factory_map()
             .get(normalized.as_str())
             .ok_or(Error::UnknownExporter {
-                plugin_urn: normalized,
+                plugin_urn: normalized.clone(),
             })?;
         let exporter_config = ExporterConfig::with_channel_capacities(
             name.clone(),
@@ -2031,6 +2075,14 @@ impl<PData: 'static + Clone + Debug> PipelineFactory<PData> {
         )
         .map_err(|e| Error::ConfigError(Box::new(e)))?
         .with_propagation_policy(propagation_policy);
+        pipeline_ctx
+            .admission()
+            .validate_factory_consumption(normalized.as_str())
+            .map_err(|error| {
+                Error::ConfigError(Box::new(otap_df_config::error::Error::InvalidUserConfig {
+                    error: error.to_string(),
+                }))
+            })?;
 
         otel_debug!(
             "exporter.create.complete",
@@ -2163,6 +2215,7 @@ struct BuildState<PData> {
     nodes: NodeDefs<PData, PipeNode>,
     registry: HashMap<NodeName, NodeRegistration>,
     channel_metrics: ChannelMetricsRegistry,
+    admission_metrics: admission::metrics::AdmissionMetricsRegistry,
 }
 
 impl<PData> BuildState<PData> {
@@ -2171,6 +2224,7 @@ impl<PData> BuildState<PData> {
             nodes: NodeDefs::default(),
             registry: HashMap::new(),
             channel_metrics: ChannelMetricsRegistry::default(),
+            admission_metrics: admission::metrics::AdmissionMetricsRegistry::default(),
         }
     }
 
@@ -2588,11 +2642,124 @@ fn stable_hash64(value: &str) -> u64 {
 #[cfg(test)]
 mod test {
     use super::*;
+    use otap_df_config::policy::{
+        RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
+        TokenBucketPolicy,
+    };
     use otap_df_config::transport_headers_policy::{
         CaptureDefaults, CaptureRule, HeaderCapturePolicy, HeaderPropagationPolicy,
         PropagationAction, PropagationDefault, PropagationSelector, PropagationSelectorType,
     };
     use std::time::Duration;
+
+    fn admission_policy(unit: RateLimitUnit) -> RateLimiterPolicy {
+        RateLimiterPolicy {
+            enforcement: RateLimitEnforcement::Enforce,
+            aggregation: RateLimitAggregation::ReceiverInstance,
+            unit,
+            pressure: RateLimitPressure::Soft,
+            token_bucket: TokenBucketPolicy {
+                allow: 10,
+                interval: Duration::from_secs(1),
+                burst: Some(10),
+            },
+        }
+    }
+
+    /// Scenario: a node explicitly opts out while inherited limiters are available.
+    /// Guarantees: an empty binding list produces an unconfigured binder and never
+    /// falls back to the implicit singleton behavior.
+    #[test]
+    fn admission_resolution_honors_explicit_empty_opt_out() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(Vec::new());
+        let policies = BTreeMap::from([(
+            "ingress".to_owned(),
+            admission_policy(RateLimitUnit::RequestBytes),
+        )]);
+
+        let binder = resolve_admission_binding(&node, &policies, None).expect("opt out resolves");
+
+        assert!(!binder.is_configured());
+    }
+
+    /// Scenario: a node explicitly names a limiter absent from its effective policy map.
+    /// Guarantees: resolution fails at startup instead of silently disabling admission.
+    #[test]
+    fn admission_resolution_rejects_unknown_explicit_name() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(vec!["missing".to_owned()]);
+
+        let error = resolve_admission_binding(&node, &BTreeMap::new(), None)
+            .expect_err("unknown limiter must fail");
+
+        assert!(error.contains("does not name an effective limiter"));
+    }
+
+    /// Scenario: a node explicitly names two otherwise valid limiters.
+    /// Guarantees: V1 rejects multi-limiter composition rather than applying only one
+    /// or charging two buckets without atomic reservation semantics.
+    #[test]
+    fn admission_resolution_rejects_multiple_explicit_names() {
+        let mut node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        node.rate_limiters = Some(vec!["first".to_owned(), "second".to_owned()]);
+        let policy = admission_policy(RateLimitUnit::RequestBytes);
+        let policies =
+            BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
+
+        let error = resolve_admission_binding(&node, &policies, None)
+            .expect_err("multiple bindings must fail");
+
+        assert!(error.contains("at most one rate limiter binding"));
+    }
+
+    /// Scenario: a node omits its binding while exactly one effective limiter exists.
+    /// Guarantees: the ergonomic singleton default preserves limiter identity, scope,
+    /// and implicit provenance for binding and startup reporting.
+    #[test]
+    fn admission_resolution_builds_implicit_singleton() {
+        let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        let policies = BTreeMap::from([(
+            "ingress".to_owned(),
+            admission_policy(RateLimitUnit::RequestBytes),
+        )]);
+
+        let binder =
+            resolve_admission_binding(&node, &policies, Some(RateLimiterDeclarationScope::Engine))
+                .expect("singleton resolves");
+
+        assert_eq!(binder.limiter_name(), Some("ingress"));
+        assert_eq!(
+            binder.provenance(),
+            Some(AdmissionBindingProvenance::ImplicitSingleton)
+        );
+        assert_eq!(
+            binder.declaration_scope(),
+            Some(&RateLimiterDeclarationScope::Engine)
+        );
+    }
+
+    /// Scenario: a node omits its binding while several effective limiters exist.
+    /// Guarantees: resolution preserves ambiguity for participating components while
+    /// allowing a non-participating factory to leave the inherited policies unconsumed.
+    #[test]
+    fn admission_resolution_preserves_implicit_ambiguity() {
+        let node = NodeUserConfig::new_receiver_config("urn:test:receiver:example");
+        let policy = admission_policy(RateLimitUnit::RequestBytes);
+        let policies =
+            BTreeMap::from([("first".to_owned(), policy), ("second".to_owned(), policy)]);
+
+        let binder =
+            resolve_admission_binding(&node, &policies, None).expect("ambiguity is deferred");
+
+        assert!(binder.is_configured());
+        assert!(binder.is_implicit_unbound());
+        assert!(
+            binder
+                .validate_factory_consumption("urn:test:receiver")
+                .is_ok()
+        );
+    }
 
     #[test]
     fn test_interests() {
@@ -2676,78 +2843,6 @@ mod test {
 
         let policy = resolve_capture_policy(&node_config, &transport_headers_policy);
         assert!(policy.is_none());
-    }
-
-    fn no_op_validate(_: &serde_json::Value) -> Result<(), otap_df_config::error::Error> {
-        Ok(())
-    }
-
-    fn unreachable_receiver_create(
-        _: PipelineContext,
-        _: NodeId,
-        _: Arc<NodeUserConfig>,
-        _: &ReceiverConfig,
-        _: &capability::registry::Capabilities,
-    ) -> Result<ReceiverWrapper<testing::TestMsg>, otap_df_config::error::Error> {
-        panic!("receiver factory should not be called for unsupported rate-limit units");
-    }
-
-    static RATE_LIMIT_TEST_RECEIVERS: &[ReceiverFactory<testing::TestMsg>] = &[ReceiverFactory {
-        name: "urn:otel:receiver:rate_limit_test",
-        create: unreachable_receiver_create,
-        wiring_contract: wiring_contract::WiringContract::UNRESTRICTED,
-        capabilities: ReceiverCapabilities::with_rate_limit_units(&[RateLimitUnit::Messages]),
-        validate_config: no_op_validate,
-    }];
-
-    static RATE_LIMIT_TEST_FACTORY: PipelineFactory<testing::TestMsg> =
-        PipelineFactory::new(RATE_LIMIT_TEST_RECEIVERS, &[], &[], &[]);
-
-    /// Scenario: an embedder builds a receiver directly through the engine with an unsupported rate unit.
-    /// Guarantees: engine construction rejects the policy before invoking the receiver factory.
-    #[test]
-    fn create_receiver_rejects_unsupported_rate_unit() {
-        use otap_df_config::policy::{
-            RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
-            TokenBucketPolicy,
-        };
-
-        let (pipeline_ctx, _) = testing::test_pipeline_ctx();
-        let node_config = Arc::new(NodeUserConfig::new_receiver_config(
-            "urn:otel:receiver:rate_limit_test",
-        ));
-        let node_id = testing::test_node("rate_limit_test");
-        let rate_limiter = RateLimiterPolicy {
-            enforcement: RateLimitEnforcement::Enforce,
-            aggregation: RateLimitAggregation::ReceiverInstance,
-            unit: RateLimitUnit::RequestBytes,
-            pressure: RateLimitPressure::Soft,
-            token_bucket: TokenBucketPolicy {
-                allow: 1024,
-                interval: Duration::from_secs(1),
-                burst: Some(1024),
-            },
-        };
-
-        let result = RATE_LIMIT_TEST_FACTORY.create_receiver(
-            &pipeline_ctx,
-            node_id,
-            node_config,
-            8,
-            8,
-            &None,
-            &BTreeMap::from([("default".to_owned(), rate_limiter)]),
-            &capability::registry::Capabilities::empty(),
-        );
-        let Err(err) = result else {
-            panic!("unsupported rate unit should fail at engine build");
-        };
-
-        assert!(
-            err.to_string()
-                .contains("does not support rate limiter unit"),
-            "unexpected error: {err}"
-        );
     }
 
     // -- resolve_propagation_policy tests -------------------------------------

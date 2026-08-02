@@ -140,6 +140,7 @@ pub struct PipelineContext {
     node_urn: NodeUrn,
     node_kind: NodeKind,
     node_telemetry_attrs: HashMap<String, TelemetryAttribute>,
+    admission: crate::admission::AdmissionBinder,
 
     /// Internal telemetry settings for the Internal Telemetry Receiver (ITR).
     /// Only the ITR factory reads this; other receivers ignore it.
@@ -311,6 +312,7 @@ impl PipelineContext {
             node_urn: Default::default(),
             node_kind: Default::default(),
             node_telemetry_attrs: HashMap::new(),
+            admission: crate::admission::AdmissionBinder::none(),
             pipeline_telemetry_attrs: HashMap::new(),
             internal_telemetry: None,
             node_names: Arc::new(HashMap::new()),
@@ -372,6 +374,21 @@ impl PipelineContext {
     #[must_use]
     pub fn memory_pressure_state(&self) -> MemoryPressureState {
         self.controller_context.memory_pressure_state()
+    }
+
+    /// Returns the node's construction-time ingress admission binder.
+    ///
+    /// Participating components must bind exactly once during their factory
+    /// `create` call. The returned local or shared gate is then retained for
+    /// the component's runtime lifetime.
+    #[must_use]
+    pub const fn admission(&self) -> &crate::admission::AdmissionBinder {
+        &self.admission
+    }
+
+    /// Attaches the node's resolved admission binding before factory construction.
+    pub(crate) fn set_admission(&mut self, admission: crate::admission::AdmissionBinder) {
+        self.admission = admission;
     }
 
     /// Sets the shared node-name-to-index mapping for this pipeline context.
@@ -702,6 +719,7 @@ impl PipelineContext {
             node_urn,
             node_kind,
             node_telemetry_attrs,
+            admission: crate::admission::AdmissionBinder::none(),
             internal_telemetry: None,
             node_names: self.node_names.clone(),
             topic_set: self.topic_set.clone(),

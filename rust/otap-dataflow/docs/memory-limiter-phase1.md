@@ -346,16 +346,29 @@ reach that ceiling; if pressure then activates, admission may take up to one
 burst window to recover. Use long intervals only when that lockout behavior is
 acceptable.
 
+Retryable rate-limit responses advertise the earliest whole-second bucket
+recovery delay for the refused weight. They do not reuse the memory limiter's
+sampling retry hint. Instance-wide fast refusal uses the minimum-unit recovery
+delay because no request weight is available at that boundary.
+
 An OTLP request larger than the configured `burst` can never fit the bucket
 while pressure gating is active. HTTP rejects it with 413 and no `Retry-After`;
 gRPC returns `RESOURCE_EXHAUSTED` with negative retry pushback. Configure
 `burst` at least as large as the largest request the receiver should accept
 during pressure.
 
-V1 supports rate limiting only for OTLP and Syslog / CEF receivers. An
-unsupported receiver, including OTAP, must explicitly opt out with
-`rate_limiters: []` when it inherits a limiter. Startup fails rather than
-silently applying an unsupported unit.
+V1 supports rate limiting only for OTLP and Syslog / CEF receivers. A component
+that explicitly names a limiter must bind it during construction or startup
+fails. A non-participating component may inherit a sole limiter implicitly; it
+is skipped and included in the pipeline's `admission.binding.summary` startup
+event. `rate_limiters: []` remains an explicit opt-out.
+
+The engine resolves the policy into a construction-time admission binder on the
+node's `PipelineContext`. A participating component binds exactly once, naming
+the dimension it measures and supplying its local or shared pressure state. The
+returned gate owns the receiver-instance bucket. Cloning that gate for multiple
+protocol stacks shares the bucket; cloning `PipelineContext` never creates or
+shares bucket capacity accidentally.
 
 V1 state is local to each receiver instance. It provides receiver-instance rate
 isolation and pressure-triggered load shedding, not a group-wide budget, tenant
@@ -386,8 +399,10 @@ additional keying, cardinality, routing, and scheduling designs.
   that oversized line are discarded through the newline. Hard memory pressure
   still closes active connections.
 - **UDP:** Over-limit datagrams are silently dropped. UDP senders receive no
-  feedback, so operators should monitor `received_logs_refused_rate_limit` and
-  `received_logs_would_refuse_rate_limit`.
+  feedback, so operators should monitor
+  `admission.rate_limiter.refusals{dimension="messages"}` and distinguish
+  enforced, observe-only, and permanently oversized outcomes with the
+  `refusal` attribute.
 
 **Design rationale:** explicit rejection is preferred over transport-level
 stalling. For TCP, holding large numbers of stalled open connections under
@@ -423,20 +438,18 @@ All engine metrics are registered under the `engine` metric-set.
 | `cpu_utilization` | Process CPU utilization as a ratio in [0, 1], normalized across all system cores |
 <!-- markdownlint-enable MD013 -->
 
-### Receiver-level
+### Admission and receiver-level
 
 <!-- markdownlint-disable MD013 -->
 | Metric | Receiver | Description |
 | --- | --- | --- |
 | `receiver.otlp.rejections.requests{error.type="memory_pressure"}` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure, partitioned by `protocol` |
 | `receiver.otlp.rejections.requests{error.type="rate_limit"}` | OTLP (gRPC + HTTP) | Requests refused by rate throttling, partitioned by `protocol` |
-| `receiver.otlp.rate_limit.would_refuse` | OTLP (gRPC + HTTP) | Requests admitted in observe-only mode that would be refused if rate throttling were enforced, partitioned by `signal` and `protocol` |
+| `admission.rate_limiter.refusals` | Any participating component | Admission attempts refused, oversized, or admitted in observe-only mode, partitioned by bounded `dimension` and `refusal` attributes |
 | `receiver.otap.refused_memory_pressure` | OTAP gRPC | Requests rejected due to memory pressure |
 | `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |
 | `receiver.syslog_cef.received_logs_rejected_memory_pressure` | Syslog / CEF | Log records dropped under pressure |
-| `receiver.syslog_cef.received_logs_refused_rate_limit` | Syslog / CEF | Log records refused by rate throttling |
-| `receiver.syslog_cef.received_logs_would_refuse_rate_limit` | Syslog / CEF | Log records that would be refused by observe-only rate throttling |
 <!-- markdownlint-enable MD013 -->
 
 ### Structured log events
@@ -445,6 +458,7 @@ All engine metrics are registered under the `engine` metric-set.
 | Event | Level | Description |
 | --- | --- | --- |
 | `process_memory_limiter.transition` | info/warn | Emitted on every pressure level change. `Hard` transitions log at warn level. |
+| `admission.binding.summary` | info | Emitted once per pipeline with bounded lists of nodes that bound, implicitly skipped, or explicitly opted out of admission. |
 | `process_memory_limiter.purge` | info | Emitted after a successful forced jemalloc purge. Includes pre/post usage and duration. |
 | `process_memory_limiter.purge_failed` | warn | Emitted when a purge attempt or post-purge re-sample fails. |
 | `process_memory_limiter.purge_unavailable` | warn | Emitted at startup when `purge_on_hard` is enabled but no allocator purge backend is available in this build. |

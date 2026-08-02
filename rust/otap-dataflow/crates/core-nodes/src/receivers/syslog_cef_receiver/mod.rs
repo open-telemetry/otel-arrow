@@ -5,12 +5,14 @@ use self::arrow_records_encoder::ArrowRecordsBuilder;
 use async_trait::async_trait;
 use linkme::distributed_slice;
 use otap_df_config::node::NodeUserConfig;
+use otap_df_engine::admission::{
+    AdmissionContext, AdmissionDecision, AdmissionDimension, LocalAdmissionGate,
+};
 use otap_df_engine::config::ReceiverConfig;
 use otap_df_engine::context::PipelineContext;
 use otap_df_engine::control::NodeControlMsg;
 use otap_df_engine::memory_limiter::LocalReceiverAdmissionState;
 use otap_df_engine::node::NodeId;
-use otap_df_engine::rate_limiter::{LocalRateLimiter, RateAdmissionDecision};
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_engine::{MessageSourceLocalEffectHandlerExtension, ReceiverFactory};
@@ -214,7 +216,7 @@ struct SyslogCefReceiver {
     /// RFC-aligned internal telemetry for this receiver
     metrics: Rc<RefCell<MetricSet<SyslogCefReceiverMetrics>>>,
     admission_state: LocalReceiverAdmissionState,
-    rate_limiter: Option<LocalRateLimiter>,
+    rate_limiter: Option<LocalAdmissionGate>,
 }
 
 impl SyslogCefReceiver {
@@ -265,23 +267,14 @@ fn drop_syslog_batch(
 }
 
 /// Applies message-rate admission for one framed syslog message.
-fn admit_syslog_message(
-    rate_limiter: &Option<LocalRateLimiter>,
-    metrics: &Rc<RefCell<MetricSet<SyslogCefReceiverMetrics>>>,
-) -> bool {
-    match rate_limiter.as_ref().map(|limiter| limiter.check_units(1)) {
-        Some(RateAdmissionDecision::Reject | RateAdmissionDecision::RejectOversized) => {
-            metrics.borrow_mut().received_logs_refused_rate_limit.inc();
-            false
-        }
-        Some(RateAdmissionDecision::WouldThrottle) => {
-            metrics
-                .borrow_mut()
-                .received_logs_would_refuse_rate_limit
-                .inc();
-            true
-        }
-        Some(RateAdmissionDecision::Admit) | None => true,
+fn admit_syslog_message(rate_limiter: &Option<LocalAdmissionGate>) -> bool {
+    match rate_limiter
+        .as_ref()
+        .map(|limiter| limiter.admit(1, AdmissionContext::EMPTY))
+    {
+        Some(AdmissionDecision::Throttle { .. } | AdmissionDecision::Oversized) => false,
+        Some(AdmissionDecision::WouldThrottle) => true,
+        Some(AdmissionDecision::Admit) | None => true,
     }
 }
 
@@ -296,6 +289,21 @@ fn warn_tcp_rate_limit_drop_once(peer_addr: SocketAddr, warned: &mut bool) {
     }
 }
 
+#[cfg(test)]
+fn local_rate_gate(
+    policy: otap_df_config::policy::RateLimiterPolicy,
+    admission_state: LocalReceiverAdmissionState,
+) -> LocalAdmissionGate {
+    otap_df_engine::admission::AdmissionBinder::configured(
+        "test",
+        policy,
+        otap_df_engine::admission::AdmissionBindingProvenance::Explicit,
+    )
+    .bind_local(AdmissionDimension::Messages, admission_state)
+    .expect("bind test admission")
+    .expect("configured test admission")
+}
+
 /// Add the syslog receiver to the receiver factory
 #[allow(unsafe_code)]
 #[distributed_slice(OTAP_RECEIVER_FACTORIES)]
@@ -306,10 +314,16 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
              node_config: Arc<NodeUserConfig>,
              receiver_config: &ReceiverConfig,
              _capabilities: &otap_df_engine::capability::registry::Capabilities| {
+        let admission = pipeline.admission().clone();
         let mut receiver = SyslogCefReceiver::from_config(pipeline, &node_config.config)?;
-        receiver.rate_limiter = receiver_config
-            .rate_limiter
-            .map(|policy| LocalRateLimiter::new(policy, receiver.admission_state.clone()));
+        receiver.rate_limiter = admission
+            .bind_local(
+                AdmissionDimension::Messages,
+                receiver.admission_state.clone(),
+            )
+            .map_err(|error| otap_df_config::error::Error::InvalidUserConfig {
+                error: error.to_string(),
+            })?;
         Ok(ReceiverWrapper::local(
             receiver,
             node,
@@ -318,9 +332,6 @@ pub static SYSLOG_CEF_RECEIVER: ReceiverFactory<OtapPdata> = ReceiverFactory {
         ))
     },
     wiring_contract: otap_df_engine::wiring_contract::WiringContract::UNRESTRICTED,
-    capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[
-        otap_df_config::policy::RateLimitUnit::Messages,
-    ]),
     validate_config: otap_df_config::validation::validate_typed_config::<Config>,
 };
 
@@ -591,7 +602,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                     task_active_count.set(task_active_count.get() - 1);
                                                                     break;
                                                                 } else {
-                                                                    if !admit_syslog_message(&rate_limiter, &metrics) {
+                                                                    if !admit_syslog_message(&rate_limiter) {
                                                                         warn_tcp_rate_limit_drop_once(
                                                                             peer_addr,
                                                                             &mut warned_rate_limit_drop,
@@ -687,7 +698,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 break;
                                                             }
 
-                                                            if !admit_syslog_message(&rate_limiter, &metrics) {
+                                                            if !admit_syslog_message(&rate_limiter) {
                                                                 warn_tcp_rate_limit_drop_once(
                                                                     peer_addr,
                                                                     &mut warned_rate_limit_drop,
@@ -919,7 +930,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                         continue;
                                     }
 
-                                    if !admit_syslog_message(&self.rate_limiter, &self.metrics) {
+                                    if !admit_syslog_message(&self.rate_limiter) {
                                         continue;
                                     }
 
@@ -1061,14 +1072,6 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of log records dropped due to process-wide memory pressure.
     #[metric(unit = "{item}")]
     pub received_logs_rejected_memory_pressure: Counter<u64>,
-
-    /// Number of log records refused by message-rate throttling.
-    #[metric(unit = "{item}")]
-    pub received_logs_refused_rate_limit: Counter<u64>,
-
-    /// Number of log records that would be refused by observe-only rate throttling.
-    #[metric(unit = "{item}")]
-    pub received_logs_would_refuse_rate_limit: Counter<u64>,
 
     /// Number of TCP connections rejected or closed due to process-wide memory pressure.
     #[metric(unit = "{conn}")]
@@ -2558,7 +2561,7 @@ mod telemetry_tests {
                     }),
                 },
             );
-            receiver.rate_limiter = Some(LocalRateLimiter::new(
+            receiver.rate_limiter = Some(local_rate_gate(
                 messages_per_second_policy_with(enforcement, 2, 2),
                 receiver.admission_state.clone(),
             ));
@@ -2610,11 +2613,6 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 1);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 0);
-            assert_eq!(
-                metric_value(&snap, "received_logs_would_refuse_rate_limit"),
-                0
-            );
         }));
     }
 
@@ -2663,7 +2661,7 @@ mod telemetry_tests {
                     }),
                 },
             );
-            receiver.rate_limiter = Some(LocalRateLimiter::new(
+            receiver.rate_limiter = Some(local_rate_gate(
                 messages_per_second_policy_with(enforcement, 2, 2),
                 receiver.admission_state.clone(),
             ));
@@ -2717,11 +2715,6 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 1);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 0);
-            assert_eq!(
-                metric_value(&snap, "received_logs_would_refuse_rate_limit"),
-                0
-            );
         }));
     }
 
@@ -2773,7 +2766,7 @@ mod telemetry_tests {
                     }),
                 },
             );
-            receiver.rate_limiter = Some(LocalRateLimiter::new(
+            receiver.rate_limiter = Some(local_rate_gate(
                 messages_per_second_policy(),
                 receiver.admission_state.clone(),
             ));
@@ -2825,11 +2818,6 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 2);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 1);
-            assert_eq!(
-                metric_value(&snap, "received_logs_would_refuse_rate_limit"),
-                0
-            );
         }));
     }
 
@@ -2868,7 +2856,7 @@ mod telemetry_tests {
                     }),
                 },
             );
-            receiver.rate_limiter = Some(LocalRateLimiter::new(
+            receiver.rate_limiter = Some(local_rate_gate(
                 messages_per_second_policy(),
                 receiver.admission_state.clone(),
             ));
@@ -2923,7 +2911,6 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 2);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 1);
             assert_eq!(
                 metric_value(&snap, "tcp_connections_rejected_memory_pressure"),
                 0
@@ -2966,7 +2953,7 @@ mod telemetry_tests {
                     }),
                 },
             );
-            receiver.rate_limiter = Some(LocalRateLimiter::new(
+            receiver.rate_limiter = Some(local_rate_gate(
                 messages_per_second_policy(),
                 receiver.admission_state.clone(),
             ));
@@ -3021,7 +3008,6 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 3);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 1);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 2);
             assert_eq!(metric_value(&snap, "received_logs_truncated"), 1);
         }));
     }
@@ -3061,7 +3047,7 @@ mod telemetry_tests {
                     }),
                 },
             );
-            receiver.rate_limiter = Some(LocalRateLimiter::new(
+            receiver.rate_limiter = Some(local_rate_gate(
                 messages_per_second_policy(),
                 receiver.admission_state.clone(),
             ));
@@ -3145,7 +3131,6 @@ mod telemetry_tests {
             let snap = metrics_rx.recv_async().await.unwrap();
             assert_eq!(metric_value(&snap, "received_logs_total"), 3);
             assert_eq!(metric_value(&snap, "received_logs_forwarded"), 2);
-            assert_eq!(metric_value(&snap, "received_logs_refused_rate_limit"), 1);
             assert_eq!(metric_value(&snap, "received_logs_truncated"), 1);
         }));
     }

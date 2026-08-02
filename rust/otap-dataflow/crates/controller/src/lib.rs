@@ -1594,6 +1594,7 @@ impl<
                     pipeline_entry.policies.telemetry.clone(),
                     pipeline_entry.policies.transport_headers.clone(),
                     pipeline_entry.policies.rate_limiters.clone(),
+                    pipeline_entry.policies.rate_limiter_scope.clone(),
                     controller_ctx.clone(),
                     metrics_reporter.clone(),
                     engine_evt_reporter.clone(),
@@ -2069,6 +2070,7 @@ impl<
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
         controller_ctx: ControllerContext,
         metrics_reporter: MetricsReporter,
         engine_evt_reporter: ObservedEventReporter,
@@ -2128,6 +2130,7 @@ impl<
                         telemetry_policy,
                         transport_headers_policy,
                         rate_limiter_policies,
+                        rate_limiter_scope,
                         telemetry_reporting_interval,
                         pipeline_factory,
                         pipeline_ctx,
@@ -2213,6 +2216,7 @@ impl<
             telemetry_policy,
             None,
             BTreeMap::new(),
+            None,
             controller_ctx.clone(),
             metrics_reporter.clone(),
             engine_evt_reporter.clone(),
@@ -2263,6 +2267,7 @@ impl<
         telemetry_policy: TelemetryPolicy,
         transport_headers_policy: Option<TransportHeadersPolicy>,
         rate_limiter_policies: BTreeMap<String, RateLimiterPolicy>,
+        rate_limiter_scope: Option<otap_df_config::policy::RateLimiterDeclarationScope>,
         telemetry_reporting_interval: Duration,
         pipeline_factory: &'static PipelineFactory<PData>,
         pipeline_context: PipelineContext,
@@ -2322,6 +2327,7 @@ impl<
                     telemetry_policy,
                     transport_headers_policy,
                     rate_limiter_policies,
+                    rate_limiter_scope,
                     internal_telemetry_settings,
                 )
                 .map_err(|e| {
@@ -2544,7 +2550,6 @@ connections:
         name: "urn:otel:receiver:internal_telemetry",
         create: create_test_observability_receiver,
         wiring_contract: WiringContract::UNRESTRICTED,
-        capabilities: otap_df_engine::ReceiverCapabilities::with_rate_limit_units(&[]),
         validate_config: accept_any_test_config,
     }];
 

@@ -471,6 +471,7 @@ where
             TelemetryPolicy::default(),
             None,                              // transport_headers_policy
             std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // rate_limiter_scope
             None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");
@@ -765,6 +766,7 @@ where
             TelemetryPolicy::default(),
             None,                              // transport_headers_policy
             std::collections::BTreeMap::new(), // rate_limiter_policies
+            None,                              // rate_limiter_scope
             None,                              // internal_telemetry
         )
         .expect("failed to build runtime pipeline");

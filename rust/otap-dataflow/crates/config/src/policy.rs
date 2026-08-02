@@ -255,7 +255,7 @@ impl Policies {
 
 /// Engine-wide metric level controlling channel, node, and shared control-plane
 /// Fully-resolved policy snapshot where every field is populated.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct ResolvedPolicies {
     /// Channel capacity policy.
     pub channel_capacity: ChannelCapacityPolicy,
@@ -278,6 +278,43 @@ pub struct ResolvedPolicies {
     /// Scope that declared the effective named limiter family.
     pub rate_limiter_scope: Option<RateLimiterDeclarationScope>,
 }
+
+impl PartialEq for ResolvedPolicies {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            channel_capacity,
+            health,
+            telemetry,
+            runtime_recovery,
+            resources,
+            transport_headers,
+            rate_limiters,
+            rate_limiter_scope: _,
+        } = self;
+        let Self {
+            channel_capacity: other_channel_capacity,
+            health: other_health,
+            telemetry: other_telemetry,
+            runtime_recovery: other_runtime_recovery,
+            resources: other_resources,
+            transport_headers: other_transport_headers,
+            rate_limiters: other_rate_limiters,
+            rate_limiter_scope: _,
+        } = other;
+
+        channel_capacity == other_channel_capacity
+            && health == other_health
+            && telemetry == other_telemetry
+            && runtime_recovery == other_runtime_recovery
+            && resources == other_resources
+            && transport_headers == other_transport_headers
+            && rate_limiters == other_rate_limiters
+        // Declaration scope is retained for future shared-state planning but
+        // has no V1 runtime effect. Include it when scope changes runtime shape.
+    }
+}
+
+impl Eq for ResolvedPolicies {}
 
 /// Configuration scope that declared an effective named limiter family.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -823,9 +860,9 @@ pub struct ResourcesPolicy {
     pub memory_limiter: Option<MemoryLimiterPolicy>,
     /// Named pressure-aware receiver admission rate limiters.
     ///
-    /// V1 accepts at most one entry. Keeping the public configuration named and
-    /// plural allows later node selection and multi-tenant limiter composition
-    /// without putting names or maps on the request hot path today.
+    /// V1 accepts multiple declarations but binds at most one limiter to each
+    /// participating node. Keeping resolution named avoids choosing a limiter
+    /// by map order and leaves later composition as an explicit design choice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limiters: Option<BTreeMap<String, RateLimiterPolicy>>,
 }
@@ -1218,7 +1255,7 @@ mod tests {
             ..super::ResolvedPolicies::default()
         };
 
-        assert_ne!(current, candidate);
+        assert_eq!(current, candidate);
         assert!(current.eq_ignoring_resources(&candidate));
     }
 

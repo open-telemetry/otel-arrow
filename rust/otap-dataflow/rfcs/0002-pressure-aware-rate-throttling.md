@@ -48,11 +48,11 @@ This gives the engine a simple first admission-control step:
 
 ## Guide-level explanation
 
-Each receiver measures incoming telemetry rate at its configured throttling
-scope. In a shared pipeline, the buckets can be keyed by tenant tokens. If each
-tenant already has its own pipeline, the traffic is already separated, so the
-policy needs no tenant token to distinguish scopes. Each receiver instance
-keeps its own rate state in both cases.
+Each participating receiver measures incoming telemetry rate at its configured
+admission point. V1 keeps one bucket per receiver instance and does not inspect
+tenant identity. A future implementation may use trusted tenant context to
+subdivide that state into bounded keyed buckets without changing the component
+admission hook.
 
 When process memory is normal, the receiver records the configured rate signal
 but does not reject only because a scope is over its configured rate. When
@@ -150,15 +150,16 @@ pattern: state which scopes accept the policy, and enforce that at startup.
 
 #### Policy application and bucket key
 
-A limiter bucket is keyed by the tuple *(resolved policy, optional tenant
-token)*. The tenant token, when present, subdivides that policy's traffic into
-per-tenant buckets. Both parts are operator-owned.
+A future tenant-aware limiter bucket can be keyed by the tuple *(resolved
+policy, optional tenant token)*. V1 implements only the resolved-policy part and
+creates one bucket for each bound receiver instance. It neither resolves nor
+uses tenant tokens.
 
-This tuple is the extensibility contract. One mechanism covers a limit with no
-tenant token and a per-tenant limit inside a shared pipeline, without a separate
-design for each. Tenant limits are not a special case: they are this tuple with
-the token component populated. A later shared-state scope changes where the
-bucket lives, not what the bucket is keyed by.
+The tuple is a future extensibility contract, not implemented V1 behavior. A
+tenant implementation must additionally define trusted identity extraction,
+bounded cardinality, eviction, and missing-identity behavior. A later
+shared-state scope changes where buckets live and requires separate lifecycle
+and reload design.
 
 This RFC places named limiter declarations under
 `policies.resources.rate_limiters`, aligned with the generic limiter model
@@ -169,7 +170,11 @@ preserves the effective named collection and the scope that declared it. A
 receiver can select one limiter with `rate_limiters: [name]` or opt out with an
 explicit empty list. When exactly one limiter is effective, omitting the node
 binding retains the original implicit behavior. Multiple effective limiters
-require an explicit node binding instead of choosing one by map order.
+require an explicit node binding for components that participate in admission
+instead of choosing one by map order. A non-participating component does not
+fail merely because it inherits several limiter declarations; it leaves them
+unconsumed and appears in the aggregated startup binding summary. An explicit
+binding must always be consumed during component construction or startup fails.
 
 V1 applies at most one named limiter at each receiver admission point.
 Composing several rate limits at one admission point remains out of scope until
@@ -283,6 +288,11 @@ without `Retry-After`, and gRPC returns `RESOURCE_EXHAUSTED` with negative retry
 pushback. Operators must configure `burst` at least as large as the largest
 request they intend to accept during pressure.
 
+A retryable refusal advertises the earliest whole-second delay after which the
+same weighted charge can conform to the bucket. The delay is derived from GCRA
+state, not from the memory-pressure sampling hint. Instance-wide fast refusal
+uses the corresponding minimum-unit recovery delay.
+
 The debt floor must also apply while memory is normal. The gate only rejects
 when pressure is active, but the bucket should keep charging and refilling in
 normal memory so pressure starts from current state. The debt floor keeps a
@@ -296,10 +306,10 @@ at that point, admission may take up to one full interval to resume. Operators
 should therefore choose long intervals only when an equally long pressure-onset
 lockout is acceptable.
 
-The first implementation resolves tenant tokens only from trusted transport
-metadata, receiver identity, or static configuration. Resource-attribute
-extractors require decoded request context and are outside the pre-decode path
-unless the receiver explicitly accepts the cost of decoding before admission.
+V1 does not resolve tenant tokens. A future implementation should prefer trusted
+transport metadata, receiver identity, or static configuration. Resource-
+attribute extractors require decoded request context and are outside a
+pre-decode path unless the receiver explicitly accepts that cost.
 
 Byte-based units do not have the same pre-decode item-count problem because the
 receiver can usually measure request or body bytes before accepting more work.
@@ -315,12 +325,38 @@ cheaply.
 
 ### Admission Decision
 
-Receiver admission combines process memory pressure and scoped rate state. It
-should follow the existing memory-limiter admission pattern: the engine
-maintains shared pressure state, propagates it to receivers, and receivers
-consult local admission state on their ingress hot paths. The engine does not
-call receiver-specific throttle APIs; receivers own the protocol-specific
-response.
+Receiver admission combines process memory pressure and scoped rate state. The
+engine resolves resource policy into a clone-safe binder stored on the node's
+`PipelineContext`. The binder retains the limiter name, declaration scope, and
+policy, but no live bucket. A participating component binds exactly once during
+factory construction, supplying the dimension it measures and its concrete
+local or shared pressure state. Binding creates the receiver-instance bucket
+and returns a cloneable gate. Components retain only weight and context
+extraction, admission-point placement, and protocol-specific response mapping.
+
+The binder and shared gate are `Send + Sync`. The local gate is deliberately
+`!Send`, uses `Rc`, and preserves `Cell`-based pressure reads for local receiver
+hot paths. Clones of either bound gate share one bucket. Cloning
+`PipelineContext` never determines aggregation or creates bucket state.
+
+V1 intentionally keeps this as an engine-owned resource service rather than an
+extension capability. The policy is resolved under `policies.resources`, next
+to the engine-owned memory limiter, and there is no current requirement for an
+operator-selectable or third-party admission implementation. The neutral gate,
+decision, dimension, and context contracts keep a later capability-backed
+constructor possible without putting extension lifecycle or virtual dispatch
+on today's built-in path.
+
+Binding is construction-time and one-shot. Dimension validation happens before
+the binder is consumed; a second valid bind returns `AlreadyBound`. This makes
+configuration mistakes startup failures and ensures every clone handed to a
+receiver's protocol stacks charges the same receiver-instance bucket.
+
+For OTLP/gRPC, the authoritative weighted check stays at the service boundary,
+not in the byte decoder. That boundary retains request metadata for future
+tenant context while adding only the byte-buffer handoff and payload wrapper to
+a rejected request. The earlier saturation probe remains an instance-wide,
+read-only optimization because `poll_ready` has no request context.
 
 Pressure reaches receivers over the existing control channel. The engine already
 delivers `NodeControlMsg::MemoryPressureChanged` carrying the current
@@ -406,14 +442,6 @@ members of `resources`, so a scoped `resources.core_allocation` override does
 not suppress a broader rate-limiter declaration.
 
 ```yaml
-tenant_tokens:
-  customer_tenant:
-    extractors:
-    - key: customer_id
-      transport_header: x-customer-id
-    - key: workspace_id
-      transport_header: x-workspace-id
-
 policies:
   resources:
     memory_limiter:
@@ -441,42 +469,46 @@ groups:
             type: receiver:otlp
             rate_limiters: [ingress]
             config:
-              tenant_tokens: [customer_tenant]
+              protocols:
+                grpc:
+                  listening_addr: 127.0.0.1:4317
 ```
 
-This example uses `request_bytes` because OTLP request bytes are
-available before protobuf inspection. A receiver that can measure item counts on
-its admission path may later support a dimension such as `request_items`, with
-`interval` defining its period. If tenants are already separated by pipeline or
-pipeline group, the same named policy can be overridden at that scope without
-extracting a tenant token. The receiver remains the admission point, and each
-receiver instance keeps its own rate state.
+This example uses `request_bytes` because OTLP request bytes are available
+without protobuf inspection. A receiver that can measure item counts on its
+admission path may later support a dimension such as `request_items`, with
+`interval` defining its period. The receiver remains the admission point, and
+each receiver instance keeps its own rate state.
 
 V1 does not yet subdivide a limiter by tenant token. A future condition block
 will identify which resolved tokens form bucket keys, and a cardinality block
 will bound the number of tracked tenant buckets.
 
 The V1 schema keeps strict unknown-field rejection, validates declaration
-placement and receiver compatibility, verifies that the receiver supports the
-configured rate unit on its admission path, and rejects unsupported
-pressure-gate combinations. It also rejects more than one limiter bound to a
-node, anything other than `aggregation: receiver_instance`, a pressure value other
-than `soft`, and pressure-aware rate limiting without a process memory pressure
-source. Per-tenant overrides will use ordered conditions from the tenant-token
-policy model when that model is implemented.
+placement, verifies dimension compatibility when a component binds, and
+rejects unsupported pressure-gate combinations. It also rejects more than one
+limiter bound to a node, anything other than
+`aggregation: receiver_instance`, a pressure value other than `soft`, and
+pressure-aware rate limiting without a process memory pressure source.
+Per-tenant overrides will use ordered conditions from the tenant-token policy
+model when that model is implemented.
 
-V1 is implemented only for OTLP and Syslog / CEF receivers. Validation applies
-to each receiver's resolved node binding, so mixed receiver pipelines can bind
-different compatible limiter names or opt a receiver out with
-`rate_limiters: []`. An omitted binding is accepted only when zero or one
-limiter is effective.
+V1 is implemented only for OTLP and Syslog / CEF receivers. An explicit binding
+that is not consumed during component construction is a startup error. An
+implicitly inherited limiter may remain unconsumed by a non-participating node;
+the engine accepts it and reports the node in one aggregated pipeline startup
+event. Mixed pipelines can bind different compatible limiter names or opt out
+with `rate_limiters: []`. With several effective limiters, a participating node
+must select one explicitly.
 
 A live limiter change uses the controller's rolling pipeline replacement path,
 not in-place mutation. The replacement receiver starts with fresh bucket state;
 no process restart is required.
 
-The first version must emit would-throttle counters in `observe_only` mode so
-operators can evaluate the policy before enforcing it.
+The first version emits one engine-owned, fixed-cardinality admission refusal
+metric for `would_throttle`, `throttle`, and `oversized` decisions. Tenant and
+group identities must never become metric attributes. Components may emit
+protocol-outcome telemetry, but must not create a second decision vocabulary.
 
 A later implementation should define:
 
@@ -494,11 +526,11 @@ A later implementation should define:
 The configuration should be operator-owned and should avoid unbounded
 per-request or per-scope label cardinality.
 
-This RFC adopts the generic limiter catalog's outer configuration shape but
-implements only one effective rate limiter per scope. Same-receiver multi-limit
-composition, explicit node bindings, per-signal selectors, shared aggregation,
-retained-work activation, and non-receiver enforcement points remain future
-generic-limiter work.
+This RFC adopts the generic limiter catalog's outer configuration shape and
+implements at most one limiter bound to a node. Same-node multi-limit
+composition, per-signal selectors, shared aggregation, retained-work
+activation, and additional enforcement points remain future generic-limiter
+work.
 
 ### Performance Validation
 
@@ -522,16 +554,17 @@ units.
   send large telemetry payloads or cause downstream buffering.
 - A scope over its configured rate may not be the scope that caused process
   memory pressure.
-- Process-wide per-tenant rate limits require tenant routing or a shared limiter
-  extension; a receiver-local limiter does not provide that by itself.
+- Process-wide per-tenant rate limits require tenant routing or an engine-owned
+  shared bucket registry; a receiver-local limiter does not provide that by
+  itself.
 - Receiver-local aggregation depends on traffic distribution. A scope spread
   across many receiver instances can admit a higher process-wide rate than the
   same scope concentrated on one receiver instance.
 - Declaring the policy at group scope gives every pipeline in the group the same
   configuration, not a shared group-wide bucket. Operators who read placement as
   aggregation will be surprised.
-- V1 accepts only one named rate limiter per policy scope and does not compose
-  multiple independent limits at one receiver.
+- V1 accepts multiple named rate limiters in a policy scope, but binds at most
+  one to a node and does not compose multiple independent limits there.
 - The configured rate unit must be defined carefully across receivers and
   signals.
 - For item-based units, a receiver may admit one request before knowing the
@@ -539,9 +572,8 @@ units.
   bounded but not zero.
 - If pressure is caused by a stuck exporter, retry backlog, or other downstream
   retention site, throttling a current high-rate scope may not reduce pressure.
-- Unidentified traffic must still be bounded. If tenant identity is optional,
-  unresolved traffic falls into a default bucket unless the policy requires a
-  tenant token and rejects missing identity.
+- A future tenant design must bound unidentified traffic by defining whether it
+  uses a bounded default bucket or is rejected when identity is required.
 - Live policy updates need explicit state handling so changed limits, removed
   buckets, and per-core limiter state do not produce surprising behavior.
 

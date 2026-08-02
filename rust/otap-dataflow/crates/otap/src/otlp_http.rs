@@ -16,7 +16,7 @@ use crate::otap_grpc::otlp::server_new::AckSlot;
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
 use crate::socket_options;
-use otap_df_engine::rate_limiter::{RateAdmissionDecision, RateLimiter};
+use otap_df_engine::admission::{AdmissionContext, AdmissionDecision, SharedAdmissionGate};
 
 use bytes::Bytes;
 use http::{HeaderValue, Method, Request, Response, StatusCode};
@@ -552,7 +552,7 @@ struct HttpHandler {
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     settings: HttpServerSettings,
     admission_state: SharedReceiverAdmissionState,
-    rate_limiter: Option<RateLimiter>,
+    rate_limiter: Option<SharedAdmissionGate>,
     /// Optional global semaphore shared across protocols (e.g., gRPC + HTTP) to enforce
     /// receiver-wide backpressure tied to downstream capacity.
     global_semaphore: Option<Arc<Semaphore>>,
@@ -607,11 +607,13 @@ impl HttpHandler {
                 ));
             }
 
-            if let Some(rate_limiter) = &self.rate_limiter
-                && rate_limiter.is_exhausted()
+            if let Some(retry_after_secs) = self
+                .rate_limiter
+                .as_ref()
+                .and_then(SharedAdmissionGate::refuse_if_instance_saturated)
             {
                 self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));
+                return Err(rate_limit_unavailable(retry_after_secs));
             }
 
             // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
@@ -693,11 +695,13 @@ impl HttpHandler {
                 ));
             }
 
-            if let Some(rate_limiter) = &self.rate_limiter
-                && rate_limiter.is_exhausted()
+            if let Some(retry_after_secs) = self
+                .rate_limiter
+                .as_ref()
+                .and_then(SharedAdmissionGate::refuse_if_instance_saturated)
             {
                 self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));
+                return Err(rate_limit_unavailable(retry_after_secs));
             }
 
             let max_len = self.settings.max_request_body_size as usize;
@@ -754,18 +758,14 @@ impl HttpHandler {
             })?;
             let payload_bytes = body.len() as u64;
             if let Some(rate_limiter) = &self.rate_limiter {
-                match rate_limiter.check_units(payload_bytes) {
-                    RateAdmissionDecision::Admit => {}
-                    RateAdmissionDecision::WouldThrottle => {
-                        self.metrics
-                            .lock()
-                            .record_would_refuse_rate_limit(signal, OtlpProtocol::Http);
-                    }
-                    RateAdmissionDecision::Reject => {
+                match rate_limiter.admit(payload_bytes, AdmissionContext::for_signal(signal)) {
+                    AdmissionDecision::Admit => {}
+                    AdmissionDecision::WouldThrottle => {}
+                    AdmissionDecision::Throttle { retry_after_secs } => {
                         self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                        return Err(rate_limit_unavailable(rate_limiter.retry_after_secs()));
+                        return Err(rate_limit_unavailable(retry_after_secs));
                     }
-                    RateAdmissionDecision::RejectOversized => {
+                    AdmissionDecision::Oversized => {
                         self.record_rejection(ReceiverRejectionErrorType::RateLimit);
                         return Err(rate_limit_burst_exceeded());
                     }
@@ -831,9 +831,11 @@ impl HttpHandler {
                 None
             };
 
-            self.metrics
-                .lock()
-                .record_request_admitted(signal, OtlpProtocol::Http, payload_bytes);
+            self.metrics.lock().record_request_admitted(
+                signal,
+                OtlpProtocol::Http,
+                Some(payload_bytes),
+            );
             let _completion_guard = RequestCompletionGuard {
                 metrics: self.metrics.clone(),
                 signal,
@@ -938,7 +940,7 @@ pub async fn serve(
     ack_registry: AckRegistry,
     metrics: Arc<Mutex<OtlpReceiverMetrics>>,
     admission_state: SharedReceiverAdmissionState,
-    rate_limiter: Option<RateLimiter>,
+    rate_limiter: Option<SharedAdmissionGate>,
     global_semaphore: Option<Arc<Semaphore>>,
     shutdown: CancellationToken,
 ) -> std::io::Result<()> {
@@ -1081,10 +1083,23 @@ pub async fn serve(
 mod tests {
     use super::*;
 
+    use otap_df_engine::admission::{
+        AdmissionBinder, AdmissionBindingProvenance, AdmissionDimension,
+    };
     use otap_df_engine::memory_limiter::{MemoryPressureLevel, MemoryPressureState};
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn shared_rate_gate(
+        policy: otap_df_config::policy::RateLimiterPolicy,
+        admission: SharedReceiverAdmissionState,
+    ) -> SharedAdmissionGate {
+        AdmissionBinder::configured("test", policy, AdmissionBindingProvenance::Explicit)
+            .bind_shared(AdmissionDimension::Bytes, admission)
+            .expect("bind test admission")
+            .expect("configured test admission")
+    }
 
     #[test]
     fn maps_paths() {
@@ -1649,7 +1664,6 @@ mod tests {
         };
         use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::memory_limiter::MemoryPressureChanged;
-        use otap_df_engine::rate_limiter::RateLimiter;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -1697,7 +1711,7 @@ mod tests {
             retry_after_secs: 7,
             usage_bytes: 0,
         });
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = shared_rate_gate(
             RateLimiterPolicy {
                 enforcement: RateLimitEnforcement::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
@@ -1711,7 +1725,10 @@ mod tests {
             },
             admission_state.clone(),
         );
-        assert_eq!(rate_limiter.check_units(1), RateAdmissionDecision::Admit);
+        assert_eq!(
+            rate_limiter.admit(1, AdmissionContext::EMPTY),
+            AdmissionDecision::Admit
+        );
 
         let server = tokio::spawn(serve(
             effect_handler,
@@ -1754,7 +1771,7 @@ mod tests {
             resp.headers()
                 .get(RETRY_AFTER)
                 .and_then(|v| v.to_str().ok()),
-            Some("7")
+            Some("1")
         );
 
         {
@@ -1807,7 +1824,6 @@ mod tests {
         };
         use otap_df_engine::control::runtime_ctrl_msg_channel;
         use otap_df_engine::memory_limiter::MemoryPressureChanged;
-        use otap_df_engine::rate_limiter::RateLimiter;
         use otap_df_engine::shared::message::SharedSender;
         use otap_df_engine::testing::test_node;
         use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -1855,7 +1871,7 @@ mod tests {
             retry_after_secs: 7,
             usage_bytes: 0,
         });
-        let rate_limiter = RateLimiter::new(
+        let rate_limiter = shared_rate_gate(
             RateLimiterPolicy {
                 enforcement: RateLimitEnforcement::Enforce,
                 aggregation: RateLimitAggregation::ReceiverInstance,
@@ -1870,8 +1886,8 @@ mod tests {
             admission_state.clone(),
         );
         assert_eq!(
-            rate_limiter.check_units(1),
-            RateAdmissionDecision::Admit,
+            rate_limiter.admit(1, AdmissionContext::EMPTY),
+            AdmissionDecision::Admit,
             "test setup should exhaust the one-unit bucket"
         );
 
@@ -1926,7 +1942,7 @@ mod tests {
             resp.headers()
                 .get(RETRY_AFTER)
                 .and_then(|v| v.to_str().ok()),
-            Some("7")
+            Some("1")
         );
 
         {

@@ -102,7 +102,10 @@ impl ResolvedPipelineConfig {
         } = other;
 
         self_role == other_role
-            && self_pipeline == other_pipeline
+            // Policy effects are compared through the resolved snapshot below.
+            // Comparing their declaration placement here would redeploy for a
+            // scope-only move whose effective runtime policy is unchanged.
+            && self_pipeline.eq_ignoring_policies(other_pipeline)
             && self_policies == other_policies
     }
 

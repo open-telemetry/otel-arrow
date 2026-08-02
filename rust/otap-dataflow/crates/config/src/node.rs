@@ -10,14 +10,12 @@
 
 use crate::error::Error;
 use crate::pipeline::telemetry::{AttributeValue, TelemetryAttribute};
-use crate::policy::RateLimiterPolicy;
 use crate::transport_headers_policy::{HeaderCapturePolicy, HeaderPropagationPolicy};
 use crate::{CapabilityId, Description, ExtensionId, NodeUrn, PortName};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 /// Deserializes a `HashMap<String, String>` while rejecting duplicate keys.
@@ -230,30 +228,6 @@ impl From<NodeKind> for Cow<'static, str> {
 }
 
 impl NodeUserConfig {
-    /// Resolves this node's V1 rate-limiter binding from the effective named map.
-    pub fn resolve_rate_limiter_binding(
-        &self,
-        effective: &BTreeMap<String, RateLimiterPolicy>,
-    ) -> Result<Option<RateLimiterPolicy>, String> {
-        match self.rate_limiters.as_deref() {
-            Some([]) => Ok(None),
-            Some([name]) => effective.get(name).copied().map(Some).ok_or_else(|| {
-                format!("rate limiter binding '{name}' does not name an effective limiter")
-            }),
-            Some(names) => Err(format!(
-                "V1 supports at most one rate limiter binding per node; found {}",
-                names.len()
-            )),
-            None => match effective.len() {
-                0 => Ok(None),
-                1 => Ok(effective.values().next().copied()),
-                count => Err(format!(
-                    "{count} effective rate limiters require an explicit node rate_limiters binding"
-                )),
-            },
-        }
-    }
-
     /// Creates a new Receiver `NodeUserConfig` with the node type URN.
     pub fn new_receiver_config<U: AsRef<str>>(node_type: U) -> Self {
         Self {
@@ -540,69 +514,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::{
-        RateLimitAggregation, RateLimitEnforcement, RateLimitPressure, RateLimitUnit,
-        TokenBucketPolicy,
-    };
     use std::collections::BTreeSet;
-    use std::time::Duration;
-
-    fn test_rate_limiter() -> RateLimiterPolicy {
-        RateLimiterPolicy {
-            enforcement: RateLimitEnforcement::Enforce,
-            aggregation: RateLimitAggregation::ReceiverInstance,
-            unit: RateLimitUnit::Messages,
-            pressure: RateLimitPressure::Soft,
-            token_bucket: TokenBucketPolicy {
-                allow: 10,
-                interval: Duration::from_secs(1),
-                burst: Some(10),
-            },
-        }
-    }
-
-    /// Scenario: one effective limiter exists and a receiver omits a binding.
-    /// Guarantees: the sole limiter remains an implicit compatibility binding.
-    #[test]
-    fn sole_rate_limiter_is_bound_implicitly() {
-        let node = NodeUserConfig::new_receiver_config("demo");
-        let policy = test_rate_limiter();
-        let effective = BTreeMap::from([("default".to_owned(), policy)]);
-
-        assert_eq!(
-            node.resolve_rate_limiter_binding(&effective),
-            Ok(Some(policy))
-        );
-    }
-
-    /// Scenario: multiple effective limiters exist and a receiver names one binding.
-    /// Guarantees: the selected named policy is resolved without collapsing the map.
-    #[test]
-    fn named_rate_limiter_binding_selects_policy() {
-        let mut node = NodeUserConfig::new_receiver_config("demo");
-        node.rate_limiters = Some(vec!["second".to_owned()]);
-        let first = test_rate_limiter();
-        let mut second = test_rate_limiter();
-        second.token_bucket.allow = 20;
-        let effective =
-            BTreeMap::from([("first".to_owned(), first), ("second".to_owned(), second)]);
-
-        assert_eq!(
-            node.resolve_rate_limiter_binding(&effective),
-            Ok(Some(second))
-        );
-    }
-
-    /// Scenario: a receiver explicitly declares an empty limiter binding list.
-    /// Guarantees: the receiver opts out even when its pipeline inherits limiters.
-    #[test]
-    fn empty_rate_limiter_binding_opts_out() {
-        let mut node = NodeUserConfig::new_receiver_config("demo");
-        node.rate_limiters = Some(Vec::new());
-        let effective = BTreeMap::from([("default".to_owned(), test_rate_limiter())]);
-
-        assert_eq!(node.resolve_rate_limiter_binding(&effective), Ok(None));
-    }
 
     #[test]
     fn node_user_config_minimal_valid() {
