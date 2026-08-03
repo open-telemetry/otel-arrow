@@ -9,6 +9,4 @@ issues: [2428, 2458]
 subtext: |
     Implements an exact logarithm table lookup function and fixed-space
     auto-widening histogram aggregator for non-negative values.
-    Moves the existing Mmsc into basic level instrumentation. Configures
-    HistogramNN<10> at 128 bytes and HistogramNN<26> at 256 bytes of
-    space for normal and detailed level measurements.
+    Moves the existing Mmsc into basic level instrumentation.

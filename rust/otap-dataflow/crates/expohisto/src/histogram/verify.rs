@@ -48,17 +48,17 @@ struct Population {
 }
 
 impl Population {
-    /// Buckets `values` at `scale`, keeping exact zeros aside.
-    fn new(values: &[f64], scale: i32) -> Self {
+    /// Buckets `observations` at `scale`, keeping exact zeros aside.
+    fn new(observations: &[(f64, u64)], scale: i32) -> Self {
         let mapping = Scale::new(scale).expect("scale is in range");
         let mut counts = BTreeMap::new();
         let mut zero_count = 0;
-        for &value in values {
+        for &(value, weight) in observations {
             assert!(value >= 0.0, "verifier expects non-negative values");
             if value == 0.0 {
-                zero_count += 1;
+                zero_count += weight;
             } else {
-                *counts.entry(mapping.map_to_index(value)).or_default() += 1;
+                *counts.entry(mapping.map_to_index(value)).or_default() += weight;
             }
         }
         Self { counts, zero_count }
@@ -151,10 +151,11 @@ fn assert_sum_close(actual: f64, expected: f64) {
     );
 }
 
-/// Asserts the histogram reproduces `values` exactly at the best geometry
-/// available to it.
+/// Asserts the histogram reproduces `observations` exactly at the best
+/// geometry available to it.
 ///
-/// `values` must be every observation the histogram received, in any order.
+/// `observations` must be every observation the histogram received, as
+/// `(value, weight)` pairs, in any order. At least one value must be positive.
 ///
 /// `scale_ceiling` is the finest scale this result could have reached. For a
 /// histogram that recorded its own values that is its configured maximum. For
@@ -163,7 +164,7 @@ fn assert_sum_close(actual: f64, expected: f64) {
 /// distinguish, however much room the destination has.
 pub(crate) fn assert_exact_and_tight<const N: usize>(
     histogram: &HistogramNN<N>,
-    values: &[f64],
+    observations: &[(f64, u64)],
     scale_ceiling: i32,
 ) {
     let minimum_width = histogram.initial.width;
@@ -173,20 +174,39 @@ pub(crate) fn assert_exact_and_tight<const N: usize>(
     let buckets = view.positive();
 
     let stats = view.stats();
-    assert_eq!(stats.count, values.len() as u64, "observation count");
-    assert_sum_close(stats.sum, values.iter().sum::<f64>());
     assert_eq!(
-        stats.min,
-        values.iter().copied().fold(f64::INFINITY, f64::min),
-        "minimum"
+        stats.count,
+        observations.iter().map(|&(_, weight)| weight).sum::<u64>(),
+        "observation count"
+    );
+    assert_sum_close(
+        stats.sum,
+        observations
+            .iter()
+            .map(|&(value, weight)| value * weight as f64)
+            .sum::<f64>(),
     );
     assert_eq!(
+        stats.min,
+        observations
+            .iter()
+            .map(|&(value, _)| value)
+            .fold(f64::INFINITY, f64::min),
+        "minimum"
+    );
+    // An exact zero never reaches the maximum, which stays at the sentinel
+    // until a positive value arrives.
+    assert_eq!(
         stats.max,
-        values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+        observations
+            .iter()
+            .map(|&(value, _)| value)
+            .filter(|&value| value > 0.0)
+            .fold(f64::NEG_INFINITY, f64::max),
         "maximum"
     );
 
-    let population = Population::new(values, scale);
+    let population = Population::new(observations, scale);
     assert_eq!(
         view.scan_buckets(|_| {}).zero_count,
         population.zero_count,
@@ -194,12 +214,7 @@ pub(crate) fn assert_exact_and_tight<const N: usize>(
     );
 
     let Some((first, last)) = population.bounds() else {
-        assert_eq!(
-            buckets.len(),
-            0,
-            "an all-zero population occupies no bucket"
-        );
-        return;
+        panic!("the verifier needs at least one positive observation");
     };
 
     // Exact: every value lands in the bucket its scale maps it to.
@@ -243,7 +258,7 @@ pub(crate) fn assert_exact_and_tight<const N: usize>(
 
     // Tight in scale: the next finer scale has to be out of reach.
     if scale < maximum_scale {
-        let finer = Population::new(values, scale + 1);
+        let finer = Population::new(observations, scale + 1);
         let (finer_first, finer_last) = finer.bounds().expect("the population has buckets");
         let finer_width = required_width::<N>(&finer, scale + 1, minimum_width);
         assert!(
@@ -263,6 +278,7 @@ mod tests {
     use super::assert_exact_and_tight;
     use crate::histogram::{HistogramNN, Width};
     use crate::mapping::table_scale;
+    use std::num::NonZeroU64;
 
     /// Deterministic xorshift, so failures reproduce exactly.
     struct Rng(u64);
@@ -283,39 +299,51 @@ mod tests {
             let fraction = 1.0 + (self.next() % 1024) as f64 / 1024.0;
             fraction * 2f64.powi(exponent)
         }
+
+        /// `count` values spread over `octaves`, each observed `weight` times.
+        ///
+        /// The weight is what walks the counter width ladder: one observation
+        /// per value keeps counters at B1, while a weight past `u32::MAX`
+        /// forces U64.
+        fn population(&mut self, count: usize, octaves: i32, weight: u64) -> Vec<(f64, u64)> {
+            (0..count).map(|_| (self.value(octaves), weight)).collect()
+        }
     }
 
-    fn build<const N: usize>(values: &[f64]) -> HistogramNN<N> {
+    /// Weights chosen to land on each rung of the width ladder.
+    const WEIGHTS: [u64; 6] = [1, 3, 300, 100_000, 5_000_000_000, u32::MAX as u64 + 1];
+
+    fn build<const N: usize>(observations: &[(f64, u64)]) -> HistogramNN<N> {
         let mut histogram = HistogramNN::new();
-        for &value in values {
-            histogram.update(value).expect("values are recordable");
+        for &(value, weight) in observations {
+            histogram
+                .record_incr(
+                    value,
+                    NonZeroU64::new(weight).expect("weights are non-zero"),
+                )
+                .expect("observations are recordable");
         }
         histogram
     }
 
-    /// Scenario: populations of varying width and span -- repeated values that
-    /// drive counters up the width ladder, and scattered values that drive the
-    /// occupied range past the pool -- are recorded into pools of several sizes.
+    /// Scenario: populations spanning one to forty octaves, observed at
+    /// weights that drive counters from B1 to U64, are recorded into the
+    /// smallest, a middling, and the largest supported pool.
     /// Guarantees: recording reproduces every observation exactly and settles
-    /// on the narrowest counter width and the finest scale that fit, so a
-    /// counter overflow never costs resolution the pool could have afforded.
+    /// on the narrowest counter width and the finest scale that fit, so
+    /// neither a counter overflow nor a widening range costs resolution the
+    /// pool could still have afforded.
     #[test]
     fn recording_keeps_the_finest_geometry_that_fits() {
         let mut rng = Rng(0x243F_6A88_85A3_08D3);
         for octaves in [1, 3, 10, 40] {
-            for repeats in [1, 5, 300] {
-                let mut values = Vec::new();
-                for _ in 0..48 {
-                    let value = rng.value(octaves);
-                    for _ in 0..repeats {
-                        values.push(value);
-                    }
-                }
-                values.push(0.0);
+            for weight in WEIGHTS {
+                let mut observations = rng.population(48, octaves, weight);
+                observations.push((0.0, 7));
 
-                assert_exact_and_tight(&build::<2>(&values), &values, table_scale());
-                assert_exact_and_tight(&build::<8>(&values), &values, table_scale());
-                assert_exact_and_tight(&build::<64>(&values), &values, table_scale());
+                assert_exact_and_tight(&build::<2>(&observations), &observations, table_scale());
+                assert_exact_and_tight(&build::<8>(&observations), &observations, table_scale());
+                assert_exact_and_tight(&build::<64>(&observations), &observations, table_scale());
             }
         }
     }
@@ -326,20 +354,26 @@ mod tests {
     /// and the scale still reflects the buckets those wider counters leave.
     #[test]
     fn a_configured_minimum_width_is_honoured() {
-        let values = vec![1.0, 2.0, 4.0, 8.0];
+        let observations = [(1.0, 1), (2.0, 1), (4.0, 1), (8.0, 1)];
         let mut histogram: HistogramNN<8> = HistogramNN::new()
             .with_min_width(Width::U16)
             .expect("the default scale covers U16 counters");
-        for &value in &values {
-            histogram.update(value).expect("values are recordable");
+        for &(value, weight) in &observations {
+            histogram
+                .record_incr(
+                    value,
+                    NonZeroU64::new(weight).expect("weights are non-zero"),
+                )
+                .expect("observations are recordable");
         }
 
         assert_eq!(histogram.view().positive().width(), Width::U16);
-        assert_exact_and_tight(&histogram, &values, table_scale());
+        assert_exact_and_tight(&histogram, &observations, table_scale());
     }
 
-    /// Scenario: two independently recorded populations, differing in scale,
-    /// counter width, and pool size, are merged.
+    /// Scenario: two independently recorded populations, differing in span,
+    /// counter width, and pool size, are merged in both pool-size directions
+    /// and with exact zeros on both sides.
     /// Guarantees: the merged histogram accounts for both populations exactly
     /// and is as fine as the coarser input allows, so combining costs no
     /// resolution beyond what the inputs had already given up.
@@ -348,37 +382,80 @@ mod tests {
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
         for left_octaves in [1, 6, 30] {
             for right_octaves in [1, 6, 30] {
-                for repeats in [1, 40] {
-                    let mut left = Vec::new();
-                    let mut right = Vec::new();
-                    for _ in 0..24 {
-                        let value = rng.value(left_octaves);
-                        for _ in 0..repeats {
-                            left.push(value);
-                        }
-                        let value = rng.value(right_octaves);
-                        for _ in 0..repeats {
-                            right.push(value);
-                        }
+                for weight in WEIGHTS {
+                    let mut left = rng.population(24, left_octaves, weight);
+                    left.push((0.0, 2));
+                    let mut right = rng.population(24, right_octaves, weight);
+                    right.push((0.0, 5));
+
+                    // A destination larger than its source, and the reverse.
+                    for (merged, ceiling) in [
+                        {
+                            let mut destination = build::<16>(&left);
+                            let source = build::<4>(&right);
+                            let ceiling = destination.view().scale().min(source.view().scale());
+                            destination
+                                .merge_from(&source)
+                                .expect("counts stay well inside u64");
+                            (destination, ceiling)
+                        },
+                        {
+                            let mut destination = build::<16>(&left);
+                            let source = build::<64>(&right);
+                            let ceiling = destination.view().scale().min(source.view().scale());
+                            destination
+                                .merge_from(&source)
+                                .expect("counts stay well inside u64");
+                            (destination, ceiling)
+                        },
+                    ] {
+                        let mut combined = left.clone();
+                        combined.extend_from_slice(&right);
+                        assert_exact_and_tight(&merged, &combined, ceiling);
                     }
-
-                    let mut merged = build::<16>(&left);
-                    let source = build::<4>(&right);
-                    let ceiling = merged.view().scale().min(source.view().scale());
-                    merged
-                        .merge_from(&source)
-                        .expect("counts stay well inside u64");
-
-                    let mut combined = left.clone();
-                    combined.extend_from_slice(&right);
-                    assert_exact_and_tight(&merged, &combined, ceiling);
                 }
             }
         }
     }
 
-    /// Scenario: several populations are merged one after another into a
-    /// destination that has already been merged into.
+    /// Scenario: two populations that are individually narrow, and so sit at
+    /// a fine scale, but lie many octaves apart, so their union cannot be
+    /// represented at either input's scale.
+    /// Guarantees: the merge coarsens past both inputs only as far as the
+    /// combined range and counts require, which is the case the ceiling alone
+    /// cannot vouch for.
+    #[test]
+    fn merging_distant_populations_coarsens_only_as_needed() {
+        let mut rng = Rng(0x1F83_D9AB_FB41_BD6B);
+        for gap in [8, 20, 60] {
+            for weight in [1, 300, 100_000] {
+                let left = rng.population(12, 1, weight);
+                let right = rng
+                    .population(12, 1, weight)
+                    .into_iter()
+                    .map(|(value, weight)| (value * 2f64.powi(gap), weight))
+                    .collect::<Vec<_>>();
+
+                let mut destination = build::<8>(&left);
+                let source = build::<8>(&right);
+                let ceiling = destination.view().scale().min(source.view().scale());
+                destination
+                    .merge_from(&source)
+                    .expect("counts stay well inside u64");
+                assert!(
+                    destination.view().scale() < ceiling,
+                    "a {gap} octave gap must force coarsening past both inputs"
+                );
+
+                let mut combined = left.clone();
+                combined.extend_from_slice(&right);
+                assert_exact_and_tight(&destination, &combined, ceiling);
+            }
+        }
+    }
+
+    /// Scenario: eight populations, each wider and more heavily weighted than
+    /// the last, are merged one after another into the same destination.
     /// Guarantees: repeated merging stays exact and stays as fine as its
     /// inputs allow, so resolution does not erode as partial aggregates
     /// accumulate.
@@ -390,20 +467,13 @@ mod tests {
         let mut ceiling = table_scale();
 
         for round in 0..8 {
-            let mut values = Vec::new();
-            for _ in 0..16 {
-                let value = rng.value(2 + round);
-                for _ in 0..(1 << round) {
-                    values.push(value);
-                }
-            }
-
-            let source = build::<8>(&values);
+            let observations = rng.population(16, 2 + round, 1 << (4 * round));
+            let source = build::<8>(&observations);
             ceiling = ceiling.min(source.view().scale());
             destination
                 .merge_from(&source)
                 .expect("counts stay well inside u64");
-            combined.extend_from_slice(&values);
+            combined.extend_from_slice(&observations);
             assert_exact_and_tight(&destination, &combined, ceiling);
         }
     }
