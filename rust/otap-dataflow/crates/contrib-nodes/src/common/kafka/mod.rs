@@ -9,6 +9,24 @@ pub mod auth;
 pub mod aws;
 pub mod security;
 
+// A reusable, in-process Kafka test suite built on `rdkafka::mocking::MockCluster`.
+//
+// The test suite is broker-only and node-agnostic; the component wrappers in
+// `node_harness` consume it to drive the Kafka exporter and receiver. Both are
+// test-only and are never compiled into the shipping library. They live here in
+// `common/kafka` (which only compiles when a `kafka-*` feature is enabled, so
+// `rdkafka` is always present) so that the exporter's and receiver's inline
+// `#[cfg(test)]` test modules can share them via `crate::common::kafka::...`.
+// The test suite is a deliberately broad, reusable test-support API: not every
+// helper is exercised by the current tests, so `dead_code` is expected and
+// allowed here rather than sprinkling per-item attributes.
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod node_harness;
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) mod test;
+
 /// TLS configuration for Kafka broker connections.
 ///
 /// All file-path fields are optional so that callers can configure only the

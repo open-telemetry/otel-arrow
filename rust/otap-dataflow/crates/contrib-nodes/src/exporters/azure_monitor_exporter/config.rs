@@ -8,6 +8,11 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
+/// Marker value for `log_record_mapping.attributes` that enables attribute
+/// passthrough: every log record attribute is emitted as-is as a top-level
+/// `"<key>": <value>` pair, using the attribute key as the column name.
+pub(crate) const ATTRIBUTES_PASSTHROUGH_MARKER: &str = "passthrough";
+
 /// Configuration for the Azure Monitor Exporter matching the Collector's schema.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -105,7 +110,12 @@ pub struct ApiConfig {
     /// Data Collection Rule identifier
     pub dcr: String,
 
-    /// Schema mapping configuration
+    /// Schema mapping configuration.
+    ///
+    /// When omitted (or left empty), no mappings are applied: only the
+    /// mandatory `TimeGenerated` column is auto-injected (from the record's
+    /// event time). See [`SchemaConfig`] for per-section mapping, including
+    /// attribute passthrough on `log_record_mapping`.
     #[serde(default)]
     pub schema: SchemaConfig,
 
@@ -137,7 +147,24 @@ pub struct SchemaConfig {
     #[serde(default)]
     pub scope_mapping: HashMap<String, String>,
 
-    /// Log record field mappings
+    /// Log record field mappings.
+    ///
+    /// Each key maps a log-record field (`body`, `severity_text`,
+    /// `time_unix_nano`, ...) to a destination column name. The special key
+    /// `attributes` accepts either an explicit `{ <attr key>: <column> }` object
+    /// OR the string `passthrough`; the two forms cannot be combined within
+    /// `attributes` (all-or-nothing).
+    ///
+    /// In `passthrough`, every log-record attribute is emitted as-is as a
+    /// top-level `"<key>": <value>` column. Other `log_record_mapping` fields,
+    /// plus `resource_mapping` and `scope_mapping`, continue to emit their own
+    /// columns independently. If a passthrough attribute key collides with a
+    /// mapped column, the attribute value wins (innermost) and the column is
+    /// emitted once.
+    ///
+    /// Passthrough column names are runtime attribute keys, so unlike explicit
+    /// mappings they are not checked for duplicates at config load; collisions
+    /// are resolved at emit time by the rule above.
     #[serde(default)]
     pub log_record_mapping: HashMap<String, Value>,
 }
@@ -194,40 +221,57 @@ impl Config {
     }
 
     fn validate_schema_unique_columns(&self) -> Result<(), Error> {
+        let schema = &self.api.schema;
+
         let mut seen = HashSet::new();
         let mut duplicates = HashSet::new();
 
-        for value in self.api.schema.resource_mapping.values() {
+        for value in schema.resource_mapping.values() {
             if !seen.insert(value.clone()) {
                 _ = duplicates.insert(value.clone());
             }
         }
 
-        for value in self.api.schema.scope_mapping.values() {
+        for value in schema.scope_mapping.values() {
             if !seen.insert(value.clone()) {
                 _ = duplicates.insert(value.clone());
             }
         }
 
-        for (key, value) in &self.api.schema.log_record_mapping {
+        for (key, value) in &schema.log_record_mapping {
+            if key == "attributes" {
+                match value {
+                    // `attributes: passthrough` emits each attribute as its own
+                    // top-level column named by the attribute key; those column
+                    // names are runtime data, so there is nothing to check here.
+                    Value::String(s) if s == ATTRIBUTES_PASSTHROUGH_MARKER => {}
+                    // `attributes: { key: Column, ... }` maps specific attributes.
+                    Value::Object(map) => {
+                        for v in map.values() {
+                            if let Value::String(s) = v {
+                                if !seen.insert(s.clone()) {
+                                    _ = duplicates.insert(s.clone());
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(Error::Config(
+                            "Invalid configuration: log_record_mapping.attributes must be a mapping object or the string 'passthrough'".to_string(),
+                        ));
+                    }
+                }
+                continue;
+            }
+
             match value {
                 Value::String(s) if !seen.insert(s.clone()) => {
                     _ = duplicates.insert(s.clone());
                 }
-                Value::Object(map) => {
-                    if key != "attributes" {
-                        return Err(Error::Config(
-                            "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed".to_string(),
-                        ));
-                    }
-
-                    for (_, v) in map {
-                        if let Value::String(s) = v {
-                            if !seen.insert(s.clone()) {
-                                _ = duplicates.insert(s.clone());
-                            }
-                        }
-                    }
+                Value::Object(_) => {
+                    return Err(Error::Config(
+                        "Invalid configuration: log_record_mapping key has invalid nested structure, only 'attributes' is allowed".to_string(),
+                    ));
                 }
                 _ => {}
             }
@@ -561,6 +605,104 @@ mod tests {
         "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.api.gzip_compression_level, 6);
+    }
+
+    #[test]
+    fn test_schema_omitted_maps_nothing() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.api.schema.resource_mapping.is_empty());
+        assert!(config.api.schema.scope_mapping.is_empty());
+        assert!(config.api.schema.log_record_mapping.is_empty());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_attributes_passthrough_accepted() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+                schema:
+                    log_record_mapping:
+                        attributes: passthrough
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.api.schema.log_record_mapping["attributes"],
+            serde_json::json!("passthrough")
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_attributes_passthrough_composes_with_mappings() {
+        // Passthrough emits each attribute as its own top-level column, so it no
+        // longer reserves a fixed column name and composes with other mappings.
+        let config = Config {
+            api: ApiConfig {
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::from([(
+                        "service.name".into(),
+                        "ServiceName".into(),
+                    )]),
+                    scope_mapping: HashMap::from([("scope.name".into(), "ScopeName".into())]),
+                    log_record_mapping: HashMap::from([
+                        ("body".into(), json!("Body")),
+                        ("attributes".into(), json!("passthrough")),
+                    ]),
+                },
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_attributes_invalid_string_rejected() {
+        let config = Config {
+            api: ApiConfig {
+                schema: SchemaConfig {
+                    resource_mapping: HashMap::new(),
+                    scope_mapping: HashMap::new(),
+                    log_record_mapping: HashMap::from([(
+                        "attributes".into(),
+                        json!("not-a-valid-marker"),
+                    )]),
+                },
+                ..test_api_config()
+            },
+            ..test_config()
+        };
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_schema_provided() {
+        let yaml = r#"
+            api:
+                dcr_endpoint: "https://example.com"
+                stream_name: "mystream"
+                dcr: "mydcr"
+                schema:
+                    resource_mapping:
+                        service.name: ServiceName
+                    log_record_mapping:
+                        body: Body
+        "#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let schema = config.api.schema;
+        assert_eq!(schema.resource_mapping["service.name"], "ServiceName");
+        assert_eq!(schema.log_record_mapping["body"], serde_json::json!("Body"));
     }
 
     #[test]
