@@ -1103,11 +1103,11 @@ dependencies = [
 [[package]]
 name = "azure_core"
 version = "1.2.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00#fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24#4b78d8ae433a7b5f35504e455148d2d5d8d40a24"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core_macros 1.1.0-beta.1",
+ "azure_core_macros 1.1.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24)",
  "bytes",
  "futures",
  "pin-project",
@@ -1115,8 +1115,27 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
- "typespec 1.2.0-beta.1",
- "typespec_client_core 1.2.0-beta.1",
+ "typespec 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24)",
+ "typespec_client_core 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24)",
+]
+
+[[package]]
+name = "azure_core"
+version = "1.2.0-beta.1"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00#fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00"
+dependencies = [
+ "async-lock",
+ "async-trait",
+ "azure_core_macros 1.1.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
+ "bytes",
+ "futures",
+ "pin-project",
+ "rustc_version",
+ "serde",
+ "serde_json",
+ "tracing",
+ "typespec 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
+ "typespec_client_core 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
 ]
 
 [[package]]
@@ -1130,6 +1149,17 @@ dependencies = [
  "syn 2.0.119",
  "tracing",
  "typespec_client_core 0.8.1",
+]
+
+[[package]]
+name = "azure_core_macros"
+version = "1.1.0-beta.1"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24#4b78d8ae433a7b5f35504e455148d2d5d8d40a24"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "tracing",
 ]
 
 [[package]]
@@ -1163,11 +1193,11 @@ dependencies = [
 [[package]]
 name = "azure_identity"
 version = "1.1.0-beta.1"
-source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00#fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24#4b78d8ae433a7b5f35504e455148d2d5d8d40a24"
 dependencies = [
  "async-lock",
  "async-trait",
- "azure_core 1.2.0-beta.1",
+ "azure_core 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24)",
  "futures",
  "pin-project",
  "serde",
@@ -7195,7 +7225,7 @@ name = "otap-df-contrib-extensions"
 version = "0.50.0"
 dependencies = [
  "async-trait",
- "azure_core 1.2.0-beta.1",
+ "azure_core 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
  "azure_identity 1.1.0-beta.1",
  "futures",
  "humantime-serde",
@@ -7485,7 +7515,7 @@ dependencies = [
  "arc-swap",
  "arrow",
  "async-trait",
- "azure_core 1.2.0-beta.1",
+ "azure_core 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
  "azure_identity 1.1.0-beta.1",
  "base64",
  "bytes",
@@ -10986,6 +11016,19 @@ dependencies = [
 [[package]]
 name = "typespec"
 version = "1.2.0-beta.1"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24#4b78d8ae433a7b5f35504e455148d2d5d8d40a24"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "typespec"
+version = "1.2.0-beta.1"
 source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00#fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00"
 dependencies = [
  "base64",
@@ -11024,6 +11067,28 @@ dependencies = [
 [[package]]
 name = "typespec_client_core"
 version = "1.2.0-beta.1"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24#4b78d8ae433a7b5f35504e455148d2d5d8d40a24"
+dependencies = [
+ "async-trait",
+ "base64",
+ "bytes",
+ "dyn-clone",
+ "futures",
+ "pin-project",
+ "rand 0.10.2",
+ "serde",
+ "serde_json",
+ "time",
+ "tracing",
+ "typespec 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24)",
+ "typespec_macros 1.1.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24)",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "typespec_client_core"
+version = "1.2.0-beta.1"
 source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00#fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00"
 dependencies = [
  "async-trait",
@@ -11038,8 +11103,8 @@ dependencies = [
  "serde_json",
  "time",
  "tracing",
- "typespec 1.2.0-beta.1",
- "typespec_macros 1.1.0-beta.1",
+ "typespec 1.2.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
+ "typespec_macros 1.1.0-beta.1 (git+https://github.com/Azure/azure-sdk-for-rust.git?rev=fd7c3dcfb2b9f55ccb6e98b8cf148cd536460f00)",
  "url",
  "uuid",
 ]
@@ -11049,6 +11114,17 @@ name = "typespec_macros"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "530a5f141b8b7e9fc2ba8eb5c657520f68581daef103b36dfbc049d82c653d39"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "typespec_macros"
+version = "1.1.0-beta.1"
+source = "git+https://github.com/Azure/azure-sdk-for-rust.git?rev=4b78d8ae433a7b5f35504e455148d2d5d8d40a24#4b78d8ae433a7b5f35504e455148d2d5d8d40a24"
 dependencies = [
  "proc-macro2",
  "quote",
