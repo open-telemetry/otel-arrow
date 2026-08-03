@@ -349,6 +349,19 @@ pub struct NodeChannelAttributeSet {
     pub channel_impl: Cow<'static, str>,
 }
 
+/// Channel endpoint attributes for a node-hosted channel, extended with user-configured custom telemetry attributes.
+#[attribute_set(scope, name = "node.custom.channel.attrs")]
+#[derive(Debug, Clone, Default, Hash)]
+pub struct NodeWithCustomChannelAttributeSet {
+    /// Base node channel attributes.
+    #[compose]
+    pub channel_attrs: NodeChannelAttributeSet,
+
+    /// Custom user-defined telemetry attributes.
+    #[compose]
+    pub custom_attrs: CustomAttributeSet,
+}
+
 /// Channel endpoint attributes for an extension-hosted channel.
 ///
 /// Extensions only have a single control-channel kind (MPSC), so `channel.kind`

@@ -6,8 +6,9 @@
 use crate::attributes::{
     CustomAttributeSet, EngineAttributeSet, EngineEntityAttributeSet, ExtensionAttributeSet,
     ExtensionChannelAttributeSet, ExtensionScopeAttributeSet, NodeAttributeSet,
-    NodeChannelAttributeSet, NodeWithCustomAttributeSet, NodeWithCustomTopicAttributeSet,
-    NodeWithTopicAttributeSet, PipelineAttributeSet, config_map_to_telemetry,
+    NodeChannelAttributeSet, NodeWithCustomAttributeSet, NodeWithCustomChannelAttributeSet,
+    NodeWithCustomTopicAttributeSet, NodeWithTopicAttributeSet, PipelineAttributeSet,
+    config_map_to_telemetry,
 };
 use crate::entity_context::{current_node_telemetry_handle, node_entity_key};
 use crate::memory_limiter::MemoryPressureState;
@@ -654,6 +655,32 @@ impl PipelineContext {
         }
     }
 
+    /// Returns a channel attribute set tied to this node context, extended with custom telemetry attributes.
+    #[must_use]
+    pub fn node_with_custom_channel_attribute_set(
+        &self,
+        channel_id: Cow<'static, str>,
+        node_port: Cow<'static, str>,
+        channel_kind: &'static str,
+        channel_mode: &'static str,
+        channel_type: &'static str,
+        channel_impl: &'static str,
+    ) -> NodeWithCustomChannelAttributeSet {
+        NodeWithCustomChannelAttributeSet {
+            channel_attrs: self.node_channel_attribute_set(
+                channel_id,
+                node_port,
+                channel_kind,
+                channel_mode,
+                channel_type,
+                channel_impl,
+            ),
+            custom_attrs: CustomAttributeSet::new(config_map_to_telemetry(
+                &self.node_telemetry_attrs,
+            )),
+        }
+    }
+
     /// Registers a node-scoped channel entity for the given channel attributes.
     #[must_use]
     pub fn register_node_channel_entity(
@@ -665,17 +692,31 @@ impl PipelineContext {
         channel_type: &'static str,
         channel_impl: &'static str,
     ) -> EntityKey {
-        let attrs = self.node_channel_attribute_set(
-            channel_id,
-            node_port,
-            channel_kind,
-            channel_mode,
-            channel_type,
-            channel_impl,
-        );
-        self.controller_context
-            .telemetry_registry_handle
-            .register_entity(attrs)
+        if self.node_telemetry_attrs.is_empty() {
+            let attrs = self.node_channel_attribute_set(
+                channel_id,
+                node_port,
+                channel_kind,
+                channel_mode,
+                channel_type,
+                channel_impl,
+            );
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(attrs)
+        } else {
+            let attrs = self.node_with_custom_channel_attribute_set(
+                channel_id,
+                node_port,
+                channel_kind,
+                channel_mode,
+                channel_type,
+                channel_impl,
+            );
+            self.controller_context
+                .telemetry_registry_handle
+                .register_entity(attrs)
+        }
     }
 
     /// Returns a metrics registry handle.
@@ -1007,6 +1048,59 @@ mod tests {
         assert_eq!(
             ctx.resource_attributes(),
             vec![("service.instance.id".to_string(), "proc-123".to_string())]
+        );
+    }
+    #[test]
+    fn register_node_channel_entity_with_custom_attributes() {
+        let registry = TelemetryRegistryHandle::new();
+        let ctx = ControllerContext::new(registry);
+        let pipeline_ctx = PipelineContext::new(
+            ctx,
+            PipelineContextParams {
+                pipeline_id: "main".into(),
+                pipeline_group_id: "default".into(),
+            },
+        );
+
+        let mut telemetry_attrs = std::collections::HashMap::new();
+        telemetry_attrs.insert(
+            "custom_key".to_string(),
+            crate::config::metrics::TelemetryAttribute::String("custom_val".to_string()),
+        );
+
+        let node_ctx = pipeline_ctx.with_node_context(
+            "test_node".into(),
+            "urn:test:node".into(),
+            crate::node::NodeKind::Processor,
+            telemetry_attrs,
+        );
+
+        let entity_key = node_ctx.register_node_channel_entity(
+            "channel1".into(),
+            "port1".into(),
+            "pdata",
+            "local",
+            "mpsc",
+            "internal",
+        );
+
+        let attrs = node_ctx
+            .controller_context
+            .telemetry_registry_handle
+            .registry()
+            .entity_attributes(entity_key)
+            .expect("entity should exist");
+
+        let mut found = false;
+        for attr in attrs {
+            if attr.key == "custom" {
+                found = true;
+                break;
+            }
+        }
+        assert!(
+            found,
+            "custom attributes should be present in channel entity"
         );
     }
 }
