@@ -365,6 +365,37 @@ mod tests {
         assert_eq!(bucket.check_units(1), BucketOutcome::WithinLimit);
     }
 
+    /// Scenario: normal-pressure observation reaches the two-window debt ceiling before
+    /// active enforcement begins for a one-unit bucket.
+    /// Guarantees: the maximum-weight charge remains refused immediately before two burst
+    /// windows elapse and conforms exactly at that worst-case recovery boundary.
+    #[test]
+    fn maximum_observed_debt_recovers_at_two_burst_windows() {
+        let (bucket, clock) = manual_bucket(1, Some(1));
+
+        for _ in 0..10 {
+            let _ = bucket.observe_units(1);
+        }
+
+        assert_eq!(
+            bucket.check_units(1),
+            BucketOutcome::OverLimit {
+                retry_after_nanos: 2_000_000_000
+            }
+        );
+
+        clock.advance(1_999_999_999);
+        assert_eq!(
+            bucket.check_units(1),
+            BucketOutcome::OverLimit {
+                retry_after_nanos: 1
+            }
+        );
+
+        clock.advance(1);
+        assert_eq!(bucket.check_units(1), BucketOutcome::WithinLimit);
+    }
+
     /// Scenario: `next_theoretical_arrival` is handed a debt limit below the published TAT.
     /// Guarantees: the returned timestamp never regresses, which is what stops a losing
     /// CAS racer from handing back capacity another thread already spent.

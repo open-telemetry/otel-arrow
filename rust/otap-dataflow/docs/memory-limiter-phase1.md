@@ -342,9 +342,10 @@ while active enforcement and exhaustion continue.
 The configured `interval` also determines the burst window. For example,
 `allow: 100`, `interval: 60s`, and `burst: 100` produce a 60-second burst
 window and a debt ceiling of two burst windows. Normal-pressure observation can
-reach that ceiling; if pressure then activates, admission may take up to one
-burst window to recover. Use long intervals only when that lockout behavior is
-acceptable.
+reach that ceiling. If pressure then activates, a charge of weight `w` may take
+up to one burst window plus the rate cost of `w` to conform. The worst case for
+any admissible charge is two burst windows. Use long intervals only when that
+lockout behavior is acceptable.
 
 Once request weight is known, retryable rate-limit responses advertise the
 earliest whole-second bucket recovery delay for the refused weight. They do not

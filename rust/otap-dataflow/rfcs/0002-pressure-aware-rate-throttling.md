@@ -303,14 +303,15 @@ The debt floor must also apply while memory is normal. The gate only rejects
 when pressure is active, but the bucket should keep charging and refilling in
 normal memory so pressure starts from current state. The debt floor keeps a
 scope from accumulating unbounded debt before soft pressure and bounds the
-worst-case lockout after pressure starts to `max_debt / rate`.
+worst-case lockout after pressure starts.
 
 `interval` directly scales that recovery time. With `burst` equal to `allow`,
 the burst window equals one interval and the implementation's two-window debt
 ceiling can be reached during normal-pressure observation. If pressure activates
-at that point, admission may take up to one full interval to resume. Operators
-should therefore choose long intervals only when an equally long pressure-onset
-lockout is acceptable.
+at that point, a charge of weight `w` may take up to one burst window plus the
+rate cost of `w` to conform. The worst case for any admissible charge is two
+burst windows. Operators should therefore choose long intervals only when that
+pressure-onset lockout is acceptable.
 
 V1 does not resolve tenant tokens. A future implementation should prefer trusted
 transport metadata, receiver identity, or static configuration. Resource-
