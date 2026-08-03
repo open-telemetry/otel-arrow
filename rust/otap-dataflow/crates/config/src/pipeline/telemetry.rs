@@ -25,9 +25,11 @@ pub struct TelemetryConfig {
     /// Resource attributes to associate with telemetry data.
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
-    /// Resource detectors to run for auto-detected telemetry attributes. Explicitly configured
-    /// `resource` attributes take precedence over attributes from detectors. An empty list
-    /// disables auto-detection; an unrecognized detector name fails engine startup.
+    /// Resource detectors to run for auto-detected telemetry attributes. On key conflicts,
+    /// precedence is explicitly configured `resource` attributes > detectors (a detector later
+    /// in the list wins over an earlier one) > the controller's build-info defaults for
+    /// `service.name`/`service.version`. An empty list disables auto-detection; an unrecognized
+    /// detector name fails engine startup.
     ///
     /// Defaults to `["service_instance", "env", "service_name"]`. Supported detectors: `env`,
     /// `service_name`, `service_instance`, `host`, `os`, `process`, `container`, `k8s`. See the

@@ -713,11 +713,11 @@ questions:
 <!-- markdownlint-disable MD013 -->
 | Scope    | Attribute           | Type    | Description                                                  |
 |----------|---------------------|---------|--------------------------------------------------------------|
-| Resource | service.instance.id | string  | Unique instance identifier (UUIDv7), from the `service_instance` detector (default). |
-| Resource | service.name        | string  | From `OTEL_SERVICE_NAME` (`service_name` detector) or the build-info default.         |
-| Resource | service.version     | string  | Build-info default, overridable via config or `OTEL_RESOURCE_ATTRIBUTES`.             |
-| Resource | host.id             | string  | Host machine id, from the `host` detector (opt-in).                                   |
-| Resource | container.id        | string  | Container id, from the `container` detector (opt-in).                                 |
+| Resource | service.instance.id | string  | Unique instance id (UUIDv7); `service_instance` default.     |
+| Resource | service.name        | string  | From `OTEL_SERVICE_NAME` or the build-info default.          |
+| Resource | service.version     | string  | Build-info default; config/`OTEL_*` override.                |
+| Resource | host.id             | string  | Host machine id; `host` detector (opt-in).                   |
+| Resource | container.id        | string  | Container id; `container` detector (opt-in).                 |
 | Engine   | core_id             | integer | Core identifier.                                             |
 | Engine   | numa_node_id        | integer | NUMA node identifier.                                        |
 | Pipeline | pipeline_id         | string  | Pipeline identifier.                                         |

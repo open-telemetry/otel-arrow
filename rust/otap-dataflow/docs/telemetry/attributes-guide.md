@@ -109,9 +109,9 @@ Notes:
   detector name fails engine startup. Precedence is explicitly configured
   `engine.telemetry.resource` attributes > detectors > the build-info defaults for
   `service.name`/`service.version`.
-- The opt-in `process` detector emits `process.command_args` (the full command line),
-  which may include secrets passed as arguments. Enable it only when the command line is
-  known not to carry sensitive data.
+- The opt-in `process` detector emits `process.command_args` (the full command
+  line), which can include secrets passed as arguments. Enable it only where
+  that is acceptable.
 - The **same** resolved resource map feeds every consumer: the native OTLP
   metric and log resource encoders and the admin `target_info` gauge - so
   resource identity is consistent across metrics, logs, and the admin
