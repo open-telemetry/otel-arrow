@@ -41,7 +41,7 @@ Not implemented yet:
 ### 1. Start ClickHouse
 
 ```bash
-docker run -it -p 8123:8123 -p 9000:9000 -e CLICKHOUSE_PASSWORD=TODO-TEST \
+docker run -it -p 8123:8123 -p 9000:9000 -e CLICKHOUSE_PASSWORD=test \
   --name clickhouse-server --ulimit nofile=262144:262144 \
   clickhouse/clickhouse-server
 ```
@@ -58,7 +58,7 @@ cargo run --features clickhouse-exporter -- --config configs/trafficgen-clickhou
 ### 3. Query ClickHouse
 
 ```bash
-docker exec -it clickhouse-server clickhouse-client --password TODO-TEST
+docker exec -it clickhouse-server clickhouse-client --password test
 ```
 
 Then:

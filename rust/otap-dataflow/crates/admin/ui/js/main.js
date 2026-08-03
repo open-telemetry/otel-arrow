@@ -170,7 +170,7 @@
   const fullWidthToggleTrack = document.getElementById("toggle-fullwidth-track");
   const fullWidthToggle = document.getElementById("toggle-fullwidth");
 
-  document.title = "Rust Dataflow Engine";
+  document.title = "OTel-Arrow Dataflow Engine";
 
   const THEME_STORAGE_KEY = "ogdp-theme";
   const LAYOUT_WIDTH_STORAGE_KEY = "ogdp-layout-width";

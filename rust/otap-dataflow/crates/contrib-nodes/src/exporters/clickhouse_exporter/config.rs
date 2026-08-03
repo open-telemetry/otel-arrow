@@ -113,7 +113,7 @@ pub struct TableConfig {
     /// Logical name (users query this)
     pub name: String,
 
-    /// TTL, e.g., "72h"
+    /// TTL, e.g., "72 HOUR"
     pub ttl: Option<String>,
 
     /// Optional table engine override; falls back to top-level default
@@ -300,7 +300,7 @@ mod tests {
             },
             "tables": {
                 "logs": {
-                    "ttl": "12h"
+                    "ttl": "12 HOUR"
                 },
                 "metrics": {
                     "gauge": {
@@ -331,7 +331,7 @@ mod tests {
 
         // --- Tables ---
         assert_eq!(config.tables.logs.name, "otel_logs");
-        assert_eq!(config.tables.logs.ttl.as_deref(), Some("12h"));
+        assert_eq!(config.tables.logs.ttl.as_deref(), Some("12 HOUR"));
 
         // Defaulted tables still present
         assert_eq!(config.tables.traces.name, "otel_traces");

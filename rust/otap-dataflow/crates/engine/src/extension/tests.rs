@@ -357,7 +357,7 @@ async fn test_ctrl_config_then_shutdown() {
 #[tokio::test]
 async fn test_ctrl_delayed_shutdown() {
     // Shutdown is delivered immediately regardless of how far in the
-    // future its deadline is — the deadline is the extension's
+    // future its deadline is -- the deadline is the extension's
     // cooperative cleanup budget, not a wait time before delivery.
     let (_tx, rx) = tokio::sync::mpsc::channel::<ExtensionControlMsg>(8);
     let (shutdown_tx, shutdown_rx) =
@@ -578,7 +578,7 @@ fn test_extension_set_iter() {
     assert_eq!(set.iter().count(), 2);
 }
 
-// ── Background lifecycle tests ───────────────────────────────────────────────
+// -- Background lifecycle tests -----------------------------------------------
 
 #[test]
 fn test_background_shared() {
@@ -614,7 +614,7 @@ fn test_background_local() {
 
 #[test]
 fn test_background_factory_capabilities_none() {
-    // Background bundles call `register_into(None, …)` → no-op,
+    // Background bundles call `register_into(None, ...)` -> no-op,
     // contributing zero entries to the registry.
     use crate::capability::registry::CapabilityRegistry;
 
@@ -650,7 +650,7 @@ fn test_background_factory_capabilities_none() {
 // let _ = ExtensionWrapper::builder(n, u, &c).background().build();
 // ```
 
-// ── Extension telemetry wiring tests ─────────────────────────────────────────
+// -- Extension telemetry wiring tests -----------------------------------------
 
 #[test]
 fn test_extension_attribute_set_carries_pipeline_scope() {
@@ -881,7 +881,7 @@ struct TelemetryReportingLocalExt {
 }
 
 // `Clone` is required by `ActiveStage::local`. Clones share state via
-// interior mutability — only one live instance ever runs.
+// interior mutability -- only one live instance ever runs.
 impl Clone for TelemetryReportingLocalExt {
     fn clone(&self) -> Self {
         Self {
@@ -1064,7 +1064,7 @@ fn two_active_extensions_report_isolated_internal_metrics() {
         let h_a = tokio::task::spawn_local(async move { w_a.start(test_metrics_reporter()).await });
         let h_b = tokio::task::spawn_local(async move { w_b.start(test_metrics_reporter()).await });
 
-        // ONE shared reporter — both extensions publish through the same
+        // ONE shared reporter -- both extensions publish through the same
         // channel. Isolation must be enforced by per-MetricSet keys, not
         // by separate transports.
         let (snapshot_rx, shared_reporter) = MetricsReporter::create_new_and_receiver(8);
@@ -1196,7 +1196,7 @@ fn extension_entity_isolated_across_cores() {
     let controller = crate::context::ControllerContext::new(registry.clone());
 
     // Same pipeline replicated across two cores. Each per-core runtime
-    // registers its own extension instances — they must not alias.
+    // registers its own extension instances -- they must not alias.
     let pipe_core0 = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 0, 0);
     let pipe_core1 = pipeline_ctx_in_controller(&controller, "grp", "pipeline_a", 1, 1);
 
@@ -1659,7 +1659,7 @@ fn panicking_collect_telemetry_handler_does_not_contaminate_neighbour() {
 fn snapshot_consumed_after_extension_drop_retains_identity() {
     // An extension publishes a snapshot, then is fully torn down
     // (entity unregistered via Drop). The in-flight snapshot must
-    // still be consumable with its key/values intact — snapshots are
+    // still be consumable with its key/values intact -- snapshots are
     // value types, not references into the registry.
     use crate::extension::wrapper::ExtensionVariant;
     use otap_df_telemetry::reporter::MetricsReporter;
@@ -1707,7 +1707,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
         // the host releasing the extension after shutdown.
         let _ = registry.unregister_entity(entity);
 
-        // Now consume the snapshot — it must still resolve to the same
+        // Now consume the snapshot -- it must still resolve to the same
         // key and carry the recorded value.
         let snap =
             tokio::time::timeout(std::time::Duration::from_secs(2), snapshot_rx.recv_async())
@@ -1736,7 +1736,7 @@ fn snapshot_consumed_after_extension_drop_retains_identity() {
 fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle() {
     // `wire_telemetry` on a dual bundle must mint two distinct entity
     // keys (one per variant). Re-running the wire/drop cycle must
-    // return entity count to baseline each time — guards against
+    // return entity count to baseline each time -- guards against
     // partial-cleanup leaks under repeated registration.
     let (ctx, registry) = crate::testing::test_extension_ctx();
     let baseline = registry.entity_count();
@@ -1778,7 +1778,7 @@ fn wire_telemetry_dual_returns_distinct_keys_and_releases_all_entities_per_cycle
     }
 }
 
-/// `Shutdown` must preempt any backlog on the FIFO control channel —
+/// `Shutdown` must preempt any backlog on the FIFO control channel --
 /// it rides a dedicated oneshot the wrapper checks via biased select.
 #[tokio::test(flavor = "current_thread")]
 async fn shutdown_preempts_queued_collect_telemetry_on_control_channel() {
@@ -1808,7 +1808,7 @@ async fn shutdown_preempts_queued_collect_telemetry_on_control_channel() {
     let first = control.recv().await.expect("recv returns a message");
     assert!(
         matches!(first, ExtensionControlMsg::Shutdown { .. }),
-        "Shutdown must be delivered before queued CollectTelemetry — \
+        "Shutdown must be delivered before queued CollectTelemetry \u{2014} \
          the dedicated shutdown channel must preempt the FIFO control channel"
     );
     assert!(

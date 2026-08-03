@@ -5,22 +5,22 @@
 //!
 //! ```text
 //! MetricsData
-//! └─── ResourceMetrics
-//!   ├── Resource
-//!   ├── SchemaURL
-//!   └── ScopeMetrics
-//!      ├── Scope
-//!      ├── SchemaURL
-//!      └── Metric
-//!         ├── Name
-//!         ├── Description
-//!         ├── Unit
-//!         └── data
-//!            ├── Gauge
-//!            ├── Sum
-//!            ├── Histogram
-//!            ├── ExponentialHistogram
-//!            └── Summary
+//! +--- ResourceMetrics
+//!   +-- Resource
+//!   +-- SchemaURL
+//!   +-- ScopeMetrics
+//!      +-- Scope
+//!      +-- SchemaURL
+//!      +-- Metric
+//!         +-- Name
+//!         +-- Description
+//!         +-- Unit
+//!         +-- data
+//!            +-- Gauge
+//!            +-- Sum
+//!            +-- Histogram
+//!            +-- ExponentialHistogram
+//!            +-- Summary
 //! ```
 
 use crate::views::{

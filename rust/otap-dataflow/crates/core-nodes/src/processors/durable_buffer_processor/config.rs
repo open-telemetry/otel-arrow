@@ -8,8 +8,8 @@
 //! The durable buffer should be connected with `RoundRobin` (or `Random`/`LeastLoaded`)
 //! dispatch on its incoming edge. Using `Broadcast` will cause each message to be persisted
 //! multiple times (once per core), leading to:
-//! - N× storage consumption
-//! - N× duplicate messages forwarded downstream
+//! - Nx storage consumption
+//! - Nx duplicate messages forwarded downstream
 //!
 //! See the [module documentation](super) for more details.
 
@@ -152,7 +152,7 @@ pub struct DurableBufferConfig {
     )]
     pub max_segment_open_duration: Duration,
 
-    // ─── Retry Configuration ────────────────────────────────────────────────
+    // --- Retry Configuration ------------------------------------------------
     /// Initial retry delay after first NACK (default: 1s).
     ///
     /// Used as the base for exponential backoff calculation.

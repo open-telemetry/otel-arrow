@@ -1,0 +1,9 @@
+change_type: breaking
+component: pipeline
+note: "Replace transform processor message counters with bounded operation outcome and failure classification metrics."
+issues: [3530]
+subtext: |
+  Migration: In dashboards, alerts, and queries, replace
+  `processor.transform.msgs.transformed` and `processor.transform.msgs.transform.failed`
+  with `processor.transform.operations` and `processor.transform.failures`.
+  Filter by `language`, `signal`, `outcome`, and `error.type`.

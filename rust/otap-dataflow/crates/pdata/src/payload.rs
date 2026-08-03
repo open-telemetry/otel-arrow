@@ -58,25 +58,25 @@
 //!
 //! Internally, conversions are happening using various utility functions:
 //! ```text
-//!                                      ┌───────────────────────┐
-//!                                      │                       │
-//!                                      │      OTLP Bytes       │
-//!                                      │                       │
-//!                                      └───┬───────────────────┘
-//!                                          │                 ▲
-//!                                          │                 │
-//!                                          │                 │
-//!                                          ▼                 │
+//!                                      +-----------------------+
+//!                                      |                       |
+//!                                      |      OTLP Bytes       |
+//!                                      |                       |
+//!                                      +---+-------------------+
+//!                                          |                 ^
+//!                                          |                 |
+//!                                          |                 |
+//!                                          v                 |
 //!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
-//!                                          │                 ▲
-//!                                          │                 │
-//!                                          │                 │
-//!                                          ▼                 │
-//!                                      ┌─────────────────────┴───┐
-//!                                      │                         │
-//!                                      │    OTAP Arrow Records   │
-//!                                      │                         │
-//!                                      └─────────────────────────┘
+//!                                          |                 ^
+//!                                          |                 |
+//!                                          |                 |
+//!                                          v                 |
+//!                                      +---------------------+---+
+//!                                      |                         |
+//!                                      |    OTAP Arrow Records   |
+//!                                      |                         |
+//!                                      +-------------------------+
 //! ```
 // ^^ TODO we're currently in the process of reworking conversion between OTLP & OTAP to go
 // directly from OTAP -> OTLP bytes. The utility functions we use might change as part of

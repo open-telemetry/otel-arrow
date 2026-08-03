@@ -288,12 +288,17 @@ Result:
 
 ### Unified Metrics
 
-A single `MetricSet` tracks receiver activity across both protocols:
+The receiver reports bounded, enum-based measurement attributes across both
+protocols:
 
-- `requests_started` / `requests_completed`
-- `acks_received` / `nacks_received`
-- `rejected_requests`
-- `transport_errors`
+- `receiver.otlp.requests.started`, `completed`, and `payload_size` use
+  `signal` and `protocol`.
+- `receiver.otlp.rejections.requests` uses `protocol` and `error.type`.
+- `receiver.otlp.acknowledgements.responses` uses `signal` and `outcome`.
+- `receiver.otlp.transport.errors` uses `protocol`.
+
+The attributes are measurement-time dimensions only; no registration-time
+copies of these dimensions are emitted.
 
 ## Configuration
 

@@ -72,7 +72,7 @@ use tikv_jemallocator::Jemalloc;
 // Global allocator selection.
 // -----------------------------------------------------------------------------
 cfg_if! {
-    // dhat (profiling) — wins everywhere when enabled
+    // dhat (profiling) -- wins everywhere when enabled
     if #[cfg(all(not(tarpaulin_include), feature = "dhat-heap"))] {
         #[global_allocator]
         static GLOBAL: dhat::Alloc = dhat::Alloc;

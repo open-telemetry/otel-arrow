@@ -228,7 +228,7 @@ mod test {
         builder.append_value(false);
         builder.append_nulls(2);
         builder.append_value(false);
-        // mix of false and null — still all defaults, so skip producing an array
+        // mix of false and null -- still all defaults, so skip producing an array
         assert!(builder.finish().is_none());
     }
 
