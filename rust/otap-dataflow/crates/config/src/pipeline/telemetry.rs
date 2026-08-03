@@ -25,9 +25,15 @@ pub struct TelemetryConfig {
     /// Resource attributes to associate with telemetry data.
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
-    /// Resource detectors to run for auto-detected telemetry attributes.
-    /// Defaults to `["service_instance", "env", "service_name"]`. Static `resource`
-    /// attributes take precedence over detected ones. An empty list disables auto-detection.
+    /// Resource detectors to run for auto-detected telemetry attributes. Explicitly configured
+    /// `resource` attributes take precedence over attributes from detectors. An empty list
+    /// disables auto-detection; an unrecognized detector name fails engine startup.
+    ///
+    /// Defaults to `["service_instance", "env", "service_name"]`. Supported detectors: `env`,
+    /// `service_name`, `service_instance`, `host`, `os`, `process`, `container`, `k8s`. See the
+    /// [`opentelemetry_sdk::resource`](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/resource/)
+    /// and [`opentelemetry-resource-detectors`](https://docs.rs/opentelemetry-resource-detectors)
+    /// docs for what each detector emits.
     #[serde(default = "default_detectors")]
     pub detectors: Vec<String>,
 }

@@ -149,11 +149,12 @@ once_cell = "1.20.2"
 # exporters, hence the "logs" feature.
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs"]}
 
-# The SDK is pulled in as a slim, detector-only dependency (`default-features = false`) for its
-# `Resource` type and the `ResourceDetector` trait. Note the work for the slim sdk is finished
-# upstream in opentelemetry-rust #3593, but pending a release. Version 0.32.1 is not slim, but the
-# next version will be.
-opentelemetry = "0.32.0"
+# Pulled in only for the `Resource` type and `ResourceDetector` trait (detector-only), so both use
+# `default-features = false` to drop trace/metrics/logs. Two caveats keep this from being fully slim
+# today: opentelemetry_sdk 0.32.1 predates the slimming in opentelemetry-rust #3593 (unreleased), and
+# the contrib resource-detectors crate still enables opentelemetry's default features, so they are
+# pulled in transitively until fixed upstream.
+opentelemetry = { version = "0.32.0", default-features = false }
 opentelemetry_sdk = { version = "0.32.1", default-features = false }
 
 parking_lot = "0.12.5"
