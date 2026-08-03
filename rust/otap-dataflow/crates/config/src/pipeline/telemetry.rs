@@ -78,10 +78,9 @@ const fn default_reporting_interval() -> Duration {
 
 /// Detectors run when config does not specify a `detectors` list.
 ///
-/// `service_instance` generates a stable id, `env` injects `OTEL_RESOURCE_ATTRIBUTES`,
-/// and `service_name` sets `service.name` (from `OTEL_SERVICE_NAME`, falling back to
-/// `unknown_service`). Host/OS/process/container/k8s detectors probe their surroundings
-/// and are opt-in.
+/// `service_instance` generates a stable id, `env` injects `OTEL_RESOURCE_ATTRIBUTES`, and
+/// `service_name` sets `service.name` from `OTEL_SERVICE_NAME`. Host/OS/process/container/k8s
+///  detectors probe their surroundings and are opt-in.
 fn default_detectors() -> Vec<String> {
     vec![
         "service_instance".to_string(),
