@@ -115,6 +115,44 @@ impl FilterProcessor {
             metric_id_pool: IdBitmapPool::new(),
         })
     }
+
+    fn record_batch_path_metrics(&mut self, signal: SignalType) {
+        match signal {
+            SignalType::Metrics => {
+                let has_include = self.config.metric_filters().has_include();
+                let has_exclude = self.config.metric_filters().has_exclude();
+                self.metrics.metric_batches_seen.inc();
+                if has_include {
+                    self.metrics.metric_include_configured_batches.inc();
+                }
+                if has_exclude {
+                    self.metrics.metric_exclude_configured_batches.inc();
+                }
+            }
+            SignalType::Logs => {
+                let has_include = self.config.log_filters().has_include();
+                let has_exclude = self.config.log_filters().has_exclude();
+                self.metrics.log_batches_seen.inc();
+                if has_include {
+                    self.metrics.log_include_configured_batches.inc();
+                }
+                if has_exclude {
+                    self.metrics.log_exclude_configured_batches.inc();
+                }
+            }
+            SignalType::Traces => {
+                let has_include = self.config.trace_filters().has_include();
+                let has_exclude = self.config.trace_filters().has_exclude();
+                self.metrics.span_batches_seen.inc();
+                if has_include {
+                    self.metrics.span_include_configured_batches.inc();
+                }
+                if has_exclude {
+                    self.metrics.span_exclude_configured_batches.inc();
+                }
+            }
+        }
+    }
 }
 
 #[async_trait(?Send)]
@@ -143,6 +181,10 @@ impl local::Processor<OtapPdata> for FilterProcessor {
             }
             Message::PData(pdata) => {
                 let signal = pdata.signal_type();
+                // Record path metrics before conversion/decode so `*_batches_seen`
+                // and the configured-path counters reflect batches received by this
+                // processor, including any that later fail conversion or decode.
+                self.record_batch_path_metrics(signal);
                 // convert to arrow records
                 let (context, payload) = pdata.into_parts();
 
@@ -209,14 +251,23 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     SignalType::Metrics => {
                         self.metrics.metric_signals_consumed.add(signals_consumed);
                         self.metrics.metric_signals_filtered.add(signals_filtered);
+                        self.metrics
+                            .metric_signals_kept
+                            .add(signals_consumed.saturating_sub(signals_filtered));
                     }
                     SignalType::Logs => {
                         self.metrics.log_signals_consumed.add(signals_consumed);
                         self.metrics.log_signals_filtered.add(signals_filtered);
+                        self.metrics
+                            .log_signals_kept
+                            .add(signals_consumed.saturating_sub(signals_filtered));
                     }
                     SignalType::Traces => {
                         self.metrics.span_signals_consumed.add(signals_consumed);
                         self.metrics.span_signals_filtered.add(signals_filtered);
+                        self.metrics
+                            .span_signals_kept
+                            .add(signals_consumed.saturating_sub(signals_filtered));
                     }
                 }
 
@@ -258,6 +309,8 @@ mod tests {
         metrics::{MetricFilter, MetricMatchProperties},
         traces::{TraceFilter, TraceMatchProperties},
     };
+    use otap_df_pdata::otap::{OtapArrowRecords, OtapBatchStore};
+    use otap_df_pdata::otlp::metrics::MetricType;
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
@@ -272,6 +325,7 @@ mod tests {
             status::StatusCode,
         },
     };
+    use otap_df_pdata::{metrics, record_batch};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
     use serde_json::json;
@@ -1849,5 +1903,362 @@ mod tests {
             .set_processor(processor)
             .run_test(scenario_traces(expected_data))
             .validate(validation_procedure());
+    }
+
+    /// Reads a single counter value from the `processor.filter.pdata` metric set.
+    /// Returns 0 when the metric has not been reported.
+    fn read_filter_pdata_metric(
+        telemetry_registry: &TelemetryRegistryHandle,
+        metric_name: &str,
+    ) -> u64 {
+        let mut value = 0u64;
+        telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
+            if desc.name == "processor.filter.pdata" {
+                for (field, metric_value) in iter {
+                    if field.name == metric_name {
+                        value = metric_value.to_u64_lossy();
+                    }
+                }
+            }
+        });
+        value
+    }
+
+    #[test]
+    fn test_filter_processor_logs_path_and_kept_metrics() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        // Include-only log filter: the include path is configured, the exclude
+        // path is not. Keeps ERROR records only.
+        let include_props = LogMatchProperties::new(
+            MatchType::Strict,
+            Vec::new(),
+            Vec::new(),
+            vec!["ERROR".to_string()],
+            None,
+            Vec::new(),
+        );
+        let log_filter = LogFilter::new(Some(include_props), None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    let mut bytes = vec![];
+                    build_logs_1()
+                        .encode(&mut bytes)
+                        .expect("failed to encode log data into bytes");
+                    let otlp_logs_bytes = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(bytes.into()).into(),
+                    );
+                    ctx.process(Message::PData(otlp_logs_bytes))
+                        .await
+                        .expect("failed to process");
+                    let _ = ctx.drain_pdata().await;
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    // The CollectTelemetry control message above is processed
+                    // asynchronously; give the collection loop time to drain.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "log.batches.seen");
+                    let include_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.include.configured.batches",
+                    );
+                    let exclude_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.exclude.configured.batches",
+                    );
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "log.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.filtered");
+                    let metric_batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.batches.seen");
+                    let span_batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "span.batches.seen");
+
+                    assert_eq!(batches_seen, 1, "log.batches.seen");
+                    assert_eq!(include_configured, 1, "log.include.configured.batches");
+                    assert_eq!(exclude_configured, 0, "log.exclude.configured.batches");
+                    assert!(consumed >= 1, "log.signals.consumed should be >= 1");
+                    assert!(kept >= 1, "log.signals.kept should be >= 1");
+                    assert_eq!(consumed, kept + filtered, "consumed == kept + filtered");
+                    assert_eq!(metric_batches_seen, 0, "metric.batches.seen");
+                    assert_eq!(span_batches_seen, 0, "span.batches.seen");
+                })
+            });
+    }
+
+    #[test]
+    fn test_filter_processor_logs_pass_through_kept_metrics() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        // Neither include nor exclude configured: the payload passes through
+        // untouched. The kept metric must reflect all forwarded signals and
+        // filtered must be 0. Regression test for the pass-through branch that
+        // previously reported every signal as filtered (kept == 0).
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    let mut bytes = vec![];
+                    build_logs_1()
+                        .encode(&mut bytes)
+                        .expect("failed to encode log data into bytes");
+                    let otlp_logs_bytes = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(bytes.into()).into(),
+                    );
+                    ctx.process(Message::PData(otlp_logs_bytes))
+                        .await
+                        .expect("failed to process");
+                    let _ = ctx.drain_pdata().await;
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    // The CollectTelemetry control message above is processed
+                    // asynchronously; give the collection loop time to drain.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "log.batches.seen");
+                    let include_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.include.configured.batches",
+                    );
+                    let exclude_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "log.exclude.configured.batches",
+                    );
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "log.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.filtered");
+
+                    assert_eq!(batches_seen, 1, "log.batches.seen");
+                    assert_eq!(include_configured, 0, "log.include.configured.batches");
+                    assert_eq!(exclude_configured, 0, "log.exclude.configured.batches");
+                    assert!(consumed >= 1, "log.signals.consumed should be >= 1");
+                    assert_eq!(
+                        filtered, 0,
+                        "log.signals.filtered must be 0 in pass-through"
+                    );
+                    assert_eq!(
+                        kept, consumed,
+                        "log.signals.kept must equal consumed in pass-through"
+                    );
+                })
+            });
+    }
+
+    #[test]
+    fn test_filter_processor_records_path_metrics_when_filtering_fails() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        let metric_props = MetricMatchProperties::new(MatchType::Strict, vec!["keep".into()]);
+        let metric_filter = MetricFilter::new(Some(metric_props), None);
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new_with_metrics(metric_filter, log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    #[rustfmt::skip]
+                    let otap_metrics = OtapArrowRecords::Metrics(
+                        metrics!(
+                            (UnivariateMetrics,
+                                ("id", UInt16, [0u16, 1]),
+                                ("metric_type", UInt8, [MetricType::Gauge as u8, MetricType::Gauge as u8]),
+                                ("name", Utf8, ["keep", "drop"])),
+                            (ResourceAttrs,
+                                ("parent_id", UInt16, [0u16]))
+                        )
+                    );
+                    let otap_metrics = OtapPdata::new_default(otap_metrics.into());
+                    let result = ctx.process(Message::PData(otap_metrics)).await;
+                    assert!(
+                        result.is_err(),
+                        "missing resource.id for ResourceAttrs should fail"
+                    );
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.batches.seen");
+                    let include_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "metric.include.configured.batches",
+                    );
+                    let exclude_configured = read_filter_pdata_metric(
+                        &telemetry_registry,
+                        "metric.exclude.configured.batches",
+                    );
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "metric.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "metric.signals.filtered");
+
+                    assert_eq!(batches_seen, 1, "metric.batches.seen");
+                    assert_eq!(include_configured, 1, "metric.include.configured.batches");
+                    assert_eq!(exclude_configured, 0, "metric.exclude.configured.batches");
+                    assert_eq!(consumed, 0, "metric.signals.consumed");
+                    assert_eq!(kept, 0, "metric.signals.kept");
+                    assert_eq!(filtered, 0, "metric.signals.filtered");
+                })
+            });
+    }
+
+    #[test]
+    fn test_filter_processor_counts_batch_seen_when_processing_fails() {
+        let test_runtime = TestRuntime::new();
+        let telemetry_registry = test_runtime.metrics_registry();
+        let metrics_reporter = test_runtime.metrics_reporter();
+
+        // No include/exclude filters configured: every record would be kept.
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new(log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let controller_ctx = ControllerContext::new(telemetry_registry.clone());
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| {
+                Box::pin(async move {
+                    // Malformed OTLP proto bytes that fail during processing. Because
+                    // `batches_seen` is recorded on receipt (before conversion/decode
+                    // and filtering), the batch is still counted even though it is
+                    // never successfully filtered and no signals are consumed/kept.
+                    let bad_bytes = vec![0x00_u8];
+                    let otlp_logs_bytes = OtapPdata::new_default(
+                        OtlpProtoBytes::ExportLogsRequest(bad_bytes.into()).into(),
+                    );
+                    let result = ctx.process(Message::PData(otlp_logs_bytes)).await;
+                    assert!(
+                        result.is_err(),
+                        "malformed OTLP proto bytes should fail to process"
+                    );
+
+                    ctx.process(Message::Control(
+                        otap_df_engine::control::NodeControlMsg::CollectTelemetry {
+                            metrics_reporter,
+                        },
+                    ))
+                    .await
+                    .expect("collect telemetry");
+                })
+            })
+            .validate(move |_ctx| {
+                Box::pin(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+                    // `batches_seen` is recorded on receipt (before conversion/decode
+                    // and filtering), so a batch that fails to process is still counted
+                    // as received, while no signals are consumed/kept/filtered.
+                    let batches_seen =
+                        read_filter_pdata_metric(&telemetry_registry, "log.batches.seen");
+                    let consumed =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.consumed");
+                    let kept = read_filter_pdata_metric(&telemetry_registry, "log.signals.kept");
+                    let filtered =
+                        read_filter_pdata_metric(&telemetry_registry, "log.signals.filtered");
+
+                    assert_eq!(batches_seen, 1, "log.batches.seen");
+                    assert_eq!(consumed, 0, "log.signals.consumed");
+                    assert_eq!(kept, 0, "log.signals.kept");
+                    assert_eq!(filtered, 0, "log.signals.filtered");
+                })
+            });
     }
 }
