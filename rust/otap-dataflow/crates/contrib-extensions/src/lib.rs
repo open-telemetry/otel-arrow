@@ -12,3 +12,6 @@ pub mod azure_identity_auth;
 
 #[cfg(feature = "oauth2-client-auth-extension")]
 pub mod oauth2_client_auth;
+
+/// Shared functions and data types for contrib extension implementations.
+pub mod common;

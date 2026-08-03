@@ -163,26 +163,47 @@ flowchart LR
 
 ### Internal state
 
+The cache, refresh loop, and capability implementation are not specific to
+OAuth 2.0, so they live in the shared `crate::common::token_refresh` module and are
+reused by every bearer-token extension (see
+[`azure_identity_auth`](../azure_identity_auth/design.md)). This extension is a
+type alias over that generic machinery:
+
+```rust
+pub type OAuth2ClientAuthExtension = TokenProviderExtension<Auth, OAuth2ClientAuthMetrics>;
+```
+
 ```rust
 #[derive(Clone)]
-pub struct OAuth2ClientAuthExtension {
-    inner: Arc<Inner>,
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
 }
 
-struct Inner {
-    auth: Auth,                                       // oauth2 client + grant + scopes
+struct Inner<S, M> {
+    source: S,                                        // oauth2 client + grant + scopes
+    expiry_buffer: Duration,                          // refresh skew (configurable here)
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
     cap_err: CapabilityErrorSource<BearerTokenProvider>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
     last_failure: std::sync::Mutex<Option<Instant>>,  // negative cache: throttle slow-path retries
-    metrics: std::sync::Mutex<OAuth2ClientAuthMetricsTracker>,
+    metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
 }
 ```
 
 All mutable state lives behind `Arc<Inner>` so the engine can clone the extension
 freely. The `fetch_lock` is an async `Mutex` (held across an `.await`); the
 metrics `Mutex` is a `std` `Mutex` whose critical sections are short and never
-held across an `.await`. Only the `auth` field differs from the Azure extension.
+held across an `.await`.
+
+Only two things are OAuth-specific:
+
+- `Auth` implements `token_refresh::TokenSource`: `fetch_token()` dispatches on
+  the configured grant type (client credentials or JWT bearer), and
+  `log_refresh_failure()` emits the `oauth2_client_auth.token_refresh_failed`
+  event.
+- `OAuth2ClientAuthMetrics` (metric set `extension.oauth2_client_auth`)
+  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
+  latency histogram to the generic tracker.
 
 ## Configuration
 
@@ -307,9 +328,10 @@ TLS relies on the process-wide `rustls` crypto provider described under
 
 ## Refresh Loop
 
-`start()` runs a `select!` loop with two arms, identical in shape to the Azure
-extension's loop (control channel + refresh timer); only the acquisition call and
-the `expiry_buffer` source differ:
+`start()` runs a `select!` loop with two arms. The loop is the shared one in
+`crate::common::token_refresh`, so it is literally the same code the Azure extension
+runs (control channel + refresh timer); only the `TokenSource` acquisition call
+and the `expiry_buffer` value differ:
 
 1. **Control channel** (`ctrl.recv()`): `Shutdown` returns the final metric
    snapshot as the terminal state; `Config` is a no-op in v1; `CollectTelemetry`
@@ -574,9 +596,6 @@ OAuth-specific coverage:
 - **Broader extension scope.** Hoist to group/engine scope (Phase 2) for genuine
   cross-core token-cache sharing (see
   [Extension Scopes](../../../../docs/extension-requirements.md#extension-scopes)).
-- **Shared token-source module.** Factor the `watch`-cache + refresh-loop +
-  `fetch_lock` machinery common to this and the Azure extension into a reusable
-  internal helper.
 
 ## References
 

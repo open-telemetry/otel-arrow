@@ -10,13 +10,13 @@
 mod auth;
 pub mod config;
 pub mod error;
-mod extension;
 mod metrics;
 
 #[cfg(test)]
 mod tests;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
@@ -33,11 +33,19 @@ use tokio::sync::watch;
 
 use self::auth::Auth;
 use self::config::Config;
-use self::extension::AzureIdentityAuthExtension;
-use self::metrics::{AzureIdentityAuthMetrics, AzureIdentityAuthMetricsTracker};
+use self::metrics::AzureIdentityAuthMetrics;
+use crate::common::token_refresh::{TokenProviderExtension, TokenProviderMetricsTracker};
+
+/// The Azure Identity Auth extension: the shared bearer-token refresher driven
+/// by an Azure credential.
+pub type AzureIdentityAuthExtension = TokenProviderExtension<Auth, AzureIdentityAuthMetrics>;
 
 /// URN under which this extension is registered.
 pub const AZURE_IDENTITY_AUTH_URN: &str = "urn:microsoft:extension:azure_identity_auth";
+
+/// Refresh this many seconds before `expires_on`. Not user-configurable: Azure
+/// token lifetimes are fixed by the platform.
+const TOKEN_EXPIRY_BUFFER_SECS: u64 = 299;
 
 /// Deserializes and validates the extension's user configuration.
 fn parse_config(config: &serde_json::Value) -> Result<Config, ConfigError> {
@@ -73,12 +81,18 @@ fn create(
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
     let metric_set = ext_ctx.register_metric_set_for_entity::<AzureIdentityAuthMetrics>(entity_key);
-    let tracker = AzureIdentityAuthMetricsTracker::new(metric_set);
+    let tracker = TokenProviderMetricsTracker::new(metric_set);
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
 
-    let extension = AzureIdentityAuthExtension::new(&name, auth, tx, tracker);
+    let extension = AzureIdentityAuthExtension::new(
+        &name,
+        auth,
+        Duration::from_secs(TOKEN_EXPIRY_BUFFER_SECS),
+        tx,
+        tracker,
+    );
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()

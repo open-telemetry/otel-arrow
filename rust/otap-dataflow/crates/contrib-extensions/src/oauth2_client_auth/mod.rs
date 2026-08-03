@@ -10,7 +10,6 @@
 mod auth;
 pub mod config;
 pub mod error;
-mod extension;
 mod metrics;
 
 #[cfg(test)]
@@ -33,8 +32,12 @@ use tokio::sync::watch;
 
 use self::auth::Auth;
 use self::config::Config;
-use self::extension::OAuth2ClientAuthExtension;
-use self::metrics::{OAuth2ClientAuthMetrics, OAuth2ClientAuthMetricsTracker};
+use self::metrics::OAuth2ClientAuthMetrics;
+use crate::common::token_refresh::{TokenProviderExtension, TokenProviderMetricsTracker};
+
+/// The OAuth 2.0 Client Auth extension: the shared bearer-token refresher
+/// driven by an OAuth 2.0 token endpoint.
+pub type OAuth2ClientAuthExtension = TokenProviderExtension<Auth, OAuth2ClientAuthMetrics>;
 
 /// URN under which this extension is registered.
 pub const OAUTH2_CLIENT_AUTH_URN: &str = "urn:otel:extension:oauth2_client_auth";
@@ -73,7 +76,7 @@ fn create(
     // Register a dedicated entity + metric set for this extension instance.
     let entity_key = ext_ctx.register_extension_entity(name.clone(), ExtensionVariant::Shared);
     let metric_set = ext_ctx.register_metric_set_for_entity::<OAuth2ClientAuthMetrics>(entity_key);
-    let tracker = OAuth2ClientAuthMetricsTracker::new(metric_set);
+    let tracker = TokenProviderMetricsTracker::new(metric_set);
 
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);

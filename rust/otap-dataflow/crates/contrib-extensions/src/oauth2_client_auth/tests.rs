@@ -16,9 +16,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::auth::Auth;
 use super::config::{Config, GrantType, SignatureAlgorithm};
-use super::extension::{self, OAuth2ClientAuthExtension};
-use super::metrics::{OAuth2ClientAuthMetrics, OAuth2ClientAuthMetricsTracker};
+use super::metrics::OAuth2ClientAuthMetrics;
 use super::*;
+use crate::common::token_refresh::TokenProviderMetricsTracker;
 
 // -- Helpers ---------------------------------------------------
 
@@ -35,10 +35,10 @@ fn valid_config_json(token_url: &str) -> serde_json::Value {
     })
 }
 
-fn make_tracker() -> OAuth2ClientAuthMetricsTracker {
+fn make_tracker() -> TokenProviderMetricsTracker<OAuth2ClientAuthMetrics> {
     let registry = TelemetryRegistryHandle::new();
     let metric_set = registry.register_metric_set::<OAuth2ClientAuthMetrics>(EmptyAttributes());
-    OAuth2ClientAuthMetricsTracker::new(metric_set)
+    TokenProviderMetricsTracker::new(metric_set)
 }
 
 fn make_extension(token_url: &str) -> OAuth2ClientAuthExtension {
@@ -495,7 +495,7 @@ async fn client_secret_file_rotation_takes_effect() {
 fn metrics_tracker_records_snapshots_and_reports() {
     let mut tracker = make_tracker();
 
-    assert!(format!("{tracker:?}").contains("OAuth2ClientAuthMetricsTracker"));
+    assert!(format!("{tracker:?}").contains("TokenProviderMetricsTracker"));
 
     let before = tracker.snapshot();
     assert!(
@@ -520,117 +520,6 @@ fn metrics_tracker_records_snapshots_and_reports() {
         rx.try_recv().is_ok(),
         "reporter received the metric snapshot"
     );
-}
-
-// -- schedule_next timing tests --------------------------------
-
-// Scenario: Schedule the next refresh for a token expiring in ~1 hour with a 5m buffer.
-// Guarantees: The refresh is scheduled `expiry_buffer` before expiry (~3300s out), ahead of expiry.
-#[tokio::test]
-async fn schedule_next_refreshes_before_expiry() {
-    use otap_df_engine::capability::auth::BearerToken;
-    use std::time::Instant;
-
-    let token = BearerToken::with_expiry(
-        "t".to_owned(),
-        Some(Instant::now() + Duration::from_secs(3600)),
-    );
-    let refresh_at = extension::schedule_next(&token, Duration::from_secs(300));
-    let secs = refresh_at
-        .saturating_duration_since(tokio::time::Instant::now())
-        .as_secs_f64();
-    assert!((secs - 3300.0).abs() < 5.0, "expected ~3300s, got {secs}");
-}
-
-// Scenario: Schedule the next refresh for a token expiring in 5s, where subtracting the buffer
-// would land in the past.
-// Guarantees: The schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s) rather than the past.
-#[tokio::test]
-async fn schedule_next_floors_near_expiry() {
-    use otap_df_engine::capability::auth::BearerToken;
-    use std::time::Instant;
-
-    let token =
-        BearerToken::with_expiry("t".to_owned(), Some(Instant::now() + Duration::from_secs(5)));
-    let refresh_at = extension::schedule_next(&token, Duration::from_secs(300));
-    let secs = refresh_at
-        .saturating_duration_since(tokio::time::Instant::now())
-        .as_secs_f64();
-    assert!((secs - 10.0).abs() < 2.0, "expected ~10s floor, got {secs}");
-}
-
-// Scenario: Schedule the next refresh for a token with no known expiry.
-// Guarantees: The refresh is pushed far into the future (~1 year), so it is not needlessly refreshed.
-#[tokio::test]
-async fn schedule_next_pushes_non_expiring_far_out() {
-    use otap_df_engine::capability::auth::BearerToken;
-
-    let token = BearerToken::without_expiry("t".to_owned());
-    let refresh_at = extension::schedule_next(&token, Duration::from_secs(300));
-    let secs = refresh_at
-        .saturating_duration_since(tokio::time::Instant::now())
-        .as_secs();
-    assert!(
-        secs > 300 * 24 * 60 * 60,
-        "expected far-future refresh, got {secs}s"
-    );
-}
-
-// -- retry backoff tests ---------------------------------------
-
-// Scenario: Compute the retry backoff for increasing consecutive-failure counts.
-// Guarantees: It doubles from the base delay and is clamped at the max without overflowing the shift.
-#[test]
-fn retry_backoff_grows_exponentially_and_caps() {
-    assert_eq!(extension::retry_backoff_secs(0), 10);
-    assert_eq!(extension::retry_backoff_secs(1), 20);
-    assert_eq!(extension::retry_backoff_secs(2), 40);
-    assert_eq!(extension::retry_backoff_secs(3), 80);
-    assert_eq!(extension::retry_backoff_secs(4), 160);
-    assert_eq!(extension::retry_backoff_secs(5), 300);
-    assert_eq!(extension::retry_backoff_secs(6), 300);
-    assert_eq!(extension::retry_backoff_secs(u32::MAX), 300);
-}
-
-// -- jitter_refresh tests --------------------------------------
-
-// Scenario: Jitter a refresh target that sits exactly at the minimum-refresh floor.
-// Guarantees: With no slack above the floor, the target is returned unchanged (no busy-loop pull to now).
-#[tokio::test]
-async fn jitter_refresh_preserves_min_interval_floor() {
-    let target = tokio::time::Instant::now() + Duration::from_secs(10);
-    for _ in 0..1000 {
-        assert_eq!(
-            extension::jitter_refresh(target),
-            target,
-            "near-floor target must not be jittered earlier"
-        );
-    }
-}
-
-// Scenario: Jitter a far-out refresh target repeatedly.
-// Guarantees: Jitter only moves the target earlier, never by more than REFRESH_JITTER_SECS, and
-// never before the min-interval floor.
-#[tokio::test]
-async fn jitter_refresh_stays_within_bounds() {
-    let now = tokio::time::Instant::now();
-    let target = now + Duration::from_secs(3600);
-    let floor = now + Duration::from_secs(10);
-    for _ in 0..1000 {
-        let jittered = extension::jitter_refresh(target);
-        assert!(
-            jittered <= target,
-            "jitter must only move the refresh earlier"
-        );
-        assert!(
-            jittered >= target - Duration::from_secs(60),
-            "jitter must not exceed REFRESH_JITTER_SECS"
-        );
-        assert!(
-            jittered >= floor,
-            "jitter must not precede the min-interval floor"
-        );
-    }
 }
 
 // -- JWT-bearer grant tests ------------------------------------

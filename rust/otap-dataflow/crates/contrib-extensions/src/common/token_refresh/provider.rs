@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! The OAuth 2.0 Client Auth extension: `Arc<Inner>` state, the
+//! The generic bearer-token provider extension: `Arc<Inner>` state, the
 //! `BearerTokenProvider` capability implementation, and the background refresh
 //! loop driven by the active `Extension::start()` task.
 
@@ -21,20 +21,18 @@ use otap_df_engine::extension::EffectHandler;
 use otap_df_engine::shared::capability::auth::bearer_token_provider::BearerTokenProvider as SharedBearerTokenProvider;
 use otap_df_engine::shared::extension::{ControlChannel, Extension as SharedExtension};
 use otap_df_engine::terminal_state::TerminalState;
-use otap_df_telemetry::otel_warn;
 use rand::RngExt;
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
-use super::auth::Auth;
-use super::metrics::OAuth2ClientAuthMetricsTracker;
+use super::metrics::{TokenProviderMetrics, TokenProviderMetricsTracker};
 
 /// Safety margin before actual expiry within which a cached token is treated as
-/// no longer usable. Deliberately much smaller than the configured
-/// `expiry_buffer`: the background loop refreshes ahead of expiry, but if that
-/// refresh is failing a still-valid token should keep being served (not treated
-/// as unusable early), which also avoids stampeding the token endpoint during a
-/// transient outage.
+/// no longer usable. Deliberately much smaller than the refresh `expiry_buffer`:
+/// the background loop refreshes well ahead of expiry, but if that refresh is
+/// failing a still-valid token should keep being served (not treated as unusable
+/// early), which also avoids stampeding the token endpoint during a transient
+/// outage.
 const TOKEN_USABLE_MARGIN_SECS: u64 = 30;
 /// Floor between successful refreshes; avoids busy-looping on near-expired
 /// tokens.
@@ -53,19 +51,44 @@ const REFRESH_JITTER_SECS: u64 = 60;
 /// woken by control messages in the meantime.
 const NON_EXPIRING_REFRESH_SECS: u64 = 365 * 24 * 60 * 60;
 
-/// Shared, clonable OAuth 2.0 Client Auth extension.
+/// The provider-specific half of a bearer-token extension: how one token is
+/// acquired, and how an acquisition failure is logged.
+#[async_trait]
+pub trait TokenSource: Send + Sync + 'static {
+    /// Error returned by a failed acquisition.
+    type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Acquires a single token (no retries). Retry and scheduling policy belong
+    /// to the refresh loop, not to the source.
+    async fn fetch_token(&self) -> Result<BearerToken, Self::Error>;
+
+    /// Emits the source's "refresh failed" internal log event. Owned by the
+    /// source because `otel_warn!` requires a literal event name.
+    fn log_refresh_failure(&self, error: &Self::Error);
+}
+
+/// Shared, clonable bearer-token provider extension.
 ///
 /// Every clone (consumers + the background refresh task) observes the same
 /// [`Inner`] state via `Arc`, so they share one token cache and refresh loop.
-#[derive(Clone)]
-pub struct OAuth2ClientAuthExtension {
-    inner: Arc<Inner>,
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
 }
 
-/// Shared state behind [`OAuth2ClientAuthExtension`].
-struct Inner {
-    /// OAuth 2.0 client + grant + scopes used to acquire tokens.
-    auth: Auth,
+// Manual `Clone`: deriving would add `S: Clone, M: Clone` bounds, but the state
+// is shared through the `Arc` and is never cloned itself.
+impl<S: TokenSource, M: TokenProviderMetrics> Clone for TokenProviderExtension<S, M> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+/// Shared state behind [`TokenProviderExtension`].
+struct Inner<S: TokenSource, M: TokenProviderMetrics> {
+    /// Provider-specific token source.
+    source: S,
     /// Refresh this far ahead of a token's expiry.
     expiry_buffer: Duration,
     /// Token cache + pub/sub for `token_stream()`.
@@ -79,22 +102,22 @@ struct Inner {
     last_failure: Mutex<Option<Instant>>,
     /// Metric tracker. Its critical sections are short and never span an
     /// `.await`, so a `std` `Mutex` is appropriate.
-    metrics: Mutex<OAuth2ClientAuthMetricsTracker>,
+    metrics: Mutex<TokenProviderMetricsTracker<M>>,
 }
 
-impl OAuth2ClientAuthExtension {
+impl<S: TokenSource, M: TokenProviderMetrics> TokenProviderExtension<S, M> {
     /// Builds a new extension instance.
     #[must_use]
     pub fn new(
         name: &str,
-        auth: Auth,
+        source: S,
         expiry_buffer: Duration,
         tx: watch::Sender<Option<BearerToken>>,
-        metrics: OAuth2ClientAuthMetricsTracker,
+        metrics: TokenProviderMetricsTracker<M>,
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                auth,
+                source,
                 expiry_buffer,
                 tx,
                 cap_err: CapabilityErrorSource::new(name.to_owned().into()),
@@ -106,7 +129,7 @@ impl OAuth2ClientAuthExtension {
     }
 }
 
-impl Inner {
+impl<S: TokenSource, M: TokenProviderMetrics> Inner<S, M> {
     /// Returns the cached token if it is present and still comfortably before
     /// its expiry (outside the usability safety margin).
     fn current_fresh_token(&self) -> Option<BearerToken> {
@@ -149,9 +172,9 @@ impl Inner {
     }
 
     /// Acquires a token and publishes it to consumers.
-    async fn refresh_once(&self) -> Result<BearerToken, super::error::Error> {
+    async fn refresh_once(&self) -> Result<BearerToken, S::Error> {
         let start = Instant::now();
-        match self.auth.get_token().await {
+        match self.source.fetch_token().await {
             Ok(token) => {
                 let latency_ms = start.elapsed().as_secs_f64() * 1_000.0;
                 // Publish the token to consumers and update the cache. Using
@@ -257,7 +280,9 @@ pub(crate) fn jitter_refresh(target: tokio::time::Instant) -> tokio::time::Insta
 }
 
 #[async_trait]
-impl SharedBearerTokenProvider for OAuth2ClientAuthExtension {
+impl<S: TokenSource, M: TokenProviderMetrics> SharedBearerTokenProvider
+    for TokenProviderExtension<S, M>
+{
     async fn get_token(&self) -> Result<BearerToken, CapabilityError> {
         // Fast path: lock-free read of the watch cache.
         if let Some(token) = self.inner.current_fresh_token() {
@@ -297,7 +322,7 @@ impl SharedBearerTokenProvider for OAuth2ClientAuthExtension {
 }
 
 #[async_trait]
-impl SharedExtension for OAuth2ClientAuthExtension {
+impl<S: TokenSource, M: TokenProviderMetrics> SharedExtension for TokenProviderExtension<S, M> {
     async fn start(
         self: Box<Self>,
         mut ctrl: ControlChannel,
@@ -412,10 +437,7 @@ impl SharedExtension for OAuth2ClientAuthExtension {
                             }
                         }
                         Err(error) => {
-                            otel_warn!(
-                                "oauth2_client_auth.token_refresh_failed",
-                                error = %error
-                            );
+                            inner.source.log_refresh_failure(&error);
                             // Bounded exponential backoff with jitter so many
                             // per-core extensions do not stampede the token
                             // endpoint on the same cadence during an outage.

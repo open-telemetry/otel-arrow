@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use oauth2::basic::{BasicClient, BasicTokenResponse};
 use oauth2::{
@@ -22,6 +23,7 @@ use serde::Deserialize;
 
 use super::config::{Config, GrantType, SignatureAlgorithm};
 use super::error::Error;
+use crate::common::token_refresh::TokenSource;
 
 /// URN grant type sent to the token endpoint for the JWT-bearer grant.
 const JWT_BEARER_GRANT_TYPE: &str = "urn:ietf:params:oauth:grant-type:jwt-bearer";
@@ -117,15 +119,6 @@ impl Auth {
                 .collect(),
             client,
         })
-    }
-
-    /// Acquires a single token (no retries) and converts it into a
-    /// [`BearerToken`].
-    pub async fn get_token(&self) -> Result<BearerToken, Error> {
-        match self.grant_type {
-            GrantType::ClientCredentials => self.get_token_client_credentials().await,
-            GrantType::JwtBearer => self.get_token_jwt_bearer().await,
-        }
     }
 
     /// Acquires a token using the client-credentials grant.
@@ -268,6 +261,24 @@ impl Auth {
         encode(&header, &serde_json::Value::Object(claims), &key).map_err(|e| Error::JwtSigning {
             message: e.to_string(),
         })
+    }
+}
+
+#[async_trait]
+impl TokenSource for Auth {
+    type Error = Error;
+
+    /// Acquires a single token (no retries) and converts it into a
+    /// [`BearerToken`].
+    async fn fetch_token(&self) -> Result<BearerToken, Error> {
+        match self.grant_type {
+            GrantType::ClientCredentials => self.get_token_client_credentials().await,
+            GrantType::JwtBearer => self.get_token_jwt_bearer().await,
+        }
+    }
+
+    fn log_refresh_failure(&self, error: &Error) {
+        otel_warn!("oauth2_client_auth.token_refresh_failed", error = %error);
     }
 }
 

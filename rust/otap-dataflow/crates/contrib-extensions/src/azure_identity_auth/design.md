@@ -207,18 +207,27 @@ flowchart LR
 
 ### Internal state
 
+The cache, refresh loop, and capability implementation are not specific to
+Azure, so they live in the shared `crate::common::token_refresh` module and can be reused by other active bearer-token extensions (see [`oauth2_client_auth`](../oauth2_client_auth/design.md)). This extension is a type alias over that generic machinery:
+
+```rust
+pub type AzureIdentityAuthExtension = TokenProviderExtension<Auth, AzureIdentityAuthMetrics>;
+```
+
 ```rust
 #[derive(Clone)]
-pub struct AzureIdentityAuthExtension {
-    inner: Arc<Inner>,
+pub struct TokenProviderExtension<S: TokenSource, M: TokenProviderMetrics> {
+    inner: Arc<Inner<S, M>>,
 }
 
-struct Inner {
-    auth: Auth,                                       // credential + scope
+struct Inner<S, M> {
+    source: S,                                        // credential + scope
+    expiry_buffer: Duration,                          // refresh skew
     tx: watch::Sender<Option<BearerToken>>,           // token cache + pub/sub
     cap_err: CapabilityErrorSource<BearerTokenProvider>,
     fetch_lock: tokio::sync::Mutex<()>,               // coalesce slow-path fetches
-    metrics: std::sync::Mutex<AzureIdentityAuthMetricsTracker>,
+    last_failure: std::sync::Mutex<Option<Instant>>,  // negative cache
+    metrics: std::sync::Mutex<TokenProviderMetricsTracker<M>>,
 }
 ```
 
@@ -226,6 +235,19 @@ All mutable state lives behind `Arc<Inner>` so the engine can clone the
 extension freely. The `fetch_lock` is an async `Mutex` (held across an
 `.await`); the metrics `Mutex` is a `std` `Mutex` whose critical sections are
 short and never held across an `.await`.
+
+Only two things are Azure-specific:
+
+- `Auth` implements `token_refresh::TokenSource`: `fetch_token()` calls the
+  `azure_identity` credential for the configured scope, and
+  `log_refresh_failure()` emits the `azure_identity_auth.token_refresh_failed`
+  event.
+- `AzureIdentityAuthMetrics` (metric set `extension.azure_identity_auth`)
+  implements `token_refresh::TokenProviderMetrics`, exposing its counters and
+  latency histogram to the generic tracker.
+
+The `expiry_buffer` is fixed at `TOKEN_EXPIRY_BUFFER_SECS` (299 s) for this
+extension; it is not user-configurable.
 
 ## Configuration
 
