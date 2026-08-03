@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: "Generalize `AuthorizedIdentity` into a scheme-agnostic claims model: an optional `principal`, an optional `scheme` tag, and a `claims` map of single- or multi-valued `ClaimValue` keyed by claim name."
+note: "Generalize `AuthorizedIdentity` into a scheme-agnostic claims model: a `principal`, a `scheme` tag, and a `claims` map of single- or multi-valued `ClaimValue` keyed by name."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3494]
