@@ -26,6 +26,12 @@ pub fn grpc_rate_limit_status(retry_after_secs: u32) -> Status {
     Status::with_metadata(Code::ResourceExhausted, "rate limit", metadata)
 }
 
+/// Builds a gRPC `resource_exhausted` status for a weight-blind saturation refusal.
+#[must_use]
+pub fn grpc_rate_limit_saturated_status() -> Status {
+    Status::new(Code::ResourceExhausted, "rate limit")
+}
+
 /// Builds a non-retryable gRPC status for a request larger than the configured burst.
 #[must_use]
 pub fn grpc_rate_limit_burst_exceeded_status() -> Status {
@@ -114,14 +120,14 @@ where
         self.reject_next_call = false;
 
         if let (true, Some(context)) = (exhausted, self.rate_limit.as_ref()) {
-            let retry_after_secs = context
+            context
                 .rate_limiter
                 .record_probed_instance_saturation_refusal();
             context
                 .metrics
                 .lock()
                 .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit);
-            let response = grpc_rate_limit_status(retry_after_secs).into_http();
+            let response = grpc_rate_limit_saturated_status().into_http();
             return Either::Right(ready(Ok(response)));
         }
 
@@ -300,6 +306,33 @@ mod tests {
         );
     }
 
+    /// Scenario: gRPC rejects a saturated receiver before request weight is known.
+    /// Guarantees: the generic refusal is resource-exhausted without request-specific
+    /// retry pushback metadata.
+    #[test]
+    fn saturated_status_omits_retry_pushback() {
+        let status = grpc_rate_limit_saturated_status();
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert!(status.metadata().get("grpc-retry-pushback-ms").is_none());
+    }
+
+    /// Scenario: gRPC rejects a request after its weighted recovery delay is known.
+    /// Guarantees: the authoritative refusal retains exact positive retry pushback.
+    #[test]
+    fn weighted_status_includes_retry_pushback() {
+        let status = grpc_rate_limit_status(14);
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_eq!(
+            status
+                .metadata()
+                .get("grpc-retry-pushback-ms")
+                .and_then(|value| value.to_str().ok()),
+            Some("14000")
+        );
+    }
+
     /// Scenario: the gRPC rate bucket is exhausted while soft pressure is active.
     /// Guarantees: rate fast-fail rejects before polling the inner concurrency-limited service.
     #[test]
@@ -343,13 +376,7 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("8")
         );
-        assert_eq!(
-            response
-                .headers()
-                .get("grpc-retry-pushback-ms")
-                .and_then(|v| v.to_str().ok()),
-            Some("1000")
-        );
+        assert!(!response.headers().contains_key("grpc-retry-pushback-ms"));
 
         let metrics = metrics.lock();
         assert_eq!(

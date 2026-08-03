@@ -165,6 +165,10 @@ Attribute values are bounded: `signal` is `traces`, `metrics`, or `logs`;
   the configured burst is rejected as non-retryable while pressure gating is
   active: HTTP returns 413 without `Retry-After`, and gRPC sends negative retry
   pushback.
+- An exhausted receiver may reject before decompressed request weight is known.
+  This early HTTP 503 or gRPC `RESOURCE_EXHAUSTED` response has no retry hint.
+  Exact retry guidance or non-retryable oversized classification is available
+  only after the weighted admission point.
 - `wait_for_result` reflects the immediate downstream node, not necessarily the
   final exporter.
 

@@ -147,12 +147,8 @@ impl<P: PressureSource> RateGate<P> {
         self.bucket.is_exhausted()
     }
 
-    fn record_instance_saturation_refusal(&self) -> u32 {
+    fn record_instance_saturation_refusal(&self) {
         self.counters.record(AdmissionRefusal::Throttle);
-        self.bucket
-            .retry_after_nanos(1)
-            .map(retry_after_secs)
-            .unwrap_or(1)
     }
 }
 
@@ -223,12 +219,17 @@ impl SharedAdmissionGate {
         self.inner.saturated()
     }
 
-    /// Records and returns a fast refusal when the receiver-instance bucket is saturated.
+    /// Records a fast refusal when the receiver-instance bucket is saturated.
+    ///
+    /// The request weight is unknown at this boundary, so this deliberately
+    /// returns only whether a refusal was selected and no retry guidance.
     #[must_use]
-    pub fn refuse_if_instance_saturated(&self) -> Option<u32> {
-        self.inner
-            .saturated()
-            .then(|| self.inner.record_instance_saturation_refusal())
+    pub fn refuse_if_instance_saturated(&self) -> bool {
+        if !self.inner.saturated() {
+            return false;
+        }
+        self.inner.record_instance_saturation_refusal();
+        true
     }
 
     /// Records a refusal already selected by an earlier saturation probe.
@@ -237,8 +238,7 @@ impl SharedAdmissionGate {
     /// subsequent `call` uses this method exactly once when it returns the fast
     /// rejection, so central admission telemetry counts the decision without
     /// charging the bucket or counting readiness polls.
-    #[must_use]
-    pub fn record_probed_instance_saturation_refusal(&self) -> u32 {
+    pub fn record_probed_instance_saturation_refusal(&self) {
         self.inner.record_instance_saturation_refusal()
     }
 }
@@ -459,7 +459,7 @@ mod tests {
 
     /// Scenario: a transport fast-fails after a read-only saturation probe.
     /// Guarantees: recording the selected refusal increments the same central
-    /// throttle counter exactly once and returns the minimum-weight bucket recovery hint.
+    /// throttle counter exactly once without fabricating request-specific retry guidance.
     #[test]
     fn probed_saturation_refusal_is_staged_once() {
         let harness = shared_harness(RateLimitEnforcement::Enforce);
@@ -469,7 +469,7 @@ mod tests {
         }
 
         assert!(harness.gate.saturated());
-        assert_eq!(harness.gate.record_instance_saturation_refusal(), 1);
+        harness.gate.record_instance_saturation_refusal();
         assert_eq!(harness.counters.drain(), [0, 1, 0]);
     }
 

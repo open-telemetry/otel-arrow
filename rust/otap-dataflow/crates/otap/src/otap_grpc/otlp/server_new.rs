@@ -18,7 +18,9 @@ use std::task::Poll;
 use crate::accessory::slots::{Key as SlotKey, State as SlotsState};
 use crate::otlp_metrics::{OtlpProtocol, OtlpReceiverMetrics};
 use crate::pdata::{Context, OtapPdata};
-use crate::rate_limit_layer::{grpc_rate_limit_burst_exceeded_status, grpc_rate_limit_status};
+use crate::rate_limit_layer::{
+    grpc_rate_limit_burst_exceeded_status, grpc_rate_limit_saturated_status, grpc_rate_limit_status,
+};
 use bytes::{BufMut, Bytes};
 use futures::future::BoxFuture;
 use http::{Request, Response};
@@ -595,12 +597,14 @@ impl ServerCommon {
 
     fn exhausted_rate_limit_response(&self) -> Option<Response<Body>> {
         let rate_limiter = self.rate_limiter.as_ref()?;
-        let retry_after_secs = rate_limiter.refuse_if_instance_saturated()?;
+        if !rate_limiter.refuse_if_instance_saturated() {
+            return None;
+        }
 
         self.metrics
             .lock()
             .record_rejection(OtlpProtocol::Grpc, ReceiverRejectionErrorType::RateLimit);
-        Some(grpc_rate_limit_status(retry_after_secs).into_http())
+        Some(grpc_rate_limit_saturated_status().into_http())
     }
 
     fn grpc_rate_limit_context(&self) -> Option<GrpcRateLimitContext> {

@@ -3169,9 +3169,9 @@ mod tests {
 
                 assert_eq!(status.code(), tonic::Code::ResourceExhausted);
                 let (expected_message, expected_pushback) = if oversized {
-                    ("request exceeds rate limit burst", "-1")
+                    ("request exceeds rate limit burst", Some("-1"))
                 } else {
-                    ("rate limit", "1000")
+                    ("rate limit", None)
                 };
                 assert_eq!(status.message(), expected_message);
                 assert_eq!(
@@ -3179,7 +3179,7 @@ mod tests {
                         .metadata()
                         .get("grpc-retry-pushback-ms")
                         .and_then(|value| value.to_str().ok()),
-                    Some(expected_pushback)
+                    expected_pushback
                 );
 
                 {
@@ -3344,8 +3344,9 @@ mod tests {
         run_otlp_grpc_under_capacity_rate_limit_test(RateLimitEnforcement::ObserveOnly);
     }
 
-    /// Scenario: an OTLP gRPC request transiently exceeds a bucket that can hold its weight.
-    /// Guarantees: the client receives retryable pushback and the request is not admitted.
+    /// Scenario: an OTLP gRPC request reaches a saturated bucket before its weight is known.
+    /// Guarantees: the client receives a generic resource-exhausted response without
+    /// request-specific pushback, and the request is not admitted.
     #[test]
     fn test_otlp_grpc_transient_rate_limit_rejection() {
         run_otlp_grpc_rate_limit_rejection_test(false);

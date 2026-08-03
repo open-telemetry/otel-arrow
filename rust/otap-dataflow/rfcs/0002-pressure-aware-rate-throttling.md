@@ -292,10 +292,12 @@ without `Retry-After`, and gRPC returns `RESOURCE_EXHAUSTED` with negative retry
 pushback. Operators must configure `burst` at least as large as the largest
 request they intend to accept during pressure.
 
-A retryable refusal advertises the earliest whole-second delay after which the
-same weighted charge can conform to the bucket. The delay is derived from GCRA
-state, not from the memory-pressure sampling hint. Instance-wide fast refusal
-uses the corresponding minimum-unit recovery delay.
+Once request weight is known, a retryable refusal advertises the earliest
+whole-second delay after which the same weighted charge can conform to the
+bucket. The delay is derived from GCRA state, not from the memory-pressure
+sampling hint. Instance-wide fast refusal carries no retry guidance because
+request weight is unavailable and the receiver cannot yet distinguish a
+transient refusal from a permanently oversized request.
 
 The debt floor must also apply while memory is normal. The gate only rejects
 when pressure is active, but the bucket should keep charging and refilling in
@@ -407,9 +409,10 @@ The policy mode controls scoped throttling:
 Adopting this policy would require updating the phase-1 memory limiter
 documentation that describes soft pressure as informational only.
 
-The exact rejection response is receiver-specific. OTLP/HTTP should preserve the
-existing memory-pressure response shape: HTTP 503 with `Retry-After`. OTLP/gRPC
-should use `ResourceExhausted` with retry pushback metadata. Other receivers
+The exact rejection response is receiver-specific. Once request weight is
+known, OTLP/HTTP should return HTTP 503 with `Retry-After`, and OTLP/gRPC should
+return `ResourceExhausted` with retry pushback metadata. A weight-blind early
+saturation refusal uses the same status without retry guidance. Other receivers
 define equivalent protocol-specific refusal behavior.
 
 ### Bursts and Recovery

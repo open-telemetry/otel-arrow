@@ -340,6 +340,10 @@ fn rate_limit_unavailable(retry_after_secs: u32) -> Response<Full<Bytes>> {
     resource_exhausted_with_retry_after("rate limit", retry_after_secs)
 }
 
+fn rate_limit_saturated() -> Response<Full<Bytes>> {
+    rpc_status_response(StatusCode::SERVICE_UNAVAILABLE, 8, "rate limit")
+}
+
 fn rate_limit_burst_exceeded() -> Response<Full<Bytes>> {
     rpc_status_response(
         StatusCode::PAYLOAD_TOO_LARGE,
@@ -607,13 +611,13 @@ impl HttpHandler {
                 ));
             }
 
-            if let Some(retry_after_secs) = self
+            if self
                 .rate_limiter
                 .as_ref()
-                .and_then(SharedAdmissionGate::refuse_if_instance_saturated)
+                .is_some_and(SharedAdmissionGate::refuse_if_instance_saturated)
             {
                 self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                return Err(rate_limit_unavailable(retry_after_secs));
+                return Err(rate_limit_saturated());
             }
 
             // Acquire permits in a consistent order to avoid deadlocks when both gRPC and
@@ -695,13 +699,13 @@ impl HttpHandler {
                 ));
             }
 
-            if let Some(retry_after_secs) = self
+            if self
                 .rate_limiter
                 .as_ref()
-                .and_then(SharedAdmissionGate::refuse_if_instance_saturated)
+                .is_some_and(SharedAdmissionGate::refuse_if_instance_saturated)
             {
                 self.record_rejection(ReceiverRejectionErrorType::RateLimit);
-                return Err(rate_limit_unavailable(retry_after_secs));
+                return Err(rate_limit_saturated());
             }
 
             let max_len = self.settings.max_request_body_size as usize;
@@ -1650,9 +1654,10 @@ mod tests {
     }
 
     /// Scenario: an OTLP HTTP request exceeds the receiver-local rate bucket during soft pressure.
-    /// Guarantees: the client receives 503 with Retry-After and the rate-limit counters are updated.
+    /// Guarantees: the weight-blind fast refusal returns 503 without Retry-After and
+    /// updates the rate-limit counters exactly once.
     #[tokio::test]
-    async fn rate_limit_rejection_returns_http_retry_after() {
+    async fn early_rate_limit_rejection_omits_http_retry_after() {
         use http_body_util::Full;
         use hyper::Method;
         use hyper::client::conn::http1;
@@ -1767,12 +1772,7 @@ mod tests {
 
         let resp = sender.send_request(req).await.expect("response");
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            resp.headers()
-                .get(RETRY_AFTER)
-                .and_then(|v| v.to_str().ok()),
-            Some("1")
-        );
+        assert!(!resp.headers().contains_key(RETRY_AFTER));
 
         {
             let metrics = metrics.lock();
@@ -1810,7 +1810,8 @@ mod tests {
     }
 
     /// Scenario: an OTLP HTTP request arrives while the rate bucket is exhausted and permits are busy.
-    /// Guarantees: rate fast-fail returns Retry-After before waiting behind concurrency semaphores.
+    /// Guarantees: rate fast-fail returns without Retry-After before waiting behind
+    /// concurrency semaphores.
     #[tokio::test]
     async fn exhausted_rate_limit_rejects_before_concurrency_wait() {
         use http_body_util::Full;
@@ -1938,12 +1939,7 @@ mod tests {
             .expect("rate rejection should not wait for the held permit")
             .expect("response");
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(
-            resp.headers()
-                .get(RETRY_AFTER)
-                .and_then(|v| v.to_str().ok()),
-            Some("1")
-        );
+        assert!(!resp.headers().contains_key(RETRY_AFTER));
 
         {
             let metrics = metrics.lock();
@@ -1978,5 +1974,21 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         assert!(!response.headers().contains_key(http::header::RETRY_AFTER));
+    }
+
+    /// Scenario: HTTP rejects a request after its weighted recovery delay is known.
+    /// Guarantees: the authoritative refusal retains the exact Retry-After value.
+    #[test]
+    fn weighted_rate_limit_response_includes_retry_after() {
+        let response = rate_limit_unavailable(14);
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("14")
+        );
     }
 }

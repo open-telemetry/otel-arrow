@@ -346,10 +346,12 @@ reach that ceiling; if pressure then activates, admission may take up to one
 burst window to recover. Use long intervals only when that lockout behavior is
 acceptable.
 
-Retryable rate-limit responses advertise the earliest whole-second bucket
-recovery delay for the refused weight. They do not reuse the memory limiter's
-sampling retry hint. Instance-wide fast refusal uses the minimum-unit recovery
-delay because no request weight is available at that boundary.
+Once request weight is known, retryable rate-limit responses advertise the
+earliest whole-second bucket recovery delay for the refused weight. They do not
+reuse the memory limiter's sampling retry hint. Instance-wide fast refusal
+carries no retry guidance because request weight is unavailable at that
+boundary and the receiver cannot yet distinguish a transient refusal from a
+permanently oversized request.
 
 An OTLP request larger than the configured `burst` can never fit the bucket
 while pressure gating is active. HTTP rejects it with 413 and no `Retry-After`;
