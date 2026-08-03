@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Generalize `capability::auth::AuthorizedIdentity` into a scheme-agnostic claims model so one identity type serves every authentication method (Kubernetes SAT, OIDC/JWT, mutual TLS). It now carries an optional `principal`, an optional `scheme` tag, and a `claims` map of `ClaimValue` (single- or multi-valued) keyed by standard/namespaced claim names. `subject()`/`audience()` and their builders are retained as sugar over the `sub`/`aud` claims, so existing callers are unaffected.
+note: Generalize `capability::auth::AuthorizedIdentity` into a scheme-agnostic claims model so one identity type serves every authentication method (Kubernetes SAT, OIDC/JWT, mutual TLS). It now carries an optional `principal`, an optional `scheme` tag, and a `claims` map of `ClaimValue` (single- or multi-valued) keyed by standard/namespaced claim names. `subject()`/`audience()` and their builders remain as ergonomic accessors for the near-universal `sub`/`aud` claims.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3494]
