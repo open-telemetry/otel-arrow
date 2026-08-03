@@ -4,21 +4,9 @@ change_type: enhancement
 
 component: pipeline
 
-note: "Geneva exporter now supports routing logs and spans to different Geneva tables based on an attribute value via `event_name_mapping`. Logs can route on `event_name`, `resource_attribute`, `scope_attribute`, or `log_record_attribute`; spans can route on `resource_attribute`, `scope_attribute`, or `span_attribute`. The reserved keys `scope.name` and `scope.version` can be used as the routing attribute name to route on the instrumentation scope."
+note: "Geneva exporter can route logs and spans to different tables based on an attribute value via `event_name_mapping`, using resource, scope, or record/span attributes (and `event_name` for logs)."
 
 issues: [3600]
 
 subtext: |
-  Add an optional `event_name_mapping` block under `logs` and `spans` to map a routing-key attribute
-  value to a destination table name (a null mapping value uses the source value as the destination):
-    logs:
-      default_event_name: "Log"
-      event_name_mapping:
-        routing_key:
-          scope_attribute: scope.name
-        events:
-          otel-sdk: SdkLog
-          custom:
-  This also renames the internal config types `LogConfig`/`SpanConfig` to `LogsConfig`/`TracesConfig`
-  and makes the `logs`/`spans` config sections optional (omitting them falls back to the "Log"/"Span"
-  default tables), aligning the exporter config with the geneva-uploader `GenevaClientConfig`.
+  Add an optional `event_name_mapping` under `logs`/`spans` mapping a routing-key attribute value to a destination table (null value uses the source value). Also renames internal `LogConfig`/`SpanConfig` to `LogsConfig`/`TracesConfig` and makes `logs`/`spans` optional to match `GenevaClientConfig`.
