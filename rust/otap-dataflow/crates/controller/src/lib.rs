@@ -51,6 +51,7 @@ use otap_df_config::engine::{
 };
 use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
 use otap_df_config::node::{NodeKind, NodeUserConfig};
+use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
@@ -297,6 +298,39 @@ impl ControllerExtensionRegistry {
 pub struct ControllerRunOptions {
     /// Controller extension factories available to configured controller extensions.
     pub extensions: ControllerExtensionRegistry,
+    /// Build-time identity of the binary, used to seed default self-telemetry resource
+    /// attributes. Populate from the binary crate (e.g. `CARGO_BIN_NAME`/`CARGO_PKG_VERSION`).
+    pub build_info: BuildInfo,
+}
+
+/// Build-time identity of the collector binary.
+///
+/// Seeds `service.name`/`service.version` as the lowest-precedence self-telemetry resource
+/// defaults, so an unconfigured collector reports its own name and version. Explicit resource
+/// attributes and the `env`/`service_name` detectors override these. `None` fields are not seeded.
+#[derive(Clone, Debug, Default)]
+pub struct BuildInfo {
+    /// Default `service.name` (e.g. the binary name).
+    pub service_name: Option<String>,
+    /// Default `service.version` (e.g. the crate version).
+    pub service_version: Option<String>,
+}
+
+impl BuildInfo {
+    /// Non-empty build-info values as resource attribute pairs.
+    fn seed_attrs(&self) -> Vec<(String, AttributeValue)> {
+        [
+            ("service.name", self.service_name.as_deref()),
+            ("service.version", self.service_version.as_deref()),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| {
+            value
+                .filter(|v| !v.is_empty())
+                .map(|v| (key.to_string(), AttributeValue::String(v.to_string())))
+        })
+        .collect()
+    }
 }
 
 struct PreparedControllerExtension {
@@ -1225,8 +1259,8 @@ impl<
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
 
         // Inject auto-detected resource attributes into the telemetry resource map so
-        // they surface on the OTLP Resource / Prometheus target_info. Explicit
-        // config-provided keys take precedence over detected ones.
+        // they surface on the OTLP Resource / Prometheus target_info. Precedence is
+        // config > detectors > build-info defaults.
         let detected = resource_detectors::detect(&engine.telemetry.detectors).map_err(|e| {
             Error::InvalidConfiguration {
                 errors: vec![otap_df_config::error::Error::InvalidUserConfig {
@@ -1235,6 +1269,11 @@ impl<
             }
         })?;
         for (key, value) in detected {
+            let _ = engine.telemetry.resource.entry(key).or_insert(value);
+        }
+        // Seed build-info service.name/service.version at the lowest precedence: fill them only
+        // when neither config nor a detector did.
+        for (key, value) in options.build_info.seed_attrs() {
             let _ = engine.telemetry.resource.entry(key).or_insert(value);
         }
 
@@ -2373,6 +2412,24 @@ mod tests {
     use async_trait::async_trait;
     use otap_df_config::engine::{ResolvedPipelineConfig, ResolvedPipelineRole};
     use otap_df_config::node::NodeUserConfig;
+
+    /// Scenario: `BuildInfo::seed_attrs` runs with a mix of set, empty, and absent fields.
+    /// Guarantees: it yields typed pairs for non-empty values only, skipping empty and `None`.
+    #[test]
+    fn build_info_seeds_only_non_empty_values() {
+        let bi = BuildInfo {
+            service_name: Some("df_engine".to_string()),
+            service_version: Some(String::new()),
+        };
+        assert_eq!(
+            bi.seed_attrs(),
+            vec![(
+                "service.name".to_string(),
+                AttributeValue::String("df_engine".to_string())
+            )]
+        );
+        assert!(BuildInfo::default().seed_attrs().is_empty());
+    }
     use otap_df_config::policy::{CoreRange, ResolvedPolicies, ResourcesPolicy};
     use otap_df_config::topic::{TopicAckPropagationMode, TopicBroadcastOnLagPolicy};
     use otap_df_engine::config::{ExporterConfig, ProcessorConfig, ReceiverConfig};
@@ -2820,6 +2877,7 @@ groups: {{}}
                 controller_extensions_engine_config(ORDERED_CONTROLLER_EXTENSION_URN),
                 ControllerRunOptions {
                     extensions: registry,
+                    ..Default::default()
                 },
             )
             .expect("controller should run ordered test extensions");
@@ -2895,6 +2953,7 @@ groups: {{}}
                 controller_monitor_engine_config(""),
                 ControllerRunOptions {
                     extensions: ControllerExtensionRegistry::empty(),
+                    ..Default::default()
                 },
             )
             .expect_err("missing controller extension factory should fail startup");
@@ -2969,6 +3028,7 @@ groups: {{}}
                 ),
                 ControllerRunOptions {
                     extensions: registry,
+                    ..Default::default()
                 },
             )
             .expect_err("invalid controller extension config should fail startup");
@@ -3041,6 +3101,7 @@ groups: {{}}
                     engine_config,
                     ControllerRunOptions {
                         extensions: registry,
+                        ..Default::default()
                     },
                 )
                 .map_err(|err| err.to_string());
