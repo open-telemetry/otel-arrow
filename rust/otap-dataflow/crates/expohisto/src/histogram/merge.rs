@@ -1,123 +1,164 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Merge logic for combining histograms.
+//! Allocation-free merge logic for combining histograms.
 //!
-//! Both sides store their counters packed several-to-a-`u64` (see
-//! [`swar`](super::swar)), so a merge is not a bucket-by-bucket loop: it
-//! rewrites whole words at a time. Two things can differ between the sides,
-//! and both are resolved before any counter is added:
+//! Geometry selection is a read-only operation over stable snapshots. Each
+//! candidate scale and width is tested by normalizing fixed-size clones, then
+//! combining packed words into a fixed output buffer. A lane that does not fit
+//! widens the candidate and the pass repeats; otherwise the buffered words are
+//! installed in one commit, so the destination is never left partly merged.
 //!
-//! 1. **Prepare** -- Set the width to `max(W_self, W_src)` and downscale self
-//!    until the combined slot range fits in `N` words. After this the
-//!    destination's geometry is fixed, and the source's scale is at least as
-//!    fine as the destination's.
-//! 2. **Merge** -- Walk the destination word by word. For each one, gather
-//!    the source counts that land in it and repack them into the
-//!    destination's lane layout, then add the packed word with
-//!    [`swar_add_checked`].
-//!
-//! Repacking goes one of two ways, depending on whether the destination's
-//! lanes are the wider or the narrower ones, and each direction is a mirror
-//! of the other:
-//!
-//! - **many source words into one** -- widen lanes, sum across words, then
-//!   [`narrow`] and pack several sub-groups into the destination word;
-//! - **one source word across many** -- widen lanes, then [`spread`] a
-//!   contiguous slice of them into the destination's wider lanes.
-//!
-//! # Overflow during the merge
-//!
-//! Either step of the add can find a counter too large for the destination's
-//! lanes: the packed source counts alone may not fit, or they may fit but
-//! overflow when added to what is already there. Both are handled the same
-//! way -- widen the destination and repack from the source -- because
-//! widening re-lays out every lane and so invalidates an already-packed word.
-//!
-//! Packing itself can only overflow in the many-into-one direction, where
-//! several source counts are summed and then narrowed. In the other direction
-//! the destination's lanes are strictly wider than the source's, so every
-//! count fits by construction.
-//!
-//! That retry terminates, and does not disturb which source words feed which
-//! destination word, because the grouping factor
-//!
-//! ```text
-//! word_ratio_log2 = (src_scale - dest_scale) + src_width - dest_width
-//! ```
-//!
-//! is invariant under widening the destination. Widening by `k` levels raises
-//! `dest_width` by `k`, and [`widen_to`](HistogramNN::widen_to) lowers
-//! `dest_scale` by the same `k` to preserve range coverage, so the two changes
-//! cancel. Each retry therefore repacks exactly the same source words into
-//! exactly the same destination word, one width wider, and the width ladder
-//! is finite.
+//! A source holding a single bucket skips that machinery and goes through the
+//! ordinary recording path, which reaches the same geometry with less setup.
 
-use super::swar::{narrow, spread, swar_add_checked, widen};
+use super::swar::{spread, swar_add_checked};
 use super::width::Width;
-use super::{Error, HighLow, HistogramNN};
+use super::{Error, HighLow, HistogramNN, Settings};
+use crate::mapping::{MIN_SCALE, Scale};
 
-/// Result of packing source counts for one destination word, in the
-/// many-source-words-into-one direction.
-///
-/// This is deliberately not a `Result`: neither case is an error, and the
-/// caller acts on both. `TooWide` is a request to grow the destination and
-/// ask again.
-enum Packed {
-    /// Counts laid out in the destination's current lane width, ready to be
-    /// added to a destination word.
-    Word(u64),
-    /// A source count did not fit a destination lane. Carries an OR-fold of
-    /// the offending lanes, whose highest set bit gives the width the
-    /// destination must reach before the pack can be retried.
-    TooWide(u64),
+#[derive(Clone, Copy)]
+struct Geometry {
+    scale: i32,
+    width: Width,
 }
 
-/// How the source's lanes line up with the destination once the difference in
-/// scale is accounted for.
-///
-/// Merging into a coarser destination means summing groups of `2^shift`
-/// source buckets. That sum is split into two stages, because a lane can only
-/// absorb so much before it runs out of bits:
-///
-/// - `in_word` steps are done inside each source word, by widening its lanes
-///   and letting the SWAR pair-sums fold neighbours together;
-/// - `cross` steps are what remains once the lanes have hit the `u64`
-///   ceiling, and are done by summing whole source words.
-#[derive(Debug, Clone, Copy)]
-struct SourceLanes {
-    /// Lane width the source is widened to before any cross-word summing.
-    cur: Width,
-    /// Widening steps applied within each source word (`src_width -> cur`).
-    in_word: u32,
-    /// Scale steps left over for cross-word summing.
-    cross: u32,
+fn projected_slot_range<const N: usize>(
+    histogram: &HistogramNN<N>,
+    target_scale: i32,
+) -> Option<HighLow> {
+    if histogram.buckets_empty() {
+        return None;
+    }
+    let shift = histogram.current.scale.scale() - target_scale;
+    debug_assert!(shift >= 0);
+    Some(HighLow {
+        low: histogram.first_slot() >> shift,
+        high: histogram.last_slot() >> shift,
+    })
 }
 
-impl SourceLanes {
-    /// Plans the two-stage fold for a source at `src_scale` feeding a
-    /// destination at `dest_scale`.
-    fn plan(src_width: Width, src_scale: i32, dest_scale: i32) -> Self {
-        // Only a finer source needs folding. The preparation step guarantees
-        // the source is never coarser, but the clamp keeps this total.
-        let shift = (src_scale - dest_scale).max(0) as u32;
-        let in_word = shift.min(src_width.to_u64_widen_steps());
-        Self {
-            cur: src_width.wider_by(in_word).expect("capped at U64"),
-            in_word,
-            cross: shift - in_word,
-        }
+fn merge_ranges(left: Option<HighLow>, right: Option<HighLow>) -> Option<HighLow> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(HighLow {
+            low: left.low.min(right.low),
+            high: left.high.max(right.high),
+        }),
+        (Some(range), None) | (None, Some(range)) => Some(range),
+        (None, None) => None,
+    }
+}
+
+fn normalize_clone<const N: usize>(
+    histogram: &HistogramNN<N>,
+    geometry: Geometry,
+) -> HistogramNN<N> {
+    if histogram.buckets_empty() {
+        let mut normalized = histogram.clone();
+        normalized.current = Settings::new(
+            Scale::new(geometry.scale).expect("candidate scale is valid"),
+            geometry.width,
+        );
+        normalized.word_base = 0;
+        normalized.word_start = 0;
+        normalized.word_end = 0;
+        normalized.data[0] = 0;
+        return normalized;
     }
 
-    /// Widens one raw source word to [`cur`](Self::cur), folding neighbouring
-    /// buckets together as it goes.
-    fn widen_word(&self, src_width: Width, raw: u64) -> u64 {
-        if self.in_word > 0 {
-            widen(src_width, self.cur, raw)
-        } else {
-            raw
+    let mut normalized = histogram.clone();
+    let mut scale_decrease = normalized.current.scale.scale() - geometry.scale;
+    let width_increase = geometry.width.subtract(normalized.current.width) as u32;
+    let aligned_steps = width_increase.min(scale_decrease as u32);
+    if aligned_steps > 0 {
+        let before = normalized.current.width;
+        let after = before
+            .wider_by(aligned_steps)
+            .expect("candidate width bounds alignment");
+        let _ = normalized.widen_words(before, after);
+        normalized.current.width = after;
+        normalized.change_scale(aligned_steps);
+        scale_decrease -= aligned_steps as i32;
+    }
+
+    // The width floor above gives do_downscale enough scale slack even when a
+    // smaller source pool cannot hold the final destination width itself.
+    if scale_decrease > 0 {
+        normalized.downscale_by(scale_decrease as u32);
+    }
+    normalized
+}
+
+#[inline]
+fn raw_word<const N: usize>(histogram: &HistogramNN<N>, word_index: i32) -> u64 {
+    if histogram.buckets_empty()
+        || word_index < histogram.word_start
+        || word_index > histogram.word_end
+    {
+        0
+    } else {
+        histogram.data[histogram.data_idx(word_index)]
+    }
+}
+
+fn packed_word_at_width<const N: usize>(
+    histogram: &HistogramNN<N>,
+    target_width: Width,
+    word_index: i32,
+) -> u64 {
+    let source_width = histogram.current.width;
+    if source_width == target_width {
+        return raw_word(histogram, word_index);
+    }
+
+    debug_assert!(source_width < target_width);
+    let steps = target_width.subtract(source_width) as u32;
+    let words_per_source = 1_i32 << steps;
+    let packed_bits = 64_u32 >> steps;
+    let source_word = word_index >> steps;
+    let chunk = word_index.rem_euclid(words_per_source) as u32;
+    let packed = raw_word(histogram, source_word) >> (chunk * packed_bits);
+    spread(source_width, target_width, packed)
+}
+
+fn required_add_width(left: u64, right: u64, width: Width) -> Width {
+    let lane_bits = width.bits_per_slot();
+    let lane_max = width.counter_max();
+    let mut maximum = 0u64;
+    let mut shift = 0;
+    while shift < 64 {
+        let left_lane = (left >> shift) & lane_max;
+        let right_lane = (right >> shift) & lane_max;
+        maximum = maximum.max(
+            left_lane
+                .checked_add(right_lane)
+                .expect("bucket sum is bounded by aggregate count"),
+        );
+        shift += lane_bits;
+    }
+    Width::from_max_value(maximum)
+}
+
+fn combine_words<const N: usize, const M: usize>(
+    left: &HistogramNN<N>,
+    right: &HistogramNN<M>,
+    width: Width,
+    words: HighLow,
+    output: &mut [u64; N],
+) -> Width {
+    let mut required = width;
+    for word_index in words.low..=words.high {
+        let left = packed_word_at_width(left, width, word_index);
+        let right = packed_word_at_width(right, width, word_index);
+        let output_index = (word_index - words.low) as usize;
+        match swar_add_checked(left, right, width) {
+            Some(combined) => output[output_index] = combined,
+            None => {
+                required = required.max(required_add_width(left, right, width));
+            }
         }
     }
+    required
 }
 
 impl<const N: usize> HistogramNN<N> {
@@ -144,354 +185,442 @@ impl<const N: usize> HistogramNN<N> {
         Ok(())
     }
 
-    /// Core merge: prepare self (width + scale), then word-by-word
-    /// merge with on-the-fly repacking.
-    ///
-    /// Infallible: count overflow is checked by the caller, and all
-    /// internal operations (downscale, widen) always succeed.
+    /// Selects stable packed geometry, preflights it, then commits it.
     fn merge_buckets<const M: usize>(&mut self, other: &HistogramNN<M>) {
-        // A source that recorded nothing but exact zeros has a non-zero count
-        // and no buckets. There is nothing to merge here; its count is folded
-        // in by the caller, where it becomes part of the merged zero count.
         if other.buckets_empty() {
             return;
         }
-
-        let src_scale = other.current.scale.scale();
-        let src_width = other.current.width;
-        let merge_width = self.current.width.max(src_width);
-        let min_scale = self.current.scale.scale().min(src_scale);
-
-        // Combined slot range at min_scale, using merge_width for
-        // word capacity.
-        let self_hl = self.slot_range_at_scale(min_scale);
-        let other_hl = other.slot_range_at_scale(min_scale);
-        let combined = self_hl.merge(other_hl);
-
-        let word_hl = HighLow {
-            low: merge_width.slot_to_word_index(combined.low),
-            high: merge_width.slot_to_word_index(combined.high),
-        };
-        let extra = word_hl.change_steps(N);
-        let target_scale = min_scale - extra as i32;
-
-        // Two independent requests: relax the range down to
-        // `target_scale`, and hold counters at least as wide as the
-        // source needs.
-        let range_change = (self.current.scale.scale() - target_scale).max(0) as u32;
-
-        // The range fix is affordable under the range-coverage
-        // invariant: the range shrinks to two buckets at MIN_SCALE, so
-        // no range fix can demand more steps than remain.
-        debug_assert!(
-            range_change as i32 <= self.current.scale.scale() - crate::mapping::MIN_SCALE,
-            "merge needs {range_change} scale steps, only {} available",
-            self.current.scale.scale() - crate::mapping::MIN_SCALE,
-        );
-
-        // Width first: the merge repacks source lanes into ours, so
-        // ours must be wide enough to hold them. Then the range fix,
-        // which narrows back no further than the width just set.
-        self.widen_to(merge_width);
-        if self.buckets_empty() {
-            // No data to transform -- the scale moves on its own.
-            self.change_scale(range_change);
-        } else {
-            self.downscale_by(range_change);
-        }
-
-        // Word-by-word merge with on-the-fly repacking.
-        self.merge_words(other, src_width, src_scale);
-    }
-
-    /// Pre-extend the word range to cover `[lo_widx, hi_widx]` and
-    /// zero-fill any newly exposed words.
-    fn extend_word_range(&mut self, lo_widx: i32, hi_widx: i32) {
-        if self.buckets_empty() {
-            self.word_start = lo_widx;
-            self.word_end = hi_widx;
-            self.word_base = lo_widx;
+        // One bucket cannot amortize geometry selection, and the recording
+        // path already lands on the same scale and width.
+        if other.trimmed_slot_count() == 1 {
+            self.merge_buckets_sequential(other)
+                .expect("aggregate count precheck bounds every bucket");
             return;
         }
-        if lo_widx < self.word_start {
-            for w in lo_widx..self.word_start {
-                self.data[self.data_idx(w)] = 0;
+
+        let mut geometry = Geometry {
+            scale: self.current.scale.scale().min(other.current.scale.scale()),
+            width: self
+                .current
+                .width
+                .max(self.initial.width)
+                .max(other.current.width),
+        };
+        let mut output = [0_u64; N];
+
+        loop {
+            while geometry.scale < geometry.width.min_scale() {
+                geometry.width = geometry
+                    .width
+                    .wider_by(1)
+                    .expect("U64 counters cover MIN_SCALE");
             }
-            self.word_start = lo_widx;
-        }
-        if hi_widx > self.word_end {
-            for w in (self.word_end + 1)..=hi_widx {
-                self.data[self.data_idx(w)] = 0;
-            }
-            self.word_end = hi_widx;
-        }
-    }
 
-    /// Word-by-word merge with on-the-fly repacking.
-    ///
-    /// Dispatches on the grouping factor
-    ///
-    /// ```text
-    /// word_ratio_log2 = (src_scale - dest_scale) + src_width - dest_width
-    /// ```
-    ///
-    /// the log2 of how many source words feed one destination word. It is
-    /// invariant under widening the destination, so the two directions below
-    /// never trade places partway through a retry (see the module docs).
-    ///
-    /// A non-negative ratio is the usual case: the destination is coarser
-    /// and/or narrower, so several source words collapse into one. A negative
-    /// ratio means the reverse -- one source word spreads across
-    /// `2^-word_ratio_log2` destination words -- which arises when the
-    /// destination's lanes are much wider than the source's.
-    fn merge_words<const M: usize>(
-        &mut self,
-        other: &HistogramNN<M>,
-        src_width: Width,
-        src_scale: i32,
-    ) {
-        let shift = src_scale - self.current.scale.scale();
-        let word_ratio_log2 = shift + src_width as i32 - self.current.width as i32;
-
-        if word_ratio_log2 >= 0 {
-            self.merge_src_words_into_one(other, src_width, src_scale, word_ratio_log2 as u32);
-        } else {
-            self.spread_src_word_across_dests(other, src_width, src_scale, -word_ratio_log2 as u32);
-        }
-    }
-
-    /// Adds an already-packed word into destination word `dest_widx`.
-    ///
-    /// Returns `false` when the add would overflow a lane. In that case this
-    /// histogram has been widened to fit the sum and the caller must repack
-    /// from the source before retrying: `packed` was laid out for the old,
-    /// narrower lanes and is stale.
-    fn add_into_word(&mut self, dest_widx: i32, packed: u64) -> bool {
-        let width = self.current.width;
-        let didx = self.data_idx(dest_widx);
-        if let Some(result) = swar_add_checked(self.data[didx], packed, width) {
-            self.data[didx] = result;
-            return true;
-        }
-
-        // Size the new width from the largest sum any lane could produce: the
-        // widest lane on each side, added together.
-        let max_dest = width.or_fold_lanes(self.data[didx]);
-        let max_packed = width.or_fold_lanes(packed);
-        self.widen_to(Width::from_max_value(max_dest + max_packed));
-        false
-    }
-
-    /// Merges when several source words feed one destination word.
-    ///
-    /// Each destination word `d` draws from source words
-    /// `[d << ratio_log2, (d + 1) << ratio_log2)`.
-    fn merge_src_words_into_one<const M: usize>(
-        &mut self,
-        other: &HistogramNN<M>,
-        src_width: Width,
-        src_scale: i32,
-        ratio_log2: u32,
-    ) {
-        debug_assert!(
-            ratio_log2 < 31,
-            "ratio_log2={ratio_log2}: scale bounds violated",
-        );
-
-        // An arithmetic shift right floors toward negative infinity, so this
-        // already names the group containing the source's first word; no
-        // separate rounding to a group boundary is needed.
-        let dest_lo = other.word_start >> ratio_log2;
-        let dest_hi = other.word_end >> ratio_log2;
-
-        self.extend_word_range(dest_lo, dest_hi);
-
-        for dest_widx in dest_lo..=dest_hi {
-            let src_start = dest_widx << ratio_log2;
-
-            loop {
-                let packed = match Self::repack_source(
-                    other,
-                    src_width,
-                    src_scale,
-                    self.current.scale.scale(),
-                    self.current.width,
-                    src_start,
-                ) {
-                    Packed::TooWide(lanes) => {
-                        self.widen_to(Width::from_max_value(lanes));
-                        continue;
-                    }
-                    // Nothing to add: this group of source words is empty.
-                    Packed::Word(0) => break,
-                    Packed::Word(packed) => packed,
-                };
-
-                if self.add_into_word(dest_widx, packed) {
-                    break;
-                }
-            }
-        }
-    }
-
-    /// Merges when one source word spreads across several destination words.
-    ///
-    /// Widening the source by [`SourceLanes::in_word`] steps makes each of
-    /// its lanes equal exactly one destination slot. Those lanes are narrower
-    /// than the destination's, so one source word's worth of them fills
-    /// `2^ratio_log2` destination words; this walks the source and hands each
-    /// group of lanes to the destination word that owns it.
-    fn spread_src_word_across_dests<const M: usize>(
-        &mut self,
-        other: &HistogramNN<M>,
-        src_width: Width,
-        src_scale: i32,
-        ratio_log2: u32,
-    ) {
-        let dests_per_src = 1i32 << ratio_log2;
-
-        for src_widx in other.word_start..=other.word_end {
-            let raw = other.data[other.data_idx(src_widx)];
-            if raw == 0 {
+            let slots = merge_ranges(
+                projected_slot_range(self, geometry.scale),
+                projected_slot_range(other, geometry.scale),
+            )
+            .expect("source has buckets");
+            let words = HighLow {
+                low: geometry.width.slot_to_word_index(slots.low),
+                high: geometry.width.slot_to_word_index(slots.high),
+            };
+            let scale_decrease = words.change_steps(N);
+            if scale_decrease > 0 {
+                geometry.scale -= scale_decrease as i32;
+                debug_assert!(geometry.scale >= MIN_SCALE);
                 continue;
             }
 
-            for chunk in 0..dests_per_src {
-                let dest_widx = src_widx * dests_per_src + chunk;
-
-                // Only reason to repeat: adding overflowed a destination lane
-                // and `add_into_word` widened the destination, which changes
-                // the layout the chunk has to be packed into.
-                loop {
-                    let packed = Self::extract_source_chunk(
-                        src_width,
-                        src_scale,
-                        self.current.scale.scale(),
-                        self.current.width,
-                        raw,
-                        chunk,
-                    );
-                    if packed == 0 {
-                        break;
-                    }
-
-                    // Extend only once a chunk is known to carry counts.
-                    // Claiming a word for an empty chunk would advance the
-                    // circular buffer's window and evict live data.
-                    self.extend_word_range(dest_widx, dest_widx);
-
-                    if self.add_into_word(dest_widx, packed) {
-                        break;
-                    }
+            if self.current.scale.scale() == geometry.scale
+                && other.current.scale.scale() == geometry.scale
+            {
+                let required_width = combine_words(self, other, geometry.width, words, &mut output);
+                if required_width > geometry.width {
+                    geometry.width = required_width;
+                    continue;
                 }
+                self.commit_packed_words(geometry, words, &output);
+                return;
             }
+
+            let destination = normalize_clone(self, geometry);
+            let source = normalize_clone(other, geometry);
+            let normalized_width = destination.current.width.max(source.current.width);
+            if normalized_width > geometry.width {
+                geometry.width = normalized_width;
+                continue;
+            }
+
+            let normalized_scale = destination
+                .current
+                .scale
+                .scale()
+                .min(source.current.scale.scale());
+            if normalized_scale < geometry.scale {
+                geometry.scale = normalized_scale;
+                continue;
+            }
+            debug_assert_eq!(destination.current.scale.scale(), geometry.scale);
+            debug_assert_eq!(source.current.scale.scale(), geometry.scale);
+
+            let required_width =
+                combine_words(&destination, &source, geometry.width, words, &mut output);
+            if required_width > geometry.width {
+                geometry.width = required_width;
+                continue;
+            }
+
+            self.commit_packed_words(geometry, words, &output);
+            return;
         }
     }
 
-    /// Extracts the lanes of source word `raw` that belong to destination word
-    /// `chunk_index`, packed into the destination's lane layout.
-    ///
-    /// Used only when one source word spreads across several destination
-    /// words. Each widened source lane already equals one destination slot,
-    /// so this selects the right run of lanes and spreads them into the
-    /// destination's wider ones -- the mirror image of the narrow-and-pack
-    /// step in [`repack_source`](Self::repack_source).
-    ///
-    /// The destination's lanes are strictly the wider ones here, so every
-    /// source count is guaranteed to fit and there is no `TooWide` case.
-    fn extract_source_chunk(
-        src_width: Width,
-        src_scale: i32,
-        dest_scale: i32,
-        dest_width: Width,
-        raw: u64,
-        chunk_index: i32,
-    ) -> u64 {
-        let lanes = SourceLanes::plan(src_width, src_scale, dest_scale);
-        let widened = lanes.widen_word(src_width, raw);
+    /// Installs words combined under the selected geometry.
+    fn commit_packed_words(&mut self, geometry: Geometry, words: HighLow, output: &[u64; N]) {
+        debug_assert!((words.high - words.low) < N as i32);
 
-        let spread_steps = dest_width as u32 - lanes.cur as u32;
-        if spread_steps == 0 {
-            return widened;
+        self.current = Settings::new(
+            Scale::new(geometry.scale).expect("candidate scale is valid"),
+            geometry.width,
+        );
+        self.word_base = words.low;
+        self.word_start = words.low;
+        self.word_end = words.high;
+
+        for word_index in words.low..=words.high {
+            let output_index = (word_index - words.low) as usize;
+            self.data[output_index] = output[output_index];
         }
-
-        // Each destination word is fed by an equal, contiguous slice of the
-        // source word's bits; the slices tile it exactly.
-        let chunk_bits = 64u32 >> spread_steps;
-        spread(
-            lanes.cur,
-            dest_width,
-            widened >> (chunk_index as u32 * chunk_bits),
-        )
+        self.debug_assert_range_coverage();
     }
 
-    /// Repacks the source words feeding one destination word into a single
-    /// word in the destination's lane layout.
-    ///
-    /// The group starts at `src_start` and runs for as many words as the
-    /// destination's geometry demands. Its counts are summed at the
-    /// [`SourceLanes::cur`] width and then narrowed to the destination's,
-    /// several sub-groups to a word when the destination's lanes are the
-    /// narrower ones -- the mirror image of the spread step in
-    /// [`extract_source_chunk`](Self::extract_source_chunk).
-    fn repack_source<const M: usize>(
+    /// Sequential merge retained as a benchmark and test reference.
+    #[cfg(any(test, feature = "bench"))]
+    fn merge_from_sequential_impl<const M: usize>(
+        &mut self,
         other: &HistogramNN<M>,
-        src_width: Width,
-        src_scale: i32,
-        dest_scale: i32,
-        dest_width: Width,
-        src_start: i32,
-    ) -> Packed {
-        let lanes = SourceLanes::plan(src_width, src_scale, dest_scale);
-        let narrow_steps = lanes.cur as u32 - dest_width as u32;
-        // Source words summed per sub-group, and sub-groups per dest word.
-        let group = 1i32 << lanes.cross;
-        let repack_count = 1i32 << narrow_steps;
-
-        // At most one sub-group per destination lane, and a u64 holds at most
-        // 64 lanes (at width B1), so 64 entries always suffice.
-        let mut sums = [0u64; 64];
-        let mut or_sums = 0u64;
-        for r in 0..repack_count {
-            let gstart = src_start + r * group;
-            let mut value = 0u64;
-            // Plain `+=` rather than `swar_add_checked`: `cross > 0` only once
-            // the lanes have reached U64, where a word is a single lane, so
-            // this cannot carry between lanes. The u64 itself cannot overflow
-            // because `merge_from` has already bounded the combined count.
-            for g in 0..group {
-                let widx = gstart + g;
-                if widx >= other.word_start && widx <= other.word_end {
-                    let word = other.data[other.data_idx(widx)];
-                    value += lanes.widen_word(src_width, word);
-                }
-            }
-            sums[r as usize] = value;
-            or_sums |= lanes.cur.or_fold_lanes(value);
+    ) -> Result<(), Error> {
+        if other.stats.count == 0 {
+            return Ok(());
         }
 
-        // Source sums exceed dest counter capacity.
-        if or_sums > dest_width.counter_max() {
-            return Packed::TooWide(or_sums);
+        let new_count = self
+            .checked_add_count(other.stats.count)
+            .ok_or(Error::Overflow)?;
+        self.merge_buckets_sequential(other)?;
+        self.commit_merge(&other.stats, new_count);
+        Ok(())
+    }
+
+    /// Exposes the sequential reference implementation to Criterion benches.
+    #[cfg(feature = "bench")]
+    #[doc(hidden)]
+    pub fn merge_from_sequential_reference<const M: usize>(
+        &mut self,
+        other: &HistogramNN<M>,
+    ) -> Result<(), Error> {
+        self.merge_from_sequential_impl(other)
+    }
+
+    /// Inserts source buckets through the ordinary recording retry path.
+    fn merge_buckets_sequential<const M: usize>(
+        &mut self,
+        other: &HistogramNN<M>,
+    ) -> Result<(), Error> {
+        if other.buckets_empty() {
+            return Ok(());
         }
 
-        // Narrow and pack into one dest-width SWAR word.
-        Packed::Word(if narrow_steps > 0 {
-            let chunk_bits = 64u32 >> narrow_steps;
-            let mut acc = 0u64;
-            for r in 0..repack_count {
-                acc |= narrow(lanes.cur, dest_width, sums[r as usize]) << (r as u32 * chunk_bits);
+        let common_scale = self.current.scale.scale().min(other.current.scale.scale());
+        let destination_decrease = self.current.scale.scale() - common_scale;
+        if destination_decrease > 0 {
+            if self.buckets_empty() {
+                self.change_scale(destination_decrease as u32);
+            } else {
+                self.downscale_by(destination_decrease as u32);
             }
-            acc
-        } else {
-            sums[0]
-        })
+        }
+
+        let mut source = other.clone();
+        let source_decrease = source.current.scale.scale() - common_scale;
+        if source_decrease > 0 {
+            source.downscale_by(source_decrease as u32);
+        }
+
+        for source_slot in source.first_slot()..=source.last_slot() {
+            let count = source.bucket_get(&source.current.width.slot_addr(source_slot));
+            if count == 0 {
+                continue;
+            }
+            self.retry_increment(count, |destination| {
+                source_slot >> (common_scale - destination.current.scale.scale())
+            })?;
+        }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::HistogramNN;
+    use crate::histogram::Width;
+    use crate::mapping::{MIN_SCALE, Scale, table_scale};
+    use std::collections::BTreeMap;
+    use std::num::NonZeroU64;
+
+    #[derive(Debug)]
+    struct Oracle {
+        scale: i32,
+        width: Width,
+        counts: BTreeMap<i32, u64>,
+    }
+
+    fn oracle_width(max_count: u64) -> Width {
+        match max_count {
+            0..=1 => Width::B1,
+            2..=3 => Width::B2,
+            4..=15 => Width::B4,
+            16..=255 => Width::U8,
+            256..=65_535 => Width::U16,
+            65_536..=4_294_967_295 => Width::U32,
+            _ => Width::U64,
+        }
+    }
+
+    fn oracle_min_scale(width: Width) -> i32 {
+        MIN_SCALE + (Width::U64 as i32 - width as i32)
+    }
+
+    fn geometry_oracle<const N: usize>(values: &[f64]) -> Oracle {
+        for scale in (MIN_SCALE..=table_scale()).rev() {
+            let mapping = Scale::new(scale).unwrap();
+            let mut counts = BTreeMap::<i32, u64>::new();
+            for &value in values {
+                if value == 0.0 {
+                    continue;
+                }
+                *counts.entry(mapping.map_to_index(value)).or_default() += 1;
+            }
+
+            let max_count = counts.values().copied().max().unwrap_or(0);
+            let mut width = oracle_width(max_count);
+            while scale < oracle_min_scale(width) {
+                width = match width {
+                    Width::B1 => Width::B2,
+                    Width::B2 => Width::B4,
+                    Width::B4 => Width::U8,
+                    Width::U8 => Width::U16,
+                    Width::U16 => Width::U32,
+                    Width::U32 | Width::U64 => Width::U64,
+                };
+            }
+
+            let first = *counts.keys().next().expect("oracle needs positive values");
+            let last = *counts.keys().next_back().unwrap();
+            let word_shift = Width::U64 as u32 - width as u32;
+            let first_word = first >> word_shift;
+            let last_word = last >> word_shift;
+            if i64::from(last_word) - i64::from(first_word) < N as i64 {
+                return Oracle {
+                    scale,
+                    width,
+                    counts,
+                };
+            }
+        }
+        unreachable!("MIN_SCALE with U64 counters fits all values");
+    }
+
+    fn assert_matches_oracle<const N: usize>(
+        histogram: &HistogramNN<N>,
+        values: &[f64],
+        oracle: &Oracle,
+    ) {
+        let view = histogram.view();
+        assert_eq!(view.scale(), oracle.scale);
+        assert_eq!(view.positive().width(), oracle.width);
+
+        let first = *oracle.counts.keys().next().unwrap();
+        let last = *oracle.counts.keys().next_back().unwrap();
+        assert_eq!(view.positive().offset(), first);
+        assert_eq!(view.positive().len(), (last - first + 1) as u32);
+        for (slot, actual) in (first..=last).zip(view.positive().iter()) {
+            assert_eq!(
+                actual,
+                oracle.counts.get(&slot).copied().unwrap_or(0),
+                "bucket {slot}"
+            );
+        }
+
+        let stats = view.stats();
+        assert_eq!(stats.count, values.len() as u64);
+        assert_eq!(stats.sum, values.iter().sum::<f64>());
+        assert_eq!(
+            stats.min,
+            values.iter().copied().fold(f64::INFINITY, f64::min)
+        );
+        assert_eq!(
+            stats.max,
+            values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        );
+        let totals = view.scan_buckets(|_| {});
+        assert_eq!(
+            totals.positive_total,
+            values.iter().filter(|&&value| value != 0.0).count() as u64
+        );
+        assert_eq!(
+            totals.zero_count,
+            values.iter().filter(|&&value| value == 0.0).count() as u64
+        );
+    }
+
+    fn assert_histograms_equivalent<const N: usize>(
+        optimized: &HistogramNN<N>,
+        sequential: &HistogramNN<N>,
+    ) {
+        assert_eq!(optimized.current_settings(), sequential.current_settings());
+
+        let optimized = optimized.view();
+        let sequential = sequential.view();
+        let optimized_stats = optimized.stats();
+        let sequential_stats = sequential.stats();
+        assert_eq!(optimized_stats.count, sequential_stats.count);
+        assert_eq!(optimized_stats.sum, sequential_stats.sum);
+        assert_eq!(optimized_stats.min, sequential_stats.min);
+        assert_eq!(optimized_stats.max, sequential_stats.max);
+
+        let optimized = optimized.positive();
+        let sequential = sequential.positive();
+        assert_eq!(optimized.width(), sequential.width());
+        assert_eq!(optimized.offset(), sequential.offset());
+        assert_eq!(optimized.len(), sequential.len());
+        assert_eq!(
+            optimized.iter().collect::<Vec<_>>(),
+            sequential.iter().collect::<Vec<_>>()
+        );
+    }
+
+    /// Scenario: one scale-8 bucket receives 100 identical observations and
+    /// its packed counter must grow from B1 through U8.
+    /// Guarantees: unused backing words pay for wider counters, preserving
+    /// scale 8 and the exact count instead of coarsening to scale 5.
+    #[test]
+    fn hot_single_bucket_widening_preserves_scale() {
+        let values = vec![1.0; 100];
+        let oracle = geometry_oracle::<64>(&values);
+        assert_eq!((oracle.scale, oracle.width), (8, Width::U8));
+
+        let histogram = build::<64>(&values);
+        assert_matches_oracle(&histogram, &values, &oracle);
+    }
+
+    /// Scenario: a bucket below 1.0 has a negative scale-8 index and receives
+    /// enough observations to widen its counter to U8.
+    /// Guarantees: circular addressing preserves the negative bucket index,
+    /// scale, count, and statistics while widening.
+    #[test]
+    fn negative_bucket_widening_preserves_scale_and_index() {
+        let values = vec![0.5; 100];
+        let oracle = geometry_oracle::<64>(&values);
+        assert_eq!((oracle.scale, oracle.width), (8, Width::U8));
+        assert!(*oracle.counts.keys().next().unwrap() < 0);
+
+        let histogram = build::<64>(&values);
+        assert_matches_oracle(&histogram, &values, &oracle);
+    }
+
+    /// Scenario: a hot bucket and a distant sparse bucket cannot fit at scale
+    /// 8 once the hot counter requires U8 storage.
+    /// Guarantees: production chooses exactly the oracle's highest feasible
+    /// lower scale and preserves all bucket mass and statistics.
+    #[test]
+    fn wide_sparse_range_downscales_only_as_far_as_required() {
+        let mut values = vec![1.0; 100];
+        values.push(2f64.powi(20));
+        let oracle = geometry_oracle::<8>(&values);
+        assert!(oracle.scale < table_scale());
+
+        let histogram = build::<8>(&values);
+        assert_matches_oracle(&histogram, &values, &oracle);
+    }
+
+    /// Scenario: two histograms have overlapping hot scale-8 buckets whose
+    /// individual B4 counts combine into a U8 count during merge.
+    /// Guarantees: merge selects the combined oracle geometry before writing,
+    /// preserving scale 8, exact bucket mass, zeros, and aggregate statistics.
+    #[test]
+    fn merging_overlapping_hot_buckets_uses_combined_geometry() {
+        let mut left_values = vec![0.5; 10];
+        left_values.push(0.0);
+        let mut right_values = vec![0.5; 10];
+        right_values.push(0.0);
+
+        let mut merged_values = left_values.clone();
+        merged_values.extend_from_slice(&right_values);
+        let oracle = geometry_oracle::<64>(&merged_values);
+        assert_eq!((oracle.scale, oracle.width), (8, Width::U8));
+
+        let original = build::<64>(&left_values);
+        let mut destination = original.clone();
+        let source = build::<4>(&right_values);
+        destination.merge_from(&source).unwrap();
+        assert_matches_oracle(&destination, &merged_values, &oracle);
+
+        let mut sequential = original;
+        sequential.merge_from_sequential_impl(&source).unwrap();
+        assert_histograms_equivalent(&destination, &sequential);
+    }
+
+    /// Scenario: individually fine-scale histograms occupy a hot low bucket
+    /// and a distant high bucket whose combined U8 geometry needs downscaling.
+    /// Guarantees: merge selects the oracle's minimal scale reduction from
+    /// stable sources and preserves every count and statistic.
+    #[test]
+    fn merging_wide_range_matches_oracle_geometry() {
+        let left_values = vec![1.0; 100];
+        let right_values = vec![2f64.powi(20)];
+        let mut merged_values = left_values.clone();
+        merged_values.extend_from_slice(&right_values);
+        let oracle = geometry_oracle::<8>(&merged_values);
+        assert!(oracle.scale < table_scale());
+
+        let mut destination = build::<8>(&left_values);
+        let source = build::<4>(&right_values);
+        destination.merge_from(&source).unwrap();
+        assert_matches_oracle(&destination, &merged_values, &oracle);
+    }
+
+    /// Scenario: merging one more observation into a histogram whose total
+    /// count is already u64::MAX would overflow the aggregate count.
+    /// Guarantees: merge reports Overflow before rebuilding, leaving bucket
+    /// geometry, bucket mass, and statistics unchanged.
+    #[test]
+    fn merge_count_overflow_leaves_destination_unchanged() {
+        let mut destination: HistogramNN<64> = HistogramNN::new();
+        destination
+            .record_incr(1.0, NonZeroU64::new(u64::MAX).unwrap())
+            .unwrap();
+        let before_settings = destination.current_settings();
+        let before_stats = destination.view().stats();
+        let before_buckets = destination.view().positive().iter().collect::<Vec<_>>();
+
+        let source = build::<4>(&[1.0]);
+        assert_eq!(
+            destination.merge_from(&source),
+            Err(super::super::Error::Overflow)
+        );
+        assert_eq!(destination.current_settings(), before_settings);
+        let after_stats = destination.view().stats();
+        assert_eq!(after_stats.count, before_stats.count);
+        assert_eq!(after_stats.sum, before_stats.sum);
+        assert_eq!(after_stats.min, before_stats.min);
+        assert_eq!(after_stats.max, before_stats.max);
+        assert_eq!(
+            destination.view().positive().iter().collect::<Vec<_>>(),
+            before_buckets
+        );
+    }
 
     /// Scenario: A histogram carrying observations is merged into a freshly
     /// created, empty histogram.
@@ -684,11 +813,9 @@ mod tests {
 
     /// Scenario: Randomized populations spanning 60 binary orders of
     /// magnitude are merged between histograms of different pool sizes,
-    /// exercising both merge directions -- several source words folded into
-    /// one destination word, and one source word spread across several.
+    /// scales, and counter widths.
     /// Guarantees: the merged histogram accounts for every observation and
-    /// reports the true maximum, across the scale and width combinations the
-    /// two directions and their overflow retries are reachable from.
+    /// reports the true maximum across all reachable source geometries.
     #[test]
     fn merging_preserves_observations_across_random_scales_and_widths() {
         let mut state = 0x243F_6A88_85A3_08D3_u64;

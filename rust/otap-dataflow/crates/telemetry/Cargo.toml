@@ -41,5 +41,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
 [dev-dependencies]
+criterion = { workspace = true }
 tempfile = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }
+
+[[bench]]
+name = "distribution_record"
+harness = false

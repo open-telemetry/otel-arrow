@@ -122,32 +122,6 @@ struct HighLow {
 }
 
 impl HighLow {
-    /// An empty range sentinel.
-    #[inline]
-    const fn empty() -> Self {
-        Self {
-            low: i32::MAX,
-            high: i32::MIN,
-        }
-    }
-
-    /// Union of two ranges.
-    #[inline]
-    const fn merge(self, other: Self) -> Self {
-        Self {
-            low: if self.low < other.low {
-                self.low
-            } else {
-                other.low
-            },
-            high: if self.high > other.high {
-                self.high
-            } else {
-                other.high
-            },
-        }
-    }
-
     /// Computes how much downscaling is needed.
     #[inline]
     const fn change_steps(mut self, size: usize) -> u32 {
@@ -323,29 +297,6 @@ impl<const N: usize> HistogramNN<N> {
             return 0;
         }
         (self.last_slot() - self.first_slot() + 1) as u32
-    }
-
-    /// Returns the slot index range `[first_slot, last_slot]`.
-    #[inline]
-    fn slot_range(&self) -> HighLow {
-        if self.buckets_empty() {
-            return HighLow::empty();
-        }
-        HighLow {
-            low: self.first_slot(),
-            high: self.last_slot(),
-        }
-    }
-
-    /// Projects the slot range to a (coarser) target scale.
-    #[inline]
-    fn slot_range_at_scale(&self, target_scale: i32) -> HighLow {
-        let shift = self.current.scale.scale() - target_scale;
-        let r = self.slot_range();
-        HighLow {
-            low: r.low >> shift,
-            high: r.high >> shift,
-        }
     }
 
     /// Returns the slot address of a bucket index.
@@ -549,7 +500,9 @@ impl<const N: usize> HistogramNN<N> {
         self.word_start = 0;
         self.word_end = 0;
         self.stats = Stats::EMPTY;
-        self.data.fill(0);
+        // The reset mapping exposes only physical word 0. Other words are
+        // cleared lazily by try_increment before they re-enter the window.
+        self.data[0] = 0;
     }
 
     /// Records a single value.
@@ -658,20 +611,53 @@ impl<const N: usize> HistogramNN<N> {
         self.change_scale(actual);
     }
 
-    /// Widens every counter to `target`, which must not be narrower
-    /// than the current width.
+    /// Widens counters to at least `target`, preserving the highest feasible
+    /// scale by spreading counts into unused backing words before coarsening.
     pub(crate) fn widen_to(&mut self, target: Width) {
-        let start = self.current.width;
-        debug_assert!(target >= start, "{target:?} is narrower than {start:?}");
-        if target == start {
-            return;
+        loop {
+            let start = self.current.width;
+            if target <= start {
+                return;
+            }
+            if self.buckets_empty() {
+                self.current.width = target;
+                self.debug_assert_range_coverage();
+                return;
+            }
+
+            let words = HighLow {
+                low: target.slot_to_word_index(self.first_slot()),
+                high: target.slot_to_word_index(self.last_slot()),
+            };
+            let decrease = words.change_steps(N);
+            if decrease == 0 {
+                self.spread_widen(start, target, words.low, words.high);
+                self.debug_assert_range_coverage();
+                return;
+            }
+            self.downscale_by(decrease);
         }
-        if !self.buckets_empty() {
-            let _ = self.widen_words(start, target);
-            self.change_scale(target.subtract(start) as u32);
+    }
+
+    /// Spreads packed counters into unused words without changing scale.
+    fn spread_widen(&mut self, before: Width, after: Width, low_word: i32, high_word: i32) {
+        let source = self.clone();
+        let steps = after.subtract(before) as u32;
+        let words_per_source = 1_i32 << steps;
+        let packed_bits = 64_u32 >> steps;
+
+        self.current.width = after;
+        self.word_start = low_word;
+        self.word_end = high_word;
+        self.word_base = low_word;
+
+        for word_index in low_word..=high_word {
+            let source_word = word_index >> steps;
+            let chunk = word_index.rem_euclid(words_per_source) as u32;
+            let packed = source.data[source.data_idx(source_word)] >> (chunk * packed_bits);
+            let data_index = self.data_idx(word_index);
+            self.data[data_index] = swar::spread(before, after, packed);
         }
-        self.current.width = target;
-        self.debug_assert_range_coverage();
     }
 
     /// Attempts to add `incr` into the bucket at `index`.

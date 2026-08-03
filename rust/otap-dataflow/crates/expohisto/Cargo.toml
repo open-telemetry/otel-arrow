@@ -14,8 +14,18 @@ default = ["std"]
 
 # Enables `std::error::Error` impls.
 std = []
+# Exposes benchmark-only reference implementations.
+bench = []
 
 [dependencies]
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "merge"
+harness = false
+required-features = ["bench"]
 
 [lints]
 workspace = true

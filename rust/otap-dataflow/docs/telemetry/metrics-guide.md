@@ -56,9 +56,46 @@ telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for deta
 - ObserveUpDownCounter: observed values that may go up or down.
 - Gauge: instantaneous measurements (last-value), used for capacity,
   utilization, queue depth.
+- MMSC: a compact distribution summary retaining exact minimum, maximum, sum,
+  and count.
+- HistogramNormal: an exponential histogram retaining a normal-resolution
+  bucket distribution.
+- HistogramDetailed: an exponential histogram retaining a higher-resolution
+  bucket distribution.
 
-Histogram support status is tracked in
-[Implementation Gaps](implementation-gaps.md).
+### Choosing counters and distribution tiers
+
+Choose the least expensive instrument that retains the information operators
+need. All sizes below are per metric series and exclude registry metadata.
+
+| Instrument | Use when | Retained information | State size | Relative recording cost |
+|------------|----------|----------------------|------------|-------------------------|
+| `Counter<u64>` or `Counter<f64>` | Only a monotonic total matters, such as processed items or bytes | Sum | 8 bytes | Lowest: one addition |
+| `Mmsc` | Range and average are useful, but quantiles and distribution shape are not | Exact min, max, sum, and count | 32 bytes | Low: comparisons plus sum and count updates |
+| `HistogramNormal` | Approximate quantiles or distribution shape are operationally useful | Exact min, max, sum, and count plus exponential buckets | 128 bytes | Higher: logarithm lookup and bucket update, with occasional widening |
+| `HistogramDetailed` | The normal tier cannot retain enough bucket resolution for diagnosis | Same fields as the normal tier with a larger bucket range | 256 bytes | Similar recording algorithm to normal, but twice the state and greater cache, merge, and export cost |
+
+Use a counter instead of a distribution when only a total is queried. For
+example, use a counter for total processed bytes; record each batch size in a
+distribution only when its range or quantiles are needed.
+
+Use `Mmsc` by default for latency, size, and other non-negative distributions
+when minimum, maximum, average (`sum / count`), and sample count answer the
+operational question. It does not retain bucket membership and cannot estimate
+quantiles.
+
+Use `HistogramNormal` when dashboards or alerts require approximate quantiles
+or when distribution shape matters. Reserve `HistogramDetailed` for a
+demonstrated need for more retained resolution: it doubles the per-series
+histogram footprint, which also multiplies with attribute cardinality.
+
+Recording into these instruments is allocation-free. Snapshotting a histogram
+for reporting and export is cold-path work and is not part of the recording
+cost above. To compare recording costs on the current platform, run:
+
+```console
+cargo bench -p otap-df-telemetry --bench distribution_record
+```
 
 ### Recording semantics and export temporality
 

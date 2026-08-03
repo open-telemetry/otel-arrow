@@ -7466,6 +7466,9 @@ dependencies = [
 [[package]]
 name = "otap-df-expohisto"
 version = "0.50.0"
+dependencies = [
+ "criterion",
+]
 
 [[package]]
 name = "otap-df-otap"
@@ -7723,6 +7726,7 @@ version = "0.50.0"
 dependencies = [
  "bytes",
  "chrono",
+ "criterion",
  "flume",
  "otap-df-config",
  "otap-df-expohisto",

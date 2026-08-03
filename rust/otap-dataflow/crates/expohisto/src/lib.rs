@@ -56,6 +56,28 @@ mod tests {
         assert_eq!(stats.max, 100.0);
     }
 
+    /// Scenario: A histogram with stale counters throughout its circular
+    /// storage is cleared and then reused for a different value range.
+    /// Guarantees: lazily clearing words before they re-enter the active
+    /// window prevents observations from before `clear` from reappearing.
+    #[test]
+    fn clear_discards_stale_circular_storage() {
+        let mut hist: HistogramNN<16> = HistogramNN::new();
+        for exponent in -20..=20 {
+            hist.update(2_f64.powi(exponent)).unwrap();
+        }
+
+        hist.clear();
+        for value in [0.5, 1.0, 2.0] {
+            hist.update(value).unwrap();
+        }
+
+        let view = hist.view();
+        assert_eq!(view.stats().count, 3);
+        assert_eq!(view.stats().sum, 3.5);
+        assert_eq!(view.scan_buckets(|_| {}).positive_total, 3);
+    }
+
     /// Negative is a debug assertion, ignored in the non-negative
     /// code path.
     #[test]

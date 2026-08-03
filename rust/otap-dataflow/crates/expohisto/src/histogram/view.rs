@@ -250,14 +250,14 @@ impl<const N: usize> HistogramView<'_, N> {
             return lower.clamp(stats.min, stats.max);
         }
 
-        let fraction = ((target - cumulative as f64) / count as f64).clamp(0.0, 1.0);
-
-        // Interpolate geometrically: the boundaries are exponentially spaced,
-        // so a log-space position is the one for which this bucket's relative
-        // error bound holds. The position is read from the boundary table, so
-        // no floating-point exponentiation is involved. The topmost bucket can
-        // have no representable upper edge, where `max` is the correct bound.
-        let value = scale.interpolate_boundary(index, fraction).unwrap_or(lower);
+        // The distribution within one bucket is unknown. Its geometric
+        // midpoint is the only representative whose error is bounded by the
+        // scale's advertised relative error for every value in that bucket.
+        // Moving the estimate according to the rank within the bucket would
+        // assume a uniform distribution and can exceed that bound for skewed
+        // observations. The topmost bucket can have no representable upper
+        // edge, where the lower boundary is the only finite representative.
+        let value = scale.interpolate_boundary(index, 0.5).unwrap_or(lower);
         value.clamp(stats.min, stats.max)
     }
 }
@@ -445,6 +445,42 @@ mod tests {
                 "q={q} est={est} exact={exact} err={err} bound={bound}"
             );
         }
+    }
+
+    /// Scenario: Ninety-nine low observations and one high observation occupy
+    /// the same exponential bucket, and the histogram is asked for p99.
+    /// Guarantees: The p99 estimate remains within the histogram's advertised
+    /// relative error of the exact low value despite the within-bucket skew.
+    #[test]
+    fn skewed_single_bucket_p99_stays_within_relative_error() {
+        // Both fixed values occupy the scale-8 bucket immediately below 1.0.
+        // Starting with U8 counters isolates quantile estimation from the
+        // separate counter-widening path. The exact nearest-rank p99 is the
+        // low value, not the single high observation in the same bucket.
+        const EXACT_P99: f64 = 0.9974;
+        let mut histogram = HistogramNN::<64>::new()
+            .with_min_width(Width::U8)
+            .expect("scale 8 supports U8 counters");
+        for _ in 0..99 {
+            histogram
+                .update(EXACT_P99)
+                .expect("low value is recordable");
+        }
+        histogram.update(0.9999).expect("high value is recordable");
+        let view = histogram.view();
+        assert_eq!(view.scale(), 8);
+        assert_eq!(view.positive().offset(), -1);
+        assert_eq!(view.positive().bucket_count(), 1);
+
+        let mut estimate = [0.0];
+        let _ = view.quantiles(&[0.99], &mut estimate);
+        let error = (estimate[0] - EXACT_P99).abs() / EXACT_P99;
+        let bound = view.relative_error();
+        assert!(
+            error <= bound + f64::EPSILON,
+            "estimate={} exact={EXACT_P99} error={error} bound={bound}",
+            estimate[0]
+        );
     }
 
     /// Scenario: A histogram records only exact zeros and is queried across

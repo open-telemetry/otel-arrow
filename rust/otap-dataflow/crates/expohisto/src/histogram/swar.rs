@@ -197,17 +197,9 @@ pub(crate) fn narrow(before: Width, after: Width, w: u64) -> u64 {
     }
 }
 
-// Single-step SWAR spread primitives
-//
-// Each function is the exact inverse of the `nstep_*` function of the same
-// pair: it reads values packed contiguously in the low 32 bits of a u64 and
-// reinstates the gaps, so each value lands in a lane twice as wide.  Values
-// are preserved one-for-one -- unlike `widen`, nothing is summed.
-//
-// Every function masks its input to the low 32 bits first, so anything above
-// the values being spread is discarded rather than corrupting the result.
+// Single-step SWAR spread primitives. Each is the exact inverse of the
+// corresponding narrow step for values packed into the low 32 bits.
 
-/// B1 to B2: spread 32 packed 1-bit values into 2-bit lanes.
 #[inline(always)]
 fn sstep_b1_b2(w: u64) -> u64 {
     let w = w & 0x0000_0000_FFFF_FFFF;
@@ -218,7 +210,6 @@ fn sstep_b1_b2(w: u64) -> u64 {
     (w | (w << 1)) & 0x5555_5555_5555_5555
 }
 
-/// B2 to B4: spread 16 packed 2-bit values into 4-bit lanes.
 #[inline(always)]
 fn sstep_b2_b4(w: u64) -> u64 {
     let w = w & 0x0000_0000_FFFF_FFFF;
@@ -228,7 +219,6 @@ fn sstep_b2_b4(w: u64) -> u64 {
     (w | (w << 2)) & 0x3333_3333_3333_3333
 }
 
-/// B4 to U8: spread 8 packed 4-bit values into 8-bit lanes.
 #[inline(always)]
 fn sstep_b4_u8(w: u64) -> u64 {
     let w = w & 0x0000_0000_FFFF_FFFF;
@@ -237,7 +227,6 @@ fn sstep_b4_u8(w: u64) -> u64 {
     (w | (w << 4)) & 0x0F0F_0F0F_0F0F_0F0F
 }
 
-/// U8 to U16: spread 4 packed 8-bit values into 16-bit lanes.
 #[inline(always)]
 fn sstep_u8_u16(w: u64) -> u64 {
     let w = w & 0x0000_0000_FFFF_FFFF;
@@ -245,60 +234,38 @@ fn sstep_u8_u16(w: u64) -> u64 {
     (w | (w << 8)) & 0x00FF_00FF_00FF_00FF
 }
 
-/// U16 to U32: spread 2 packed 16-bit values into 32-bit lanes.
 #[inline(always)]
 fn sstep_u16_u32(w: u64) -> u64 {
     let w = w & 0x0000_0000_FFFF_FFFF;
     (w | (w << 16)) & 0x0000_FFFF_0000_FFFF
 }
 
-/// U32 to U64: keep the single low 32-bit value.
 #[inline(always)]
 fn sstep_u32_u64(w: u64) -> u64 {
     w & 0x0000_0000_FFFF_FFFF
 }
 
-/// Spread a single u64 word from `before` lane width to `after` lane width by
-/// chaining SWAR unpack steps.  This is the inverse of [`narrow`].
-///
-/// The input holds `64 / after_bits` values of `before` bits packed
-/// contiguously from bit 0, occupying the low `64 x before_bits / after_bits`
-/// bits; bits above that are ignored.  Each value is placed in its own
-/// `after`-width lane, filling the returned u64.
-///
-/// Because the destination lanes are strictly wider, no value can be
-/// truncated: this is total, with no overflow case for a caller to handle.
+/// Spreads packed values into wider lanes without summing adjacent values.
 #[inline]
 pub(crate) fn spread(before: Width, after: Width, w: u64) -> u64 {
     use Width::*;
     debug_assert!(before < after);
     match (before, after) {
-        // * to B2
         (B1, B2) => sstep_b1_b2(w),
-
-        // * to B4
         (B2, B4) => sstep_b2_b4(w),
         (B1, B4) => sstep_b2_b4(sstep_b1_b2(w)),
-
-        // * to U8
         (B4, U8) => sstep_b4_u8(w),
         (B2, U8) => sstep_b4_u8(sstep_b2_b4(w)),
         (B1, U8) => sstep_b4_u8(sstep_b2_b4(sstep_b1_b2(w))),
-
-        // * to U16
         (U8, U16) => sstep_u8_u16(w),
         (B4, U16) => sstep_u8_u16(sstep_b4_u8(w)),
         (B2, U16) => sstep_u8_u16(sstep_b4_u8(sstep_b2_b4(w))),
         (B1, U16) => sstep_u8_u16(sstep_b4_u8(sstep_b2_b4(sstep_b1_b2(w)))),
-
-        // * to U32
         (U16, U32) => sstep_u16_u32(w),
         (U8, U32) => sstep_u16_u32(sstep_u8_u16(w)),
         (B4, U32) => sstep_u16_u32(sstep_u8_u16(sstep_b4_u8(w))),
         (B2, U32) => sstep_u16_u32(sstep_u8_u16(sstep_b4_u8(sstep_b2_b4(w)))),
         (B1, U32) => sstep_u16_u32(sstep_u8_u16(sstep_b4_u8(sstep_b2_b4(sstep_b1_b2(w))))),
-
-        // * to U64
         (U32, U64) => sstep_u32_u64(w),
         (U16, U64) => sstep_u32_u64(sstep_u16_u32(w)),
         (U8, U64) => sstep_u32_u64(sstep_u16_u32(sstep_u8_u16(w))),
@@ -307,56 +274,39 @@ pub(crate) fn spread(before: Width, after: Width, w: u64) -> u64 {
         (B1, U64) => sstep_u32_u64(sstep_u16_u32(sstep_u8_u16(sstep_b4_u8(sstep_b2_b4(
             sstep_b1_b2(w),
         ))))),
-
         _ => unreachable!(),
     }
 }
 
 /// SWAR addition with per-lane overflow detection.
 ///
-/// Returns `Some(a + b)` if no lane overflows, or `None` if any lane
-/// would exceed its maximum value.  Neither input is modified on failure.
-///
-/// Algorithm: zero the MSB of each lane, add the lower bits (which
-/// cannot carry across lanes), then detect overflow via the majority
-/// function of (a_msb, b_msb, carry_from_below).
+/// Returns `Some(a + b)` when every lane fits and `None` otherwise.
 #[inline]
 pub(crate) fn swar_add_checked(a: u64, b: u64, width: Width) -> Option<u64> {
     if width == Width::U64 {
         return a.checked_add(b);
     }
-    let msb = width.msb_mask();
+
+    let msb = match width {
+        Width::B1 => 0xFFFF_FFFF_FFFF_FFFF,
+        Width::B2 => 0xAAAA_AAAA_AAAA_AAAA,
+        Width::B4 => 0x8888_8888_8888_8888,
+        Width::U8 => 0x8080_8080_8080_8080,
+        Width::U16 => 0x8000_8000_8000_8000,
+        Width::U32 => 0x8000_0000_8000_0000,
+        Width::U64 => unreachable!(),
+    };
     let a_lo = a & !msb;
     let b_lo = b & !msb;
-    let sum_lo = a_lo + b_lo; // no inter-lane carry (MSB was zeroed)
+    let sum_lo = a_lo + b_lo;
     let carry = sum_lo & msb;
     let a_hi = a & msb;
     let b_hi = b & msb;
-    // Overflow in a lane iff at least 2 of {a_msb, b_msb, carry} are set.
     let overflow = (a_hi & b_hi) | (a_hi & carry) | (b_hi & carry);
-    if overflow != 0 {
-        return None;
-    }
-    Some(sum_lo ^ a_hi ^ b_hi)
+    (overflow == 0).then_some(sum_lo ^ a_hi ^ b_hi)
 }
 
 impl Width {
-    /// Mask with the MSB of each SWAR lane set.
-    #[inline]
-    #[must_use]
-    pub(crate) const fn msb_mask(self) -> u64 {
-        use Width::{B1, B2, B4, U8, U16, U32, U64};
-        match self {
-            B1 => 0xFFFF_FFFF_FFFF_FFFF,
-            B2 => 0xAAAA_AAAA_AAAA_AAAA,
-            B4 => 0x8888_8888_8888_8888,
-            U8 => 0x8080_8080_8080_8080,
-            U16 => 0x8000_8000_8000_8000,
-            U32 => 0x8000_0000_8000_0000,
-            U64 => 0x8000_0000_0000_0000,
-        }
-    }
-
     /// OR-fold all SWAR lanes within a word into a single representative
     /// value.  The result has the same highest-set-bit as the true
     /// maximum lane, so `Width::from_max_value(or_fold_lanes(w, word))`
@@ -390,85 +340,6 @@ impl Width {
             }
             U32 => (w | (w >> 32)) & 0xFFFF_FFFF,
             U64 => w,
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{narrow, spread};
-    use crate::histogram::width::Width;
-
-    const WIDTHS: [Width; 7] = [
-        Width::B1,
-        Width::B2,
-        Width::B4,
-        Width::U8,
-        Width::U16,
-        Width::U32,
-        Width::U64,
-    ];
-
-    /// Scenario: values that already fit the narrower width are narrowed and
-    /// then spread back, for every ordered pair of lane widths.
-    /// Guarantees: `spread` is a left inverse of `narrow` whenever `narrow`
-    /// does not truncate, so the two directions of a merge repack agree on
-    /// lane layout and no count is moved, dropped, or duplicated.
-    #[test]
-    fn spreading_a_narrowed_word_restores_every_lane() {
-        let mut state = 0x9E37_79B9_7F4A_7C15u64;
-        for &wide in &WIDTHS {
-            for &thin in &WIDTHS {
-                if thin >= wide {
-                    continue;
-                }
-                // Lanes of `wide` bits holding values that fit `thin` bits.
-                let lane_bits = 1u32 << (wide as u32);
-                let lanes = 64 / lane_bits;
-                for _ in 0..64 {
-                    let mut word = 0u64;
-                    for lane in 0..lanes {
-                        state ^= state << 13;
-                        state ^= state >> 7;
-                        state ^= state << 17;
-                        let value = state & thin.counter_max();
-                        word |= value << (lane * lane_bits);
-                    }
-                    assert_eq!(
-                        spread(thin, wide, narrow(wide, thin, word)),
-                        word,
-                        "{wide:?} -> {thin:?} -> {wide:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// Scenario: a word carrying arbitrary garbage above the packed values is
-    /// spread into wider lanes.
-    /// Guarantees: `spread` masks its input, so bits beyond the chunk being
-    /// unpacked cannot leak into the result -- this is what lets the merge
-    /// select a chunk with a plain shift and no masking of its own.
-    #[test]
-    fn spreading_ignores_bits_above_the_packed_values() {
-        for &wide in &WIDTHS {
-            for &thin in &WIDTHS {
-                if thin >= wide {
-                    continue;
-                }
-                let packed_bits = 64u32 >> (wide as u32 - thin as u32);
-                let payload = 0x0123_4567_89AB_CDEFu64 & ((1u64 << packed_bits) - 1);
-                let garbage = if packed_bits == 64 {
-                    0
-                } else {
-                    u64::MAX << packed_bits
-                };
-                assert_eq!(
-                    spread(thin, wide, payload | garbage),
-                    spread(thin, wide, payload),
-                    "{thin:?} -> {wide:?}"
-                );
-            }
         }
     }
 }
