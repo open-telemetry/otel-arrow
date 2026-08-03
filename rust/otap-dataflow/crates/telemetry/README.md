@@ -137,7 +137,7 @@ Prometheus scraping is provided by the admin server at the fixed
 For more on this design, see the [self-tracing architecture
 document](../../docs/self_tracing_architecture.md). See a sample
 configuration in
-[configs/internal-telemetry.yaml](../../configs/internal-telemetry.yaml).
+[configs/internal-telemetry-metrics.yaml](../../configs/internal-telemetry-metrics.yaml).
 
 ## Roadmap
 
