@@ -34,6 +34,9 @@ pub struct TelemetryConfig {
     /// [`opentelemetry_sdk::resource`](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/resource/)
     /// and [`opentelemetry-resource-detectors`](https://docs.rs/opentelemetry-resource-detectors)
     /// docs for what each detector emits.
+    ///
+    /// Note: the `process` detector emits `process.command_args` (the full command line), which
+    /// can include secrets passed as CLI arguments. Enable it only where that is acceptable.
     #[serde(default = "default_detectors")]
     pub detectors: Vec<String>,
 }
