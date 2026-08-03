@@ -8,7 +8,7 @@ change_type: enhancement
 component: engine
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Generalize `capability::auth::AuthorizedIdentity` into a scheme-agnostic claims model so one identity type serves every authentication method (Kubernetes SAT, OIDC/JWT, mutual TLS). It now carries an optional `principal`, an optional `scheme` tag, and a `claims` map of `ClaimValue` (single- or multi-valued) keyed by standard/namespaced claim names. `subject()`/`audience()` and their builders remain as ergonomic accessors for the near-universal `sub`/`aud` claims.
+note: "Generalize `AuthorizedIdentity` into a scheme-agnostic claims model: an optional `principal`, an optional `scheme` tag, and a `claims` map of single- or multi-valued `ClaimValue` keyed by claim name."
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3494]
@@ -17,8 +17,7 @@ issues: [3494]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  This lets authorizers emit the full set of verified claims for downstream
-  tenant / per-route authorization resolvers to match on, rather than only a
-  subject and audience. Claim names follow JWT registered names where they exist
-  (`sub`, `aud`, `groups`) and are otherwise namespaced by scheme (`k8s.*`,
-  `x509.*`). `AuthorizedIdentity` remains `#[non_exhaustive]`.
+  One identity type serves every auth method (Kubernetes SAT, OIDC/JWT, mutual
+  TLS). Claim names follow JWT registered names (`sub`, `aud`, `groups`) or are
+  scheme-namespaced (`k8s.*`, `x509.*`). `subject()`/`audience()` remain as
+  `sub`/`aud` accessors. Stays `#[non_exhaustive]`.
