@@ -1848,7 +1848,7 @@ impl<
     /// at runtime the engine tears down regardless of whether the graceful drain
     /// of pipeline instances completes, so the main controller thread must not
     /// block forever if that drain stalls. The latch is one-way for the current
-    /// run — `wait_until_all_instances_exit` is only entered once, after which
+    /// run -- `wait_until_all_instances_exit` is only entered once, after which
     /// the controller proceeds to teardown.
     pub(crate) fn release_instance_wait(&self) {
         let mut state = self

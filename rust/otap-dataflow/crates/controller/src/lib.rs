@@ -1927,8 +1927,8 @@ impl<
     ///
     /// Follows the same double-signal convention used by the OpenTelemetry
     /// Collector (Go):
-    /// - **First signal** → initiates graceful shutdown (drain pipelines).
-    /// - **Second signal** → forces immediate process exit (`std::process::exit(1)`).
+    /// - **First signal** -> initiates graceful shutdown (drain pipelines).
+    /// - **Second signal** -> forces immediate process exit (`std::process::exit(1)`).
     ///
     /// This allows Kubernetes (or any process manager that sends SIGTERM, or
     /// CTRL_SHUTDOWN_EVENT on Windows) to trigger an orderly drain of in-flight
@@ -1941,11 +1941,11 @@ impl<
     /// is best-effort in that case and the second-signal escape hatch does not
     /// apply.
     ///
-    /// The spawned thread's `JoinHandle` is intentionally dropped — the thread
+    /// The spawned thread's `JoinHandle` is intentionally dropped -- the thread
     /// will terminate either via `process::exit(1)` on a second signal, or when
     /// the process exits normally after all pipelines have drained.
     fn spawn_shutdown_signal_listener(control_plane: Arc<dyn ControlPlane>) {
-        // The JoinHandle is intentionally dropped — the thread terminates when
+        // The JoinHandle is intentionally dropped -- the thread terminates when
         // the process exits (after pipelines drain) or on force-exit.
         drop(
             thread::Builder::new()
@@ -1966,7 +1966,7 @@ impl<
                         // exist when it arrives.
                         let mut signals = TerminationSignals::register();
 
-                        // ── First signal: graceful shutdown ─────────────────
+                        // First signal: graceful shutdown.
                         let signal_name = signals.recv().await;
 
                         otel_info!(
@@ -1975,13 +1975,13 @@ impl<
                             message = "OS termination signal received, initiating graceful shutdown. Send the signal again to force immediate exit."
                         );
 
-                        // Give pipelines a generous deadline to drain (60 s by default —
+                        // Give pipelines a generous deadline to drain (60 s by default --
                         // matches the default Kubernetes terminationGracePeriodSeconds).
                         // TODO: make this configurable via engine config.
                         const SHUTDOWN_TIMEOUT_SECS: u64 = 60;
 
                         // Retry a few times if the control channel is full under
-                        // backpressure — avoids silently dropping the shutdown request.
+                        // backpressure -- avoids silently dropping the shutdown request.
                         const MAX_RETRIES: u32 = 3;
                         const RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
@@ -2012,7 +2012,7 @@ impl<
                             );
                         }
 
-                        // ── Second signal: force exit ───────────────────────
+                        // Second signal: force exit.
                         let signal_name = signals.recv().await;
                         raw_error!(
                             "shutdown.force_exit",
@@ -2496,7 +2496,7 @@ impl<
 /// shutdown) and second (force-exit) signal. Recreating them between waits
 /// would drop a signal delivered while the shutdown request is in flight,
 /// because tokio only delivers a signal to streams that already exist when it
-/// arrives — which would defeat the "second signal forces exit" escape hatch.
+/// arrives -- which would defeat the "second signal forces exit" escape hatch.
 struct TerminationSignals {
     #[cfg(unix)]
     sigterm: tokio::signal::unix::Signal,
@@ -4390,7 +4390,7 @@ groups:
     /// Ctrl-Close, Ctrl-Shutdown); on Unix it registers SIGINT and SIGTERM.
     ///
     /// This guards against a platform-specific regression where a signal source
-    /// is unavailable or the `signal` Tokio feature is missing — `register()`
+    /// is unavailable or the `signal` Tokio feature is missing -- `register()`
     /// would otherwise panic only at runtime on the affected OS.
     #[test]
     fn termination_signals_register_on_current_platform() {

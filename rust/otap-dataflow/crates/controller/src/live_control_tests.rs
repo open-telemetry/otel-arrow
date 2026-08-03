@@ -3494,7 +3494,7 @@ fn register_launched_instance_reconciles_early_exit_without_leaking_active_count
 /// Guarantees: `release_instance_wait` unblocks `wait_until_all_instances_exit`
 /// unconditionally, so the main controller thread proceeds to teardown instead
 /// of hanging. Regression test for the removed `thread::park`/`unpark` escape
-/// hatch — the condvar wait is now the only wake path and must honor the latch.
+/// hatch -- the condvar wait is now the only wake path and must honor the latch.
 #[test]
 fn release_instance_wait_unblocks_wait_with_active_instances() {
     let runtime = test_runtime(&empty_engine_config());
