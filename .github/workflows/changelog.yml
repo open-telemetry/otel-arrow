@@ -14,18 +14,27 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
     branches:
       - main
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changelog:
+  changelog-merge-group:
+    name: changelog
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
+    if: ${{ github.event_name == 'merge_group' }}
+    steps:
+      - run: echo "Changelog validation passed on the pull request."
+
+  changelog-validation:
+    name: changelog
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
     env:
       PR_HEAD: ${{ github.event.pull_request.head.sha }}
 
@@ -53,7 +62,7 @@ jobs:
 
           echo "skip=${skip}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: ${{ steps.detect_bypass.outputs.skip == 'true' && '1' || '0' }}
 

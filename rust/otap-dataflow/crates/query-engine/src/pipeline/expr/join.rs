@@ -1430,18 +1430,6 @@ impl JoinExec for AttributesAllSelectionVecJoin {
             });
         }
 
-        let selection_vec = match vals {
-            ColumnarValue::Array(arr) => arr.as_boolean(),
-            ColumnarValue::Scalar(_) => {
-                // In the future (if needed someday) we could handle by invoking scalar join
-                return Err(Error::ExecutionError {
-                    cause: "Invalid columnar value from AttributesAll eval. \
-                        expected Array got Scalar"
-                        .into(),
-                });
-            }
-        };
-
         let parent_ids = extract_u16_array(
             if self.all_attrs_left {
                 left.parent_ids.as_ref()
@@ -1451,7 +1439,25 @@ impl JoinExec for AttributesAllSelectionVecJoin {
             consts::PARENT_ID,
         )?;
 
-        let selected_parent_ids = filter(parent_ids, selection_vec)?;
+        let selection_vec = match vals {
+            ColumnarValue::Array(arr) => arr.as_boolean().clone(),
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(true))) => {
+                BooleanArray::new(BooleanBuffer::new_set(parent_ids.len()), None)
+            }
+            ColumnarValue::Scalar(ScalarValue::Boolean(Some(false) | None)) => {
+                BooleanArray::new(BooleanBuffer::new_unset(parent_ids.len()), None)
+            }
+            ColumnarValue::Scalar(other) => {
+                return Err(Error::ExecutionError {
+                    cause: format!(
+                        "Invalid scalar value from AttributesAll eval {:?}",
+                        other.data_type()
+                    ),
+                });
+            }
+        };
+
+        let selected_parent_ids = filter(parent_ids, &selection_vec)?;
         let mut selected_lookup = IdBitmap::new();
         selected_lookup.populate(
             selected_parent_ids

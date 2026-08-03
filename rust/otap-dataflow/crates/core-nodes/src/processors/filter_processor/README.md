@@ -156,10 +156,7 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 | Metric | Unit | Description |
 | --- | --- | --- |
-| `processor.filter.pdata.log_signals_consumed` | `{log}` | Number of log signals consumed. |
-| `processor.filter.pdata.span_signals_consumed` | `{span}` | Number of span signals consumed. |
-| `processor.filter.pdata.log_signals_filtered` | `{log}` | Number of log signals filtered. |
-| `processor.filter.pdata.span_signals_filtered` | `{span}` | Number of span signals filtered. |
+| `processor.filter.pdata.dropped.items` | `{item}` | Number of signal items (log records, spans, or metric data points) a decision node chose to drop. |
 
 ### Events
 

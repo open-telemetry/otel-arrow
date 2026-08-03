@@ -15,6 +15,7 @@ pub struct CompletedExport {
     pub client: LogsIngestionClient,
     pub result: Result<Duration, Error>,
     pub row_count: u64,
+    pub body_size_bytes: u64,
 }
 
 pub struct InFlightExports {
@@ -102,12 +103,14 @@ impl InFlightExports {
         body: Bytes,
     ) -> LocalBoxFuture<'static, CompletedExport> {
         Box::pin(async move {
+            let body_size_bytes = body.len() as u64;
             let result = client.export(body).await;
             CompletedExport {
                 batch_id,
                 client,
                 result,
                 row_count,
+                body_size_bytes,
             }
         })
     }
@@ -182,6 +185,7 @@ mod tests {
                 client: create_test_client(),
                 result,
                 row_count,
+                body_size_bytes: 0,
             }
         })
     }
