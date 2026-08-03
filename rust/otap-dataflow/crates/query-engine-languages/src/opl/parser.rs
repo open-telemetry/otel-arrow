@@ -6,7 +6,7 @@
 use std::vec;
 
 use ::pest::{Parser as _, iterators::Pair};
-use data_engine_expressions::QueryLocation;
+use data_engine_expressions::{PipelineFunction, QueryLocation, ScalarExpression};
 use data_engine_parser_abstractions::{
     Parser, ParserError, ParserOptions, ParserResult, ParserState, to_query_location,
 };
@@ -26,7 +26,10 @@ mod pest {
 
 pub(crate) use pest::Rule;
 
-use crate::opl::parser::pipeline::parse_pipeline;
+use crate::opl::parser::{
+    expression::parse_expression,
+    pipeline::{RootPipelineBuilder, parse_pipeline},
+};
 
 /// Parser for OPL programs.
 pub struct OplParser;
@@ -65,6 +68,44 @@ impl Parser for OplParser {
         }
 
         Ok(ParserResult::new(state.build()?))
+    }
+}
+
+impl OplParser {
+    /// Parse the expression into a [`ScalarExpression`]
+    ///
+    /// Returns the parsed expression and definition of any functions referenced by the expression.
+    pub fn parse_expr_with_options(
+        expr: &str,
+        options: ParserOptions,
+    ) -> Result<(ScalarExpression, Vec<PipelineFunction>), Vec<ParserError>> {
+        let mut parse_result = match pest::OplPestParser::parse(Rule::expression, expr) {
+            Ok(rules) => rules,
+            Err(pest_error) => {
+                return Err(vec![ParserError::from_pest_error(expr, pest_error)]);
+            }
+        };
+
+        let rule = match parse_result.next() {
+            Some(rule) => rule,
+            None => {
+                // safety: this is a valid query location
+                let query_location =
+                    QueryLocation::new(0, expr.len(), 1, 1).expect("valid query location");
+
+                return Err(vec![ParserError::SyntaxError(
+                    query_location,
+                    "Unable to parse: no rules".into(),
+                )]);
+            }
+        };
+
+        let mut state = ParserState::new_with_options(expr, options);
+        let pipeline_builder = RootPipelineBuilder::new(&mut state);
+        let result = parse_expression(rule, &pipeline_builder).map_err(|e| vec![e])?;
+        let pipeline = state.build()?;
+
+        Ok((result.into(), pipeline.get_functions().to_vec()))
     }
 }
 

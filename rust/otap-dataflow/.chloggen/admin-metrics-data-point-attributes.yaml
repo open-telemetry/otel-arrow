@@ -1,0 +1,6 @@
+change_type: bug_fix
+component: observability
+note: "Expose metric data point attributes from the admin metrics JSON endpoint."
+issues:
+  - 3300
+subtext: The admin metrics JSON endpoint now properly includes data point attributes, matching the existing prometheus endpoint behavior.

@@ -167,11 +167,11 @@ fn start_controller_monitor_extension(
     }))
 }
 
-#[attribute_set(name = "controller.monitor.attrs")]
+#[attribute_set(scope, name = "controller.monitor.attrs")]
 #[derive(Debug, Clone)]
 struct ControllerMonitorAttributes {
     /// Configured controller monitor extension instance identifier.
-    #[attribute(key = "extension.id")]
+    #[attribute_key = "extension.id"]
     extension_id: String,
 }
 
@@ -276,8 +276,11 @@ impl ControllerMonitor {
             .set(telemetry_metric_sets);
 
         let snapshot = self.metrics.snapshot();
-        self.telemetry_registry
-            .accumulate_metric_set_snapshot(snapshot.key(), snapshot.get_metrics());
+        self.telemetry_registry.accumulate_metric_set_snapshot(
+            snapshot.key(),
+            snapshot.bucket(),
+            snapshot.get_metrics(),
+        );
 
         if self.config.log_snapshots {
             otel_info!(

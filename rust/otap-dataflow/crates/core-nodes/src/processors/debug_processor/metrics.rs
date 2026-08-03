@@ -3,41 +3,30 @@
 
 //! Metrics for the OTAP DebugProcessor node.
 
+use otap_df_config::SignalType;
 use otap_df_telemetry::instrument::Counter;
-use otap_df_telemetry_macros::metric_set;
+use otap_df_telemetry_macros::{attribute_set, metric_set};
+
+#[attribute_set(item, measurement)]
+#[derive(Debug, Clone, Copy)]
+pub struct SignalAttributes {
+    pub signal: SignalType,
+}
 
 /// Pdata-oriented metrics for the OTAP DebugProcessor
-#[metric_set(name = "processor.debug.pdata")]
+#[metric_set(name = "processor.debug.pdata", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct DebugPdataMetrics {
-    /// Number of log signals consumed
-    #[metric(unit = "{log}")]
-    pub log_signals_consumed: Counter<u64>,
-    /// Number of events (structured logs) consumed
-    #[metric(unit = "{event}")]
-    pub events_consumed: Counter<u64>,
-    /// Number of span signals consumed
-    #[metric(unit = "{span}")]
-    pub span_signals_consumed: Counter<u64>,
-    /// number of span links consumed
-    #[metric(unit = "{link}")]
-    pub span_links_consumed: Counter<u64>,
-    /// number of span events (structured logs) consumed
-    #[metric(unit = "{event}")]
-    pub span_events_consumed: Counter<u64>,
-    /// Number of metrics consumed
-    #[metric(unit = "{metric}")]
-    pub metric_signals_consumed: Counter<u64>,
-    /// number of metric datapoints consumed
-    #[metric(unit = "{datapoint}")]
-    pub metric_datapoints_consumed: Counter<u64>,
-    /// number of metrics (batches) consumed
-    #[metric(unit = "{msg}")]
-    pub metrics_consumed: Counter<u64>,
-    /// number of logs (batches) consumed
-    #[metric(unit = "{msg}")]
-    pub logs_consumed: Counter<u64>,
-    /// number of traces (batches) consumed
-    #[metric(unit = "{msg}")]
-    pub traces_consumed: Counter<u64>,
+    /// Incoming OTLP requests handled by the debug processor
+    #[metric(name = "consumed.requests", unit = "{request}")]
+    pub consumed_requests: Counter<u64>,
+    /// Primary signal items: log records, metric datapoints, or spans
+    #[metric(name = "consumed.items", unit = "{item}")]
+    pub consumed_items: Counter<u64>,
+    /// Named log events for logs, or span events for traces
+    #[metric(name = "consumed.events", unit = "{event}")]
+    pub consumed_events: Counter<u64>,
+    /// Span links
+    #[metric(name = "consumed.links", unit = "{link}")]
+    pub consumed_links: Counter<u64>,
 }

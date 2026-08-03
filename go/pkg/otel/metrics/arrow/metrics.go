@@ -169,9 +169,14 @@ func (b *MetricsBuilder) Append(metrics pmetric.Metrics) error {
 	b.builder.Reserve(len(optimizedMetrics.Metrics))
 
 	for _, metric := range optimizedMetrics.Metrics {
+		if metricID == math.MaxUint16 {
+			return werror.Wrap(carrow.ErrTooManyRecords)
+		}
 		ID := metricID
 
-		b.ib.Append(ID)
+		if err = b.ib.Append(ID); err != nil {
+			return werror.Wrap(err)
+		}
 		metricID++
 
 		// === Process resource and schema URL ===

@@ -5,7 +5,7 @@
 //!
 //! Acquires and refreshes Azure access tokens and exposes them to data-path
 //! nodes through the `BearerTokenProvider` capability. See
-//! `docs/azure-identity-auth-extension.md` for the design.
+//! `design.md` for the design.
 
 mod auth;
 pub mod config;
@@ -22,7 +22,7 @@ use linkme::distributed_slice;
 use otap_df_config::error::Error as ConfigError;
 use otap_df_config::extension::ExtensionUserConfig;
 use otap_df_engine::ExtensionFactory;
-use otap_df_engine::capability::BearerTokenProvider;
+use otap_df_engine::capability::auth::bearer_token_provider::BearerTokenProvider;
 use otap_df_engine::config::ExtensionConfig;
 use otap_df_engine::context::ExtensionContext;
 use otap_df_engine::extension::wrapper::ExtensionVariant;

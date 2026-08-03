@@ -54,7 +54,7 @@ impl PipelineStage for FilterPipelineStage {
         session_context: &SessionContext,
         _config_options: &ConfigOptions,
         _task_context: Arc<TaskContext>,
-        _exec_state: &mut ExecutionState,
+        exec_state: &mut ExecutionState,
     ) -> Result<OtapArrowRecords> {
         let root_rb = match otap_batch.root_record_batch() {
             Some(rb) => rb,
@@ -71,7 +71,7 @@ impl PipelineStage for FilterPipelineStage {
         // Convert the result to a root-aligned BooleanArray selection vector.
         let selection_vec = match result {
             None => {
-                // expression data was absent — no rows pass the filter
+                // expression data was absent -- no rows pass the filter
                 BooleanArray::new(BooleanBuffer::new_unset(num_rows), None)
             }
             Some(scoped_value) => {
@@ -87,6 +87,13 @@ impl PipelineStage for FilterPipelineStage {
                 }
             }
         };
+
+        // Record the number of root records removed by this filter so callers
+        // can observe genuine drops without inferring them from batch sizes.
+        // Rows whose predicate result is null are treated as not passing (see
+        // `scoped_value_to_boolean_array`), so `true_count` is exactly the rows
+        // kept.
+        exec_state.add_filtered(num_rows.saturating_sub(selection_vec.true_count()));
 
         let otap_batch = filter_otap_batch(&selection_vec, &otap_batch, &mut self.id_bitmap_pool)?;
 
@@ -119,10 +126,10 @@ impl PipelineStage for FilterPipelineStage {
 /// Convert a `ColumnarValue` into a `BooleanArray` selection vector of the given number of rows.
 ///
 /// Handles:
-/// - `ColumnarValue::Array` — casts to `BooleanArray`, strips null buffer by ANDing values with
+/// - `ColumnarValue::Array` -- casts to `BooleanArray`, strips null buffer by ANDing values with
 ///   the null buffer (null predicate results are treated as false)
-/// - `ColumnarValue::Scalar(Boolean(true))` — all-true array
-/// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` — all-false array
+/// - `ColumnarValue::Scalar(Boolean(true))` -- all-true array
+/// - `ColumnarValue::Scalar(Boolean(false))` or `Scalar(Null)` -- all-false array
 pub(crate) fn scoped_value_to_boolean_array(
     values: ColumnarValue,
     num_rows: usize,
@@ -252,7 +259,7 @@ fn align_selection_vec_from_atts(
             });
         }
         None => {
-            // no ID column means no attributes exist — return all-null for the root
+            // no ID column means no attributes exist -- return all-null for the root
             return Ok(ScopedValue::new(
                 null_columnar_value_for_rows(&value.values, num_rows)?,
                 DataScope::Root,
@@ -568,6 +575,65 @@ mod test {
         let result_where_false =
             exec_logs_pipeline::<OplParser>("logs | where false", to_logs_data(log_records)).await;
         assert_eq!(result_where_false.resource_logs.len(), 0);
+    }
+
+    /// The engine must report the exact number of root records removed by a
+    /// filter predicate via `ExecutionState`, so callers can observe genuine
+    /// drops without inferring them from batch sizes.
+    #[tokio::test]
+    async fn test_filter_reports_dropped_count_in_exec_state() {
+        let log_records = vec![
+            LogRecord::build()
+                .severity_text("TRACE")
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .severity_text("INFO")
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .severity_text("ERROR")
+                .event_name("3")
+                .finish(),
+        ];
+
+        async fn dropped_count(query: &str, records: &[LogRecord]) -> usize {
+            let parser_result = KqlParser::parse(query).unwrap();
+            let mut pipeline = Pipeline::new(parser_result.pipeline);
+            let mut exec_state = ExecutionState::new();
+            let _ = pipeline
+                .execute_with_state(to_otap_logs(records.to_vec()), &mut exec_state)
+                .await
+                .unwrap();
+            exec_state.counters().filtered
+        }
+
+        // 2 of 3 records removed.
+        assert_eq!(
+            dropped_count("logs | where severity_text == \"ERROR\"", &log_records).await,
+            2
+        );
+        // All records removed.
+        assert_eq!(dropped_count("logs | where false", &log_records).await, 3);
+        // No records removed.
+        assert_eq!(dropped_count("logs | where true", &log_records).await, 0);
+        // A non-filtering transform drops nothing.
+        assert_eq!(
+            dropped_count("logs | extend attributes[\"x\"] = 1", &log_records).await,
+            0
+        );
+
+        // Counters accumulate across stages and reset on demand.
+        let parser_result = KqlParser::parse("logs | where severity_text == \"ERROR\"").unwrap();
+        let mut pipeline = Pipeline::new(parser_result.pipeline);
+        let mut exec_state = ExecutionState::new();
+        let _ = pipeline
+            .execute_with_state(to_otap_logs(log_records.clone()), &mut exec_state)
+            .await
+            .unwrap();
+        assert_eq!(exec_state.counters().filtered, 2);
+        exec_state.reset_counters();
+        assert_eq!(exec_state.counters().filtered, 0);
     }
 
     async fn test_simple_attrs_filter<P: Parser>() {
@@ -5820,6 +5886,43 @@ mod test {
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &expected
+        );
+    }
+
+    /// Scenario: A five-attribute traffic-generator-shaped log record joins two attribute predicates.
+    /// Guarantees: Scalar false filters the record, while scalar true keeps it without terminating filtering.
+    #[tokio::test]
+    async fn test_filter_attributes_all_scalar_result() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("thread.id", AnyValue::new_int(0)),
+                    KeyValue::new("thread.name", AnyValue::new_string("worker")),
+                    KeyValue::new("code.function", AnyValue::new_string("run")),
+                    KeyValue::new("code.namespace", AnyValue::new_string("example")),
+                    KeyValue::new("code.filepath", AnyValue::new_string("main.rs")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "foo") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(result.resource_logs.is_empty());
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "run") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(!result.resource_logs.is_empty());
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
         );
     }
 }

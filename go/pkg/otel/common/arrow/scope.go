@@ -61,7 +61,9 @@ func (b *ScopeBuilder) Append(scopeID int64, scope pcommon.InstrumentationScope)
 	return b.builder.Append(scope, func() error {
 		b.nb.AppendNonEmpty(scope.Name())
 		b.vb.AppendNonEmpty(scope.Version())
-		b.aib.Append(uint16(scopeID))
+		if err := b.aib.Append(uint16(scopeID)); err != nil {
+			return werror.Wrap(err)
+		}
 		b.dacb.AppendNonZero(scope.DroppedAttributesCount())
 		return nil
 	})

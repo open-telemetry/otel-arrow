@@ -438,32 +438,29 @@ impl PipelineStatus {
 
     /// Selects the runtime instances that currently represent this logical pipeline.
     fn selected_runtime_keys(&self) -> Vec<RuntimeInstanceKey> {
-        if !self.serving_generations.is_empty() {
-            return self
-                .serving_generations
-                .iter()
-                .map(|(core_id, generation)| RuntimeInstanceKey {
-                    core_id: *core_id,
-                    deployment_generation: *generation,
-                })
-                .filter(|key| self.instances.contains_key(key))
-                .collect();
+        let mut selected_by_core = HashMap::new();
+        if let Some(active_generation) = self.active_generation {
+            for key in self.instances.keys().filter(|key| {
+                key.deployment_generation == active_generation
+                    && (self.active_cores.is_empty() || self.active_cores.contains(&key.core_id))
+            }) {
+                _ = selected_by_core.insert(key.core_id, *key);
+            }
         }
 
-        if let Some(active_generation) = self.active_generation {
-            let selected: Vec<_> = self
-                .instances
-                .iter()
-                .filter(|(key, _)| {
-                    key.deployment_generation == active_generation
-                        && (self.active_cores.is_empty()
-                            || self.active_cores.contains(&key.core_id))
-                })
-                .map(|(key, _)| *key)
-                .collect();
-            if !selected.is_empty() {
-                return selected;
+        for (core_id, generation) in &self.serving_generations {
+            _ = selected_by_core.remove(core_id);
+            let key = RuntimeInstanceKey {
+                core_id: *core_id,
+                deployment_generation: *generation,
+            };
+            if self.instances.contains_key(&key) {
+                _ = selected_by_core.insert(*core_id, key);
             }
+        }
+
+        if !selected_by_core.is_empty() {
+            return selected_by_core.into_values().collect();
         }
 
         let mut per_core: HashMap<CoreId, RuntimeInstanceKey> = HashMap::new();
@@ -838,6 +835,30 @@ mod tests {
         status.set_active_generation(0);
         status.set_serving_generation(0, 1);
         status.set_serving_generation(1, 0);
+
+        assert_eq!(status.total_cores(), 2);
+        assert_eq!(status.running_cores(), 2);
+        assert!(status.readiness());
+    }
+
+    /// Scenario: one core has recovered onto a newer generation while its sibling
+    /// continues serving the committed active generation without an explicit override.
+    /// Guarantees: per-core serving overrides overlay, rather than replace, the active
+    /// generation so both cores contribute to readiness and running-core counts.
+    #[test]
+    fn serving_generation_selection_overlays_partial_core_recovery() {
+        let mut status = new_status(HealthPolicy::default());
+        insert_runtime(
+            &mut status,
+            0,
+            0,
+            runtime(PipelinePhase::Failed(FailReason::RuntimeError)),
+        );
+        insert_runtime(&mut status, 0, 1, runtime(PipelinePhase::Running));
+        insert_runtime(&mut status, 1, 0, runtime(PipelinePhase::Running));
+        status.set_active_generation(0);
+        status.set_active_cores([0, 1]);
+        status.set_serving_generation(0, 1);
 
         assert_eq!(status.total_cores(), 2);
         assert_eq!(status.running_cores(), 2);

@@ -1,0 +1,4 @@
+change_type: bug_fix
+component: pipeline
+note: Clarify Azure Monitor exporter metric descriptions for completed export attempts.
+issues: [3625]

@@ -10,7 +10,6 @@
 //! The configuration may change in the future and support for various transformation query is
 //! still being developed.
 //!
-//! ToDo: Handle Ack and Nack
 //! ToDo: Detect unsupported pipelines at config time instead of run time.
 
 use std::sync::Arc;
@@ -30,11 +29,11 @@ use otap_df_engine::{
     local::processor::{EffectHandler, Processor},
     message::Message,
     node::NodeId,
-    processor::ProcessorWrapper,
+    processor::{ProcessorRuntimeRequirements, ProcessorWrapper},
 };
 use otap_df_otap::{
     OTAP_PROCESSOR_FACTORIES,
-    accessory::slots::Key,
+    accessory::{context::split_contexts::Contexts, slots::Key},
     pdata::{Context, OtapPdata},
 };
 use otap_df_pdata::TryIntoWithOptions;
@@ -43,39 +42,52 @@ use otap_df_pdata::{
 };
 use otap_df_query_engine::{
     parser::default_parser_options,
-    pipeline::{Pipeline, PipelineOptions, routing::RouterExtType, state::ExecutionState},
+    pipeline::{
+        Pipeline, PipelineOptions,
+        routing::RouterExtType,
+        state::{ExecutionCounters, ExecutionState},
+    },
 };
 use otap_df_query_engine_languages::{opl::parser::OplParser, ottl::parser::OttlParser};
-use otap_df_telemetry::metrics::MetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
 
 use crate::processors::transform_processor::routing::RouterImpl;
 
 use self::config::{Config, Query};
-use self::context::Contexts;
-use self::metrics::Metrics;
+use self::metrics::{TransformErrorType, TransformLanguage, TransformMetrics};
 
 mod config;
-mod context;
 mod metrics;
 mod routing;
 
 /// URN for the TransformProcessor
 pub const TRANSFORM_PROCESSOR_URN: &str = "urn:otel:processor:transform";
 
-/// Opentelemetry Processing Language Processor
+/// Transform Processor
 pub struct TransformProcessor {
     execution_state: ExecutionState,
     transforms: Vec<Transform>,
     contexts: Contexts,
-    metrics: MetricSet<Metrics>,
+    metrics: TransformMetrics,
     sanitize_results: bool,
 }
 
 struct Transform {
     signal_scope: SignalScope,
     pipeline: Pipeline,
+}
+
+/// A processor error paired with its bounded internal telemetry classification.
+struct TransformOperationError {
+    error_type: TransformErrorType,
+    error: EngineError,
+}
+
+impl TransformOperationError {
+    const fn new(error_type: TransformErrorType, error: EngineError) -> Self {
+        Self { error_type, error }
+    }
 }
 
 /// Identifier for which signal types the transformation pipeline should be applied.
@@ -135,26 +147,32 @@ impl TransformProcessor {
             filter_attribute_keys_case_sensitive: config.filter_attribute_keys_case_sensitive,
         };
 
-        let transforms = match &config.query {
+        let (transforms, language) = match &config.query {
             Query::KqlQuery(query) => {
                 let pipeline_expr = KqlParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
                 let signal_scope = SignalScope::try_from(&pipeline_expr)?;
-                vec![Transform {
-                    pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
-                    signal_scope,
-                }]
+                (
+                    vec![Transform {
+                        pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
+                        signal_scope,
+                    }],
+                    TransformLanguage::Kql,
+                )
             }
             Query::OplQuery(query) => {
                 let pipeline_expr = OplParser::parse_with_options(query, parser_options)
                     .map_err(map_parser_err)?
                     .pipeline;
                 let signal_scope = SignalScope::try_from(&pipeline_expr)?;
-                vec![Transform {
-                    pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
-                    signal_scope,
-                }]
+                (
+                    vec![Transform {
+                        pipeline: Pipeline::new_with_options(pipeline_expr, pipeline_options),
+                        signal_scope,
+                    }],
+                    TransformLanguage::Opl,
+                )
             }
             Query::Ottl(ottl_config) => {
                 let mut transforms = Vec::new();
@@ -175,7 +193,7 @@ impl TransformProcessor {
                     }
                 }
 
-                transforms
+                (transforms, TransformLanguage::Ottl)
             }
         };
 
@@ -188,7 +206,7 @@ impl TransformProcessor {
 
         Ok(Self {
             transforms,
-            metrics: pipeline_ctx.register_metrics::<Metrics>(),
+            metrics: TransformMetrics::register(pipeline_ctx, language),
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             execution_state,
             sanitize_results: !config.skip_sanitize_result,
@@ -200,18 +218,25 @@ impl TransformProcessor {
     async fn handle_exec_result(
         &mut self,
         inbound_context: Context,
-        pipeline_result: Result<OtapArrowRecords, EngineError>,
+        signal: SignalType,
+        pipeline_result: Result<OtapArrowRecords, TransformOperationError>,
+        counters: ExecutionCounters,
         effect_handler: &mut EffectHandler<OtapPdata>,
-    ) -> Result<(), EngineError> {
+    ) -> Result<(), TransformOperationError> {
         let router_impl = self
             .execution_state
             .get_extension_mut::<RouterExtType>()
             .and_then(|router| router.as_any_mut().downcast_mut::<RouterImpl>())
-            .ok_or_else(|| EngineError::ProcessorError {
-                processor: effect_handler.processor_id(),
-                kind: ProcessorErrorKind::Other,
-                source_detail: "Router not found in pipeline exec state".into(),
-                error: "Routing error:".into(),
+            .ok_or_else(|| {
+                TransformOperationError::new(
+                    TransformErrorType::Internal,
+                    EngineError::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Other,
+                        source_detail: "Router not found in pipeline exec state".into(),
+                        error: "Routing error:".into(),
+                    },
+                )
             })?;
 
         // access the batch that was the output of the call to pipeline.execute. This should
@@ -226,6 +251,9 @@ impl TransformProcessor {
             }
         };
 
+        // Record flow metrics from the engine's per-batch execution counters
+        effect_handler.record_flow_dropped_items(signal, counters.filtered as u64);
+
         if self.sanitize_results {
             sanitize_otap_batch(&mut default_otap_batch);
         }
@@ -238,7 +266,12 @@ impl TransformProcessor {
             // routed somewhere else, so we don't need to juggle any inbound/outbound contexts
             // and we can just handle the batch normally.
             let pdata = OtapPdata::new(inbound_context, default_otap_batch.into());
-            effect_handler.send_message_with_source_node(pdata).await?;
+            effect_handler
+                .send_message_with_source_node(pdata)
+                .await
+                .map_err(|error| {
+                    TransformOperationError::new(TransformErrorType::OutputSend, error.into())
+                })?;
             return Ok(());
         }
 
@@ -247,11 +280,16 @@ impl TransformProcessor {
         let inbound_ctx_key = self
             .contexts
             .insert_inbound(inbound_context, None)
-            .ok_or_else(|| EngineError::ProcessorError {
-                processor: effect_handler.processor_id(),
-                kind: ProcessorErrorKind::Other,
-                error: "inbound slots not available".into(),
-                source_detail: "".into(),
+            .ok_or_else(|| {
+                TransformOperationError::new(
+                    TransformErrorType::InboundCapacity,
+                    EngineError::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Other,
+                        error: "inbound slots not available".into(),
+                        source_detail: "".into(),
+                    },
+                )
             })?;
 
         // send the output of the pipeline to the default output port while juggling the context for
@@ -272,12 +310,15 @@ impl TransformProcessor {
                 // that would eventually get Ack/Nack'd to clear it later
                 self.contexts.clear_inbound(inbound_ctx_key);
 
-                EngineError::ProcessorError {
-                    processor: effect_handler.processor_id(),
-                    kind: ProcessorErrorKind::Other,
-                    error: "outbound slots not available".into(),
-                    source_detail: "".into(),
-                }
+                TransformOperationError::new(
+                    TransformErrorType::OutboundCapacity,
+                    EngineError::ProcessorError {
+                        processor: effect_handler.processor_id(),
+                        kind: ProcessorErrorKind::Other,
+                        error: "outbound slots not available".into(),
+                        source_detail: "".into(),
+                    },
+                )
             })?;
         if !outbound_key.is_null() {
             effect_handler.subscribe_to(
@@ -286,7 +327,12 @@ impl TransformProcessor {
                 &mut pdata,
             );
         }
-        effect_handler.send_message_with_source_node(pdata).await?;
+        effect_handler
+            .send_message_with_source_node(pdata)
+            .await
+            .map_err(|error| {
+                TransformOperationError::new(TransformErrorType::OutputSend, error.into())
+            })?;
 
         // handle any batches that need to be forwarded to a specific output port thanks to invocation
         // of a "route_to" operator call
@@ -296,11 +342,19 @@ impl TransformProcessor {
                 .connected_ports()
                 .iter()
                 .find(|p| p.as_ref() == route_name.as_str())
-                .ok_or_else(|| EngineError::ProcessorError {
-                    processor: effect_handler.processor_id(),
-                    kind: ProcessorErrorKind::Transport,
-                    error: "Routing error: ".into(),
-                    source_detail: format!("output port name {} not configured", route_name),
+                .ok_or_else(|| {
+                    TransformOperationError::new(
+                        TransformErrorType::RouteNotConfigured,
+                        EngineError::ProcessorError {
+                            processor: effect_handler.processor_id(),
+                            kind: ProcessorErrorKind::Transport,
+                            error: "Routing error: ".into(),
+                            source_detail: format!(
+                                "output port name {} not configured",
+                                route_name
+                            ),
+                        },
+                    )
                 })?
                 .clone();
 
@@ -324,12 +378,15 @@ impl TransformProcessor {
                         "outbound slots were not available".into(),
                     );
 
-                    EngineError::ProcessorError {
-                        processor: effect_handler.processor_id(),
-                        kind: ProcessorErrorKind::Other,
-                        error: "outbound slots not available".into(),
-                        source_detail: "".into(),
-                    }
+                    TransformOperationError::new(
+                        TransformErrorType::OutboundCapacity,
+                        EngineError::ProcessorError {
+                            processor: effect_handler.processor_id(),
+                            kind: ProcessorErrorKind::Other,
+                            error: "outbound slots not available".into(),
+                            source_detail: "".into(),
+                        },
+                    )
                 })?;
             if !outbound_key.is_null() {
                 effect_handler.subscribe_to(
@@ -341,7 +398,10 @@ impl TransformProcessor {
 
             effect_handler
                 .send_message_with_source_node_to(port_name, pdata)
-                .await?;
+                .await
+                .map_err(|error| {
+                    TransformOperationError::new(TransformErrorType::OutputSend, error.into())
+                })?;
         }
 
         Ok(())
@@ -401,6 +461,13 @@ pub static TRANSFORM_PROCESSOR_FACTORY: ProcessorFactory<OtapPdata> = ProcessorF
 
 #[async_trait(?Send)]
 impl Processor<OtapPdata> for TransformProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The transform processor can drop signal items via filtering (e.g. a
+        // KQL `where`), so it records `dropped.items` when it lies within a
+        // flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         message: Message<OtapPdata>,
@@ -411,7 +478,7 @@ impl Processor<OtapPdata> for TransformProcessor {
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    if let Err(e) = metrics_reporter.report(&mut self.metrics) {
+                    if let Err(e) = self.metrics.report(&mut metrics_reporter) {
                         return Err(EngineError::InternalError {
                             message: e.to_string(),
                         });
@@ -447,6 +514,11 @@ impl Processor<OtapPdata> for TransformProcessor {
                 let mut transformed = false;
                 let mut transform_error = None;
 
+                // Reset the engine's record-removal counters so that, after the
+                // transform loop, they reflect only the drops caused by this
+                // batch.
+                self.execution_state.reset_counters();
+
                 // Execute all transforms. We skip transforms where the batch's signal type is not
                 // selected by the signal scope, and lazily convert the pdata payload to OTAP
                 // if/when we find a transform to apply. If any transform error occurs, break early
@@ -474,24 +546,42 @@ impl Processor<OtapPdata> for TransformProcessor {
                     // convert payload to OTAP & remove delta encoded IDs.
                     // safety: we know payload will have been initialized to Some either, before
                     // entering the loop, or during the previous iteration.
-                    let mut otap_batch: OtapArrowRecords = payload
+                    let conversion_result: Result<OtapArrowRecords, _> = payload
                         .take()
                         .expect("payload initialized")
-                        .try_into_with_default()?;
-                    otap_batch.decode_transport_optimized_ids()?;
+                        .try_into_with_default();
+                    let mut otap_batch = match conversion_result {
+                        Ok(otap_batch) => otap_batch,
+                        Err(error) => {
+                            transform_error = Some(TransformOperationError::new(
+                                TransformErrorType::PayloadConversion,
+                                error.into(),
+                            ));
+                            break;
+                        }
+                    };
+                    if let Err(error) = otap_batch.decode_transport_optimized_ids() {
+                        transform_error = Some(TransformOperationError::new(
+                            TransformErrorType::IdDecode,
+                            error.into(),
+                        ));
+                        break;
+                    }
 
                     let result = transform
                         .pipeline
                         .execute_with_state(otap_batch, &mut self.execution_state)
                         .await
                         .map_err(|e| {
-                            self.metrics.msgs_transform_failed.inc();
-                            EngineError::ProcessorError {
-                                processor: effect_handler.processor_id(),
-                                kind: ProcessorErrorKind::Other,
-                                error: format!("Error executing query engine pipeline {e}"),
-                                source_detail: e.to_string(),
-                            }
+                            TransformOperationError::new(
+                                TransformErrorType::QueryExecution,
+                                EngineError::ProcessorError {
+                                    processor: effect_handler.processor_id(),
+                                    kind: ProcessorErrorKind::Other,
+                                    error: format!("Error executing query engine pipeline {e}"),
+                                    source_detail: e.to_string(),
+                                },
+                            )
                         });
 
                     match result {
@@ -507,7 +597,6 @@ impl Processor<OtapPdata> for TransformProcessor {
                 }
 
                 if transformed {
-                    self.metrics.msgs_transformed.inc();
                     let result = match transform_error {
                         Some(e) => Err(e),
                         None => {
@@ -524,8 +613,26 @@ impl Processor<OtapPdata> for TransformProcessor {
                             }
                         }
                     };
-                    self.handle_exec_result(context, result, effect_handler)
-                        .await?;
+                    // Hand the engine's per-batch counters to the result handler,
+                    // which records the corresponding flow metrics.
+                    let counters = self.execution_state.counters();
+                    match self
+                        .handle_exec_result(
+                            context,
+                            pdata_signal_type,
+                            result,
+                            counters,
+                            effect_handler,
+                        )
+                        .await
+                    {
+                        Ok(()) => self.metrics.record_success(pdata_signal_type),
+                        Err(operation_error) => {
+                            self.metrics
+                                .record_failure(pdata_signal_type, operation_error.error_type);
+                            return Err(operation_error.error);
+                        }
+                    }
                 } else {
                     // safety: payload is initialized to Some, and only modified if any transforms
                     // are applied. In this location, we know no transforms were applied so we can
@@ -547,6 +654,8 @@ impl Processor<OtapPdata> for TransformProcessor {
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::collections::BTreeMap;
+
     use arrow::{
         array::{DictionaryArray, StringArray},
         compute::kernels::cmp::eq,
@@ -592,6 +701,57 @@ mod test {
         pdata::{Context, OtapPdata},
         testing::{TestCallData, next_ack, next_nack},
     };
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct TransformMetricPoint {
+        field: String,
+        attributes: BTreeMap<String, String>,
+        value: u64,
+    }
+
+    fn transform_metric_points(
+        telemetry_registry: &TelemetryRegistryHandle,
+    ) -> Vec<TransformMetricPoint> {
+        let mut points = Vec::new();
+        telemetry_registry.visit_current_metrics_with_item_attrs(
+            |descriptor, _entity_attributes, item_attributes, metrics| {
+                if descriptor.name != "processor.transform" {
+                    return;
+                }
+
+                let attributes = item_attributes
+                    .iter()
+                    .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                    .collect::<BTreeMap<_, _>>();
+                for (field, value) in metrics {
+                    points.push(TransformMetricPoint {
+                        field: field.name.to_string(),
+                        attributes: attributes.clone(),
+                        value: value.to_u64_lossy(),
+                    });
+                }
+            },
+            false,
+        );
+        points
+    }
+
+    fn transform_metric_value(
+        points: &[TransformMetricPoint],
+        field: &str,
+        expected_attributes: &[(&str, &str)],
+    ) -> Option<u64> {
+        points
+            .iter()
+            .find(|point| {
+                point.field == field
+                    && expected_attributes.iter().all(|(key, value)| {
+                        point.attributes.get(*key).map(String::as_str) == Some(*value)
+                    })
+            })
+            .map(|point| point.value)
+    }
 
     /// Helper to create test log records with specific severity levels
     fn create_log_records(severities: &[&str]) -> Vec<LogRecord> {
@@ -680,6 +840,33 @@ mod test {
         try_create_with_config(json!({ "kql_query": query }), runtime)
     }
 
+    #[test]
+    fn test_declares_drop_decisions() {
+        // The transform processor filters records (e.g. via a KQL `where`), so
+        // it must declare the drop-decision capability; otherwise the engine
+        // never wires its `dropped.items` flow metric.
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry_handle = runtime.metrics_registry();
+        let controller_context = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_context = controller_context.pipeline_context_with(
+            "group_id".into(),
+            "pipeline_id".into(),
+            0,
+            1,
+            0,
+        );
+        let processor = TransformProcessor::from_config(
+            &pipeline_context,
+            &json!({ "kql_query": "logs | where severity_text == \"ERROR\"" }),
+        )
+        .expect("created processor");
+
+        assert!(
+            processor.runtime_requirements().makes_drop_decisions,
+            "transform processor must declare drop decisions so dropped.items is wired"
+        );
+    }
+
     fn try_create_with_opl_query(
         query: &str,
         runtime: &TestRuntime<OtapPdata>,
@@ -703,6 +890,8 @@ mod test {
         }
     }
 
+    /// Scenario: A KQL transform filters a logs batch and dispatches its result successfully.
+    /// Guarantees: One successful KQL logs operation is exported without legacy metric fields.
     #[test]
     fn test_simple_transform_pipeline() {
         let runtime = TestRuntime::<OtapPdata>::new();
@@ -780,37 +969,108 @@ mod test {
                 .expect("collect");
             })
             .validate(|_ctx| async move {
-                // Allow the collector to pull from the channel
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush transform metrics");
 
-                let mut msgs_transformed = 0;
-                let mut msgs_transform_failed = 0;
-                telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "processor.transform" {
-                        for (field, v) in iter {
-                            let val = v.to_u64_lossy();
-                            match field.name {
-                                "msgs.transformed" => msgs_transformed += val,
-                                "msgs.transform.failed" => msgs_transform_failed += val,
-                                _ => {}
-                            }
-                        }
-                    }
-                });
-
-                assert_eq!(msgs_transformed, 1);
-                assert_eq!(msgs_transform_failed, 0)
+                let points = transform_metric_points(&telemetry_registry);
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "operations",
+                        &[
+                            ("language", "kql"),
+                            ("signal", "logs"),
+                            ("outcome", "success"),
+                        ],
+                    ),
+                    Some(1)
+                );
+                assert!(points.iter().all(|point| point.field != "msgs.transformed"
+                    && point.field != "msgs.transform.failed"));
             });
     }
 
+    /// Scenario: An OPL query assigns an integer to a string field and fails during execution.
+    /// Guarantees: The processor returns the query error and exports one classified failed operation.
+    #[test]
+    fn test_query_execution_error_reports_failure_attributes() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
+        let processor =
+            try_create_with_opl_query("logs | extend instrumentation_scope.name = 42", &runtime)
+                .expect("created processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(|mut ctx| async move {
+                let input = to_otap_logs(vec![LogRecord::build().event_name("event").finish()]);
+                let error = ctx
+                    .process(Message::PData(OtapPdata::new_default(input.into())))
+                    .await
+                    .expect_err("query execution should fail");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Error executing query engine pipeline"),
+                    "unexpected transform error: {error}"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect transform metrics");
+            })
+            .validate(|_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush transform metrics");
+
+                let points = transform_metric_points(&telemetry_registry);
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "operations",
+                        &[
+                            ("language", "opl"),
+                            ("signal", "logs"),
+                            ("outcome", "failure"),
+                        ],
+                    ),
+                    Some(1)
+                );
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "failures",
+                        &[
+                            ("language", "opl"),
+                            ("signal", "logs"),
+                            ("error.type", "query_execution"),
+                        ],
+                    ),
+                    Some(1)
+                );
+            });
+    }
+
+    /// Scenario: Two configured OTTL statements transform one incoming logs message.
+    /// Guarantees: The message is counted as one successful OTTL operation, not once per statement.
     #[test]
     fn test_simple_ottl_pipeline() {
         let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
         let processor = try_create_with_config(
             json!({
                 "ottl": {
                     "log_statements": [
-                        "set(severity_text, \"ERROR\")"
+                        "set(severity_text, \"ERROR\")",
+                        "set(event_name, \"processed\")"
                     ]
                 }
             }),
@@ -860,7 +1120,8 @@ mod test {
                             2
                         );
                         for log_record in &logs_data.resource_logs[0].scope_logs[0].log_records {
-                            assert_eq!(log_record.severity_text, "ERROR")
+                            assert_eq!(log_record.severity_text, "ERROR");
+                            assert_eq!(log_record.event_name, "processed");
                         }
                     }
                     invalid => {
@@ -869,8 +1130,33 @@ mod test {
                         )
                     }
                 }
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect transform metrics");
             })
-            .validate(|_ctx| async move {});
+            .validate(|_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush transform metrics");
+
+                let points = transform_metric_points(&telemetry_registry);
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "operations",
+                        &[
+                            ("language", "ottl"),
+                            ("signal", "logs"),
+                            ("outcome", "success"),
+                        ],
+                    ),
+                    Some(1)
+                );
+            });
     }
 
     #[test]
@@ -1066,10 +1352,14 @@ mod test {
         .expect("no process error")
     }
 
+    /// Scenario: A traces-scoped query receives one traces message and one metrics message.
+    /// Guarantees: Only the matching traces message produces a transform operation metric.
     #[test]
     fn test_signal_scope() {
         // test ensure it will only operate on traces, but ignores other signals
         let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
         let query = "traces | where name == \"foo\"";
         let processor = try_create_with_kql_query(query, &runtime).expect("created processor");
         runtime
@@ -1097,8 +1387,45 @@ mod test {
                     .get(ArrowPayloadType::UnivariateMetrics)
                     .expect("metrics present");
                 assert_eq!(metrics.num_rows(), 2);
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect transform metrics");
             })
-            .validate(|_ctx| async move {})
+            .validate(|_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush transform metrics");
+
+                let points = transform_metric_points(&telemetry_registry);
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "operations",
+                        &[
+                            ("language", "kql"),
+                            ("signal", "traces"),
+                            ("outcome", "success"),
+                        ],
+                    ),
+                    Some(1)
+                );
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "operations",
+                        &[
+                            ("language", "kql"),
+                            ("signal", "metrics"),
+                            ("outcome", "success"),
+                        ],
+                    ),
+                    None
+                );
+            })
     }
 
     #[test]
@@ -1979,9 +2306,13 @@ mod test {
             .validate(|_ctx| async move {})
     }
 
+    /// Scenario: A routed transform exhausts its configured outbound context capacity.
+    /// Guarantees: The partial dispatch fails once with the outbound-capacity classification.
     #[test]
     fn test_ack_nack_full_contexts_outbound_slots_for_routed_batch() {
         let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
         let query = r#"logs
             | if (severity_text == "ERROR") {
                 route_to "error_port"
@@ -2061,8 +2392,45 @@ mod test {
                         panic!("got unexpected pipeline ctrl message {other:?}")
                     }
                 };
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect transform metrics");
             })
-            .validate(|_ctx| async move {})
+            .validate(|_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush transform metrics");
+
+                let points = transform_metric_points(&telemetry_registry);
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "operations",
+                        &[
+                            ("language", "opl"),
+                            ("signal", "logs"),
+                            ("outcome", "failure"),
+                        ],
+                    ),
+                    Some(1)
+                );
+                assert_eq!(
+                    transform_metric_value(
+                        &points,
+                        "failures",
+                        &[
+                            ("language", "opl"),
+                            ("signal", "logs"),
+                            ("error.type", "outbound_capacity"),
+                        ],
+                    ),
+                    Some(1)
+                );
+            })
     }
 
     #[test]
