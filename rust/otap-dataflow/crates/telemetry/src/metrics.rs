@@ -58,10 +58,10 @@ pub const fn check_cardinality(cardinality: usize) {
 /// [`Distribution`] boxes its tier internally, so it is embedded here directly
 /// rather than boxed again.
 ///
-/// This type has no serde representation on purpose: a distribution's wire form
-/// is the OTLP exponential histogram, produced by the OTLP encoder, and
-/// consumers that need a textual rendering (the admin endpoints) project the
-/// summary themselves.
+/// This type has no serde representation on purpose: the OTLP encoder selects
+/// the wire form from the instrument and distribution tier, while consumers
+/// that need a textual rendering (the admin endpoints) project the summary
+/// themselves.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MetricValue {
     /// Unsigned 64-bit integer value.
@@ -69,7 +69,7 @@ pub enum MetricValue {
     /// 64-bit floating point value.
     F64(f64),
     /// A distribution aggregation from an [`Mmsc`] or exponential-histogram
-    /// instrument.
+    /// instrument. The instrument descriptor determines its OTLP point type.
     Distribution(Distribution),
 }
 
@@ -2595,9 +2595,8 @@ mod tests {
     }
 
     /// Scenario: An `Mmsc` aggregation is converted into a `MetricValue`.
-    /// Guarantees: It becomes the basic tier of a distribution -- an exponential
-    ///   histogram with no encoded buckets -- preserving every field, so MMSC and
-    ///   bucketed instruments share one metric value kind.
+    /// Guarantees: It becomes the basic tier of a distribution, preserving every
+    /// field while remaining distinguishable from the bucketed histogram tiers.
     #[test]
     fn test_mmsc_converts_into_basic_tier_distribution() {
         let mut mmsc = Mmsc::default();

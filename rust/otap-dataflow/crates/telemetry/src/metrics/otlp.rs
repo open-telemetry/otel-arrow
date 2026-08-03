@@ -68,7 +68,8 @@
 //! | `UpDownCounter` | non-monotonic `Sum` | Descriptor temporality; delta-window or registration start |
 //! | `Gauge` | `Gauge` | Start time is zero, as required for an instantaneous value |
 //! | scalar `Histogram` | delta `Histogram` with one observation | Delta-window start; uses the bridge's stable explicit bounds |
-//! | `Mmsc` | delta, bucketless `ExponentialHistogram` | Delta-window start; preserves exact min, max, sum, and count |
+//! | `Mmsc` | delta, bucketless `Histogram` | Delta-window start; preserves exact min, max, sum, and count |
+//! | `ExponentialHistogram` | delta `ExponentialHistogram` | Delta-window start; preserves exact exponential bucket counts |
 //!
 //! Every point uses [`MetricExportBatch::time_unix_nano`] as its end time. A
 //! dirty scalar field is emitted even when its value is zero, because zero may
@@ -858,9 +859,25 @@ fn encode_metric(
             );
             metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
         }
-        // Both instruments aggregate into a `Distribution`; the basic (Mmsc)
-        // tier simply encodes no buckets.
-        Instrument::Mmsc | Instrument::ExponentialHistogram => {
+        Instrument::Mmsc => {
+            let MetricValue::Distribution(distribution) = value else {
+                unreachable!("metric value kind was validated before encoding")
+            };
+            let crate::instrument::Distribution::Basic(mmsc) = distribution else {
+                unreachable!("metric value kind was validated before encoding")
+            };
+            if mmsc.count == 0 {
+                return Ok(None);
+            }
+            let point = mmsc_histogram_data_point(
+                mmsc,
+                metric_set.delta_start_time_unix_nano,
+                time_unix_nano,
+                datapoint_attributes,
+            );
+            metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
+        }
+        Instrument::ExponentialHistogram => {
             let MetricValue::Distribution(distribution) = value else {
                 unreachable!("metric value kind was validated before encoding")
             };
@@ -892,7 +909,8 @@ fn encode_metric(
 /// Validates the descriptor/value pairing before any lossy projection occurs.
 fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), Error> {
     let expected = match field.instrument {
-        Instrument::Mmsc | Instrument::ExponentialHistogram => "distribution",
+        Instrument::Mmsc => "mmsc",
+        Instrument::ExponentialHistogram => "exponential histogram",
         _ => match field.value_type {
             crate::descriptor::MetricValueType::U64 => "u64",
             crate::descriptor::MetricValueType::F64 => "f64",
@@ -901,7 +919,11 @@ fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), 
     let actual = match value {
         MetricValue::U64(_) => "u64",
         MetricValue::F64(_) => "f64",
-        MetricValue::Distribution(_) => "distribution",
+        MetricValue::Distribution(crate::instrument::Distribution::Basic(_)) => "mmsc",
+        MetricValue::Distribution(
+            crate::instrument::Distribution::Normal(_)
+            | crate::instrument::Distribution::Detailed(_),
+        ) => "exponential histogram",
     };
 
     if expected == actual {
@@ -933,6 +955,28 @@ fn number_data_point(
             unreachable!("metric value kind was validated before encoding")
         }
     }
+}
+
+/// Encodes an MMSC summary without inventing bucket membership.
+fn mmsc_histogram_data_point(
+    mmsc: &crate::instrument::Mmsc,
+    start_time_unix_nano: u64,
+    time_unix_nano: u64,
+    datapoint_attributes: &[KeyValue],
+) -> HistogramDataPoint {
+    let mut point = HistogramDataPoint::build()
+        .attributes(datapoint_attributes.to_vec())
+        .start_time_unix_nano(start_time_unix_nano)
+        .time_unix_nano(time_unix_nano)
+        .count(mmsc.count)
+        .min(mmsc.min)
+        .max(mmsc.max)
+        .bucket_counts(Vec::<u64>::new())
+        .explicit_bounds(Vec::<f64>::new());
+    if mmsc.min >= 0.0 {
+        point = point.sum(mmsc.sum);
+    }
+    point.finish()
 }
 
 /// Encodes the legacy scalar histogram form as exactly one observation.
@@ -1726,6 +1770,10 @@ mod tests {
         assert_eq!(only_scope(&request).metrics.len(), 2);
     }
 
+    /// Scenario: Two MMSC snapshots with the same stream identity are coalesced
+    /// before OTLP encoding.
+    /// Guarantees: The merged summary is emitted as one explicit-boundary
+    /// histogram point with exact statistics and no invented buckets.
     #[test]
     fn coalesces_duplicate_metric_set_identities_into_one_otlp_scope() {
         let attributes = empty_attributes();
@@ -1786,13 +1834,16 @@ mod tests {
         );
 
         let mmsc = metric_named(scope, "histogram.mmsc");
-        let Some(metric::Data::ExponentialHistogram(histogram)) = mmsc.data.as_ref() else {
-            panic!("expected exponential histogram metric")
+        let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
+            panic!("expected explicit-boundary histogram metric")
         };
-        assert_eq!(histogram.data_points[0].min, Some(0.0));
-        assert_eq!(histogram.data_points[0].max, Some(5.0));
-        assert_eq!(histogram.data_points[0].sum, Some(12.0));
-        assert_eq!(histogram.data_points[0].count, 4);
+        let point = &histogram.data_points[0];
+        assert_eq!(point.min, Some(0.0));
+        assert_eq!(point.max, Some(5.0));
+        assert_eq!(point.sum, Some(12.0));
+        assert_eq!(point.count, 4);
+        assert!(point.explicit_bounds.is_empty());
+        assert!(point.bucket_counts.is_empty());
     }
 
     /// Scenario: A delta exponential-histogram distribution field is recorded,
@@ -1957,8 +2008,8 @@ mod tests {
         assert_eq!(point.bucket_counts, expected_buckets);
 
         let mmsc = metric_named(scope, "histogram.mmsc");
-        let Some(metric::Data::ExponentialHistogram(histogram)) = mmsc.data.as_ref() else {
-            panic!("expected MMSC exponential histogram metric")
+        let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
+            panic!("expected MMSC explicit-boundary histogram metric")
         };
         assert_eq!(
             histogram.aggregation_temporality,
@@ -1973,15 +2024,8 @@ mod tests {
         assert_eq!(point.sum, Some(20.0));
         assert_eq!(point.min, Some(2.0));
         assert_eq!(point.max, Some(9.0));
-        assert_eq!(point.zero_count, 0);
-        assert!(point.negative.is_none());
-        // The basic tier has no bucket structure, so its non-zero observations
-        // are summarized into the single bucket enclosing [min, max]; OTLP
-        // requires them to be represented rather than dropped.
-        let positive = point.positive.as_ref().expect("non-zero observations");
-        assert_eq!(positive.bucket_counts, vec![4]);
-        let bucketed: u64 = positive.bucket_counts.iter().sum();
-        assert_eq!(point.zero_count + bucketed, point.count);
+        assert!(point.explicit_bounds.is_empty());
+        assert!(point.bucket_counts.is_empty());
     }
 
     #[test]
@@ -2153,6 +2197,9 @@ mod tests {
         assert_eq!(histogram.data_points[0].bucket_counts[15], 1);
     }
 
+    /// Scenario: An MMSC summary contains a negative minimum.
+    /// Guarantees: Its explicit-boundary histogram point retains count/min/max
+    /// but omits the undefined OTLP histogram sum and invents no buckets.
     #[test]
     fn omits_mmsc_sum_when_the_population_contains_negative_values() {
         let batch = MetricExportBatch {
@@ -2170,8 +2217,8 @@ mod tests {
                 .expect("MMSC produces a request"),
         );
         let metric = metric_named(only_scope(&request), "histogram.empty");
-        let Some(metric::Data::ExponentialHistogram(histogram)) = metric.data.as_ref() else {
-            panic!("expected exponential histogram metric")
+        let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
+            panic!("expected explicit-boundary histogram metric")
         };
         let [point] = histogram.data_points.as_slice() else {
             panic!("expected one histogram data point")
@@ -2180,6 +2227,8 @@ mod tests {
         assert_eq!(point.min, Some(-2.0));
         assert_eq!(point.max, Some(8.0));
         assert_eq!(point.count, 2);
+        assert!(point.explicit_bounds.is_empty());
+        assert!(point.bucket_counts.is_empty());
     }
 
     #[test]
@@ -2360,8 +2409,14 @@ mod tests {
         }
     }
 
+    /// Scenario: Metric descriptors are paired with scalar, MMSC, and
+    /// exponential-histogram values of the wrong kind or tier.
+    /// Guarantees: Encoding rejects every mismatch before selecting an OTLP
+    /// point representation.
     #[test]
     fn rejects_metric_value_kind_mismatches() {
+        let mut normal = crate::instrument::Distribution::normal();
+        normal.record(1.0);
         let cases = [
             (
                 &INVALID_SUM_DESCRIPTOR,
@@ -2381,8 +2436,22 @@ mod tests {
                 &MMSC_ONLY_DESCRIPTOR,
                 MetricValue::U64(1),
                 "histogram.empty",
-                "distribution",
+                "mmsc",
                 "u64",
+            ),
+            (
+                &MMSC_ONLY_DESCRIPTOR,
+                MetricValue::from(normal),
+                "histogram.empty",
+                "mmsc",
+                "exponential histogram",
+            ),
+            (
+                &DISTRIBUTION_ONLY_DESCRIPTOR,
+                mmsc_value(1.0, 1.0, 1.0, 1),
+                "histogram.distribution",
+                "exponential histogram",
+                "mmsc",
             ),
         ];
 

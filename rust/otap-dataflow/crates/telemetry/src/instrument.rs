@@ -471,11 +471,11 @@ impl From<f64> for Gauge<f64> {
 /// running min/max/sum/count. This is a delta instrument -- values are reset
 /// after each reporting interval.
 ///
-/// An `Mmsc` *is* an exponential histogram with no encoded buckets: it knows
-/// only the range its observations occupied, so the OTLP projection preserves
-/// min, max, sum, and count exactly and summarizes every observation into the
-/// single bucket enclosing that range. This is why it is carried as the
-/// [`Distribution::Basic`] tier rather than as a distinct metric value kind.
+/// An `Mmsc` knows only the range its observations occupied. Its OTLP
+/// projection is therefore an explicit-boundary histogram point with no
+/// boundaries or bucket counts, preserving min, max, sum, and count without
+/// inventing bucket membership. It is carried as [`Distribution::Basic`] so
+/// all pre-aggregated distributions share one internal metric value kind.
 ///
 /// Exact zeros are not tracked separately. The bucketed tiers keep a
 /// `zero_count` because a positive-only exponential histogram has no bucket
@@ -628,10 +628,9 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 
 /// A delta distribution instrument with three resolution tiers.
 ///
-/// Every tier is an exponential-histogram aggregation, so distributions are
-/// represented consistently regardless of resolution:
-/// - [`Distribution::Basic`] is an [`Mmsc`]: an exponential histogram with no
-///   encoded buckets, keeping exact min/max/sum/count/zero-count.
+/// Every tier is a pre-aggregated distribution:
+/// - [`Distribution::Basic`] is an [`Mmsc`] with exact min/max/sum/count and no
+///   bucket structure.
 /// - [`Distribution::Normal`] and [`Distribution::Detailed`] keep full
 ///   exponential-histogram bucket ranges sized by [`HISTOGRAM_NORMAL_WORDS`]
 ///   and [`HISTOGRAM_DETAILED_WORDS`] respectively.
@@ -761,9 +760,8 @@ impl Distribution {
     ///
     /// [`Distribution::Basic`] encodes no buckets, so it emits nothing and
     /// reports [`BucketTotals::EMPTY`] regardless of whether zeros were
-    /// observed. A zero there is an ordinary observation that lowers `min`,
-    /// and is summarized along with every other observation into the single
-    /// enclosing bucket its OTLP projection emits.
+    /// observed. A zero there is an ordinary observation that lowers `min`;
+    /// its OTLP summary point does not claim any bucket membership.
     pub fn scan_buckets<F>(&self, emit: F) -> BucketTotals
     where
         F: FnMut(u64),
@@ -1302,8 +1300,7 @@ mod tests {
     /// positive values.
     /// Guarantees: The basic tier does not track zeros separately -- its bucket
     /// scan emits nothing and reports empty totals, folding zeros into min
-    /// instead -- so nothing excludes them from the single bucket its OTLP
-    /// projection emits.
+    /// instead -- and its OTLP projection does not fabricate bucket counts.
     #[test]
     fn test_basic_tier_folds_zeros_into_min() {
         let mut dist = Distribution::basic();
