@@ -13,10 +13,10 @@ engine:
     logs:
       level: "info"
       providers:
-        global: its
-        engine: its
-        internal: console_direct
-        admin: its
+        global: console_async
+        engine: console_async
+        internal: noop
+        admin: console_direct
     resource:
       service.id: 1234
       service.name: test
@@ -38,6 +38,7 @@ engine:
         telemetry:
           type: "receiver:internal_telemetry"
           config:
+            signals: [metrics]
             metrics:
               interval: 2s
               views:
@@ -82,28 +83,17 @@ engine:
                   stream:
                     name: processing_duration
                     description: Duration of the processing of the items.
-        router:
-          type: "processor:type_router"
-          outputs: ["logs", "metrics"]
-          config: {}
         metrics_debug:
           type: "processor:debug"
           config:
             verbosity: detailed
             mode: batch
             signals: [metrics]
-        console:
-          type: "exporter:console"
-          config: {}
         noop:
           type: "exporter:noop"
           config: {}
       connections:
         - from: telemetry
-          to: router
-        - from: router["logs"]
-          to: console
-        - from: router["metrics"]
           to: metrics_debug
         - from: metrics_debug
           to: noop
