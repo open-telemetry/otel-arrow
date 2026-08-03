@@ -22,6 +22,10 @@ pub struct LogsConfig {
     ///
     /// The `RUST_LOG` environment variable, if set, takes precedence over this field.
     ///
+    /// Successful full-engine reconciliation applies changes to this field to running
+    /// subscribers without restarting the engine. Span-scoped directives are applied at
+    /// startup only.
+    ///
     /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
     #[serde(default)]
     pub level: LogLevel,
@@ -60,6 +64,10 @@ pub struct InternalLogTapConfig {
 /// See the [`EnvFilter` directives documentation][env-filter] for the full syntax.
 ///
 /// Defaults to `"info,h2=off,hyper=off"`.
+///
+/// Successful full-engine reconciliation applies changes to this value to running
+/// subscribers without restarting the engine. Span-scoped directives are applied at
+/// startup only.
 ///
 /// [env-filter]: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

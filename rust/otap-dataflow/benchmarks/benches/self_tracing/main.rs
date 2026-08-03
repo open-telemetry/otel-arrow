@@ -9,6 +9,28 @@
 //! Benchmark names follow the pattern: `group/description/N_events`
 //!
 //! Example: `encode/3_attrs/1000_events` = 300 us -> 300 ns per event
+//!
+//! ## Benchmark Results: `runtime_log_filter_emission`
+//!
+//! System: Apple M4 Pro, 24 GB RAM, 14 cores
+//!
+//! Compares the static `EnvFilter` layer against the reloadable
+//! `RuntimeLogFilter` layer when no reload occurs. Times are the criterion
+//! median with the 95% confidence interval in brackets.
+//!
+//! | Case             | Static `EnvFilter`             | `RuntimeLogFilter`             |
+//! |------------------|--------------------------------|--------------------------------|
+//! | enabled (`info`) | 135.25 ns [134.93, 135.55]     | 136.91 ns [136.57, 137.24]     |
+//! | disabled (`warn`)| 1.0038 ns [1.0016, 1.0064]     | 1.0029 ns [0.9994, 1.0082]     |
+//!
+//! Disabled callsites stay at the ~1 ns cached-interest floor: the intervals
+//! overlap, so the `ArcSwap` indirection is not reached once tracing caches the
+//! callsite as uninterested. Enabled callsites cost ~1.7 ns more (~1.2%); the
+//! intervals do not overlap, so this is small but real.
+//!
+//! Both figures assume level/target directives only. Span directives make
+//! `EnvFilter` report `Interest::sometimes()`, which evaluates `enabled()` per
+//! event and removes the cached-interest floor for every callsite.
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use otap_df_config::observed_state::SendPolicy;
