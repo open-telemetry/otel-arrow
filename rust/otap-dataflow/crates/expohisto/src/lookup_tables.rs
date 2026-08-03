@@ -1,3 +1,6 @@
+// Copyright The OpenTelemetry Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // TODO: Make this auto-generated, see https://github.com/jmacd/rust-expohisto/tree/main/mapping-gen
 
 /// Maximum histogram scale supported by this lookup table.

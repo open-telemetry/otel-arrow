@@ -1265,7 +1265,7 @@ mod tests {
     /// corrupting the aggregation.
     #[cfg(debug_assertions)]
     #[test]
-    #[should_panic(expected = "Distribution::record rejected value")]
+    #[should_panic]
     fn test_distribution_histogram_rejects_negative() {
         let mut dist = Distribution::normal();
         dist.record(-1.0);

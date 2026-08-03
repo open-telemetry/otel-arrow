@@ -14,10 +14,13 @@ pub mod width;
 
 use crate::float64::{NAN_INF_BIASED, get_biased_exponent, get_significand, unbias_exponent};
 use crate::mapping::{Scale, ScaleError, table_scale};
+use std::num::NonZeroU64;
 pub use view::{BucketTotals, BucketView, BucketsIter, HistogramView};
 pub use width::{SlotAddr, Width};
 
 use core::fmt;
+
+const ONE: NonZeroU64 = NonZeroU64::new(1).expect("one is non-zero");
 
 /// Compact histogram configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -345,7 +348,7 @@ impl<const N: usize> HistogramNN<N> {
         }
     }
 
-    /// Returns the slot address of a bucket indx.
+    /// Returns the slot address of a bucket index.
     #[inline]
     const fn slot_addr(&self, slot: i32) -> SlotAddr<'_> {
         self.current.width.slot_addr(slot)
@@ -552,18 +555,23 @@ impl<const N: usize> HistogramNN<N> {
     /// Records a single value.
     #[inline]
     pub fn update(&mut self, value: f64) -> Result<(), Error> {
-        self.record_incr(value, 1)
+        self.record_incr(value, ONE)
     }
 
     /// Records a value with a specified increment.
-    pub fn record_incr(&mut self, value: f64, incr: u64) -> Result<(), Error> {
-        // Extract the raw exponent and significand (sign bit is ignored).
+    pub fn record_incr(&mut self, value: f64, incr: NonZeroU64) -> Result<(), Error> {
+        let incr = incr.get();
+
+        // Extract the raw exponent and significand.
         let mut biased_exp = get_biased_exponent(value);
         let mut significand = get_significand(value);
 
         let new_count = self.checked_add_count(incr).ok_or(Error::Overflow)?;
 
-        // Handle the extreme cases.
+        // Ignore the sign bit, means we use the absolute value.
+        debug_assert!(!value.is_sign_negative(), "value must be non-negative");
+
+        // Handle 0, subnormal, NaN and Inf.
         match biased_exp {
             0 => {
                 if significand == 0 {
@@ -571,11 +579,8 @@ impl<const N: usize> HistogramNN<N> {
                     self.stats.min = 0.0;
                     self.stats.count = new_count;
                     return Ok(());
-                } else if value.is_sign_negative() {
-                    // Negative non-zero.
-                    return Err(Error::Extreme);
                 } else {
-                    // Round subnorms to MIN_VALUE.
+                    // Round subnormal values to MIN_VALUE.
                     biased_exp = 1;
                     significand = 0;
                 }
@@ -584,12 +589,7 @@ impl<const N: usize> HistogramNN<N> {
                 // Inf and NaN cases.
                 return Err(Error::Extreme);
             }
-            _ => {
-                // Normal exponents, only positive.
-                if value.is_sign_negative() {
-                    return Err(Error::Extreme);
-                }
-            }
+            _ => {}
         }
 
         let base2_exp = unbias_exponent(biased_exp);

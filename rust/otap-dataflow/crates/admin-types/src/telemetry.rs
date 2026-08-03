@@ -159,9 +159,6 @@ pub struct DistributionDetails {
     /// Relative error bound that applies to the quantile estimates.
     pub relative_error: f64,
     /// Estimated median, within `relative_error` of the true value.
-    ///
-    /// `None` when no estimate is representable in JSON, as for an empty
-    /// distribution whose estimates are NaN.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub p50: Option<f64>,
     /// Estimated 90th percentile, within `relative_error` of the true value.

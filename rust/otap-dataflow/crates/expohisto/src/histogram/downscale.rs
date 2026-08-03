@@ -341,6 +341,7 @@ mod tests {
     use super::super::HistogramNN;
     use crate::histogram::width::Width;
     use crate::mapping::{MIN_SCALE, Scale, ScaleError, min_scale_for, table_scale};
+    use std::num::NonZeroU64;
 
     /// Deterministic xorshift, so failures reproduce exactly.
     struct Rng(u64);
@@ -386,11 +387,11 @@ mod tests {
             let r = rng.next();
             let e = ((r >> 3) % 2000) as f64 / 2000.0;
             let value = (e * spread).exp2();
-            let incr = 1 + (r % incr_max);
+            let incr = NonZeroU64::new(1 + (r % incr_max)).unwrap();
             if hist.record_incr(value, incr).is_err() {
                 break;
             }
-            expect_count += incr;
+            expect_count += incr.get();
             // The invariant every downscale must preserve.
             assert!(
                 hist.current.scale.scale() >= hist.current.width.min_scale(),
@@ -475,11 +476,11 @@ mod tests {
             let r = rng.next();
             let e = ((r >> 3) % 2000) as f64 / 2000.0;
             let value = (e * spread).exp2();
-            let incr = 1 + (r % incr_max);
+            let incr = NonZeroU64::new(1 + (r % incr_max)).unwrap();
             if hist.record_incr(value, incr).is_err() {
                 break;
             }
-            obs[nobs] = (value, incr);
+            obs[nobs] = (value, incr.get());
             nobs += 1;
         }
         assert!(nobs > 0);

@@ -63,7 +63,7 @@ impl<'a> SlotAddr<'a> {
         shifted & self.width.counter_max()
     }
 
-    /// Updtes the counter, promised to fit.
+    /// Updates the counter, promised to fit.
     #[inline]
     pub(crate) const fn update_counter_in_word(&self, word: u64, count: u64) -> u64 {
         debug_assert!(count <= self.width.counter_max());

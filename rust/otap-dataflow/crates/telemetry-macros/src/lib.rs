@@ -272,7 +272,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
             metric_field_value_types.push(value_type_variant);
 
             match instrument_ty_name.as_str() {
-                "Counter" | "Mmsc" => {
+                "Counter" => {
                     metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
                     metric_field_needs_flush_checks.push(quote!(
                         if !otap_df_telemetry::metrics::MetricValue::from(self.#field_ident.get()).is_zero() {
@@ -280,7 +280,7 @@ pub fn derive_metric_set_handler(input: TokenStream) -> TokenStream {
                         }
                     ));
                 }
-                "HistogramNormal" | "HistogramDetailed" => {
+                "Mmsc" | "HistogramNormal" | "HistogramDetailed" => {
                     metric_field_clear_stmts.push(quote!( self.#field_ident.reset(); ));
                     metric_field_needs_flush_checks.push(quote!(
                         if !self.#field_ident.is_empty() {

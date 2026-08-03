@@ -1,14 +1,14 @@
 change_type: enhancement
 
-component: telemetry
+component: observability
 
 note: OpenTelemetry exponential histogram in Metrics ITS
 
-issues: [1541]
+issues: [2428, 2458]
 
 subtext: |
-    Implements an exact logarithm table lookup function. a fixed-space
-    auto-widening histogram aggregator for non-negative values, and
-    move the existing Mmsc into basic level instrumentation; configure
+    Implements an exact logarithm table lookup function and fixed-space
+    auto-widening histogram aggregator for non-negative values.
+    Moves the existing Mmsc into basic level instrumentation. Configures
     HistogramNN<10> at 128 bytes and HistogramNN<26> at 256 bytes of
     space for normal and detailed level measurements.

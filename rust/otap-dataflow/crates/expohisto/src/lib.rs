@@ -56,13 +56,12 @@ mod tests {
         assert_eq!(stats.max, 100.0);
     }
 
-    /// Scenario: The positive-only histogram is asked to record a negative
-    /// value.
-    /// Guarantees: `update` rejects the value with an error instead of
-    /// silently mis-recording it, preserving the positive-only invariant.
+    /// Negative is a debug assertion, ignored in the non-negative
+    /// code path.
     #[test]
-    fn rejects_negative_values() {
+    #[should_panic]
+    fn asserts_non_negative() {
         let mut hist: HistogramNN<16> = HistogramNN::new();
-        assert!(hist.update(-1.0).is_err());
+        hist.update(-1.0).expect("actually not ok");
     }
 }
