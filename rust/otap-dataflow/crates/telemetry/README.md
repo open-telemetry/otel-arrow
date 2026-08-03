@@ -96,6 +96,22 @@ The `RUST_LOG` environment variable remains a process-level override. When it
 is set, it takes precedence over both startup and reconciled `logs.level`
 values.
 
+### Limitation: span directives are not reloadable
+
+`EnvFilter` supports span-scoped directives such as
+`warn,[pipeline_thread]=debug`, which raise verbosity only while a matching
+span is entered. Those directives work when supplied at startup through
+`logs.level` or `RUST_LOG`, but reconciliation cannot apply them to spans that
+are already entered.
+
+Reconciliation installs a newly built `EnvFilter` into each live dispatcher.
+`EnvFilter` tracks span scopes through `on_new_span` and `on_enter`, so a
+replacement filter has no record of spans entered before it was installed and
+never pushes them onto its scope stack. Engine threads enter
+`pipeline_thread` once for the lifetime of the thread, so a reconciled span
+directive targeting it has no effect until the engine restarts. Only the
+non-span part of the reconciled `logs.level` takes effect.
+
 There are four aspects that can be configured:
 
 - `engine`: logging for pipeline threads that run dataflow processing

@@ -97,6 +97,13 @@ impl RuntimeLogFilter {
 
 impl RuntimeLogFilterHandle {
     /// Replaces the active level/target directives and refreshes all callsites.
+    ///
+    /// Severity and target directives take effect immediately. Span-scoped
+    /// directives such as `[pipeline_thread]=debug` do not apply to spans that
+    /// were entered before this call: the replacement `EnvFilter` never
+    /// observed their `on_new_span`/`on_enter` callbacks, so its scope stack
+    /// stays empty for them. Such directives still work when supplied at
+    /// startup. See the crate README for operator-facing details.
     pub fn apply(&self, level: &LogLevel) {
         if self.shared.configured_level.load().as_ref() == level {
             return;
