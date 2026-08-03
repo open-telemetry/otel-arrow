@@ -477,4 +477,114 @@ mod tests {
             assert_exact_and_tight(&destination, &combined, ceiling);
         }
     }
+
+    /// Scenario: histograms configured with a raised minimum counter width and
+    /// a lowered maximum scale record randomized populations of varying span
+    /// and weight.
+    /// Guarantees: both configured limits hold -- counters never narrow past
+    /// the floor and the scale never rises above the ceiling -- and within
+    /// them the result is still exact and as fine as it can be.
+    #[test]
+    fn configured_limits_bound_the_geometry_without_loosening_it() {
+        let mut rng = Rng(0xCBBB_9D5D_C105_9ED8);
+        for width in [Width::B2, Width::U8, Width::U16, Width::U32] {
+            for max_scale in [8, 4, 0, -2] {
+                let Ok(template) = HistogramNN::<8>::new()
+                    .with_min_width(width)
+                    .and_then(|histogram| histogram.with_max_scale(max_scale))
+                else {
+                    continue;
+                };
+
+                for octaves in [1, 12] {
+                    for weight in [1, 100_000] {
+                        let observations = rng.population(24, octaves, weight);
+                        let mut histogram = template.clone();
+                        for &(value, weight) in &observations {
+                            histogram
+                                .record_incr(
+                                    value,
+                                    NonZeroU64::new(weight).expect("weights are non-zero"),
+                                )
+                                .expect("observations are recordable");
+                        }
+
+                        assert!(histogram.view().positive().width() >= width);
+                        assert!(histogram.view().scale() <= max_scale);
+                        assert_exact_and_tight(&histogram, &observations, table_scale());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Scenario: the smallest normal value, one, and the largest finite value
+    /// are recorded together into the smallest pool there is.
+    /// Guarantees: spanning the whole normal range coarsens the scale far
+    /// below the default rather than failing, and the result is still exact
+    /// and no coarser than that range demands.
+    #[test]
+    fn spanning_the_full_normal_range_coarsens_but_stays_exact() {
+        let observations = [(f64::MIN_POSITIVE, 1), (1.0, 1), (f64::MAX, 1)];
+        let histogram = build::<2>(&observations);
+
+        assert!(
+            histogram.view().scale() < 0,
+            "two thousand octaves cannot be held at a positive scale"
+        );
+        assert_exact_and_tight(&histogram, &observations, table_scale());
+    }
+
+    /// Scenario: a source configured with wide counters, holding counts that a
+    /// far narrower width would hold, is merged into a default destination
+    /// whose values sit in the same narrow range.
+    /// Guarantees: the merge stays exact and keeps the finest scale its inputs
+    /// allow, so carrying counters wider than the counts need costs bucket
+    /// capacity but never resolution.
+    #[test]
+    fn merging_a_source_with_wide_counters_keeps_the_reachable_scale() {
+        let observations: Vec<(f64, u64)> =
+            (0..8).map(|step| (1.0 + step as f64 / 512.0, 3)).collect();
+
+        let mut source: HistogramNN<8> = HistogramNN::new()
+            .with_min_width(Width::U32)
+            .expect("the default scale covers U32 counters");
+        for &(value, weight) in &observations {
+            source
+                .record_incr(
+                    value,
+                    NonZeroU64::new(weight).expect("weights are non-zero"),
+                )
+                .expect("observations are recordable");
+        }
+
+        let mut destination = build::<8>(&observations);
+        let ceiling = destination.view().scale().min(source.view().scale());
+        assert_eq!(
+            ceiling,
+            table_scale(),
+            "this range fits at the finest scale"
+        );
+        destination
+            .merge_from(&source)
+            .expect("counts stay well inside u64");
+
+        let view = destination.view();
+        assert_eq!(view.scale(), ceiling, "wide counters must not cost scale");
+        assert_eq!(view.stats().count, 48);
+        assert_eq!(
+            view.positive().iter().sum::<u64>(),
+            48,
+            "every observation is still in a bucket"
+        );
+        assert!(
+            view.positive()
+                .iter()
+                .all(|count| count == 0 || count % 6 == 0),
+            "an occupied bucket holds three observations from each side"
+        );
+        // The merge carries the source's counters rather than repacking them,
+        // so the result is as wide as the source was configured to be.
+        assert_eq!(view.positive().width(), Width::U32);
+    }
 }

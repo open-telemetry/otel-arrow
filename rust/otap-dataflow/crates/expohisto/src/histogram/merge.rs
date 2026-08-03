@@ -622,6 +622,36 @@ mod tests {
         );
     }
 
+    /// Scenario: two histograms each hold two buckets carrying a quarter of
+    /// u64::MAX, so the packed path must add counters at the widest rung.
+    /// Guarantees: the combined counters reach U64 and hold the exact sums,
+    /// so a merge at the top of the width ladder neither wraps nor saturates.
+    #[test]
+    fn merging_counts_that_fill_u64_counters_stays_exact() {
+        let quarter = u64::MAX / 4;
+        let increment = NonZeroU64::new(quarter).expect("a quarter of u64::MAX is non-zero");
+        let mut destination: HistogramNN<8> = HistogramNN::new();
+        let mut source: HistogramNN<8> = HistogramNN::new();
+        for value in [1.0, 4.0] {
+            destination
+                .record_incr(value, increment)
+                .expect("the first quarter fits");
+            source
+                .record_incr(value, increment)
+                .expect("the first quarter fits");
+        }
+
+        destination
+            .merge_from(&source)
+            .expect("four quarters fit in u64");
+
+        let view = destination.view();
+        assert_eq!(view.stats().count, 4 * quarter);
+        assert_eq!(view.positive().width(), Width::U64);
+        let occupied: Vec<u64> = view.positive().iter().filter(|&count| count != 0).collect();
+        assert_eq!(occupied, vec![2 * quarter, 2 * quarter]);
+    }
+
     /// Scenario: A histogram carrying observations is merged into a freshly
     /// created, empty histogram.
     /// Guarantees: the destination adopts the source's exact minimum instead
