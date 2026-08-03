@@ -8,13 +8,13 @@ change_type: breaking
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Replace debug processor per-signal counters with `consumed.requests`, `consumed.items`, `consumed.events`, and `consumed.links` metrics.
+note: Remove debug processor request and primary item metrics, retaining only event and link metrics under `processor.debug`.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
-issues: [3432]
+issues: [3432, 3649]
 
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Migration: Update dashboards, alerts, and queries to use the `processor.debug.pdata.consumed.*` metrics, filtering on `signal` instead of querying the removed signal-specific metric names.
+  Migration: Use `node.consumer.consumed.messages` and `.consumed.items` for request and primary item counts. Remove `.pdata` from retained debug event and link metric names.
