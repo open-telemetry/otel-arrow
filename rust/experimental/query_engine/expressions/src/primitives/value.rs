@@ -62,6 +62,39 @@ impl Value<'_> {
         }
     }
 
+    pub fn diagnostic_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Null => f.write_str("Null"),
+            Value::Array(a) => {
+                write!(f, "Array(Count={})", a.len())
+            }
+            Value::Map(m) => {
+                write!(f, "Map(Count={})", m.len())
+            }
+            Value::String(s) => {
+                f.write_str("String(")?;
+                let v = s.get_value();
+                if v.len() <= 32 {
+                    f.write_str(serde_json::to_string(&v).unwrap().as_str())?;
+                } else {
+                    write!(
+                        f,
+                        "{}",
+                        serde_json::to_string(&format!("{}...", &v[..32]))
+                            .unwrap()
+                            .as_str()
+                    )?;
+                }
+                f.write_str(")")
+            }
+            v => {
+                write!(f, "{}(", v.get_value_type())?;
+                std::fmt::Display::fmt(v, f)?;
+                f.write_str(")")
+            }
+        }
+    }
+
     pub fn convert_to_bool(&self) -> Option<bool> {
         match self {
             Value::Boolean(b) => Some(b.get_value()),
@@ -336,6 +369,16 @@ impl Value<'_> {
         left: &Value,
         right: &Value,
     ) -> Result<i64, ExpressionError> {
+        if let Value::Integer(left) = left
+            && let Value::Integer(right) = right
+        {
+            return Ok(compare_ordered_values(left.get_value(), right.get_value()));
+        } else if let Value::Double(left) = left
+            && let Value::Double(right) = right
+        {
+            return Ok(compare_double_values(left.get_value(), right.get_value()));
+        }
+
         let left_type = left.get_value_type();
         let right_type = right.get_value_type();
 
