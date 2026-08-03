@@ -9,6 +9,8 @@
 mod downscale;
 mod merge;
 mod swar;
+#[cfg(test)]
+mod verify;
 mod view;
 pub mod width;
 
@@ -611,8 +613,17 @@ impl<const N: usize> HistogramNN<N> {
         self.change_scale(actual);
     }
 
-    /// Widens counters to at least `target`, preserving the highest feasible
-    /// scale by spreading counts into unused backing words before coarsening.
+    /// Widens counters to at least `target`.
+    ///
+    /// Wider counters are paid for in one of two ways. Spreading them into
+    /// words the histogram is not using keeps every bucket boundary, so the
+    /// scale survives; that is the choice whenever the wider layout still fits
+    /// `N` words. Otherwise one level is folded in place, which sums adjacent
+    /// buckets and costs a scale step, and the choice is made again.
+    ///
+    /// Folding one level at a time is what keeps the cost minimal: each fold
+    /// halves the span the target width has to cover, so the loop stops at the
+    /// first scale that fits rather than paying a step per width level.
     pub(crate) fn widen_to(&mut self, target: Width) {
         loop {
             let start = self.current.width;
@@ -629,13 +640,18 @@ impl<const N: usize> HistogramNN<N> {
                 low: target.slot_to_word_index(self.first_slot()),
                 high: target.slot_to_word_index(self.last_slot()),
             };
-            let decrease = words.change_steps(N);
-            if decrease == 0 {
+            if words.change_steps(N) == 0 {
                 self.spread_widen(start, target, words.low, words.high);
                 self.debug_assert_range_coverage();
                 return;
             }
-            self.downscale_by(decrease);
+
+            // Folding pairs of lanes cannot overflow the doubled lane, so this
+            // step always succeeds and always moves one level closer.
+            let next = start.wider_by(1).expect("target is wider than start");
+            let _ = self.widen_words(start, next);
+            self.current.width = next;
+            self.change_scale(1);
         }
     }
 
