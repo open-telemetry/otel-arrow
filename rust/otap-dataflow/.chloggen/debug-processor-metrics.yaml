@@ -17,4 +17,4 @@ issues: [3432, 3649]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Migration: Use `node.consumer.consumed.messages` and `.consumed.items` for request and primary item counts. Remove `.pdata` from retained debug event and link metric names.
+  Migration: Replace `processor.debug.pdata.consumed.requests` with `node.consumer.consumed.messages` and `processor.debug.pdata.consumed.items` with `node.consumer.consumed.items`. Rename `processor.debug.pdata.consumed.{events,links}` to `processor.debug.consumed.{events,links}`.
