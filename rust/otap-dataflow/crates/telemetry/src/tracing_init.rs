@@ -8,10 +8,12 @@
 //! trace events are captured and routed.
 
 use crate::event::{LogEvent, ObservedEventReporter};
+use crate::eventname_filter::EventNameFilter;
 use crate::self_tracing::{ConsoleWriter, LogContextFn, LogRecord};
 use otap_df_config::settings::telemetry::logs::LogLevel;
 use std::time::SystemTime;
 use tracing::{Dispatch, Event, Subscriber};
+use tracing_subscriber::filter::FilterExt;
 use tracing_subscriber::layer::{Context, Layer as TracingLayer};
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
@@ -41,6 +43,9 @@ pub struct TracingSetup {
     pub log_level: LogLevel,
     /// Context function.
     pub context_fn: LogContextFn,
+    /// EventName-based filter, composed on top of the level/target `EnvFilter`.
+    /// Defaults to allow-all (no EventName filtering).
+    event_filter: EventNameFilter,
 }
 
 impl TracingSetup {
@@ -51,13 +56,21 @@ impl TracingSetup {
             provider,
             log_level,
             context_fn,
+            event_filter: EventNameFilter::allow_all(),
         }
+    }
+
+    /// Sets the EventName filter applied on top of the level/target filter.
+    #[must_use]
+    pub fn with_event_filter(mut self, event_filter: EventNameFilter) -> Self {
+        self.event_filter = event_filter;
+        self
     }
 
     /// Initialize this setup as the global tracing subscriber.
     pub fn try_init_global(&self) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
         self.provider
-            .try_init_global(&self.log_level, self.context_fn)
+            .try_init_global(&self.log_level, self.context_fn, &self.event_filter)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
@@ -66,7 +79,7 @@ impl TracingSetup {
         F: FnOnce() -> R,
     {
         self.provider
-            .with_subscriber(&self.log_level, self.context_fn, f)
+            .with_subscriber(&self.log_level, self.context_fn, &self.event_filter, f)
     }
 
     #[cfg(test)]
@@ -74,8 +87,12 @@ impl TracingSetup {
     where
         F: FnOnce() -> R,
     {
-        self.provider
-            .with_subscriber_ignoring_env(&self.log_level, self.context_fn, f)
+        self.provider.with_subscriber_ignoring_env(
+            &self.log_level,
+            self.context_fn,
+            &self.event_filter,
+            f,
+        )
     }
 }
 
@@ -98,26 +115,40 @@ pub enum ProviderSetup {
 }
 
 impl ProviderSetup {
-    fn build_dispatch_with_filter(&self, filter: EnvFilter, context_fn: LogContextFn) -> Dispatch {
+    fn build_dispatch_with_filter(
+        &self,
+        filter: EnvFilter,
+        context_fn: LogContextFn,
+        event_filter: &EventNameFilter,
+    ) -> Dispatch {
         match self {
             ProviderSetup::Noop => Dispatch::new(tracing::subscriber::NoSubscriber::new()),
 
             ProviderSetup::ConsoleDirect => {
                 let layer =
                     StructuredLoggingLayer::new(Some(ConsoleWriter::color()), None, context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
+                Dispatch::new(
+                    Registry::default().with(layer.with_filter(filter.and(event_filter.clone()))),
+                )
             }
 
             ProviderSetup::InternalAsync { reporter } => {
                 let layer = StructuredLoggingLayer::new(None, Some(reporter.clone()), context_fn);
-                Dispatch::new(Registry::default().with(filter).with(layer))
+                Dispatch::new(
+                    Registry::default().with(layer.with_filter(filter.and(event_filter.clone()))),
+                )
             }
         }
     }
 
     /// Build a `Dispatch` for this provider setup with the given log level.
-    fn build_dispatch(&self, log_level: &LogLevel, context_fn: LogContextFn) -> Dispatch {
-        self.build_dispatch_with_filter(create_env_filter(log_level), context_fn)
+    fn build_dispatch(
+        &self,
+        log_level: &LogLevel,
+        context_fn: LogContextFn,
+        event_filter: &EventNameFilter,
+    ) -> Dispatch {
+        self.build_dispatch_with_filter(create_env_filter(log_level), context_fn, event_filter)
     }
 
     /// Initialize this setup as the global tracing subscriber.
@@ -125,17 +156,24 @@ impl ProviderSetup {
         &self,
         log_level: &LogLevel,
         context_fn: LogContextFn,
+        event_filter: &EventNameFilter,
     ) -> Result<(), tracing::dispatcher::SetGlobalDefaultError> {
-        let dispatch = self.build_dispatch(log_level, context_fn);
+        let dispatch = self.build_dispatch(log_level, context_fn, event_filter);
         tracing::dispatcher::set_global_default(dispatch)
     }
 
     /// Run a closure with the appropriate tracing subscriber for this setup.
-    pub fn with_subscriber<F, R>(&self, log_level: &LogLevel, context_fn: LogContextFn, f: F) -> R
+    pub fn with_subscriber<F, R>(
+        &self,
+        log_level: &LogLevel,
+        context_fn: LogContextFn,
+        event_filter: &EventNameFilter,
+        f: F,
+    ) -> R
     where
         F: FnOnce() -> R,
     {
-        let dispatch = self.build_dispatch(log_level, context_fn);
+        let dispatch = self.build_dispatch(log_level, context_fn, event_filter);
         tracing::dispatcher::with_default(&dispatch, f)
     }
 
@@ -144,13 +182,17 @@ impl ProviderSetup {
         &self,
         log_level: &LogLevel,
         context_fn: LogContextFn,
+        event_filter: &EventNameFilter,
         f: F,
     ) -> R
     where
         F: FnOnce() -> R,
     {
-        let dispatch =
-            self.build_dispatch_with_filter(EnvFilter::new(log_level.as_str()), context_fn);
+        let dispatch = self.build_dispatch_with_filter(
+            EnvFilter::new(log_level.as_str()),
+            context_fn,
+            event_filter,
+        );
         tracing::dispatcher::with_default(&dispatch, f)
     }
 }
@@ -571,18 +613,30 @@ mod tests {
     fn provider_setup_with_subscriber_all_variants() {
         crate::with_cleared_rust_log(|| {
             let info = level("info");
-            noop_provider().with_subscriber_ignoring_env(&info, LogContext::new, || {
-                otel_info!("noop");
-            });
+            let allow_all = EventNameFilter::allow_all();
+            noop_provider().with_subscriber_ignoring_env(
+                &info,
+                LogContext::new,
+                &allow_all,
+                || {
+                    otel_info!("noop");
+                },
+            );
 
-            console_direct_provider().with_subscriber_ignoring_env(&info, LogContext::new, || {
-                otel_info!("console_direct");
-            });
+            console_direct_provider().with_subscriber_ignoring_env(
+                &info,
+                LogContext::new,
+                &allow_all,
+                || {
+                    otel_info!("console_direct");
+                },
+            );
 
             let (reporter, _rx) = test_reporter();
             internal_async_provider(reporter).with_subscriber_ignoring_env(
                 &info,
                 LogContext::new,
+                &allow_all,
                 || {
                     otel_info!("console_async");
                 },
@@ -612,6 +666,57 @@ mod tests {
 
     /// Scenario: one asynchronous subscriber is temporarily nested inside another.
     /// Guarantees: inner events remain isolated while outer events return to the outer channel.
+    #[test]
+    fn event_name_filter_composes_with_level_filter() {
+        use crate::eventname_filter::EventNameFilter;
+
+        // Allowlist by EventName, layered on top of the level filter. Only
+        // events whose EventName passes *both* filters should be reported.
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(internal_async_provider(reporter), level("info"))
+                .with_event_filter(EventNameFilter::allowing(["receiver.start", "channel.*"]));
+
+            setup.with_subscriber_ignoring_env(|| {
+                otel_info!("receiver.start"); // allowed (exact)
+                otel_info!("receiver.stop"); // dropped (not in allowlist)
+                otel_warn!("channel.full"); // allowed (prefix)
+                otel_error!("exporter.fail"); // dropped (not in allowlist)
+            });
+            drop(setup);
+
+            assert_eq!(
+                receiver.into_iter().count(),
+                2,
+                "only receiver.start and channel.full pass the EventName allowlist"
+            );
+        });
+    }
+
+    #[test]
+    fn event_name_deny_filter_suppresses_matches() {
+        use crate::eventname_filter::EventNameFilter;
+
+        crate::with_cleared_rust_log(|| {
+            let (reporter, receiver) = test_reporter();
+            let setup = test_setup(internal_async_provider(reporter), level("info"))
+                .with_event_filter(EventNameFilter::denying(["noisy.*"]));
+
+            setup.with_subscriber_ignoring_env(|| {
+                otel_info!("noisy.tick"); // dropped (denied prefix)
+                otel_info!("noisy.tock"); // dropped (denied prefix)
+                otel_warn!("important.event"); // passes
+            });
+            drop(setup);
+
+            assert_eq!(
+                receiver.into_iter().count(),
+                1,
+                "only the non-denied event passes"
+            );
+        });
+    }
+
     #[test]
     fn nested_with_subscriber() {
         crate::with_cleared_rust_log(|| {

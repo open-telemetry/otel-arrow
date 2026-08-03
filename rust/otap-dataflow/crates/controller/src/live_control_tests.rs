@@ -22,6 +22,7 @@ use otap_df_engine::{ExporterFactory, ProcessorFactory, ReceiverFactory};
 use otap_df_state::pipeline_status::PipelineStatus;
 use otap_df_telemetry::TracingSetup;
 use otap_df_telemetry::event::EngineEvent;
+use otap_df_telemetry::eventname_filter::{EventNameFilter, EventNameFilterHandle};
 use otap_df_telemetry::metrics::MetricSetSnapshot;
 use otap_df_telemetry::tracing_init::ProviderSetup;
 use tokio_util::sync::CancellationToken;
@@ -259,6 +260,19 @@ fn test_runtime_with_factory(
     config: &OtelDataflowSpec,
     pipeline_factory: &'static PipelineFactory<()>,
 ) -> Arc<ControllerRuntime<()>> {
+    test_runtime_with_factory_and_event_filter(config, pipeline_factory).0
+}
+
+fn test_runtime_with_event_filter(
+    config: &OtelDataflowSpec,
+) -> (Arc<ControllerRuntime<()>>, EventNameFilterHandle) {
+    test_runtime_with_factory_and_event_filter(config, &TEST_PIPELINE_FACTORY)
+}
+
+fn test_runtime_with_factory_and_event_filter(
+    config: &OtelDataflowSpec,
+    pipeline_factory: &'static PipelineFactory<()>,
+) -> (Arc<ControllerRuntime<()>>, EventNameFilterHandle) {
     let registry = TelemetryRegistryHandle::new();
     let observed_state_store =
         ObservedStateStore::new(&ObservedStateSettings::default(), registry.clone());
@@ -269,21 +283,27 @@ fn test_runtime_with_factory(
         Controller::<()>::declare_topics(config).expect("declared topics should be valid");
     let (memory_pressure_tx, _memory_pressure_rx) =
         tokio::sync::watch::channel(MemoryPressureChanged::initial());
+    let (event_filter, event_filter_handle) = EventNameFilter::new();
 
-    Arc::new(ControllerRuntime::new(
-        pipeline_factory,
-        ControllerContext::new(registry),
-        observed_state_store,
-        observed_state_handle,
-        engine_event_reporter,
-        metrics_reporter,
-        declared_topics,
-        available_core_ids(),
-        TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context),
-        Duration::from_secs(1),
-        memory_pressure_tx,
-        config.clone(),
-    ))
+    (
+        Arc::new(ControllerRuntime::new(
+            pipeline_factory,
+            ControllerContext::new(registry),
+            observed_state_store,
+            observed_state_handle,
+            engine_event_reporter,
+            metrics_reporter,
+            declared_topics,
+            available_core_ids(),
+            TracingSetup::new(ProviderSetup::Noop, LogLevel::default(), engine_context)
+                .with_event_filter(event_filter),
+            event_filter_handle.clone(),
+            Duration::from_secs(1),
+            memory_pressure_tx,
+            config.clone(),
+        )),
+        event_filter_handle,
+    )
 }
 
 struct ObservedStateRunner {
@@ -2340,6 +2360,57 @@ fn reconcile_engine_config_reports_noop_for_matching_live_config() {
     );
 }
 
+/// Scenario: a full-config reconciliation changes only the EventName allowlist.
+/// Guarantees: the live filter changes without rebuilding tracing subscribers.
+#[test]
+fn reconcile_engine_config_applies_event_filter_config() {
+    let config = empty_engine_config();
+    let (runtime, event_filter_handle) = test_runtime_with_event_filter(&config);
+    assert!(event_filter_handle.allows("receiver.start"));
+
+    let desired = OtelDataflowSpec::from_yaml(
+        r#"
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    logs:
+      events:
+        allow: ["channel.*"]
+"#,
+    )
+    .expect("desired config should parse");
+
+    let status = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect("EventName config should reconcile");
+
+    assert_eq!(status.state, EngineConfigReconcileState::Succeeded);
+    assert!(event_filter_handle.allows("channel.full"));
+    assert!(!event_filter_handle.allows("receiver.start"));
+}
+
+/// Scenario: a full-config reconciliation sets both EventName policy modes.
+/// Guarantees: validation rejects the request without changing the live filter.
+#[test]
+fn reconcile_engine_config_rejects_invalid_event_filter_config() {
+    let config = empty_engine_config();
+    let (runtime, event_filter_handle) = test_runtime_with_event_filter(&config);
+    let mut desired = config.clone();
+    desired.engine.telemetry.logs.events.allow = vec!["channel.*".into()];
+    desired.engine.telemetry.logs.events.deny = vec!["channel.drop".into()];
+
+    let err = runtime
+        .reconcile_engine_config(reconcile_request(desired, true))
+        .expect_err("conflicting EventName policies should be rejected");
+
+    assert!(matches!(
+        err,
+        ControlPlaneError::InvalidRequest { ref message }
+            if message.contains("logs.events cannot set both 'allow' and 'deny'")
+    ));
+    assert!(event_filter_handle.allows("channel.drop"));
+}
+
 /// Scenario: a full-config reconciliation request omits live stopped
 /// resources with `delete_missing` enabled.
 /// Guarantees: reconciliation deletes the omitted pipeline and then the
@@ -2413,7 +2484,7 @@ fn reconcile_engine_config_preserves_missing_resources_when_requested() {
 #[test]
 fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
     let config = engine_config_with_pipeline(simple_pipeline_yaml());
-    let runtime = test_runtime(&config);
+    let (runtime, event_filter_handle) = test_runtime_with_event_filter(&config);
     let pipeline_key = PipelineKey::new("g1".into(), "p1".into());
     {
         let mut state = runtime
@@ -2430,6 +2501,7 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
         .engine
         .custom
         .insert("desired".to_owned(), serde_json::json!({"enabled": true}));
+    desired.engine.telemetry.logs.events.allow = vec!["channel.*".to_owned()];
 
     let err = runtime
         .reconcile_engine_config(reconcile_request(desired, true))
@@ -2437,6 +2509,7 @@ fn reconcile_engine_config_does_not_publish_scaffold_on_conflict() {
 
     assert_eq!(err, ControlPlaneError::RolloutConflict);
     assert!(runtime.engine_config_snapshot().engine.custom.is_empty());
+    assert!(event_filter_handle.allows("receiver.start"));
 }
 
 /// Scenario: full-config reconciliation would change an existing topic

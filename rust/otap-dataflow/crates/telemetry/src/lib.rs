@@ -27,6 +27,7 @@
 
 use crate::error::Error;
 use crate::event::{ObservedEvent, ObservedEventReporter};
+use crate::eventname_filter::{EventNameFilter, EventNameFilterHandle};
 use crate::registry::TelemetryRegistryHandle;
 use otap_df_config::observed_state::SendPolicy;
 use otap_df_config::pipeline::telemetry::TelemetryConfig;
@@ -43,6 +44,8 @@ pub mod descriptor;
 pub mod error;
 /// Event types for lifecycle and log events.
 pub mod event;
+/// Per-EventName runtime filtering of internal telemetry logs.
+pub mod eventname_filter;
 pub mod instrument;
 /// Internal logs/events module for engine.
 pub mod internal_events;
@@ -190,6 +193,13 @@ pub struct InternalTelemetrySystem {
     /// The logging providers.
     provider_modes: LoggingProviders,
 
+    /// EventName filter built from `logs.events`, applied on top of the level
+    /// filter. Shared (cloned) into every per-thread `TracingSetup`.
+    event_filter: EventNameFilter,
+
+    /// Runtime handle used to apply reconciled `logs.events` configuration.
+    event_filter_handle: EventNameFilterHandle,
+
     /// Entity key providers for associating log events with their source entity context.
     context_fn: LogContextFn,
 
@@ -263,12 +273,17 @@ impl InternalTelemetrySystem {
             )
         };
 
+        let (event_filter, event_filter_handle) = EventNameFilter::new();
+        event_filter_handle.apply_config(&config.logs.events);
+
         Ok(Self {
             registry: telemetry_registry,
             collector,
             metrics_reporter,
             log_level: config.logs.level.clone(),
             provider_modes: config.logs.providers.clone(),
+            event_filter,
+            event_filter_handle,
             context_fn,
             console_async_reporter,
             its_reporter,
@@ -314,12 +329,19 @@ impl InternalTelemetrySystem {
         };
 
         TracingSetup::new(provider, self.log_level.clone(), self.context_fn)
+            .with_event_filter(self.event_filter.clone())
     }
 
     /// Returns a `TracingSetup` for engine threads.
     #[must_use]
     pub fn engine_tracing_setup(&self) -> TracingSetup {
         self.tracing_setup_for(self.provider_modes.engine)
+    }
+
+    /// Returns the handle used to update EventName filtering at runtime.
+    #[must_use]
+    pub fn event_filter_handle(&self) -> EventNameFilterHandle {
+        self.event_filter_handle.clone()
     }
 
     /// Returns a `TracingSetup` for admin threads.
