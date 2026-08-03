@@ -603,6 +603,9 @@ Memory limiter configuration:
 Rate limiter configuration:
 
 - Named limiters are declared under `policies.resources.rate_limiters`.
+- Any non-empty rate-limiter declaration requires a top-level
+  `policies.resources.memory_limiter`, which supplies the process pressure
+  signal that activates enforcement.
 - A declaration may appear at top-level, group, or pipeline policy scope. The
   nearest declared map replaces the broader map; entries are not deep-merged.
 - `rate_limiters: {}` at a narrower policy scope disables an inherited map.

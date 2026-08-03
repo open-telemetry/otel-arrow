@@ -232,7 +232,7 @@ scanning, that cost must be explicit rather than accidental.
 
 Two useful units are:
 
-- `request_bytes` for request or body bytes known before decode,
+- `request_bytes` for receiver-defined request or body bytes,
 - `request_items` for normalized telemetry items.
 
 For `request_items`, the counted unit is normalized telemetry items:
@@ -241,12 +241,12 @@ For `request_items`, the counted unit is normalized telemetry items:
 - spans for traces,
 - metric data points for metrics.
 
-OTLP receivers can usually measure request bytes before protobuf inspection, so
-bytes per second is the likely default unit for encoded OTLP admission. Item
-counting for encoded OTLP is not free and should not be assumed; it requires a
-scan or decode the receiver would otherwise avoid. OTAP receivers, and receivers
-that already build item-level batches on their admission path, may support item
-rate units more naturally.
+An OTLP receiver may know the encoded wire length before protobuf inspection,
+but that is not the V1 accounting unit. Item counting for encoded OTLP is also
+not free and should not be assumed; it requires a scan or decode the receiver
+would otherwise avoid. OTAP receivers, and receivers that already build
+item-level batches on their admission path, may support item rate units more
+naturally.
 
 V1 OTLP implements only `request_bytes`, measured from the decompressed
 payload. It does not implement OTLP item counting. Because the authoritative
@@ -260,10 +260,13 @@ accepted batch. This matters for item-based units because admission happens
 before decode, and the exact item count of a request may only be known after
 decode.
 
-For units known before admission, such as `request_bytes`, the receiver
-can use a normal token-bucket check because it knows the request weight before
-admission. For item-based units whose weight is known only after decode, the
-receiver should use a **post-charge token bucket with bounded debt**:
+When a receiver knows its configured unit weight before admitting the request,
+it can perform the authoritative token-bucket check at that boundary. When the
+configured weight is known only after body collection or decode, as with V1
+OTLP `request_bytes`, the receiver first uses a read-only exhaustion probe and
+then performs the authoritative weighted check once the decompressed size is
+known. Item-based units whose weight is known only after decode require the
+same bounded post-charge treatment:
 
 1. A request arrives.
 2. The receiver resolves the scope from transport metadata, receiver identity,
