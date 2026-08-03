@@ -13,11 +13,8 @@ use otap_df_telemetry_macros::metric_set;
 )]
 #[derive(Debug, Default, Clone)]
 pub struct FilterPdataMetrics {
-    /// Number of signals consumed
-    #[metric(unit = "{signal}")]
-    pub signals_consumed: Counter<u64>,
-
-    /// Number of signals filtered
-    #[metric(unit = "{signal}")]
-    pub signals_filtered: Counter<u64>,
+    /// Number of signal items (log records, spans, or metric data points) a
+    /// decision node chose to drop.
+    #[metric(name = "dropped.items", unit = "{item}")]
+    pub dropped_items: Counter<u64>,
 }

@@ -150,7 +150,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let (filtered_arrow_records, signals_consumed, signals_filtered): (
+                let (filtered_arrow_records, _signals_consumed, dropped_items): (
                     OtapArrowRecords,
                     u64,
                     u64,
@@ -207,13 +207,12 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     })?;
 
                 let metric = self.metrics.with(SignalAttributes { signal });
-                metric.signals_consumed.add(signals_consumed);
-                metric.signals_filtered.add(signals_filtered);
+                metric.dropped_items.add(dropped_items);
 
                 // Record the drop flow-metric. A no-op unless this node is
                 // a decision node in a flow that enables `dropped.items`.
-                // `signals_filtered` is the dropped count.
-                effect_handler.record_flow_dropped_items(signal, signals_filtered);
+                // `dropped_items` is the dropped count.
+                effect_handler.record_flow_dropped_items(signal, dropped_items);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(
