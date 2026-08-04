@@ -85,11 +85,10 @@ impl Auth {
             );
         }
 
-        let token_url = TokenUrl::new(config.token_url.clone()).map_err(|e| {
-            Error::BuildHttpClient {
+        let token_url =
+            TokenUrl::new(config.token_url.clone()).map_err(|e| Error::BuildHttpClient {
                 reason: format!("invalid token_url: {e}"),
-            }
-        })?;
+            })?;
 
         let client = build_reqwest_client(config)?;
 
@@ -125,9 +124,12 @@ impl Auth {
     async fn get_token_client_credentials(&self) -> Result<BearerToken, Error> {
         // Credentials are read fresh on each acquisition so the file forms can
         // rotate without a restart.
-        let client_id =
-            read_credential(self.client_id_file.as_ref(), self.client_id.as_ref(), "client_id")
-                .await?;
+        let client_id = read_credential(
+            self.client_id_file.as_ref(),
+            self.client_id.as_ref(),
+            "client_id",
+        )
+        .await?;
         let client_secret = read_credential(
             self.client_secret_file.as_ref(),
             self.client_secret.as_ref(),
@@ -150,12 +152,13 @@ impl Auth {
         let executor = HttpExecutor {
             client: self.client.clone(),
         };
-        let response = request
-            .request_async(&executor)
-            .await
-            .map_err(|e| Error::TokenAcquisition {
-                message: e.to_string(),
-            })?;
+        let response =
+            request
+                .request_async(&executor)
+                .await
+                .map_err(|e| Error::TokenAcquisition {
+                    message: e.to_string(),
+                })?;
 
         Ok(to_bearer_token(&response))
     }
@@ -166,9 +169,12 @@ impl Auth {
     async fn get_token_jwt_bearer(&self) -> Result<BearerToken, Error> {
         // Credentials (client id + signing key) are read fresh on each
         // acquisition so the file forms can rotate without a restart.
-        let client_id =
-            read_credential(self.client_id_file.as_ref(), self.client_id.as_ref(), "client_id")
-                .await?;
+        let client_id = read_credential(
+            self.client_id_file.as_ref(),
+            self.client_id.as_ref(),
+            "client_id",
+        )
+        .await?;
         let key_pem = read_pem_credential(
             self.client_certificate_key_file.as_ref(),
             self.client_certificate_key.as_ref(),
@@ -319,7 +325,9 @@ fn to_bearer_token(response: &BasicTokenResponse) -> BearerToken {
     match response.expires_in() {
         // Let the capability crate centralize the absolute-to-monotonic `Instant`
         // conversion so every provider handles expiry the same way.
-        Some(expires_in) => BearerToken::from_absolute_expiry(secret, SystemTime::now() + expires_in),
+        Some(expires_in) => {
+            BearerToken::from_absolute_expiry(secret, SystemTime::now() + expires_in)
+        }
         None => BearerToken::without_expiry(secret),
     }
 }
@@ -332,12 +340,13 @@ async fn read_credential(
     field: &str,
 ) -> Result<String, Error> {
     if let Some(path) = file {
-        let contents = tokio::fs::read_to_string(path)
-            .await
-            .map_err(|source| Error::ReadCredentialFile {
-                path: path.clone(),
-                source,
-            })?;
+        let contents =
+            tokio::fs::read_to_string(path)
+                .await
+                .map_err(|source| Error::ReadCredentialFile {
+                    path: path.clone(),
+                    source,
+                })?;
         return Ok(contents.trim().to_owned());
     }
     if let Some(value) = inline {
@@ -397,13 +406,12 @@ impl<'c> AsyncHttpClient<'c> for HttpExecutor {
                 reqwest::Request::try_from(request).map_err(|e| Error::TokenAcquisition {
                     message: format!("invalid token request: {e}"),
                 })?;
-            let response =
-                client
-                    .execute(request)
-                    .await
-                    .map_err(|e| Error::TokenAcquisition {
-                        message: format!("token endpoint request failed: {e}"),
-                    })?;
+            let response = client
+                .execute(request)
+                .await
+                .map_err(|e| Error::TokenAcquisition {
+                    message: format!("token endpoint request failed: {e}"),
+                })?;
 
             let mut builder = http::Response::builder()
                 .status(response.status())
@@ -418,11 +426,9 @@ impl<'c> AsyncHttpClient<'c> for HttpExecutor {
                     message: format!("reading token response failed: {e}"),
                 })?
                 .to_vec();
-            builder
-                .body(body)
-                .map_err(|e| Error::TokenAcquisition {
-                    message: format!("invalid token response: {e}"),
-                })
+            builder.body(body).map_err(|e| Error::TokenAcquisition {
+                message: format!("invalid token response: {e}"),
+            })
         })
     }
 }
@@ -482,7 +488,8 @@ fn build_reqwest_client(config: &Config) -> Result<reqwest::Client, Error> {
                     reason: "both a client certificate and key are required for mTLS".to_string(),
                 });
             }
-            let mut identity_pem = read_pem(tls.config.cert_file.as_ref(), tls.config.cert_pem.as_ref())?;
+            let mut identity_pem =
+                read_pem(tls.config.cert_file.as_ref(), tls.config.cert_pem.as_ref())?;
             identity_pem.extend_from_slice(&read_pem(
                 tls.config.key_file.as_ref(),
                 tls.config.key_pem.as_ref(),

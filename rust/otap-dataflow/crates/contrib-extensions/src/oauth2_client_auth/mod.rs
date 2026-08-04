@@ -81,8 +81,7 @@ fn create(
     // Empty token cache; the background refresh loop publishes the first token.
     let (tx, _rx) = watch::channel(None);
 
-    let extension =
-        OAuth2ClientAuthExtension::new(&name, auth, config.expiry_buffer, tx, tracker);
+    let extension = OAuth2ClientAuthExtension::new(&name, auth, config.expiry_buffer, tx, tracker);
 
     ExtensionWrapper::builder(name, ext_config, extension_config)
         .active()
@@ -99,8 +98,7 @@ fn create(
 #[distributed_slice(OTAP_EXTENSION_FACTORIES)]
 pub static OAUTH2_CLIENT_AUTH_EXTENSION: ExtensionFactory = ExtensionFactory {
     name: OAUTH2_CLIENT_AUTH_URN,
-    description:
-        "Active+Shared extension exposing BearerTokenProvider via OAuth 2.0 client credentials",
+    description: "Active+Shared extension exposing BearerTokenProvider via OAuth 2.0 client credentials",
     documentation_url: "",
     capabilities: Some(extension_capabilities!(
         shared: OAuth2ClientAuthExtension => [BearerTokenProvider]

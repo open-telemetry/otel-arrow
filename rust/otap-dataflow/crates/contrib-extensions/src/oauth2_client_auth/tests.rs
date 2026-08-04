@@ -670,9 +670,6 @@ async fn jwt_bearer_reads_signing_key_from_file() {
     let ext =
         OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
 
-    let token = ext
-        .get_token()
-        .await
-        .expect("token acquired via key file");
+    let token = ext.get_token().await.expect("token acquired via key file");
     assert_eq!(token.expose_token(), "jwt-tok");
 }

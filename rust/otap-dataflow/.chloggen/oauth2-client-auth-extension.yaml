@@ -7,16 +7,8 @@ note: Add the `oauth2_client_auth` extension, a `BearerTokenProvider` backed by 
 issues: [3479]
 
 subtext: |
-  New extension in the `otap-df-contrib-extensions` crate (feature
-  `oauth2-client-auth-extension`, URN `urn:otel:extension:oauth2_client_auth`)
-  that acquires and refreshes OAuth 2.0 access tokens and exposes them to
-  data-path nodes via the shared `BearerTokenProvider` capability. Supports the
-  client-credentials grant (RFC 6749 section 4.4) and the JWT-bearer grant
-  (RFC 7523 section 2.1, a signed RSA JWT assertion). The token endpoint is
-  reached over TLS via the engine's shared `TlsClientConfig` (custom CA and
-  mTLS), and `client_id` / `client_secret` / signing-key material may be
-  supplied inline or via files re-read on each acquisition for rotation without
-  a restart. Tokens are cached and refreshed ahead of expiry in a background
-  task, concurrent cache misses are coalesced onto a single token request, and
-  the extension gates pipeline startup on the first successful token publish.
-  Emits success/failure/publish counters and acquisition-latency telemetry.
+  Feature `oauth2-client-auth-extension`, URN
+  `urn:otel:extension:oauth2_client_auth`. Supports the client-credentials and
+  JWT-bearer grants over TLS (custom CA, mTLS). Credentials may be inline or
+  in files re-read on each acquisition for rotation without a restart.
+  Tokens are refreshed ahead of expiry.

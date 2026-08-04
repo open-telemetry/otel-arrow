@@ -31,8 +31,10 @@ async fn schedule_next_refreshes_before_expiry() {
 // Guarantees: The schedule floors at MIN_TOKEN_REFRESH_INTERVAL_SECS (~10s) rather than the past.
 #[tokio::test]
 async fn schedule_next_floors_near_expiry() {
-    let token =
-        BearerToken::with_expiry("t".to_owned(), Some(Instant::now() + Duration::from_secs(5)));
+    let token = BearerToken::with_expiry(
+        "t".to_owned(),
+        Some(Instant::now() + Duration::from_secs(5)),
+    );
     let refresh_at = schedule_next(&token, Duration::from_secs(300));
     let secs = refresh_at
         .saturating_duration_since(tokio::time::Instant::now())
