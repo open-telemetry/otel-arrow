@@ -52,6 +52,10 @@ impl PartitionTracker {
     /// The stored generation is advanced to `generation` when it is newer, so a
     /// partition reassigned to this consumer adopts the new ownership period.
     fn track(&mut self, offset: i64, generation: u64) {
+        if generation < self.generation {
+            // Stale ownership period -- do not touch current-period state.
+            return;
+        }
         if generation > self.generation {
             self.generation = generation;
             self.pending.clear();
@@ -506,6 +510,39 @@ mod tests {
         assert_eq!(pt.pending_count(), 1);
         assert_eq!(pt.high_water_mark(), None);
         assert_eq!(pt.committable_offset(), Some(50));
+    }
+
+    // Scenario: after a partition has been (re)tracked under a newer generation,
+    // a `track` call arrives carrying an older (stale) generation -- as could
+    // happen from a reordered or buggy caller feeding a past ownership period.
+    // Guarantees: the stale call is a complete no-op: the stored generation,
+    // pending set, high-water mark, and lowest-pending watermark are all left
+    // exactly as the current ownership period established, so an offset from a
+    // period this consumer no longer owns can never pollute committable state.
+    #[test]
+    fn partition_track_ignores_stale_generation() {
+        let mut pt = PartitionTracker::new(1);
+
+        // Establish current ownership period (generation 2) with one offset.
+        pt.track(200, 2);
+        assert_eq!(pt.generation, 2);
+        assert_eq!(pt.pending_count(), 1);
+        assert_eq!(pt.lowest_pending(), Some(200));
+
+        // A stale generation-1 track must not touch any current-period state.
+        pt.track(100, 1);
+        assert_eq!(
+            pt.generation, 2,
+            "stale track must not lower the generation"
+        );
+        assert_eq!(pt.pending_count(), 1, "stale offset must not be inserted");
+        assert_eq!(
+            pt.lowest_pending(),
+            Some(200),
+            "watermark must be unchanged"
+        );
+        assert_eq!(pt.high_water_mark(), None);
+        assert_eq!(pt.committable_offset(), Some(200));
     }
 
     // ---- OffsetTracker tests ----

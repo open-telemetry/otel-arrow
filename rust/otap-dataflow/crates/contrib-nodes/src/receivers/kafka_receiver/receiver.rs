@@ -873,11 +873,6 @@ impl KafkaReceiver {
                 // 2. Get the result from consumer_lag worker
                 result = async {
                     match lag_refresh_in_flight.as_mut() {
-                        Some((handle, deadline, _cancel))
-                            if tokio::time::Instant::now() >= *deadline =>
-                        {
-                            Ok(handle.await)
-                        }
                         Some((handle, deadline, _cancel)) => {
                             tokio::time::timeout_at(*deadline, handle).await
                         }
@@ -887,6 +882,15 @@ impl KafkaReceiver {
                 }, if lag_refresh_in_flight.is_some() => {
                     match result {
                         Err(_elapsed) => {
+                            // The refresh outran its deadline. Cancel the worker so
+                            // it stops cooperatively at its next deadline check, and
+                            // release the slot so periodic refreshes can resume (the
+                            // trigger below is gated on `lag_refresh_in_flight`).
+                            if let Some((_handle, _deadline, cancel)) =
+                                lag_refresh_in_flight.take()
+                            {
+                                cancel.cancel();
+                            }
                             otel_warn!("kafka.lag.refresh_incomplete", reason = "deadline_exceeded");
                         }
                         Ok(join_result) => {
@@ -2585,6 +2589,49 @@ mod tests {
                     result, None,
                     "an assignment with no committed offsets must abort the refresh, not \
                      produce a subset/zero mean",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: the receive loop's lag-refresh deadline elapses, so the loop
+    /// cancels the worker's token (as the `Err(Elapsed)` arm does) while the
+    /// worker still owns partitions.
+    /// Guarantees: a cancelled token makes `compute_consumer_lag` abandon the
+    /// refresh (`None`) at its next cancellation check instead of continuing to
+    /// issue broker calls -- the observable behavior that lets the loop drop the
+    /// wedged worker and resume future refreshes without blocking.
+    #[tokio::test]
+    async fn compute_consumer_lag_none_when_cancelled() {
+        const TOPIC: &str = "lag-cancelled";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let brokers = cluster.bootstrap_servers().to_string();
+                let consumer = make_manual_consumer(&brokers, "lag-cancelled-group");
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+                let _ = tpl.add_partition(TOPIC, 1);
+                consumer.assign(&tpl).expect("assign partitions");
+
+                // Pre-cancel the token to model the timeout path cancelling a
+                // still-running worker. The assignment is non-empty, so the
+                // cancellation check (not the empty-assignment shortcut) decides
+                // the outcome.
+                let cancel = CancellationToken::new();
+                cancel.cancel();
+                let deadline = Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &cancel)
+                })
+                .await
+                .expect("lag task should not panic");
+
+                assert_eq!(
+                    result, None,
+                    "a cancelled refresh must abandon measurement rather than \
+                     continue issuing broker calls",
                 );
             },
         )
