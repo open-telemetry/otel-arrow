@@ -59,16 +59,16 @@ pub struct AzureMonitorExporterOperationalMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterExportMetrics {
-    /// Number of items resolved by export outcome.
+    /// Number of items in completed export attempts.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
-    /// Number of batches resolved by export outcome.
+    /// Number of completed export batches.
     #[metric(unit = "{batch}")]
     pub batches: Counter<u64>,
-    /// Number of messages resolved by export outcome.
+    /// Number of messages in completed export attempts.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
-    /// Compressed request-body bytes resolved by export outcome.
+    /// Compressed request-body bytes in completed export attempts.
     #[metric(unit = "By")]
     pub bytes: Counter<u64>,
 }
@@ -120,7 +120,7 @@ struct AzureMonitorExporterStateMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterHeartbeatMetrics {
-    /// Number of heartbeat sends resolved by outcome.
+    /// Number of completed heartbeat send attempts.
     #[metric(unit = "{heartbeat}")]
     pub sends: Counter<u64>,
 }

@@ -68,12 +68,20 @@ telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for deta
 Choose the least expensive instrument that retains the information operators
 need. All sizes below are per metric series and exclude registry metadata.
 
-| Instrument | Use when | Retained information | State size | Relative recording cost |
-|------------|----------|----------------------|------------|-------------------------|
-| `Counter<u64>` or `Counter<f64>` | Only a monotonic total matters, such as processed items or bytes | Sum | 8 bytes | Lowest: one addition |
-| `Mmsc` | Range and average are useful, but quantiles and distribution shape are not | Exact min, max, sum, and count | 32 bytes | Low: comparisons plus sum and count updates |
-| `HistogramNormal` | Approximate quantiles or distribution shape are operationally useful | Exact min, max, sum, and count plus exponential buckets | 128 bytes | Higher: logarithm lookup and bucket update, with occasional widening |
-| `HistogramDetailed` | The normal tier cannot retain enough bucket resolution for diagnosis | Same fields as the normal tier with a larger bucket range | 256 bytes | Similar recording algorithm to normal, but twice the state and greater cache, merge, and export cost |
+| Instrument | Use when | Retained information | State size | Recording cost per observation |
+|------------|----------|----------------------|------------|--------------------------------|
+| `Counter<u64>` or `Counter<f64>` | Only a monotonic total matters, such as processed items or bytes | Sum | 8 bytes | ~0.4 ns: one addition |
+| `Mmsc` | Range and average are useful, but quantiles and distribution shape are not | Exact min, max, sum, and count | 32 bytes | ~1.3 ns: comparisons plus sum and count updates |
+| `HistogramNormal` | Approximate quantiles or distribution shape are operationally useful | Exact min, max, sum, and count plus exponential buckets | 128 bytes (10 counter words) | ~8 ns: logarithm lookup and bucket update, with occasional widening |
+| `HistogramDetailed` | The normal tier cannot retain enough bucket resolution for diagnosis | Same fields as the normal tier with a larger bucket range | 256 bytes (26 counter words) | ~9 ns: the same algorithm over twice the state, with greater cache, merge, and export cost |
+
+The costs above are medians measured on an unloaded development machine over
+1,024 values spanning roughly 64 octaves, a spread that exercises counter
+widening and scale reduction. Treat them as ratios rather than absolute
+figures: an `Mmsc` observation costs about three counter additions, a
+histogram observation about six `Mmsc` records, and the detailed tier costs
+only slightly more per observation than the normal tier, so choose between
+those two on retained resolution and footprint rather than on recording speed.
 
 Use a counter instead of a distribution when only a total is queried. For
 example, use a counter for total processed bytes; record each batch size in a
@@ -91,10 +99,17 @@ histogram footprint, which also multiplies with attribute cardinality.
 
 Recording into these instruments is allocation-free. Snapshotting a histogram
 for reporting and export is cold-path work and is not part of the recording
-cost above. To compare recording costs on the current platform, run:
+cost above. To re-measure recording costs on the target platform, run:
 
 ```console
 cargo bench -p otap-df-telemetry --bench distribution_record
+```
+
+Merging two histograms, which happens when partial aggregates are combined
+rather than on the recording path, can be compared with:
+
+```console
+cargo bench -p otap-df-expohisto --bench merge --features bench
 ```
 
 ### Recording semantics and export temporality
