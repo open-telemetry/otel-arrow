@@ -802,6 +802,44 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_logs_body_using_matches_with_escape_sequences() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello 1"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello 12"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = r#"logs | where matches(body, "hello \\d$")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+
+        let query = r#"logs | where matches(body, "hello \\d+")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_logs_body_using_contains() {
         let input = vec![
             LogRecord::build()
