@@ -713,9 +713,11 @@ questions:
 <!-- markdownlint-disable MD013 -->
 | Scope    | Attribute           | Type    | Description                                                  |
 |----------|---------------------|---------|--------------------------------------------------------------|
-| Resource | process_instance_id | string  | Unique process instance identifier (base32-encoded UUID v7). |
-| Resource | host_id             | string  | Host identifier (e.g. hostname).                             |
-| Resource | container_id        | string  | Container identifier (e.g. Docker/containerd container ID).  |
+| Resource | service.instance.id | string  | Unique instance id (UUIDv7); `service_instance` default.     |
+| Resource | service.name        | string  | From `OTEL_SERVICE_NAME` or the build-info default.          |
+| Resource | service.version     | string  | Build-info default; config/`OTEL_*` override.                |
+| Resource | host.id             | string  | Host machine id; `host` detector (opt-in).                   |
+| Resource | container.id        | string  | Container id; `container` detector (opt-in).                 |
 | Engine   | core_id             | integer | Core identifier.                                             |
 | Engine   | numa_node_id        | integer | NUMA node identifier.                                        |
 | Pipeline | pipeline_id         | string  | Pipeline identifier.                                         |
