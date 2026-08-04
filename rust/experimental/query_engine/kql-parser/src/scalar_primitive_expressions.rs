@@ -236,9 +236,12 @@ fn parse_regex_expression(
 
     let mut inner_rules = regex_expression_rule.into_inner();
 
-    let pattern = parse_standard_string_literal(inner_rules.next().unwrap());
+    let pattern = parse_standard_string_literal(inner_rules.next().unwrap())?;
 
-    let options = inner_rules.next().map(|r| parse_standard_string_literal(r));
+    let options = inner_rules
+        .next()
+        .map(|r| parse_standard_string_literal(r))
+        .transpose()?;
 
     let regex = Value::parse_regex(
         &query_location,
@@ -288,7 +291,7 @@ fn parse_dynamic_expression(
 
                     let key = parse_standard_string_literal(
                         dynamic_map_item_expression_rules.next().unwrap(),
-                    );
+                    )?;
 
                     let value = parse_dynamic_inner_expression(
                         dynamic_map_item_expression_rules.next().unwrap(),
