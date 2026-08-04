@@ -22,7 +22,7 @@ pub enum Instrument {
     Mmsc,
     /// Exponential-histogram distribution (normal/detailed tiers).
     ///
-    /// Tracked as a [`crate::instrument::Distribution`]; the OTLP bridge exports
+    /// Tracked as a [`crate::instrument::DistributionValue`]; the OTLP bridge exports
     /// the aggregation as an OTel exponential-histogram point.
     ExponentialHistogram,
 }

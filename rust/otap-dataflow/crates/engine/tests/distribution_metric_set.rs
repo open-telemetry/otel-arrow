@@ -22,7 +22,7 @@ struct LatencyMetrics {
 /// Scenario: A `#[metric_set]` struct declares a `HistogramNormal` field, records
 /// observations, and is snapshotted, cleared, and checked for flush readiness.
 /// Guarantees: The macro maps the field to an `ExponentialHistogram` delta F64
-/// instrument, `snapshot_values` yields a live `Distribution`, `needs_flush`
+/// instrument, `snapshot_values` yields a live `DistributionValue`, `needs_flush`
 /// tracks whether observations exist, and `clear_values` resets the tier.
 #[test]
 fn histogram_normal_field_wires_through_metric_set_macro() {

@@ -16,7 +16,7 @@ use crate::descriptor::{
     Instrument, MeasurementAttributeDescriptor, MetricsDescriptor, MetricsField,
 };
 use crate::entity::{EntityAttributeSet, EntityRegistry};
-use crate::instrument::{Distribution, Mmsc};
+use crate::instrument::{DistributionValue, Mmsc};
 use crate::registry::{EntityKey, MetricSetKey};
 use crate::semconv::SemConvRegistry;
 use slotmap::SlotMap;
@@ -55,7 +55,7 @@ pub const fn check_cardinality(cardinality: usize) {
 
 /// Metric value -- a scalar integer or float, or a pre-aggregated distribution.
 ///
-/// [`Distribution`] boxes its tier internally, so it is embedded here directly
+/// [`DistributionValue`] boxes its tier internally, so it is embedded here directly
 /// rather than boxed again.
 ///
 /// This type has no serde representation on purpose: the OTLP encoder selects
@@ -70,7 +70,7 @@ pub enum MetricValue {
     F64(f64),
     /// A distribution aggregation from an [`Mmsc`] or exponential-histogram
     /// instrument. The instrument descriptor determines its OTLP point type.
-    Distribution(Distribution),
+    Distribution(DistributionValue),
 }
 
 impl MetricValue {
@@ -199,15 +199,15 @@ impl std::ops::AddAssign for MetricValue {
     }
 }
 
-impl From<Distribution> for MetricValue {
-    fn from(value: Distribution) -> Self {
+impl From<DistributionValue> for MetricValue {
+    fn from(value: DistributionValue) -> Self {
         MetricValue::Distribution(value)
     }
 }
 
 impl From<Mmsc> for MetricValue {
     fn from(value: Mmsc) -> Self {
-        MetricValue::Distribution(Distribution::Basic(Box::new(value)))
+        MetricValue::Distribution(DistributionValue::Basic(Box::new(value)))
     }
 }
 
@@ -1488,7 +1488,7 @@ mod tests {
 
     /// Builds a normal-tier snapshot by recording through its instrument,
     /// which is the only way a distribution is populated.
-    fn normal_distribution(observations: &[f64]) -> Distribution {
+    fn normal_distribution(observations: &[f64]) -> DistributionValue {
         let mut histogram = crate::instrument::HistogramNormal::default();
         for &value in observations {
             histogram.record(value);
@@ -2503,7 +2503,7 @@ mod tests {
     /// Extracts the basic-tier aggregation from a distribution value.
     fn expect_mmsc(value: &MetricValue) -> Mmsc {
         match value {
-            MetricValue::Distribution(Distribution::Basic(mmsc)) => **mmsc,
+            MetricValue::Distribution(DistributionValue::Basic(mmsc)) => **mmsc,
             other => panic!("expected basic-tier distribution, got {other:?}"),
         }
     }
@@ -2580,17 +2580,17 @@ mod tests {
         assert!(zeroed.is_zero());
         match &zeroed {
             MetricValue::Distribution(d) => {
-                assert!(matches!(d, Distribution::Normal(_)));
+                assert!(matches!(d, DistributionValue::Normal(_)));
                 let _ = HISTOGRAM_NORMAL_WORDS; // tier constant is in scope for clarity
             }
-            _ => panic!("expected Distribution variant"),
+            _ => panic!("expected DistributionValue variant"),
         }
 
         // Merge b into a: combined count is 3.
         va.add_in_place(&vb);
         match &va {
             MetricValue::Distribution(d) => assert_eq!(d.count(), 3),
-            _ => panic!("expected Distribution variant"),
+            _ => panic!("expected DistributionValue variant"),
         }
 
         // Reset empties the aggregation in place.
@@ -2598,7 +2598,7 @@ mod tests {
         assert!(va.is_zero());
         match &va {
             MetricValue::Distribution(d) => assert_eq!(d.count(), 0),
-            _ => panic!("expected Distribution variant"),
+            _ => panic!("expected DistributionValue variant"),
         }
     }
 
@@ -2621,7 +2621,7 @@ mod tests {
                 assert_eq!(d.count(), 3);
                 assert_eq!(d.scan_buckets(|_| {}).zero_count, 0);
             }
-            other => panic!("expected Distribution variant, got {other:?}"),
+            other => panic!("expected DistributionValue variant, got {other:?}"),
         }
     }
 
@@ -2751,7 +2751,7 @@ mod tests {
         fn count_of(value: &MetricValue) -> u64 {
             match value {
                 MetricValue::Distribution(d) => d.count(),
-                other => panic!("expected Distribution, got {other:?}"),
+                other => panic!("expected DistributionValue, got {other:?}"),
             }
         }
 

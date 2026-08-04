@@ -23,7 +23,7 @@ use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValu
 use otap_df_telemetry::attributes::{AttributeSetHandler, AttributeValue};
 use otap_df_telemetry::descriptor::{Instrument, MetricValueType, MetricsDescriptor, MetricsField};
 use otap_df_telemetry::event::LogEvent;
-use otap_df_telemetry::instrument::Distribution;
+use otap_df_telemetry::instrument::DistributionValue;
 use otap_df_telemetry::log_tap::{LogQuery, LogQueryResult, RetainedLogEvent};
 use otap_df_telemetry::metrics::{MetricValue, MetricsIterator};
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
@@ -150,14 +150,14 @@ where
                 // for a value assembled elsewhere. min/max/sum are meaningless
                 // without an observation, so report the count alone rather than
                 // inviting a consumer to read them.
-                let mut state = serializer.serialize_struct("Distribution", 1)?;
+                let mut state = serializer.serialize_struct("DistributionValue", 1)?;
                 state.serialize_field("count", &0_u64)?;
                 return state.end();
             }
             let details = distribution_details(d);
             let fields = if details.is_some() { 5 } else { 4 };
 
-            let mut state = serializer.serialize_struct("Distribution", fields)?;
+            let mut state = serializer.serialize_struct("DistributionValue", fields)?;
             state.serialize_field("min", &min)?;
             state.serialize_field("max", &max)?;
             state.serialize_field("sum", &sum)?;
@@ -174,7 +174,7 @@ where
 ///
 /// Returns `None` for the basic tier, which encodes no buckets and so has no
 /// zero population to report and no quantiles to estimate.
-fn distribution_details(d: &Distribution) -> Option<api::DistributionDetails> {
+fn distribution_details(d: &DistributionValue) -> Option<api::DistributionDetails> {
     let mut estimates = [0.0_f64; ADMIN_QUANTILES.len()];
     // One walk over the buckets yields both the estimates and the zero count;
     // asking for the zero count separately would repeat that walk.
@@ -745,7 +745,7 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
         // Distribution values are expanded into multiple fields at the call
         // site; this arm should not be reached.
         MetricValue::Distribution(_) => {
-            unreachable!("Distribution values must be expanded at the call site")
+            unreachable!("DistributionValue values must be expanded at the call site")
         }
     }
 }
@@ -838,7 +838,7 @@ fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) ->
         // Distribution values are expanded into summary lines at the call
         // site; this arm should not be reached.
         MetricValue::Distribution(_) => {
-            unreachable!("Distribution values must be expanded at the call site")
+            unreachable!("DistributionValue values must be expanded at the call site")
         }
     }
 }
@@ -982,7 +982,7 @@ fn collect_scalar_metric(
 fn collect_distribution_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    distribution: &Distribution,
+    distribution: &DistributionValue,
     base_labels: &str,
     ts_suffix: &str,
 ) {

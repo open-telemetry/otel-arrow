@@ -1028,7 +1028,7 @@ mod tests {
             .try_recv()
             .expect("flow duration metric should be reported");
         let [
-            MetricValue::Distribution(otap_df_telemetry::instrument::Distribution::Basic(
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
                 duration_snapshot,
             )),
         ] = snapshot.get_metrics()

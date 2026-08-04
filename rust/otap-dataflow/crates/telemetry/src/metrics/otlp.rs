@@ -854,7 +854,7 @@ fn encode_metric(
             let MetricValue::Distribution(distribution) = value else {
                 unreachable!("metric value kind was validated before encoding")
             };
-            let crate::instrument::Distribution::Basic(mmsc) = distribution else {
+            let crate::instrument::DistributionValue::Basic(mmsc) = distribution else {
                 unreachable!("metric value kind was validated before encoding")
             };
             if mmsc.count == 0 {
@@ -910,10 +910,10 @@ fn validate_value_kind(field: &MetricsField, value: &MetricValue) -> Result<(), 
     let actual = match value {
         MetricValue::U64(_) => "u64",
         MetricValue::F64(_) => "f64",
-        MetricValue::Distribution(crate::instrument::Distribution::Basic(_)) => "mmsc",
+        MetricValue::Distribution(crate::instrument::DistributionValue::Basic(_)) => "mmsc",
         MetricValue::Distribution(
-            crate::instrument::Distribution::Normal(_)
-            | crate::instrument::Distribution::Detailed(_),
+            crate::instrument::DistributionValue::Normal(_)
+            | crate::instrument::DistributionValue::Detailed(_),
         ) => "exponential histogram",
     };
 
@@ -1009,7 +1009,7 @@ mod tests {
 
     /// Builds a normal-tier snapshot by recording through its instrument,
     /// which is the only way a distribution is populated.
-    fn normal_distribution(observations: &[f64]) -> crate::instrument::Distribution {
+    fn normal_distribution(observations: &[f64]) -> crate::instrument::DistributionValue {
         let mut histogram = crate::instrument::HistogramNormal::default();
         for &value in observations {
             histogram.record(value);

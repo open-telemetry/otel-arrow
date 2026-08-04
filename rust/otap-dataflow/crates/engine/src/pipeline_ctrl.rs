@@ -3436,9 +3436,9 @@ mod tests {
         msg: &str,
     ) -> otap_df_telemetry::instrument::Mmsc {
         match &values[index] {
-            MetricValue::Distribution(otap_df_telemetry::instrument::Distribution::Basic(mmsc)) => {
-                **mmsc
-            }
+            MetricValue::Distribution(otap_df_telemetry::instrument::DistributionValue::Basic(
+                mmsc,
+            )) => **mmsc,
             other => panic!("{msg}: expected a basic-tier distribution, got {other:?}"),
         }
     }

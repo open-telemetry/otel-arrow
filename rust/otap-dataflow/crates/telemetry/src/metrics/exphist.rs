@@ -12,7 +12,7 @@
 //! All points are emitted with delta temporality by the caller; these
 //! functions only build the per-point payload.
 
-use crate::instrument::Distribution;
+use crate::instrument::DistributionValue;
 use otap_df_expohisto::HistogramView;
 use otap_df_pdata::proto::opentelemetry::common::v1::KeyValue;
 use otap_df_pdata::proto::opentelemetry::metrics::v1::{
@@ -88,28 +88,28 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
     builder.finish()
 }
 
-/// Projects a [`Distribution`] onto an OTLP `ExponentialHistogramDataPoint`,
+/// Projects a [`DistributionValue`] onto an OTLP `ExponentialHistogramDataPoint`,
 /// dispatching each bucketed tier onto the matching primitive.
 ///
 /// The caller validates that this function is used only for a true
 /// exponential-histogram instrument.
 pub(crate) fn distribution_exponential_histogram_data_point(
-    distribution: &Distribution,
+    distribution: &DistributionValue,
     start_time_unix_nano: u64,
     time_unix_nano: u64,
     attributes: &[KeyValue],
 ) -> ExponentialHistogramDataPoint {
     match distribution {
-        Distribution::Basic(_) => {
+        DistributionValue::Basic(_) => {
             unreachable!("basic MMSC distributions use explicit-boundary histograms")
         }
-        Distribution::Normal(hist) => exponential_histogram_data_point(
+        DistributionValue::Normal(hist) => exponential_histogram_data_point(
             &hist.view(),
             start_time_unix_nano,
             time_unix_nano,
             attributes,
         ),
-        Distribution::Detailed(hist) => exponential_histogram_data_point(
+        DistributionValue::Detailed(hist) => exponential_histogram_data_point(
             &hist.view(),
             start_time_unix_nano,
             time_unix_nano,

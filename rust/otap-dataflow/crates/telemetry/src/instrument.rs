@@ -13,7 +13,7 @@
 
 use otap_df_expohisto::{Error as HistogramError, HistogramNN};
 
-/// Bucket totals recovered by [`Distribution::scan_buckets`], re-exported so
+/// Bucket totals recovered by [`DistributionValue::scan_buckets`], re-exported so
 /// callers need not depend on `otap_df_expohisto` directly.
 pub use otap_df_expohisto::BucketTotals;
 use std::fmt::Debug;
@@ -474,7 +474,7 @@ impl From<f64> for Gauge<f64> {
 /// An `Mmsc` knows only the range its observations occupied. Its OTLP
 /// projection is therefore an explicit-boundary histogram point with no
 /// boundaries or bucket counts, preserving min, max, sum, and count without
-/// inventing bucket membership. It is carried as [`Distribution::Basic`] so
+/// inventing bucket membership. It is carried as [`DistributionValue::Basic`] so
 /// all pre-aggregated distributions share one internal metric value kind.
 ///
 /// Exact zeros are not tracked separately. The bucketed tiers keep a
@@ -607,7 +607,7 @@ impl Timer {
     }
 }
 
-// Distribution implementation.
+// DistributionValue implementation.
 // ============================
 
 /// Number of `u64` bucket words in the "normal" resolution exponential
@@ -629,31 +629,31 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 /// A snapshot of a delta distribution, at one of three resolution tiers.
 ///
 /// Every tier is a pre-aggregated distribution:
-/// - [`Distribution::Basic`] is an [`Mmsc`] with exact min/max/sum/count and no
+/// - [`DistributionValue::Basic`] is an [`Mmsc`] with exact min/max/sum/count and no
 ///   bucket structure.
-/// - [`Distribution::Normal`] and [`Distribution::Detailed`] keep full
+/// - [`DistributionValue::Normal`] and [`DistributionValue::Detailed`] keep full
 ///   exponential-histogram bucket ranges sized by [`HISTOGRAM_NORMAL_WORDS`]
 ///   and [`HISTOGRAM_DETAILED_WORDS`] respectively.
 ///
 /// This is what an instrument hands to the reporting path: components record
 /// into [`Mmsc`], [`HistogramNormal`], or [`HistogramDetailed`], each of which
 /// yields the matching variant from its `get`. Nothing records into a
-/// `Distribution` itself, because the tier a component needs is a property of
+/// `DistributionValue` itself, because the tier a component needs is a property of
 /// the metric and is fixed by the declared field type. Selecting it at runtime
 /// awaits a way to resolve it from configuration.
 ///
 /// The tier is carried rather than erased because the reporting path needs it:
-/// the OTLP bridge exports [`Distribution::Basic`] as a bucketless histogram
+/// the OTLP bridge exports [`DistributionValue::Basic`] as a bucketless histogram
 /// point and the other two as exponential-histogram points, and the descriptor
 /// declares which to expect.
 ///
 /// Tiers differ widely in size (a detailed histogram is roughly 256 bytes), so
 /// each variant is boxed and the enum itself stays pointer-small. That keeps a
 /// basic-tier series cheap to carry by value, which is why
-/// [`crate::metrics::MetricValue`] embeds a `Distribution` directly rather than
+/// [`crate::metrics::MetricValue`] embeds a `DistributionValue` directly rather than
 /// boxing it a second time.
 #[derive(Debug, Clone)]
-pub enum Distribution {
+pub enum DistributionValue {
     /// Basic tier: exact min/max/sum/count with no encoded buckets.
     Basic(Box<Mmsc>),
     /// Normal tier: exponential histogram with [`HISTOGRAM_NORMAL_WORDS`] bucket words.
@@ -662,7 +662,7 @@ pub enum Distribution {
     Detailed(Box<HistogramNN<HISTOGRAM_DETAILED_WORDS>>),
 }
 
-impl Distribution {
+impl DistributionValue {
     /// Resets all state for the next reporting interval.
     #[inline]
     pub fn reset(&mut self) {
@@ -703,7 +703,7 @@ impl Distribution {
     /// When `count` is zero every other field is zero as well: there is no
     /// observation to summarize, so `min` and `max` carry no meaning and must
     /// not be rendered or exported. Callers are expected to branch on `count`
-    /// (or [`Distribution::is_empty`]) before reading them.
+    /// (or [`DistributionValue::is_empty`]) before reading them.
     #[must_use]
     pub fn summary(&self) -> (u64, f64, f64, f64) {
         match self {
@@ -731,7 +731,7 @@ impl Distribution {
     /// an encoder learns the zero count for free, and no caller can pay for a
     /// scan whose bucket counts it then discards.
     ///
-    /// [`Distribution::Basic`] encodes no buckets, so it emits nothing and
+    /// [`DistributionValue::Basic`] encodes no buckets, so it emits nothing and
     /// reports [`BucketTotals::EMPTY`] regardless of whether zeros were
     /// observed. A zero there is an ordinary observation that lowers `min`;
     /// its OTLP summary point does not claim any bucket membership.
@@ -752,7 +752,7 @@ impl Distribution {
     /// why the scale itself is not exposed here: a consumer of the estimates
     /// needs the error they carry, not the encoding that produced it.
     ///
-    /// Returns `None` for [`Distribution::Basic`], which encodes no buckets
+    /// Returns `None` for [`DistributionValue::Basic`], which encodes no buckets
     /// and so reports no estimated values, and 0.0 for an empty histogram.
     #[must_use]
     pub fn relative_error(&self) -> Option<f64> {
@@ -768,7 +768,7 @@ impl Distribution {
     ///
     /// `quantiles` must be sorted in non-decreasing order with every entry in
     /// `[0.0, 1.0]`, and `out` must be at least as long. Returns `None`
-    /// without touching `out` for [`Distribution::Basic`], which keeps no
+    /// without touching `out` for [`DistributionValue::Basic`], which keeps no
     /// buckets and therefore cannot estimate interior quantiles.
     ///
     /// Quantile estimation has to know the zero mass before it can walk the
@@ -801,14 +801,14 @@ impl Distribution {
             (Self::Detailed(dst), Self::Detailed(src)) => {
                 Self::check_hist(dst.merge_from(&**src), "merge overflow");
             }
-            _ => debug_assert!(false, "Distribution::merge across mismatched tiers"),
+            _ => debug_assert!(false, "DistributionValue::merge across mismatched tiers"),
         }
     }
 
     #[inline]
     fn check_hist(result: Result<(), HistogramError>, context: &str) {
         if let Err(error) = result {
-            debug_assert!(false, "Distribution::{context}: {error}");
+            debug_assert!(false, "DistributionValue::{context}: {error}");
         }
     }
 }
@@ -823,10 +823,10 @@ impl Distribution {
 /// distributions that share a summary compare equal.
 ///
 /// The bucket scan here is not the access pattern
-/// [`Distribution::scan_buckets`] exists to discourage: an equality test must
+/// [`DistributionValue::scan_buckets`] exists to discourage: an equality test must
 /// look at the buckets, and it discards the counts only after comparing the
 /// totals they produce.
-impl PartialEq for Distribution {
+impl PartialEq for DistributionValue {
     fn eq(&self, other: &Self) -> bool {
         self.tier_name() == other.tier_name()
             && self.summary() == other.summary()
@@ -841,38 +841,33 @@ fn check_hist_update(result: Result<(), HistogramError>, context: &str) {
     }
 }
 
-/// A normal-tier exponential-histogram instrument.
+/// An exponential-histogram instrument holding `N` counter words.
 ///
-/// Records non-negative observations into a [`HistogramNN`] with
-/// [`HISTOGRAM_NORMAL_WORDS`] bucket words and snapshots them as a live
-/// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
-/// normal tier.
+/// Records non-negative observations into a [`HistogramNN`] and yields them as
+/// a live [`DistributionValue`]. The tiers below differ only in how many counter
+/// words they carry, so they share everything except which variant they
+/// report.
 #[derive(Clone, Default)]
-pub struct HistogramNormal(HistogramNN<HISTOGRAM_NORMAL_WORDS>);
+pub struct Histogram<const N: usize>(HistogramNN<N>);
 
-impl Debug for HistogramNormal {
+impl<const N: usize> Debug for Histogram<N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HistogramNormal")
+        f.debug_struct("Histogram")
+            .field("words", &N)
             .field("count", &self.0.view().stats().count)
             .finish_non_exhaustive()
     }
 }
 
-impl HistogramNormal {
-    /// Records a single non-negative observation (see [`Distribution::record`]).
+impl<const N: usize> Histogram<N> {
+    /// Records a single non-negative observation.
+    ///
+    /// Negative, NaN, and infinite values are invalid. In debug builds an
+    /// invalid value trips a debug assertion; in release builds it is dropped
+    /// so a misbehaving call site cannot corrupt the aggregation.
     #[inline]
     pub fn record(&mut self, value: f64) {
-        check_hist_update(
-            self.0.update(value),
-            "HistogramNormal::record rejected value",
-        );
-    }
-
-    /// Returns the current aggregation as a live [`Distribution`].
-    #[inline]
-    #[must_use]
-    pub fn get(&self) -> Distribution {
-        Distribution::Normal(Box::new(self.0.clone()))
+        check_hist_update(self.0.update(value), "Histogram::record rejected value");
     }
 
     /// Returns `true` when no observations have been recorded this interval.
@@ -889,51 +884,31 @@ impl HistogramNormal {
     }
 }
 
+/// A normal-tier exponential-histogram instrument.
+///
+/// Declared as a `#[metric_set]` field type to select the normal tier.
+pub type HistogramNormal = Histogram<HISTOGRAM_NORMAL_WORDS>;
+
 /// A detailed-tier exponential-histogram instrument.
 ///
-/// Records non-negative observations into a [`HistogramNN`] with
-/// [`HISTOGRAM_DETAILED_WORDS`] bucket words and snapshots them as a live
-/// [`Distribution`]. Declared as a `#[metric_set]` field type to select the
-/// detailed tier.
-#[derive(Clone, Default)]
-pub struct HistogramDetailed(HistogramNN<HISTOGRAM_DETAILED_WORDS>);
+/// Declared as a `#[metric_set]` field type to select the detailed tier.
+pub type HistogramDetailed = Histogram<HISTOGRAM_DETAILED_WORDS>;
 
-impl Debug for HistogramDetailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HistogramDetailed")
-            .field("count", &self.0.view().stats().count)
-            .finish_non_exhaustive()
+impl HistogramNormal {
+    /// Returns the current aggregation as a live [`DistributionValue`].
+    #[inline]
+    #[must_use]
+    pub fn get(&self) -> DistributionValue {
+        DistributionValue::Normal(Box::new(self.0.clone()))
     }
 }
 
 impl HistogramDetailed {
-    /// Records a single non-negative observation (see [`Distribution::record`]).
-    #[inline]
-    pub fn record(&mut self, value: f64) {
-        check_hist_update(
-            self.0.update(value),
-            "HistogramDetailed::record rejected value",
-        );
-    }
-
-    /// Returns the current aggregation as a live [`Distribution`].
+    /// Returns the current aggregation as a live [`DistributionValue`].
     #[inline]
     #[must_use]
-    pub fn get(&self) -> Distribution {
-        Distribution::Detailed(Box::new(self.0.clone()))
-    }
-
-    /// Returns `true` when no observations have been recorded this interval.
-    #[inline]
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.0.view().stats().count == 0
-    }
-
-    /// Resets the histogram for the next reporting interval.
-    #[inline]
-    pub fn reset(&mut self) {
-        self.0.clear();
+    pub fn get(&self) -> DistributionValue {
+        DistributionValue::Detailed(Box::new(self.0.clone()))
     }
 }
 
@@ -943,16 +918,16 @@ mod tests {
 
     /// Builds a basic-tier snapshot by recording through the instrument that
     /// produces it, which is the only way a distribution is populated.
-    fn basic_of(values: &[f64]) -> Distribution {
+    fn basic_of(values: &[f64]) -> DistributionValue {
         let mut mmsc = Mmsc::default();
         for &value in values {
             mmsc.record(value);
         }
-        Distribution::Basic(Box::new(mmsc))
+        DistributionValue::Basic(Box::new(mmsc))
     }
 
     /// Builds a normal-tier snapshot by recording through its instrument.
-    fn normal_of(values: &[f64]) -> Distribution {
+    fn normal_of(values: &[f64]) -> DistributionValue {
         let mut histogram = HistogramNormal::default();
         for &value in values {
             histogram.record(value);
@@ -961,7 +936,7 @@ mod tests {
     }
 
     /// Builds a detailed-tier snapshot by recording through its instrument.
-    fn detailed_of(values: &[f64]) -> Distribution {
+    fn detailed_of(values: &[f64]) -> DistributionValue {
         let mut histogram = HistogramDetailed::default();
         for &value in values {
             histogram.record(value);
@@ -1171,7 +1146,7 @@ mod tests {
     fn test_distribution_basic_records_mmsc_summary() {
         let dist = basic_of(&[10.0, 5.0, 20.0, 15.0]);
         assert_eq!(dist.count(), 4);
-        let Distribution::Basic(mmsc) = &dist else {
+        let DistributionValue::Basic(mmsc) = &dist else {
             panic!("expected basic tier")
         };
         let snap = mmsc.get();
@@ -1191,9 +1166,9 @@ mod tests {
         for dist in [normal_of(&values), detailed_of(&values)] {
             assert_eq!(dist.count(), 4);
             let stats = match &dist {
-                Distribution::Normal(hist) => hist.view().stats(),
-                Distribution::Detailed(hist) => hist.view().stats(),
-                Distribution::Basic(_) => panic!("expected histogram tier"),
+                DistributionValue::Normal(hist) => hist.view().stats(),
+                DistributionValue::Detailed(hist) => hist.view().stats(),
+                DistributionValue::Basic(_) => panic!("expected histogram tier"),
             };
             assert_eq!(stats.count, 4);
             assert!((stats.sum - 108.2).abs() < 1e-9);
@@ -1229,7 +1204,7 @@ mod tests {
         let mut basic_a = basic_of(&[2.0, 8.0]);
         let basic_b = basic_of(&[1.0, 10.0]);
         basic_a.merge(&basic_b);
-        let Distribution::Basic(mmsc) = &basic_a else {
+        let DistributionValue::Basic(mmsc) = &basic_a else {
             panic!("expected basic tier")
         };
         let snap = mmsc.get();
