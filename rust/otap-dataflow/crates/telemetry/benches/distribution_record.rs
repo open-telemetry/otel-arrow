@@ -16,9 +16,7 @@
 //! ```
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
-use otap_df_telemetry::instrument::{
-    Counter, Distribution, HistogramDetailed, HistogramNormal, Mmsc,
-};
+use otap_df_telemetry::instrument::{Counter, HistogramDetailed, HistogramNormal, Mmsc};
 use std::hint::black_box;
 
 const OBSERVATIONS: usize = 1_024;
@@ -75,25 +73,6 @@ fn record_distributions(c: &mut Criterion) {
             detailed.reset();
         });
     });
-
-    // Recording through the tier enum, which a component would do if the tier
-    // were chosen from configuration rather than by the declared field type.
-    // Each variant is boxed, so this adds a branch and a pointer chase that
-    // the typed instruments above do not pay.
-    for (name, mut distribution) in [
-        ("distribution_basic", Distribution::basic()),
-        ("distribution_normal", Distribution::normal()),
-        ("distribution_detailed", Distribution::detailed()),
-    ] {
-        let _ = group.bench_function(name, |b| {
-            b.iter(|| {
-                for value in &values {
-                    distribution.record(black_box(*value));
-                }
-                distribution.reset();
-            });
-        });
-    }
 
     group.finish();
 }

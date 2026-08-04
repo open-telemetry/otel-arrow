@@ -67,7 +67,6 @@
 //! | `Counter` | monotonic `Sum` | Descriptor temporality; delta-window or registration start |
 //! | `UpDownCounter` | non-monotonic `Sum` | Descriptor temporality; delta-window or registration start |
 //! | `Gauge` | `Gauge` | Start time is zero, as required for an instantaneous value |
-//! | scalar `Histogram` | delta `Histogram` with one observation | Delta-window start; uses the bridge's stable explicit bounds |
 //! | `Mmsc` | delta, bucketless `Histogram` | Delta-window start; preserves exact min, max, sum, and count |
 //! | `ExponentialHistogram` | delta `ExponentialHistogram` | Delta-window start; preserves exact exponential bucket counts |
 //!
@@ -453,6 +452,8 @@ fn append_scope_metrics(
 fn merge_scope_metric_points(target: &mut ScopeMetrics, incoming: ScopeMetrics) {
     for incoming_metric in incoming.metrics {
         let target_metric = target.metrics.iter_mut().find(|target_metric| {
+            // TODO: Is this compatibility checking needed? can't imagine how
+            // a single SDK would reach a point of having a disagreement.
             target_metric.name == incoming_metric.name
                 && target_metric.description == incoming_metric.description
                 && target_metric.unit == incoming_metric.unit
@@ -581,7 +582,6 @@ fn merge_metric_set(target: &mut MetricSetExport, incoming: &MetricSetExport) {
             Instrument::Gauge => *current = incoming.clone(),
             Instrument::Counter
             | Instrument::UpDownCounter
-            | Instrument::Histogram
             | Instrument::Mmsc
             | Instrument::ExponentialHistogram => current.add_in_place(incoming),
         }
@@ -850,15 +850,6 @@ fn encode_metric(
             let point = number_data_point(value, 0, time_unix_nano, datapoint_attributes);
             metric::Data::Gauge(Gauge::new(vec![point]))
         }
-        Instrument::Histogram => {
-            let point = scalar_histogram_data_point(
-                value,
-                metric_set.delta_start_time_unix_nano,
-                time_unix_nano,
-                datapoint_attributes,
-            );
-            metric::Data::Histogram(Histogram::new(AggregationTemporality::Delta, vec![point]))
-        }
         Instrument::Mmsc => {
             let MetricValue::Distribution(distribution) = value else {
                 unreachable!("metric value kind was validated before encoding")
@@ -957,7 +948,9 @@ fn number_data_point(
     }
 }
 
-/// Encodes an MMSC summary without inventing bucket membership.
+/// Encodes an MMSC summary. This uses the OTLP explicit boundary histogram
+/// without buckets, which is a valid way to encode MMSC by the spec:
+/// https://opentelemetry.io/docs/specs/otel/metrics/data-model/#histogram
 fn mmsc_histogram_data_point(
     mmsc: &crate::instrument::Mmsc,
     start_time_unix_nano: u64,
@@ -968,58 +961,12 @@ fn mmsc_histogram_data_point(
         .attributes(datapoint_attributes.to_vec())
         .start_time_unix_nano(start_time_unix_nano)
         .time_unix_nano(time_unix_nano)
-        .count(mmsc.count)
-        .min(mmsc.min)
-        .max(mmsc.max)
-        .bucket_counts(Vec::<u64>::new())
-        .explicit_bounds(Vec::<f64>::new());
-    if mmsc.min >= 0.0 {
-        point = point.sum(mmsc.sum);
+        .count(mmsc.count);
+    if mmsc.count > 0 {
+        point = point.min(mmsc.min).max(mmsc.max);
     }
-    point.finish()
-}
-
-/// Encodes the legacy scalar histogram form as exactly one observation.
-///
-/// Scalar histograms are not pre-aggregated. These stable explicit bounds keep
-/// their output shape consistent across native ITS releases.
-/// [`Instrument::Mmsc`] follows a separate, bucketless path above.
-fn scalar_histogram_data_point(
-    value: &MetricValue,
-    start_time_unix_nano: u64,
-    time_unix_nano: u64,
-    datapoint_attributes: &[KeyValue],
-) -> HistogramDataPoint {
-    const DEFAULT_BOUNDS: [f64; 15] = [
-        0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0, 5000.0,
-        7500.0, 10000.0,
-    ];
-
-    let value = match value {
-        MetricValue::U64(value) => *value as f64,
-        MetricValue::F64(value) => *value,
-        MetricValue::Distribution(_) => {
-            unreachable!("metric value kind was validated before encoding")
-        }
-    };
-    let bucket = DEFAULT_BOUNDS
-        .iter()
-        .position(|bound| value <= *bound)
-        .unwrap_or(DEFAULT_BOUNDS.len());
-    let mut bucket_counts = vec![0; DEFAULT_BOUNDS.len() + 1];
-    bucket_counts[bucket] = 1;
-
-    let mut point = HistogramDataPoint::build()
-        .attributes(datapoint_attributes.to_vec())
-        .start_time_unix_nano(start_time_unix_nano)
-        .time_unix_nano(time_unix_nano)
-        .count(1u64)
-        .min(value)
-        .max(value)
-        .bucket_counts(bucket_counts)
-        .explicit_bounds(DEFAULT_BOUNDS.to_vec());
-    if value >= 0.0 {
-        point = point.sum(value);
+    if let Some(sum) = super::exphist::otlp_histogram_sum(mmsc.count, mmsc.sum, mmsc.min) {
+        point = point.sum(sum);
     }
     point.finish()
 }
@@ -1059,6 +1006,17 @@ const fn saturating_i64(value: u64) -> i64 {
 
 #[cfg(test)]
 mod tests {
+
+    /// Builds a normal-tier snapshot by recording through its instrument,
+    /// which is the only way a distribution is populated.
+    fn normal_distribution(observations: &[f64]) -> crate::instrument::Distribution {
+        let mut histogram = crate::instrument::HistogramNormal::default();
+        for &value in observations {
+            histogram.record(value);
+        }
+        histogram.get()
+    }
+
     use super::*;
     use crate::attributes::AttributeSetHandler;
     use crate::descriptor::{
@@ -1129,14 +1087,6 @@ mod tests {
                 unit: "Cel",
                 brief: "Current gauge",
                 instrument: Instrument::Gauge,
-                temporality: None,
-                value_type: MetricValueType::F64,
-            },
-            MetricsField {
-                name: "histogram.scalar",
-                unit: "ms",
-                brief: "Scalar histogram",
-                instrument: Instrument::Histogram,
                 temporality: None,
                 value_type: MetricValueType::F64,
             },
@@ -1264,18 +1214,6 @@ mod tests {
             instrument: Instrument::Gauge,
             temporality: None,
             value_type: MetricValueType::F64,
-        }],
-    };
-
-    static U64_HISTOGRAM_DESCRIPTOR: MetricsDescriptor = MetricsDescriptor {
-        name: "test.u64_histogram",
-        metrics: &[MetricsField {
-            name: "histogram.u64",
-            unit: "By",
-            brief: "Unsigned histogram",
-            instrument: Instrument::Histogram,
-            temporality: Some(Temporality::Delta),
-            value_type: MetricValueType::U64,
         }],
     };
 
@@ -1785,7 +1723,6 @@ mod tests {
                 MetricValue::U64(10),
                 MetricValue::F64(-1.0),
                 MetricValue::F64(3.0),
-                MetricValue::F64(4.0),
                 mmsc_value(1.0, 3.0, 4.0, 2),
             ],
         );
@@ -1797,7 +1734,6 @@ mod tests {
                 MetricValue::U64(20),
                 MetricValue::F64(2.0),
                 MetricValue::F64(8.0),
-                MetricValue::F64(6.0),
                 mmsc_value(0.0, 5.0, 8.0, 2),
             ],
         );
@@ -1853,21 +1789,15 @@ mod tests {
     /// recorded observation and whose delta start time is preserved.
     #[test]
     fn encodes_distribution_as_delta_exponential_histogram_point() {
-        use crate::instrument::Distribution;
-
         let attributes = empty_attributes();
-        let mut first_dist = Distribution::normal();
-        for value in [1.0_f64, 2.0, 4.0] {
-            first_dist.record(value);
-        }
+        let first_dist = normal_distribution(&[1.0, 2.0, 4.0]);
         let first = metric_set(
             &DISTRIBUTION_ONLY_DESCRIPTOR,
             attributes.clone(),
             vec![MetricValue::from(first_dist)],
         );
 
-        let mut second_dist = Distribution::normal();
-        second_dist.record(8.0);
+        let second_dist = normal_distribution(&[8.0]);
         let second = metric_set(
             &DISTRIBUTION_ONLY_DESCRIPTOR,
             attributes,
@@ -1917,7 +1847,6 @@ mod tests {
                     MetricValue::U64(u64::MAX),
                     MetricValue::F64(-2.5),
                     MetricValue::F64(18.25),
-                    MetricValue::F64(42.0),
                     mmsc_value(2.0, 9.0, 20.0, 4),
                 ],
             )],
@@ -1931,7 +1860,7 @@ mod tests {
         );
         let scope = only_scope(&request);
         assert_eq!(scope.scope.as_ref().expect("scope").name, "test.scope");
-        assert_eq!(scope.metrics.len(), 6);
+        assert_eq!(scope.metrics.len(), 5);
 
         let delta_counter = metric_named(scope, "counter.delta");
         assert_eq!(delta_counter.description, "Delta counter");
@@ -1979,34 +1908,6 @@ mod tests {
         assert_eq!(point.time_unix_nano, COLLECTION_TIME);
         assert_eq!(point.value, Some(number_data_point::Value::AsDouble(18.25)));
 
-        let scalar = metric_named(scope, "histogram.scalar");
-        let Some(metric::Data::Histogram(histogram)) = scalar.data.as_ref() else {
-            panic!("expected histogram metric")
-        };
-        assert_eq!(
-            histogram.aggregation_temporality,
-            AggregationTemporality::Delta as i32
-        );
-        let [point] = histogram.data_points.as_slice() else {
-            panic!("expected one histogram point")
-        };
-        assert_eq!(point.start_time_unix_nano, DELTA_START);
-        assert_eq!(point.time_unix_nano, COLLECTION_TIME);
-        assert_eq!(point.count, 1);
-        assert_eq!(point.sum, Some(42.0));
-        assert_eq!(point.min, Some(42.0));
-        assert_eq!(point.max, Some(42.0));
-        assert_eq!(
-            point.explicit_bounds,
-            vec![
-                0.0, 5.0, 10.0, 25.0, 50.0, 75.0, 100.0, 250.0, 500.0, 750.0, 1000.0, 2500.0,
-                5000.0, 7500.0, 10000.0,
-            ]
-        );
-        let mut expected_buckets = vec![0; 16];
-        expected_buckets[4] = 1;
-        assert_eq!(point.bucket_counts, expected_buckets);
-
         let mmsc = metric_named(scope, "histogram.mmsc");
         let Some(metric::Data::Histogram(histogram)) = mmsc.data.as_ref() else {
             panic!("expected MMSC explicit-boundary histogram metric")
@@ -2042,7 +1943,6 @@ mod tests {
                         MetricValue::U64(2),
                         MetricValue::F64(-1.0),
                         MetricValue::F64(3.0),
-                        MetricValue::F64(4.0),
                         empty_mmsc.clone(),
                     ],
                 ),
@@ -2072,7 +1972,7 @@ mod tests {
 
         let first = &resource_metrics.scope_metrics[0];
         assert_eq!(first.scope.as_ref().expect("scope").name, "test.scope");
-        assert_eq!(first.metrics.len(), 5);
+        assert_eq!(first.metrics.len(), 4);
         assert!(
             first
                 .metrics
@@ -2101,7 +2001,6 @@ mod tests {
                     MetricValue::U64(0),
                     MetricValue::F64(0.0),
                     MetricValue::F64(0.0),
-                    MetricValue::F64(0.0),
                     mmsc_value(0.0, 0.0, 0.0, 0),
                 ],
             )],
@@ -2114,7 +2013,7 @@ mod tests {
                 .expect("zero scalar values must still produce a request"),
         );
         let scope = only_scope(&request);
-        assert_eq!(scope.metrics.len(), 5);
+        assert_eq!(scope.metrics.len(), 4);
 
         for name in ["counter.delta", "counter.cumulative", "up_down.delta"] {
             let (point, _) = number_point(metric_named(scope, name));
@@ -2133,68 +2032,6 @@ mod tests {
             gauge.data_points[0].value,
             Some(number_data_point::Value::AsDouble(0.0))
         );
-
-        let histogram = metric_named(scope, "histogram.scalar");
-        let Some(metric::Data::Histogram(histogram)) = histogram.data.as_ref() else {
-            panic!("expected histogram metric")
-        };
-        let point = &histogram.data_points[0];
-        assert_eq!(point.count, 1);
-        assert_eq!(point.sum, Some(0.0));
-        assert_eq!(point.bucket_counts[0], 1);
-    }
-
-    #[test]
-    fn scalar_histogram_uses_closed_upper_bounds_and_handles_extremes_and_u64() {
-        let cases = [
-            (MetricValue::F64(f64::MIN), 0, f64::MIN),
-            (MetricValue::F64(0.0), 0, 0.0),
-            (MetricValue::F64(f64::EPSILON), 1, f64::EPSILON),
-            (MetricValue::F64(5.0), 1, 5.0),
-            (
-                MetricValue::F64(5.000_000_000_000_001),
-                2,
-                5.000_000_000_000_001,
-            ),
-            (MetricValue::F64(10_000.0), 14, 10_000.0),
-            (MetricValue::F64(f64::MAX), 15, f64::MAX),
-            (MetricValue::U64(u64::MAX), 15, u64::MAX as f64),
-        ];
-
-        for (value, expected_bucket, expected_value) in cases {
-            let point = scalar_histogram_data_point(&value, DELTA_START, COLLECTION_TIME, &[]);
-            assert_eq!(point.count, 1);
-            assert_eq!(
-                point.sum,
-                (expected_value >= 0.0).then_some(expected_value),
-                "OTLP histogram sums are only defined for non-negative populations"
-            );
-            assert_eq!(point.min, Some(expected_value));
-            assert_eq!(point.max, Some(expected_value));
-            assert_eq!(point.bucket_counts.iter().sum::<u64>(), 1);
-            assert_eq!(point.bucket_counts[expected_bucket], 1);
-        }
-
-        let batch = MetricExportBatch {
-            time_unix_nano: COLLECTION_TIME,
-            metric_sets: vec![metric_set(
-                &U64_HISTOGRAM_DESCRIPTOR,
-                empty_attributes(),
-                vec![MetricValue::U64(u64::MAX)],
-            )],
-        };
-        let request = decode_request(
-            empty_resource_encoder()
-                .encode(&batch)
-                .expect("u64 histogram value matches its descriptor")
-                .expect("histogram produces a request"),
-        );
-        let metric = metric_named(only_scope(&request), "histogram.u64");
-        let Some(metric::Data::Histogram(histogram)) = metric.data.as_ref() else {
-            panic!("expected histogram metric")
-        };
-        assert_eq!(histogram.data_points[0].sum, Some(u64::MAX as f64));
-        assert_eq!(histogram.data_points[0].bucket_counts[15], 1);
     }
 
     /// Scenario: An MMSC summary contains a negative minimum.
@@ -2415,8 +2252,7 @@ mod tests {
     /// point representation.
     #[test]
     fn rejects_metric_value_kind_mismatches() {
-        let mut normal = crate::instrument::Distribution::normal();
-        normal.record(1.0);
+        let normal = normal_distribution(&[1.0]);
         let cases = [
             (
                 &INVALID_SUM_DESCRIPTOR,
@@ -2542,7 +2378,6 @@ mod tests {
                     MetricValue::U64(11),
                     MetricValue::F64(-2.5),
                     MetricValue::F64(18.25),
-                    MetricValue::F64(42.0),
                     mmsc_value(2.0, 9.0, 20.0, 4),
                 ],
             )],

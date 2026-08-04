@@ -19,6 +19,21 @@ use otap_df_pdata::proto::opentelemetry::metrics::v1::{
     ExponentialHistogramDataPoint, exponential_histogram_data_point::Buckets,
 };
 
+/// Returns the sum to report for an OTLP histogram point, or `None` when the
+/// population makes it undefined.
+///
+/// OTLP reserves the histogram sum for non-negative populations so consumers
+/// may treat it as monotonic, for compatibility with OpenMetrics: "Negative
+/// events *can* be recorded, but sum should not be filled out when doing so."
+/// A population with no observations has no sum to report either.
+///
+/// Both histogram encoders share this rule. The exponential encoder needs it
+/// because bucketing ignores the sign bit, so a negative observation lands in
+/// the bucket for its magnitude while the extremes and the sum keep its sign.
+pub(crate) fn otlp_histogram_sum(count: u64, sum: f64, min: f64) -> Option<f64> {
+    (count > 0 && min >= 0.0).then_some(sum)
+}
+
 /// Projects an exponential-histogram view onto an OTLP
 /// `ExponentialHistogramDataPoint`.
 ///
@@ -30,9 +45,15 @@ use otap_df_pdata::proto::opentelemetry::metrics::v1::{
 /// anyway, which is why [`HistogramView::scan_buckets`] hands back both the
 /// bucket counts and the totals in one pass.
 ///
-/// `sum`, `min`, and `max` are populated only when at least one observation
-/// has been recorded. The sum is always OTLP-valid here because the source
-/// histogram rejects negative values.
+/// `min` and `max` are populated only when at least one observation has been
+/// recorded, and they carry the true signed extremes.
+///
+/// `sum` is additionally withheld when the minimum is negative. Bucketing
+/// ignores the sign bit, so a negative observation lands in the bucket for its
+/// magnitude while the extremes and the sum keep its sign. OTLP reserves the
+/// sum for non-negative populations so consumers can treat it as monotonic,
+/// for compatibility with OpenMetrics, which is the same rule the MMSC
+/// encoder applies.
 pub(crate) fn exponential_histogram_data_point<const N: usize>(
     view: &HistogramView<'_, N>,
     start_time_unix_nano: u64,
@@ -58,7 +79,10 @@ pub(crate) fn exponential_histogram_data_point<const N: usize>(
         builder = builder.positive(Buckets::new(positive.offset(), bucket_counts));
     }
     if stats.count > 0 {
-        builder = builder.sum(stats.sum).min(stats.min).max(stats.max);
+        builder = builder.min(stats.min).max(stats.max);
+    }
+    if let Some(sum) = otlp_histogram_sum(stats.count, stats.sum, stats.min) {
+        builder = builder.sum(sum);
     }
 
     builder.finish()
@@ -98,6 +122,23 @@ pub(crate) fn distribution_exponential_histogram_data_point(
 mod tests {
     use super::*;
     use otap_df_expohisto::HistogramNN;
+
+    /// Scenario: The shared OTLP sum rule is evaluated for an empty
+    /// population, a non-negative one, and one whose minimum is negative.
+    /// Guarantees: The sum is reported only for a non-empty, non-negative
+    /// population, so neither histogram encoder emits the sum OTLP leaves
+    /// undefined. Bucketing ignores the sign bit, so the negative case is
+    /// reachable in a release build even though recording one trips a debug
+    /// assertion, which is why the rule is enforced at encode time.
+    #[test]
+    fn the_sum_is_withheld_for_empty_and_negative_populations() {
+        assert_eq!(otlp_histogram_sum(0, 0.0, 0.0), None);
+        assert_eq!(otlp_histogram_sum(0, 5.0, 1.0), None);
+        assert_eq!(otlp_histogram_sum(2, 6.0, 1.0), Some(6.0));
+        assert_eq!(otlp_histogram_sum(2, 0.0, 0.0), Some(0.0));
+        assert_eq!(otlp_histogram_sum(2, 6.0, -2.0), None);
+        assert_eq!(otlp_histogram_sum(1, -2.0, -2.0), None);
+    }
 
     /// Scenario: A positive-only histogram records several positive values and
     /// is projected onto an OTLP exponential-histogram point.
@@ -156,7 +197,9 @@ mod tests {
 
     /// Scenario: An untouched histogram is projected onto an OTLP point.
     /// Guarantees: The empty histogram yields a zero-count point with no
-    /// positive buckets and no sum, so downstream consumers can drop it.
+    /// positive buckets and no sum, min, or max, so downstream consumers can
+    /// drop it rather than read extremes from an interval that observed
+    /// nothing.
     #[test]
     fn empty_histogram_yields_empty_point() {
         let hist: HistogramNN<16> = HistogramNN::new();
@@ -168,5 +211,7 @@ mod tests {
         assert_eq!(point.zero_count, 0);
         assert!(point.positive.is_none());
         assert!(point.sum.is_none());
+        assert!(point.min.is_none());
+        assert!(point.max.is_none());
     }
 }

@@ -197,8 +197,6 @@ pub enum Instrument {
     UpDownCounter,
     /// Gauge.
     Gauge,
-    /// Histogram with explicit bucket boundaries.
-    Histogram,
     /// Distribution keeping exact min/max/sum/count with no encoded buckets.
     Mmsc,
     /// Distribution keeping exponential-histogram buckets.

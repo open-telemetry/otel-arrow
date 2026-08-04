@@ -61,8 +61,7 @@ impl Settings {
 pub enum Error {
     /// Overflow of a u64 counter.
     Overflow,
-    /// Invalid value: NaN or +/-Inf for all histogram types, or negative
-    /// for [`HistogramNN`].
+    /// Invalid value: NaN or +/-Inf.
     Extreme,
 }
 
@@ -145,6 +144,9 @@ enum IncrResult {
 }
 
 /// An allocation-free exponential histogram for non-negative values.
+///
+/// Negative values trigger a debug_assert! and record absolute
+/// value with assertions disabled.
 pub struct HistogramNN<const N: usize> {
     initial: Settings,
     current: Settings,

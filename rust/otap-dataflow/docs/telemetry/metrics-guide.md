@@ -65,70 +65,21 @@ telemetry SDK (see [crates/telemetry](../../crates/telemetry/README.md) for deta
 
 ### Choosing counters and distribution tiers
 
-Choose the least expensive instrument that retains the information operators
-need. All sizes below are per metric series and exclude registry metadata.
+To choose between OpenTelemetry metric instrument types, it is useful to
+consider what you want to observe:
 
-| Instrument | Use when | Retained information | State size | Recording cost per observation |
-|------------|----------|----------------------|------------|--------------------------------|
-| `Counter<u64>` or `Counter<f64>` | Only a monotonic total matters, such as processed items or bytes | Sum | 8 bytes | ~0.25 ns: one addition |
-| `Mmsc` | Range and average are useful, but quantiles and distribution shape are not | Exact min, max, sum, and count | 32 bytes | ~0.7 ns: comparisons plus sum and count updates |
-| `HistogramNormal` | Approximate quantiles or distribution shape are operationally useful | Exact min, max, sum, and count plus exponential buckets | 128 bytes (10 counter words) | ~7 ns: logarithm lookup and bucket update, with occasional widening |
-| `HistogramDetailed` | The normal tier cannot retain enough bucket resolution for diagnosis | Same fields as the normal tier with a larger bucket range | 256 bytes (26 counter words) | ~8 ns: the same algorithm over twice the state, with greater cache, merge, and export cost |
+| Instrument           | Useful for calculating                    | Size          | Update cost |
+|----------------------|-------------------------------------------|---------------|-------------|
+| Counter              | Rate                                      | 8 bytes       | 0.2 ns      |
+| UpDownCounter        | Total                                     | 8 bytes       | 0.2 ns      |
+| Gauge                | Average                                   | 8 bytes       | 0.2 ns      |
+| MinMaxSumCount       | Total, Rate, Average, Extremes            | 32 bytes      | 0.7 ns      |
+| ExponentialHistogram | Total, Rate, Average, Extremes, Quantiles | 128-256 bytes | 5-7 ns      |
 
-The costs above are medians measured on an unloaded development machine,
-recording a reporting interval's worth of observations -- 1,024 values spanning
-roughly 64 octaves, a spread that exercises counter widening and scale
-reduction -- into a long-lived instrument, as a component does. Treat them as
-ratios rather than absolute figures: an `Mmsc` observation costs about three
-counter additions, and a histogram observation about ten `Mmsc` records. The
-detailed tier costs only slightly more per observation than the normal tier, so
-choose between those two on retained resolution and footprint rather than on
-recording speed.
-
-That last ratio is the one to weigh. A histogram observation is roughly thirty
-counter additions, so reach for `Mmsc` unless bucket resolution is genuinely
-needed.
-
-A histogram given its expected shape up front does less work, because it never
-pays to widen counters or reduce scale. When the range and the busiest bucket
-can be predicted, `with_min_width` and `with_max_scale` start the histogram
-where it would have ended up, which is worth a few percent on the recording
-path.
-
-Use a counter instead of a distribution when only a total is queried. For
-example, use a counter for total processed bytes; record each batch size in a
-distribution only when its range or quantiles are needed.
-
-Use `Mmsc` by default for latency, size, and other non-negative distributions
-when minimum, maximum, average (`sum / count`), and sample count answer the
-operational question. It does not retain bucket membership and cannot estimate
-quantiles.
-
-Use `HistogramNormal` when dashboards or alerts require approximate quantiles
-or when distribution shape matters. Reserve `HistogramDetailed` for a
-demonstrated need for more retained resolution: it doubles the per-series
-histogram footprint, which also multiplies with attribute cardinality.
-
-Declare an instrument as one of the concrete types above rather than as a
-[`Distribution`], which is the tier enum used to carry a snapshot for reporting.
-Its variants are boxed, so recording through it adds a branch and a pointer
-chase worth about 1.4 ns per observation, which triples the cost of an `Mmsc`.
-
-Recording into these instruments is allocation-free. Snapshotting a histogram
-for reporting and export is cold-path work and is not part of the recording
-cost above. To re-measure on the target platform, run:
-
-```console
-cargo bench -p otap-df-telemetry --bench distribution_record
-cargo bench -p otap-df-expohisto --bench hot
-```
-
-Merging two histograms, which happens when partial aggregates are combined
-rather than on the recording path, can be compared with:
-
-```console
-cargo bench -p otap-df-expohisto --bench merge --features bench
-```
+To choose between MinMaxSumCount and ExponentialHistogram, ask whether
+detailed information about quantiles will be used or is useful for
+observability. Histogram resolution is not currently configurable, see
+the implementation gaps.
 
 ### Recording semantics and export temporality
 

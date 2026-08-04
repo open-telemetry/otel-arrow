@@ -15,8 +15,6 @@ pub enum Instrument {
     UpDownCounter,
     /// A value that can arbitrarily go up and down, used for temperature or current memory usage
     Gauge,
-    /// Distribution of recorded values, used for latencies or request sizes
-    Histogram,
     /// Pre-aggregated min/max/sum/count summary.
     ///
     /// Internally tracked as an `Mmsc` instrument; the OTLP bridge exports the
@@ -95,7 +93,7 @@ impl MetricsField {
             Instrument::Counter | Instrument::UpDownCounter => {
                 self.temporality == Some(Temporality::Delta)
             }
-            Instrument::Histogram | Instrument::Mmsc | Instrument::ExponentialHistogram => true,
+            Instrument::Mmsc | Instrument::ExponentialHistogram => true,
             Instrument::Gauge => false,
         }
     }

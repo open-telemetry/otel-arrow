@@ -626,7 +626,7 @@ pub const HISTOGRAM_NORMAL_WORDS: usize = 10;
 /// Size = (26+6)*8 = 256 bytes
 pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 
-/// A delta distribution instrument with three resolution tiers.
+/// A snapshot of a delta distribution, at one of three resolution tiers.
 ///
 /// Every tier is a pre-aggregated distribution:
 /// - [`Distribution::Basic`] is an [`Mmsc`] with exact min/max/sum/count and no
@@ -635,8 +635,17 @@ pub const HISTOGRAM_DETAILED_WORDS: usize = 26;
 ///   exponential-histogram bucket ranges sized by [`HISTOGRAM_NORMAL_WORDS`]
 ///   and [`HISTOGRAM_DETAILED_WORDS`] respectively.
 ///
-/// This is a delta instrument: observations are recorded over an interval and
-/// then cleared via [`reset`](Distribution::reset) after each report.
+/// This is what an instrument hands to the reporting path: components record
+/// into [`Mmsc`], [`HistogramNormal`], or [`HistogramDetailed`], each of which
+/// yields the matching variant from its `get`. Nothing records into a
+/// `Distribution` itself, because the tier a component needs is a property of
+/// the metric and is fixed by the declared field type. Selecting it at runtime
+/// awaits a way to resolve it from configuration.
+///
+/// The tier is carried rather than erased because the reporting path needs it:
+/// the OTLP bridge exports [`Distribution::Basic`] as a bucketless histogram
+/// point and the other two as exponential-histogram points, and the descriptor
+/// declares which to expect.
 ///
 /// Tiers differ widely in size (a detailed histogram is roughly 256 bytes), so
 /// each variant is boxed and the enum itself stays pointer-small. That keeps a
@@ -654,42 +663,6 @@ pub enum Distribution {
 }
 
 impl Distribution {
-    /// Creates a basic-tier distribution tracking only min/max/sum/count.
-    #[inline]
-    #[must_use]
-    pub fn basic() -> Self {
-        Self::Basic(Box::<Mmsc>::default())
-    }
-
-    /// Creates a normal-tier exponential-histogram distribution.
-    #[inline]
-    #[must_use]
-    pub fn normal() -> Self {
-        Self::Normal(Box::new(HistogramNN::new()))
-    }
-
-    /// Creates a detailed-tier exponential-histogram distribution.
-    #[inline]
-    #[must_use]
-    pub fn detailed() -> Self {
-        Self::Detailed(Box::new(HistogramNN::new()))
-    }
-
-    /// Records a single non-negative observation.
-    ///
-    /// Mirrors [`Mmsc::record`]: negative, NaN, and infinite values are
-    /// invalid. In debug builds an invalid value trips a debug assertion; in
-    /// release builds it is dropped so a misbehaving call site cannot corrupt
-    /// the aggregation.
-    #[inline]
-    pub fn record(&mut self, value: f64) {
-        match self {
-            Self::Basic(mmsc) => mmsc.record(value),
-            Self::Normal(hist) => Self::check_hist(hist.update(value), "record rejected value"),
-            Self::Detailed(hist) => Self::check_hist(hist.update(value), "record rejected value"),
-        }
-    }
-
     /// Resets all state for the next reporting interval.
     #[inline]
     pub fn reset(&mut self) {
@@ -968,6 +941,34 @@ impl HistogramDetailed {
 mod tests {
     use super::*;
 
+    /// Builds a basic-tier snapshot by recording through the instrument that
+    /// produces it, which is the only way a distribution is populated.
+    fn basic_of(values: &[f64]) -> Distribution {
+        let mut mmsc = Mmsc::default();
+        for &value in values {
+            mmsc.record(value);
+        }
+        Distribution::Basic(Box::new(mmsc))
+    }
+
+    /// Builds a normal-tier snapshot by recording through its instrument.
+    fn normal_of(values: &[f64]) -> Distribution {
+        let mut histogram = HistogramNormal::default();
+        for &value in values {
+            histogram.record(value);
+        }
+        histogram.get()
+    }
+
+    /// Builds a detailed-tier snapshot by recording through its instrument.
+    fn detailed_of(values: &[f64]) -> Distribution {
+        let mut histogram = HistogramDetailed::default();
+        for &value in values {
+            histogram.record(value);
+        }
+        histogram.get()
+    }
+
     #[test]
     fn test_delta_counter_u64_add_inc() {
         let mut counter = Counter::new(10u64);
@@ -1168,10 +1169,7 @@ mod tests {
     /// the standalone Mmsc instrument it wraps.
     #[test]
     fn test_distribution_basic_records_mmsc_summary() {
-        let mut dist = Distribution::basic();
-        for v in [10.0, 5.0, 20.0, 15.0] {
-            dist.record(v);
-        }
+        let dist = basic_of(&[10.0, 5.0, 20.0, 15.0]);
         assert_eq!(dist.count(), 4);
         let Distribution::Basic(mmsc) = &dist else {
             panic!("expected basic tier")
@@ -1189,10 +1187,8 @@ mod tests {
     /// wired to expohisto.
     #[test]
     fn test_distribution_histogram_tiers_record_into_buckets() {
-        for mut dist in [Distribution::normal(), Distribution::detailed()] {
-            for v in [1.5_f64, 2.7, 4.0, 100.0] {
-                dist.record(v);
-            }
+        let values = [1.5_f64, 2.7, 4.0, 100.0];
+        for dist in [normal_of(&values), detailed_of(&values)] {
             assert_eq!(dist.count(), 4);
             let stats = match &dist {
                 Distribution::Normal(hist) => hist.view().stats(),
@@ -1211,17 +1207,16 @@ mod tests {
     /// returns it to the empty state so each delta interval starts clean.
     #[test]
     fn test_distribution_reset_clears_all_tiers() {
-        for mut dist in [
-            Distribution::basic(),
-            Distribution::normal(),
-            Distribution::detailed(),
+        for (empty, mut recorded) in [
+            (basic_of(&[]), basic_of(&[3.0])),
+            (normal_of(&[]), normal_of(&[3.0])),
+            (detailed_of(&[]), detailed_of(&[3.0])),
         ] {
-            assert!(dist.is_empty());
-            dist.record(3.0);
-            assert!(!dist.is_empty());
-            dist.reset();
-            assert!(dist.is_empty());
-            assert_eq!(dist.count(), 0);
+            assert!(empty.is_empty());
+            assert!(!recorded.is_empty());
+            recorded.reset();
+            assert!(recorded.is_empty());
+            assert_eq!(recorded.count(), 0);
         }
     }
 
@@ -1231,12 +1226,8 @@ mod tests {
     /// registry relies on to fold per-thread aggregations together.
     #[test]
     fn test_distribution_merge_same_tier_accumulates() {
-        let mut basic_a = Distribution::basic();
-        basic_a.record(2.0);
-        basic_a.record(8.0);
-        let mut basic_b = Distribution::basic();
-        basic_b.record(1.0);
-        basic_b.record(10.0);
+        let mut basic_a = basic_of(&[2.0, 8.0]);
+        let basic_b = basic_of(&[1.0, 10.0]);
         basic_a.merge(&basic_b);
         let Distribution::Basic(mmsc) = &basic_a else {
             panic!("expected basic tier")
@@ -1247,11 +1238,8 @@ mod tests {
         assert_eq!(snap.max, 10.0);
         assert_eq!(snap.sum, 21.0);
 
-        let mut hist_a = Distribution::normal();
-        hist_a.record(1.5);
-        hist_a.record(2.5);
-        let mut hist_b = Distribution::normal();
-        hist_b.record(3.5);
+        let mut hist_a = normal_of(&[1.5, 2.5]);
+        let hist_b = normal_of(&[3.5]);
         hist_a.merge(&hist_b);
         assert_eq!(hist_a.count(), 3);
     }
@@ -1265,8 +1253,8 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_distribution_histogram_rejects_negative() {
-        let mut dist = Distribution::normal();
-        dist.record(-1.0);
+        let mut histogram = HistogramNormal::default();
+        histogram.record(-1.0);
     }
 
     /// Scenario: A normal-tier distribution records exact zeros alongside
@@ -1277,11 +1265,7 @@ mod tests {
     /// counts delivered by the same pass.
     #[test]
     fn test_distribution_recovers_zero_count_from_total() {
-        let mut dist = Distribution::normal();
-        dist.record(0.0);
-        for v in [1.5_f64, 2.7, 4.0] {
-            dist.record(v);
-        }
+        let dist = normal_of(&[0.0, 1.5, 2.7, 4.0]);
 
         let (count, sum, min, max) = dist.summary();
         assert_eq!(count, 4);
@@ -1303,10 +1287,7 @@ mod tests {
     /// instead -- and its OTLP projection does not fabricate bucket counts.
     #[test]
     fn test_basic_tier_folds_zeros_into_min() {
-        let mut dist = Distribution::basic();
-        dist.record(0.0);
-        dist.record(0.0);
-        dist.record(4.0);
+        let dist = basic_of(&[0.0, 0.0, 4.0]);
 
         assert_eq!(dist.count(), 3);
         let mut emitted = 0_usize;
@@ -1325,12 +1306,8 @@ mod tests {
     /// observations nor reports a spurious minimum.
     #[test]
     fn test_basic_tier_merge_preserves_zero_observations() {
-        let mut a = Distribution::basic();
-        a.record(2.0);
-        a.record(2.0);
-        let mut b = Distribution::basic();
-        b.record(0.0);
-        b.record(0.0);
+        let mut a = basic_of(&[2.0, 2.0]);
+        let b = basic_of(&[0.0, 0.0]);
 
         a.merge(&b);
 

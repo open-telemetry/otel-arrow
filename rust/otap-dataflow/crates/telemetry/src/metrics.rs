@@ -1485,6 +1485,17 @@ fn decode_bucket_item_attrs<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// Builds a normal-tier snapshot by recording through its instrument,
+    /// which is the only way a distribution is populated.
+    fn normal_distribution(observations: &[f64]) -> Distribution {
+        let mut histogram = crate::instrument::HistogramNormal::default();
+        for &value in observations {
+            histogram.record(value);
+        }
+        histogram.get()
+    }
+
     use super::*;
     use crate::attributes::{AttributeSetHandler, AttributeValue};
     use crate::descriptor::{
@@ -1648,7 +1659,7 @@ mod tests {
                 name: "histogram",
                 unit: "1",
                 brief: "Test histogram",
-                instrument: Instrument::Histogram,
+                instrument: Instrument::ExponentialHistogram,
                 temporality: Some(Temporality::Delta),
                 value_type: MetricValueType::U64,
             },
@@ -2556,11 +2567,8 @@ mod tests {
     fn test_distribution_value_merge_and_reset() {
         use crate::instrument::HISTOGRAM_NORMAL_WORDS;
 
-        let mut a = Distribution::normal();
-        a.record(1.0);
-        a.record(2.0);
-        let mut b = Distribution::normal();
-        b.record(3.0);
+        let a = normal_distribution(&[1.0, 2.0]);
+        let b = normal_distribution(&[3.0]);
 
         let mut va = MetricValue::from(a);
         let vb = MetricValue::from(b);
@@ -2704,7 +2712,7 @@ mod tests {
         impl Default for MockHistogramMetricSet {
             fn default() -> Self {
                 Self {
-                    values: vec![MetricValue::Distribution(Distribution::normal())],
+                    values: vec![MetricValue::Distribution(normal_distribution(&[]))],
                 }
             }
         }
@@ -2737,11 +2745,7 @@ mod tests {
         }
 
         fn histogram_value(observations: &[f64]) -> MetricValue {
-            let mut dist = Distribution::normal();
-            for v in observations {
-                dist.record(*v);
-            }
-            MetricValue::Distribution(dist)
+            MetricValue::Distribution(normal_distribution(observations))
         }
 
         fn count_of(value: &MetricValue) -> u64 {

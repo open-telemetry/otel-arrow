@@ -939,24 +939,6 @@ fn collect_scalar_metric(
             Instrument::Counter => "counter",
             Instrument::UpDownCounter => "gauge",
             Instrument::Gauge => "gauge",
-            // `Instrument::Histogram` reaches this path with a scalar
-            // `U64`/`F64` value because the telemetry registry does not yet
-            // store pre-aggregated bucket data. The stored scalar is a single
-            // observation (whatever the metric set's `snapshot_values()`
-            // returns). The native OTLP bridge can place that observation in
-            // stable explicit bounds, but this admin snapshot has no
-            // bucket/sum/count state to render.
-            //
-            // Rendering as the Prometheus histogram family
-            // (`_bucket{le=...}`/`_sum`/`_count`) would require fabricating
-            // bucket data we don't have, so we emit a `gauge` reflecting the
-            // raw stored scalar. This is a known limitation: not spec-compliant
-            // for OTel Histograms (the spec mandates the histogram family) and
-            // potentially misleading because the gauge value's meaning depends
-            // on what the producer chose to put in `snapshot_values()`.
-            // Proper handling requires extending `MetricValue` with a variant
-            // carrying buckets/sum/count.
-            Instrument::Histogram => "gauge",
             // A distribution-valued field routed here means the descriptor
             // and the stored value disagree. The renderer has a scalar in
             // hand, so it emits a gauge rather than panicking the admin
@@ -2560,7 +2542,7 @@ mod tests {
         AttributeField, AttributeValueType, AttributesDescriptor, Instrument, MetricsField,
         Temporality,
     };
-    use otap_df_telemetry::instrument::Mmsc;
+    use otap_df_telemetry::instrument::{HistogramDetailed, HistogramNormal, Mmsc};
     use otap_df_telemetry::metrics::MetricSetHandler;
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -3340,11 +3322,17 @@ mod tests {
     /// Builds a bucketed distribution over the integers 1..=n.
     #[allow(unused_qualifications)]
     fn normal_distribution(n: u64) -> MetricValue {
-        let mut d = Distribution::normal();
+        let mut histogram = HistogramNormal::default();
         for i in 1..=n {
-            d.record(i as f64);
+            histogram.record(i as f64);
         }
-        MetricValue::Distribution(d)
+        MetricValue::Distribution(histogram.get())
+    }
+
+    /// Builds an empty detailed-tier distribution.
+    #[allow(unused_qualifications)]
+    fn detailed_distribution() -> MetricValue {
+        MetricValue::Distribution(HistogramDetailed::default().get())
     }
 
     /// Scenario: Empty distributions of every tier are passed to the admin
@@ -3357,7 +3345,7 @@ mod tests {
         let tiers = [
             MetricValue::from(Mmsc::default()),
             normal_distribution(0),
-            MetricValue::Distribution(Distribution::detailed()),
+            detailed_distribution(),
         ];
         for value in &tiers {
             assert!(is_empty_distribution(value));
