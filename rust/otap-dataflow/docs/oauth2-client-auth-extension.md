@@ -71,7 +71,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 
 - A new capability. This extension **reuses** the `BearerTokenProvider`
   capability introduced with the
-  [Azure Identity Auth extension](azure-identity-auth-extension.md#capability-bearertokenprovider);
+  [Azure Identity Auth extension](../crates/contrib-extensions/src/azure_identity_auth/design.md#capability-bearertokenprovider);
   it adds no capability machinery.
 - Provider-specific identity flows (Managed Identity, Workload Identity). Those
   belong to the Azure extension.
@@ -106,7 +106,7 @@ standard OAuth 2.0 endpoints rather than Azure identity flows.
 The extension implements `BearerTokenProvider` unchanged - the same
 `get_token()` / `token_stream()` trait, `BearerToken` type, and `CapabilityError`
 semantics defined in the
-[Azure Identity Auth extension](azure-identity-auth-extension.md#capability-bearertokenprovider).
+[Azure Identity Auth extension](../crates/contrib-extensions/src/azure_identity_auth/design.md#capability-bearertokenprovider).
 It is the engine's **outbound token provider**
 (`capability::auth::bearer_token_provider`), distinct from the inbound
 `BearerTokenAuthorizer` that admits tokens on incoming requests. A consumer binds
@@ -363,7 +363,7 @@ refresh far into the future; the loop is still woken by control messages.
 
 A consumer binds `bearer_token_provider` to an `oauth2_client_auth` instance and
 resolves it once at factory time - exactly the mechanism described in the
-[Azure extension's Consumer Integration](azure-identity-auth-extension.md#consumer-integration).
+[Azure extension's Consumer Integration](../crates/contrib-extensions/src/azure_identity_auth/design.md#consumer-integration).
 Nothing on the consumer side is OAuth-specific; a node cannot tell which provider
 backs the capability, and can consume it two ways: a cached fast-path read via
 `get_token()`, or a subscription to `token_stream()` that pushes each refreshed
@@ -563,7 +563,7 @@ OAuth-specific coverage:
    serves one client + scope set; a node needing multiple audiences declares one
    instance per audience. Is a single multi-scope instance worth the added
    surface? (Shared with the Azure extension's
-   [Multi-resource tokens](azure-identity-auth-extension.md#open-questions)
+   [Multi-resource tokens](../crates/contrib-extensions/src/azure_identity_auth/design.md#open-questions)
    question.)
 3. **Identity/scope hot-swap.** Should `ExtensionControlMsg::Config` rebuild
    `Auth` in place (new client / scopes) instead of requiring an extension
