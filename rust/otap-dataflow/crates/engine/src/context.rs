@@ -889,18 +889,19 @@ impl ExtensionContext {
             .telemetry_registry_handle
             .register_metric_set_for_entity::<T>(entity_key)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use otap_df_config::pipeline::telemetry::AttributeValue;
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
+    use std::collections::HashMap;
 
     #[test]
     fn register_node_channel_entity_includes_custom_attributes() {
-        use otap_df_config::pipeline::telemetry::AttributeValue;
-
         let registry = TelemetryRegistryHandle::new();
-        let controller_ctx = ControllerContext::new_with_identity(
-            registry.clone(),
-            "proc-123",
-            "machine-abc",
-            "container-xyz",
-        );
+        let controller_ctx = ControllerContext::new(registry.clone());
 
         let pipeline_params = PipelineContextParams {
             pipeline_group_id: Cow::Borrowed("group1"),
