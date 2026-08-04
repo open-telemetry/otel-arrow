@@ -3,6 +3,7 @@
 
 use std::{
     borrow::Borrow,
+    fmt,
     fmt::{Debug, Display, Write},
 };
 
@@ -62,35 +63,28 @@ impl Value<'_> {
         }
     }
 
-    pub fn diagnostic_fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    pub fn diagnostic_fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Null => f.write_str("Null"),
-            Value::Array(a) => {
-                write!(f, "Array(Count={})", a.len())
-            }
-            Value::Map(m) => {
-                write!(f, "Map(Count={})", m.len())
-            }
+            Value::Array(a) => write!(f, "Array(Count={})", a.len()),
+            Value::Map(m) => write!(f, "Map(Count={})", m.len()),
             Value::String(s) => {
                 f.write_str("String(")?;
                 let v = s.get_value();
-                if v.len() <= 32 {
-                    f.write_str(serde_json::to_string(&v).unwrap().as_str())?;
-                } else {
-                    write!(
-                        f,
-                        "{}",
-                        serde_json::to_string(&format!("{}...", &v[..32]))
-                            .unwrap()
-                            .as_str()
-                    )?;
+                match v.char_indices().nth(32) {
+                    Some((idx, _)) => {
+                        write_json_escaped_str(f, &v[..idx], true)?;
+                    }
+                    None => {
+                        write_json_escaped_str(f, v, false)?;
+                    }
                 }
-                f.write_str(")")
+                f.write_char(')')
             }
             v => {
                 write!(f, "{}(", v.get_value_type())?;
                 std::fmt::Display::fmt(v, f)?;
-                f.write_str(")")
+                f.write_char(')')
             }
         }
     }
@@ -1019,6 +1013,45 @@ impl Value<'_> {
 
         left_may_by_double || right_may_by_double
     }
+}
+
+fn write_json_escaped_str(
+    f: &mut fmt::Formatter<'_>,
+    s: &str,
+    append_ellipsis: bool,
+) -> fmt::Result {
+    f.write_char('"')?;
+    for ch in s.chars() {
+        match ch {
+            '"' => f.write_str("\\\"")?,
+            '\\' => f.write_str("\\\\")?,
+            '\n' => f.write_str("\\n")?,
+            '\r' => f.write_str("\\r")?,
+            '\t' => f.write_str("\\t")?,
+            c if (c as u32) < 0x20 => {
+                // control characters U+0000..U+001F -> \u00XX
+                write!(f, "\\u{:04x}", c as u32)?;
+            }
+            c if (c as u32) <= 0xFFFF => {
+                // BMP non-control characters: write directly
+                f.write_char(c)?;
+            }
+            // Non-BMP characters (above U+FFFF) must be encoded as UTF-16 surrogate pairs
+            c => {
+                let code = c as u32;
+                let u = code - 0x1_0000;
+                let high = 0xD800 | ((u >> 10) & 0x3FF);
+                let low = 0xDC00 | (u & 0x3FF);
+                write!(f, "\\u{:04x}\\u{:04x}", high, low)?;
+            }
+        }
+    }
+    if append_ellipsis {
+        f.write_str("...\"")?;
+    } else {
+        f.write_char('"')?;
+    }
+    Ok(())
 }
 
 impl Display for Value<'_> {
