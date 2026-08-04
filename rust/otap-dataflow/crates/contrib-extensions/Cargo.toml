@@ -36,6 +36,7 @@ jsonwebtoken = { workspace = true, optional = true }
 oauth2 = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true, features = ["form"] }
+secrecy = { workspace = true, optional = true }
 
 [features]
 # Umbrella feature enabling all contrib extensions.
@@ -43,7 +44,7 @@ contrib-extensions = ["azure-identity-auth-extension", "oauth2-client-auth-exten
 # Azure Identity authentication extension (BearerTokenProvider capability).
 azure-identity-auth-extension = ["dep:azure_core", "dep:azure_identity", "dep:humantime-serde", "dep:rand"]
 # OAuth 2.0 Client Auth extension (BearerTokenProvider capability).
-oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand"]
+oauth2-client-auth-extension = ["dep:oauth2", "dep:reqwest", "dep:http", "dep:jsonwebtoken", "dep:humantime-serde", "dep:rand", "dep:secrecy"]
 
 [dev-dependencies]
 otap-df-engine = { workspace = true, features = ["test-utils"] }

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use otap_df_config::tls::TlsClientConfig;
+use secrecy::SecretString;
 use serde::Deserialize;
 
 /// Default duration ahead of expiry at which a token is refreshed.
@@ -94,8 +95,12 @@ pub struct Config {
 
     /// Client secret. Required for `client_credentials` unless
     /// `client_secret_file` is set.
+    ///
+    /// Held as a [`SecretString`] so it is redacted from `Debug` output.
+    /// Note that the raw pipeline config retains the cleartext;
+    /// prefer `client_secret_file`.
     #[serde(default)]
-    pub client_secret: Option<String>,
+    pub client_secret: Option<SecretString>,
 
     /// Path to a file holding the client secret. Re-read on each acquisition
     /// and takes precedence over `client_secret`.
@@ -134,8 +139,12 @@ pub struct Config {
     // -- JWT-bearer grant fields (rejected for `client_credentials`) --
     /// Private key (PEM) used to sign the JWT-bearer assertion. Required for
     /// the `jwt-bearer` grant unless `client_certificate_key_file` is set.
+    ///
+    /// Held as a [`SecretString`] so it is redacted from `Debug` output.
+    /// Note that the raw pipeline config retains the cleartext;
+    /// prefer `client_certificate_key_file`.
     #[serde(default)]
-    pub client_certificate_key: Option<String>,
+    pub client_certificate_key: Option<SecretString>,
 
     /// Path to a file holding the signing key. Re-read on each acquisition and
     /// takes precedence over `client_certificate_key`.

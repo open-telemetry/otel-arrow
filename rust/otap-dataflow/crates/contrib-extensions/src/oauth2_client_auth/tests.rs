@@ -648,6 +648,52 @@ async fn jwt_bearer_signs_assertion_and_acquires_token() {
     assert!(claims.get("exp").is_some(), "assertion carries an exp");
 }
 
+// Scenario: The token endpoint reports an `expires_in` far too large to add to the current time
+// (client-credentials grant, parsed by the oauth2 crate).
+// Guarantees: The acquisition returns a token with no known expiry instead of panicking on the
+// `SystemTime` overflow, so a hostile or buggy endpoint cannot crash the node.
+#[tokio::test]
+async fn absurd_expires_in_yields_token_without_expiry() {
+    let server = start_token_server("no-expiry-tok", u64::MAX).await;
+    let ext = make_extension(&format!("{}/token", server.uri()));
+
+    let token = ext.get_token().await.expect("token acquired");
+    assert_eq!(token.expose_token(), "no-expiry-tok");
+    assert!(
+        token.expires_on().is_none(),
+        "an unrepresentable expiry must degrade to `no known expiry`"
+    );
+}
+
+// Scenario: The token endpoint reports an `expires_in` far too large to add to the current time on
+// the jwt-bearer path, which parses the response itself rather than through the oauth2 crate.
+// Guarantees: The acquisition returns a token with no known expiry instead of panicking, matching
+// the client-credentials path.
+#[tokio::test]
+async fn absurd_expires_in_yields_token_without_expiry_jwt_bearer() {
+    let (private_key_pem, _) = generate_test_rsa_keypair();
+    let server = start_token_server("no-expiry-jwt-tok", u64::MAX).await;
+
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "grant_type": "jwt-bearer",
+        "client_id": "svc-account",
+        "client_certificate_key": private_key_pem,
+    }))
+    .expect("valid jwt-bearer config");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let (tx, _rx) = watch::channel(None);
+    let ext =
+        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+
+    let token = ext.get_token().await.expect("jwt-bearer token acquired");
+    assert_eq!(token.expose_token(), "no-expiry-jwt-tok");
+    assert!(
+        token.expires_on().is_none(),
+        "an unrepresentable expiry must degrade to `no known expiry`"
+    );
+}
+
 // Scenario: A jwt-bearer config supplies the signing key via `client_certificate_key_file`.
 // Guarantees: The key is read from the file and used to sign the assertion, yielding a token.
 #[tokio::test]

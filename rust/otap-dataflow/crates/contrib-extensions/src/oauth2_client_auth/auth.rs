@@ -19,6 +19,7 @@ use otap_df_engine::capability::auth::BearerToken;
 use otap_df_telemetry::otel_warn;
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
+use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
 use super::config::{Config, GrantType, SignatureAlgorithm};
@@ -48,13 +49,13 @@ pub struct Auth {
     /// Path to a file holding the client identifier (re-read each acquisition).
     client_id_file: Option<PathBuf>,
     /// Inline client secret (client-credentials grant).
-    client_secret: Option<String>,
+    client_secret: Option<SecretString>,
     /// Path to a file holding the client secret (re-read each acquisition).
     client_secret_file: Option<PathBuf>,
     /// RSA algorithm used to sign the JWT-bearer assertion.
     signature_algorithm: SignatureAlgorithm,
     /// Inline signing key (PEM) for the JWT-bearer assertion.
-    client_certificate_key: Option<String>,
+    client_certificate_key: Option<SecretString>,
     /// Path to a file holding the signing key (re-read each acquisition).
     client_certificate_key_file: Option<PathBuf>,
     /// Optional `kid` header placed on the signed assertion.
@@ -126,13 +127,13 @@ impl Auth {
         // rotate without a restart.
         let client_id = read_credential(
             self.client_id_file.as_ref(),
-            self.client_id.as_ref(),
+            self.client_id.as_deref(),
             "client_id",
         )
         .await?;
         let client_secret = read_credential(
             self.client_secret_file.as_ref(),
-            self.client_secret.as_ref(),
+            self.client_secret.as_ref().map(ExposeSecret::expose_secret),
             "client_secret",
         )
         .await?;
@@ -171,13 +172,15 @@ impl Auth {
         // acquisition so the file forms can rotate without a restart.
         let client_id = read_credential(
             self.client_id_file.as_ref(),
-            self.client_id.as_ref(),
+            self.client_id.as_deref(),
             "client_id",
         )
         .await?;
         let key_pem = read_pem_credential(
             self.client_certificate_key_file.as_ref(),
-            self.client_certificate_key.as_ref(),
+            self.client_certificate_key
+                .as_ref()
+                .map(ExposeSecret::expose_secret),
             "client_certificate_key",
         )
         .await?;
@@ -301,10 +304,9 @@ struct TokenEndpointResponse {
 /// Converts a manually-parsed token response into a [`BearerToken`].
 fn bearer_from_response(response: TokenEndpointResponse) -> BearerToken {
     match response.expires_in {
-        Some(secs) => BearerToken::from_absolute_expiry(
-            response.access_token,
-            SystemTime::now() + Duration::from_secs(secs),
-        ),
+        Some(secs) => {
+            BearerToken::from_relative_expiry(response.access_token, Duration::from_secs(secs))
+        }
         None => BearerToken::without_expiry(response.access_token),
     }
 }
@@ -319,15 +321,11 @@ fn jwt_algorithm(alg: SignatureAlgorithm) -> Algorithm {
 }
 
 /// Converts an OAuth 2.0 token response into a [`BearerToken`], carrying the
-/// relative `expires_in` through as an absolute expiry.
+/// issuer's relative `expires_in` through as the token's expiry.
 fn to_bearer_token(response: &BasicTokenResponse) -> BearerToken {
     let secret = response.access_token().secret().to_owned();
     match response.expires_in() {
-        // Let the capability crate centralize the absolute-to-monotonic `Instant`
-        // conversion so every provider handles expiry the same way.
-        Some(expires_in) => {
-            BearerToken::from_absolute_expiry(secret, SystemTime::now() + expires_in)
-        }
+        Some(expires_in) => BearerToken::from_relative_expiry(secret, expires_in),
         None => BearerToken::without_expiry(secret),
     }
 }
@@ -336,7 +334,7 @@ fn to_bearer_token(response: &BasicTokenResponse) -> BearerToken {
 /// the credential can rotate without a restart) over the inline value.
 async fn read_credential(
     file: Option<&PathBuf>,
-    inline: Option<&String>,
+    inline: Option<&str>,
     field: &str,
 ) -> Result<String, Error> {
     if let Some(path) = file {
@@ -350,7 +348,7 @@ async fn read_credential(
         return Ok(contents.trim().to_owned());
     }
     if let Some(value) = inline {
-        return Ok(value.clone());
+        return Ok(value.to_owned());
     }
     Err(Error::TokenAcquisition {
         message: format!("no `{field}` or `{field}_file` configured"),
@@ -362,7 +360,7 @@ async fn read_credential(
 /// returned verbatim so the PEM structure is preserved.
 async fn read_pem_credential(
     file: Option<&PathBuf>,
-    inline: Option<&String>,
+    inline: Option<&str>,
     field: &str,
 ) -> Result<Vec<u8>, Error> {
     if let Some(path) = file {
@@ -374,7 +372,7 @@ async fn read_pem_credential(
             });
     }
     if let Some(value) = inline {
-        return Ok(value.clone().into_bytes());
+        return Ok(value.as_bytes().to_vec());
     }
     Err(Error::TokenAcquisition {
         message: format!("no `{field}` or `{field}_file` configured"),
