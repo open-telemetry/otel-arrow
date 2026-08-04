@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::slice;
+use std::sync::Arc;
 
 /// The value of a single claim.
 ///
@@ -24,6 +25,18 @@ pub enum ClaimValue {
 }
 
 impl ClaimValue {
+    /// Builds a single-valued claim from a string slice.
+    #[must_use]
+    pub fn one(value: &str) -> Self {
+        Self::One(value.to_owned())
+    }
+
+    /// Builds a multi-valued claim from an iterator of string slices.
+    #[must_use]
+    pub fn many<'a>(values: impl IntoIterator<Item = &'a str>) -> Self {
+        Self::Many(values.into_iter().map(str::to_owned).collect())
+    }
+
     /// Views the value as a slice, unifying [`One`](ClaimValue::One) (a
     /// single-element slice) and [`Many`](ClaimValue::Many). No allocation.
     #[must_use]
@@ -84,9 +97,20 @@ impl ClaimValue {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct AuthorizedIdentity {
-    principal: Option<String>,
-    scheme: Option<String>,
-    claims: BTreeMap<String, ClaimValue>,
+    // Behind an `Arc` so cloning an identity -- which happens on every
+    // authorization-cache hit -- is a refcount bump, not a deep copy of the
+    // claims and their strings.
+    inner: Arc<Inner>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Inner {
+    principal: Option<Box<str>>,
+    scheme: Option<Box<str>>,
+    // Keyed by claim name; ordered iteration and last-write-wins dedup for free.
+    // (An interned/compiled representation would avoid these per-string
+    // allocations, but that belongs with the shared tenant-token work.)
+    claims: BTreeMap<Box<str>, ClaimValue>,
 }
 
 impl AuthorizedIdentity {
@@ -97,76 +121,81 @@ impl AuthorizedIdentity {
 
     /// Creates an empty identity (no principal, scheme, or claims).
     #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            principal: None,
-            scheme: None,
-            claims: BTreeMap::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Sets the canonical, best-effort principal name (for logging / coarse
     /// identity; not for policy matching).
     #[must_use]
-    pub fn with_principal(mut self, principal: impl Into<String>) -> Self {
-        self.principal = Some(principal.into());
+    pub fn with_principal(mut self, principal: &str) -> Self {
+        Arc::make_mut(&mut self.inner).principal = Some(principal.into());
         self
     }
 
     /// Sets the authentication scheme tag (e.g. `k8s_sat`, `oidc`, `mtls`).
     #[must_use]
-    pub fn with_scheme(mut self, scheme: impl Into<String>) -> Self {
-        self.scheme = Some(scheme.into());
+    pub fn with_scheme(mut self, scheme: &str) -> Self {
+        Arc::make_mut(&mut self.inner).scheme = Some(scheme.into());
         self
     }
 
-    /// Sets a claim to an arbitrary [`ClaimValue`].
+    /// Sets a claim to an arbitrary [`ClaimValue`] (last write wins).
     #[must_use]
-    pub fn with_claim(mut self, name: impl Into<String>, value: ClaimValue) -> Self {
-        let _ = self.claims.insert(name.into(), value);
+    pub fn with_claim(mut self, name: &str, value: ClaimValue) -> Self {
+        let _ = Arc::make_mut(&mut self.inner)
+            .claims
+            .insert(name.into(), value);
         self
     }
 
     /// Sets a single-valued claim.
     #[must_use]
-    pub fn with_claim_str(self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.with_claim(name, ClaimValue::One(value.into()))
+    pub fn with_claim_str(self, name: &str, value: &str) -> Self {
+        self.with_claim(name, ClaimValue::one(value))
     }
 
-    /// Sets a multi-valued claim.
+    /// Sets a multi-valued claim from an iterator of string slices.
+    ///
+    /// Accepts arrays, slices, and iterators of `&str` (e.g. `["a", "b"]`). A
+    /// caller holding owned strings can pass `values.iter().map(String::as_str)`.
     #[must_use]
-    pub fn with_claim_values(self, name: impl Into<String>, values: Vec<String>) -> Self {
-        self.with_claim(name, ClaimValue::Many(values))
+    pub fn with_claim_values<'a>(
+        self,
+        name: &str,
+        values: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        self.with_claim(name, ClaimValue::many(values))
     }
 
     /// Sets the `sub` claim (the principal the credential represents).
     #[must_use]
-    pub fn with_subject(self, subject: impl Into<String>) -> Self {
+    pub fn with_subject(self, subject: &str) -> Self {
         self.with_claim_str(Self::CLAIM_SUBJECT, subject)
     }
 
     /// Sets the `aud` claim (the audience the credential was accepted for).
     #[must_use]
-    pub fn with_audience(self, audience: impl Into<String>) -> Self {
+    pub fn with_audience(self, audience: &str) -> Self {
         self.with_claim_str(Self::CLAIM_AUDIENCE, audience)
     }
 
     /// The canonical principal name, if set.
     #[must_use]
     pub fn principal(&self) -> Option<&str> {
-        self.principal.as_deref()
+        self.inner.principal.as_deref()
     }
 
     /// The authentication scheme tag, if set.
     #[must_use]
     pub fn scheme(&self) -> Option<&str> {
-        self.scheme.as_deref()
+        self.inner.scheme.as_deref()
     }
 
     /// The value of a claim by name, if present.
     #[must_use]
     pub fn claim(&self, name: &str) -> Option<&ClaimValue> {
-        self.claims.get(name)
+        self.inner.claims.get(name)
     }
 
     /// The single string value of a claim, if present and single-valued.
@@ -177,9 +206,10 @@ impl AuthorizedIdentity {
 
     /// Iterates over all claims as `(name, value)` pairs, ordered by name.
     pub fn claims(&self) -> impl Iterator<Item = (&str, &ClaimValue)> {
-        self.claims
+        self.inner
+            .claims
             .iter()
-            .map(|(name, value)| (name.as_str(), value))
+            .map(|(name, value)| (&**name, value))
     }
 
     /// The `sub` claim (the principal the credential represents), if known.
@@ -249,10 +279,7 @@ mod tests {
             .with_claim_str("k8s.namespace", "team-a")
             .with_claim_values(
                 "groups",
-                vec![
-                    "system:serviceaccounts".to_string(),
-                    "system:serviceaccounts:team-a".to_string(),
-                ],
+                ["system:serviceaccounts", "system:serviceaccounts:team-a"],
             );
 
         assert_eq!(
@@ -277,8 +304,7 @@ mod tests {
     /// audiences and membership works.
     #[test]
     fn multi_valued_audience_reads_through_claim_not_accessor() {
-        let identity = AuthorizedIdentity::new()
-            .with_claim_values("aud", vec!["aud-a".to_string(), "aud-b".to_string()]);
+        let identity = AuthorizedIdentity::new().with_claim_values("aud", ["aud-a", "aud-b"]);
 
         assert_eq!(identity.audience(), None);
         let aud = identity.claim("aud").expect("aud present");
@@ -301,5 +327,18 @@ mod tests {
         assert_eq!(many.as_str(), None);
         assert!(many.contains("b"));
         assert!(!many.contains("c"));
+    }
+
+    /// Scenario: build claim values from borrowed `&str` inputs via the `one`
+    /// and `many` constructors.
+    /// Guarantees: `one` produces a single-valued claim and `many` a
+    /// multi-valued one, each owning a copy of the borrowed inputs.
+    #[test]
+    fn claim_value_borrowed_constructors() {
+        assert_eq!(ClaimValue::one("x"), ClaimValue::One("x".to_string()));
+        assert_eq!(
+            ClaimValue::many(["a", "b"]),
+            ClaimValue::Many(vec!["a".to_string(), "b".to_string()])
+        );
     }
 }
