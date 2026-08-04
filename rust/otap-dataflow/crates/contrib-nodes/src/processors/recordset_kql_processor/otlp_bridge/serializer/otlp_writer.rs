@@ -210,10 +210,7 @@ fn write_value(writer: &mut ProtobufWriter, value: &AnyValue) -> Result<(), Seri
         AnyValue::Null => {}
         AnyValue::Native(a) => write_native_value(writer, a)?,
         AnyValue::Extended(_) => {
-            let value = value.to_value();
-            value.convert_to_string(&mut |s| {
-                writer.write_string_field(1, s);
-            });
+            writer.write_string_field(1, value.to_value().convert_to_string().as_ref())
         }
     }
 
