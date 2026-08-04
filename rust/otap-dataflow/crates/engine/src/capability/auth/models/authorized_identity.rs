@@ -8,15 +8,18 @@ use std::slice;
 
 /// The value of a single claim.
 ///
-/// Claims are heterogeneous: some are single-valued (`sub`, `aud`), others are
+/// Claims are heterogeneous: some are single-valued (`sub`, `iss`), others are
 /// inherently multi-valued (`groups`, an X.509 certificate's repeated `OU`
-/// attributes, or its Subject Alternative Names). [`ClaimValue`] captures both
-/// without forcing every claim into a `Vec`.
+/// attributes, or its Subject Alternative Names), and some (`aud`) may be
+/// either. [`ClaimValue`] captures all cases without forcing every claim into a
+/// `Vec`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimValue {
-    /// A single-valued claim (e.g. `sub`, `aud`, `uid`).
+    /// A single-valued claim (e.g. `sub`, `iss`, `uid`, or an `aud` with one
+    /// audience).
     One(String),
-    /// A multi-valued claim (e.g. `groups`, X.509 `OU`, SANs).
+    /// A multi-valued claim (e.g. `groups`, X.509 `OU`, SANs, or an `aud` with
+    /// several audiences).
     Many(Vec<String>),
 }
 
@@ -185,7 +188,10 @@ impl AuthorizedIdentity {
         self.claim_str(Self::CLAIM_SUBJECT)
     }
 
-    /// The `aud` claim (the audience the credential was accepted for), if known.
+    /// The `aud` claim as a single string, when the audience is single-valued.
+    ///
+    /// Returns `None` when `aud` is absent or multi-valued; use
+    /// [`claim`](Self::claim)`("aud")` to read a multi-valued audience.
     #[must_use]
     pub fn audience(&self) -> Option<&str> {
         self.claim_str(Self::CLAIM_AUDIENCE)
@@ -262,6 +268,23 @@ mod tests {
         // A multi-valued claim has no single string form.
         assert_eq!(groups.as_str(), None);
         assert_eq!(groups.as_slice().len(), 2);
+    }
+
+    /// Scenario: build an identity whose `aud` claim is multi-valued (several
+    /// audiences), then read it via the typed accessor and the generic map.
+    /// Guarantees: `audience()` returns `None` for a multi-valued `aud` (it is
+    /// only for the single-audience case), while `claim("aud")` exposes all
+    /// audiences and membership works.
+    #[test]
+    fn multi_valued_audience_reads_through_claim_not_accessor() {
+        let identity = AuthorizedIdentity::new()
+            .with_claim_values("aud", vec!["aud-a".to_string(), "aud-b".to_string()]);
+
+        assert_eq!(identity.audience(), None);
+        let aud = identity.claim("aud").expect("aud present");
+        assert!(aud.contains("aud-a"));
+        assert!(aud.contains("aud-b"));
+        assert_eq!(aud.as_slice().len(), 2);
     }
 
     /// Scenario: compare a `ClaimValue::One` against a `ClaimValue::Many`.
