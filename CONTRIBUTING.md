@@ -101,6 +101,11 @@ appropriate directory. Copy the `TEMPLATE.yaml` in the appropriate
 `arrow-encoder-fix-null-handling.yaml`) and fill in the fields
 (`change_type`, `component`, `note`, `issues`).
 
+Changelog eligibility currently tracks user-facing behavior, not API
+compatibility. The project does not publish crates or make an API stability
+promise, so an API change alone is not a `breaking` change. Choose the entry
+type that describes the user-facing impact instead.
+
 You can validate or preview entries locally:
 
 ```bash
@@ -123,6 +128,10 @@ dependency bumps):
 - Apply the `skipchangelog` label (for maintainers).
 - Documentation-only PRs (all changed files are under a `docs/` or `rfcs/`
   directory).
+- PRs confined to `rust/experimental/` -- those crates are not released and
+  ship no `CHANGELOG.md`, so there is no changelog to write an entry into. A
+  PR that also touches a released module (for example `rust/otap-dataflow/`)
+  is *not* exempt, even if the bulk of the change is experimental.
 - For dependency-update PRs: Renovate auto-applies the `dependencies` label
   and bot-authored PRs are exempt.
 
