@@ -485,6 +485,42 @@ async fn request_includes_scope_and_endpoint_params() {
     assert_eq!(token.expose_token(), "tok");
 }
 
+// Scenario: A `client_secret_file` larger than the collector's shared TLS/credential size limit
+// (4MB) is configured on the per-acquisition read path.
+// Guarantees: The acquisition fails with a read error instead of loading the whole file into
+// memory on every refresh, so an oversized or hostile path cannot exhaust memory.
+#[tokio::test]
+async fn oversized_client_secret_file_is_rejected() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let secret_path = dir.path().join("client_secret");
+    std::fs::write(&secret_path, vec![b'x'; 5 * 1024 * 1024]).expect("write oversized secret");
+
+    let server = start_token_server("tok", 3600).await;
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": format!("{}/token", server.uri()),
+        "client_id": "id",
+        "client_secret_file": secret_path.to_string_lossy(),
+    }))
+    .expect("valid config");
+    let auth = Auth::new(&cfg).expect("auth builds");
+    let (tx, _rx) = watch::channel(None);
+    let ext =
+        OAuth2ClientAuthExtension::new("test-ext", auth, cfg.expiry_buffer, tx, make_tracker());
+
+    let _ = ext
+        .get_token()
+        .await
+        .expect_err("an oversized credential file must be rejected");
+    assert!(
+        server
+            .received_requests()
+            .await
+            .expect("requests recorded")
+            .is_empty(),
+        "the token endpoint must not be contacted with an unread credential"
+    );
+}
+
 // Scenario: A client_secret_file is rewritten between two acquisitions of a near-expiry token.
 // Guarantees: The next acquisition re-reads the file and authenticates with the rotated secret,
 // with no restart.

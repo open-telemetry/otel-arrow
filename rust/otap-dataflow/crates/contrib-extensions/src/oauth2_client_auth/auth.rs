@@ -16,6 +16,7 @@ use oauth2::{
     TokenUrl,
 };
 use otap_df_engine::capability::auth::BearerToken;
+use otap_df_otap::tls_utils::{read_file_with_limit_async, read_file_with_limit_sync};
 use otap_df_telemetry::otel_warn;
 use rand::RngExt;
 use reqwest::{Certificate, Identity};
@@ -332,6 +333,10 @@ fn to_bearer_token(response: &BasicTokenResponse) -> BearerToken {
 
 /// Reads a credential value, preferring the file form (re-read on each call so
 /// the credential can rotate without a restart) over the inline value.
+///
+/// File reads go through the collector's shared size-limited reader: this runs
+/// on the per-acquisition path, so an oversized or hostile path would otherwise
+/// be re-read into memory on every refresh.
 async fn read_credential(
     file: Option<&PathBuf>,
     inline: Option<&str>,
@@ -339,12 +344,15 @@ async fn read_credential(
 ) -> Result<String, Error> {
     if let Some(path) = file {
         let contents =
-            tokio::fs::read_to_string(path)
+            read_file_with_limit_async(path)
                 .await
                 .map_err(|source| Error::ReadCredentialFile {
                     path: path.clone(),
                     source,
                 })?;
+        let contents = String::from_utf8(contents).map_err(|_| Error::TokenAcquisition {
+            message: format!("`{field}_file` does not contain valid UTF-8"),
+        })?;
         return Ok(contents.trim().to_owned());
     }
     if let Some(value) = inline {
@@ -364,12 +372,12 @@ async fn read_pem_credential(
     field: &str,
 ) -> Result<Vec<u8>, Error> {
     if let Some(path) = file {
-        return tokio::fs::read(path)
-            .await
-            .map_err(|source| Error::ReadCredentialFile {
+        return read_file_with_limit_async(path).await.map_err(|source| {
+            Error::ReadCredentialFile {
                 path: path.clone(),
                 source,
-            });
+            }
+        });
     }
     if let Some(value) = inline {
         return Ok(value.as_bytes().to_vec());
@@ -454,10 +462,11 @@ fn build_reqwest_client(config: &Config) -> Result<reqwest::Client, Error> {
             certs.push(Certificate::from_pem(ca_pem.as_bytes()).map_err(build_err)?);
         }
         if let Some(ca_file) = &tls.ca_file {
-            let ca_pem = std::fs::read(ca_file).map_err(|source| Error::ReadCredentialFile {
-                path: ca_file.clone(),
-                source,
-            })?;
+            let ca_pem =
+                read_file_with_limit_sync(ca_file).map_err(|source| Error::ReadCredentialFile {
+                    path: ca_file.clone(),
+                    source,
+                })?;
             certs.push(Certificate::from_pem(&ca_pem).map_err(build_err)?);
         }
 
@@ -502,7 +511,7 @@ fn build_reqwest_client(config: &Config) -> Result<reqwest::Client, Error> {
 /// Reads PEM material from a file (preferred) or an inline string.
 fn read_pem(file: Option<&PathBuf>, inline: Option<&String>) -> Result<Vec<u8>, Error> {
     if let Some(path) = file {
-        return std::fs::read(path).map_err(|source| Error::ReadCredentialFile {
+        return read_file_with_limit_sync(path).map_err(|source| Error::ReadCredentialFile {
             path: path.clone(),
             source,
         });
