@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785717486253,
+  "lastUpdate": 1785804199474,
   "repoUrl": "https://github.com/open-telemetry/otel-arrow",
   "entries": {
     "Benchmark": [
@@ -6690,6 +6690,38 @@ window.BENCHMARK_DATA = {
           {
             "name": "linux-amd64-binary-size",
             "value": 111.51,
+            "unit": "MB"
+          },
+          {
+            "name": "linux-arm64-binary-size",
+            "value": 99.03,
+            "unit": "MB"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]",
+            "email": "49699333+dependabot[bot]@users.noreply.github.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b5ef6234f870f5818eaf9cd216824d0bc4d75695",
+          "message": "chore(deps): bump aiohttp from 3.14.1 to 3.14.3 in /tools/pipeline_perf_test/orchestrator (#3655)\n\nBumps [aiohttp](https://github.com/aio-libs/aiohttp) from 3.14.1 to\n3.14.3.\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/aio-libs/aiohttp/blob/master/CHANGES.rst\">aiohttp's\nchangelog</a>.</em></p>\n<blockquote>\n<h1>3.14.3 (2026-07-22)</h1>\n<h2>Bug fixes</h2>\n<ul>\n<li>\n<p>Fixed the client dropping only the first <code>Authorization</code>,\n<code>Cookie</code> and\n<code>Proxy-Authorization</code> header when a redirect crossed an\norigin -- by :user:<code>arshsmith1</code>.</p>\n<p><em>Related issues and pull requests on GitHub:</em>\n:issue:<code>13180</code>.</p>\n</li>\n<li>\n<p>Fixed error message construction in the C HTTP parser -- by\n:user:<code>bdraco</code>.</p>\n<p><em>Related issues and pull requests on GitHub:</em>\n:issue:<code>13222</code>.</p>\n</li>\n</ul>\n<hr />\n<h1>3.14.2 (2026-07-20)</h1>\n<h2>Bug fixes</h2>\n<ul>\n<li>\n<p>Fixed :py:attr:<code>~aiohttp.web.StreamResponse.last_modified</code>\nrounding a\n:class:<code>datetime.datetime</code> with a fractional second down.</p>\n<p><em>Related issues and pull requests on GitHub:</em>\n:issue:<code>5303</code>.</p>\n</li>\n<li>\n<p>Fixed resolving <code>localhost</code> on Windows to fall back\nwithout <code>AI_ADDRCONFIG</code>\nwhen the first lookup fails, so <code>localhost</code> still works\nwithout an active\nnetwork.</p>\n<p><em>Related issues and pull requests on GitHub:</em>\n:issue:<code>5357</code>.</p>\n</li>\n</ul>\n<!-- raw HTML omitted -->\n</blockquote>\n<p>... (truncated)</p>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/5e392ce0456f5235a4ee6ad46f0e806df2f15873\"><code>5e392ce</code></a>\nRelease v3.14.3 (<a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13225\">#13225</a>)</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/49f65d54150397892f7bcc4aae887767d51c322d\"><code>49f65d5</code></a>\n[PR <a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13222\">#13222</a>/f4866933\nbackport][3.14] Build C parser error message from bounded...</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/240099e5216a01b32919dcd8dd5c6c0b1bf83671\"><code>240099e</code></a>\n[PR <a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13180\">#13180</a>/ee53d655\nbackport][3.14] drop every copy of credential headers on ...</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/d93f30a302f8b930074fe14a2be7b2088ba28111\"><code>d93f30a</code></a>\nBump version (<a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13202\">#13202</a>)</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/c1b9212ad3d93c24b5fc66ad0849597166bc816e\"><code>c1b9212</code></a>\nRelease v3.14.2 (<a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13201\">#13201</a>)</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/380d4b55e8df48dfd62f1addfb530426f6bc4106\"><code>380d4b5</code></a>\n[PR <a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13054\">#13054</a>/ed8b040c\nbackport][3.14] escape backslashes in digest auth quoted-...</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/e1e1bee363dfba04a9a75c8801717da2ed5bdcb9\"><code>e1e1bee</code></a>\nMake llhttp method array size dynamic (<a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13174\">#13174</a>)\n(<a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13196\">#13196</a>)</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/aa4cf29b6a5ad6f4d21fa1dd3f69193dc2f5d505\"><code>aa4cf29</code></a>\n[PR <a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13170\">#13170</a>/2b906869\nbackport][3.14] Fix StreamResponse.last_modified rounding...</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/71b57b40d85a0723c92b0a5a37ebdf518210d2ea\"><code>71b57b4</code></a>\n[PR <a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13172\">#13172</a>/a57747ed\nbackport][3.14] Fix C parser folding fragment into query_...</li>\n<li><a\nhref=\"https://github.com/aio-libs/aiohttp/commit/64a03fb620b623e5a5a1b7103c07ae3e536a0d40\"><code>64a03fb</code></a>\n[PR <a\nhref=\"https://redirect.github.com/aio-libs/aiohttp/issues/13169\">#13169</a>/1adc0cd7\nbackport][3.14] Upgrade http:// to https:// in README.rst...</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/aio-libs/aiohttp/compare/v3.14.1...v3.14.3\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=aiohttp&package-manager=pip&previous-version=3.14.1&new-version=3.14.3)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore this major version` will close this PR and stop\nDependabot creating any more for this major version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this minor version` will close this PR and stop\nDependabot creating any more for this minor version (unless you reopen\nthe PR or upgrade to it yourself)\n- `@dependabot ignore this dependency` will close this PR and stop\nDependabot creating any more for this dependency (unless you reopen the\nPR or upgrade to it yourself)\nYou can disable automated security fix PRs for this repo from the\n[Security Alerts\npage](https://github.com/open-telemetry/otel-arrow/network/alerts).\n\n</details>\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-08-03T23:28:42Z",
+          "url": "https://github.com/open-telemetry/otel-arrow/commit/b5ef6234f870f5818eaf9cd216824d0bc4d75695"
+        },
+        "date": 1785804184830,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "linux-amd64-binary-size",
+            "value": 111.56,
             "unit": "MB"
           },
           {
