@@ -51,7 +51,6 @@ use otap_df_config::engine::{
 };
 use otap_df_config::extension::{ExtensionUrn, ExtensionUserConfig};
 use otap_df_config::node::{NodeKind, NodeUserConfig};
-use otap_df_config::pipeline::telemetry::AttributeValue;
 use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_config::policy::MemoryLimiterMode;
 use otap_df_config::policy::{
@@ -95,7 +94,7 @@ use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::reporter::MetricsReporter;
 use otap_df_telemetry::{
     InternalTelemetrySettings, InternalTelemetrySystem, TracingSetup, otel_error, otel_info,
-    otel_info_span, otel_warn, raw_error, self_tracing::LogContext,
+    otel_info_span, otel_warn, raw_error, resource_detectors, self_tracing::LogContext,
 };
 use smallvec::smallvec;
 use std::collections::{HashMap, HashSet};
@@ -1225,16 +1224,18 @@ impl<
         let telemetry_registry = TelemetryRegistryHandle::new();
         let controller_ctx = ControllerContext::new(telemetry_registry.clone());
 
-        // Inject auto-detected process/host resource attributes (host.id,
-        // container.id, service.instance.id) into the telemetry resource map so
+        // Inject auto-detected resource attributes into the telemetry resource map so
         // they surface on the OTLP Resource / Prometheus target_info. Explicit
-        // config-provided keys take precedence over auto-detected values.
-        for (key, value) in controller_ctx.resource_attributes() {
-            let _ = engine
-                .telemetry
-                .resource
-                .entry(key)
-                .or_insert_with(|| AttributeValue::String(value));
+        // config-provided keys take precedence over detected ones.
+        let detected = resource_detectors::detect(&engine.telemetry.detectors).map_err(|e| {
+            Error::InvalidConfiguration {
+                errors: vec![otap_df_config::error::Error::InvalidUserConfig {
+                    error: format!("engine.telemetry.detectors: {e}"),
+                }],
+            }
+        })?;
+        for (key, value) in detected {
+            let _ = engine.telemetry.resource.entry(key).or_insert(value);
         }
 
         // Snapshot the resolved resource map (config + auto-detected) for the admin
@@ -4384,14 +4385,8 @@ groups:
         assert_eq!(broadcast_messages, 1);
     }
 
-    /// Registering the platform's termination-signal streams must succeed inside
-    /// a Tokio runtime without panicking. On Windows this exercises the
-    /// registration of all four console control events (Ctrl-C, Ctrl-Break,
-    /// Ctrl-Close, Ctrl-Shutdown); on Unix it registers SIGINT and SIGTERM.
-    ///
-    /// This guards against a platform-specific regression where a signal source
-    /// is unavailable or the `signal` Tokio feature is missing -- `register()`
-    /// would otherwise panic only at runtime on the affected OS.
+    /// Scenario: termination-signal streams are registered inside a Tokio runtime.
+    /// Guarantees: every signal source for the current platform registers without panicking.
     #[test]
     fn termination_signals_register_on_current_platform() {
         let rt = tokio::runtime::Builder::new_current_thread()

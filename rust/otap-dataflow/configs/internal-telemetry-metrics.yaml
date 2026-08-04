@@ -20,6 +20,12 @@ engine:
     resource:
       service.id: 1234
       service.name: test
+    # Resource detectors auto-populate telemetry resource attributes. Defaults to
+    # [service_instance, env, service_name] when omitted; explicitly configured `resource`
+    # attributes above take precedence over attributes from detectors. Opt into
+    # host/os/process/container/k8s to probe the environment (here host.* is added); an empty
+    # list disables detection entirely.
+    detectors: [service_instance, env, service_name, host]
   observability:
     pipeline:
       policies:

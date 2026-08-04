@@ -1,0 +1,63 @@
+# Geneva Exporter with Custom Table Names
+#
+# This configuration sets a custom default table (event name) for each signal:
+# logs go to "CustomLogTable" and spans go to "CustomSpanTable" in Geneva.
+# An OTLP/gRPC receiver forwards both signals directly to the Geneva exporter.
+#
+# Usage:
+#   ./df_engine --config otlp-geneva-set-table-name.yaml --num-cores 1
+#
+# Send data to this collector using:
+#   - OTLP/gRPC endpoint: localhost:4317
+
+version: otel_dataflow/v1
+
+policies:
+  channel_capacity:
+    control:
+      node: 100
+      pipeline: 100
+    pdata: 128
+
+engine: {}
+
+groups:
+  default:
+    pipelines:
+      main:
+        nodes:
+          # OTLP gRPC Receiver - shared across all signals
+          otlp-receiver:
+            type: "urn:otel:receiver:otlp"
+            config:
+              protocols:
+                grpc:
+                  listening_addr: "127.0.0.1:4317"
+
+          geneva-exporter:
+            type: "urn:microsoft:exporter:geneva"
+            config:
+              endpoint: "endpoint"
+              environment: "environment"
+              account: "account"
+              namespace: "namespace"
+              region: "region"
+              config_major_version: 1
+              tenant: "tenant"
+              role_name: "role_name"
+              role_instance: "role_instance"
+              auth:
+                type: "certificate"
+                path: "/path/to/your/certificate.p12"
+                password: "your-cert-password"
+              max_buffer_size: 1000
+              max_concurrent_uploads: 4
+              logs:
+                default_event_name: "CustomLogTable"
+              spans:
+                default_event_name: "CustomSpanTable"
+
+        connections:
+          # Shared receiver -> Geneva exporter
+          - from: otlp-receiver
+            to: geneva-exporter
