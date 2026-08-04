@@ -25,6 +25,17 @@ pub struct TelemetryConfig {
     /// Resource attributes to associate with telemetry data.
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
+    /// Resource detectors to run for auto-detected telemetry attributes. Explicitly configured
+    /// `resource` attributes take precedence over attributes from detectors. An empty list
+    /// disables auto-detection; an unrecognized detector name fails engine startup.
+    ///
+    /// Defaults to `["service_instance", "env", "service_name"]`. Supported detectors: `env`,
+    /// `service_name`, `service_instance`, `host`, `os`, `process`, `container`, `k8s`. See the
+    /// [`opentelemetry_sdk::resource`](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/resource/)
+    /// and [`opentelemetry-resource-detectors`](https://docs.rs/opentelemetry-resource-detectors)
+    /// docs for what each detector emits.
+    #[serde(default = "default_detectors")]
+    pub detectors: Vec<String>,
 }
 
 impl TelemetryConfig {
@@ -50,6 +61,7 @@ impl Default for TelemetryConfig {
         Self {
             logs: LogsConfig::default(),
             resource: HashMap::default(),
+            detectors: default_detectors(),
             reporting_channel_size: default_reporting_channel_size(),
             reporting_interval: default_reporting_interval(),
         }
@@ -62,6 +74,20 @@ const fn default_reporting_channel_size() -> usize {
 
 const fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
+}
+
+/// Detectors run when config does not specify a `detectors` list.
+///
+/// `service_instance` generates a stable id, `env` injects `OTEL_RESOURCE_ATTRIBUTES`,
+/// and `service_name` sets `service.name` (from `OTEL_SERVICE_NAME`, falling back to
+/// `unknown_service`). Host/OS/process/container/k8s detectors probe their surroundings
+/// and are opt-in.
+fn default_detectors() -> Vec<String> {
+    vec![
+        "service_instance".to_string(),
+        "env".to_string(),
+        "service_name".to_string(),
+    ]
 }
 
 /// Attribute value types for telemetry resource attributes.
