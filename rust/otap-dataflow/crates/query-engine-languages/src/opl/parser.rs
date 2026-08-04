@@ -208,18 +208,18 @@ mod test {
                             ScalarExpression::Source(SourceScalarExpression::new(
                                 QueryLocation::new_fake(),
                                 ValueAccessor::new_with_selectors(vec![
-                                    ScalarExpression::Static(
-                                        StaticScalarExpression::String(StringScalarExpression::new(
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
                                             QueryLocation::new_fake(),
                                             "attributes",
-                                        )),
-                                    ),
-                                    ScalarExpression::Static(
-                                        StaticScalarExpression::String(StringScalarExpression::new(
+                                        )
+                                    ),),
+                                    ScalarExpression::Static(StaticScalarExpression::String(
+                                        StringScalarExpression::new(
                                             QueryLocation::new_fake(),
                                             "code",
-                                        )),
-                                    )
+                                        )
+                                    ),)
                                 ]),
                             )),
                             ScalarExpression::Static(StaticScalarExpression::Regex(
