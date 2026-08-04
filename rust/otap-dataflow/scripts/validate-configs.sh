@@ -26,7 +26,8 @@ else
     # Note: --all-features cannot be used because jemalloc and mimalloc are
     # mutually exclusive (compile_error! in non-test builds).
     cargo build \
-        --features azure,aws,contrib-exporters,contrib-processors,contrib-receivers,recordset-kql-processor,azure-monitor-exporter,geneva-exporter,condense-attributes-processor,resource-validator-processor,user_events-eventheader \
+        --locked \
+        --features azure,aws,contrib-exporters,contrib-processors,contrib-receivers,recordset-kql-processor,azure-monitor-exporter,azure-identity-auth-extension,geneva-exporter,condense-attributes-processor,resource-validator-processor,user_events-eventheader \
         --manifest-path "$PROJECT_DIR/Cargo.toml"
     BINARY="$PROJECT_DIR/target/debug/df_engine"
 fi
@@ -58,6 +59,18 @@ host_os="$(uname -s)"
 for config in $CONFIG_FILES; do
     TOTAL=$((TOTAL + 1))
     REL_PATH="${config#"$REPO_ROOT/"}"
+
+    # Fail (don't silently skip) if a discovered .yaml/.yml dataflow config
+    # contains Jinja2 "{{ ... }}" placeholders. Such files are templates that
+    # are rendered (e.g. by the pipeline_perf_test harness) before use and are
+    # not valid as-is. Templates must use the ".yaml.j2" extension so they are
+    # excluded from discovery instead of being validated as literal configs.
+    if grep -Eq '\{\{[^}]*\}\}' "$config"; then
+        echo "  ❌ $REL_PATH (Jinja2 placeholder found; rename template to *.yaml.j2)"
+        FAILED=$((FAILED + 1))
+        FAILED_FILES="$FAILED_FILES\n  - $REL_PATH (Jinja2 template must use *.yaml.j2 extension)"
+        continue
+    fi
 
     # Check for a "# platform:" marker at the top of the file.
     required_platform=$(sed -n 's/^# platform: //p' "$config" | head -1)

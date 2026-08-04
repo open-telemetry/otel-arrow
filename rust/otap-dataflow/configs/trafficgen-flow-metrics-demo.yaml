@@ -1,0 +1,183 @@
+# Demonstrates distributed flow metrics with multiple drop decision nodes inside a
+# single flow range:
+#
+# The "ingest_pipeline" flow covers attr1..attr4. The sampler, filter,
+# transform, and recordset_kql nodes each drop records and record
+# `dropped.items` tagged with a `flow.node.decision` attribute of their node
+# name.
+#
+# Inspect scope attributes while running:
+#   curl -s 'http://127.0.0.1:8080/api/v1/telemetry/metrics?format=json' \
+#     | jq '[.metric_sets[] | select(.name == "flow")]'
+#
+# The detailed ITS debug output also displays the `signal` datapoint attribute.
+
+version: otel_dataflow/v1
+engine:
+  telemetry:
+    reporting_interval: 1s
+  observability:
+    pipeline:
+      nodes:
+        telemetry:
+          type: receiver:internal_telemetry
+          config:
+            signals: [metrics]
+            metrics:
+              interval: 1s
+        flow_metrics_filter:
+          type: processor:filter
+          config:
+            metrics:
+              include:
+                match_type: strict
+                metric_names:
+                  - consumed.items
+                  - compute.duration
+                  - produced.items
+                  - dropped.items
+        metrics_debug:
+          type: processor:debug
+          config:
+            verbosity: detailed
+            mode: batch
+            signals: [metrics]
+        noop:
+          type: exporter:noop
+          config: {}
+      connections:
+        - from: telemetry
+          to: flow_metrics_filter
+        - from: flow_metrics_filter
+          to: metrics_debug
+        - from: metrics_debug
+          to: noop
+groups:
+  default:
+    pipelines:
+      main:
+        policies:
+          channel_capacity:
+            control:
+              node: 100
+              pipeline: 100
+            pdata: 128
+          telemetry:
+            runtime_metrics: normal
+            flow_metrics:
+              - id: ingest_pipeline
+                bounds:
+                  start_node: attr1
+                  end_node: attr4
+                # metrics is optional
+                # if omitted, all supported metrics are recorded
+                metrics:
+                  [
+                    compute_duration,
+                    consumed_items,
+                    produced_items,
+                    dropped_items,
+                  ]
+
+        nodes:
+          receiver:
+            type: receiver:traffic_generator
+            config:
+              traffic_config:
+                max_batch_size: 10
+                signals_per_second: 10
+                log_weight: 100
+              # Synthetic data source emits deterministic log attributes
+              # (thread.id, thread.name) so the downstream filter/transform drop
+              # a predictable fraction.
+              data_source: synthetic
+
+          # Decision node #1: keeps ~2/3 of log records.
+          sampler:
+            type: processor:log_sampling
+            config:
+              policy:
+                ratio:
+                  emit: 2
+                  out_of: 3
+
+          attr1:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage
+                  value: "1"
+
+          attr2:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage2
+                  value: "2"
+
+          # Decision node #2: drops log records whose thread.name is worker-1.
+          filter:
+            type: processor:filter
+            config:
+              logs:
+                exclude:
+                  match_type: strict
+                  record_attributes:
+                    - key: thread.name
+                      value: worker-1
+
+          # Decision node #3: transform processor dropping worker-3 via a KQL
+          # `where` predicate, proving it records dropped.items too.
+          transform:
+            type: processor:transform
+            config:
+              kql_query: 'logs | where attributes["thread.name"] != "worker-3"'
+
+          # Decision node #4: recordset_kql processor dropping worker-2 via a KQL
+          # `where` predicate, proving it records dropped.items too.
+          recordset:
+            type: "urn:microsoft:processor:recordset_kql"
+            config:
+              query: "source | where attributes['thread.name'] != 'worker-2'"
+
+          attr3:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage3
+                  value: "3"
+
+          attr4:
+            type: processor:attribute
+            config:
+              actions:
+                - action: insert
+                  key: pipeline.stage4
+                  value: "4"
+
+          noop:
+            type: exporter:noop
+            config:
+
+        connections:
+          - from: receiver
+            to: attr1
+          - from: attr1
+            to: sampler
+          - from: sampler
+            to: attr2
+          - from: attr2
+            to: attr3
+          - from: attr3
+            to: filter
+          - from: filter
+            to: transform
+          - from: transform
+            to: recordset
+          - from: recordset
+            to: attr4
+          - from: attr4
+            to: noop

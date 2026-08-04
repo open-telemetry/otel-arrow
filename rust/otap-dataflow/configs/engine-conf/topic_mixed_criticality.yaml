@@ -67,7 +67,7 @@ groups:
           traffic_gen:
             type: receiver:traffic_generator
             config:
-              data_source: static
+              data_source: synthetic
               generation_strategy: pre_generated
               traffic_config:
                 signals_per_second: 150000

@@ -12,6 +12,7 @@ use datafusion::functions::{export_functions, make_udf_function};
 use datafusion::logical_expr::{self as datafusion_expr, TypeSignature};
 use datafusion::logical_expr_common::signature::Arity;
 
+pub(crate) mod compare;
 mod contains;
 mod fnv;
 pub(crate) mod is_type;

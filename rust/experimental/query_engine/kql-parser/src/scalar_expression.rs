@@ -312,6 +312,7 @@ pub(crate) fn parse_scalar_unary_expression(
                         let item = match value_type {
                             ValueType::Array => ("Array", "array"),
                             ValueType::Boolean => ("Boolean", "bool"),
+                            ValueType::Bytes => ("Bytes", "bytes"),
                             ValueType::DateTime => ("DateTime", "datetime"),
                             ValueType::Double => ("Double", "real"),
                             ValueType::Integer => ("Integer", "long"),
@@ -675,7 +676,8 @@ pub(crate) fn try_resolve_identifier(
                     s.get_selectors()
             {
                 for v in selectors.get_values() {
-                    value.push(v.to_value().to_string().into());
+                    let selector_value: String = v.to_value().convert_to_string().into();
+                    value.push(selector_value.into());
                 }
 
                 return Ok(Some(value));

@@ -214,7 +214,7 @@ impl<'a> Iterator for OtapAttributeIter<'a> {
     }
 }
 
-/// Iterator over attributes with u32 parent_id (event attrs, link attrs per OTAP spec §5.4.1).
+/// Iterator over attributes with u32 parent_id (event attrs, link attrs per OTAP spec sec.5.4.1).
 pub struct Otap32AttributeIter<'a> {
     pub(crate) attrs: Option<&'a Attribute32Arrays<'a>>,
     pub(crate) matching_rows: &'a [usize],

@@ -28,6 +28,7 @@ use otap_df_pdata::{
     },
 };
 use otap_df_telemetry::{otel_error, otel_warn};
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::oneshot;
@@ -43,6 +44,7 @@ pub mod proxy;
 pub mod server_settings;
 
 use crate::memory_pressure_layer::{ReceiverRejectionMetrics, grpc_memory_pressure_status};
+use crate::otap_grpc::common::peer_addr_from_extensions;
 use crate::otap_grpc::otlp::server::SharedState;
 pub use client_settings::GrpcClientSettings;
 pub use server_settings::GrpcServerSettings;
@@ -174,6 +176,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
+        let peer_addr = peer_addr_from_extensions(request.extensions());
         spawn_stream_handler::<Logs, _>(
             request.into_inner(),
             OtapArrowRecords::Logs,
@@ -181,6 +184,7 @@ impl ArrowLogsService for ArrowLogsServiceImpl {
             self.state.clone(),
             self.settings.clone(),
             tx,
+            peer_addr,
         );
 
         Ok(Response::new(Box::pin(output) as Self::ArrowLogsStream))
@@ -200,6 +204,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
         // Provide client a stream to listen to
         let output = ReceiverStream::new(rx);
 
+        let peer_addr = peer_addr_from_extensions(request.extensions());
         spawn_stream_handler::<Metrics, _>(
             request.into_inner(),
             OtapArrowRecords::Metrics,
@@ -207,6 +212,7 @@ impl ArrowMetricsService for ArrowMetricsServiceImpl {
             self.state.clone(),
             self.settings.clone(),
             tx,
+            peer_addr,
         );
 
         Ok(Response::new(Box::pin(output) as Self::ArrowMetricsStream))
@@ -226,6 +232,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
         // create a stream to output result to
         let output = ReceiverStream::new(rx);
 
+        let peer_addr = peer_addr_from_extensions(request.extensions());
         spawn_stream_handler::<Traces, _>(
             request.into_inner(),
             OtapArrowRecords::Traces,
@@ -233,6 +240,7 @@ impl ArrowTracesService for ArrowTracesServiceImpl {
             self.state.clone(),
             self.settings.clone(),
             tx,
+            peer_addr,
         );
 
         Ok(Response::new(Box::pin(output) as Self::ArrowTracesStream))
@@ -254,6 +262,7 @@ fn spawn_stream_handler<T, F>(
     state: Option<SharedState>,
     settings: Settings,
     tx: tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+    peer_addr: Option<SocketAddr>,
 ) where
     T: OtapBatchStore + Send + 'static,
     F: Fn(T) -> OtapArrowRecords + Copy + Send + 'static,
@@ -266,6 +275,7 @@ fn spawn_stream_handler<T, F>(
             state,
             settings,
             tx,
+            peer_addr,
         )
         .await;
     });
@@ -278,6 +288,7 @@ async fn handle_stream<T, F>(
     state: Option<SharedState>,
     settings: Settings,
     tx: tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+    peer_addr: Option<SocketAddr>,
 ) where
     T: OtapBatchStore + Send + 'static,
     F: Fn(T) -> OtapArrowRecords + Copy + Send + 'static,
@@ -335,6 +346,7 @@ async fn handle_stream<T, F>(
                     &settings.admission_state,
                     settings.receiver_rejection_metrics.as_deref(),
                     &tx,
+                    peer_addr,
                 )
                 .await {
                     Ok(Some(response)) => pending.push(response),
@@ -405,6 +417,7 @@ async fn accept_data<T: OtapBatchStore, F>(
     admission_state: &SharedReceiverAdmissionState,
     rejection_metrics: Option<&dyn ReceiverRejectionMetrics>,
     tx: &tokio::sync::mpsc::Sender<Result<BatchStatus, Status>>,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<Option<PendingResponseFuture>, ()>
 where
     F: Fn(T) -> OtapArrowRecords,
@@ -443,6 +456,9 @@ where
     let otap_batch_as_otap_arrow_records = otap_batch(batch);
     let mut otap_pdata =
         OtapPdata::new(Context::default(), otap_batch_as_otap_arrow_records.into());
+    if let Some(addr) = peer_addr {
+        otap_pdata.set_peer_addr(addr);
+    }
 
     let cancel_rx = if let Some(state) = state {
         // Try to allocate a slot (under the mutex) for calldata.

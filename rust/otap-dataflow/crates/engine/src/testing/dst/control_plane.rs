@@ -64,6 +64,7 @@ async fn run_control_plane_seed(seed: u64) {
             MetricsReporter::create_new_and_receiver(16).1,
             DST_CONTROL_PLANE_METRICS_FLUSH_INTERVAL,
             TelemetryPolicy::default(),
+            crate::terminal_state::TerminalMetricsDeadline::default(),
         );
 
         let manager_handle = tokio::task::spawn_local(async move { manager.run().await });

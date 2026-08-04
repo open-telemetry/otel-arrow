@@ -9,21 +9,21 @@
 //! or more synthetic extension factories, then exercises the build
 //! and/or run paths to verify the engine's contract:
 //!
-//! 1. **Passive flow** — a passive extension's capability is resolvable
+//! 1. **Passive flow** -- a passive extension's capability is resolvable
 //!    via `Capabilities::require_local::<C>()` from within a receiver's
 //!    `create()` body.
-//! 2. **Per-variant pruning** — a dual-registration bundle whose
+//! 2. **Per-variant pruning** -- a dual-registration bundle whose
 //!    consumers only call one of `require_local` / `require_shared`
 //!    drops the unused variant before the runtime pipeline is handed
 //!    off to `run_forever`.
-//! 3. **Active spawn ordering** — an active extension's `start()` runs
+//! 3. **Active spawn ordering** -- an active extension's `start()` runs
 //!    BEFORE data-path nodes, but capability *construction* (the
 //!    receiver factory's `create()` body) runs *before* `start()` is
 //!    invoked at all (because `create()` is build-time).
-//! 4. **Fail-fast on extension error** — an active extension whose
+//! 4. **Fail-fast on extension error** -- an active extension whose
 //!    `start()` returns immediately aborts the pipeline; data-path
 //!    drain is not awaited.
-//! 5. **Shutdown ordering** — extensions receive
+//! 5. **Shutdown ordering** -- extensions receive
 //!    `ExtensionControlMsg::Shutdown` only after data-path nodes have
 //!    drained.
 
@@ -37,7 +37,7 @@ use otap_df_engine::ExtensionFactory;
 use otap_df_engine::ReceiverFactory;
 use otap_df_engine::capability::registry::Capabilities;
 use otap_df_engine::config::{ExporterConfig, ExtensionConfig, ReceiverConfig};
-use otap_df_engine::context::{ControllerContext, PipelineContext};
+use otap_df_engine::context::{ControllerContext, ExtensionContext, PipelineContext};
 use otap_df_engine::control::{
     ExtensionControlMsg, RuntimeControlMsg, pipeline_completion_msg_channel,
     runtime_ctrl_msg_channel,
@@ -52,12 +52,12 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::processor::ProcessorWrapper;
 use otap_df_engine::receiver::ReceiverWrapper;
 use otap_df_engine::terminal_state::TerminalState;
+use otap_df_engine::testing::capability::no_op_stateful::LocalNoOpStateful;
 use otap_df_engine::testing::capability::no_op_stateful::NoOpStateful;
-use otap_df_engine::testing::capability::no_op_stateful::local::NoOpStateful as LocalNoOpStateful;
-use otap_df_engine::testing::capability::no_op_stateful::shared::NoOpStateful as SharedNoOpStateful;
+use otap_df_engine::testing::capability::no_op_stateful::SharedNoOpStateful;
+use otap_df_engine::testing::capability::no_op_stateless::LocalNoOpStateless;
 use otap_df_engine::testing::capability::no_op_stateless::NoOpStateless;
-use otap_df_engine::testing::capability::no_op_stateless::local::NoOpStateless as LocalNoOpStateless;
-use otap_df_engine::testing::capability::no_op_stateless::shared::NoOpStateless as SharedNoOpStateless;
+use otap_df_engine::testing::capability::no_op_stateless::SharedNoOpStateless;
 use otap_df_engine::{PipelineFactory, extension_capabilities};
 use otap_df_state::store::ObservedStateStore;
 use otap_df_telemetry::InternalTelemetrySystem;
@@ -66,14 +66,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-// ─────────────────────────────────────────────────────────────────────
-// Shared helpers — global probe registries thread per-test state into
+// ---------------------------------------------------------------------
+// Shared helpers -- global probe registries thread per-test state into
 // `static fn` factory bodies without unsafe code.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 //
 // Receiver/extension factories are `static fn` pointers and cannot
 // capture closures over per-test state. To pass `Arc<AtomicUsize>` /
-// `Arc<Mutex<…>>` handles into a factory body, each test:
+// `Arc<Mutex<...>>` handles into a factory body, each test:
 //
 //   1. Inserts its handles into a global `RECEIVER_PROBES` /
 //      `ACTIVE_EXT_PROBES` / `SHUTDOWN_RECORDING_PROBES` map keyed by a
@@ -83,7 +83,7 @@ use std::time::{Duration, Instant};
 //   3. Inside the factory body, looks up the key in the global
 //      registry and clones out the handles it needs.
 //
-// The registry is `Mutex<HashMap<…>>` (cheap; tests are not perf-
+// The registry is `Mutex<HashMap<...>>` (cheap; tests are not perf-
 // critical), which avoids any `unsafe` and works fine across the
 // rt-multi-thread bits we use in `run_pipeline_with_shutdown_after`.
 
@@ -121,7 +121,7 @@ struct ReceiverProbe {
 
 /// Enumerates the call sequences the [`ProbeReceiver`] factory can
 /// execute against its `&Capabilities` input. Adding new variants is
-/// strictly additive — existing tests keep their behavior.
+/// strictly additive -- existing tests keep their behavior.
 #[derive(Clone, Copy, Debug)]
 #[allow(dead_code)] // Some variants are reserved for future tests.
 enum CallSequence {
@@ -162,7 +162,7 @@ enum CallSequence {
     SharedStatefulIncrement,
     /// `require_local::<NoOpStateful>()`; the create() body keeps the
     /// boxed handle alive by stashing it on the receiver, which then
-    /// invokes `.record(7).await` from inside its `start()` body —
+    /// invokes `.record(7).await` from inside its `start()` body --
     /// exercising the async `&mut self` path on the local trait variant.
     LocalStatefulRecordAsync,
     /// `require_shared::<NoOpStateful>()`; analogous to
@@ -213,11 +213,12 @@ const PASSIVE_EXTENSION_URN: &str = "urn:test:extension:passive_extension";
 const DUAL_EXTENSION_URN: &str = "urn:test:extension:dual_extension";
 const ACTIVE_EXTENSION_URN: &str = "urn:test:extension:active_extension";
 const FAILING_EXTENSION_URN: &str = "urn:test:extension:failing_extension";
+const IMMEDIATE_OK_EXTENSION_URN: &str = "urn:test:extension:immediate_ok_extension";
 const SHUTDOWN_RECORDING_EXTENSION_URN: &str = "urn:test:extension:shutdown_recording_extension";
 
-// ─────────────────────────────────────────────────────────────────────
-// Probe receiver — exercises Capabilities API in create()
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Probe receiver -- exercises Capabilities API in create()
+// ---------------------------------------------------------------------
 
 struct ProbeReceiver {
     lifecycle: Option<NodeLifecycleProbe>,
@@ -226,7 +227,7 @@ struct ProbeReceiver {
     /// `stateful_increment_return` slot. Exercises async `&mut self`
     /// on the local trait variant.
     async_local_stateful: Option<Box<dyn LocalNoOpStateful>>,
-    /// As above but for the shared trait variant — exercises async
+    /// As above but for the shared trait variant -- exercises async
     /// `&mut self` on the `Send` shared handle.
     async_shared_stateful: Option<Box<dyn SharedNoOpStateful>>,
     /// Probe key used to publish async record return values back to
@@ -444,9 +445,9 @@ const PROBE_RECEIVER_FACTORY: ReceiverFactory<()> = ReceiverFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Noop exporter
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 struct NoopExporter;
 
@@ -490,9 +491,9 @@ const NOOP_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Stateless no-op extension impl shared across local + shared variants.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct NoOpStatelessImpl {
@@ -555,12 +556,12 @@ impl LocalNoOpStateless for NoOpStatelessImplLocal {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Passive (no-lifecycle) extension factory — provides NoOpStateless
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Passive (no-lifecycle) extension factory -- provides NoOpStateless
+// ---------------------------------------------------------------------
 
 fn passive_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -587,13 +588,13 @@ const PASSIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Dual extension factory — registers BOTH local and shared variants so
+// ---------------------------------------------------------------------
+// Dual extension factory -- registers BOTH local and shared variants so
 // the per-variant pruning test has something to drop.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 fn dual_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -619,9 +620,9 @@ const DUAL_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Active extension — observable start() / shutdown() side effects
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Active extension -- observable start() / shutdown() side effects
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct ActiveExtImpl {
@@ -701,7 +702,7 @@ fn lookup_active_ext_probe(key: &str) -> ActiveExtProbe {
 }
 
 fn active_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -736,14 +737,14 @@ const ACTIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Active SHARED-COUNTER extension — same struct provides BOTH the
+// ---------------------------------------------------------------------
+// Active SHARED-COUNTER extension -- same struct provides BOTH the
 // extension lifecycle AND a `NoOpStateful` capability backed by an
 // `Arc<AtomicU64>`. The `start()` task bumps the counter a fixed
 // number of times before entering its event loop, so capability
 // consumers can observe the active extension mutating shared state
 // during its run.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct ActiveSharedCounterImpl {
@@ -777,7 +778,7 @@ impl otap_df_engine::shared::extension::Extension for ActiveSharedCounterImpl {
         mut ctrl: otap_df_engine::shared::extension::ControlChannel,
         _eh: EffectHandler,
     ) -> Result<TerminalState, EngineError> {
-        // Mutate shared state from inside the active task — the canonical
+        // Mutate shared state from inside the active task -- the canonical
         // pattern for an active extension publishing data to capability
         // consumers (e.g., a token-refresh loop or a state-warmup task).
         for _ in 0..self.bumps {
@@ -797,7 +798,7 @@ const ACTIVE_SHARED_COUNTER_EXTENSION_URN: &str =
     "urn:test:extension:active_shared_counter_extension";
 
 fn active_shared_counter_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -836,9 +837,9 @@ const ACTIVE_SHARED_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFacto
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Failing extension — start() returns an error immediately
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Failing extension -- start() returns an error immediately
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct FailingExtImpl;
@@ -873,7 +874,7 @@ impl otap_df_engine::shared::extension::Extension for FailingExtImpl {
 }
 
 fn failing_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -897,10 +898,71 @@ const FAILING_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Shutdown-recording extension — captures the wall-clock instant at
+// ---------------------------------------------------------------------
+// Immediate-Ok extension -- start() returns Ok(TerminalState::default())
+// without waiting for Shutdown. Used to pin the contract that an
+// active extension self-terminating mid-run is a pipeline error.
+// ---------------------------------------------------------------------
+
+#[derive(Clone)]
+struct ImmediateOkExtImpl;
+
+#[async_trait]
+impl SharedNoOpStateless for ImmediateOkExtImpl {
+    fn name(&self) -> &str {
+        "immediate-ok"
+    }
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+    async fn ping(&self) -> u64 {
+        0
+    }
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait]
+impl otap_df_engine::shared::extension::Extension for ImmediateOkExtImpl {
+    async fn start(
+        self: Box<Self>,
+        _ctrl: otap_df_engine::shared::extension::ControlChannel,
+        _eh: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        Ok(TerminalState::default())
+    }
+}
+
+fn immediate_ok_extension_create(
+    _ctx: &ExtensionContext,
+    name: otap_df_config::ExtensionId,
+    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+    let bundle = ExtensionWrapper::builder(name, user_config, extension_config)
+        .active()
+        .shared::<ImmediateOkExtImpl>(ImmediateOkExtImpl)
+        .build()
+        .expect("immediate-ok extension bundle builds");
+    Ok(bundle)
+}
+
+const IMMEDIATE_OK_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: IMMEDIATE_OK_EXTENSION_URN,
+    description: "active extension whose start() returns Ok immediately, before Shutdown",
+    documentation_url: "",
+    capabilities: Some(extension_capabilities!(
+        shared: ImmediateOkExtImpl => [NoOpStateless]
+    )),
+    create: immediate_ok_extension_create,
+    validate_config: otap_df_config::validation::no_config,
+};
+
+// ---------------------------------------------------------------------
+// Shutdown-recording extension -- captures the wall-clock instant at
 // which Shutdown was received.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct ShutdownRecordingExtImpl {
@@ -975,7 +1037,7 @@ fn lookup_shutdown_recording_probe(key: &str) -> ShutdownRecordingProbe {
 }
 
 fn shutdown_recording_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1008,12 +1070,12 @@ const SHUTDOWN_RECORDING_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory 
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Dual-active extension — registers BOTH `.active().shared(...)` and
+// ---------------------------------------------------------------------
+// Dual-active extension -- registers BOTH `.active().shared(...)` and
 // `.active().local(Rc::new(...))`. Each side has its own observable
 // `start()` so a test that consumes only one variant can assert the
 // OTHER variant's wrapper was pruned (its `start()` never ran).
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 /// `!Send` Active extension impl. Functionally similar to
 /// [`ActiveExtImpl`] but a separate concrete type so the builder's
@@ -1067,7 +1129,7 @@ impl otap_df_engine::local::extension::Extension for ActiveLocalExtImpl {
 const DUAL_ACTIVE_EXTENSION_URN: &str = "urn:test:extension:dual_active_extension";
 
 fn dual_active_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1116,9 +1178,9 @@ const DUAL_ACTIVE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Background extension — no capabilities, engine-driven event loop
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Background extension -- no capabilities, engine-driven event loop
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct BackgroundExtImpl {
@@ -1181,7 +1243,7 @@ fn lookup_background_probe(key: &str) -> BackgroundProbe {
 }
 
 fn background_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1206,7 +1268,7 @@ fn background_extension_create(
 
 const BACKGROUND_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     name: BACKGROUND_EXTENSION_URN,
-    description: "background extension — engine-driven event loop, no capabilities",
+    description: "background extension \u{2014} engine-driven event loop, no capabilities",
     documentation_url: "",
     // `None` is the engine's runtime signal that this is a Background
     // extension: `register_into` skips capability registration, and
@@ -1216,10 +1278,10 @@ const BACKGROUND_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Shared-counter extension — provides NoOpStateful via passive Cloned;
+// ---------------------------------------------------------------------
+// Shared-counter extension -- provides NoOpStateful via passive Cloned;
 // holds an `Arc<AtomicU64>` counter so cloned consumers share state.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct SharedCounterImpl {
@@ -1232,7 +1294,7 @@ impl SharedNoOpStateful for SharedCounterImpl {
         self.counter.load(Ordering::SeqCst)
     }
     fn increment(&mut self) -> u64 {
-        // `&mut self` is fine — interior mutability via the `Arc<AtomicU64>`
+        // `&mut self` is fine -- interior mutability via the `Arc<AtomicU64>`
         // means clones of `SharedCounterImpl` all observe the same
         // underlying value, demonstrating cross-consumer state sharing
         // when the impl explicitly opts in.
@@ -1301,7 +1363,7 @@ fn lookup_shared_counter_probe(key: &str) -> SharedCounterProbe {
 }
 
 fn shared_counter_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1315,7 +1377,7 @@ fn shared_counter_extension_create(
     let impl_ = SharedCounterImpl {
         counter: Arc::clone(&probe.counter),
     };
-    // `.passive().cloned()` — each consumer gets its own `Clone` of the
+    // `.passive().cloned()` -- each consumer gets its own `Clone` of the
     // prototype. The `Arc<AtomicU64>` field means clones all point at
     // the same underlying counter, which is the explicit
     // share-state-via-`Arc` pattern documented in the architecture.
@@ -1339,18 +1401,18 @@ const SHARED_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Shared-counter extension (shared variant) — same `SharedCounterImpl`
+// ---------------------------------------------------------------------
+// Shared-counter extension (shared variant) -- same `SharedCounterImpl`
 // registered under `.passive().cloned().shared(...)` so tests can
 // exercise the `require_shared::<NoOpStateful>()` path (sync + async
 // `&mut self` on the `Send` shared trait variant).
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 const SHARED_COUNTER_SHARED_EXTENSION_URN: &str =
     "urn:test:extension:shared_counter_shared_extension";
 
 fn shared_counter_shared_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1384,12 +1446,12 @@ const SHARED_COUNTER_SHARED_EXTENSION_FACTORY: ExtensionFactory = ExtensionFacto
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Constructed extension — `.passive().constructed(closure)` so each
+// ---------------------------------------------------------------------
+// Constructed extension -- `.passive().constructed(closure)` so each
 // consumer triggers a fresh instance from the user-supplied closure.
 // The closure increments a counter so the test can verify it ran once
 // per consumer.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct ConstructedNoOpImpl;
@@ -1444,7 +1506,7 @@ fn lookup_constructed_probe(key: &str) -> ConstructedProbe {
 }
 
 fn constructed_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1455,7 +1517,7 @@ fn constructed_extension_create(
         .and_then(|v| v.as_str())
         .expect("probe_key present in constructed extension config");
     let probe = lookup_constructed_probe(key);
-    // `.passive().constructed(closure)` — the closure is invoked once
+    // `.passive().constructed(closure)` -- the closure is invoked once
     // per consumer at `Capabilities::require_local` time. Each consumer
     // gets a fresh `ConstructedNoOpImpl` value, demonstrating
     // per-consumer instantiation.
@@ -1483,12 +1545,12 @@ const CONSTRUCTED_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Rc-counter extension (LOCAL ONLY) — proves shared mutable state via
+// ---------------------------------------------------------------------
+// Rc-counter extension (LOCAL ONLY) -- proves shared mutable state via
 // `Rc<RefCell<...>>` is observable across multiple consumers when the
 // impl is registered with `.passive().cloned()`. `Rc` is `!Send` so
 // this impl can only be wired through the local trait variant.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct RcCounterImpl {
@@ -1521,7 +1583,7 @@ impl LocalNoOpStateful for RcCounterImpl {
 const RC_COUNTER_EXTENSION_URN: &str = "urn:test:extension:rc_counter_extension";
 
 fn rc_counter_extension_create(
-    _pipeline_ctx: PipelineContext,
+    _ctx: &ExtensionContext,
     name: otap_df_config::ExtensionId,
     user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
     extension_config: &ExtensionConfig,
@@ -1552,13 +1614,13 @@ const RC_COUNTER_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Node lifecycle probe — captures `start()` entry / exit timestamps for
+// ---------------------------------------------------------------------
+// Node lifecycle probe -- captures `start()` entry / exit timestamps for
 // the probe receiver, processor, and exporter so lifecycle ordering
 // tests can compare against extension start/shutdown timestamps.
 // Separate from `ReceiverProbe` to keep the existing capability-call
 // probe focused on its job.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[derive(Clone, Default)]
 struct NodeLifecycleProbe {
@@ -1595,10 +1657,10 @@ fn lookup_node_lifecycle_probe(key: &str) -> NodeLifecycleProbe {
         .unwrap_or_else(|| panic!("no NodeLifecycleProbe registered for key '{key}'"))
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Probe processor — exercises Capabilities API in create() and records
+// ---------------------------------------------------------------------
+// Probe processor -- exercises Capabilities API in create() and records
 // lifecycle timestamps. Pass-through for pdata; loops on Shutdown.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 struct ProbeProcessor {
     lifecycle: Option<NodeLifecycleProbe>,
@@ -1677,10 +1739,10 @@ const PROBE_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<()> =
         validate_config: otap_df_config::validation::no_config,
     };
 
-// ─────────────────────────────────────────────────────────────────────
-// Probe exporter — exercises Capabilities API in create() and records
+// ---------------------------------------------------------------------
+// Probe exporter -- exercises Capabilities API in create() and records
 // lifecycle timestamps. Identical lifecycle to NoopExporter otherwise.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 struct ProbeExporter {
     lifecycle: Option<NodeLifecycleProbe>,
@@ -1758,9 +1820,9 @@ const PROBE_EXPORTER_FACTORY: ExporterFactory<()> = ExporterFactory {
     validate_config: otap_df_config::validation::no_config,
 };
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // PipelineFactory<()> wiring all the test factories
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 const RECEIVER_FACTORIES: &[ReceiverFactory<()>] = &[PROBE_RECEIVER_FACTORY];
 const PROCESSOR_FACTORIES: &[otap_df_engine::ProcessorFactory<()>] = &[PROBE_PROCESSOR_FACTORY];
@@ -1771,6 +1833,7 @@ const EXTENSION_FACTORIES: &[ExtensionFactory] = &[
     ACTIVE_EXTENSION_FACTORY,
     ACTIVE_SHARED_COUNTER_EXTENSION_FACTORY,
     FAILING_EXTENSION_FACTORY,
+    IMMEDIATE_OK_EXTENSION_FACTORY,
     SHUTDOWN_RECORDING_EXTENSION_FACTORY,
     DUAL_ACTIVE_EXTENSION_FACTORY,
     BACKGROUND_EXTENSION_FACTORY,
@@ -1787,13 +1850,13 @@ static TEST_PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
     EXTENSION_FACTORIES,
 );
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Pipeline-build / run helpers shared across tests
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
-fn fresh_pipeline_context() -> (
-    InternalTelemetrySystem,
+fn fresh_pipeline_env() -> (
     PipelineContext,
+    InternalTelemetrySystem,
     otap_df_telemetry::registry::EntityKey,
 ) {
     let telemetry_system = InternalTelemetrySystem::default();
@@ -1807,7 +1870,7 @@ fn fresh_pipeline_context() -> (
         0,
     );
     let entity_key = ctx.register_pipeline_entity();
-    (telemetry_system, ctx, entity_key)
+    (ctx, telemetry_system, entity_key)
 }
 
 fn run_pipeline_with_shutdown_after(
@@ -1875,7 +1938,7 @@ fn build_test_runtime_pipeline(
 ) {
     let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
         .expect("yaml config parses + validates");
-    let (telemetry_system, pipeline_ctx, entity_key) = fresh_pipeline_context();
+    let (pipeline_ctx, telemetry_system, entity_key) = fresh_pipeline_env();
     let runtime_pipeline = TEST_PIPELINE_FACTORY
         .build(
             pipeline_ctx.clone(),
@@ -1930,9 +1993,9 @@ fn make_probe(key: &str, sequence: CallSequence) -> ReceiverProbeHandles {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 1 — passive extension provides NoOpStateless to a node consumer
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Test 1 -- passive extension provides NoOpStateless to a node consumer
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_passive_extension_provides_capability_to_node() {
@@ -1979,20 +2042,20 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 2 — dual ACTIVE local+shared; receiver consumes only local;
+// ---------------------------------------------------------------------
+// Test 2 -- dual ACTIVE local+shared; receiver consumes only local;
 //          assert the shared variant's wrapper was pruned (start()
-//          never ran). This is Category 3a in lib.rs — the unused
+//          never ran). This is Category 3a in lib.rs -- the unused
 //          variant is silently dropped while the consumed variant
 //          is kept and spawned.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_dual_active_unused_variant_is_pruned_and_never_starts() {
     let receiver_key = "dual-active-recv";
     let probe = make_probe(receiver_key, CallSequence::Local);
 
-    // Two distinct probes — one for the local Active variant, one for
+    // Two distinct probes -- one for the local Active variant, one for
     // the shared Active variant. After the run we'll assert local
     // started and shared did NOT (because pruning dropped its wrapper
     // before `run_forever` could spawn it).
@@ -2097,10 +2160,10 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 3 — active extension start() runs after build (capability
+// ---------------------------------------------------------------------
+// Test 3 -- active extension start() runs after build (capability
 //          construction in receiver's create() observes start()=false)
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_active_extension_start_runs_after_create() {
@@ -2148,7 +2211,7 @@ connections:
     let (runtime_pipeline, ctx, entity_key, ts) = build_test_runtime_pipeline(&yaml);
 
     // Capability construction happened during build, before any task
-    // was spawned — assert start() is still false at this point.
+    // was spawned -- assert start() is still false at this point.
     assert_eq!(probe.create_calls.load(Ordering::SeqCst), 1);
     assert_eq!(probe.first_call_succeeded.load(Ordering::SeqCst), 1);
     assert!(
@@ -2181,9 +2244,9 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 4 — fail-fast on extension error
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Test 4 -- fail-fast on extension error
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_active_extension_failure_aborts_pipeline_fast() {
@@ -2239,13 +2302,66 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Error-path shutdown hygiene — when one active extension errors out,
-// any *other* already-started extensions must still receive `Shutdown`
-// before the pipeline returns, so they can release sockets, files, or
-// background work cleanly. Regression test for review feedback on
-// PR #2860 (discussion_r3228775534).
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// An active extension self-terminating mid-run (returning `Ok(())`
+// before any `Shutdown` is broadcast) breaks the active-extension
+// contract -- operators lose a declared long-lived service with zero
+// visibility. The pipeline must surface this as an error.
+
+#[test]
+fn test_active_extension_self_terminating_is_pipeline_error() {
+    let receiver_key = "self-term-recv";
+    let _probe = make_probe(receiver_key, CallSequence::Local);
+
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "selfterm-ext"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  selfterm-ext:
+    type: "{IMMEDIATE_OK_EXTENSION_URN}"
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_test_runtime_pipeline(&yaml);
+
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        // Short backstop: the pipeline is expected to fail on its own well before this.
+        Duration::from_millis(100),
+    );
+
+    assert!(
+        result.is_err(),
+        "an active extension returning Ok before Shutdown must fail the pipeline, got Ok"
+    );
+    let msg = format!("{}", result.err().unwrap());
+    assert!(
+        msg.to_lowercase().contains("extension")
+            && (msg.to_lowercase().contains("exit")
+                || msg.to_lowercase().contains("terminat")
+                || msg.to_lowercase().contains("shutdown")),
+        "error must call out the active extension's early termination, got: {msg}"
+    );
+}
+
+// When one active extension errors out, other already-started extensions
+// must still receive `Shutdown` before the pipeline returns so they can
+// release sockets, files, or background work cleanly.
 
 #[test]
 fn test_other_extensions_receive_shutdown_when_pipeline_errors() {
@@ -2266,7 +2382,7 @@ fn test_other_extensions_receive_shutdown_when_pipeline_errors() {
     // pruned as "defined-but-unbound" before the run starts. We use
     // two probe receivers, each binding a distinct extension, fanning
     // into the same exporter. The failing extension errors at start
-    // → pipeline aborts → the recording extension must still receive
+    // -> pipeline aborts -> the recording extension must still receive
     // `Shutdown` on the way out.
     let receiver_b_key = "err-shutdown-recv-b";
     let _probe_b = make_probe(receiver_b_key, CallSequence::Local);
@@ -2305,7 +2421,7 @@ connections:
     );
     let (runtime_pipeline, ctx, entity_key, ts) = build_test_runtime_pipeline(&yaml);
 
-    // Generous outer shutdown grace — the test must return well before
+    // Generous outer shutdown grace -- the test must return well before
     // it because the pipeline aborts on the failing extension's error
     // and then bounded-drains the recording extension within
     // `EXTENSION_SHUTDOWN_GRACE` (5s).
@@ -2334,10 +2450,10 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 5 — shutdown ordering: extension records Shutdown timestamp
+// ---------------------------------------------------------------------
+// Test 5 -- shutdown ordering: extension records Shutdown timestamp
 //          inside the pipeline run window
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_extension_receives_shutdown_within_run_window() {
@@ -2408,9 +2524,9 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 6 — one-shot enforcement: require_local twice
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Test 6 -- one-shot enforcement: require_local twice
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_require_local_twice_errors() {
@@ -2461,9 +2577,9 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 7 — one-shot enforcement: require_local then require_shared
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Test 7 -- one-shot enforcement: require_local then require_shared
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_require_local_then_require_shared_errors() {
@@ -2501,9 +2617,9 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 8 — one-shot enforcement: require_local then optional_local
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Test 8 -- one-shot enforcement: require_local then optional_local
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_require_local_then_optional_local_errors() {
@@ -2541,9 +2657,9 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 9 — one-shot enforcement: require_local then optional_shared
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Test 9 -- one-shot enforcement: require_local then optional_shared
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_require_local_then_optional_shared_errors() {
@@ -2581,14 +2697,14 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 10 — Background extension is kept (no warning) and runs even
+// ---------------------------------------------------------------------
+// Test 10 -- Background extension is kept (no warning) and runs even
 //           though no node binds any of its capabilities (it has none).
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_background_extension_runs_without_node_bindings() {
-    // The receiver claims nothing — pipeline has no capability bindings
+    // The receiver claims nothing -- pipeline has no capability bindings
     // anywhere. We're testing the Background lifecycle in isolation.
     let receiver_key = "bg-receiver";
     let _probe = make_probe(receiver_key, CallSequence::None);
@@ -2649,12 +2765,12 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 11 — Background extension survives pruning even when an
+// ---------------------------------------------------------------------
+// Test 11 -- Background extension survives pruning even when an
 //           unbound *non-background* extension is dropped.
 //           Two extensions in the same pipeline; receiver binds neither.
 //           Asserts contrasting outcomes prove the BG special-case.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_background_kept_while_unbound_active_dropped() {
@@ -2691,8 +2807,8 @@ fn test_background_kept_while_unbound_active_dropped() {
     // Both a Background and an Active extension are declared. The
     // receiver binds NEITHER (its `capabilities:` block is omitted).
     // Expected outcomes:
-    //   - Background bundle: kept (Category 1) → start() runs.
-    //   - Active bundle: dropped (Category 2: defined-but-unbound) →
+    //   - Background bundle: kept (Category 1) -> start() runs.
+    //   - Active bundle: dropped (Category 2: defined-but-unbound) ->
     //     start() never runs.
     let yaml = format!(
         r#"
@@ -2744,7 +2860,7 @@ connections:
 
     assert!(
         !active_started.load(Ordering::SeqCst),
-        "unbound Active extension must be dropped before runtime spawn — start() must not run"
+        "unbound Active extension must be dropped before runtime spawn \u{2014} start() must not run"
     );
     assert!(
         active_start_at.lock().is_none(),
@@ -2752,11 +2868,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 12 — Shared state: two receiver nodes binding the same
+// ---------------------------------------------------------------------
+// Test 12 -- Shared state: two receiver nodes binding the same
 //           passive-cloned extension share an Arc<AtomicU64> counter.
 //           Each consumer's `increment()` is observable to the other.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_shared_state_across_two_nodes_via_arc() {
@@ -2822,7 +2938,7 @@ connections:
     // The two consumers were each handed a Box<dyn Local> via .cloned()
     // (clones of the prototype). The prototype's `Arc<AtomicU64>` is
     // shared across clones, so the two `increment()` returns must be
-    // distinct values 1 and 2 (in build-order — receiver_a first,
+    // distinct values 1 and 2 (in build-order -- receiver_a first,
     // receiver_b second). Plus the underlying counter is now 2.
     let mut returns = [val_a, val_b];
     returns.sort_unstable();
@@ -2838,12 +2954,12 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 13 — `.passive().constructed()` policy: the user closure runs
+// ---------------------------------------------------------------------
+// Test 13 -- `.passive().constructed()` policy: the user closure runs
 //           ONCE PER CONSUMER, so two nodes binding to the same
 //           constructed extension yield two closure invocations and
 //           two fresh instances.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_constructed_policy_yields_fresh_instance_per_consumer() {
@@ -2913,11 +3029,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 14 — one-shot enforcement: optional_local then require_local
+// ---------------------------------------------------------------------
+// Test 14 -- one-shot enforcement: optional_local then require_local
 //           Proves that a successful `optional_local` claim consumes
 //           the binding's one-shot, blocking subsequent `require_*`.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_optional_local_then_require_local_errors() {
@@ -2955,11 +3071,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 15 — one-shot enforcement: optional_local then optional_local
+// ---------------------------------------------------------------------
+// Test 15 -- one-shot enforcement: optional_local then optional_local
 //           Proves that two optional_* calls on the same binding
 //           still trip the one-shot guard.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_optional_local_then_optional_local_errors() {
@@ -2999,10 +3115,10 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 16 — one-shot enforcement: optional_shared then require_shared
+// ---------------------------------------------------------------------
+// Test 16 -- one-shot enforcement: optional_shared then require_shared
 //           Mirror of test 14, exercises the shared-side accessors.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_optional_shared_then_require_shared_errors() {
@@ -3040,10 +3156,10 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Test 17 — one-shot enforcement: optional_shared then optional_shared
+// ---------------------------------------------------------------------
+// Test 17 -- one-shot enforcement: optional_shared then optional_shared
 //           Mirror of test 15, exercises the shared-side accessors.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_one_shot_optional_shared_then_optional_shared_errors() {
@@ -3081,9 +3197,9 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Lifecycle ordering — extension `start()` invoked before any node task
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Lifecycle ordering -- extension `start()` invoked before any node task
+// ---------------------------------------------------------------------
 //
 // Asserts the framework's "extensions start first" lifecycle invariant:
 // the active extension's `start()` records its entry timestamp before
@@ -3212,7 +3328,7 @@ connections:
     // The processor's `start()` is engine-internal and not exposed to
     // the trait impl; we observe it via its first `process()` call,
     // which can only happen after spawn. If the receiver never sends
-    // pdata, this slot stays None — that's fine and we skip the assert.
+    // pdata, this slot stays None -- that's fine and we skip the assert.
     if let Some(processor_first) = *lifecycle.processor_first_call_at.lock() {
         assert!(
             ext_start <= processor_first,
@@ -3222,9 +3338,9 @@ connections:
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Lifecycle ordering — extension receives Shutdown after nodes drain
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
+// Lifecycle ordering -- extension receives Shutdown after nodes drain
+// ---------------------------------------------------------------------
 //
 // Asserts the framework's "extensions stop last" lifecycle invariant:
 // the receiver and exporter record their `start()`-body exit
@@ -3332,11 +3448,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Optional capability — `optional_local` returns Ok(None) when no
+// ---------------------------------------------------------------------
+// Optional capability -- `optional_local` returns Ok(None) when no
 // extension provides the capability (no provider declared in YAML).
 // Validates the optional path for processor and exporter consumers.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_optional_capability_returns_none_when_no_provider() {
@@ -3406,11 +3522,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// `&mut self` (sync) on the SHARED trait variant — proves the shared
+// ---------------------------------------------------------------------
+// `&mut self` (sync) on the SHARED trait variant -- proves the shared
 // trait's `Send` bound doesn't block sync `&mut self` invocation
-// through a `Box<dyn …Shared>` returned by `require_shared`.
-// ─────────────────────────────────────────────────────────────────────
+// through a `Box<dyn ...Shared>` returned by `require_shared`.
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_shared_handle_sync_mut_self_increment() {
@@ -3467,11 +3583,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// async `&mut self` on the LOCAL trait variant — proves the async
-// codegen path is invokable through a `Box<dyn …Local>` retrieved at
+// ---------------------------------------------------------------------
+// async `&mut self` on the LOCAL trait variant -- proves the async
+// codegen path is invokable through a `Box<dyn ...Local>` retrieved at
 // build time and awaited inside a node task.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_local_handle_async_mut_self_record() {
@@ -3544,11 +3660,11 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// async `&mut self` on the SHARED trait variant — proves the async +
-// `Send` codegen path is invokable through a `Box<dyn …Shared>` and
+// ---------------------------------------------------------------------
+// async `&mut self` on the SHARED trait variant -- proves the async +
+// `Send` codegen path is invokable through a `Box<dyn ...Shared>` and
 // awaited from inside a node task.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_shared_handle_async_mut_self_record() {
@@ -3619,12 +3735,12 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Cross-node shared state via `Rc<RefCell<...>>` on the LOCAL trait
-// variant — proves that an `Rc`-wrapped field on a `.passive().cloned()`
+// variant -- proves that an `Rc`-wrapped field on a `.passive().cloned()`
 // impl is observably shared across multiple consumers (clones bump
 // the Rc refcount and point at the same RefCell).
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_local_shared_state_across_two_nodes_via_rc() {
@@ -3688,12 +3804,12 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Cross-node shared state via `Arc<AtomicU64>` on the SHARED trait
-// variant — same idea as the existing local-Arc multi-node test, but
+// variant -- same idea as the existing local-Arc multi-node test, but
 // goes through the `require_shared` path with the `Send` trait
 // variant.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_shared_state_across_two_nodes_via_shared_arc() {
@@ -3770,14 +3886,14 @@ connections:
     );
 }
 
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 // Active extension mutates shared `Arc<AtomicU64>` state during its
-// `start()` task — proves capability consumers observe pre-mutation
+// `start()` task -- proves capability consumers observe pre-mutation
 // state at build time and can read the post-mutation state through
 // the same `Arc` after the run. The extension's impl provides BOTH
 // the lifecycle and the `NoOpStateful` capability, so writes from
 // `start()` and reads via the capability go through one Arc.
-// ─────────────────────────────────────────────────────────────────────
+// ---------------------------------------------------------------------
 
 #[test]
 fn test_active_extension_mutates_shared_arc_observed_by_consumers() {
@@ -3855,11 +3971,751 @@ connections:
     // the Arc-shared counter exactly `bumps` times. Capability consumers
     // share that same Arc (via the registry-handed-out clone of the
     // impl), so reads through the capability would observe the same
-    // value — here we verify directly through the probe's Arc handle.
+    // value -- here we verify directly through the probe's Arc handle.
     assert_eq!(
         counter.load(Ordering::SeqCst),
         bumps,
         "active extension's start() must have mutated the shared Arc<AtomicU64> \
          exactly `bumps` times, observable to capability consumers"
+    );
+}
+
+const READY_GATE_EXTENSION_URN: &str = "urn:test:extension:ready_gate_extension";
+
+#[derive(Clone)]
+struct ReadyGateExtImpl {
+    ready_after: Option<Duration>,
+    fail_before_ready: bool,
+    ready_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+    start_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+}
+
+#[async_trait]
+impl SharedNoOpStateless for ReadyGateExtImpl {
+    fn name(&self) -> &str {
+        "ready-gate"
+    }
+    fn echo(&self, value: u64) -> u64 {
+        value
+    }
+    async fn ping(&self) -> u64 {
+        0
+    }
+    async fn echo_async(&self, value: String) -> String {
+        value
+    }
+}
+
+#[async_trait]
+impl otap_df_engine::shared::extension::Extension for ReadyGateExtImpl {
+    async fn start(
+        self: Box<Self>,
+        mut ctrl: otap_df_engine::shared::extension::ControlChannel,
+        eh: EffectHandler,
+    ) -> Result<TerminalState, EngineError> {
+        *self.start_at.lock() = Some(Instant::now());
+
+        // Yield so the spawn barrier sees this task alive before a
+        // fail_before_ready return drops `eh`.
+        tokio::task::yield_now().await;
+
+        if self.fail_before_ready {
+            return Err(EngineError::InternalError {
+                message: "synthetic failure before readiness signal".into(),
+            });
+        }
+
+        if let Some(d) = self.ready_after {
+            tokio::time::sleep(d).await;
+            eh.signal_ready();
+            *self.ready_at.lock() = Some(Instant::now());
+        }
+
+        loop {
+            match ctrl.recv().await {
+                Ok(ExtensionControlMsg::Shutdown { .. }) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        Ok(TerminalState::default())
+    }
+}
+
+#[derive(Clone)]
+struct ReadyGateProbe {
+    ready_after: Option<Duration>,
+    fail_before_ready: bool,
+    ready_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+    start_at: Arc<parking_lot::Mutex<Option<Instant>>>,
+}
+
+static READY_GATE_PROBES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, ReadyGateProbe>>,
+> = std::sync::OnceLock::new();
+
+fn ready_gate_probes()
+-> &'static std::sync::Mutex<std::collections::HashMap<String, ReadyGateProbe>> {
+    READY_GATE_PROBES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn register_ready_gate_probe(key: &str, probe: ReadyGateProbe) {
+    let _ = ready_gate_probes()
+        .lock()
+        .expect("ready gate probes mutex poisoned")
+        .insert(key.to_owned(), probe);
+}
+
+fn lookup_ready_gate_probe(key: &str) -> ReadyGateProbe {
+    ready_gate_probes()
+        .lock()
+        .expect("ready gate probes mutex poisoned")
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| panic!("no ReadyGateProbe registered for key '{key}'"))
+}
+
+fn make_ready_gate_probe(
+    key: &str,
+    ready_after: Option<Duration>,
+    fail_before_ready: bool,
+) -> ReadyGateProbe {
+    let probe = ReadyGateProbe {
+        ready_after,
+        fail_before_ready,
+        ready_at: Arc::new(parking_lot::Mutex::new(None)),
+        start_at: Arc::new(parking_lot::Mutex::new(None)),
+    };
+    register_ready_gate_probe(key, probe.clone());
+    probe
+}
+
+fn ready_gate_extension_create(
+    _ctx: &ExtensionContext,
+    name: otap_df_config::ExtensionId,
+    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+    let key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|v| v.as_str())
+        .expect("probe_key present in ready_gate extension config");
+    let probe = lookup_ready_gate_probe(key);
+
+    let readiness_timeout = user_config
+        .config
+        .get("readiness_timeout_ms")
+        .and_then(|v| v.as_u64())
+        .map(Duration::from_millis);
+
+    let impl_ = ReadyGateExtImpl {
+        ready_after: probe.ready_after,
+        fail_before_ready: probe.fail_before_ready,
+        ready_at: Arc::clone(&probe.ready_at),
+        start_at: Arc::clone(&probe.start_at),
+    };
+
+    let builder = ExtensionWrapper::builder(name, user_config, extension_config).active();
+    let builder = match readiness_timeout {
+        Some(t) => builder.with_readiness_probe_timeout_override(t),
+        None => builder,
+    };
+    let bundle = builder
+        .shared::<ReadyGateExtImpl>(impl_)
+        .build()
+        .expect("ready_gate extension bundle builds");
+    Ok(bundle)
+}
+
+const READY_GATE_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: READY_GATE_EXTENSION_URN,
+    description: "active extension whose start() optionally sleeps before signalling readiness",
+    documentation_url: "",
+    capabilities: Some(extension_capabilities!(
+        shared: ReadyGateExtImpl => [NoOpStateless]
+    )),
+    create: ready_gate_extension_create,
+    validate_config: otap_df_config::validation::no_config,
+};
+
+const READY_GATE_BG_EXTENSION_URN: &str = "urn:test:extension:ready_gate_extension_bg";
+
+fn ready_gate_bg_extension_create(
+    _ctx: &ExtensionContext,
+    name: otap_df_config::ExtensionId,
+    user_config: Arc<otap_df_config::extension::ExtensionUserConfig>,
+    extension_config: &ExtensionConfig,
+) -> Result<ExtensionBundle, otap_df_config::error::Error> {
+    let key = user_config
+        .config
+        .get("probe_key")
+        .and_then(|v| v.as_str())
+        .expect("probe_key present in ready_gate background extension config");
+    let probe = lookup_ready_gate_probe(key);
+
+    let readiness_timeout = user_config
+        .config
+        .get("readiness_timeout_ms")
+        .and_then(|v| v.as_u64())
+        .map(Duration::from_millis);
+
+    let impl_ = ReadyGateExtImpl {
+        ready_after: probe.ready_after,
+        fail_before_ready: probe.fail_before_ready,
+        ready_at: Arc::clone(&probe.ready_at),
+        start_at: Arc::clone(&probe.start_at),
+    };
+
+    let builder = ExtensionWrapper::builder(name, user_config, extension_config).background();
+    let builder = match readiness_timeout {
+        Some(t) => builder.with_readiness_probe_timeout_override(t),
+        None => builder,
+    };
+    let bundle = builder
+        .shared::<ReadyGateExtImpl>(impl_)
+        .build()
+        .expect("ready_gate background extension bundle builds");
+    Ok(bundle)
+}
+
+const READY_GATE_BG_EXTENSION_FACTORY: ExtensionFactory = ExtensionFactory {
+    name: READY_GATE_BG_EXTENSION_URN,
+    description: "background twin of ready_gate \u{2014} engine-driven, no capabilities",
+    documentation_url: "",
+    capabilities: None,
+    create: ready_gate_bg_extension_create,
+    validate_config: otap_df_config::validation::no_config,
+};
+
+fn build_runtime_pipeline_with_ready_gate(
+    yaml: &str,
+) -> (
+    otap_df_engine::runtime_pipeline::RuntimePipeline<()>,
+    PipelineContext,
+    otap_df_telemetry::registry::EntityKey,
+    InternalTelemetrySystem,
+) {
+    const EXT_FACTORIES_PLUS_GATE: &[ExtensionFactory] = &[
+        PASSIVE_EXTENSION_FACTORY,
+        DUAL_EXTENSION_FACTORY,
+        ACTIVE_EXTENSION_FACTORY,
+        ACTIVE_SHARED_COUNTER_EXTENSION_FACTORY,
+        FAILING_EXTENSION_FACTORY,
+        IMMEDIATE_OK_EXTENSION_FACTORY,
+        SHUTDOWN_RECORDING_EXTENSION_FACTORY,
+        DUAL_ACTIVE_EXTENSION_FACTORY,
+        BACKGROUND_EXTENSION_FACTORY,
+        SHARED_COUNTER_EXTENSION_FACTORY,
+        SHARED_COUNTER_SHARED_EXTENSION_FACTORY,
+        CONSTRUCTED_EXTENSION_FACTORY,
+        RC_COUNTER_EXTENSION_FACTORY,
+        READY_GATE_EXTENSION_FACTORY,
+        READY_GATE_BG_EXTENSION_FACTORY,
+    ];
+    static PIPELINE_FACTORY: PipelineFactory<()> = PipelineFactory::new(
+        RECEIVER_FACTORIES,
+        PROCESSOR_FACTORIES,
+        EXPORTER_FACTORIES,
+        EXT_FACTORIES_PLUS_GATE,
+    );
+
+    let config = PipelineConfig::from_yaml("test-group".into(), "test-pipeline".into(), yaml)
+        .expect("yaml config parses + validates");
+    let (pipeline_ctx, telemetry_system, entity_key) = fresh_pipeline_env();
+    let runtime_pipeline = PIPELINE_FACTORY
+        .build(
+            pipeline_ctx.clone(),
+            config,
+            ChannelCapacityPolicy::default(),
+            TelemetryPolicy::default(),
+            None,
+            None,
+        )
+        .expect("pipeline builds");
+    (runtime_pipeline, pipeline_ctx, entity_key, telemetry_system)
+}
+
+#[test]
+fn test_extension_readiness_gate_passes_when_ext_signals_in_time() {
+    let receiver_key = "ready-pass-recv";
+    let ext_key = "ready-pass-ext";
+    let lifecycle_key = "ready-pass-lifecycle";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    register_node_lifecycle_probe(lifecycle_key, NodeLifecycleProbe::default());
+    let ext_probe = make_ready_gate_probe(ext_key, Some(Duration::from_millis(150)), false);
+
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+      lifecycle_key: "{lifecycle_key}"
+    capabilities:
+      no_op_stateless: "{ext_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_key}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_key}"
+      readiness_timeout_ms: 5000
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_millis(500),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
+
+    let lifecycle = lookup_node_lifecycle_probe(lifecycle_key);
+    let receiver_start_at = lifecycle.receiver_start_at.lock().unwrap();
+    let ready_at = ext_probe.ready_at.lock().unwrap();
+    assert!(
+        receiver_start_at >= ready_at,
+        "receiver_start_at={receiver_start_at:?}, ready_at={ready_at:?}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_times_out_with_named_extension() {
+    let receiver_key = "ready-timeout-recv";
+    let ext_key = "ready-timeout-ext";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    let _ext_probe = make_ready_gate_probe(ext_key, None, false);
+
+    let timeout_ms: u64 = 200;
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "{ext_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_key}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_key}"
+      readiness_timeout_ms: {timeout_ms}
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(30),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+
+    let upper = Duration::from_millis(timeout_ms) + Duration::from_secs(2);
+    assert!(elapsed < upper, "elapsed={elapsed:?}, upper={upper:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(ext_key), "{msg}");
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("readiness") && (lower.contains("timeout") || lower.contains("did not")),
+        "{msg}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_waits_in_parallel_for_multiple_extensions() {
+    let lifecycle_key = "ready-parallel-lifecycle";
+    let recv_keys = [
+        "ready-parallel-recv-a",
+        "ready-parallel-recv-b",
+        "ready-parallel-recv-c",
+    ];
+    let ext_keys = [
+        "ready-parallel-ext-a",
+        "ready-parallel-ext-b",
+        "ready-parallel-ext-c",
+    ];
+
+    for k in recv_keys.iter() {
+        let _ = make_probe(k, CallSequence::Shared);
+    }
+    register_node_lifecycle_probe(lifecycle_key, NodeLifecycleProbe::default());
+
+    let ready_after = Duration::from_millis(1000);
+    let mut ext_probes = Vec::new();
+    for k in ext_keys.iter() {
+        ext_probes.push(make_ready_gate_probe(k, Some(ready_after), false));
+    }
+
+    let yaml = format!(
+        r#"
+nodes:
+  {recv_a}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_a}"
+      lifecycle_key: "{lifecycle_key}"
+    capabilities:
+      no_op_stateless: "{ext_a}"
+  {recv_b}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_b}"
+    capabilities:
+      no_op_stateless: "{ext_b}"
+  {recv_c}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_c}"
+    capabilities:
+      no_op_stateless: "{ext_c}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_a}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_a}"
+      readiness_timeout_ms: 5000
+  {ext_b}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_b}"
+      readiness_timeout_ms: 5000
+  {ext_c}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_c}"
+      readiness_timeout_ms: 5000
+
+connections:
+  - from: {recv_a}
+    to: exporter
+  - from: {recv_b}
+    to: exporter
+  - from: {recv_c}
+    to: exporter
+"#,
+        recv_a = recv_keys[0],
+        recv_b = recv_keys[1],
+        recv_c = recv_keys[2],
+        ext_a = ext_keys[0],
+        ext_b = ext_keys[1],
+        ext_c = ext_keys[2],
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        ready_after + Duration::from_millis(250),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let parallel_upper = ready_after + Duration::from_millis(250) + Duration::from_secs(1);
+    assert!(
+        elapsed < parallel_upper,
+        "elapsed={elapsed:?}, parallel_upper={parallel_upper:?}, serial_lower={:?}",
+        ready_after * ext_keys.len() as u32,
+    );
+
+    let lifecycle = lookup_node_lifecycle_probe(lifecycle_key);
+    let receiver_start_at = lifecycle.receiver_start_at.lock().unwrap();
+    let slowest_ready_at = ext_probes
+        .iter()
+        .map(|p| p.ready_at.lock().unwrap())
+        .max()
+        .unwrap();
+    assert!(
+        receiver_start_at >= slowest_ready_at,
+        "receiver_start_at={receiver_start_at:?}, slowest_ready_at={slowest_ready_at:?}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_honors_per_extension_timeouts() {
+    let recv_keys = ["ready-mixed-recv-fast", "ready-mixed-recv-slow"];
+    let ext_keys = ["ready-mixed-ext-fast", "ready-mixed-ext-slow"];
+
+    for k in recv_keys.iter() {
+        let _ = make_probe(k, CallSequence::Shared);
+    }
+    let _ext_fast_probe = make_ready_gate_probe(ext_keys[0], None, false);
+    let _ext_slow_probe = make_ready_gate_probe(ext_keys[1], None, false);
+
+    let fast_timeout_ms: u64 = 200;
+    let slow_timeout_ms: u64 = 2_000;
+
+    let yaml = format!(
+        r#"
+nodes:
+  {recv_fast}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_fast}"
+    capabilities:
+      no_op_stateless: "{ext_fast}"
+  {recv_slow}:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{recv_slow}"
+    capabilities:
+      no_op_stateless: "{ext_slow}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_fast}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_fast}"
+      readiness_timeout_ms: {fast_timeout_ms}
+  {ext_slow}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_slow}"
+      readiness_timeout_ms: {slow_timeout_ms}
+
+connections:
+  - from: {recv_fast}
+    to: exporter
+  - from: {recv_slow}
+    to: exporter
+"#,
+        recv_fast = recv_keys[0],
+        recv_slow = recv_keys[1],
+        ext_fast = ext_keys[0],
+        ext_slow = ext_keys[1],
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(60),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+
+    let upper = Duration::from_millis(fast_timeout_ms) + Duration::from_secs(2);
+    assert!(elapsed < upper, "elapsed={elapsed:?}, upper={upper:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(ext_keys[0]), "{msg}");
+    assert!(!msg.contains(ext_keys[1]), "{msg}");
+}
+
+#[test]
+fn test_extension_readiness_gate_surfaces_extension_failure_before_ready() {
+    let receiver_key = "ready-drop-recv";
+    let ext_key = "ready-drop-ext";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    let _ext_probe = make_ready_gate_probe(ext_key, None, true);
+
+    let timeout_ms: u64 = 30_000;
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+    capabilities:
+      no_op_stateless: "{ext_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {ext_key}:
+    type: "{READY_GATE_EXTENSION_URN}"
+    config:
+      probe_key: "{ext_key}"
+      readiness_timeout_ms: {timeout_ms}
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(60),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+    assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
+
+    // The extension fails before signalling readiness. The gate watches task
+    // completions while probes are pending, so it surfaces the extension's
+    // own failure rather than waiting out the 30s probe timeout.
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("synthetic failure before readiness signal"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_waits_for_background_extension() {
+    let receiver_key = "ready-bg-recv";
+    let bg_ext_key = "ready-bg-ext";
+    let lifecycle_key = "ready-bg-lifecycle";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    register_node_lifecycle_probe(lifecycle_key, NodeLifecycleProbe::default());
+    let bg_probe = make_ready_gate_probe(bg_ext_key, Some(Duration::from_millis(150)), false);
+
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+      lifecycle_key: "{lifecycle_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {bg_ext_key}:
+    type: "{READY_GATE_BG_EXTENSION_URN}"
+    config:
+      probe_key: "{bg_ext_key}"
+      readiness_timeout_ms: 5000
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_millis(500),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_ok(), "{result:?}");
+    assert!(elapsed < Duration::from_secs(5), "elapsed={elapsed:?}");
+
+    let lifecycle = lookup_node_lifecycle_probe(lifecycle_key);
+    let receiver_start_at = lifecycle.receiver_start_at.lock().unwrap();
+    let ready_at = bg_probe.ready_at.lock().unwrap();
+    assert!(
+        receiver_start_at >= ready_at,
+        "receiver_start_at={receiver_start_at:?}, ready_at={ready_at:?}"
+    );
+}
+
+#[test]
+fn test_extension_readiness_gate_times_out_for_background_extension() {
+    let receiver_key = "ready-bg-timeout-recv";
+    let bg_ext_key = "ready-bg-timeout-ext";
+
+    let _recv_probe = make_probe(receiver_key, CallSequence::Local);
+    let _bg_probe = make_ready_gate_probe(bg_ext_key, None, false);
+
+    let timeout_ms: u64 = 200;
+    let yaml = format!(
+        r#"
+nodes:
+  receiver:
+    type: "{PROBE_RECEIVER_URN}"
+    config:
+      probe_key: "{receiver_key}"
+  exporter:
+    type: "{NOOP_EXPORTER_URN}"
+
+extensions:
+  {bg_ext_key}:
+    type: "{READY_GATE_BG_EXTENSION_URN}"
+    config:
+      probe_key: "{bg_ext_key}"
+      readiness_timeout_ms: {timeout_ms}
+
+connections:
+  - from: receiver
+    to: exporter
+"#
+    );
+    let (runtime_pipeline, ctx, entity_key, ts) = build_runtime_pipeline_with_ready_gate(&yaml);
+
+    let started_at = Instant::now();
+    let result = run_pipeline_with_shutdown_after(
+        runtime_pipeline,
+        ctx,
+        entity_key,
+        ts,
+        Duration::from_secs(30),
+    );
+    let elapsed = started_at.elapsed();
+
+    assert!(result.is_err());
+    assert!(elapsed < Duration::from_secs(8), "elapsed={elapsed:?}");
+
+    let err = result.err().unwrap();
+    let msg = format!("{err}");
+    assert!(msg.contains(bg_ext_key), "{msg}");
+    let lower = msg.to_lowercase();
+    assert!(
+        lower.contains("timeout") || lower.contains("readiness"),
+        "{msg}"
     );
 }

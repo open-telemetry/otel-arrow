@@ -85,6 +85,10 @@ impl TraceFilter {
         &self,
         mut traces_payload: OtapArrowRecords,
     ) -> Result<(OtapArrowRecords, u64, u64)> {
+        if traces_payload.num_items() == 0 {
+            return Ok((traces_payload, 0, 0));
+        }
+
         let (
             resource_attr_filter,
             span_filter,
@@ -159,9 +163,10 @@ impl TraceFilter {
             // both include and exclude is none
             let num_rows = traces_payload
                 .get(ArrowPayloadType::Spans)
-                .ok_or_else(|| Error::RecordBatchNotFound {
-                    payload_type: ArrowPayloadType::Spans,
-                })?
+                // Safety: We check at the top of this function whether the
+                // number of rows is 0 and return early. Rows > 0 implies a
+                // root record batch is present.
+                .expect("Traces payload has a root record")
                 .num_rows() as u64;
             return Ok((traces_payload, num_rows, num_rows));
         };

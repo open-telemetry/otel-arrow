@@ -290,11 +290,11 @@ where
     O::Request: std::fmt::Debug + PartialEq,
     F: FnOnce(&mut TestContext<I, O>) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + '_>>,
 {
-    // Use portpicker to find a free port for the collector receiver.
+    // Pick a free loopback port for the collector receiver.
     // Note that the OpenTelemetry Collector will respect a `:0` port
     // designator, however it will not print the port that it has selected
     // in Info-level logs, making it difficult to use in this kind of test.
-    let receiver_port = portpicker::pick_unused_port().expect("no free ports available");
+    let receiver_port = otap_df_test_net::pick_unused_loopback_tcp_port();
 
     // Start the test receiver server and wrap it with a timeout to avoid tests getting stuck
     let (server_handle, request_rx, exporter_port, server_shutdown_tx) =

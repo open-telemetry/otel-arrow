@@ -64,9 +64,23 @@ pub fn install_crypto_provider() -> Result<(), String> {
     Ok(())
 }
 
+/// Returns `true` if a process-wide rustls [`CryptoProvider`] is installed.
+///
+/// Use this to fail fast with a clear, actionable error before constructing a
+/// rustls-backed client (e.g. the Geneva exporter). Without a provider, TLS
+/// handshakes would otherwise fail deep inside a dependency with an opaque
+/// message. A provider is installed by [`install_crypto_provider`] at startup
+/// when exactly one `crypto-*` feature is enabled.
+///
+/// [`CryptoProvider`]: rustls::crypto::CryptoProvider
+#[must_use]
+pub fn is_crypto_provider_installed() -> bool {
+    rustls::crypto::CryptoProvider::get_default().is_some()
+}
+
 /// Installs the crypto provider idempotently (intended for test setup).
 ///
-/// Uses [`std::sync::Once`] so it is safe to call from every test — the actual
+/// Uses [`std::sync::Once`] so it is safe to call from every test -- the actual
 /// installation happens at most once per process.
 pub fn ensure_crypto_provider() {
     use std::sync::Once;
@@ -82,12 +96,20 @@ pub fn ensure_crypto_provider() {
             let _ = install_crypto_provider();
         }
 
-        #[cfg(not(any(
-            feature = "crypto-ring",
-            feature = "crypto-aws-lc",
-            feature = "crypto-symcrypt",
-            feature = "crypto-openssl"
-        )))]
+        // `rustls::crypto::ring` only exists when the rustls `ring` feature is
+        // enabled. With no `crypto-*` feature selected, the only thing that
+        // turns it on is `test-utils`, so the ring fallback must be gated to
+        // match, otherwise a plain lib check (e.g. a dependent crate built
+        // without any crypto feature) fails with E0433.
+        #[cfg(all(
+            feature = "test-utils",
+            not(any(
+                feature = "crypto-ring",
+                feature = "crypto-aws-lc",
+                feature = "crypto-symcrypt",
+                feature = "crypto-openssl"
+            ))
+        ))]
         {
             let _ = rustls::crypto::ring::default_provider().install_default();
         }

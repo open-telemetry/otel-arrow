@@ -1,0 +1,56 @@
+# platform: windows-only
+# ETW multi-session pipeline
+#
+# Demonstrates two independent ETW receiver nodes, each with its own
+# session_name and provider, feeding separate console exporters.
+#
+# Usage (run as Administrator for ETW access):
+#   cargo run --features etw-receiver -- -c configs/etw-multi-session.yaml
+#
+# Each receiver creates its own kernel ETW session.  The per-session-name
+# registry ensures they operate independently.
+
+version: otel_dataflow/v1
+engine: { }
+policies:
+  resources:
+    core_allocation:
+      type: core_count
+      count: 2
+groups:
+  default:
+    pipelines:
+      kernel_process:
+        nodes:
+          etw_process:
+            type: receiver:etw
+            config:
+              session_name: "OtelArrowETW"
+              providers:
+                # Microsoft-Windows-Kernel-Process
+                - guid: "22fb2cd6-0e7b-422b-a0c7-2fad1fd0e716"
+                  level: information
+          console_process:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: etw_process
+            to: console_process
+
+      powershell:
+        nodes:
+          etw_powershell:
+            type: receiver:etw
+            config:
+              session_name: "OtelArrowETW2"
+              providers:
+                # Microsoft-Windows-PowerShell
+                - guid: "a0c1853b-5c40-4b15-8766-3cf1c58f985a"
+                  level: verbose
+          console_powershell:
+            type: exporter:console
+            config: {}
+        connections:
+          - from: etw_powershell
+            to: console_powershell
+

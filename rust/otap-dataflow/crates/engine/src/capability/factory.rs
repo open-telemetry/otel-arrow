@@ -14,11 +14,11 @@
 //! needs these types to describe registration fn pointers, while the
 //! extension builder needs them to encode instance policy. Placing them
 //! with the registry side makes the dependency one-way:
-//! `extension → capability`.
+//! `extension -> capability`.
 
 use std::any::Any;
 
-// ── Shared ───────────────────────────────────────────────────────────────────
+// -- Shared -------------------------------------------------------------------
 
 /// Produces instances of a shared extension's concrete type for capability
 /// consumers.
@@ -31,9 +31,9 @@ use std::any::Any;
 ///
 /// The instance policy chosen at the builder (`.cloned(...)` vs
 /// `.fresh(...)`) is baked into the stored closure:
-/// - **Cloned** — the closure captures a prototype `E: Clone`
+/// - **Cloned** -- the closure captures a prototype `E: Clone`
 ///   and returns `e.clone()` on each call.
-/// - **Fresh** — the closure captures the user-supplied
+/// - **Fresh** -- the closure captures the user-supplied
 ///   `Fn() -> E` and invokes it on each call.
 ///
 /// `SharedInstanceFactory` is [`Clone`]: one extension may provide
@@ -89,7 +89,7 @@ impl Clone for SharedInstanceFactory {
     }
 }
 
-// ── Local ────────────────────────────────────────────────────────────────────
+// -- Local --------------------------------------------------------------------
 
 /// Produces instances of a local (!Send) extension's concrete type for
 /// capability consumers. See [`SharedInstanceFactory`] for background.
@@ -97,9 +97,9 @@ impl Clone for SharedInstanceFactory {
 /// The instance policy chosen at the builder (`.cloned(...)` vs
 /// `.constructed(...)`) is baked into the stored closure. Both policies
 /// mint a fresh `Box<E>` per call, mirroring the shared-side contract:
-/// - **Cloned** — the closure captures a prototype `E: Clone`
+/// - **Cloned** -- the closure captures a prototype `E: Clone`
 ///   and returns `Box::new(e.clone())` on each call.
-/// - **Constructed** — the closure captures the user-supplied
+/// - **Constructed** -- the closure captures the user-supplied
 ///   `Fn() -> E` and boxes its output on each call.
 ///
 /// `LocalInstanceFactory` is [`Clone`] for the same reason as its

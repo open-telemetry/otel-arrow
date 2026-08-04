@@ -4,7 +4,7 @@
 use object_store::aws::{AmazonS3Builder, AmazonS3ConfigKey};
 use serde::{Deserialize, Serialize};
 
-use crate::cloud_auth::opaque_string::OpaqueString;
+use crate::opaque_string::OpaqueString;
 
 /// AWS authentication methods. This can be leveraged in component
 /// configuration objects for a consistent way to specify AWS auth information.

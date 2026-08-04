@@ -16,9 +16,11 @@
 //! let mut cfg = OtelDataflowSpec::from_file(&path)?;
 //! startup::apply_cli_overrides(&mut cfg, num_cores, core_id_range, http_admin_bind);
 //! startup::validate_engine_components(&cfg, &MY_PIPELINE_FACTORY)?;
+//! startup::validate_controller_extensions(&cfg, &ControllerRunOptions::default().extensions)?;
 //! println!("{}", startup::system_info(&MY_PIPELINE_FACTORY, "system"));
 //! ```
 
+use crate::{CONTROLLER_EXTENSION_FACTORIES, ControllerExtensionRegistry};
 use otap_df_config::engine::{
     HttpAdminSettings, OtelDataflowSpec, SYSTEM_OBSERVABILITY_PIPELINE_ID, SYSTEM_PIPELINE_GROUP_ID,
 };
@@ -185,13 +187,13 @@ pub fn validate_pipeline_components<PData: 'static + Clone + Debug>(
     Ok(())
 }
 
-/// Validates that every node in every pipeline (including the observability
-/// pipeline, if configured) references a component URN registered in the
+/// Validates that every node in every pipeline (including the engine
+/// observability pipeline) references a component URN registered in the
 /// given [`PipelineFactory`].
 ///
 /// This is the top-level validation entry point that iterates over all
-/// pipeline groups, all pipelines within each group, and the optional
-/// observability pipeline.
+/// pipeline groups, all pipelines within each group, and the observability
+/// pipeline.
 pub fn validate_engine_components<PData: 'static + Clone + Debug>(
     engine_cfg: &OtelDataflowSpec,
     factory: &PipelineFactory<PData>,
@@ -202,24 +204,63 @@ pub fn validate_engine_components<PData: 'static + Clone + Debug>(
         }
     }
 
-    // Also validate the observability pipeline nodes, if configured.
-    if let Some(obs_pipeline) = &engine_cfg.engine.observability.pipeline {
-        let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
-        let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
-        let obs_pipeline_config = obs_pipeline.clone().into_pipeline_config();
-        validate_pipeline_components(
-            &obs_group_id,
-            &obs_pipeline_id,
-            &obs_pipeline_config,
-            factory,
-        )?;
+    let obs_group_id: PipelineGroupId = SYSTEM_PIPELINE_GROUP_ID.into();
+    let obs_pipeline_id: PipelineId = SYSTEM_OBSERVABILITY_PIPELINE_ID.into();
+    let obs_pipeline_config = engine_cfg
+        .engine
+        .observability
+        .pipeline
+        .clone()
+        .into_pipeline_config();
+    validate_pipeline_components(
+        &obs_group_id,
+        &obs_pipeline_id,
+        &obs_pipeline_config,
+        factory,
+    )?;
+
+    Ok(())
+}
+
+/// Validates configured controller extensions against the supplied registry.
+///
+/// This is static validation only: it verifies that each configured controller
+/// extension type has a registered factory and that the extension-specific
+/// config validates without starting the extension.
+pub fn validate_controller_extensions(
+    engine_cfg: &OtelDataflowSpec,
+    registry: &ControllerExtensionRegistry,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (extension_id, extension) in engine_cfg.engine.controller.extensions.iter() {
+        let urn_str = extension.r#type.as_str();
+        match registry.get(&extension.r#type) {
+            None => {
+                return Err(std::io::Error::other(format!(
+                    "Unknown controller extension `{}` in engine.controller.extensions extension={}",
+                    urn_str,
+                    extension_id.as_ref()
+                ))
+                .into());
+            }
+            Some(factory) => {
+                (factory.validate_config)(&extension.config).map_err(|e| {
+                    std::io::Error::other(format!(
+                        "Invalid config for controller extension `{}` in engine.controller.extensions extension={}: {}",
+                        urn_str,
+                        extension_id.as_ref(),
+                        e
+                    ))
+                })?;
+            }
+        }
     }
 
     Ok(())
 }
 
-/// Returns a human-readable string with system information and all component
-/// URNs registered in the given [`PipelineFactory`].
+/// Returns a human-readable string with system information, all component URNs
+/// registered in the given [`PipelineFactory`], and linked controller extension
+/// URNs.
 ///
 /// `memory_allocator` should describe the active global allocator (e.g.
 /// `"jemalloc"`, `"mimalloc"`, or `"system"`).  The library cannot detect this
@@ -249,7 +290,7 @@ pub fn system_info<PData: 'static + Clone + Debug>(
     let available_memory_gb = sys.available_memory() as f64 / 1_073_741_824.0;
 
     let debug_warning = if cfg!(debug_assertions) {
-        "\n\n⚠️  WARNING: This binary was compiled in debug mode.
+        "\n\n\u{26A0}\u{FE0F}  WARNING: This binary was compiled in debug mode.
    Debug builds are NOT recommended for production, benchmarks, or performance testing.
    Use 'cargo build --release' for optimal performance."
     } else {
@@ -265,9 +306,14 @@ pub fn system_info<PData: 'static + Clone + Debug>(
         .collect();
     let mut exporters_sorted: Vec<&str> =
         factory.get_exporter_factory_map().keys().copied().collect();
+    let mut controller_extensions_sorted: Vec<&str> = CONTROLLER_EXTENSION_FACTORIES
+        .iter()
+        .map(|f| f.name)
+        .collect();
     receivers_sorted.sort();
     processors_sorted.sort();
     exporters_sorted.sort();
+    controller_extensions_sorted.sort();
 
     format!(
         "System Information:
@@ -280,6 +326,7 @@ Available Component URNs:
   Receivers: {}
   Processors: {}
   Exporters: {}
+  Controller Extensions: {}
 
 Example configuration files can be found in the configs/ directory.{}",
         available_cores,
@@ -290,6 +337,7 @@ Example configuration files can be found in the configs/ directory.{}",
         receivers_sorted.join(", "),
         processors_sorted.join(", "),
         exporters_sorted.join(", "),
+        controller_extensions_sorted.join(", "),
         debug_warning
     )
 }
@@ -388,6 +436,47 @@ extensions:
             "unexpected error: {msg}"
         );
         assert!(msg.contains("not-registered"), "unexpected error: {msg}");
+    }
+
+    /// Scenario: the component factory omits the built-in observability components.
+    /// Guarantees: engine validation checks the default pipeline under `system/observability`.
+    #[test]
+    fn validate_engine_components_checks_default_observability_pipeline() {
+        let config = OtelDataflowSpec::from_yaml(
+            r#"
+version: otel_dataflow/v1
+groups: {}
+"#,
+        )
+        .expect("minimal engine config should parse");
+        let factory: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
+
+        let error = validate_engine_components(&config, &factory)
+            .expect_err("missing observability components must fail validation");
+        let message = error.to_string();
+        assert!(
+            message.contains("Unknown ") && message.contains(" component `urn:otel:"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("pipeline_group=system pipeline=observability"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn system_info_lists_controller_extensions() {
+        let factory: PipelineFactory<()> = PipelineFactory::new(&[], &[], &[], &[]);
+        let info = system_info(&factory, "system");
+
+        assert!(
+            info.contains("Controller Extensions:"),
+            "system info should include controller extension URNs: {info}"
+        );
+        assert!(
+            info.contains(crate::CONTROLLER_MONITOR_EXTENSION_URN),
+            "system info should include linked controller monitor extension: {info}"
+        );
     }
 
     #[test]

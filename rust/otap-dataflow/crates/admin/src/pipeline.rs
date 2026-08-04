@@ -17,6 +17,8 @@
 //!   retention evicts terminal history.
 //! - PUT `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
 //!   Create or replace a pipeline and return a rollout job status snapshot.
+//! - DELETE `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}`
+//!   Gracefully drain and remove a specific logical pipeline.
 //! - POST `/api/v1/groups/{pipeline_group_id}/pipelines/{pipeline_id}/shutdown`
 //!   Shutdown a specific logical pipeline and return a shutdown job status snapshot.
 //!   - Query parameters:
@@ -40,6 +42,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use otap_df_admin_types::operations::DeleteOptions;
 use otap_df_admin_types::pipelines::{PipelineRolloutState, Status as ApiPipelineStatus};
 use otap_df_config::PipelineKey;
 use otap_df_telemetry::otel_info;
@@ -51,7 +54,7 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route(
             "/groups/{pipeline_group_id}/pipelines/{pipeline_id}",
-            get(show_pipeline).put(put_pipeline),
+            get(show_pipeline).put(put_pipeline).delete(delete_pipeline),
         )
         // Returns the status of a specific pipeline.
         .route(
@@ -124,6 +127,11 @@ fn shutdown_is_success(state: &str) -> bool {
 }
 
 /// Returns committed configuration details for one logical pipeline.
+///
+/// Credential header values are redacted from the response (see
+/// [`otap_df_config::pipeline::PipelineConfig::redacted_for_snapshot`]) so
+/// secrets configured in node and extension `headers` are not exposed in
+/// cleartext.
 pub async fn show_pipeline(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
     State(state): State<AppState>,
@@ -132,7 +140,10 @@ pub async fn show_pipeline(
         .controller
         .pipeline_details(&pipeline_group_id, &pipeline_id)
     {
-        Ok(Some(details)) => Ok(Json(details)),
+        Ok(Some(mut details)) => {
+            details.pipeline = details.pipeline.redacted_for_snapshot();
+            Ok(Json(details))
+        }
         Ok(None) => Err(StatusCode::NOT_FOUND),
         Err(
             crate::ControlPlaneError::PipelineNotFound | crate::ControlPlaneError::GroupNotFound,
@@ -371,6 +382,43 @@ pub async fn shutdown_pipeline(
     }
 }
 
+/// Gracefully drains and removes one logical pipeline from committed state.
+pub async fn delete_pipeline(
+    Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
+    Query(params): Query<DeleteOptions>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    otel_info!(
+        "pipeline.delete.requested",
+        pipeline_group_id = pipeline_group_id.as_str(),
+        pipeline_id = pipeline_id.as_str(),
+        timeout_secs = params.timeout_secs
+    );
+
+    match state
+        .run_terminal_control_plane(move |controller| {
+            controller.delete_pipeline(&pipeline_group_id, &pipeline_id, params.timeout_secs)
+        })
+        .await
+    {
+        Ok(status) if status.state == "succeeded" => (StatusCode::OK, Json(status)).into_response(),
+        Ok(status) => (StatusCode::CONFLICT, Json(status)).into_response(),
+        Err(error @ crate::ControlPlaneError::GroupNotFound)
+        | Err(error @ crate::ControlPlaneError::PipelineNotFound) => {
+            operation_error_response(StatusCode::NOT_FOUND, error)
+        }
+        Err(crate::ControlPlaneError::RolloutConflict) => operation_error_response(
+            StatusCode::CONFLICT,
+            crate::ControlPlaneError::RolloutConflict,
+        ),
+        Err(crate::ControlPlaneError::InvalidRequest { message }) => operation_error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            crate::ControlPlaneError::InvalidRequest { message },
+        ),
+        Err(other) => operation_error_response(StatusCode::INTERNAL_SERVER_ERROR, other),
+    }
+}
+
 /// Returns aggregated runtime status for one logical pipeline.
 pub async fn show_status(
     Path((pipeline_group_id, pipeline_id)): Path<(String, String)>,
@@ -433,7 +481,10 @@ async fn readiness(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ControlPlane, ControlPlaneError, PipelineDetails, RolloutStatus, ShutdownStatus};
+    use crate::{
+        ControlPlane, ControlPlaneError, PipelineDeleteStatus, PipelineDetails, RolloutStatus,
+        ShutdownStatus,
+    };
     use axum::body::to_bytes;
     use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
     use otap_df_config::observed_state::ObservedStateSettings;
@@ -449,6 +500,7 @@ mod tests {
         rollout_status_result: Result<Option<RolloutStatus>, ControlPlaneError>,
         shutdown_result: Result<ShutdownStatus, ControlPlaneError>,
         shutdown_status_result: Result<Option<ShutdownStatus>, ControlPlaneError>,
+        delete_result: Result<PipelineDeleteStatus, ControlPlaneError>,
     }
 
     impl ControlPlane for StubControlPlane {
@@ -499,6 +551,15 @@ mod tests {
         ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
             self.shutdown_status_result.clone()
         }
+
+        fn delete_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _timeout_secs: u64,
+        ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+            self.delete_result.clone()
+        }
     }
 
     fn test_app_state(controller: Arc<dyn ControlPlane>) -> AppState {
@@ -510,6 +571,7 @@ mod tests {
             observed_state_store: observed_state_store.handle(),
             metrics_registry,
             controller,
+            terminal_control_plane_permits: Arc::new(tokio::sync::Semaphore::new(1)),
             log_tap: None,
             memory_pressure_state: MemoryPressureState::default(),
             target_info: Arc::from(""),
@@ -562,6 +624,114 @@ mod tests {
         .expect("fixture shutdown status should deserialize")
     }
 
+    fn delete_status(state: &str) -> PipelineDeleteStatus {
+        PipelineDeleteStatus {
+            pipeline_group_id: "default".to_string().into(),
+            pipeline_id: "main".to_string().into(),
+            state: state.to_string(),
+            started_at: "2026-01-01T00:00:00Z".to_string(),
+            updated_at: "2026-01-01T00:00:01Z".to_string(),
+            shutdown: None,
+            failure_reason: (state != "succeeded").then(|| "delete failed".to_string()),
+        }
+    }
+
+    /// Minimal control plane that serves a configured `pipeline_details`, used
+    /// to exercise the `show_pipeline` redaction path end-to-end.
+    struct PipelineDetailsStub {
+        details: Result<Option<PipelineDetails>, ControlPlaneError>,
+    }
+
+    impl ControlPlane for PipelineDetailsStub {
+        fn shutdown_all(&self, _timeout_secs: u64) -> Result<(), ControlPlaneError> {
+            Ok(())
+        }
+        fn shutdown_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _timeout_secs: u64,
+        ) -> Result<ShutdownStatus, ControlPlaneError> {
+            Err(ControlPlaneError::PipelineNotFound)
+        }
+        fn reconfigure_pipeline(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _request: crate::ReconfigureRequest,
+        ) -> Result<RolloutStatus, ControlPlaneError> {
+            Err(ControlPlaneError::PipelineNotFound)
+        }
+        fn pipeline_details(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+        ) -> Result<Option<PipelineDetails>, ControlPlaneError> {
+            self.details.clone()
+        }
+        fn rollout_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _rollout_id: &str,
+        ) -> Result<Option<RolloutStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+        fn shutdown_status(
+            &self,
+            _pipeline_group_id: &str,
+            _pipeline_id: &str,
+            _shutdown_id: &str,
+        ) -> Result<Option<ShutdownStatus>, ControlPlaneError> {
+            Ok(None)
+        }
+    }
+
+    /// Scenario: a pipeline's node config contains credential header values.
+    /// Guarantees: `show_pipeline` redacts them so the raw credential never
+    /// appears in the response body.
+    #[tokio::test]
+    async fn show_pipeline_redacts_credential_header_values() {
+        let details: PipelineDetails = serde_json::from_value(json!({
+            "pipelineGroupId": "default",
+            "pipelineId": "main",
+            "pipeline": {
+                "nodes": {
+                    "exporter": {
+                        "type": "urn:test:exporter:example",
+                        "config": {
+                            "headers": { "authorization": "Bearer super-secret-token" }
+                        }
+                    }
+                }
+            }
+        }))
+        .expect("pipeline details fixture should deserialize");
+
+        let response = show_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            State(test_app_state(Arc::new(PipelineDetailsStub {
+                details: Ok(Some(details)),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let text = String::from_utf8(body.to_vec()).expect("pipeline body is utf-8");
+        assert!(
+            !text.contains("Bearer super-secret-token"),
+            "raw credential must not appear in the pipeline response: {text}"
+        );
+        assert!(
+            text.contains("[REDACTED]"),
+            "redacted placeholder should appear in the pipeline response: {text}"
+        );
+    }
+
     /// Scenario: the control plane rejects a pipeline reconfigure request
     /// before rollout work starts.
     /// Guarantees: the admin handler converts that rejection into a structured
@@ -581,6 +751,7 @@ mod tests {
                 rollout_status_result: Ok(None),
                 shutdown_result: Ok(shutdown_status("succeeded")),
                 shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
             }))),
             Json(request()),
         )
@@ -614,6 +785,7 @@ mod tests {
                 rollout_status_result: Ok(Some(rollout_status(PipelineRolloutState::Running))),
                 shutdown_result: Ok(shutdown_status("succeeded")),
                 shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
             }))),
             Json(request()),
         )
@@ -647,6 +819,7 @@ mod tests {
                 rollout_status_result: Ok(None),
                 shutdown_result: Err(ControlPlaneError::RolloutConflict),
                 shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
             }))),
         )
         .await
@@ -679,6 +852,7 @@ mod tests {
                 rollout_status_result: Ok(None),
                 shutdown_result: Ok(shutdown_status("running")),
                 shutdown_status_result: Ok(Some(shutdown_status("running"))),
+                delete_result: Ok(delete_status("succeeded")),
             }))),
         )
         .await
@@ -711,6 +885,7 @@ mod tests {
                 rollout_status_result: Ok(None),
                 shutdown_result: Ok(shutdown_status("succeeded")),
                 shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
             }))),
         )
         .await
@@ -736,11 +911,129 @@ mod tests {
                 rollout_status_result: Ok(None),
                 shutdown_result: Ok(shutdown_status("succeeded")),
                 shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
             }))),
         )
         .await
         .into_response();
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Scenario: pipeline deletion completes successfully.
+    /// Guarantees: the handler exposes the terminal delete status with HTTP
+    /// 200 and preserves the pipeline identifiers in the body.
+    #[tokio::test]
+    async fn delete_pipeline_returns_terminal_success_status() {
+        let response = delete_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(DeleteOptions { timeout_secs: 30 }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("succeeded")),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let status: PipelineDeleteStatus =
+            serde_json::from_slice(&body).expect("delete body should deserialize");
+        assert_eq!(status.pipeline_group_id.as_ref(), "default");
+        assert_eq!(status.pipeline_id.as_ref(), "main");
+        assert_eq!(status.state, "succeeded");
+    }
+
+    /// Scenario: pipeline deletion reaches a terminal failed state after the
+    /// request was accepted by the control plane.
+    /// Guarantees: the handler returns HTTP 409 with the delete status body
+    /// rather than replacing it with a request-rejection error.
+    #[tokio::test]
+    async fn delete_pipeline_returns_conflict_with_failed_delete_status() {
+        let response = delete_pipeline(
+            Path(("default".to_string(), "main".to_string())),
+            Query(DeleteOptions { timeout_secs: 30 }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Ok(delete_status("failed")),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let status: PipelineDeleteStatus =
+            serde_json::from_slice(&body).expect("delete body should deserialize");
+        assert_eq!(status.state, "failed");
+        assert_eq!(status.failure_reason.as_deref(), Some("delete failed"));
+    }
+
+    /// Scenario: pipeline deletion targets a missing group.
+    /// Guarantees: the handler returns HTTP 404 with the typed operation error
+    /// shape used by SDK callers.
+    #[tokio::test]
+    async fn delete_pipeline_returns_not_found_for_missing_group() {
+        let response = delete_pipeline(
+            Path(("missing".to_string(), "main".to_string())),
+            Query(DeleteOptions { timeout_secs: 30 }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Err(ControlPlaneError::GroupNotFound),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::GroupNotFound);
+    }
+
+    /// Scenario: pipeline deletion targets a missing logical pipeline in an
+    /// existing group.
+    /// Guarantees: the handler returns HTTP 404 with the pipeline-not-found
+    /// operation error kind.
+    #[tokio::test]
+    async fn delete_pipeline_returns_not_found_for_missing_pipeline() {
+        let response = delete_pipeline(
+            Path(("default".to_string(), "missing".to_string())),
+            Query(DeleteOptions { timeout_secs: 30 }),
+            State(test_app_state(Arc::new(StubControlPlane {
+                replace_result: Ok(rollout_status(PipelineRolloutState::Succeeded)),
+                rollout_status_result: Ok(None),
+                shutdown_result: Ok(shutdown_status("succeeded")),
+                shutdown_status_result: Ok(None),
+                delete_result: Err(ControlPlaneError::PipelineNotFound),
+            }))),
+        )
+        .await
+        .into_response();
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should collect");
+        let error: OperationError =
+            serde_json::from_slice(&body).expect("error body should deserialize");
+        assert_eq!(error.kind, OperationErrorKind::PipelineNotFound);
     }
 }

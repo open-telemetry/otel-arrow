@@ -13,6 +13,11 @@ pub struct TrafficGeneratorReceiverMetrics {
     /// Number of logs generated.
     #[metric(unit = "{log}")]
     pub logs_produced: Counter<u64>,
+    /// Total uncompressed bytes of log payloads produced (protobuf-encoded size before
+    /// compression). Together with `logs_produced`, this yields the average uncompressed
+    /// bytes per log record for compression-ratio analysis.
+    #[metric(unit = "By")]
+    pub logs_bytes_produced: Counter<u64>,
     /// Number of spans generated.
     #[metric(unit = "{span}")]
     pub spans_produced: Counter<u64>,

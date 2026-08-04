@@ -60,9 +60,9 @@ use otap_df_pdata::{OtapPayload, OtapPayloadHelpers, OtlpProtoBytes};
 
 use otap_df_otap::pdata::{Context, OtapPdata};
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // Slot ID Constants
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// OTLP opaque binary storage slots (for pass-through mode)
 /// These are in the 60-62 range to stay within the 64-slot WAL bitmap limit
@@ -82,7 +82,7 @@ const fn to_slot_id(_signal_type: SignalType, payload_type: ArrowPayloadType) ->
 }
 
 /// Convert signal type to OTLP slot ID (for opaque binary storage)
-const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
+pub(crate) const fn to_otlp_slot_id(signal_type: SignalType) -> SlotId {
     SlotId::new(match signal_type {
         SignalType::Logs => otlp_slots::OTLP_LOGS,
         SignalType::Traces => otlp_slots::OTLP_TRACES,
@@ -213,9 +213,9 @@ fn compute_schema_fingerprint(batch: &RecordBatch) -> SchemaFingerprint {
     *hash.as_bytes()
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // OtapRecordBundleAdapter
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Adapter that wraps OtapArrowRecords and implements Quiver's RecordBundle trait.
 ///
@@ -310,9 +310,9 @@ impl RecordBundle for OtapRecordBundleAdapter {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // OtlpBytesAdapter (for pass-through mode)
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Adapter that wraps OtlpProtoBytes and implements Quiver's RecordBundle trait.
 ///
@@ -440,9 +440,9 @@ impl RecordBundle for OtlpBytesAdapter {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 // ReconstructedBundle to OtapPdata conversion
-// ─────────────────────────────────────────────────────────────────────────────
+// -----------------------------------------------------------------------------
 
 /// Error returned when converting a bundle to OtapPdata fails.
 #[derive(Debug, Clone, thiserror::Error)]
@@ -830,9 +830,9 @@ mod tests {
         assert!(find_otlp_slot(&arrow_payloads).is_none());
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Roundtrip tests: Simulating WAL persist → recover cycle
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
+    // Roundtrip tests: Simulating WAL persist -> recover cycle
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_traces_bundle_with_shared_slots_roundtrip() {
@@ -846,7 +846,7 @@ mod tests {
         ));
         let adapter = OtapRecordBundleAdapter::new(records);
 
-        // Simulate what Quiver does: extract slot→batch pairs
+        // Simulate what Quiver does: extract slot->batch pairs
         let mut recovered_payloads: HashMap<SlotId, RecordBatch> = HashMap::new();
         for slot_desc in &adapter.descriptor().slots {
             if let Some(payload) = adapter.payload(slot_desc.id) {
@@ -902,7 +902,7 @@ mod tests {
         ));
         let adapter = OtapRecordBundleAdapter::new(records);
 
-        // Extract slot→batch pairs (simulating WAL storage)
+        // Extract slot->batch pairs (simulating WAL storage)
         let mut recovered_payloads: HashMap<SlotId, RecordBatch> = HashMap::new();
         for slot_desc in &adapter.descriptor().slots {
             if let Some(payload) = adapter.payload(slot_desc.id) {
@@ -944,7 +944,7 @@ mod tests {
         ));
         let adapter = OtapRecordBundleAdapter::new(records);
 
-        // Extract slot→batch pairs
+        // Extract slot->batch pairs
         let mut recovered_payloads: HashMap<SlotId, RecordBatch> = HashMap::new();
         for slot_desc in &adapter.descriptor().slots {
             if let Some(payload) = adapter.payload(slot_desc.id) {
@@ -1007,7 +1007,7 @@ mod tests {
         // HashMap iteration order is not guaranteed, but all slots should be from same signal
         #[rustfmt::skip]
         let records = OtapArrowRecords::Traces(traces!(
-            (Spans, 
+            (Spans,
                 ("id", UInt16, vec![0u16, 1])),
             (SpanEvents,
                 ("id", UInt32, vec![0u32, 1]),
@@ -1028,9 +1028,9 @@ mod tests {
         assert_eq!(signal, SignalType::Traces);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
     // Edge case and boundary tests
-    // ─────────────────────────────────────────────────────────────────────────
+    // -------------------------------------------------------------------------
 
     #[test]
     fn test_invalid_slot_ids_return_none() {

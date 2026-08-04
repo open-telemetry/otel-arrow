@@ -1,0 +1,55 @@
+slug: log_attr_processor_insert_multi_batch
+name: Log Attribute Insert (Multi Batch)
+description: >
+  Inserting an attribute "processing.engine" with a static value "benchmark" on
+  logs. Comparing the attributes processor across engines and transports with
+  varying loadgen batch sizes at a fixed 400k logs/sec generated load.
+
+chart:
+  axes:
+    x:
+      title: Loadgen Batch Size (logs/batch)
+      description: Batch size emitted by the load generator. All tests run at a fixed 400k logs/sec generated load.
+
+tests:
+  - name: batch-256
+    label: "256"
+    loadgen_rate: 400000
+    description: 256 logs per batch @ 400k logs/sec
+  - name: batch-512
+    label: "512"
+    loadgen_rate: 400000
+    description: 512 logs per batch @ 400k logs/sec
+  - name: batch-1024
+    label: "1024"
+    loadgen_rate: 400000
+    description: 1024 logs per batch @ 400k logs/sec
+  - name: batch-2048
+    label: "2048"
+    loadgen_rate: 400000
+    description: 2048 logs per batch @ 400k logs/sec
+  - name: batch-4096
+    label: "4096"
+    loadgen_rate: 400000
+    description: 4096 logs per batch @ 400k logs/sec
+
+suites:
+  # DFE OTAP
+  - name: DFE OTAP Attr Insert
+    slug: dfe_logs_otap_none_attr_insert_multi_batch
+    short: DFE OTAP/Attr
+
+  # DFE OTLP
+  - name: DFE OTLP Attr Insert
+    slug: dfe_logs_otlp_none_attr_insert_multi_batch
+    short: DFE OTLP/Attr
+
+  # OTC OTLP
+  - name: OTC OTLP Attr Insert
+    slug: otc_logs_otlp_none_attr_insert_multi_batch
+    short: OTC OTLP/Attr
+
+  # Fluent Bit OTLP (modify filter)
+  - name: FB OTLP Modify Insert
+    slug: fbit_logs_otlp_none_attr_insert_multi_batch
+    short: FB OTLP/Modify

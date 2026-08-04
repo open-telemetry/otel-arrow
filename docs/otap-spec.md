@@ -166,8 +166,8 @@ Allowed Payload Types are defined per gRPC service/Signal. Clients MUST only
 send ArrowPayloads with allowed ArrowPayload types for that Signal according to
 the tables defined in this section.
 
-`arrow_payloads` additionally MUST include the primary/root table (LOGS, SPANS,
-or UNIVARIATE_METRICS) and SHOULD omit payloads with 0 rows.
+`arrow_payloads` SHOULD omit payloads with 0 rows, but a payload with 0 rows is
+considered semantically equivalent to one that is missing.
 
 A `type` MUST NOT be sent as `UNKNOWN` (value 0).
 
@@ -444,8 +444,8 @@ properties for the `resource` column's `id` field.
 | resource.dropped_attributes_count | UInt32                | -                   | No       | -                            | -        | Number of dropped resource attributes |
 | scope                             | Struct                | -                   | No       | -                            | -        | Instrumentation scope                 |
 | scope.id                          | UInt16                | -                   | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS            |
-| scope.name                        | Utf8                  | -                   | No       | -                            | -        | Instrumentation scope name            |
-| scope.version                     | Utf8                  | -                   | No       | -                            | -        | Instrumentation scope version         |
+| scope.name                        | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope name            |
+| scope.version                     | Utf8                  | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope version         |
 | scope.dropped_attributes_count    | UInt32                | -                   | No       | -                            | -        | Number of dropped scope attributes    |
 | schema_url                        | Utf8                  | -                   | No       | -                            | -        | Span schema URL                       |
 | start_time_unix_nano              | Timestamp(Nanosecond) | -                   | Yes      | -                            | -        | Span start time in Unix nanoseconds   |
@@ -495,12 +495,12 @@ properties for the `resource` column's `id` field.
 | id                                | UInt16      | -                   | Yes      | [DELTA](#642-delta-encoding) | encoding | Metric identifier (primary key)                |
 | resource                          | Struct      | -                   | No       | -                            | -        | Resource information                           |
 | resource.id                       | UInt16      | -                   | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to RESOURCE_ATTRS                  |
-| resource.schema_url               | Utf8        | -                   | No       | -                            | -        | Resource schema URL                            |
+| resource.schema_url               | Utf8        | Dict(u8), Dict(u16) | No       | -                            | -        | Resource schema URL                            |
 | resource.dropped_attributes_count | UInt32      | -                   | No       | -                            | -        | Number of dropped resource attributes          |
 | scope                             | Struct      | -                   | No       | -                            | -        | Instrumentation scope information              |
 | scope.id                          | UInt16      | -                   | No       | [DELTA](#642-delta-encoding) | encoding | Foreign key to SCOPE_ATTRS                     |
-| scope.name                        | Utf8        | -                   | No       | -                            | -        | Instrumentation scope name                     |
-| scope.version                     | Utf8        | -                   | No       | -                            | -        | Instrumentation scope version                  |
+| scope.name                        | Utf8        | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope name                     |
+| scope.version                     | Utf8        | Dict(u8), Dict(u16) | No       | -                            | -        | Instrumentation scope version                  |
 | scope.dropped_attributes_count    | UInt32      | -                   | No       | -                            | -        | Number of dropped scope attributes             |
 | schema_url                        | Utf8        | -                   | No       | -                            | -        | Metric schema URL                              |
 | metric_type                       | UInt8       | -                   | Yes      | -                            | -        | Metric type enum (Gauge, Sum, Histogram, etc.) |
@@ -926,7 +926,7 @@ hashing, too few client connections can pin traffic to a single backend core.
 
 For a detailed treatment of challenges, solution techniques (client-side and
 server-side), and recommended baseline configurations, see
-[Load Balancing: Challenges & Solutions](rust/otap-dataflow/docs/load-balancing.md).
+[Load Balancing: Challenges & Solutions](../rust/otap-dataflow/docs/load-balancing.md).
 
 ---
 

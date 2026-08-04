@@ -78,7 +78,7 @@ impl ComputeDuration {
     /// timing on the EffectHandler.
     ///
     /// The closure-based API structurally prevents the timer from
-    /// being held across `.await` — the closure is `FnOnce`, not
+    /// being held across `.await` -- the closure is `FnOnce`, not
     /// async, so the compiler enforces that only synchronous work is
     /// measured.
     #[inline]
@@ -174,7 +174,11 @@ mod tests {
         let (rx, mut reporter) = MetricsReporter::create_new_and_receiver(1);
         cd.report(&mut reporter);
         while let Ok(snapshot) = rx.try_recv() {
-            registry.accumulate_metric_set_snapshot(snapshot.key(), snapshot.get_metrics());
+            registry.accumulate_metric_set_snapshot(
+                snapshot.key(),
+                snapshot.bucket(),
+                snapshot.get_metrics(),
+            );
         }
 
         let mut found_set = false;

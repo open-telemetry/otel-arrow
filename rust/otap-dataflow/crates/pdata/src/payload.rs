@@ -58,25 +58,25 @@
 //!
 //! Internally, conversions are happening using various utility functions:
 //! ```text
-//!                                      ┌───────────────────────┐
-//!                                      │                       │
-//!                                      │      OTLP Bytes       │
-//!                                      │                       │
-//!                                      └───┬───────────────────┘
-//!                                          │                 ▲
-//!                                          │                 │
-//!                                          │                 │
-//!                                          ▼                 │
+//!                                      +-----------------------+
+//!                                      |                       |
+//!                                      |      OTLP Bytes       |
+//!                                      |                       |
+//!                                      +---+-------------------+
+//!                                          |                 ^
+//!                                          |                 |
+//!                                          |                 |
+//!                                          v                 |
 //!    otap_df_otap::encoder::encode_<signal>_otap_batch    otap_df_pdata::otlp::<signal>::<signal_>_from()
-//!                                          │                 ▲
-//!                                          │                 │
-//!                                          │                 │
-//!                                          ▼                 │
-//!                                      ┌─────────────────────┴───┐
-//!                                      │                         │
-//!                                      │    OTAP Arrow Records   │
-//!                                      │                         │
-//!                                      └─────────────────────────┘
+//!                                          |                 ^
+//!                                          |                 |
+//!                                          |                 |
+//!                                          v                 |
+//!                                      +---------------------+---+
+//!                                      |                         |
+//!                                      |    OTAP Arrow Records   |
+//!                                      |                         |
+//!                                      +-------------------------+
 //! ```
 // ^^ TODO we're currently in the process of reworking conversion between OTLP & OTAP to go
 // directly from OTAP -> OTLP bytes. The utility functions we use might change as part of
@@ -100,7 +100,6 @@ use prost::{EncodeError, Message};
 
 /// Container for the various representations of the telemetry data
 #[derive(Clone, Debug)]
-#[allow(clippy::large_enum_variant)]
 pub enum OtapPayload {
     /// data is serialized as a protobuf service message for one of the OTLP GRPC services
     OtlpBytes(OtlpProtoBytes),
@@ -167,6 +166,20 @@ impl OtapPayload {
         }
     }
 
+    /// Returns the best available retained-memory byte estimate.
+    ///
+    /// For OTLP bytes this is the encoded byte length because the payload uses
+    /// `bytes::Bytes`, which does not expose backing allocation capacity. A
+    /// `Bytes` slice may pin a larger shared allocation, but that larger
+    /// capacity is not measurable here.
+    #[must_use]
+    pub fn retained_memory_bytes(&self) -> usize {
+        match self {
+            Self::OtlpBytes(value) => value.retained_memory_bytes(),
+            Self::OtapArrowRecords(value) => value.retained_memory_bytes(),
+        }
+    }
+
     /// Return an empty payload of a certain type.
     #[must_use]
     pub const fn empty(signal: SignalType) -> Self {
@@ -187,6 +200,9 @@ pub trait OtapPayloadHelpers: Into<OtapPayload> {
     /// Number of bytes, if known.
     fn num_bytes(&self) -> Option<usize>;
 
+    /// Best available retained-memory byte estimate.
+    fn retained_memory_bytes(&self) -> usize;
+
     /// Return true if there is no data.
     fn is_empty(&self) -> bool;
 
@@ -205,6 +221,10 @@ impl OtapPayloadHelpers for OtapArrowRecords {
 
     fn num_bytes(&self) -> Option<usize> {
         None
+    }
+
+    fn retained_memory_bytes(&self) -> usize {
+        self.retained_memory_bytes()
     }
 
     fn take_payload(&mut self) -> Self {
@@ -249,6 +269,10 @@ impl OtapPayloadHelpers for OtlpProtoBytes {
 
     fn num_bytes(&self) -> Option<usize> {
         Some(self.num_bytes())
+    }
+
+    fn retained_memory_bytes(&self) -> usize {
+        self.as_bytes().len()
     }
 
     fn is_empty(&self) -> bool {

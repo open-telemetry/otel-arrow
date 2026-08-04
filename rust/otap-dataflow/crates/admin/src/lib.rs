@@ -5,6 +5,7 @@
 
 mod convert;
 mod dashboard;
+mod engine_config;
 pub mod error;
 mod health;
 mod pipeline;
@@ -12,6 +13,12 @@ mod pipeline_group;
 mod telemetry;
 
 use axum::Router;
+use axum::response::Response;
+pub use otap_df_admin_types::engine::{
+    ConfigChangeAction, ConfigChangeStatus, EngineConfigReconcileRequest,
+    EngineConfigReconcileState, EngineConfigReconcileStatus, GroupDeleteStatus,
+    PipelineDeleteStatus,
+};
 use otap_df_admin_types::operations::{OperationError, OperationErrorKind};
 pub use otap_df_admin_types::pipelines::{
     PipelineDetails, PipelineRolloutState, PipelineRolloutSummary, ReconfigureRequest,
@@ -22,17 +29,21 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceBuilder;
 
 use crate::error::Error;
-use otap_df_config::engine::HttpAdminSettings;
+use otap_df_config::engine::{HttpAdminSettings, OtelDataflowSpec};
 use otap_df_config::pipeline::telemetry::AttributeValue as ResourceAttributeValue;
+use otap_df_config::pipeline_group::PipelineGroupConfig;
 use otap_df_engine::memory_limiter::MemoryPressureState;
 use otap_df_state::store::ObservedStateHandle;
 use otap_df_telemetry::log_tap::InternalLogTapHandle;
 use otap_df_telemetry::registry::TelemetryRegistryHandle;
 use otap_df_telemetry::{otel_info, otel_warn};
+
+const TERMINAL_CONTROL_PLANE_PERMITS: usize = 1;
 
 /// Control-plane error surfaced to admin handlers.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -40,6 +51,8 @@ use otap_df_telemetry::{otel_info, otel_warn};
 pub enum ControlPlaneError {
     /// The requested pipeline group does not exist.
     GroupNotFound,
+    /// The requested pipeline group already exists.
+    GroupAlreadyExists,
     /// The requested pipeline does not exist.
     PipelineNotFound,
     /// Another incompatible live operation is active in the current consistency scope.
@@ -66,6 +79,7 @@ impl ControlPlaneError {
     pub fn as_operation_error(&self) -> OperationError {
         match self {
             Self::GroupNotFound => OperationError::new(OperationErrorKind::GroupNotFound),
+            Self::GroupAlreadyExists => OperationError::new(OperationErrorKind::Conflict),
             Self::PipelineNotFound => OperationError::new(OperationErrorKind::PipelineNotFound),
             Self::RolloutConflict => OperationError::new(OperationErrorKind::Conflict),
             Self::InvalidRequest { message } => {
@@ -124,6 +138,74 @@ pub trait ControlPlane: Send + Sync {
         pipeline_id: &str,
         shutdown_id: &str,
     ) -> Result<Option<ShutdownStatus>, ControlPlaneError>;
+
+    /// Returns the committed configuration for one pipeline group.
+    fn group_details(
+        &self,
+        _pipeline_group_id: &str,
+    ) -> Result<Option<PipelineGroupConfig>, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline group details are not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Creates one empty pipeline group in the controller-owned configuration.
+    fn create_group(
+        &self,
+        _pipeline_group_id: &str,
+        _group: PipelineGroupConfig,
+    ) -> Result<PipelineGroupConfig, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline group creation is not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Returns the full current engine configuration known to the controller.
+    fn engine_config_snapshot(&self) -> Result<OtelDataflowSpec, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "engine config snapshots are not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Reconciles the controller runtime to the supplied full desired configuration.
+    fn reconcile_engine_config(
+        &self,
+        _request: EngineConfigReconcileRequest,
+    ) -> Result<EngineConfigReconcileStatus, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "full engine config reconciliation is not supported by this control plane"
+                .to_owned(),
+        })
+    }
+
+    /// Gracefully drains and removes one logical pipeline from the controller state.
+    fn delete_pipeline(
+        &self,
+        _pipeline_group_id: &str,
+        _pipeline_id: &str,
+        _timeout_secs: u64,
+    ) -> Result<PipelineDeleteStatus, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline deletion is not supported by this control plane".to_owned(),
+        })
+    }
+
+    /// Gracefully drains and removes one logical pipeline group from the controller state.
+    fn delete_group(
+        &self,
+        _pipeline_group_id: &str,
+        _timeout_secs: u64,
+    ) -> Result<GroupDeleteStatus, ControlPlaneError> {
+        let _ = self;
+        Err(ControlPlaneError::Internal {
+            message: "pipeline group deletion is not supported by this control plane".to_owned(),
+        })
+    }
 }
 
 /// Shared state for the HTTP admin server.
@@ -138,6 +220,10 @@ struct AppState {
     /// Resident controller control plane for runtime mutations.
     controller: Arc<dyn ControlPlane>,
 
+    /// Bounds long synchronous terminal control-plane operations dispatched
+    /// from async HTTP handlers.
+    terminal_control_plane_permits: Arc<Semaphore>,
+
     /// Optional internal log tap for querying retained internal logs.
     log_tap: Option<InternalLogTapHandle>,
 
@@ -150,6 +236,75 @@ struct AppState {
     /// of every Prometheus scrape so we don't re-sort and re-escape on each
     /// request.
     target_info: Arc<str>,
+}
+
+impl AppState {
+    async fn run_terminal_control_plane<T, F>(&self, operation: F) -> Result<T, ControlPlaneError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<dyn ControlPlane>) -> Result<T, ControlPlaneError> + Send + 'static,
+    {
+        let permit = self
+            .terminal_control_plane_permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ControlPlaneError::RolloutConflict)?;
+        let controller = Arc::clone(&self.controller);
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            operation(controller)
+        })
+        .await
+        .map_err(|err| ControlPlaneError::Internal {
+            message: format!("terminal control-plane operation failed to join: {err}"),
+        })?
+    }
+}
+
+/// Attaches hardened security headers to every `/api/v1/*` response.
+///
+/// Mirrors the non-CSP subset of the UI/static header set from `dashboard.rs`:
+/// `Cache-Control`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+/// Content-Security-Policy is intentionally omitted - it is only meaningful for
+/// HTML responses served by the UI, not for JSON API endpoints.
+/// Centralising them as a layer on `api_routes` means new endpoints inherit them.
+///
+/// Normative sources:
+///
+/// | Header | Source | Purpose |
+/// |---|---|---|
+/// | `Cache-Control: no-store, no-cache, must-revalidate` | [RFC 9111 section 5.2.2](https://www.rfc-editor.org/rfc/rfc9111#section-5.2.2) | Prevent caching of sensitive responses |
+/// | `X-Frame-Options: DENY` | [RFC 7034](https://www.rfc-editor.org/rfc/rfc7034) (deprecated, legacy fallback) | Legacy anti-clickjacking |
+/// | `X-Content-Type-Options: nosniff` | [WHATWG Fetch](https://fetch.spec.whatwg.org/#x-content-type-options-header) | Stop MIME-sniffing |
+/// | `Referrer-Policy: no-referrer` | [W3C Referrer Policy](https://www.w3.org/TR/referrer-policy/) | Avoid leaking URLs via the Referer header |
+async fn attach_api_security_headers(mut response: Response) -> Response {
+    use axum::http::{HeaderName, HeaderValue, header};
+    let h = response.headers_mut();
+    // RFC 9111 section 5.2.2 - `no-store` forbids caching; `no-cache` and `must-revalidate`
+    // add defensive coverage for older proxies.
+    let _ = h.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static(dashboard::CACHE_CONTROL_NO_STORE),
+    );
+    // WHATWG Fetch Standard - instructs browser to honor declared Content-Type
+    // and not MIME-sniff responses as executable script or HTML.
+    let _ = h.insert(
+        HeaderName::from_static("x-content-type-options"),
+        HeaderValue::from_static(dashboard::X_CONTENT_TYPE_OPTIONS_NO_SNIFF),
+    );
+    // RFC 7034 (Informational, deprecated) - legacy anti-clickjacking fallback
+    // for browsers that do not implement CSP `frame-ancestors`.
+    let _ = h.insert(
+        HeaderName::from_static("x-frame-options"),
+        HeaderValue::from_static(dashboard::X_FRAME_OPTIONS_DENY),
+    );
+    // W3C Referrer Policy - strips Referer header so admin URLs do not leak
+    // to third parties through outbound links.
+    let _ = h.insert(
+        HeaderName::from_static("referrer-policy"),
+        HeaderValue::from_static(dashboard::REFERRER_POLICY_NO_REFERRER),
+    );
+    response
 }
 
 /// Run the admin HTTP server until shutdown is requested.
@@ -168,6 +323,7 @@ pub async fn run(
         observed_state_store: observed_store,
         metrics_registry,
         controller,
+        terminal_control_plane_permits: Arc::new(Semaphore::new(TERMINAL_CONTROL_PLANE_PERMITS)),
         log_tap,
         memory_pressure_state,
         target_info,
@@ -176,8 +332,10 @@ pub async fn run(
     let api_routes = Router::new()
         .merge(health::routes())
         .merge(telemetry::routes())
+        .merge(engine_config::routes())
         .merge(pipeline_group::routes())
-        .merge(pipeline::routes());
+        .merge(pipeline::routes())
+        .layer(axum::middleware::map_response(attach_api_security_headers));
 
     let app = Router::new()
         .nest("/api/v1", api_routes)
@@ -233,4 +391,43 @@ pub async fn run(
             addr: addr.to_string(),
             details: format!("{e}"),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::attach_api_security_headers;
+    use axum::body::Body;
+    use axum::http::Response;
+
+    /// Verify that all four hardened security headers are injected with the
+    /// expected values and that a pre-existing header on the response is
+    /// not overwritten.
+    #[tokio::test]
+    async fn security_headers_are_attached() {
+        let response = Response::builder()
+            .body(Body::empty())
+            .expect("response should build");
+
+        let response = attach_api_security_headers(response).await;
+        let headers = response.headers();
+
+        assert_eq!(
+            headers.get("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-store, no-cache, must-revalidate"),
+        );
+        assert_eq!(
+            headers
+                .get("x-content-type-options")
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff"),
+        );
+        assert_eq!(
+            headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+            Some("DENY"),
+        );
+        assert_eq!(
+            headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+            Some("no-referrer"),
+        );
+    }
 }

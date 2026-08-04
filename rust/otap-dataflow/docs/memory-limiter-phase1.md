@@ -277,7 +277,10 @@ stateDiagram-v2
   when the threshold is crossed.
 - **Recovery from Soft** requires usage to drop below
   `soft_limit - hysteresis` before returning to `Normal`. This prevents
-  oscillation when usage hovers near the soft threshold.
+  oscillation when usage hovers near the soft threshold. When `hysteresis` is
+  omitted it defaults to `min(hard_limit - soft_limit, soft_limit / 10)`, a
+  narrow band so recovery happens once usage falls modestly below `soft_limit`
+  rather than only after it collapses toward zero.
 - **Recovery from Hard** requires usage to drop below `soft_limit`
   before returning to `Soft`.
 - Phase 1 does **not** implement cooldown timers. Those are planned for a
@@ -369,8 +372,7 @@ All engine metrics are registered under the `engine` metric-set.
 <!-- markdownlint-disable MD013 -->
 | Metric | Receiver | Description |
 | --- | --- | --- |
-| `receiver.otlp.refused_memory_pressure` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure |
-| `receiver.otlp.rejected_requests` | OTLP (gRPC + HTTP) | Total rejected requests (includes memory pressure) |
+| `receiver.otlp.rejections.requests{error.type="memory_pressure"}` | OTLP (gRPC + HTTP) | Requests rejected due to memory pressure, partitioned by `protocol` |
 | `receiver.otap.refused_memory_pressure` | OTAP gRPC | Requests rejected due to memory pressure |
 | `receiver.otap.rejected_requests` | OTAP gRPC | Total rejected requests (includes memory pressure) |
 | `receiver.syslog_cef.tcp_connections_rejected_memory_pressure` | Syslog / CEF TCP | Connections rejected or closed |

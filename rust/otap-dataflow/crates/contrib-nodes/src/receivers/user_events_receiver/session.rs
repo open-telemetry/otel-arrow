@@ -10,6 +10,7 @@ use tokio::time;
 
 use super::one_collect_adapter::{
     CollectInitError, OneCollectUserEventsSession, UserEventsSessionConfig, UserEventsSubscription,
+    UserEventsSubscriptionLimits,
 };
 use super::{DrainConfig, SessionConfig, SubscriptionConfig};
 
@@ -166,12 +167,19 @@ impl UserEventsSession {
             .iter()
             .map(|subscription| UserEventsSubscription {
                 tracepoint: subscription.tracepoint.clone(),
+                limits: subscription
+                    .limits
+                    .as_ref()
+                    .map(|limits| UserEventsSubscriptionLimits {
+                        max_pending_events: limits.max_pending_events,
+                        max_pending_bytes: limits.max_pending_bytes,
+                    }),
             })
             .collect::<Vec<_>>();
         let config = UserEventsSessionConfig {
             per_cpu_buffer_size: config.per_cpu_buffer_size,
-            max_pending_events: config.max_pending_events,
-            max_pending_bytes: config.max_pending_bytes,
+            max_pending_events: config.limits.max_pending_events,
+            max_pending_bytes: config.limits.max_pending_bytes,
             // Open the perf ring for this pipeline's pinned CPU only.
             // Keeping ring reads on the same CPU as the pipeline thread
             // preserves the NUMA-locality design documented in the

@@ -19,8 +19,6 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 from pathlib import Path
 
-ISSUE_TITLE = "Flaky Test Report (automated)"
-
 # Maximum number of job links to show per flaky test in the report table
 MAX_JOB_LINKS = 5
 
@@ -316,23 +314,21 @@ def lookup_job_urls(flaky_tests, repo_slug, artifact_metadata):
         t["fail_job_links"] = links
 
 
-def get_previous_flaky_names(issue_label, issue_title):
-    """Fetch the set of test names from the existing tracking issue, if any.
+def get_previous_flaky_names(issue_number):
+    """Fetch the set of test names from the tracking issue.
 
-    Returns ``None`` when no previous issue exists (first run) so that
+    Returns ``None`` when the issue body cannot be read so that
     callers can distinguish "no prior report" from "prior report had
     zero flaky tests".
     """
+    if not issue_number:
+        return None
     try:
         result = subprocess.run(
             [
-                "gh", "issue", "list",
-                "--label", issue_label,
-                "--state", "open",
-                "--search", issue_title,
-                "--json", "body,title",
-                "--jq",
-                f'.[] | select(.title == "{issue_title}") | .body',
+                "gh", "issue", "view", issue_number,
+                "--json", "body",
+                "--jq", ".body",
             ],
             capture_output=True, text=True, timeout=30,
         )
@@ -511,11 +507,13 @@ if __name__ == "__main__":
     repo_slug = os.environ.get("GITHUB_REPOSITORY", "")
     issue_label = os.environ.get("FLAKY_ISSUE_LABEL", "flaky-test")
 
+    issue_number = os.environ.get("FLAKY_ISSUE_NUMBER", "")
+
     test_results, artifact_metadata = parse_junit_files("junit-artifacts")
     flaky_tests = identify_flaky_tests(test_results)
     if flaky_tests and repo_slug:
         lookup_job_urls(flaky_tests, repo_slug, artifact_metadata)
-    previous_names = get_previous_flaky_names(issue_label, ISSUE_TITLE)
+    previous_names = get_previous_flaky_names(issue_number)
     body = format_issue_body(flaky_tests, lookback, repo_url, previous_names)
 
     # Write outputs

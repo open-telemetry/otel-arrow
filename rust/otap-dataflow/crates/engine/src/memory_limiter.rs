@@ -487,10 +487,16 @@ impl EffectiveMemoryLimiter {
             );
         }
 
+        // When `hysteresis` is omitted, derive a small recovery band below the
+        // soft limit: the smaller of the soft->hard gap and 10% of the soft
+        // limit. Capping at `soft_limit / 10` (rather than `soft_limit - 1`)
+        // keeps the band narrow even when the soft->hard gap is wide, so the
+        // limiter recovers to `Normal` once usage falls modestly below
+        // `soft_limit` instead of only after usage collapses toward zero.
         let hysteresis_bytes = policy.hysteresis.unwrap_or_else(|| {
             hard_limit_bytes
                 .saturating_sub(soft_limit_bytes)
-                .min(soft_limit_bytes.saturating_sub(1))
+                .min(soft_limit_bytes / 10)
         });
 
         if hysteresis_bytes >= soft_limit_bytes {
@@ -1154,7 +1160,131 @@ mod tests {
         })
         .expect("limiter should accept omitted hysteresis");
 
-        assert_eq!(limiter.hysteresis_bytes, 99);
+        // Derived band = min(hard - soft = 150, soft / 10 = 10) = 10 bytes, a
+        // narrow recovery margin below the soft limit (not soft_limit - 1).
+        assert_eq!(limiter.hysteresis_bytes, 10);
+    }
+
+    #[test]
+    fn soft_pressure_recovers_to_normal_with_default_hysteresis() {
+        // Regression: with an omitted `hysteresis`, a wide soft->hard gap must
+        // still yield a recovery band small enough to return to `Normal` once
+        // usage falls modestly below `soft_limit` -- not stay latched in `Soft`
+        // until usage collapses toward zero. Any consumer of the Soft-pressure
+        // signal (the pressure gauge, downstream throttling) stays engaged for
+        // the whole latched window, so the Soft->Normal transition timing is the
+        // user-visible contract. Samples are driven through `tick()` so the
+        // policy-derived hysteresis governs classification, exercising the
+        // defaulting and the pressure-state machine together (not a hand-forced
+        // level).
+        let mut limiter = EffectiveMemoryLimiter::from_policy(&MemoryLimiterPolicy {
+            mode: MemoryLimiterMode::Enforce,
+            source: MemoryLimiterSource::Rss,
+            check_interval: Duration::from_secs(1),
+            soft_limit: Some(100),
+            hard_limit: Some(250),
+            hysteresis: None,
+            retry_after_secs: 1,
+            fail_readiness_on_hard: true,
+            purge_on_hard: false,
+            purge_min_interval: Duration::from_secs(5),
+        })
+        .expect("limiter should accept omitted hysteresis");
+
+        // min(hard - soft = 150, soft / 10 = 10) = 10.
+        assert_eq!(limiter.hysteresis_bytes, 10);
+
+        // Feed usage 100 (== soft_limit) then 50 (well below soft_limit).
+        limiter.sampler = MemoryUsageSampler::from_test_probes(
+            Box::new(SequenceProbe {
+                samples: VecDeque::from([
+                    MemorySample {
+                        usage_bytes: 100,
+                        source: MemorySampleSource::Rss,
+                    },
+                    MemorySample {
+                        usage_bytes: 50,
+                        source: MemorySampleSource::Rss,
+                    },
+                ]),
+            }),
+            None,
+        );
+
+        let state = MemoryPressureState::default();
+
+        // A sample at the soft limit enters Soft pressure.
+        let entered = limiter.tick(&state).expect("tick should succeed");
+        assert_eq!(entered.current_level, MemoryPressureLevel::Soft);
+        assert_eq!(state.level(), MemoryPressureLevel::Soft);
+
+        // Usage of 50 is below soft_limit - hysteresis (90), so pressure
+        // recovers to Normal and the shared state reflects it.
+        let recovered = limiter.tick(&state).expect("tick should succeed");
+        assert_eq!(recovered.current_level, MemoryPressureLevel::Normal);
+        assert_eq!(state.level(), MemoryPressureLevel::Normal);
+    }
+
+    #[test]
+    fn soft_recovery_boundary_uses_strict_below_soft_minus_hysteresis() {
+        // Pins the exact Soft->Normal recovery threshold. With soft=100 and the
+        // derived default hysteresis of 10, recovery is a strict `<` at 90:
+        // usage == 90 stays Soft, usage == 89 recovers to Normal. Driven through
+        // `tick()` so the real classify()/publish path is exercised.
+        fn limiter_with(second_sample: u64) -> (EffectiveMemoryLimiter, MemoryPressureState) {
+            let mut limiter = EffectiveMemoryLimiter::from_policy(&MemoryLimiterPolicy {
+                mode: MemoryLimiterMode::Enforce,
+                source: MemoryLimiterSource::Rss,
+                check_interval: Duration::from_secs(1),
+                soft_limit: Some(100),
+                hard_limit: Some(250),
+                hysteresis: None,
+                retry_after_secs: 1,
+                fail_readiness_on_hard: true,
+                purge_on_hard: false,
+                purge_min_interval: Duration::from_secs(5),
+            })
+            .expect("limiter should accept omitted hysteresis");
+            limiter.sampler = MemoryUsageSampler::from_test_probes(
+                Box::new(SequenceProbe {
+                    samples: VecDeque::from([
+                        MemorySample {
+                            usage_bytes: 100,
+                            source: MemorySampleSource::Rss,
+                        },
+                        MemorySample {
+                            usage_bytes: second_sample,
+                            source: MemorySampleSource::Rss,
+                        },
+                    ]),
+                }),
+                None,
+            );
+            (limiter, MemoryPressureState::default())
+        }
+
+        // First tick (usage 100) enters Soft; second tick at usage == 90 stays
+        // Soft because recovery is a strict `<` (90 is not < 90).
+        let (mut at_boundary, state) = limiter_with(90);
+        assert_eq!(
+            at_boundary.tick(&state).expect("tick").current_level,
+            MemoryPressureLevel::Soft
+        );
+        assert_eq!(
+            at_boundary.tick(&state).expect("tick").current_level,
+            MemoryPressureLevel::Soft
+        );
+
+        // Second tick at usage == 89 (soft_limit - hysteresis - 1) recovers.
+        let (mut below_boundary, state2) = limiter_with(89);
+        assert_eq!(
+            below_boundary.tick(&state2).expect("tick").current_level,
+            MemoryPressureLevel::Soft
+        );
+        assert_eq!(
+            below_boundary.tick(&state2).expect("tick").current_level,
+            MemoryPressureLevel::Normal
+        );
     }
 
     #[test]

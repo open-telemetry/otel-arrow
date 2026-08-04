@@ -1,0 +1,10 @@
+groups:
+  - id: event.otap.otlp.exporter.grpc.receive
+    type: event
+    name: otlp.exporter.grpc.receive
+    stability: development
+    brief: >
+      Emitted by the OTLP gRPC exporter each time it receives a message
+      from its upstream channel (a batch ready to be exported, or a
+      control-plane message). Steady-state event useful for confirming
+      the exporter is actively pulling work from its inbox.

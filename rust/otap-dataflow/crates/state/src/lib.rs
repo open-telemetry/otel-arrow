@@ -33,7 +33,7 @@ impl Serialize for ObservedEventRingBuffer {
     {
         let mut seq = serializer.serialize_seq(Some(self.buf.len()))?;
         for ev in self.buf.iter().rev() {
-            // <— reverse iteration
+            // <-- reverse iteration
             seq.serialize_element(ev)?;
         }
         seq.end()

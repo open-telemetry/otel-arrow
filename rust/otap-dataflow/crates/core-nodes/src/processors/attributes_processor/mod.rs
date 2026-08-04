@@ -12,9 +12,11 @@
 //! - `delete`: Removes an attribute by key.
 //! - `insert`: Inserts a new attribute (only if the key doesn't already exist).
 //! - `upsert`: Inserts a new attribute, or updates the value if the key already exists.
+//! - `update`: Updates an existing attribute only if the key already exists.
+//! - `hash`: Replaces existing scalar attribute values with lowercase hex SHA-256 hashes.
 //!
 //! Unsupported actions are ignored if present in the config:
-//! `update` (value update), `hash`, `extract`, `convert`.
+//! `extract`, `convert`.
 //! We may add support for them later.
 //!
 //! Example configuration (YAML):
@@ -47,25 +49,24 @@ use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
 use otap_df_engine::processor::ProcessorWrapper;
-use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
+use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, opaque_string::OpaqueString, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::transform::apply_attribute_transform;
 use otap_df_pdata::otap::{
     OtapArrowRecords,
     transform::{
-        AttributesTransform, DeleteTransform, InsertTransform, LiteralValue, RenameTransform,
-        UpsertTransform,
+        AttributesTransform, DeleteTransform, HashSpec, HashTransform, InsertTransform,
+        LiteralValue, RenameTransform, UpdateTransform, UpsertTransform,
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 mod metrics;
-use self::metrics::AttributesProcessorMetrics;
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
@@ -104,17 +105,58 @@ pub enum Action {
         value: LiteralValue,
     },
 
+    /// Update an existing attribute without inserting missing keys.
+    Update {
+        /// The attribute key to update.
+        key: String,
+        /// The value to use for existing attributes.
+        value: LiteralValue,
+    },
+
+    /// Hash an existing scalar attribute value using SHA-256.
+    ///
+    /// The replacement value is a lowercase hex string. The hash input is `salt || value`, where
+    /// scalar values are encoded as UTF-8 for strings, raw bytes for byte arrays, a single `0` or
+    /// `1` byte for booleans, and little-endian bytes for `i64` and `f64` values.
+    Hash {
+        /// The attribute key to hash.
+        key: String,
+        /// The hashing algorithm to use. Defaults to `sha256`.
+        #[serde(default = "default_hash_algorithm")]
+        algorithm: HashAlgorithm,
+        /// Salt prepended to the attribute bytes before hashing.
+        ///
+        /// Stored as an [`OpaqueString`] so that derived `Debug` output does not leak the salt
+        /// into logs, panics, or diagnostic dumps. The salt is still round-trippable via
+        /// `Serialize`/`Deserialize`, so configuration reload and persistence are unaffected.
+        #[serde(default)]
+        salt: OpaqueString,
+    },
+
     /// Other actions are accepted for forward-compatibility but ignored.
     /// These variants allow deserialization of Go-style configs without effect.
     #[serde(other)]
     Unsupported,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+/// Supported hash algorithms for the `hash` action.
+pub enum HashAlgorithm {
+    /// SHA-256.
+    Sha256,
+}
+
+const fn default_hash_algorithm() -> HashAlgorithm {
+    HashAlgorithm::Sha256
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 /// Configuration for the AttributesProcessor.
 ///
 /// Accepts configuration in the same format as the OpenTelemetry Collector's attributes processor.
-/// Supported actions: rename (deviation), delete, insert, upsert. Others are ignored.
+/// Supported actions: rename (deviation), delete, insert, upsert, update, hash.
+/// Others are ignored.
 ///
 /// You can control which attribute domains are transformed via `apply_to`.
 /// Valid values: "signal" (default), "resource", "scope".
@@ -131,9 +173,8 @@ pub struct Config {
 /// Processor that applies attribute transformations to OTAP attribute batches.
 ///
 /// Implements the OpenTelemetry Collector's attributes processor functionality using
-/// efficient Arrow operations. Supports `update` (rename) and `delete` operations
-/// across all attribute types (resource, scope, and signal-specific attributes)
-/// for logs, metrics, and traces telemetry.
+/// efficient Arrow operations across all attribute types (resource, scope, and
+/// signal-specific attributes) for logs, metrics, and traces telemetry.
 pub struct AttributesProcessor {
     // Pre-computed transform to avoid rebuilding per message
     transform: AttributesTransform,
@@ -142,7 +183,7 @@ pub struct AttributesProcessor {
     has_scope_domain: bool,
     has_signal_domain: bool,
     // Metrics handle
-    metrics: MetricSet<AttributesProcessorMetrics>,
+    metrics: metrics::AttributesProcessorMetrics,
     // Opt-in compute-duration timing
     compute_duration: ComputeDuration,
 }
@@ -173,6 +214,8 @@ impl AttributesProcessor {
         let mut deletes = BTreeSet::new();
         let mut inserts = BTreeMap::new();
         let mut upserts = BTreeMap::new();
+        let mut updates = BTreeMap::new();
+        let mut hashes = BTreeMap::new();
 
         for action in config.actions {
             match action {
@@ -191,6 +234,18 @@ impl AttributesProcessor {
                 Action::Upsert { key, value } => {
                     let _ = upserts.insert(key, value);
                 }
+                Action::Update { key, value } => {
+                    let _ = updates.insert(key, value);
+                }
+                Action::Hash {
+                    key,
+                    algorithm,
+                    salt,
+                } => match algorithm {
+                    HashAlgorithm::Sha256 => {
+                        let _ = hashes.insert(key, HashSpec::sha256(salt.into_inner()));
+                    }
+                },
                 // Unsupported actions are ignored for now
                 Action::Unsupported => {}
             }
@@ -231,6 +286,16 @@ impl AttributesProcessor {
             } else {
                 Some(UpsertTransform::new(upserts))
             },
+            update: if updates.is_empty() {
+                None
+            } else {
+                Some(UpdateTransform::new(updates))
+            },
+            hash: if hashes.is_empty() {
+                None
+            } else {
+                Some(HashTransform::new(hashes))
+            },
         };
 
         transform
@@ -244,7 +309,7 @@ impl AttributesProcessor {
             has_resource_domain,
             has_scope_domain,
             has_signal_domain,
-            metrics: pipeline_ctx.register_metrics::<AttributesProcessorMetrics>(),
+            metrics: metrics::AttributesProcessorMetrics::new(&pipeline_ctx),
             compute_duration: ComputeDuration::new(&pipeline_ctx),
         })
     }
@@ -255,50 +320,8 @@ impl AttributesProcessor {
             && self.transform.delete.is_none()
             && self.transform.insert.is_none()
             && self.transform.upsert.is_none()
-    }
-
-    #[inline]
-    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
-        use payload_sets::*;
-
-        match (
-            self.has_resource_domain,
-            self.has_scope_domain,
-            self.has_signal_domain,
-            signal,
-        ) {
-            // Empty cases
-            (false, false, false, _) => EMPTY,
-
-            // Signal only
-            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
-            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
-            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
-
-            // Resource only
-            (true, false, false, _) => RESOURCE_ONLY,
-
-            // Scope only
-            (false, true, false, _) => SCOPE_ONLY,
-
-            // Resource + Signal
-            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
-            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
-            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
-
-            // Scope + Signal
-            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
-            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
-            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
-
-            // Resource + Scope (no signal)
-            (true, true, false, _) => RESOURCE_SCOPE,
-
-            // All three
-            (true, true, true, SignalType::Logs) => LOGS_ALL,
-            (true, true, true, SignalType::Metrics) => METRICS_ALL,
-            (true, true, true, SignalType::Traces) => TRACES_ALL,
-        }
+            && self.transform.update.is_none()
+            && self.transform.hash.is_none()
     }
 
     #[allow(clippy::result_large_err)]
@@ -306,26 +329,58 @@ impl AttributesProcessor {
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<(u64, u64, u64, u64), EngineError> {
-        let mut deleted_total: u64 = 0;
-        let mut renamed_total: u64 = 0;
-        let mut inserted_total: u64 = 0;
-        let mut upserted_total: u64 = 0;
+    ) -> Result<SmallVec<[(metrics::TargetDomain, u64, u64, u64, u64, u64, u64); 3]>, EngineError>
+    {
+        let mut per_domain = SmallVec::new();
 
-        if !self.is_noop() {
-            let payloads = self.attrs_payloads(signal);
-            for &payload_ty in payloads {
-                let stats = apply_attribute_transform(records, payload_ty, &self.transform, true)?
-                    .unwrap_or_default();
-
-                deleted_total += stats.deleted_entries;
-                renamed_total += stats.renamed_entries;
-                inserted_total += stats.inserted_entries;
-                upserted_total += stats.upserted_entries;
-            }
+        if self.is_noop() {
+            return Ok(per_domain);
         }
 
-        Ok((deleted_total, renamed_total, inserted_total, upserted_total))
+        // Helper closure to aggregate stats across a slice of payload types.
+        let mut apply_domain =
+            |payloads: &[ArrowPayloadType]| -> Result<(u64, u64, u64, u64, u64, u64), EngineError> {
+                let mut deleted = 0u64;
+                let mut renamed = 0u64;
+                let mut inserted = 0u64;
+                let mut upserted = 0u64;
+                let mut updated = 0u64;
+                let mut hashed = 0u64;
+                for &payload_ty in payloads {
+                    let stats =
+                        apply_attribute_transform(records, payload_ty, &self.transform, true)?
+                            .unwrap_or_default();
+                    deleted += stats.deleted_entries;
+                    renamed += stats.renamed_entries;
+                    inserted += stats.inserted_entries;
+                    upserted += stats.upserted_entries;
+                    updated += stats.updated_entries;
+                    hashed += stats.hashed_entries;
+                }
+                Ok((deleted, renamed, inserted, upserted, updated, hashed))
+            };
+
+        if self.has_signal_domain {
+            let payloads = match signal {
+                SignalType::Logs => payload_sets::LOGS_SIGNAL,
+                SignalType::Metrics => payload_sets::METRICS_SIGNAL,
+                SignalType::Traces => payload_sets::TRACES_SIGNAL,
+            };
+            let (d, r, i, u, upd, h) = apply_domain(payloads)?;
+            per_domain.push((metrics::TargetDomain::Signal, d, r, i, u, upd, h));
+        }
+
+        if self.has_resource_domain {
+            let (d, r, i, u, upd, h) = apply_domain(payload_sets::RESOURCE_ONLY)?;
+            per_domain.push((metrics::TargetDomain::Resource, d, r, i, u, upd, h));
+        }
+
+        if self.has_scope_domain {
+            let (d, r, i, u, upd, h) = apply_domain(payload_sets::SCOPE_ONLY)?;
+            per_domain.push((metrics::TargetDomain::Scope, d, r, i, u, upd, h));
+        }
+
+        Ok(per_domain)
     }
 }
 
@@ -341,7 +396,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    let _ = metrics_reporter.report(&mut self.metrics);
+                    let _ = self.metrics.report(&mut metrics_reporter);
                     self.compute_duration.report(&mut metrics_reporter);
                     Ok(())
                 }
@@ -362,37 +417,60 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 let mut records: OtapArrowRecords = payload.try_into_with_default()?;
 
-                // Update domain counters (count once per message when domains are enabled)
-                if self.has_resource_domain {
-                    self.metrics.domains_resource.inc();
-                }
-                if self.has_scope_domain {
-                    self.metrics.domains_scope.inc();
-                }
-                if self.has_signal_domain {
-                    self.metrics.domains_signal.inc();
-                }
-                // Apply transform across selected domains and collect exact stats.
+                // Apply transform across selected domains and record per-(action, domain) stats.
                 let result = effect_handler.timed(&self.compute_duration, || {
                     self.apply_transform_with_stats(&mut records, signal)
                 });
                 match result {
-                    Ok((deleted_total, renamed_total, inserted_total, upserted_total)) => {
-                        if deleted_total > 0 {
-                            self.metrics.deleted_entries.add(deleted_total);
+                    Ok(domain_stats) => {
+                        for (domain, deleted, renamed, inserted, upserted, updated, hashed) in
+                            domain_stats
+                        {
+                            if deleted > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Deleted, domain)
+                                    .entries
+                                    .add(deleted);
+                            }
+                            if renamed > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Renamed, domain)
+                                    .entries
+                                    .add(renamed);
+                            }
+                            if inserted > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Inserted, domain)
+                                    .entries
+                                    .add(inserted);
+                            }
+                            if upserted > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Upserted, domain)
+                                    .entries
+                                    .add(upserted);
+                            }
+                            if updated > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Updated, domain)
+                                    .entries
+                                    .add(updated);
+                            }
+                            if hashed > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Hashed, domain)
+                                    .entries
+                                    .add(hashed);
+                            }
                         }
-                        if renamed_total > 0 {
-                            self.metrics.renamed_entries.add(renamed_total);
-                        }
-                        if inserted_total > 0 {
-                            self.metrics.inserted_entries.add(inserted_total);
-                        }
-                        if upserted_total > 0 {
-                            self.metrics.upserted_entries.add(upserted_total);
-                        }
+                        self.metrics.record_transform_outcome(
+                            otap_df_telemetry::common_attributes::Outcome::Success,
+                        );
                     }
                     Err(e) => {
-                        self.metrics.transform_failed.inc();
+                        self.metrics.record_transform_outcome(
+                            otap_df_telemetry::common_attributes::Outcome::Failure,
+                        );
                         return Err(e);
                     }
                 }
@@ -481,13 +559,11 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
 
-// Pre-computed arrays for all domain combinations
+// Per-domain payload slices used by apply_transform_with_stats.
 mod payload_sets {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
 
-    pub(super) const EMPTY: &[A] = &[];
-
-    // Signal only
+    // Signal payloads per signal type
     pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
     pub(super) const METRICS_SIGNAL: &[A] = &[
         A::MetricAttrs,
@@ -499,70 +575,11 @@ mod payload_sets {
     ];
     pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
 
-    // Resource only
+    // Resource domain
     pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
 
-    // Scope only
+    // Scope domain
     pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
-
-    // Resource + Signal
-    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
-    pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-
-    // Scope + Signal
-    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
-    pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-
-    // Resource + Scope
-    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
-
-    // All three: Resource + Scope + Signal
-    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
-    pub(super) const METRICS_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
 }
 
 #[cfg(test)]
@@ -620,7 +637,9 @@ mod tests {
         let cfg = json!({
             "actions": [
                 {"action": "rename", "source_key": "a", "destination_key": "b"},
-                {"action": "delete", "key": "x"}
+                {"action": "delete", "key": "x"},
+                {"action": "update", "key": "secret", "value": "[REDACTED]"},
+                {"action": "hash", "key": "account.id", "algorithm": "sha256", "salt": "pepper"}
             ]
         });
         let telemetry_registry_handle = TelemetryRegistryHandle::new();
@@ -630,11 +649,276 @@ mod tests {
         let parsed = AttributesProcessor::from_config(pipeline_ctx, &cfg).expect("config parse");
         assert!(parsed.transform.rename.is_some());
         assert!(parsed.transform.delete.is_some());
+        assert!(parsed.transform.update.is_some());
+        assert!(parsed.transform.hash.is_some());
         // default apply_to should include Signal
         assert!(parsed.has_signal_domain);
         // and not necessarily Resource/Scope unless specified
         assert!(!parsed.has_resource_domain);
         assert!(!parsed.has_scope_domain);
+    }
+
+    #[test]
+    fn test_update_updates_existing_signal_attribute_only() {
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new("secret", AnyValue::new_string("rv"))],
+            vec![KeyValue::new("secret", AnyValue::new_string("sv"))],
+            vec![
+                KeyValue::new("secret", AnyValue::new_string("lv")),
+                KeyValue::new("keep", AnyValue::new_string("unchanged")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "update", "key": "secret", "value": "[MASKED]"},
+                {"action": "update", "key": "missing", "value": "must_not_insert"}
+            ]
+        });
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-update-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert_eq!(
+                    res_attrs
+                        .iter()
+                        .find(|kv| kv.key == "secret")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("rv"))
+                );
+
+                let scope_attrs = &decoded.resource_logs[0].scope_logs[0]
+                    .scope
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert_eq!(
+                    scope_attrs
+                        .iter()
+                        .find(|kv| kv.key == "secret")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("sv"))
+                );
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                assert_eq!(
+                    log_attrs
+                        .iter()
+                        .find(|kv| kv.key == "secret")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("[MASKED]"))
+                );
+                assert!(!log_attrs.iter().any(|kv| kv.key == "must_not_insert"));
+                assert!(
+                    log_attrs.iter().any(|kv| kv.key == "keep"
+                        && kv.value == Some(AnyValue::new_string("unchanged")))
+                );
+            })
+            .validate(|_| async move {});
+    }
+
+    #[test]
+    fn test_config_rejects_unsupported_hash_algorithm() {
+        let cfg = json!({
+            "actions": [
+                {"action": "hash", "key": "secret", "algorithm": "sha512"}
+            ]
+        });
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        assert!(AttributesProcessor::from_config(pipeline_ctx, &cfg).is_err());
+    }
+
+    #[test]
+    fn test_hash_action_debug_redacts_salt() {
+        let action: Action = serde_json::from_value(json!({
+            "action": "hash",
+            "key": "secret",
+            "algorithm": "sha256",
+            "salt": "pepper"
+        }))
+        .expect("parse action");
+
+        let debug = format!("{action:?}");
+        assert!(!debug.contains("pepper"));
+        assert!(debug.contains("***"));
+    }
+
+    #[test]
+    fn test_hash_updates_existing_scalar_signal_attributes_only() {
+        let input = build_logs_with_attrs(
+            vec![KeyValue::new(
+                "str_attr",
+                AnyValue::new_string("resource-value"),
+            )],
+            vec![],
+            vec![
+                KeyValue::new("str_attr", AnyValue::new_string("alice@example.com")),
+                KeyValue::new("bytes_attr", AnyValue::new_bytes(b"abc")),
+                KeyValue::new("int_attr", AnyValue::new_int(514)),
+                KeyValue::new("double_attr", AnyValue::new_double(3.5)),
+                KeyValue::new("bool_attr", AnyValue::new_bool(true)),
+                KeyValue::new(
+                    "map_attr",
+                    AnyValue::new_kvlist(vec![KeyValue::new("nested", AnyValue::new_bool(true))]),
+                ),
+                KeyValue::new(
+                    "array_attr",
+                    AnyValue::new_array(vec![AnyValue::new_string("one")]),
+                ),
+                KeyValue::new("keep", AnyValue::new_string("unchanged")),
+            ],
+        );
+
+        let cfg = json!({
+            "actions": [
+                {"action": "hash", "key": "str_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "bytes_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "int_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "double_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "bool_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "map_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "array_attr", "algorithm": "sha256", "salt": "pepper"},
+                {"action": "hash", "key": "missing", "algorithm": "sha256", "salt": "pepper"}
+            ]
+        });
+
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+
+        let node = test_node("attributes-processor-hash-test");
+        let rt: TestRuntime<OtapPdata> = TestRuntime::new();
+        let mut node_config = NodeUserConfig::new_processor_config(ATTRIBUTES_PROCESSOR_URN);
+        node_config.config = cfg;
+        let proc =
+            create_attributes_processor(pipeline_ctx, node, Arc::new(node_config), rt.config())
+                .expect("create processor");
+        let phase = rt.set_processor(proc);
+
+        phase
+            .run_test(|mut ctx| async move {
+                let mut bytes = BytesMut::new();
+                input.encode(&mut bytes).expect("encode");
+                let bytes = bytes.freeze();
+                let pdata_in =
+                    OtapPdata::new_default(OtlpProtoBytes::ExportLogsRequest(bytes).into());
+                ctx.process(Message::PData(pdata_in))
+                    .await
+                    .expect("process");
+
+                let out = ctx.drain_pdata().await;
+                let first = out.into_iter().next().expect("one output").payload();
+
+                let otlp_bytes: OtlpProtoBytes =
+                    first.try_into_with_default().expect("convert to otlp");
+                let bytes = match otlp_bytes {
+                    OtlpProtoBytes::ExportLogsRequest(b) => b,
+                    _ => panic!("unexpected otlp variant"),
+                };
+                let decoded = ExportLogsServiceRequest::decode(bytes.as_ref()).expect("decode");
+
+                let res_attrs = &decoded.resource_logs[0]
+                    .resource
+                    .as_ref()
+                    .unwrap()
+                    .attributes;
+                assert_eq!(
+                    res_attrs
+                        .iter()
+                        .find(|kv| kv.key == "str_attr")
+                        .and_then(|kv| kv.value.as_ref()),
+                    Some(&AnyValue::new_string("resource-value"))
+                );
+
+                let log_attrs = &decoded.resource_logs[0].scope_logs[0].log_records[0].attributes;
+                for (key, expected) in [
+                    (
+                        "str_attr",
+                        "8b8d9adc4875c0dca816e3e17b7ac87b45e40945b731fa02e3b42bf101589e21",
+                    ),
+                    (
+                        "bytes_attr",
+                        "fadf7b97406e1eaa259a82e26e6839e564c37c256876e060e17838c86b7275ef",
+                    ),
+                    (
+                        "int_attr",
+                        "13ddda943275484b13d00c410ab1ee38dafb4b468904979f561aa7a5c8d11699",
+                    ),
+                    (
+                        "double_attr",
+                        "3b25069b0582c48a0c401bb1f4fb6250de982cad1335473df46ca790ce41535e",
+                    ),
+                    (
+                        "bool_attr",
+                        "1c57981a8c749477991aa9772cd04531bb532f5c4965a69c498f044453a2d57a",
+                    ),
+                ] {
+                    assert_eq!(
+                        log_attrs
+                            .iter()
+                            .find(|kv| kv.key == key)
+                            .and_then(|kv| kv.value.as_ref()),
+                        Some(&AnyValue::new_string(expected))
+                    );
+                }
+                assert!(!log_attrs.iter().any(|kv| kv.key == "missing"));
+                assert!(
+                    log_attrs.iter().any(|kv| kv.key == "keep"
+                        && kv.value == Some(AnyValue::new_string("unchanged")))
+                );
+                assert!(log_attrs.iter().any(|kv| kv.key == "map_attr"
+                    && kv.value
+                        == Some(AnyValue::new_kvlist(vec![KeyValue::new(
+                            "nested",
+                            AnyValue::new_bool(true)
+                        )]))));
+                assert!(log_attrs.iter().any(|kv| kv.key == "array_attr"
+                    && kv.value == Some(AnyValue::new_array(vec![AnyValue::new_string("one")]))));
+            })
+            .validate(|_| async move {});
     }
 
     #[test]
@@ -2214,6 +2498,8 @@ mod telemetry_tests {
     use prost::Message as _;
     use serde_json::json;
 
+    /// Scenario: A processor with rename, delete, and upsert actions processes logs and collects telemetry.
+    /// Guarantees: The component records correct entries per action and domain in processor.attributes.modified, and transform success in processor.attributes.
     #[test]
     fn test_metrics_collect_telemetry_reports_counters() {
         use std::sync::Arc;
@@ -2317,25 +2603,55 @@ mod telemetry_tests {
                 let mut found_deleted_entries = false;
                 let mut found_upserted_entries = false;
                 let mut found_domain_signal = false;
+                let mut found_transform_success = false;
 
-                telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "processor.attributes" {
-                        for (field, v) in iter {
-                            match (field.name, v.to_u64_lossy()) {
-                                ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
-                                ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
-                                ("upserted.entries", x) if x >= 1 => found_upserted_entries = true,
-                                ("domains.signal", x) if x >= 1 => found_domain_signal = true,
-                                _ => {}
+                telemetry_registry.visit_current_metrics_with_item_attrs(
+                    |desc, _attrs, dp_attrs, iter| {
+                        let items: Vec<_> = iter.collect();
+                        if desc.name == "processor.attributes.modified" {
+                            let action = dp_attrs
+                                .iter()
+                                .find(|(k, _)| *k == "action")
+                                .map(|(_, v)| &**v);
+                            let domain = dp_attrs
+                                .iter()
+                                .find(|(k, _)| *k == "domain")
+                                .map(|(_, v)| &**v);
+                            for (field, value) in &items {
+                                if field.name == "entries" && value.to_u64_lossy() >= 1 {
+                                    match action {
+                                        Some("renamed") => found_renamed_entries = true,
+                                        Some("deleted") => found_deleted_entries = true,
+                                        Some("upserted") => found_upserted_entries = true,
+                                        _ => {}
+                                    }
+                                    if domain == Some("signal") {
+                                        found_domain_signal = true;
+                                    }
+                                }
                             }
                         }
-                    }
-                });
+                        if desc.name == "processor.attributes" {
+                            let is_success = dp_attrs
+                                .iter()
+                                .any(|(k, v)| *k == "outcome" && &**v == "success");
+                            if is_success {
+                                for (field, value) in &items {
+                                    if field.name == "transforms" && value.to_u64_lossy() >= 1 {
+                                        found_transform_success = true;
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    false,
+                );
 
-                assert!(found_renamed_entries, "renamed.entries should be >= 1");
-                assert!(found_deleted_entries, "deleted.entries should be >= 1");
-                assert!(found_upserted_entries, "upserted.entries should be >= 1");
-                assert!(found_domain_signal, "domains.signal should be >= 1");
+                assert!(found_renamed_entries, "renamed entries should be >= 1");
+                assert!(found_deleted_entries, "deleted entries should be >= 1");
+                assert!(found_upserted_entries, "upserted entries should be >= 1");
+                assert!(found_domain_signal, "domain signal entries should be >= 1");
+                assert!(found_transform_success, "transform success should be >= 1");
             });
     }
 }

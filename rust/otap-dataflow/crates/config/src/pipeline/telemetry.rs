@@ -1,19 +1,16 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! OTel SDK-specific telemetry configuration. Note: this is presently
-//! used only for internal metrics reporting, not for internal logging.
-
-pub mod metrics;
+//! Engine-wide internal telemetry configuration.
 
 use crate::settings::telemetry::logs::LogsConfig;
-use metrics::MetricsConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{collections::HashMap, time::Duration};
 
 /// Telemetry backend configuration.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct TelemetryConfig {
     /// The size of the reporting channel, measured in the number of internal metric events shared across all cores.
     #[serde(default = "default_reporting_channel_size")]
@@ -22,35 +19,54 @@ pub struct TelemetryConfig {
     #[serde(with = "humantime_serde", default = "default_reporting_interval")]
     #[schemars(with = "String")]
     pub reporting_interval: Duration,
-    /// Metrics system configuration.
-    #[serde(default)]
-    pub metrics: MetricsConfig,
     /// Internal logs configuration.
     #[serde(default)]
     pub logs: LogsConfig,
     /// Resource attributes to associate with telemetry data.
     #[serde(default)]
     pub resource: HashMap<String, AttributeValue>,
+    /// Resource detectors to run for auto-detected telemetry attributes. On key conflicts,
+    /// precedence is explicitly configured `resource` attributes > detectors (a detector later
+    /// in the list wins over an earlier one) > the controller's build-info defaults for
+    /// `service.name`/`service.version`. An empty list disables auto-detection; an unrecognized
+    /// detector name fails engine startup.
+    ///
+    /// Defaults to `["service_instance", "env", "service_name"]`. Supported detectors: `env`,
+    /// `service_name`, `service_instance`, `host`, `os`, `process`, `container`, `k8s`. See the
+    /// [`opentelemetry_sdk::resource`](https://docs.rs/opentelemetry_sdk/latest/opentelemetry_sdk/resource/)
+    /// and [`opentelemetry-resource-detectors`](https://docs.rs/opentelemetry-resource-detectors)
+    /// docs for what each detector emits.
+    ///
+    /// Note: the `process` detector emits `process.command_args` (the full command line), which
+    /// can include secrets passed as CLI arguments. Enable it only where that is acceptable.
+    #[serde(default = "default_detectors")]
+    pub detectors: Vec<String>,
 }
 
 impl TelemetryConfig {
-    /// Validates the telemetry configuration, including all metric readers.
+    /// Returns `true` when an upstream log producer routes logs through ITS.
+    #[must_use]
+    pub const fn routes_logs_through_its(&self) -> bool {
+        self.logs.providers.routes_logs_through_its()
+    }
+
+    /// Validates the telemetry configuration for every internal signal.
     pub fn validate(&self) -> Result<(), crate::error::Error> {
         if self.reporting_interval.is_zero() {
             return Err(crate::error::Error::InvalidUserConfig {
                 error: "engine.telemetry.reporting_interval must be greater than zero".to_string(),
             });
         }
-        self.metrics.validate()
+        self.logs.validate()
     }
 }
 
 impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
-            metrics: MetricsConfig::default(),
             logs: LogsConfig::default(),
             resource: HashMap::default(),
+            detectors: default_detectors(),
             reporting_channel_size: default_reporting_channel_size(),
             reporting_interval: default_reporting_interval(),
         }
@@ -65,8 +81,22 @@ const fn default_reporting_interval() -> Duration {
     Duration::from_secs(1)
 }
 
+/// Detectors run when config does not specify a `detectors` list.
+///
+/// `service_instance` generates a stable id, `env` injects `OTEL_RESOURCE_ATTRIBUTES`, and
+/// `service_name` sets `service.name` from `OTEL_SERVICE_NAME`. Host/OS/process/container/k8s
+///  detectors probe their surroundings and are opt-in.
+fn default_detectors() -> Vec<String> {
+    vec![
+        "service_instance".to_string(),
+        "env".to_string(),
+        "service_name".to_string(),
+    ]
+}
+
 /// Attribute value types for telemetry resource attributes.
-#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, JsonSchema)]
+#[serde(untagged)]
 pub enum AttributeValue {
     /// String type attribute value.
     String(String),
@@ -78,6 +108,21 @@ pub enum AttributeValue {
     F64(f64),
     /// Array type attribute value.
     Array(AttributeValueArray),
+}
+
+impl Serialize for AttributeValue {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AttributeValue::String(s) => serializer.serialize_str(s),
+            AttributeValue::Bool(b) => serializer.serialize_bool(*b),
+            AttributeValue::I64(i) => serializer.serialize_i64(*i),
+            AttributeValue::F64(f) => serializer.serialize_f64(*f),
+            AttributeValue::Array(arr) => arr.serialize(serializer),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for AttributeValue {
@@ -213,7 +258,8 @@ impl<'de> Deserialize<'de> for AttributeValue {
 }
 
 /// Array attribute value types for telemetry resource attributes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Deserialize, JsonSchema)]
+#[schemars(untagged)]
 pub enum AttributeValueArray {
     /// Array of bools
     Bool(Vec<bool>),
@@ -225,17 +271,31 @@ pub enum AttributeValueArray {
     String(Vec<String>),
 }
 
+impl Serialize for AttributeValueArray {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            AttributeValueArray::Bool(v) => v.serialize(serializer),
+            AttributeValueArray::I64(v) => v.serialize(serializer),
+            AttributeValueArray::F64(v) => v.serialize(serializer),
+            AttributeValueArray::String(v) => v.serialize(serializer),
+        }
+    }
+}
+
 impl AttributeValue {
     /// Render this attribute value as a single OTel-compatible string,
     /// suitable for downstream consumers that require a flat string
-    /// representation (e.g. Prometheus label values, OTel SDK resource
+    /// representation (e.g. Prometheus label values or OTLP resource
     /// attributes that have already been narrowed to strings).
     ///
     /// Conversion is round-trip lossless for every variant:
     /// - `String`: cloned verbatim.
     /// - `Bool`: `"true"` / `"false"`.
     /// - `I64`: standard decimal formatting.
-    /// - `F64`: Rust's `Display`, which uses the Ryu algorithm — the
+    /// - `F64`: Rust's `Display`, which uses the Ryu algorithm -- the
     ///   shortest decimal that round-trips back to the same `f64`.
     /// - `Array`: encoded as a bare JSON array (e.g. `["a","b"]`,
     ///   `[1,2,3]`). JSON preserves element type and order, and avoids
@@ -395,11 +455,6 @@ mod tests {
             reporting_interval: "3s"
             resource:
                 service.version: "1.0.0"
-            metrics:
-                readers:
-                    - periodic:
-                        exporter:
-                            type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_str).unwrap();
 
@@ -411,16 +466,31 @@ mod tests {
         } else {
             panic!("Expected service.version to be a String attribute value");
         }
-        assert_eq!(config.metrics.readers.len(), 1);
     }
 
+    /// Scenario: a configuration still uses the removed top-level metrics SDK settings.
+    /// Guarantees: deserialization reports the unsupported field instead of silently ignoring it.
+    #[test]
+    fn test_telemetry_config_rejects_legacy_metrics_settings() {
+        let error = serde_yaml::from_str::<TelemetryConfig>(
+            r#"
+            metrics:
+                provider: its
+            "#,
+        )
+        .expect_err("legacy metrics settings must be rejected");
+        assert!(error.to_string().contains("unknown field `metrics`"));
+    }
+
+    /// Scenario: telemetry settings are omitted.
+    /// Guarantees: defaults preserve ConsoleAsync logs and the standard metrics cadence.
     #[test]
     fn test_telemetry_config_default() {
         let config = TelemetryConfig::default();
         assert_eq!(config.reporting_channel_size, 100);
         assert_eq!(config.reporting_interval, Duration::from_secs(1));
         assert!(config.resource.is_empty());
-        assert_eq!(config.metrics.readers.len(), 0);
+        assert!(!config.routes_logs_through_its());
     }
 
     #[test]
@@ -671,8 +741,8 @@ mod tests {
     fn test_telemetry_attribute_serialize_bare() {
         let attr = TelemetryAttribute::new(AttributeValue::String("test".to_string()));
         let json = serde_json::to_string(&attr).unwrap();
-        // Without brief, serializes as just the value (with enum tagging)
-        assert_eq!(json, r#"{"String":"test"}"#);
+        // Without brief, serializes as just the plain value
+        assert_eq!(json, r#""test""#);
     }
 
     #[test]
@@ -682,7 +752,172 @@ mod tests {
             "A test attribute",
         );
         let json = serde_json::to_string(&attr).unwrap();
-        assert!(json.contains(r#""value":{"String":"test"}"#));
+        assert!(json.contains(r#""value":"test""#));
         assert!(json.contains(r#""brief":"A test attribute""#));
+    }
+
+    #[test]
+    fn test_attribute_value_yaml_roundtrip_scalars() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("s".into(), AttributeValue::String("hello".into())),
+            ("b".into(), AttributeValue::Bool(true)),
+            ("i".into(), AttributeValue::I64(-42)),
+            ("f".into(), AttributeValue::F64(1.5)),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        let back: HashMap<String, AttributeValue> =
+            serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_yaml_roundtrip_arrays() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            (
+                "strings".into(),
+                AttributeValue::Array(AttributeValueArray::String(vec!["a".into(), "b".into()])),
+            ),
+            (
+                "bools".into(),
+                AttributeValue::Array(AttributeValueArray::Bool(vec![true, false])),
+            ),
+            (
+                "ints".into(),
+                AttributeValue::Array(AttributeValueArray::I64(vec![1, 2, 3])),
+            ),
+            (
+                "floats".into(),
+                AttributeValue::Array(AttributeValueArray::F64(vec![1.5, 2.5])),
+            ),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        let back: HashMap<String, AttributeValue> =
+            serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_json_roundtrip() {
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("s".into(), AttributeValue::String("hello".into())),
+            ("b".into(), AttributeValue::Bool(true)),
+            ("i".into(), AttributeValue::I64(-42)),
+            ("f".into(), AttributeValue::F64(1.5)),
+            (
+                "arr".into(),
+                AttributeValue::Array(AttributeValueArray::I64(vec![10, 20])),
+            ),
+        ]);
+
+        let json = serde_json::to_string(&attrs).expect("serialize to JSON");
+        let back: HashMap<String, AttributeValue> =
+            serde_json::from_str(&json).expect("deserialize from JSON");
+
+        assert_eq!(attrs, back);
+    }
+
+    #[test]
+    fn test_attribute_value_serializes_plain_scalars_yaml() {
+        // Verify that serialized YAML uses plain scalars, not
+        // externally-tagged enum wrappers like `!String`.
+        let attrs: HashMap<String, AttributeValue> = HashMap::from([
+            ("name".into(), AttributeValue::String("svc".into())),
+            ("count".into(), AttributeValue::I64(7)),
+        ]);
+
+        let yaml = serde_yaml::to_string(&attrs).expect("serialize to YAML");
+        assert!(
+            !yaml.contains("!String"),
+            "YAML should not contain enum tags, got:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("!I64"),
+            "YAML should not contain enum tags, got:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_telemetry_config_yaml_roundtrip() {
+        let resource = HashMap::from([
+            (
+                "service.name".to_string(),
+                AttributeValue::String("my-svc".to_string()),
+            ),
+            ("enabled".to_string(), AttributeValue::Bool(true)),
+            ("replica".to_string(), AttributeValue::I64(3)),
+        ]);
+
+        let config = TelemetryConfig {
+            resource,
+            ..Default::default()
+        };
+
+        let yaml = serde_yaml::to_string(&config).expect("serialize to YAML");
+        let back: TelemetryConfig = serde_yaml::from_str(&yaml).expect("deserialize from YAML");
+
+        assert_eq!(config.resource, back.resource);
+    }
+
+    #[test]
+    fn test_attribute_value_json_schema_is_untagged() {
+        // The JSON schema for AttributeValue should describe the actual
+        // serialized format (plain scalars and arrays), not an externally-tagged
+        // enum like {"String": "value"} or {"Bool": true}.
+        let schema = schemars::schema_for!(AttributeValue);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // An externally-tagged enum schema would contain variant names as
+        // property keys. The untagged schema should use oneOf with primitive types.
+        assert!(
+            !json.contains(r#""String""#),
+            "Schema should not contain externally-tagged 'String' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""Bool""#),
+            "Schema should not contain externally-tagged 'Bool' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""I64""#),
+            "Schema should not contain externally-tagged 'I64' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""F64""#),
+            "Schema should not contain externally-tagged 'F64' variant.\nSchema:\n{json}"
+        );
+        assert!(
+            !json.contains(r#""Array""#),
+            "Schema should not contain externally-tagged 'Array' variant.\nSchema:\n{json}"
+        );
+
+        // Should have anyOf/oneOf for the union of types
+        assert!(
+            json.contains("anyOf") || json.contains("oneOf"),
+            "Schema should use anyOf/oneOf for untagged union.\nSchema:\n{json}"
+        );
+    }
+
+    #[test]
+    fn test_attribute_value_array_json_schema_is_untagged() {
+        // Same check for AttributeValueArray -- schema should describe bare
+        // arrays of primitives, not externally-tagged objects like {"Bool": [...]}.
+        let schema = schemars::schema_for!(AttributeValueArray);
+        let json = serde_json::to_string_pretty(&schema).unwrap();
+
+        // Externally-tagged schemas use "required": ["Bool"] etc. as object
+        // property wrappers. The untagged schema should have none of these.
+        assert!(
+            !json.contains(r#""required""#),
+            "Schema should not contain 'required' property keys from tagged variants.\nSchema:\n{json}"
+        );
+
+        // For an untagged array enum, we expect anyOf/oneOf with array types
+        assert!(
+            json.contains("anyOf") || json.contains("oneOf"),
+            "Schema should use anyOf/oneOf for untagged union.\nSchema:\n{json}"
+        );
     }
 }

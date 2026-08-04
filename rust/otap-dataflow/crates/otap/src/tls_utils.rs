@@ -1313,7 +1313,7 @@ fn parse_certified_key(
 
     let provider = rustls::crypto::CryptoProvider::get_default().ok_or_else(|| {
         io::Error::other(
-            "no rustls CryptoProvider installed — call install_crypto_provider() first",
+            "no rustls CryptoProvider installed \u{2014} call install_crypto_provider() first",
         )
     })?;
     let signing_key = provider
@@ -1642,8 +1642,8 @@ mod tests {
     /// Generate an end-entity (leaf) certificate signed by a CA using rcgen.
     ///
     /// This creates a proper PKI hierarchy:
-    /// - CA certificate (`CA:TRUE`) → can be added to root stores as trust anchor
-    /// - End-entity certificate (`CA:FALSE`) → presented during TLS handshake
+    /// - CA certificate (`CA:TRUE`) -> can be added to root stores as trust anchor
+    /// - End-entity certificate (`CA:FALSE`) -> presented during TLS handshake
     ///
     /// This avoids two issues:
     /// 1. `CaUsedAsEndEntity` error when using CA certs as server/client certs

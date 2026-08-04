@@ -12,29 +12,39 @@ jobs:
   pipeline-perf-test:
     runs-on: oracle-bare-metal-64cpu-1024gb-x86-64-ubuntu-24
     steps:
+      # Route tool-created temp files to RUNNER_TEMP, which GitHub Actions empties
+      # at the start and end of every job. Required when running directly on the
+      # shared bare-metal host (no job-level container) per
+      # https://github.com/open-telemetry/community/blob/main/docs/how-to-use-bare-metal-runner.md
+      - name: Route temp files to RUNNER_TEMP
+        run: |
+          echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP" >> "$GITHUB_ENV"
+
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@8d3c67de8e2fe68ef647c8db1e6a09f647780f40 # v2.19.0
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
         with:
           egress-policy: audit
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Set up Python (non-OL8)
         if: ${{ steps.detect_os.outputs.id != 'ol' }}
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.14"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Build dataflow_engine
         run: |
@@ -44,7 +54,9 @@ jobs:
           docker buildx build --load --build-context otel-arrow=../../ -f Dockerfile -t df_engine .
           cd ../..
 
-      - name: Build otelarrowcol
+      - name: Build otelarrowcol image
+        # Builds the thin Dockerfile, which pulls the upstream OpenTelemetry
+        # Collector Contrib distribution (includes the otelarrow components).
         run: |
           docker build . -t otelarrowcol
 
@@ -247,17 +259,26 @@ jobs:
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
 
+      # Bare-metal host cleanup: remove only the Docker artifacts created by
+      # this job. Avoid broad commands (e.g. rm -rf /tmp/*) per the shared
+      # runner guidelines.
+      - name: Clean up Docker artifacts created by this job
+        if: always()
+        run: |
+          docker rmi -f df_engine otelarrowcol 2>/dev/null || true
+          # Prune dangling (unused) build cache and images only.
+          docker builder prune -f 2>/dev/null || true
+          docker image prune -f 2>/dev/null || true
+
   update-benchmarks:
     runs-on: ubuntu-24.04
     needs: [pipeline-perf-test]
     if: ${{ !cancelled() }}
     permissions:
-      # deployments permission to deploy GitHub pages website
-      deployments: write
       # contents permission to update benchmark contents in gh-pages branch
       contents: write
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download syslog artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -407,7 +428,7 @@ jobs:
 
       - name: Update benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_output.json
@@ -420,7 +441,7 @@ jobs:
 
       - name: Update syslog TCP benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_tcp_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_tcp_output.json
@@ -433,7 +454,7 @@ jobs:
 
       - name: Update standard load batch size benchmark data
         if: ${{ !cancelled() && hashFiles('standardload_batch_size_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: standardload_batch_size_output.json
@@ -446,7 +467,7 @@ jobs:
 
       - name: Update benchmark data and deploy to GitHub Pages
         if: ${{ !cancelled() && hashFiles('backpressure_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: backpressure_output.json
@@ -459,7 +480,7 @@ jobs:
 
       - name: Update filter benchmark data
         if: ${{ !cancelled() && hashFiles('filter_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: filter_output.json
@@ -472,7 +493,7 @@ jobs:
 
       - name: Update batch processor benchmark data
         if: ${{ !cancelled() && hashFiles('batch_processor_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: batch_processor_output.json
@@ -485,7 +506,7 @@ jobs:
 
       - name: Update filter otelcol benchmark data
         if: ${{ !cancelled() && hashFiles('filter_otelcol_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: filter_otelcol_output.json
@@ -498,7 +519,7 @@ jobs:
 
       - name: Update syslog TCP otelcol benchmark data
         if: ${{ !cancelled() && hashFiles('syslog_tcp_otelcol_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: syslog_tcp_otelcol_output.json
@@ -511,7 +532,7 @@ jobs:
 
       - name: Update saturation benchmark data
         if: ${{ !cancelled() && hashFiles('saturation_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: saturation_output.json
@@ -524,7 +545,7 @@ jobs:
 
       - name: Update idle state benchmark data
         if: ${{ !cancelled() && hashFiles('idle_state_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: idle_state_output.json
@@ -537,7 +558,7 @@ jobs:
 
       - name: Update idle state memory scaling data
         if: ${{ !cancelled() && hashFiles('idle_memory_scaling_results/idle-memory-scaling.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: idle_memory_scaling_results/idle-memory-scaling.json
@@ -550,7 +571,7 @@ jobs:
 
       - name: Update scaling efficiency data
         if: ${{ !cancelled() && hashFiles('scaling_efficiency_results/scaling-efficiency.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customBiggerIsBetter"
           output-file-path: scaling_efficiency_results/scaling-efficiency.json
@@ -563,7 +584,7 @@ jobs:
 
       - name: Update passthrough benchmark data
         if: ${{ !cancelled() && hashFiles('passthrough_output.json') != '' }}
-        uses: benchmark-action/github-action-benchmark@a60cea5bc7b49e15c1f58f411161f99e0df48372 # v1.22.0
+        uses: benchmark-action/github-action-benchmark@52576c92bccf6ac60c8223ec7eb2565637cae9ba # v1.22.1
         with:
           tool: "customSmallerIsBetter"
           output-file-path: passthrough_output.json
@@ -578,3 +599,14 @@ jobs:
         run: |
           echo "### Benchmark Results" >> $GITHUB_STEP_SUMMARY
           echo "[View the benchmark results here](https://open-telemetry.github.io/otel-arrow/benchmarks/nightly/)" >> $GITHUB_STEP_SUMMARY
+
+  workflow-notification:
+    permissions:
+      issues: write
+    needs:
+      - pipeline-perf-test
+      - update-benchmarks
+    if: always()
+    uses: open-telemetry/shared-workflows/.github/workflows/workflow-failure-issue.yml@62d5939b47144252763c5ff9fffe8c20d76cd806 # v0.4.0
+    with:
+      success: ${{ needs.pipeline-perf-test.result == 'success' && needs.update-benchmarks.result == 'success' }}

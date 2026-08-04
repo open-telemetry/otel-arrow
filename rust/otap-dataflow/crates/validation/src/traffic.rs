@@ -346,7 +346,7 @@ impl Generator {
     /// set the traffic generator to use static as source
     #[must_use]
     pub fn static_signals(mut self) -> Self {
-        self.data_source = DataSource::Static;
+        self.data_source = DataSource::Synthetic;
         self
     }
 
@@ -413,7 +413,7 @@ impl Default for Generator {
             metric_weight: DEFAULT_WEIGHT_ZERO,
             trace_weight: DEFAULT_WEIGHT_ZERO,
             log_weight: DEFAULT_LOG_WEIGHT,
-            data_source: DataSource::Static,
+            data_source: DataSource::Synthetic,
             tls: None,
             transport_headers: HashMap::new(),
             container_connection: None,
@@ -545,7 +545,7 @@ mod tests {
         assert_eq!(g.metric_weight, 0);
         assert_eq!(g.trace_weight, 0);
         assert_eq!(g.log_weight, 100);
-        assert_eq!(g.data_source, DataSource::Static);
+        assert_eq!(g.data_source, DataSource::Synthetic);
         assert_eq!(g.core_start, 2);
         assert_eq!(g.core_end, 2);
         assert!(g.transport_headers.is_empty());

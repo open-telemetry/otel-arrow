@@ -165,10 +165,10 @@ enum BoundedReadResult {
 }
 
 /// Reads bytes from `reader` into `buf` until one of:
-/// - A newline (`\n`) is found → returns [`BoundedReadResult::Complete`]
-/// - `buf` reaches `max_size` bytes without a newline → returns
+/// - A newline (`\n`) is found -> returns [`BoundedReadResult::Complete`]
+/// - `buf` reaches `max_size` bytes without a newline -> returns
 ///   [`BoundedReadResult::Truncated`]
-/// - EOF is reached → returns [`BoundedReadResult::Eof`]
+/// - EOF is reached -> returns [`BoundedReadResult::Eof`]
 ///
 /// This prevents unbounded memory growth from malicious or misbehaving clients
 /// that send data without newline delimiters.
@@ -461,9 +461,6 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                             Box::new(BufReader::new(socket))
                                         };
 
-                                        // Suppress unused variable warning when TLS is disabled
-                                        let _ = peer_addr;
-
                                         let mut line_bytes = Vec::with_capacity(INITIAL_MSG_BUFFER_CAPACITY);
 
                                         let mut arrow_records_builder = ArrowRecordsBuilder::new();
@@ -479,7 +476,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                     match arrow_records_builder.build() {
                                                         Ok(arrow_records) => {
                                                             let res = effect_handler.try_send_message_with_source_node(
-                                                                OtapPdata::new_todo_context(arrow_records.into())
+                                                                OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)
                                                             );
                                                             let mut m = metrics.borrow_mut();
                                                             match &res {
@@ -563,7 +560,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -654,7 +651,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                         // Reset the timer since we already built an arrow record batch due to size constraint
                                                                         interval.reset();
 
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
                                                                             match &res {
@@ -678,7 +675,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 let items = u64::from(arrow_records_builder.len());
                                                                 match arrow_records_builder.build() {
                                                                     Ok(arrow_records) => {
-                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                        let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
 
                                                                         {
                                                                             let mut m = metrics.borrow_mut();
@@ -713,7 +710,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                                                 // Reset the builder for the next batch
                                                                 arrow_records_builder = ArrowRecordsBuilder::new();
 
-                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into())).await;
+                                                                let res = effect_handler.send_message_with_source_node(OtapPdata::new_todo_context(arrow_records.into()).with_peer_addr(peer_addr)).await;
                                                                 {
                                                                     let mut m = metrics.borrow_mut();
                                                                     match &res {
@@ -830,7 +827,7 @@ impl local::Receiver<OtapPdata> for SyslogCefReceiver {
                                     // truncated by the OS (the actual message may have been larger).
                                     // A message exactly MAX_MESSAGE_SIZE bytes would also trigger
                                     // this, but there is no way to distinguish the two cases with
-                                    // UDP — this heuristic is the best we can do.
+                                    // UDP -- this heuristic is the best we can do.
                                     if n == buf.len() {
                                         self.metrics.borrow_mut().received_logs_truncated.inc();
                                     }
@@ -959,7 +956,7 @@ pub struct SyslogCefReceiverMetrics {
     /// Number of log records whose raw message exceeded [`MAX_MESSAGE_SIZE`] and
     /// were truncated before parsing. For TCP, truncation is detected precisely
     /// when a newline-delimited message exceeds the size limit. For UDP, it is
-    /// a heuristic — a datagram that fills the entire receive buffer is assumed
+    /// a heuristic -- a datagram that fills the entire receive buffer is assumed
     /// truncated, though a message exactly [`MAX_MESSAGE_SIZE`] bytes would also
     /// trigger this.
     #[metric(unit = "{item}")]
@@ -1437,7 +1434,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the UDP server to run at
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_udp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_udp(listening_addr);
@@ -1461,7 +1458,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the TCP server to run at
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_tcp(listening_addr);
@@ -1488,7 +1485,7 @@ mod tests {
         let test_runtime = TestRuntime::new();
 
         // addr and port for the TCP server to run at
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_tcp(listening_addr);
@@ -1511,7 +1508,7 @@ mod tests {
     }
 
     /// Test closure that sends a message exceeding MAX_MESSAGE_SIZE to verify
-    /// truncation handling — the receiver must not crash or exhaust memory.
+    /// truncation handling -- the receiver must not crash or exhaust memory.
     fn tcp_truncation_scenario(
         listening_addr: SocketAddr,
     ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
@@ -1560,9 +1557,9 @@ mod tests {
     /// Validation for the TCP truncation test.
     ///
     /// The oversized message is split into two reads by `read_line_bounded`:
-    /// 1. The truncated head (first `MAX_MESSAGE_SIZE` bytes) — contains the
+    /// 1. The truncated head (first `MAX_MESSAGE_SIZE` bytes) -- contains the
     ///    valid syslog header and parses successfully.
-    /// 2. The tail (remaining 500 bytes of padding + `\n`) — parsed as an
+    /// 2. The tail (remaining 500 bytes of padding + `\n`) -- parsed as an
     ///    RFC 3164 content-only message (the parser accepts any non-empty input).
     /// 3. The normal-sized message sent afterward.
     ///
@@ -1607,7 +1604,7 @@ mod tests {
     fn test_syslog_cef_receiver_tcp_truncation() {
         let test_runtime = TestRuntime::new();
 
-        let listening_port = portpicker::pick_unused_port().expect("No free ports");
+        let listening_port = otap_df_test_net::pick_unused_loopback_tcp_port();
         let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
         let config = Config::new_tcp(listening_addr);
@@ -1691,7 +1688,7 @@ mod read_line_bounded_tests {
 
     #[tokio::test]
     async fn eof_with_partial_data() {
-        // 10 bytes, no newline, then stream closes — under the limit
+        // 10 bytes, no newline, then stream closes -- under the limit
         let mut reader = make_reader(b"partial").await;
         let mut buf = Vec::new();
         let result = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
@@ -1752,7 +1749,7 @@ mod read_line_bounded_tests {
 
     #[tokio::test]
     async fn pre_filled_buf_at_limit_returns_truncated_immediately() {
-        // buf is already at max_size — should return Truncated without reading
+        // buf is already at max_size -- should return Truncated without reading
         let mut reader = make_reader(b"should not be read\n").await;
         let mut buf = vec![b'X'; 64];
         let result = read_line_bounded(&mut reader, &mut buf, 64).await.unwrap();
@@ -1875,7 +1872,7 @@ mod config_tests {
     #[test]
     fn both_protocols_rejected() {
         // The Protocol enum is externally tagged, so specifying both tcp and udp
-        // in the same config must be rejected — only one protocol per instance.
+        // in the same config must be rejected -- only one protocol per instance.
         let json = serde_json::json!({
             "protocol": {
                 "tcp": {
@@ -2113,7 +2110,7 @@ mod telemetry_tests {
             );
 
             // addr and port for the UDP server to run at
-            let listening_port = portpicker::pick_unused_port().expect("No free ports");
+            let listening_port = otap_df_test_net::pick_unused_loopback_udp_port();
             let listening_addr: SocketAddr = format!("127.0.0.1:{listening_port}").parse().unwrap();
 
             // Receiver with metrics enabled via pipeline.
@@ -2216,7 +2213,7 @@ mod telemetry_tests {
             );
 
             // Address
-            let port = portpicker::pick_unused_port().expect("No free ports");
+            let port = otap_df_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
             // Receiver with pipeline metrics.
@@ -2307,7 +2304,7 @@ mod telemetry_tests {
                 0,
             );
 
-            let port = portpicker::pick_unused_port().expect("No free ports");
+            let port = otap_df_test_net::pick_unused_loopback_udp_port();
             let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
 
             pipeline

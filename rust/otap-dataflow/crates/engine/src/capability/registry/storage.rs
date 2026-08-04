@@ -1,7 +1,7 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! [`CapabilityRegistry`] — the build-phase store of capability
+//! [`CapabilityRegistry`] -- the build-phase store of capability
 //! registrations, keyed by `(capability TypeId, extension ID)` and
 //! split into local (!Send) and shared (Send) buckets.
 
@@ -114,7 +114,7 @@ impl CapabilityRegistry {
 
     /// Returns `true` if any extension provides a **native** local entry
     /// for this capability. A local binding is also reachable whenever
-    /// [`has_shared`](Self::has_shared) is true — shared registrations
+    /// [`has_shared`](Self::has_shared) is true -- shared registrations
     /// are always adaptable via `SharedAsLocal`. For the composite
     /// "can a node bind this as local?" predicate, use
     /// `has_native_local(id) || has_shared(id)`.

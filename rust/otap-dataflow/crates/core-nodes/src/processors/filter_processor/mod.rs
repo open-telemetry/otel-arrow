@@ -24,11 +24,13 @@ use otap_df_engine::local::processor as local;
 use otap_df_engine::message::Message;
 use otap_df_engine::node::NodeId;
 use otap_df_engine::process_duration::ComputeDuration;
-use otap_df_engine::processor::ProcessorWrapper;
+use otap_df_engine::processor::{ProcessorRuntimeRequirements, ProcessorWrapper};
 use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_pdata::otap::filter::IdBitmapPool;
+use otap_df_telemetry::common_attributes::SignalAttributes;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -40,8 +42,13 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
     config: Config,
-    metrics: MetricSet<FilterPdataMetrics>,
+    metrics: MeasurementMetricSet<FilterPdataMetrics>,
     compute_duration: ComputeDuration,
+    /// Reusable paged-bitmap pool for filtering metric child batches across
+    /// successive `Message::PData` calls. Storing the pool on the processor
+    /// (rather than allocating one per call) preserves the page allocations
+    /// that `IdBitmap::clear` would otherwise re-create on every batch.
+    metric_id_pool: IdBitmapPool,
 }
 
 /// Factory function to create a FilterProcessor.
@@ -84,18 +91,19 @@ impl FilterProcessor {
     #[must_use]
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         FilterProcessor {
             config,
             metrics,
             compute_duration,
+            metric_id_pool: IdBitmapPool::new(),
         }
     }
 
     /// Creates a new FilterProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -105,12 +113,19 @@ impl FilterProcessor {
             config,
             metrics,
             compute_duration,
+            metric_id_pool: IdBitmapPool::new(),
         })
     }
 }
 
 #[async_trait(?Send)]
 impl local::Processor<OtapPdata> for FilterProcessor {
+    fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
+        // The filter processor drops signal items, so it records
+        // `dropped.items` when it lies within a flow that enables it.
+        ProcessorRuntimeRequirements::none().with_drop_decisions()
+    }
+
     async fn process(
         &mut self,
         msg: Message<OtapPdata>,
@@ -122,7 +137,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     mut metrics_reporter,
                 } = control
                 {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.metrics);
                     self.compute_duration.report(&mut metrics_reporter);
                 }
                 Ok(())
@@ -135,7 +150,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let (filtered_arrow_records, signals_consumed, signals_filtered): (
+                let (filtered_arrow_records, _signals_consumed, dropped_items): (
                     OtapArrowRecords,
                     u64,
                     u64,
@@ -143,8 +158,20 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     effect_handler.timed(&self.compute_duration, || -> Result<_, Error> {
                         match signal {
                             SignalType::Metrics => {
-                                // ToDo: Add support for metrics
-                                Ok((arrow_records, 0, 0))
+                                let (filtered, consumed, filtered_count) = self
+                                    .config
+                                    .metric_filters()
+                                    .filter(arrow_records, &mut self.metric_id_pool)
+                                    .map_err(|e| {
+                                        let source_detail = format_error_sources(&e);
+                                        Error::ProcessorError {
+                                            processor: effect_handler.processor_id(),
+                                            kind: ProcessorErrorKind::Other,
+                                            error: format!("Filter error: {e}"),
+                                            source_detail,
+                                        }
+                                    })?;
+                                Ok((filtered, consumed, filtered_count))
                             }
                             SignalType::Logs => {
                                 let (filtered, consumed, filtered_count) =
@@ -179,17 +206,13 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         }
                     })?;
 
-                match signal {
-                    SignalType::Metrics => {}
-                    SignalType::Logs => {
-                        self.metrics.log_signals_consumed.add(signals_consumed);
-                        self.metrics.log_signals_filtered.add(signals_filtered);
-                    }
-                    SignalType::Traces => {
-                        self.metrics.span_signals_consumed.add(signals_consumed);
-                        self.metrics.span_signals_filtered.add(signals_filtered);
-                    }
-                }
+                let metric = self.metrics.with(SignalAttributes { signal });
+                metric.dropped_items.add(dropped_items);
+
+                // Record the drop flow-metric. A no-op unless this node is
+                // a decision node in a flow that enables `dropped.items`.
+                // `dropped_items` is the dropped count.
+                effect_handler.record_flow_dropped_items(signal, dropped_items);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(
@@ -221,11 +244,16 @@ mod tests {
     use otap_df_pdata::otap::filter::{
         AnyValue as AnyValueFilter, KeyValue as KeyValueFilter, MatchType,
         logs::{LogFilter, LogMatchProperties, LogSeverityNumberMatchProperties},
+        metrics::{MetricFilter, MetricMatchProperties},
         traces::{TraceFilter, TraceMatchProperties},
     };
     use otap_df_pdata::proto::opentelemetry::{
         common::v1::{AnyValue, InstrumentationScope, KeyValue},
         logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        metrics::v1::{
+            AggregationTemporality, Metric, MetricsData, NumberDataPoint, ResourceMetrics,
+            ScopeMetrics, Sum,
+        },
         resource::v1::Resource,
         trace::v1::{
             ResourceSpans, ScopeSpans, Span, Status, TracesData,
@@ -235,6 +263,7 @@ mod tests {
     };
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
+    use serde_json::json;
     use std::future::Future;
     use std::pin::Pin;
     use std::sync::Arc;
@@ -645,6 +674,39 @@ mod tests {
 ])
     }
 
+    fn build_metrics(names: &[&str]) -> MetricsData {
+        build_metrics_with_indices(&names.iter().copied().enumerate().collect::<Vec<_>>())
+    }
+
+    fn build_metrics_with_indices(names: &[(usize, &str)]) -> MetricsData {
+        MetricsData::new(vec![ResourceMetrics::new(
+            Resource::default(),
+            vec![ScopeMetrics::new(
+                InstrumentationScope::build()
+                    .name("scope".to_string())
+                    .finish(),
+                names
+                    .iter()
+                    .map(|&(index, name)| {
+                        Metric::build()
+                            .name(name)
+                            .data_sum(Sum::new(
+                                AggregationTemporality::Cumulative,
+                                true,
+                                vec![
+                                    NumberDataPoint::build()
+                                        .time_unix_nano(1000u64 + index as u64)
+                                        .value_int(index as i64)
+                                        .finish(),
+                                ],
+                            ))
+                            .finish()
+                    })
+                    .collect::<Vec<_>>(),
+            )],
+        )])
+    }
+
     /// Validation closure that checks the outputted data
     fn validation_procedure() -> impl FnOnce(ValidateContext) -> Pin<Box<dyn Future<Output = ()>>> {
         |mut _ctx| Box::pin(async move {})
@@ -680,6 +742,42 @@ mod tests {
                 };
 
                 assert_eq!(received_logs_data, expected);
+            })
+        }
+    }
+
+    /// Test closure that simulates a typical metrics processor scenario.
+    fn scenario_metrics(
+        sent: MetricsData,
+        expected: MetricsData,
+    ) -> impl FnOnce(TestContext<OtapPdata>) -> Pin<Box<dyn Future<Output = ()>>> {
+        move |mut ctx| {
+            Box::pin(async move {
+                let mut bytes = vec![];
+                sent.encode(&mut bytes)
+                    .expect("failed to encode metrics data into bytes");
+                let otlp_metrics_bytes = OtapPdata::new_default(
+                    OtlpProtoBytes::ExportMetricsRequest(bytes.into()).into(),
+                );
+                ctx.process(Message::PData(otlp_metrics_bytes))
+                    .await
+                    .expect("failed to process");
+                let msgs = ctx.drain_pdata().await;
+                assert_eq!(msgs.len(), 1);
+                let received_metrics_data = &msgs[0];
+                let (_, payload) = received_metrics_data.clone().into_parts();
+                let otlp_bytes: OtlpProtoBytes = payload
+                    .try_into_with_default()
+                    .expect("failed to convert to OtlpProtoBytes");
+                let received_metrics_data = match otlp_bytes {
+                    OtlpProtoBytes::ExportMetricsRequest(bytes) => {
+                        MetricsData::decode(bytes.as_ref())
+                            .expect("failed to decode metrics into metricsdata")
+                    }
+                    _ => panic!("expected metrics type"),
+                };
+
+                assert_eq!(received_metrics_data, expected);
             })
         }
     }
@@ -848,6 +946,73 @@ mod tests {
         test_runtime
             .set_processor(processor)
             .run_test(scenario_logs(build_logs_1(), expected_data))
+            .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_filter_processor_metrics_strict_include_only() {
+        let test_runtime = TestRuntime::new();
+
+        let metric_props = MetricMatchProperties::new(
+            MatchType::Strict,
+            vec!["test.counter1".into(), "test.counter3".into()],
+        );
+        let metric_filter = MetricFilter::new(Some(metric_props), None);
+        let log_filter = LogFilter::new(None, None, Vec::new());
+        let trace_filter = TraceFilter::new(None, None);
+
+        let config = Config::new_with_metrics(metric_filter, log_filter, trace_filter);
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::new(config, pipeline_ctx),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        let sent = build_metrics(&["test.counter1", "test.counter2", "test.counter3"]);
+        let expected = build_metrics_with_indices(&[(0, "test.counter1"), (2, "test.counter3")]);
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario_metrics(sent, expected))
+            .validate(validation_procedure());
+    }
+
+    #[test]
+    fn test_filter_processor_metrics_include_metric_names_from_config() {
+        let test_runtime = TestRuntime::new();
+
+        let user_config = Arc::new(NodeUserConfig::new_processor_config(FILTER_PROCESSOR_URN));
+        let telemetry_registry_handle = TelemetryRegistryHandle::new();
+        let controller_ctx = ControllerContext::new(telemetry_registry_handle);
+        let pipeline_ctx =
+            controller_ctx.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        let config = json!({
+            "metrics": {
+                "include": {
+                    "match_type": "strict",
+                    "metric_names": ["test.counter1", "test.counter3"]
+                }
+            }
+        });
+        let processor = ProcessorWrapper::local(
+            FilterProcessor::from_config(pipeline_ctx, &config).expect("config should parse"),
+            test_node(test_runtime.config().name.clone()),
+            user_config,
+            test_runtime.config(),
+        );
+
+        let sent = build_metrics(&["test.counter1", "test.counter2", "test.counter3"]);
+        let expected = build_metrics_with_indices(&[(0, "test.counter1"), (2, "test.counter3")]);
+
+        test_runtime
+            .set_processor(processor)
+            .run_test(scenario_metrics(sent, expected))
             .validate(validation_procedure());
     }
 

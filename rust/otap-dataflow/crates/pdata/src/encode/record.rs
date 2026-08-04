@@ -10,4 +10,5 @@ pub mod logs;
 pub mod metrics;
 pub mod traces;
 
-pub(crate) mod array;
+#[allow(missing_docs, clippy::len_without_is_empty, clippy::must_use_candidate)]
+pub mod array;

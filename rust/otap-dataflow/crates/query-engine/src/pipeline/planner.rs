@@ -6,18 +6,19 @@
 use std::collections::HashSet;
 
 use data_engine_expressions::{
-    BooleanScalarExpression, BooleanValue, DataExpression, DateTimeValue, DoubleValue, Expression,
-    IntegerValue, LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
+    BooleanScalarExpression, BooleanValue, DataExpression, Expression, IntegerValue,
+    LogicalExpression, MapSelector, MoveTransformExpression, MutableValueExpression,
     OutputExpression, PipelineExpression, PipelineFunction, PipelineFunctionExpression,
     PipelineFunctionImplementation, ReduceMapTransformExpression, RenameMapKeysTransformExpression,
     ScalarExpression, SetTransformExpression, SourceScalarExpression, StaticScalarExpression,
     StringValue, TransformExpression, ValueAccessor,
 };
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
-use datafusion::logical_expr::{BinaryExpr, Expr, Operator, col, lit};
-use datafusion::prelude::{SessionContext, lit_timestamp_nano};
+use datafusion::logical_expr::Expr;
+use datafusion::prelude::SessionContext;
 use otap_df_pdata::OtapArrowRecords;
 use otap_df_pdata::otap::transform::{AttributesTransform, DeleteTransform, RenameTransform};
+use otap_df_pdata::otlp::attributes::cbor::SerializedValuePathElement;
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
 use otap_df_pdata::schema::consts;
 
@@ -27,13 +28,10 @@ use crate::pipeline::apply_attrs::ApplyToAttributesPipelineStage;
 use crate::pipeline::assign::{AssignPipelineStage, Assignment};
 use crate::pipeline::attributes::AttributeTransformPipelineStage;
 use crate::pipeline::conditional::{ConditionalPipelineStage, ConditionalPipelineStageBranch};
-use crate::pipeline::expr::{
-    DataScope, ExprLogicalPlanner, LogicalExprDataSource, ScopedLogicalExpr,
-};
-use crate::pipeline::filter::optimize::{
-    AttrValueColumnSelectionOptimizer, AttrsFilterCombineOptimizerRule, CompositeToBaseFilterPlan,
-};
-use crate::pipeline::filter::{Composite, FilterExec, FilterPipelineStage, FilterPlan};
+use crate::pipeline::expr::planner::ExprPlanner;
+use crate::pipeline::expr::{DataScope, ScopedExpr};
+use crate::pipeline::filter::FilterPipelineStage;
+use crate::pipeline::fork::{ForkPipelineStage, ForkPipelineStageBranch};
 use crate::pipeline::routing::RouteToPipelineStage;
 use crate::pipeline::{BoxedPipelineStage, PipelineStage};
 
@@ -241,39 +239,80 @@ impl PipelinePlanner {
                 }),
             },
 
-            DataExpression::Conditional(conditional_expr) => {
-                let mut pipeline_branches = vec![];
-                for branch in conditional_expr.get_branches() {
-                    let predicate = self.plan_filter_exec(
-                        branch.get_condition(),
-                        functions,
-                        session_ctx,
-                        otap_batch,
-                    )?;
+            DataExpression::Branch(branch_expr) => {
+                if !branch_expr.branches_consume_records() {
+                    // when branches get a copy of the record, we consider this to be a "fork"
+                    let mut branches = Vec::with_capacity(branch_expr.get_branches().len());
+                    for branch in branch_expr.get_branches() {
+                        if branch.get_condition().is_some() {
+                            // forking with filter not yet supported. This should be composed by
+                            // caller into a fork containing either a conditional data or a filter
+                            return Err(Error::NotYetSupportedError {
+                                message:  "copying data branch expression with condition not yet supported".into()
+                            });
+                        }
 
-                    let pipeline_stages = self.plan_data_exprs(
-                        branch.get_expressions(),
-                        functions,
-                        session_ctx,
-                        otap_batch,
-                    )?;
+                        let pipeline_stages = self.plan_data_exprs(
+                            branch.get_expressions(),
+                            functions,
+                            session_ctx,
+                            otap_batch,
+                        )?;
+                        branches.push(ForkPipelineStageBranch::new(pipeline_stages));
+                    }
+                    Ok(vec![Box::new(ForkPipelineStage::new(branches))])
+                } else {
+                    // If branches consume the records, we assume that each branch, except for
+                    // the last, must have a condition. If this were not the case, it would mean
+                    // that some branch consumes all records, leaving none for the subsequent
+                    // branches, which is non-sensible. Hence, we plan this into a the
+                    // "conditional" pipeline stage, while treating non-terminal branch as invalid
+                    // when a condition is missing and it's not the final branch.
 
-                    pipeline_branches.push(ConditionalPipelineStageBranch::new(
-                        predicate,
-                        pipeline_stages,
-                    ));
+                    let expr_planner = if self.plan_for_attributes {
+                        ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
+                    } else {
+                        ExprPlanner::with_attr_key_case_sensitive(
+                            self.filter_attribute_keys_case_sensitive,
+                        )
+                    };
+
+                    let mut default_branch = None;
+                    let mut pipeline_branches = vec![];
+                    for (i, branch) in branch_expr.get_branches().iter().enumerate() {
+                        let pipeline_stages = self.plan_data_exprs(
+                            branch.get_expressions(),
+                            functions,
+                            session_ctx,
+                            otap_batch,
+                        )?;
+
+                        match branch.get_condition() {
+                            Some(condition) => {
+                                let predicate = expr_planner.plan_logical(condition, functions)?;
+                                pipeline_branches.push(ConditionalPipelineStageBranch::new(
+                                    predicate,
+                                    pipeline_stages,
+                                ))
+                            }
+                            None => {
+                                let is_final_branch = i == branch_expr.get_branches().len() - 1;
+                                if !is_final_branch {
+                                    return Err(Error::InvalidPipelineError {
+                                        cause: "default branch found in consuming Branch data expression in invalid location".into(),
+                                         query_location: Some(branch_expr.get_query_location().clone()),
+                                    });
+                                } else {
+                                    default_branch = Some(pipeline_stages)
+                                }
+                            }
+                        };
+                    }
+
+                    let pipeline_stage =
+                        ConditionalPipelineStage::new(pipeline_branches, default_branch);
+                    Ok(vec![Box::new(pipeline_stage)])
                 }
-
-                let default_branch = conditional_expr
-                    .get_default_branch()
-                    .map(|data_exprs| {
-                        self.plan_data_exprs(data_exprs, functions, session_ctx, otap_batch)
-                    })
-                    .transpose()?;
-
-                let pipeline_stage =
-                    ConditionalPipelineStage::new(pipeline_branches, default_branch);
-                Ok(vec![Box::new(pipeline_stage)])
             }
 
             DataExpression::Output(output_expr) => match output_expr.get_output() {
@@ -282,9 +321,8 @@ impl PipelinePlanner {
                 }
             },
 
-            // TODO support other DataExpressions
-            other => Err(Error::NotYetSupportedError {
-                message: format!("data expression not yet supported {}", other.get_name()),
+            DataExpression::Summary(_) => Err(Error::NotYetSupportedError {
+                message: format!("data expression not yet supported {}", data_expr.get_name()),
             }),
         }
     }
@@ -293,48 +331,19 @@ impl PipelinePlanner {
         &self,
         logical_expr: &LogicalExpression,
         functions: &[PipelineFunction],
-        session_ctx: &SessionContext,
-        otap_batch: &OtapArrowRecords,
+        _session_ctx: &SessionContext,
+        _otap_batch: &OtapArrowRecords,
     ) -> Result<Vec<Box<dyn PipelineStage>>> {
-        let filter_exec =
-            self.plan_filter_exec(logical_expr, functions, session_ctx, otap_batch)?;
-        let filter_stage = FilterPipelineStage::new(filter_exec);
-
-        Ok(vec![Box::new(filter_stage)])
-    }
-
-    /// plan a [`FilterExec`] from a [`LogicalExpression`]
-    fn plan_filter_exec(
-        &self,
-        logical_expr: &LogicalExpression,
-        functions: &[PipelineFunction],
-        session_ctx: &SessionContext,
-        otap_batch: &OtapArrowRecords,
-    ) -> Result<Composite<FilterExec>> {
-        let filter_plan = Composite::<FilterPlan>::try_from(
-            logical_expr,
-            self.filter_attribute_keys_case_sensitive,
-            functions,
-        )?;
-
-        // optimize the to the plan
-        let filter_plan = if self.plan_for_attributes {
-            // Currently using a two step transformation of the FilterPlan to turn this into
-            // something that can be applied directly to the attributes record batch.
-            // First, we combine all the filter expressions in some Composite<FilterPlan> into
-            // a single Composite::Base containing a single expression.
-            // Next, we look for any places we are doing a binary expression like `value == "x"`,
-            // and determining the _actual_ values column (str, int, bool, etc.) to use in this
-            // expression, as "value" is just being treated as a logical column to make it easier
-            // to write the expressions
-            CompositeToBaseFilterPlan::optimize(filter_plan)
-                .and_then(AttrValueColumnSelectionOptimizer::optimize)?
+        let planner = if self.plan_for_attributes {
+            ExprPlanner::for_attributes(self.filter_attribute_keys_case_sensitive)
         } else {
-            AttrsFilterCombineOptimizerRule::optimize(filter_plan)
+            ExprPlanner::with_attr_key_case_sensitive(self.filter_attribute_keys_case_sensitive)
         };
 
-        // transform logical plan into executable plan
-        filter_plan.to_exec(session_ctx, otap_batch)
+        let scoped_op = planner.plan_logical(logical_expr, functions)?;
+        let filter_stage = FilterPipelineStage::new(scoped_op);
+
+        Ok(vec![Box::new(filter_stage)])
     }
 
     fn plan_move(
@@ -585,7 +594,8 @@ impl PipelinePlanner {
 
         // list of combined assignments for the next assignment pipeline stage.
         let mut assignments = Vec::new();
-        let logical_planner = ExprLogicalPlanner::default();
+        let scoped_planner =
+            ExprPlanner::with_attr_key_case_sensitive(self.filter_attribute_keys_case_sensitive);
 
         // TODO - currently the logic for coalescing multiple assignments isn't as intelligent
         // as it could be. The strategy currently employed is just to look at adjacent set
@@ -607,15 +617,32 @@ impl PipelinePlanner {
         //
         // To avoid the ambiguity, we keep track of which keys or columns used in the combined
         // expressions in this set..
+        #[derive(Eq, Hash, PartialEq)]
+        enum ReferencedDestination {
+            Column(String),
+            Attribute(String),
+            NestedAttribute(String, Vec<SerializedValuePathElement>),
+        }
+
         let mut cols_or_keys_referenced = HashSet::new();
 
         // update the referenced column/attr key tracking set
-        fn set_dest_attr_key(dest_accessor: &ColumnAccessor, referenced: &mut HashSet<String>) {
+        fn set_dest_attr_key(
+            dest_accessor: &ColumnAccessor,
+            referenced: &mut HashSet<ReferencedDestination>,
+        ) {
             if let ColumnAccessor::ColumnName(col_name) = dest_accessor {
-                _ = referenced.insert(col_name.into());
+                _ = referenced.insert(ReferencedDestination::Column(col_name.clone()));
             }
             if let ColumnAccessor::Attributes(_, key) = dest_accessor {
-                _ = referenced.insert(key.into());
+                _ = referenced.insert(ReferencedDestination::Attribute(key.clone()));
+            }
+            if let ColumnAccessor::NestedAttribute(_, key, path) = dest_accessor {
+                _ = referenced.insert(ReferencedDestination::Attribute(key.clone()));
+                _ = referenced.insert(ReferencedDestination::NestedAttribute(
+                    key.clone(),
+                    path.clone(),
+                ));
             }
         }
 
@@ -628,16 +655,33 @@ impl PipelinePlanner {
         fn check_combine(
             prev: &Assignment<'_>,
             next: &Assignment<'_>,
-            cols_or_keys_referenced: &HashSet<String>,
+            cols_or_keys_referenced: &HashSet<ReferencedDestination>,
         ) -> bool {
             let can_combine_dests = match (&prev.dest_column, &next.dest_column) {
                 (ColumnAccessor::ColumnName(_), ColumnAccessor::ColumnName(next_key)) => {
-                    !cols_or_keys_referenced.contains(next_key)
+                    !cols_or_keys_referenced
+                        .contains(&ReferencedDestination::Column(next_key.clone()))
                 }
                 (
                     ColumnAccessor::Attributes(prev_attrs_id, _),
                     ColumnAccessor::Attributes(next_attrs_id, next_key),
-                ) => prev_attrs_id == next_attrs_id && !cols_or_keys_referenced.contains(next_key),
+                ) => {
+                    prev_attrs_id == next_attrs_id
+                        && !cols_or_keys_referenced
+                            .contains(&ReferencedDestination::Attribute(next_key.clone()))
+                }
+                (
+                    ColumnAccessor::NestedAttribute(prev_attrs_id, _, _),
+                    ColumnAccessor::NestedAttribute(next_attrs_id, next_key, next_path),
+                ) => {
+                    prev_attrs_id == next_attrs_id
+                        && !cols_or_keys_referenced.contains(
+                            &ReferencedDestination::NestedAttribute(
+                                next_key.clone(),
+                                next_path.clone(),
+                            ),
+                        )
+                }
 
                 // in all other cases, the destinations don't match so we can't combine into
                 // a single assignment
@@ -649,51 +693,88 @@ impl PipelinePlanner {
             }
 
             // ensure that if the source is an attribute
-            if source_references_col_or_key(&next.source, cols_or_keys_referenced) {
+            if source_references_col_or_key(&next.source.expr, cols_or_keys_referenced) {
                 return false;
             }
 
             true
         }
 
-        // recursively descends the source plan to find any cases where the source references
-        // an attribute key or column whose value is in the `referenced` set (which is the set
-        // of destinations that may have been reassigned a new value).
+        // recursively descends the source ScopedExpr tree to find any cases where the source
+        // references an attribute key or column whose value is in the `referenced` set (which
+        // is the set of destinations that may have been reassigned a new value).
         fn source_references_col_or_key(
-            source_expr: &ScopedLogicalExpr,
-            referenced: &HashSet<String>,
+            source_op: &ScopedExpr,
+            referenced: &HashSet<ReferencedDestination>,
         ) -> bool {
-            match &source_expr.source {
-                LogicalExprDataSource::DataSource(data_scope) => match &data_scope {
-                    DataScope::Attributes(_, key) => referenced.contains(key),
+            use crate::pipeline::expr::LeafEval;
+
+            match source_op {
+                ScopedExpr::Eval { scope, eval } => match scope {
+                    DataScope::Attribute(_, key) => {
+                        referenced.contains(&ReferencedDestination::Attribute(key.clone()))
+                    }
+                    DataScope::AttributesAll(_) => {
+                        // Fused attribute expressions embed key and value comparisons
+                        // directly in the DataFusion expression. Conservatively assume
+                        // they may reference any reassigned attribute.
+                        // TODO: extract key literals from the fused expression for
+                        // more precise dependency tracking.
+                        true
+                    }
                     DataScope::StaticScalar => false,
-
-                    // visit the expression applied to the root and search for any column exprs
-                    DataScope::Root => {
-                        let mut source_contains_refed_column = false;
-                        _ = source_expr.logical_expr.apply(|expr| {
+                    DataScope::Root | DataScope::RootParent(_) => {
+                        // walk the DataFusion Expr tree looking for column references
+                        if let LeafEval::DatafusionExpr { logical_expr, .. } = eval {
+                            let mut found = false;
+                            _ = logical_expr.apply(|expr| {
+                                if let Expr::Column(column) = expr {
+                                    found = referenced.contains(&ReferencedDestination::Column(
+                                        column.name().to_string(),
+                                    ));
+                                }
+                                Ok(if found {
+                                    TreeNodeRecursion::Stop
+                                } else {
+                                    TreeNodeRecursion::Continue
+                                })
+                            });
+                            found
+                        } else {
+                            false
+                        }
+                    }
+                },
+                ScopedExpr::JoinAndEval { children, eval, .. } => {
+                    let children_ref = children
+                        .iter()
+                        .any(|child| source_references_col_or_key(child, referenced));
+                    // also check the eval expression itself for column references
+                    let eval_ref = if let LeafEval::DatafusionExpr { logical_expr, .. } = eval {
+                        let mut found = false;
+                        _ = logical_expr.apply(|expr| {
                             if let Expr::Column(column) = expr {
-                                source_contains_refed_column = referenced.contains(column.name());
+                                found = referenced.contains(&ReferencedDestination::Column(
+                                    column.name().to_string(),
+                                ));
                             }
-
-                            Ok(if source_contains_refed_column {
+                            Ok(if found {
                                 TreeNodeRecursion::Stop
                             } else {
                                 TreeNodeRecursion::Continue
                             })
                         });
-
-                        source_contains_refed_column
-                    }
-                },
-                LogicalExprDataSource::Join(left, right) => {
-                    let left = source_references_col_or_key(left.as_ref(), referenced);
-                    let right = source_references_col_or_key(right.as_ref(), referenced);
-                    left | right
+                        found
+                    } else {
+                        false
+                    };
+                    children_ref || eval_ref
                 }
-                LogicalExprDataSource::MultiJoin(children) => children
-                    .iter()
-                    .any(|child| source_references_col_or_key(child, referenced)),
+                ScopedExpr::BitmapAnd(left, right) | ScopedExpr::BitmapOr(left, right) => {
+                    source_references_col_or_key(left, referenced)
+                        || source_references_col_or_key(right, referenced)
+                }
+                ScopedExpr::BitmapNot(child) => source_references_col_or_key(child, referenced),
             }
         }
 
@@ -738,8 +819,8 @@ impl PipelinePlanner {
                     let mut inner_pipeline_data_exprs = Vec::with_capacity(function_exprs.len());
                     for func_expr in function_exprs {
                         let data_expr = match func_expr {
-                            PipelineFunctionExpression::Conditional(c) => {
-                                DataExpression::Conditional(c.clone())
+                            PipelineFunctionExpression::Branch(c) => {
+                                DataExpression::Branch(c.clone())
                             }
                             PipelineFunctionExpression::Discard(d) => {
                                 DataExpression::Discard(d.clone())
@@ -787,7 +868,7 @@ impl PipelinePlanner {
             // create new assignment argument
             let assignment = Assignment {
                 dest_column: ColumnAccessor::try_from(dest.get_value_accessor())?,
-                source: logical_planner.plan_scalar_expr(set_expr.get_source(), functions)?,
+                source: scoped_planner.plan_scalar(set_expr.get_source(), functions)?,
                 dest_query_location: Some(dest.get_query_location()),
             };
 
@@ -860,39 +941,6 @@ impl PipelinePlanner {
 }
 
 #[derive(Debug)]
-pub enum BinaryArg {
-    Column(ColumnAccessor),
-    Literal(StaticScalarExpression),
-    Null,
-}
-
-impl TryFrom<&ScalarExpression> for BinaryArg {
-    type Error = Error;
-
-    fn try_from(scalar_expr: &ScalarExpression) -> Result<Self> {
-        let binary_arg = match scalar_expr {
-            ScalarExpression::Source(source) => {
-                BinaryArg::Column(ColumnAccessor::try_from(source.get_value_accessor())?)
-            }
-            ScalarExpression::Static(static_expr) => match static_expr {
-                StaticScalarExpression::Null(_) => BinaryArg::Null,
-                static_expr => BinaryArg::Literal(static_expr.clone()),
-            },
-            expr => {
-                return Err(Error::NotYetSupportedError {
-                    message: format!(
-                        "expression type not yet supported as argument to binary operation. received {:?}",
-                        expr,
-                    ),
-                });
-            }
-        };
-
-        Ok(binary_arg)
-    }
-}
-
-#[derive(Debug)]
 pub enum ColumnAccessor {
     ColumnName(String),
 
@@ -902,17 +950,41 @@ pub enum ColumnAccessor {
     /// payload type identifies which attributes are being joined
     /// and the string identifies the attribute key
     Attributes(AttributesIdentifier, String),
+
+    /// Path inside a serialized Map/Slice attribute value.
+    NestedAttribute(
+        AttributesIdentifier,
+        String,
+        Vec<SerializedValuePathElement>,
+    ),
 }
 
 impl ColumnAccessor {
     fn try_from_attrs_key(
         attrs_identifier: AttributesIdentifier,
-        scalar_expr: &ScalarExpression,
+        selectors: &[ScalarExpression],
     ) -> Result<Self> {
-        match scalar_expr {
-            ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => Ok(
-                Self::Attributes(attrs_identifier, attr_key.get_value().to_string()),
-            ),
+        let Some(attr_key_expr) = selectors.first() else {
+            return Err(Error::InvalidPipelineError {
+                cause: "attribute accessor is missing key selector".into(),
+                query_location: None,
+            });
+        };
+
+        match attr_key_expr {
+            ScalarExpression::Static(StaticScalarExpression::String(attr_key)) => {
+                let attr_key = attr_key.get_value().to_string();
+                let path = selectors[1..]
+                    .iter()
+                    .map(Self::try_from_nested_path_element)
+                    .collect::<Result<Vec<_>>>()?;
+
+                if path.is_empty() {
+                    Ok(Self::Attributes(attrs_identifier, attr_key))
+                } else {
+                    Ok(Self::NestedAttribute(attrs_identifier, attr_key, path))
+                }
+            }
 
             // TODO: handle users accessing attributes in a different way, like for example from a variable,
             // function result, etc.
@@ -925,22 +997,70 @@ impl ColumnAccessor {
         }
     }
 
+    fn try_from_nested_path_element(
+        scalar_expr: &ScalarExpression,
+    ) -> Result<SerializedValuePathElement> {
+        match scalar_expr {
+            ScalarExpression::Static(StaticScalarExpression::String(key)) => {
+                Ok(SerializedValuePathElement::Key(key.get_value().to_string()))
+            }
+            ScalarExpression::Static(StaticScalarExpression::Integer(index)) => {
+                let index = usize::try_from(index.get_value()).map_err(|_| {
+                    Error::InvalidPipelineError {
+                        cause: format!(
+                            "nested serialized attribute path index must be non-negative. found {}",
+                            index.get_value()
+                        ),
+                        query_location: Some(index.get_query_location().clone()),
+                    }
+                })?;
+                Ok(SerializedValuePathElement::Index(index))
+            }
+            expr => Err(Error::NotYetSupportedError {
+                message: format!(
+                    "unsupported nested serialized attribute path selector. currently only static string keys and integer indexes are supported. received {:?}",
+                    expr
+                ),
+            }),
+        }
+    }
+
     fn try_from_struct_field(
         struct_column_name: &'static str,
         attrs_payload_type: ArrowPayloadType,
         selectors: &[ScalarExpression],
     ) -> Result<Self> {
-        match &selectors[1] {
+        let Some(struct_selector) = selectors.get(1) else {
+            return Err(Error::InvalidPipelineError {
+                cause: format!(
+                    "nested struct column definition for struct {struct_column_name} is missing field selector"
+                ),
+                query_location: None,
+            });
+        };
+
+        match struct_selector {
             ScalarExpression::Static(StaticScalarExpression::String(struct_field)) => {
                 match struct_field.get_value() {
                     ATTRIBUTES_FIELD_NAME => Self::try_from_attrs_key(
                         AttributesIdentifier::NonRoot(attrs_payload_type),
-                        &selectors[2],
+                        &selectors[2..],
                     ),
-                    struct_field => Ok(Self::StructCol(
-                        struct_column_name,
-                        struct_field.to_string(),
-                    )),
+                    struct_field => {
+                        if let Some(extra_selector) = selectors.get(2) {
+                            return Err(Error::InvalidPipelineError {
+                                cause: format!(
+                                    "unsupported nested selector on struct field {struct_column_name}.{struct_field}. received {:?}",
+                                    extra_selector
+                                ),
+                                query_location: Some(extra_selector.get_query_location().clone()),
+                            });
+                        }
+                        Ok(Self::StructCol(
+                            struct_column_name,
+                            struct_field.to_string(),
+                        ))
+                    }
                 }
             }
             expr => Err(Error::InvalidPipelineError {
@@ -948,7 +1068,7 @@ impl ColumnAccessor {
                     "unsupported nested struct column definition for struct {}. received {:?}",
                     struct_column_name, expr
                 ),
-                query_location: Some(selectors[1].get_query_location().clone()),
+                query_location: Some(struct_selector.get_query_location().clone()),
             }),
         }
     }
@@ -965,7 +1085,7 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                 let column_name = column.get_value();
                 match column_name {
                     ATTRIBUTES_FIELD_NAME => {
-                        Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1])
+                        Self::try_from_attrs_key(AttributesIdentifier::Root, &selectors[1..])
                     }
                     RESOURCES_FIELD_NAME => Self::try_from_struct_field(
                         consts::RESOURCE,
@@ -977,7 +1097,18 @@ impl TryFrom<&ValueAccessor> for ColumnAccessor {
                         ArrowPayloadType::ScopeAttrs,
                         selectors,
                     ),
-                    value => Ok(Self::ColumnName(value.to_string())),
+                    value => {
+                        if let Some(extra_selector) = selectors.get(1) {
+                            return Err(Error::InvalidPipelineError {
+                                cause: format!(
+                                    "unsupported nested selector on column {value}. received {:?}",
+                                    extra_selector
+                                ),
+                                query_location: Some(extra_selector.get_query_location().clone()),
+                            });
+                        }
+                        Ok(Self::ColumnName(value.to_string()))
+                    }
                 }
             }
             expr => Err(Error::InvalidPipelineError {
@@ -996,115 +1127,6 @@ pub enum AttributesIdentifier {
 
     /// Attributes for something that isn't the root record type. E.g. ScopeAttrs, ResourceAttrs
     NonRoot(ArrowPayloadType),
-}
-
-pub fn try_static_scalar_to_literal_for_column(
-    column_name: &str,
-    static_scalar: &StaticScalarExpression,
-) -> Result<Expr> {
-    Ok(match static_scalar {
-        // for integers, we need to choose the correct type of literal for the field
-        // note: this currently contains fields only on the root record batches as we don't
-        // yet support traversing into the OTAP batch to filter by nested fields like span
-        // events/links, metrics data points, etc.
-        StaticScalarExpression::Integer(int_val) => {
-            let val = int_val.get_value();
-            match column_name {
-                consts::AGGREGATION_TEMPORALITY
-                | consts::SEVERITY_NUMBER
-                | consts::KIND
-                | consts::EXP_HISTOGRAM_OFFSET => lit(val as i32),
-
-                consts::METRIC_TYPE => lit(val as u8),
-
-                consts::DROPPED_ATTRIBUTES_COUNT
-                | consts::FLAGS
-                | consts::DROPPED_EVENTS_COUNT
-                | consts::DROPPED_LINKS_COUNT => lit(val as u32),
-
-                // other columns for which filtering is currently supported are i64
-                _ => lit(val),
-            }
-        }
-        StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
-        StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
-        StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
-        StaticScalarExpression::DateTime(dt_val) => {
-            let val =
-                dt_val
-                    .get_value()
-                    .timestamp_nanos_opt()
-                    .ok_or_else(|| Error::ExecutionError {
-                        cause: format!("failed to convert {dt_val:?} to nanosecond timestamp"),
-                    })?;
-            lit_timestamp_nano(val)
-        }
-        _ => {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "literal from scalar expression. received {:?}",
-                    static_scalar
-                ),
-            });
-        }
-    })
-}
-
-pub fn try_static_scalar_to_attr_literal(static_scalar: &StaticScalarExpression) -> Result<Expr> {
-    let lit_expr = match static_scalar {
-        StaticScalarExpression::String(str_val) => lit(str_val.get_value()),
-        StaticScalarExpression::Boolean(bool_val) => lit(bool_val.get_value()),
-        StaticScalarExpression::Integer(int_val) => lit(int_val.get_value()),
-        StaticScalarExpression::Double(float_val) => lit(float_val.get_value()),
-        _ => {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "literal from scalar expression. received {:?}",
-                    static_scalar
-                ),
-            });
-        }
-    };
-
-    Ok(lit_expr)
-}
-
-/// try to get the column from an OTAP batch containing an AnyValue based on the value of some
-/// defined static scalar.
-pub fn try_static_scalar_to_any_val_column(
-    static_scalar: &StaticScalarExpression,
-) -> Result<&'static str> {
-    let col_name = match static_scalar {
-        StaticScalarExpression::Boolean(_) => consts::ATTRIBUTE_BOOL,
-        StaticScalarExpression::Double(_) => consts::ATTRIBUTE_DOUBLE,
-        StaticScalarExpression::Integer(_) => consts::ATTRIBUTE_INT,
-        StaticScalarExpression::String(_) => consts::ATTRIBUTE_STR,
-        _ => {
-            return Err(Error::NotYetSupportedError {
-                message: format!(
-                    "AnyValues values column from scalar literal. received {:?}",
-                    static_scalar
-                ),
-            });
-        }
-    };
-
-    Ok(col_name)
-}
-
-/// Create the BinaryExpr that would be used to filter for the value of an attribute in an OTAP
-/// attributes record batch. This considers the type of the scalar literal to select the correct
-/// column e.g. string literals should filter by the "str" column and also creates a datafusion
-/// literal expr with the correct type to compare against.
-pub fn try_attrs_value_filter_from_literal(
-    scalar_lit: &StaticScalarExpression,
-    binary_op: Operator,
-) -> Result<BinaryExpr> {
-    Ok(BinaryExpr::new(
-        Box::new(col(try_static_scalar_to_any_val_column(scalar_lit)?)),
-        binary_op,
-        Box::new(try_static_scalar_to_attr_literal(scalar_lit)?),
-    ))
 }
 
 #[cfg(test)]

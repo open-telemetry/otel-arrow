@@ -1,0 +1,23 @@
+name: OTC OTLP Transform Insert (Logs)
+slug: otc_logs_otlp_none_transform_insert
+description: OpenTelemetry Collector OTLP logs, transform processor (OTTL) inserting processing.engine=benchmark
+orchestrator_template: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/orchestrator/otc-single-core-multi-rate.yaml
+
+meta:
+  binary: otc
+  protocols: [otlp]
+  signals: [logs]
+  compression: none
+
+variables:
+  report: ../pipeline_perf_test/test_suites/comparison_dashboard/reports/report_logs.yaml
+  collector_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/otelcol/otlp-transform-insert.yaml.j2
+  loadgen_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/loadgen/otlp.yaml.j2
+  backend_config: ../pipeline_perf_test/test_suites/comparison_dashboard/templates/backend/otlp.yaml.j2
+  protocol: otlp
+  signal: logs
+  loadgen_max_batch_size: 1000
+  compression_method: none
+  otelcol_gomaxprocs: 1
+  insert_actions:
+    - {key: "processing.engine", value: "benchmark"}

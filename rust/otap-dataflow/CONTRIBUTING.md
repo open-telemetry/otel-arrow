@@ -28,6 +28,45 @@ the full check path, likely because many of the longest tests are concentrated
 in a few large integration-style binaries, so the extra runner orchestration did
 not offset the limited parallelism gains.
 
+## Test documentation
+
+Document every test immediately above its declaration with Rust doc comments:
+
+```rust
+/// Scenario: <the behavior or condition under test>
+/// Guarantees: <the observable invariant protected by the test>
+```
+
+Make both statements specific enough for a reviewer to understand the test's
+intent and the behavior that must not regress without reading its implementation.
+
+## Test and example server bind addresses
+
+When a test or example starts a listening server, bind it to the loopback
+interface (`127.0.0.1`, or `[::1]` for IPv6), not an all-interfaces address
+(`0.0.0.0`, or `[::]`/`[::]:0` for IPv6). Prefer an ephemeral port
+(`127.0.0.1:0`) and read the assigned port back from the listener.
+
+Windows Defender Firewall exempts loopback binds from its allow/deny prompt, so
+a loopback bind avoids the repeated firewall prompts that an all-interfaces bind
+triggers on every `cargo test` / `cargo xtask check` rebuild (test binaries are
+named by content hash, so a granted exception does not persist across rebuilds).
+Production defaults that intentionally serve external traffic may still bind
+`0.0.0.0` (or `[::]`).
+
+## Changelog entries
+
+User-facing Rust changes are recorded in
+[`CHANGELOG.md`](./CHANGELOG.md). Changelog entries are added per PR as YAML
+files under [`.chloggen/`](./.chloggen/) in this directory and collapsed into
+the CHANGELOG at release time.
+
+Copy `TEMPLATE.yaml` in the `.chloggen/` directory to a new `.yaml`
+file (e.g. `otlp-exporter-fix-data-loss.yaml`) and fill in the fields.
+
+See [`.chloggen/README.md`](./.chloggen/README.md) for the full guide,
+including allowed `component:` values and skip conditions.
+
 ## Telemetry and logging
 
 All internal logging MUST use the `otel_*` macros from `otap_df_telemetry`

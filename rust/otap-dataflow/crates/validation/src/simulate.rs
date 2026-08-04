@@ -208,7 +208,7 @@ fn loadgen_reached_limit(
         .filter_map(|set| attribute_node_id(&set.attributes).map(|label| (set, label)))
         .peekable();
 
-    // No loadgen metric sets found yet — generators have not reported their
+    // No loadgen metric sets found yet -- generators have not reported their
     // first telemetry tick. Keep polling.
     if iter.peek().is_none() {
         return false;
@@ -254,7 +254,7 @@ fn validation_finished_and_passed(snapshot: &MetricsSnapshot) -> ValidationPollR
         if metric_value(set, VALIDATION_FINISHED_METRIC_NAME).is_none_or(|v| v < 1) {
             return ValidationPollResult::NotFinished;
         }
-        // Exporter is finished — check its validation result in the same pass.
+        // Exporter is finished -- check its validation result in the same pass.
         if metric_value(set, VALIDATION_METRIC_NAME).is_some_and(|v| v < 1) {
             if let Some(label) = attribute_node_id(&set.attributes) {
                 failed_validation_exporters.push(label);

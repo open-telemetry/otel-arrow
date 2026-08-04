@@ -1,8 +1,90 @@
 # Perf Exporter
 
-Status: **Skeleton**
+<!-- markdownlint-disable MD013 -->
 
-This crate will contain the implementation of the perf exporter.
+## Metadata
+
+- Type: `exporter:perf` (`urn:otel:exporter:perf`)
+- Feature gate: Default
+- Stability: Experimental
+
+## Overview
+
+The perf exporter reports pipeline throughput and optional process or host usage
+statistics. It is mainly intended for local benchmarks and performance
+experiments.
+
+## Getting Started
+
+Use the perf exporter at the end of a benchmark pipeline:
+
+```yaml
+type: exporter:perf
+config:
+  frequency: 1000
+  smoothing_factor: 0.3
+  self_usage: true
+  cpu_usage: true
+  mem_usage: true
+  disk_usage: true
+  io_usage: true
+```
+
+## Configuration
+
+```yaml
+type: exporter:perf
+config:
+  # Report interval in milliseconds (default: 1000).
+  frequency: 1000
+
+  # Exponential moving average smoothing (default: 0.3).
+  smoothing_factor: 0.3
+
+  # Report process usage (default: true).
+  self_usage: true
+
+  # Report CPU usage (default: true).
+  cpu_usage: true
+
+  # Report memory usage (default: true).
+  mem_usage: true
+
+  # Report disk usage (default: true).
+  disk_usage: true
+
+  # Report network and I/O usage (default: true).
+  io_usage: true
+```
+
+## Telemetry
+
+These tables list telemetry emitted directly by this node. Common engine
+runtime metric sets may also be attached by the pipeline telemetry policy.
+
+### Metric Sets
+
+Input PData message volume is reported by the engine through
+`channel.receiver.recv.count` on the PData input channel and is not duplicated
+by the exporter.
+
+#### `exporter.pdata.exports`
+
+| Metric | Unit | Attributes | Description |
+| --- | --- | --- | --- |
+| `exporter.pdata.exports.messages` | `{message}` | `signal`, `outcome` | Number of PData messages whose export reached a terminal outcome. |
+
+### Events
+
+| Event | Severity | Description |
+| --- | --- | --- |
+| `perf_exporter.start` | `info` | Exporter startup with the configured report interval. |
+
+## Limits
+
+- Output is designed for benchmark inspection, not as a stable telemetry
+  export format.
+- Host usage counters depend on platform support exposed to the process.
 
 ## Example Output
 
@@ -29,7 +111,7 @@ This crate will contain the implementation of the perf exporter.
 =====================Network Usage=====================
 Network Interface: lo0
     - bytes read                        : 0 B/s
-    - total bytes recevied              : 4.07 GB
+    - total bytes received              : 4.07 GB
     - bytes transmitted                 : 0 B/s
     - total bytes transmitted           : 4.07 GB
     - packets received                  : 0 B/s
@@ -42,7 +124,7 @@ Network Interface: lo0
     - total errors on transmitted       : 0 B
 Network Interface: utun3
     - bytes read                        : 0 B/s
-    - total bytes recevied              : 0 B
+    - total bytes received              : 0 B
     - bytes transmitted                 : 0 B/s
     - total bytes transmitted           : 4.40 KB
     - packets received                  : 0 B/s
@@ -55,7 +137,7 @@ Network Interface: utun3
     - total errors on transmitted       : 0 B
 Network Interface: anpi0
     - bytes read                        : 0 B/s
-    - total bytes recevied              : 0 B
+    - total bytes received              : 0 B
     - bytes transmitted                 : 0 B/s
     - total bytes transmitted           : 0 B
     - packets received                  : 0 B/s
@@ -67,3 +149,8 @@ Network Interface: anpi0
     - errors on transmitted             : 0 B/s
     - total errors on transmitted       : 0 B
 ```
+
+## Related Docs
+
+- [Configuration model](../../../../../docs/configuration-model.md)
+- [Core node catalog](../../../README.md)

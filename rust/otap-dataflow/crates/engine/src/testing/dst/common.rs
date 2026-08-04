@@ -68,6 +68,10 @@ impl Unwindable for DstPData {
         self.frames.pop()
     }
 
+    fn signal(&self) -> Option<otap_df_config::SignalType> {
+        None
+    }
+
     fn drop_payload(&mut self) {
         self.payload = None;
     }
@@ -82,6 +86,8 @@ pub(super) fn frame(node_id: usize, interests: Interests, tag: u64) -> Frame {
             entry_time_ns: clock::nanos_since_birth(),
             output_port_index: 0,
         },
+        produced_items: 0,
+        consumed_items: 0,
     }
 }
 
@@ -156,6 +162,7 @@ pub(super) fn build_manager<PData>(
         },
         Vec::new(),
         empty_node_metric_handles(),
+        crate::terminal_state::TerminalMetricsDeadline::default(),
     );
 
     (

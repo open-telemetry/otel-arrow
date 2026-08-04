@@ -28,10 +28,10 @@ splitting of OTAP records.  While this library is recommended any time
 you are converting between the representations listed above, note that
 the OTAP Dataflow engine includes an alternative that avoids
 materializing intermediate OTLP records.  We recommend [PData
-Views](./otap-dataflow/crates/pdata-views/README.md) for producing and
+Views](../pdata-views/README.md) for producing and
 consuming OTLP bytes in the OTAP-Dataflow engine.
 
-Rust reference implementation for the [OpenTelemetry-Arrow Protocol
+Rust reference implementation for the [OTel-Arrow Protocol
 (OTAP)](../../../../README.md). Here are some of the main data use-cases:
 
 ## High-level interfaces
@@ -83,7 +83,7 @@ both transport-optimized and memory-optimized representations, using
 Arrow metadata for the indicator.
 
 See more documentation on this process in our [OTAP
-basics](../../docs/otap-basics.md) documentation.
+basics](../../../../docs/otap_basics.md) documentation.
 
 ### OTAP stream to OTAP records
 

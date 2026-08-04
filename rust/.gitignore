@@ -11,3 +11,6 @@
 #   !*/Cargo.lock
 #
 **/Cargo.lock
+
+# otap-dataflow builds binaries (df_engine), so its lockfile is committed.
+!/otap-dataflow/Cargo.lock

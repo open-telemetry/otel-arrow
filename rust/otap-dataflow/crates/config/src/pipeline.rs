@@ -23,7 +23,7 @@ use std::sync::Arc;
 ///   communication semantics. For example, it can route each message to one destination (`one_of`), or
 ///   in the future it can broadcast to every destination.
 ///
-/// This configuration defines the pipeline’s nodes, the interconnections
+/// This configuration defines the pipeline's nodes, the interconnections
 /// (hyper-edges) and optional pipeline-level policies.
 ///
 /// Use `PipelineConfig::from_yaml` or `PipelineConfig::from_json` instead of
@@ -44,7 +44,7 @@ pub struct PipelineConfig {
 
     /// All data-path nodes in this pipeline, keyed by node ID.
     ///
-    /// This includes receivers, processors, and exporters — but NOT extensions.
+    /// This includes receivers, processors, and exporters -- but NOT extensions.
     /// Extensions are configured in the sibling `extensions` section.
     #[serde(default)]
     nodes: PipelineNodes,
@@ -378,6 +378,19 @@ impl PipelineNodes {
         self.0.contains_key(id)
     }
 
+    /// Returns a clone of this node set with every node's credential header
+    /// values redacted, for safe exposure through the admin/config snapshot
+    /// APIs. See [`NodeUserConfig::redacted_for_snapshot`]. The stored config is
+    /// left unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> PipelineNodes {
+        let mut redacted = self.clone();
+        for node in redacted.0.values_mut() {
+            *node = Arc::new(node.redacted_for_snapshot());
+        }
+        redacted
+    }
+
     /// Returns an iterator visiting all nodes.
     pub fn iter(&self) -> impl Iterator<Item = (&NodeId, &Arc<NodeUserConfig>)> {
         self.0.iter()
@@ -627,6 +640,24 @@ impl PipelineConfig {
     #[must_use]
     pub const fn nodes(&self) -> &PipelineNodes {
         &self.nodes
+    }
+
+    /// Returns a clone of this pipeline config with every node's and
+    /// extension's credential header values redacted, for safe exposure through
+    /// the admin/config snapshot APIs. See
+    /// [`NodeUserConfig::redacted_for_snapshot`] and
+    /// [`ExtensionUserConfig::redacted_for_snapshot`]. The stored config is left
+    /// unchanged.
+    #[must_use]
+    pub fn redacted_for_snapshot(&self) -> PipelineConfig {
+        let mut redacted = self.clone();
+        for node in redacted.nodes.0.values_mut() {
+            *node = Arc::new(node.redacted_for_snapshot());
+        }
+        for extension in redacted.extensions.0.values_mut() {
+            *extension = Arc::new(extension.redacted_for_snapshot());
+        }
+        redacted
     }
 
     /// Returns a reference to the pipeline extensions.
@@ -1143,6 +1174,7 @@ impl PipelineConfigBuilder {
                     capabilities: HashMap::new(),
                     header_capture: None,
                     header_propagation: None,
+                    policies: None,
                 },
             );
         }
@@ -1439,11 +1471,6 @@ mod tests {
     use crate::error::Error;
     use crate::node::NodeKind;
     use crate::pipeline::DispatchPolicy;
-    use crate::pipeline::telemetry::metrics::MetricsConfig;
-    use crate::pipeline::telemetry::metrics::readers::periodic::MetricsPeriodicExporterType;
-    use crate::pipeline::telemetry::metrics::readers::{
-        MetricsReaderConfig, MetricsReaderPeriodicConfig,
-    };
     use crate::pipeline::telemetry::{AttributeValue, TelemetryConfig};
     use crate::pipeline::{PipelineConfigBuilder, PipelineType};
     use serde_json::json;
@@ -1938,12 +1965,6 @@ connections:
             resource:
               service.name: "my_service"
               service.version: "1.2.3"
-            metrics:
-              readers:
-                - periodic:
-                    interval: "15s"
-                    exporter:
-                      type: console
             "#;
         let config: TelemetryConfig = serde_yaml::from_str(yaml_data).unwrap();
         assert_eq!(config.reporting_channel_size, 200);
@@ -1960,74 +1981,6 @@ connections:
             assert_eq!(val, "1.2.3");
         } else {
             panic!("Expected service.version to be a string");
-        }
-
-        let readers = &config.metrics.readers;
-        assert_eq!(readers.len(), 1);
-        if let MetricsReaderConfig::Periodic(periodic_config) = &readers[0] {
-            assert_eq!(periodic_config.interval.as_secs(), 15);
-            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
-                panic!("Expected Console exporter config");
-            }
-        } else {
-            panic!("Expected Periodic reader config");
-        }
-    }
-
-    #[test]
-    fn test_metrics_reader_deserialization() {
-        let yaml_data = r#"
-            readers:
-              - periodic:
-                  interval: "10s"
-                  exporter:
-                    type: console
-            "#;
-        let config: MetricsConfig = serde_yaml::from_str(yaml_data).unwrap();
-        assert_eq!(config.readers.len(), 1);
-        if let MetricsReaderConfig::Periodic(periodic_config) = &config.readers[0] {
-            assert_eq!(periodic_config.interval.as_secs(), 10);
-            if MetricsPeriodicExporterType::Console != periodic_config.exporter.exporter_type {
-                panic!("Expected Console exporter config");
-            }
-        } else {
-            panic!("Expected Periodic reader config");
-        }
-    }
-
-    #[test]
-    fn test_metrics_reader_periodic_config_deserialization() {
-        let yaml_data = r#"
-            interval: "20s"
-            exporter:
-              type: console
-            "#;
-        let metrics_reader_periodic_config: MetricsReaderPeriodicConfig =
-            serde_yaml::from_str(yaml_data).unwrap();
-        assert_eq!(metrics_reader_periodic_config.interval.as_secs(), 20);
-        if MetricsPeriodicExporterType::Console
-            != metrics_reader_periodic_config.exporter.exporter_type
-        {
-            panic!("Expected Console exporter config");
-        }
-    }
-
-    #[test]
-    fn test_metrics_reader_periodic_config_deserialization_unknown_exporter() {
-        let yaml_data = r#"
-            interval: "20s"
-            exporter:
-              type: unknown
-            "#;
-        let metrics_reader_periodic_config_result: Result<
-            MetricsReaderPeriodicConfig,
-            serde_yaml::Error,
-        > = serde_yaml::from_str(yaml_data);
-        if let Err(e) = metrics_reader_periodic_config_result {
-            let err_msg = e.to_string();
-            assert!(err_msg.contains("unknown variant `unknown`"));
-        } else {
-            panic!("Expected deserialization to fail due to unknown exporter");
         }
     }
 
@@ -2842,7 +2795,7 @@ sink:
         assert!(config.connection_iter().next().is_none());
     }
 
-    // ── Extension config tests ──────────────────────────────────────
+    // -- Extension config tests --------------------------------------
 
     #[test]
     fn test_extensions_parsed_separately_from_nodes() {
@@ -2916,7 +2869,7 @@ connections:
 
     #[test]
     fn test_same_name_in_nodes_and_extensions_allowed() {
-        // Nodes and extensions are separate namespaces — same name is valid.
+        // Nodes and extensions are separate namespaces -- same name is valid.
         let config = PipelineConfigBuilder::new()
             .add_receiver("myname", "urn:test:receiver:example", None)
             .add_exporter("exp", "urn:test:exporter:example", None)
@@ -3149,7 +3102,7 @@ connections:
     fn test_capabilities_on_extension_rejected() {
         // ExtensionUserConfig uses #[serde(deny_unknown_fields)], so
         // `capabilities` on an extension is caught at deserialization time
-        // (extensions don't consume capabilities — they provide them).
+        // (extensions don't consume capabilities -- they provide them).
         let yaml = r#"
 nodes:
   receiver:
@@ -3241,6 +3194,74 @@ extensions:
         assert!(
             msg.contains("duplicate extension key"),
             "error should mention duplicate extension key: {msg}"
+        );
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_exporter_headers() {
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "urn:otel:receiver:otlp"
+                config: {}
+              exporter:
+                type: "urn:otel:exporter:otlp_http"
+                config:
+                  endpoint: "https://backend.example"
+                  http:
+                    headers:
+                      authorization: "Bearer super-secret-token"
+            connections:
+              - from: receiver
+                to: exporter
+        "#;
+        let config = super::PipelineConfig::from_yaml("group".into(), "pipe".into(), yaml)
+            .expect("pipeline should parse and validate");
+        let redacted = config.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("Bearer super-secret-token"),
+            "credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present"
+        );
+        // The stored pipeline config keeps the cleartext for runtime use.
+        let original_json = serde_json::to_string(&config).expect("config serializes");
+        assert!(original_json.contains("Bearer super-secret-token"));
+    }
+
+    #[test]
+    fn redacted_for_snapshot_masks_extension_headers() {
+        // Extensions carry the same raw `config` Value as nodes; an extension
+        // that holds static `headers` must be redacted too. Deserialize
+        // directly (no validation) so the test stays focused on redaction.
+        let yaml = r#"
+            nodes:
+              receiver:
+                type: "urn:otel:receiver:otlp"
+                config: {}
+            extensions:
+              auth:
+                type: "urn:otap:extension:headers_setter"
+                config:
+                  headers:
+                    authorization: "Bearer ext-super-secret"
+        "#;
+        let config: super::PipelineConfig =
+            serde_yaml::from_str(yaml).expect("pipeline should deserialize");
+        let redacted = config.redacted_for_snapshot();
+
+        let redacted_json = serde_json::to_string(&redacted).expect("redacted serializes");
+        assert!(
+            !redacted_json.contains("Bearer ext-super-secret"),
+            "extension credential must not survive redaction: {redacted_json}"
+        );
+        assert!(
+            redacted_json.contains(crate::node::REDACTED_HEADER_VALUE),
+            "redaction placeholder should be present"
         );
     }
 }

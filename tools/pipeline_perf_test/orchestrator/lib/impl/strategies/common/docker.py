@@ -106,7 +106,7 @@ def sanitize_docker_name(name: Optional[str]) -> Optional[str]:
 
 def create_docker_client() -> docker.DockerClient:
     """Initialize a docker client from the environment"""
-    return docker.from_env()
+    return docker.from_env(timeout=300)
 
 
 def stop_and_remove_container(
@@ -193,7 +193,7 @@ def set_global_docker_runtime_data(ctx: BaseContext, data: GlobalDockerRuntime):
 def get_or_create_docker_client(ctx: BaseContext) -> docker.DockerClient:
     runtime = get_global_docker_runtime(ctx)
     if not runtime.client:
-        runtime.client = docker.from_env()
+        runtime.client = docker.from_env(timeout=300)
         set_global_docker_runtime_data(ctx, runtime)
     return runtime.client
 
