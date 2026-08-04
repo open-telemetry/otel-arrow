@@ -25,9 +25,9 @@ use otap_df_pdata::TryIntoWithOptions;
 /// structurally valid OTAP output -- no additional schema re-validation is
 /// performed on the returned records before forwarding downstream.
 ///
-/// TODO: `OtlpBytes` payloads are converted to OTAP records via the
-/// default conversion; native OTLP handling and per-`ArrowPayloadType`
-/// processing (including child attribute batches) are deferred.
+/// TODO: `OtlpBytes` payloads still flow through default conversion to
+/// OTAP records; add native OTLP handling and explicit per-`ArrowPayloadType`
+/// processing paths.
 pub(crate) fn run_on_otap_records<F>(
     pdata: OtapPdata,
     run: F,
