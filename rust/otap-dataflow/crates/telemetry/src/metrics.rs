@@ -1934,7 +1934,7 @@ mod tests {
             &mut entities,
             |_desc, _attrs, _dp, iter| {
                 for (_field, value) in iter {
-                    accumulated_values.push(value);
+                    accumulated_values.push(value.clone());
                 }
             },
             false,
