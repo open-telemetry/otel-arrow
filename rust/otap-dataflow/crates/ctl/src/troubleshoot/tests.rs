@@ -133,6 +133,10 @@ fn metrics_filters_prune_sets_and_metric_names() {
                     otap_df_admin_api::telemetry::AttributeValue::String("receiver".to_string()),
                 ),
             ]),
+            data_point_attributes: BTreeMap::from([(
+                "signal".to_string(),
+                otap_df_admin_api::telemetry::AttributeValue::String("logs".to_string()),
+            )]),
             metrics: BTreeMap::from([
                 (
                     "pending.sends".to_string(),
@@ -160,6 +164,13 @@ fn metrics_filters_prune_sets_and_metric_names() {
 
     assert_eq!(filtered.metric_sets.len(), 1);
     assert_eq!(filtered.metric_sets[0].metrics.len(), 1);
+    assert_eq!(
+        filtered.metric_sets[0].data_point_attributes,
+        BTreeMap::from([(
+            "signal".to_string(),
+            otap_df_admin_api::telemetry::AttributeValue::String("logs".to_string()),
+        )])
+    );
     assert!(
         filtered.metric_sets[0]
             .metrics
@@ -203,6 +214,7 @@ fn diagnosis_surfaces_drain_deadline_and_drop_signatures() {
             metric_sets: vec![otap_df_admin_api::telemetry::MetricSet {
                 name: "engine.pipeline".to_string(),
                 attributes: BTreeMap::new(),
+                data_point_attributes: BTreeMap::new(),
                 metrics: BTreeMap::from([(
                     "pending.sends".to_string(),
                     otap_df_admin_api::telemetry::MetricValue::U64(1),

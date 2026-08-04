@@ -225,7 +225,9 @@ func (b *HistogramDataPointBuilder) TryBuild(attrsAccu *carrow.Attributes32Accum
 
 	for ID, hdpRec := range b.dataPointAccumulator.hdps {
 		hdp := hdpRec.Orig
-		b.ib.Append(uint32(ID))
+		if err = b.ib.Append(uint32(ID)); err != nil {
+			return nil, werror.Wrap(err)
+		}
 		b.pib.Append(b.dataPointAccumulator.sorter.Encode(hdpRec.ParentID, hdp))
 
 		// Attributes

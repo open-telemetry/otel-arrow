@@ -8,7 +8,7 @@ change_type: enhancement
 component: pipeline
 
 # A brief description of the change.  Surround your text with quotes ("") if it needs to start with a backtick (`).
-note: Auto-inject the mandatory `TimeGenerated` column in the Azure Monitor exporter when no mapping targets it. The value is taken from the log record's event time (`time_unix_nano`, falling back to `observed_time_unix_nano`, then the current time), so records carry their true event time instead of the ingestion arrival time Azure would otherwise stamp. An explicit mapping to `TimeGenerated` (resource, scope, field, or attribute), or a passthrough attribute named `TimeGenerated`, takes precedence and disables injection.
+note: Auto-inject `TimeGenerated` from the log record event time when no Azure Monitor mapping targets it. An explicit mapping or passthrough attribute takes precedence.
 
 # Mandatory: One or more tracking issues related to the change. You can use the PR number here if no issue exists.
 issues: [3407]
@@ -16,4 +16,6 @@ issues: [3407]
 # (Optional) One or more lines of additional information to render under the primary note.
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
-subtext:
+subtext: |
+  The value uses `time_unix_nano`, then `observed_time_unix_nano`, then the
+  current time. This preserves event time instead of Azure ingestion time.

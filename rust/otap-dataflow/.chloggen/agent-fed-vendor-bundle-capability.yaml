@@ -7,8 +7,5 @@ note: Add the `VendorBundle` capability so an agent-fed extension can hand an op
 issues: [3477]
 
 subtext: |
-  Complements the `BearerTokenProvider` capability for the agent-fed auth path:
-  the `#[capability]`-generated `VendorBundle` trait carries host-resolved,
-  vendor-defined attributes the engine passes through untouched, so a consumer
-  can skip its own config-service handshake. Token-only scopes do not provide
-  this capability.
+  The capability carries host-resolved, vendor-defined attributes through
+  data-path nodes, allowing consumers to skip a config-service handshake.

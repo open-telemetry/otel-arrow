@@ -8,9 +8,10 @@ by the crate and log events emitted via `otel_*` log macros.
 
 | Metric name | Description | Produced in file |
 | --- | --- | --- |
-| `exporter.azure_monitor.exports.items` | Number of log items (Azure Monitor rows) resolved by `signal="logs"` and `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.exports.batches` | Number of log batches resolved by `signal="logs"` and `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.exports.messages` | Number of log messages resolved by `signal="logs"` and `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.exports.items` | Number of log items (Azure Monitor rows) in completed export attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.exports.batches` | Number of completed log export batches. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.exports.messages` | Number of log messages in completed export attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.exports.bytes` | Compressed request-body bytes in completed export attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.http.responses` | Number of HTTP export attempts by `response` (`http_2xx`, `http_400`, `http_401`, `http_403`, `http_404`, `http_413`, `http_429`, `http_5xx`, `network_error`, or `other`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.azure_monitor.http.latency` | HTTP export attempt latency in milliseconds (min/max/sum/count), partitioned by `response`. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
 | `exporter.azure_monitor.batch_size` | Compressed batch size in bytes (min/max/sum/count). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/client.rs` |
@@ -19,7 +20,7 @@ by the crate and log events emitted via `otel_*` log macros.
 | `exporter.azure_monitor.in_flight_log_records` | Current number of log records in-flight at the exporter (enqueued export requests awaiting completion, including records being retried). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.state.mappings` | Current number of exporter state-map entries, partitioned by `mapping` (`batch_to_message`, `message_to_batch`, or `message_to_data`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 | `exporter.azure_monitor.log_entries_too_large` | Number of log entries rejected for exceeding batch size limit. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
-| `exporter.azure_monitor.heartbeats.sends` | Number of heartbeat sends resolved by `outcome` (`success` or `failure`). | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
+| `exporter.azure_monitor.heartbeats.sends` | Number of completed heartbeat send attempts. | `crates/contrib-nodes/src/exporters/azure_monitor_exporter/exporter.rs` |
 
 ## Logs
 
