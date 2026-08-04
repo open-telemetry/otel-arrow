@@ -714,7 +714,7 @@ impl PartitionListFmt {
         if !self.buf.is_empty() {
             self.buf.push(',');
         }
-        let _ = write!(self.buf, "{topic}-{partition}");
+        let _ = write!(self.buf, "{topic}:{partition}");
         self.listed += 1;
     }
 
