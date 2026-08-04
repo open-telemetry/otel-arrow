@@ -6,6 +6,7 @@
 package builder
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -239,7 +240,7 @@ func (b *Uint16DeltaBuilder) SetMaxDelta(delta uint16) {
 	b.maxDelta = delta
 }
 
-func (b *Uint16DeltaBuilder) Append(value uint16) {
+func (b *Uint16DeltaBuilder) Append(value uint16) error {
 	if b.builder != nil {
 		switch builder := b.builder.(type) {
 		case *array.Uint16Builder:
@@ -247,26 +248,23 @@ func (b *Uint16DeltaBuilder) Append(value uint16) {
 				builder.Append(value)
 			} else {
 				if value < b.prev {
-					// Should never happen.
-					panic("value is less than previous value")
+					return fmt.Errorf("uint16 delta builder: value %d is less than previous value %d", value, b.prev)
 				}
 				delta := value - b.prev
 				if delta > b.maxDelta {
-					panic("delta is greater than max delta, consider sorting the data")
+					return fmt.Errorf("uint16 delta builder: delta %d is greater than max delta %d, consider sorting the data", delta, b.maxDelta)
 				}
 				builder.Append(delta)
 			}
 			b.prev = value
 		case *array.Uint16DictionaryBuilder:
 			if err := builder.Append(value); err != nil {
-				// Should never happen.
-				panic(err)
+				return err
 			}
 		default:
-			// Should never happen.
-			panic("unknown builder type")
+			return fmt.Errorf("uint16 delta builder: unknown builder type %T", b.builder)
 		}
-		return
+		return nil
 	}
 
 	if b.updateRequest != nil {
@@ -275,6 +273,7 @@ func (b *Uint16DeltaBuilder) Append(value uint16) {
 		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
 		b.updateRequest = nil // No need to report this again.
 	}
+	return nil
 }
 
 func (b *Uint16DeltaBuilder) AppendNull() {
@@ -314,7 +313,7 @@ func (b *Uint32DeltaBuilder) SetMaxDelta(delta uint32) {
 	b.maxDelta = delta
 }
 
-func (b *Uint32DeltaBuilder) Append(value uint32) {
+func (b *Uint32DeltaBuilder) Append(value uint32) error {
 	if b.builder != nil {
 		switch builder := b.builder.(type) {
 		case *array.Uint32Builder:
@@ -322,26 +321,23 @@ func (b *Uint32DeltaBuilder) Append(value uint32) {
 				builder.Append(value)
 			} else {
 				if value < b.prev {
-					// Should never happen.
-					panic("value is less than previous value")
+					return fmt.Errorf("uint32 delta builder: value %d is less than previous value %d", value, b.prev)
 				}
 				delta := value - b.prev
 				if delta > b.maxDelta {
-					panic("delta is greater than max delta, consider sorting the data")
+					return fmt.Errorf("uint32 delta builder: delta %d is greater than max delta %d, consider sorting the data", delta, b.maxDelta)
 				}
 				builder.Append(delta)
 			}
 			b.prev = value
 		case *array.Uint32DictionaryBuilder:
 			if err := builder.Append(value); err != nil {
-				// Should never happen.
-				panic(err)
+				return err
 			}
 		default:
-			// Should never happen.
-			panic("unknown builder type")
+			return fmt.Errorf("uint32 delta builder: unknown builder type %T", b.builder)
 		}
-		return
+		return nil
 	}
 
 	if b.updateRequest != nil {
@@ -350,6 +346,7 @@ func (b *Uint32DeltaBuilder) Append(value uint32) {
 		b.updateRequest.Inc(&update.NewFieldEvent{FieldName: b.transformNode.Path()})
 		b.updateRequest = nil // No need to report this again.
 	}
+	return nil
 }
 
 func (b *Uint32DeltaBuilder) AppendNull() {

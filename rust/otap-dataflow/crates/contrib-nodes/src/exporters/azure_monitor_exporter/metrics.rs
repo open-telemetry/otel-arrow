@@ -59,15 +59,18 @@ pub struct AzureMonitorExporterOperationalMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterExportMetrics {
-    /// Number of items resolved by export outcome.
+    /// Number of items in completed export attempts.
     #[metric(unit = "{item}")]
     pub items: Counter<u64>,
-    /// Number of batches resolved by export outcome.
+    /// Number of completed export batches.
     #[metric(unit = "{batch}")]
     pub batches: Counter<u64>,
-    /// Number of messages resolved by export outcome.
+    /// Number of messages in completed export attempts.
     #[metric(unit = "{message}")]
     pub messages: Counter<u64>,
+    /// Compressed request-body bytes in completed export attempts.
+    #[metric(unit = "By")]
+    pub bytes: Counter<u64>,
 }
 
 /// HTTP export attempts partitioned by response category.
@@ -117,7 +120,7 @@ struct AzureMonitorExporterStateMetrics {
 )]
 #[derive(Debug, Default, Clone)]
 pub struct AzureMonitorExporterHeartbeatMetrics {
-    /// Number of heartbeat sends resolved by outcome.
+    /// Number of completed heartbeat send attempts.
     #[metric(unit = "{heartbeat}")]
     pub sends: Counter<u64>,
 }
@@ -198,11 +201,18 @@ impl AzureMonitorExporterMetricsTracker {
     }
 
     #[inline]
-    pub(super) fn record_export(&mut self, outcome: Outcome, items: u64, messages: u64) {
+    pub(super) fn record_export(
+        &mut self,
+        outcome: Outcome,
+        items: u64,
+        messages: u64,
+        bytes: u64,
+    ) {
         let metrics = self.export_metrics.with(OutcomeAttributes { outcome });
         metrics.items.add(items);
         metrics.batches.inc();
         metrics.messages.add(messages);
+        metrics.bytes.add(bytes);
     }
 
     #[inline]
@@ -275,18 +285,20 @@ mod tests {
     #[test]
     fn export_metrics_are_partitioned_by_outcome() {
         let mut metrics = new_test_tracker();
-        metrics.record_export(Outcome::Success, 100, 50);
-        metrics.record_export(Outcome::Failure, 10, 5);
+        metrics.record_export(Outcome::Success, 100, 50, 1_024);
+        metrics.record_export(Outcome::Failure, 10, 5, 512);
 
         let success = metrics.export_for(Outcome::Success);
         assert_eq!(success.items.get(), 100);
         assert_eq!(success.batches.get(), 1);
         assert_eq!(success.messages.get(), 50);
+        assert_eq!(success.bytes.get(), 1_024);
 
         let failure = metrics.export_for(Outcome::Failure);
         assert_eq!(failure.items.get(), 10);
         assert_eq!(failure.batches.get(), 1);
         assert_eq!(failure.messages.get(), 5);
+        assert_eq!(failure.bytes.get(), 512);
     }
 
     /// Scenario: HTTP attempts receive successful, throttled, and network-error responses.
@@ -392,7 +404,7 @@ mod tests {
     #[test]
     fn terminal_snapshots_include_touched_measurement_metrics() {
         let mut metrics = new_test_tracker();
-        metrics.record_export(Outcome::Success, 10, 1);
+        metrics.record_export(Outcome::Success, 10, 1, 100);
 
         let snapshots = metrics.terminal_snapshots();
         let export_snapshot = snapshots
@@ -419,7 +431,7 @@ mod tests {
         let mut metrics = new_test_tracker();
         let (receiver, mut reporter) = MetricsReporter::create_new_and_receiver(16);
         metrics.add_batch_size(42.0);
-        metrics.record_export(Outcome::Success, 42, 1);
+        metrics.record_export(Outcome::Success, 42, 1, 420);
 
         metrics.report(&mut reporter).unwrap();
 
