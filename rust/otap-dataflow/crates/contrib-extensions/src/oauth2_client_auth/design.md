@@ -310,13 +310,21 @@ configures the connection:
 
 The extension acquires tokens over a `reqwest`/`rustls` HTTP client built from
 `TlsClientConfig` exactly as the OTLP/HTTP exporter does, so its TLS surface
-matches that client. Two `TlsClientConfig` knobs therefore behave differently
+matches that client. Three `TlsClientConfig` knobs therefore behave differently
 from a fully general TLS stack:
 
 - **`server_name_override` (SNI override) is not supported** by the
   reqwest/rustls client. Like the OTLP/HTTP exporter, the extension rejects it at
   config validation rather than silently ignoring it, so a config that relies on
   it fails fast instead of connecting with the wrong SNI.
+- **`insecure` (disable TLS) is rejected when `token_url` is `https://`.** The
+  two are contradictory: the `https://` scheme mandates a TLS handshake, so no
+  client can honor a request for plaintext against it. `token_url` is an absolute
+  URI (RFC 6749 section 3.2), so its scheme already decides the transport and the
+  flag is redundant. Rather than accept the contradiction and connect with TLS
+  anyway, validation fails so an operator who believes they disabled TLS finds
+  out at startup. Use an `http://` `token_url` for a plaintext endpoint; setting
+  `insecure` alongside one is a consistent no-op and is accepted.
 - **`insecure_skip_verify`** (TLS enabled but certificate verification skipped) is
   honored - it maps to reqwest's `danger_accept_invalid_certs`. It is intended
   only for local development or testing against a self-signed endpoint; because it

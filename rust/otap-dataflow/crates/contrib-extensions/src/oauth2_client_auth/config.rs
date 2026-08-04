@@ -200,6 +200,19 @@ impl Config {
                         .to_string(),
                 );
             }
+
+            // `tls.insecure` asks for no TLS, which an `https://` endpoint can
+            // never satisfy: the scheme mandates a TLS handshake. Reject the
+            // contradiction instead of accepting it and connecting with TLS
+            // anyway, so an operator who believes they disabled TLS finds out
+            // at startup. Use an `http://` `token_url` for a plaintext endpoint.
+            if tls.insecure == Some(true) && self.token_url.trim().starts_with("https://") {
+                return Err(
+                    "`tls.insecure` is not supported with an `https://` `token_url`: the scheme \
+                     requires TLS. Use an `http://` `token_url` for a plaintext token endpoint"
+                        .to_string(),
+                );
+            }
         }
 
         // A client identifier is required for every grant; it may be supplied

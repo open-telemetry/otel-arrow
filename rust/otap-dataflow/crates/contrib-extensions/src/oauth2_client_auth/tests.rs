@@ -271,6 +271,49 @@ fn insecure_skip_verify_is_accepted_by_config() {
     assert!(cfg.tls.is_some());
 }
 
+// Scenario: A TLS config sets `insecure` (no TLS) while `token_url` uses the `https://` scheme.
+// Guarantees: Validation rejects the contradiction, so an operator who believes they disabled TLS
+// finds out at startup instead of silently getting a TLS connection.
+#[test]
+fn insecure_with_https_token_url_is_rejected() {
+    let err = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "client_id": "id",
+        "client_secret": "s",
+        "tls": { "insecure": true },
+    }))
+    .expect_err("insecure with an https token_url must be rejected");
+    assert!(matches!(err, ConfigError::InvalidUserConfig { .. }));
+}
+
+// Scenario: A TLS config sets `insecure` alongside a plaintext `http://` token_url.
+// Guarantees: The config is accepted, because the flag agrees with the scheme and is a no-op.
+#[test]
+fn insecure_with_http_token_url_is_accepted() {
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": "http://localhost:8080/token",
+        "client_id": "id",
+        "client_secret": "s",
+        "tls": { "insecure": true },
+    }))
+    .expect("insecure agrees with a plaintext token_url");
+    assert!(cfg.tls.is_some());
+}
+
+// Scenario: A TLS config sets `insecure: false` with an `https://` token_url.
+// Guarantees: The config is accepted, since only an explicit `true` contradicts the scheme.
+#[test]
+fn insecure_false_with_https_token_url_is_accepted() {
+    let cfg = config_from_json(serde_json::json!({
+        "token_url": "https://idp.example.com/token",
+        "client_id": "id",
+        "client_secret": "s",
+        "tls": { "insecure": false },
+    }))
+    .expect("insecure=false is consistent with https");
+    assert!(cfg.tls.is_some());
+}
+
 // Scenario: The factory's static `validate_config` hook is called with a valid config.
 // Guarantees: It accepts the config, mirroring the parse-then-validate path used at wiring time.
 #[test]
