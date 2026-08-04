@@ -639,7 +639,7 @@ fn aggregate_metric_groups(
         for (field, value) in metrics_iter {
             let _ = metrics_map
                 .entry(field.name.to_string())
-                .and_modify(|existing| existing.add_in_place(&value))
+                .and_modify(|existing| existing.add_in_place(value))
                 .or_insert_with(|| value.clone());
         }
     };
@@ -722,7 +722,7 @@ fn groups_without_metadata(groups: &[AggregateGroup]) -> Vec<MetricSet> {
     out
 }
 
-fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+fn format_lp_value(value: &MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
             let vtype = value_type.unwrap_or(match value {
@@ -733,8 +733,8 @@ fn format_lp_value(value: MetricValue, value_type: Option<MetricValueType>) -> S
             match vtype {
                 MetricValueType::U64 => {
                     let int_val = match value {
-                        MetricValue::U64(v) => v,
-                        MetricValue::F64(v) => v as u64,
+                        MetricValue::U64(v) => *v,
+                        MetricValue::F64(v) => *v as u64,
                         MetricValue::Distribution(_) => unreachable!(),
                     };
                     format!("{int_val}i")
@@ -818,7 +818,7 @@ impl PromGroupedMetrics {
     }
 }
 
-fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) -> String {
+fn format_prom_value(value: &MetricValue, value_type: Option<MetricValueType>) -> String {
     match value {
         MetricValue::U64(_) | MetricValue::F64(_) => {
             let vtype = value_type.unwrap_or(match value {
@@ -829,7 +829,7 @@ fn format_prom_value(value: MetricValue, value_type: Option<MetricValueType>) ->
             match vtype {
                 MetricValueType::U64 => match value {
                     MetricValue::U64(v) => v.to_string(),
-                    MetricValue::F64(v) => (v as u64).to_string(),
+                    MetricValue::F64(v) => (*v as u64).to_string(),
                     MetricValue::Distribution(_) => unreachable!(),
                 },
                 MetricValueType::F64 => value.to_f64().to_string(),
@@ -880,7 +880,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
                         &mut fields,
                         "{}={}",
                         escape_lp_field_key(fname),
-                        format_lp_value(val.clone(), field_type)
+                        format_lp_value(val, field_type)
                     );
                 }
                 // Distribution metrics render their summary statistics only;
@@ -928,7 +928,7 @@ fn agg_line_protocol_text(groups: &[AggregateGroup], timestamp_millis: Option<i6
 fn collect_scalar_metric(
     groups: &mut PromGroupedMetrics,
     field: &MetricsField,
-    value: MetricValue,
+    value: &MetricValue,
     base_labels: &str,
     ts_suffix: &str,
 ) {
@@ -1168,7 +1168,7 @@ fn agg_prometheus_text(
                         collect_scalar_metric(
                             &mut prom_groups,
                             field,
-                            value.clone(),
+                            value,
                             &base_labels,
                             &ts_suffix,
                         );
@@ -1206,13 +1206,13 @@ fn collect_metrics_snapshot(
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
-                if is_empty_distribution(&value) {
+                if is_empty_distribution(value) {
                     continue;
                 }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
                     attributes: data_point_attributes.clone(),
-                    value,
+                    value: value.clone(),
                 });
             }
 
@@ -1250,13 +1250,13 @@ fn collect_metrics_snapshot_and_reset(
             let mut metrics = Vec::new();
 
             for (field, value) in metrics_iter {
-                if is_empty_distribution(&value) {
+                if is_empty_distribution(value) {
                     continue;
                 }
                 metrics.push(MetricDataPointWithMetadata {
                     metadata: *field,
                     attributes: data_point_attributes.clone(),
-                    value,
+                    value: value.clone(),
                 });
             }
 
@@ -1291,10 +1291,10 @@ fn collect_compact_snapshot(
         |descriptor, attributes, item_attributes, metrics_iter| {
             let mut metrics = HashMap::new();
             for (field, value) in metrics_iter {
-                if is_empty_distribution(&value) {
+                if is_empty_distribution(value) {
                     continue;
                 }
-                let _ = metrics.insert(field.name.to_string(), value);
+                let _ = metrics.insert(field.name.to_string(), value.clone());
             }
 
             if !metrics.is_empty() {
@@ -1329,10 +1329,10 @@ fn collect_compact_snapshot_and_reset(
         |descriptor, attributes, item_attributes, metrics_iter| {
             let mut metrics = HashMap::new();
             for (field, value) in metrics_iter {
-                if is_empty_distribution(&value) {
+                if is_empty_distribution(value) {
                     continue;
                 }
-                let _ = metrics.insert(field.name.to_string(), value);
+                let _ = metrics.insert(field.name.to_string(), value.clone());
             }
 
             if !metrics.is_empty() {
@@ -1418,7 +1418,7 @@ fn format_line_protocol(
                 }
                 // Distribution metrics render their summary statistics only;
                 // full exponential-bucket rendering is deferred.
-                MetricValue::Distribution(ref d) => {
+                MetricValue::Distribution(d) => {
                     let (count, sum, min, max) = d.summary();
                     if count == 0 {
                         continue;
@@ -1503,7 +1503,7 @@ fn format_prometheus_text(
                 MetricValue::U64(_) | MetricValue::F64(_) => {
                     collect_scalar_metric(&mut groups, field, value, &base_labels, &ts_suffix);
                 }
-                MetricValue::Distribution(ref d) => {
+                MetricValue::Distribution(d) => {
                     collect_distribution_metric(&mut groups, field, d, &base_labels, &ts_suffix);
                 }
             }

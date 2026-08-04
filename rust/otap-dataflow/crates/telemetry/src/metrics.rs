@@ -777,7 +777,7 @@ impl<'a> MetricsIterator<'a> {
 }
 
 impl<'a> Iterator for MetricsIterator<'a> {
-    type Item = (&'static MetricsField, MetricValue);
+    type Item = (&'static MetricsField, &'a MetricValue);
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
@@ -793,11 +793,11 @@ impl<'a> Iterator for MetricsIterator<'a> {
             #[cfg(feature = "unchecked-index")]
             #[allow(unsafe_code)]
             unsafe {
-                self.values.get_unchecked(i).clone()
+                self.values.get_unchecked(i)
             }
             #[cfg(not(feature = "unchecked-index"))]
             {
-                self.values[i].clone()
+                &self.values[i]
             }
         };
 
@@ -1883,7 +1883,7 @@ mod tests {
             &mut entities,
             |_desc, _attrs, _dp, iter| {
                 for (_field, value) in iter {
-                    accumulated_values.push(value);
+                    accumulated_values.push(value.clone());
                 }
             },
             false,
@@ -1986,7 +1986,7 @@ mod tests {
                 assert_eq!(desc.name, "test_metrics");
 
                 for (field, value) in iter {
-                    collected_values.push((field.name, value));
+                    collected_values.push((field.name, value.clone()));
                 }
             },
             false,
@@ -2245,7 +2245,7 @@ mod tests {
         metrics.visit_admin_metrics_and_reset(
             &entities,
             |_descriptor, _attributes, _datapoint_attributes, values| {
-                admin_values.extend(values.map(|(_, value)| value));
+                admin_values.extend(values.map(|(_, value)| value.clone()));
             },
             false,
         );
@@ -2305,11 +2305,11 @@ mod tests {
 
         let item1 = iter.next().unwrap();
         assert_eq!(item1.0.name, "metric1");
-        assert_eq!(item1.1, MetricValue::U64(0));
+        assert_eq!(*item1.1, MetricValue::U64(0));
 
         let item2 = iter.next().unwrap();
         assert_eq!(item2.0.name, "metric2");
-        assert_eq!(item2.1, MetricValue::U64(5));
+        assert_eq!(*item2.1, MetricValue::U64(5));
 
         assert!(iter.next().is_none());
     }
