@@ -146,7 +146,9 @@ enum IncrResult {
 /// An allocation-free exponential histogram for non-negative values.
 ///
 /// Negative values trigger a debug_assert! and record absolute
-/// value with assertions disabled.
+/// value with assertions disabled. The test is on the sign bit, so negative
+/// zero counts as negative here even though it compares equal to zero; it is
+/// still recorded as the zero it is.
 pub struct HistogramNN<const N: usize> {
     initial: Settings,
     current: Settings,
@@ -538,20 +540,23 @@ impl<const N: usize> HistogramNN<N> {
         let mut biased_exp = get_biased_exponent(value);
         let mut significand = get_significand(value);
 
-        // Reject NaN and the infinities before anything else. NaN compares
-        // false against every bound, so the non-negative assertion below would
-        // fire on it and report the wrong problem.
+        // Reject NaN and the infinities before the sign check below, so that
+        // -Inf is reported as the extreme value it is rather than as a
+        // negative one, and so NaN is not measured against a bound it compares
+        // false against.
         if biased_exp == NAN_INF_BIASED {
             return Err(Error::Extreme);
         }
 
         let new_count = self.checked_add_count(incr).ok_or(Error::Overflow)?;
 
-        // Bucketing ignores the sign bit and uses the magnitude. Negative zero
-        // is the zero it compares equal to, not a negative value, so it is
-        // admitted: it arises from ordinary arithmetic and every tier counts
-        // it.
-        debug_assert!(value >= 0.0, "value must be non-negative");
+        // This type declares a non-negative domain, so it enforces the sign
+        // bit rather than a comparison: -0.0 compares equal to zero and would
+        // pass `value >= 0.0`. Reaching it takes a negation, a multiply or
+        // divide by a negative, or rounding a small negative toward zero, each
+        // of which suggests the caller computed something that was not
+        // non-negative to begin with. Bucketing itself uses the magnitude.
+        debug_assert!(!value.is_sign_negative(), "value must be non-negative");
 
         // Zeros are counted but never bucketed, and subnormals round up to the
         // smallest normal value.

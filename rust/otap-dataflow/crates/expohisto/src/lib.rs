@@ -151,8 +151,12 @@ mod tests {
         assert_eq!(view.scan_buckets(|_| {}).positive_total, 3);
     }
 
-    /// Negative is a debug assertion, ignored in the non-negative
-    /// code path.
+    /// Scenario: A negative value is recorded in a build with debug
+    /// assertions on.
+    /// Guarantees: The non-negative domain is enforced loudly, so a caller
+    /// recording one is told. Gated on the assertion profile because a release
+    /// build compiles the check out and records the magnitude instead.
+    #[cfg(debug_assertions)]
     #[test]
     #[should_panic]
     fn asserts_non_negative() {

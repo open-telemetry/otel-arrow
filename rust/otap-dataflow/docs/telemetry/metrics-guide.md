@@ -82,10 +82,16 @@ observability. Histogram resolution is not currently configurable, see
 the implementation gaps.
 
 All distribution instruments accept the same observations, so a field can
-move between them without changing what a caller may record. Values must be
-non-negative and finite. A negative, NaN, or infinite value trips a debug
+move between them without changing what a shipped binary records. Values must
+be non-negative and finite. A negative, NaN, or infinite value trips a debug
 assertion; in a release build a non-finite one is dropped, so a stray NaN
 cannot poison a sum for the rest of the reporting interval.
+
+The tiers differ on one point, and only in debug builds. Negative zero
+compares equal to zero, and `Mmsc` counts it as one, while the histogram tiers
+assert on it because the type behind them declares a non-negative domain and
+tests the sign bit. Every tier reports a plain positive zero for it, so the
+difference never reaches an export.
 
 ### Recording semantics and export temporality
 

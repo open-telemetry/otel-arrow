@@ -514,18 +514,23 @@ impl Debug for Mmsc {
 impl Mmsc {
     /// Records a single non-negative observation, updating min/max/sum/count.
     ///
-    /// Shares its input contract with the histogram tiers: negative, NaN, and
-    /// infinite values are invalid. In debug builds an invalid value trips a
-    /// debug assertion; in release builds a non-finite one is dropped so a
-    /// misbehaving call site cannot corrupt the aggregation.
+    /// NaN and the infinities are invalid, as they are for the histogram
+    /// tiers: in debug builds they trip a debug assertion, and in release they
+    /// are dropped so a misbehaving call site cannot corrupt the aggregation.
+    /// Negative values are invalid too, and are recorded as given.
+    ///
+    /// Negative zero is counted as the zero it compares equal to. The
+    /// histogram tiers assert on it instead, because the type behind them
+    /// declares a non-negative domain and tests the sign bit to enforce it.
+    /// Both report a plain positive zero, so the tiers differ only in whether
+    /// they complain.
     #[inline]
     pub fn record(&mut self, value: f64) {
-        // The tiers share one contract for invalid input, so that changing a
-        // field from `Mmsc` to a histogram tier does not change what a
-        // misbehaving call site does to the aggregation. A non-finite value is
-        // dropped rather than folded in: `sum` is an accumulator, so a single
-        // NaN or infinity would poison it for the rest of the interval and
-        // every value recorded after it would be lost.
+        // A non-finite value is dropped rather than folded in: `sum` is an
+        // accumulator, so a single NaN or infinity would poison it for the
+        // rest of the interval and every value recorded after it would be
+        // lost. The histogram tiers reject them too, so this much of the
+        // contract is shared.
         if !value.is_finite() {
             debug_assert!(
                 false,
@@ -538,9 +543,9 @@ impl Mmsc {
             "Mmsc::record called with negative value: {value}"
         );
         // Negative zero is counted as the zero it compares equal to, so it is
-        // normalized here. The histogram tiers already report a plain zero,
-        // and leaving the sign bit set would surface as a negative minimum in
-        // an export from this tier alone.
+        // normalized here rather than left to surface as a negative minimum in
+        // an export. The histogram tiers report a plain zero for it as well,
+        // though they assert on it first.
         let value = if value == 0.0 { 0.0 } else { value };
         // An empty aggregation has no min/max to compare against -- both are
         // 0.0 -- so the first observation is adopted outright.
@@ -885,13 +890,18 @@ impl<const N: usize> Debug for Histogram<N> {
 impl<const N: usize> Histogram<N> {
     /// Records a single non-negative observation.
     ///
-    /// Shares its input contract with [`Mmsc`]: negative, NaN, and infinite
-    /// values are invalid. In debug builds an invalid value trips a debug
-    /// assertion; in release builds a non-finite one is dropped so a
-    /// misbehaving call site cannot corrupt the aggregation. A negative value
-    /// is counted in the bucket for its magnitude, while the extremes and the
-    /// sum keep its sign, which is why the OTLP bridge withholds the sum of a
-    /// population whose minimum is negative.
+    /// Negative, NaN, and infinite values are invalid. In debug builds an
+    /// invalid value trips a debug assertion; in release builds a non-finite
+    /// one is dropped so a misbehaving call site cannot corrupt the
+    /// aggregation. A negative value is counted in the bucket for its
+    /// magnitude, while the extremes and the sum keep its sign, which is why
+    /// the OTLP bridge withholds the sum of a population whose minimum is
+    /// negative.
+    ///
+    /// Negative zero counts as negative here, unlike in [`Mmsc`]: the
+    /// underlying histogram declares a non-negative domain and tests the sign
+    /// bit to enforce it. It is still recorded as the zero it is, so both
+    /// tiers report a plain positive zero for it.
     #[inline]
     pub fn record(&mut self, value: f64) {
         check_hist_update(self.0.update(value), "Histogram::record rejected value");
@@ -1045,39 +1055,74 @@ mod tests {
         }
     }
 
-    /// Scenario: Negative zero is recorded into each tier.
-    /// Guarantees: It is treated as the ordinary zero it compares equal to,
-    /// counted by every tier and lowering the minimum to zero, rather than
-    /// being taken for a negative value and dropped.
+    /// Scenario: Negative zero is recorded into the summary tier.
+    /// Guarantees: It is counted as the zero it compares equal to, and the
+    /// stored minimum carries no sign bit, so an exporter reading this tier
+    /// cannot report a negative minimum for a population of zeros.
     #[test]
-    fn every_tier_accepts_negative_zero_as_zero() {
+    fn mmsc_counts_negative_zero_as_zero() {
         let mut mmsc = Mmsc::default();
         mmsc.record(-0.0);
+
         assert_eq!(mmsc.count, 1);
         assert_eq!(mmsc.sum, 0.0);
         assert_eq!(mmsc.min, 0.0);
-        // Equality cannot see the sign bit, and an exporter can.
+        // Equality cannot see the sign bit, and a serializer can.
         assert!(
             !mmsc.min.is_sign_negative(),
             "minimum kept the sign of -0.0"
         );
+    }
 
-        for summary in [
-            {
-                let mut h = HistogramNormal::default();
-                h.record(-0.0);
-                h.get().summary()
-            },
-            {
-                let mut h = HistogramDetailed::default();
-                h.record(-0.0);
-                h.get().summary()
-            },
+    /// Scenario: Negative zero is recorded into the histogram tiers in a build
+    /// with debug assertions on.
+    /// Guarantees: Both reject it. They are backed by a type that declares a
+    /// non-negative domain and tests the sign bit to enforce it, so a value
+    /// that only reaches zero from below is reported to its author rather than
+    /// quietly accepted.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn histogram_tiers_assert_on_negative_zero() {
+        for tier in ["normal", "detailed"] {
+            let result = std::panic::catch_unwind(|| {
+                if tier == "normal" {
+                    HistogramNormal::default().record(-0.0);
+                } else {
+                    HistogramDetailed::default().record(-0.0);
+                }
+            });
+            assert!(
+                result.is_err(),
+                "the {tier} tier accepted -0.0 without asserting"
+            );
+        }
+    }
+
+    /// Scenario: Negative zero is recorded into each tier in a build with
+    /// debug assertions off, which is how a released binary runs.
+    /// Guarantees: All three count it and report a plain positive zero as the
+    /// minimum. The tiers differ on whether -0.0 is worth asserting about, but
+    /// not on what they export for it, so moving a field between them cannot
+    /// change a shipped aggregation.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn every_tier_reports_negative_zero_as_positive_zero_in_release() {
+        let mut mmsc = Mmsc::default();
+        mmsc.record(-0.0);
+        let mut normal = HistogramNormal::default();
+        normal.record(-0.0);
+        let mut detailed = HistogramDetailed::default();
+        detailed.record(-0.0);
+
+        for (tier, summary) in [
+            ("basic", (mmsc.count, mmsc.sum, mmsc.min, mmsc.max)),
+            ("normal", normal.get().summary()),
+            ("detailed", detailed.get().summary()),
         ] {
-            assert_eq!(summary, (1, 0.0, 0.0, 0.0));
+            assert_eq!(summary, (1, 0.0, 0.0, 0.0), "{tier} tier");
             assert!(
                 !summary.2.is_sign_negative(),
-                "minimum kept the sign of -0.0"
+                "the {tier} tier kept the sign of -0.0"
             );
         }
     }
