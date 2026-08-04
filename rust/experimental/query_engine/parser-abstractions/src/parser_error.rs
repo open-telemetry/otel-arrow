@@ -48,14 +48,9 @@ impl ParserError {
             pest::error::LineColLocation::Span(l, _) => l,
         };
 
-        let content = if line > 0 && column > 0 {
-            &query
-                .lines()
-                .nth(line - 1)
-                .expect("Query line did not exist")[column - 1..]
-        } else {
-            &query[start..end]
-        };
+        let content = query.lines().nth(line - 1)
+            .or(query.get(start..end))
+            .unwrap_or(query);
 
         Self::SyntaxNotSupported(
             QueryLocation::new(start, end, line, column)

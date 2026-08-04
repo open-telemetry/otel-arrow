@@ -174,6 +174,39 @@ mod test {
     }
 
     #[test]
+    fn test_parse_empty_string() {
+        let result = OplParser::parse("");
+        assert!(result.is_err());
+
+        let errors = result.err().unwrap();
+        assert_eq!(errors.len(), 1);
+
+        let error = &errors[0];
+        assert!(
+            error
+                .to_string()
+                .contains("Syntax '' supplied in query is not supported")
+        )
+    }
+
+    #[test]
+    fn test_parse_unexpected_escape_sequence() {
+        let result = OplParser::parse(r#"logs | where (matches(attributes["code"], regexp"\\d+"))"#);
+        assert!(result.is_err());
+
+        let errors = result.err().unwrap();
+        assert_eq!(errors.len(), 1);
+
+        let error = &errors[0];
+        println!("ERROR={error}");
+        assert!(
+            error
+                .to_string()
+                .contains("Unexpected escape sequence character 'd'")
+        )
+    }
+
+    #[test]
     fn test_parse_comments() {
         let programs = [
             // simple with inline comment
