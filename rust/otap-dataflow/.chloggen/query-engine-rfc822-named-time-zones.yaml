@@ -1,0 +1,5 @@
+change_type: bug_fix
+component: query-engine
+note: Parse standard RFC 822 named time zones in date-time expressions.
+issues: [2047]
+subtext:

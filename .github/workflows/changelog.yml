@@ -5,6 +5,9 @@
 # refactors, dev-dependency bumps), include "chore" in the PR title,
 # apply the "chore" label, or apply the "skipchangelog" label.
 #
+# PRs confined to paths that have no changelog to write into -- any `docs/`
+# or `rfcs/` directory, or `rust/experimental/` -- are exempt automatically.
+#
 # Modeled on opentelemetry-collector-contrib/.github/workflows/changelog.yml.
 
 name: changelog
@@ -14,18 +17,27 @@ on:
     types: [opened, synchronize, reopened, labeled, unlabeled, edited]
     branches:
       - main
+  merge_group:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  changelog:
+  changelog-merge-group:
+    name: changelog
     runs-on: ubuntu-latest
-    if: ${{ github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
+    if: ${{ github.event_name == 'merge_group' }}
+    steps:
+      - run: echo "Changelog validation passed on the pull request."
+
+  changelog-validation:
+    name: changelog
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' && github.actor != 'otelbot' }}
     env:
       PR_HEAD: ${{ github.event.pull_request.head.sha }}
 
@@ -53,7 +65,7 @@ jobs:
 
           echo "skip=${skip}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: ${{ steps.detect_bypass.outputs.skip == 'true' && '1' || '0' }}
 
@@ -63,24 +75,30 @@ jobs:
           go-version: stable
           cache-dependency-path: "**/*.sum"
 
-      - name: Check if documentation-only PR
-        id: check_docs_only
+      - name: Check if PR only touches changelog-exempt paths
+        id: check_exempt_paths
         if: ${{ steps.detect_bypass.outputs.skip != 'true' }}
         run: |
           # Get all changed files
           all_changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD")
 
-          # Treat PR as docs-only when all changed files are under any docs/ or rfcs/ directory.
-          non_doc_files=$(printf '%s\n' "$all_changed" | grep -v '^$' | grep -v -E '(^|.*/)(docs|rfcs)/' || true)
+          # Treat PR as exempt when every changed file is under a path with no
+          # user-facing changelog:
+          #   - any docs/ or rfcs/ directory
+          #   - rust/experimental/, whose crates ship no CHANGELOG.md
+          non_exempt_files=$(printf '%s\n' "$all_changed" | grep -v '^$' \
+            | grep -v -E '(^|.*/)(docs|rfcs)/' \
+            | grep -v -E '^rust/experimental/' \
+            || true)
 
-          if [ -z "$non_doc_files" ]; then
-            echo "is_doc_only=true" >> "$GITHUB_OUTPUT"
+          if [ -z "$non_exempt_files" ]; then
+            echo "is_exempt=true" >> "$GITHUB_OUTPUT"
           else
-            echo "is_doc_only=false" >> "$GITHUB_OUTPUT"
+            echo "is_exempt=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Ensure no direct edits to CHANGELOG files
-        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_exempt_paths.outputs.is_exempt != 'true' }}
         run: |
           changed=$(git diff --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
             -- go/CHANGELOG.md rust/otap-dataflow/CHANGELOG.md)
@@ -96,7 +114,7 @@ jobs:
           fi
 
       - name: Ensure a .chloggen/*.yaml entry was added or edited
-        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_exempt_paths.outputs.is_exempt != 'true' }}
         run: |
           touched=$(git diff --diff-filter=AM --name-only "$(git merge-base origin/main "$PR_HEAD")" "$PR_HEAD" \
             -- 'go/.chloggen/' 'rust/otap-dataflow/.chloggen/' \
@@ -135,7 +153,7 @@ jobs:
           fi
 
       - name: Validate .chloggen/*.yaml entries
-        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_docs_only.outputs.is_doc_only != 'true' }}
+        if: ${{ steps.detect_bypass.outputs.skip != 'true' && steps.check_exempt_paths.outputs.is_exempt != 'true' }}
         run: |
           make chlog-install
           make chlog-validate

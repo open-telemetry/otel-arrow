@@ -46,6 +46,7 @@ data_engine_expressions = { workspace = true, optional = true }
 data_engine_kql_parser = { workspace = true, optional = true }
 data_engine_recordset = { workspace = true, optional = true }
 rdkafka = { workspace = true, features = ["zstd", "ssl"], optional = true }
+tokio-util = { workspace = true, optional = true }
 xxhash-rust = { workspace = true, optional = true, features = ["xxh64"] }
 hex = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
@@ -93,6 +94,7 @@ kafka-receiver = [
     "dep:rdkafka",
     "dep:smallvec",
     "dep:regex",
+    "dep:tokio-util",
 ]
 kafka-exporter = [
     "dep:rdkafka",
@@ -194,6 +196,7 @@ otap-df-pdata = { workspace = true, features = ["testing"] }
 pretty_assertions.workspace = true
 rand.workspace = true
 serde_yaml.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "std", "env-filter"] }
 wiremock.workspace = true
 

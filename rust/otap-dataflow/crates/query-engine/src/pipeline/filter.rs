@@ -802,6 +802,44 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_filter_logs_body_using_matches_with_escape_sequences() {
+        let input = vec![
+            LogRecord::build()
+                .body(AnyValue::new_string("hello 1"))
+                .event_name("1")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello 12"))
+                .event_name("2")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello world"))
+                .event_name("3")
+                .finish(),
+            LogRecord::build()
+                .body(AnyValue::new_string("hello"))
+                .event_name("6")
+                .finish(),
+        ];
+
+        let query = r#"logs | where matches(body, "hello \\d$")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone()]
+        );
+
+        let query = r#"logs | where matches(body, "hello \\d+")"#;
+        let result = exec_logs_pipeline::<OplParser>(query, to_logs_data(input.clone())).await;
+
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[input[0].clone(), input[1].clone()]
+        );
+    }
+
+    #[tokio::test]
     async fn test_filter_logs_body_using_contains() {
         let input = vec![
             LogRecord::build()
@@ -5886,6 +5924,43 @@ mod test {
         assert_eq!(
             &result.resource_logs[0].scope_logs[0].log_records,
             &expected
+        );
+    }
+
+    /// Scenario: A five-attribute traffic-generator-shaped log record joins two attribute predicates.
+    /// Guarantees: Scalar false filters the record, while scalar true keeps it without terminating filtering.
+    #[tokio::test]
+    async fn test_filter_attributes_all_scalar_result() {
+        let log_records = vec![
+            LogRecord::build()
+                .attributes([
+                    KeyValue::new("thread.id", AnyValue::new_int(0)),
+                    KeyValue::new("thread.name", AnyValue::new_string("worker")),
+                    KeyValue::new("code.function", AnyValue::new_string("run")),
+                    KeyValue::new("code.namespace", AnyValue::new_string("example")),
+                    KeyValue::new("code.filepath", AnyValue::new_string("main.rs")),
+                ])
+                .finish(),
+        ];
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "foo") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(result.resource_logs.is_empty());
+
+        let result = exec_logs_pipeline::<OplParser>(
+            r#"logs | where (attributes["code.function"] == "run") and not(contains(attributes["thread.name"], "bar"))"#,
+            to_logs_data(log_records.clone()),
+        )
+        .await;
+
+        assert!(!result.resource_logs.is_empty());
+        assert_eq!(
+            &result.resource_logs[0].scope_logs[0].log_records,
+            &[log_records[0].clone()]
         );
     }
 }

@@ -23,6 +23,10 @@ emitted via `otel_*` log macros.
 | `node.producer.produced.duration` | Duration from production until the corresponding ack or nack is routed, in nanoseconds (MMSC). | `crates/engine/src/channel_metrics.rs` |
 | `node.producer.produced.messages` | Messages produced by the node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
 | `node.producer.produced.items` | Signal items produced (emitted) by an item-count-enabled node, grouped by the `signal` and `outcome` datapoint attributes. | `crates/engine/src/channel_metrics.rs` |
+| `flow.consumed.items` | Signal items entering an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.compute.duration` | Processor compute duration within an opted-in flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.produced.items` | Signal items leaving an opted-in processor flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
+| `flow.dropped.items` | Signal items dropped at a decision node in an opted-in flow, grouped by the `signal` datapoint attribute. | `crates/engine/src/flow_metrics.rs` |
 | `pipeline.uptime` | Time since pipeline instance start. | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.memory_usage` | Current heap memory in use by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |
 | `pipeline.memory_allocated` | Cumulative bytes allocated by the pipeline thread (jemalloc only). | `crates/engine/src/pipeline_metrics.rs` |

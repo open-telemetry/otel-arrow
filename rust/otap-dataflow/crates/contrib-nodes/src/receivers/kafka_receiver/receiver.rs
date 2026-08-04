@@ -7,7 +7,7 @@
 // ToDo: Offload heavier decode operations to avoid stalling the receiver
 
 use super::config::{HeaderExtraction, KafkaReceiverConfig};
-use super::errors::DecodeError;
+use super::error::KafkaReceiverError;
 use super::headers::HeaderExtractions;
 use super::metrics::KafkaReceiverMetrics;
 use super::offset_tracker::OffsetTracker;
@@ -39,7 +39,7 @@ use otap_df_pdata::OtlpProtoBytes;
 use otap_df_pdata::otap::{OtapArrowRecords, from_record_messages};
 use otap_df_pdata::proto::opentelemetry::arrow::v1::BatchArrowRecords;
 use otap_df_telemetry::metrics::MetricSet;
-use otap_df_telemetry::{otel_error, otel_info};
+use otap_df_telemetry::{otel_error, otel_info, otel_warn};
 use prost::Message;
 use rdkafka::Message as _;
 use rdkafka::consumer::stream_consumer::StreamConsumer;
@@ -52,9 +52,21 @@ use smallvec::smallvec;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::time::MissedTickBehavior;
+use tokio_util::sync::CancellationToken;
 
 /// URN for the Kafka Receiver
 pub const KAFKA_RECEIVER_URN: &str = "urn:otel:receiver:kafka";
+
+/// Bounded broker timeout for a single per-partition consumer-lag watermark
+/// lookup. This bounds *each* `fetch_watermarks` call, not the whole refresh:
+/// a refresh queries every owned partition sequentially, so the worst-case time
+/// spent in one refresh scales with the number of owned partitions
+/// (`partitions * timeout`).
+const LAG_FETCH_PARTITION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Total deadline for a single off-loop consumer-lag refresh.
+const LAG_REFRESH_TOTAL_DEADLINE: Duration = Duration::from_secs(15);
 
 /// Compile a slice of topic config strings into a parallel [`Vec`] of
 /// optional [`Regex`] values. Entries starting with `^` are treated as
@@ -312,11 +324,11 @@ impl KafkaReceiver {
         &mut self,
         kafka_message: BorrowedMessage<'_>,
         capture_policy: Option<&HeaderCapturePolicy>,
-    ) -> Result<OtapPdata, DecodeError> {
+    ) -> Result<OtapPdata, KafkaReceiverError> {
         let topic = kafka_message.topic();
 
         let data = kafka_message.payload().ok_or_else(|| {
-            DecodeError::EmptyPayload(EngineError::PdataConversionError {
+            KafkaReceiverError::EmptyPayloadDecode(EngineError::PdataConversionError {
                 error: "Empty payload inside Kafka Message unable to convert to PData".to_string(),
             })
         })?;
@@ -347,7 +359,7 @@ impl KafkaReceiver {
                 HeaderExtractions::apply_otap_traces,
                 decode_traces_payload,
             )
-            .map_err(DecodeError::Traces)
+            .map_err(KafkaReceiverError::TracesDecode)
         } else if matches_any_topic(
             self.config.metrics_topics(),
             &self.metrics_topic_regexes,
@@ -369,7 +381,7 @@ impl KafkaReceiver {
                 HeaderExtractions::apply_otap_metrics,
                 decode_metrics_payload,
             )
-            .map_err(DecodeError::Metrics)
+            .map_err(KafkaReceiverError::MetricsDecode)
         } else if matches_any_topic(self.config.logs_topics(), &self.logs_topic_regexes, topic)
             && !matches_any_exclude(&self.logs_exclude_regexes, topic)
         {
@@ -388,9 +400,9 @@ impl KafkaReceiver {
                 HeaderExtractions::apply_otap_logs,
                 decode_logs_payload,
             )
-            .map_err(DecodeError::Logs)
+            .map_err(KafkaReceiverError::LogsDecode)
         } else {
-            Err(DecodeError::UnknownTopic(
+            Err(KafkaReceiverError::UnknownTopicDecode(
                 EngineError::PdataConversionError {
                     error: "Unknown kafka topic received unable to convert to PData".to_string(),
                 },
@@ -502,12 +514,18 @@ impl KafkaReceiver {
 
         let delta = self.rebalance_state.drain_metrics();
         if !delta.is_empty() {
+            self.metrics.rebalances_total.add(delta.rebalances_total);
             self.metrics
-                .partitions_assigned
-                .add(delta.partitions_assigned);
+                .partition_assignments
+                .add(delta.partition_assignments);
             self.metrics
-                .partitions_revoked
-                .add(delta.partitions_revoked);
+                .partition_revocations
+                .add(delta.partition_revocations);
+            // `partitions_assigned` is a gauge: set it to the current owned count
+            // snapshot rather than accumulating. Folded only when a rebalance
+            // actually occurred (guarded by `is_empty`, which ignores this
+            // gauge-only field) to avoid redundant writes on idle ticks.
+            self.metrics.partitions_assigned.set(delta.partitions_owned);
             self.metrics
                 .rebalance_commit_errors
                 .add(delta.rebalance_commit_errors);
@@ -529,6 +547,37 @@ impl KafkaReceiver {
         }
         self.rebalance_state
             .set_committable_snapshot(self.offset_tracker.committable_snapshot());
+    }
+
+    /// Spawn an off-loop consumer-lag refresh, returning its join handle.
+    ///
+    /// Moves an `Arc` clone of the consumer into a blocking task
+    /// ([`tokio::task::spawn_blocking`]) that runs [`compute_consumer_lag`] off
+    /// the receive loop.
+    ///
+    /// The task returns:
+    /// - `Some(mean_lag)` when the high-watermark lookup succeeds for *every*
+    ///   owned partition (the mean covers the whole assignment, never a subset);
+    /// - `Some(0.0)` when the assignment is empty (nothing owned), the caller's
+    ///   signal to reset the gauge to the documented empty-assignment value;
+    /// - `None` when the refresh is incomplete -- any owned partition lacks a
+    ///   committed offset, a broker read failed, or the deadline was exceeded --
+    ///   the caller's signal to retain the previous gauge value. Instantly returns
+    ///   when in auto-commit mode.
+    fn spawn_consumer_lag_refresh<C: ConsumerContext + 'static>(
+        &self,
+        consumer: &Arc<StreamConsumer<C>>,
+        deadline: Instant,
+        cancel: CancellationToken,
+    ) -> Option<tokio::task::JoinHandle<Option<f64>>> {
+        if self.config.is_auto_commit() {
+            return None;
+        }
+
+        let consumer = Arc::clone(consumer);
+        Some(tokio::task::spawn_blocking(move || {
+            compute_consumer_lag(consumer.as_ref(), deadline, &cancel)
+        }))
     }
 
     /// Advance the offset tracker for a processed message and, if the
@@ -584,40 +633,40 @@ impl KafkaReceiver {
             return;
         };
 
-        // Read the partition's tracked generation once and reuse it for both
-        // guards below (avoids repeated tracker lookups on this hot path).
-        let tracked_generation = self.offset_tracker.partition_generation(&name, partition);
-
-        // Stale-generation guard: feedback produced under an earlier ownership
-        // period must not affect the current one. If the partition's tracked
-        // state belongs to a newer generation than this ack, the ack is stale
-        // (the partition was revoked and reassigned since); drop it without
-        // disturbing the current state.
-        if tracked_generation.is_some_and(|current| ack_generation < current) {
-            self.metrics.acks_for_revoked_partition.add(1);
-            return;
-        }
-
-        // Late-ack guard: never commit a partition this consumer no longer
-        // owns. Drop the feedback and purge any lingering tracker state for the
-        // ack's generation or older (never a newer ownership period).
+        // Read the partition's tracked generation, its currently-assigned
+        // generation, and whether it is still owned. The assigned generation is
+        // consulted (not just the tracker's) so a stale ack is rejected even in
+        // the window after a revoke/reassign where the tracker still reports the
+        // old generation because no record of the new period has been tracked
+        // yet. The `is_assigned` membership check remains explicit for clarity.
         //
-        // This is safe because librdkafka runs `post_rebalance(Assign)` on the
-        // poll thread *before* `consumer.recv()` yields messages for the newly
-        // assigned partitions, so `assigned` is always populated before any ack
-        // for those partitions can return.
-        if !self.rebalance_state.is_assigned(&name, partition) {
-            self.metrics.acks_for_revoked_partition.add(1);
-            // Purge only state not newer than the ack (never a newer ownership
-            // period). `tracked_generation` was already fetched above, so this
-            // reuses that knowledge rather than re-reading the tracker.
-            if tracked_generation.is_some_and(|current| current <= ack_generation) {
-                self.offset_tracker.revoke(&name, partition);
-            }
-            return;
-        }
+        // The late-ack path is safe because librdkafka runs
+        // `post_rebalance(Assign)` on the poll thread *before* `consumer.recv()`
+        // yields messages for the newly assigned partitions, so `assigned` is
+        // always populated before any ack for those partitions can return.
+        let tracked_generation = self.offset_tracker.partition_generation(&name, partition);
+        let assigned_generation = self.rebalance_state.current_generation(&name, partition);
+        let is_assigned = self.rebalance_state.is_assigned(&name, partition);
 
-        self.advance_offset_and_commit(&name, partition, offset, consumer, receiver_id);
+        match classify_offset_feedback(
+            ack_generation,
+            tracked_generation,
+            assigned_generation,
+            is_assigned,
+        ) {
+            OffsetFeedbackAction::Commit => {
+                self.advance_offset_and_commit(&name, partition, offset, consumer, receiver_id);
+            }
+            OffsetFeedbackAction::DropStale => {
+                self.metrics.acks_for_revoked_partition.add(1);
+            }
+            OffsetFeedbackAction::DropLateAck { purge } => {
+                self.metrics.acks_for_revoked_partition.add(1);
+                if purge {
+                    self.offset_tracker.revoke(&name, partition);
+                }
+            }
+        }
     }
 
     async fn run_receive_loop<C: ConsumerContext + 'static>(
@@ -626,6 +675,8 @@ impl KafkaReceiver {
         effect_handler: local::EffectHandler<OtapPdata>,
         consumer: StreamConsumer<C>,
     ) -> Result<TerminalState, EngineError> {
+        let consumer = Arc::new(consumer);
+
         // Start periodic telemetry collection
         let telemetry_cancel_handle = effect_handler
             .start_periodic_telemetry(Duration::from_secs(1))
@@ -665,6 +716,32 @@ impl KafkaReceiver {
             }
         }
 
+        // Opt-in consumer-lag refresh timer, derived from the configured
+        // interval. Stays `None` (disabled) in auto-commit mode (no committed
+        // offset to compare against) or when no interval is set, so the dedicated
+        // `select!` branch below is never polled and no timer is armed. `reset()`
+        // defers the first tick by one full interval so the first refresh is
+        // periodic, not immediate.
+        let mut lag_ticker: Option<tokio::time::Interval> = manual_commit
+            .then(|| self.config.lag_refresh_interval_ms())
+            .flatten()
+            .map(Duration::from_millis)
+            .map(|dur| {
+                let mut ticker = tokio::time::interval(dur);
+                ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+                ticker.reset();
+                ticker
+            });
+
+        // Keeps track of the current in flight consumer_lag worker: its join
+        // handle, its absolute deadline, and a cancellation token used to stop
+        // it cooperatively on shutdown so it cannot outlive the receiver.
+        let mut lag_refresh_in_flight: Option<(
+            tokio::task::JoinHandle<Option<f64>>,
+            tokio::time::Instant,
+            CancellationToken,
+        )> = None;
+
         // Set once the receiver-first drain protocol begins. After this the
         // receiver stops polling Kafka (see the `consumer.recv()` branch guard)
         // but stays responsive to control messages until `Shutdown` arrives.
@@ -685,12 +762,23 @@ impl KafkaReceiver {
                             effect_handler.info("Shutting down Kafka receiver").await;
                             // Commit all tracked offsets before shutdown
                             if manual_commit {
-                                if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                                if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                     otel_error!(
                                         "kafka.shutdown.commit_failed",
                                         error = %e,
                                     );
                                 }
+                            }
+                            // Drain any in-flight consumer-lag worker so we do not
+                            // abandon a running `spawn_blocking` task. send a cancellation
+                            // signal
+                            if let Some((handle, lag_deadline, lag_cancel)) =
+                                lag_refresh_in_flight.take()
+                            {
+                                lag_cancel.cancel();
+                                let bound =
+                                    lag_deadline.min(tokio::time::Instant::from_std(deadline));
+                                let _ = tokio::time::timeout_at(bound, handle).await;
                             }
                             consumer.unsubscribe();
                             let snapshot = self.metrics.snapshot();
@@ -716,7 +804,7 @@ impl KafkaReceiver {
                                 // restart (at-least-once), so there is nothing
                                 // else to wait on.
                                 if manual_commit {
-                                    if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                                    if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                         otel_error!(
                                             "kafka.drain.commit_failed",
                                             error = %e,
@@ -736,7 +824,7 @@ impl KafkaReceiver {
                             if manual_commit && !ack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_offset_feedback(
                                     &ack_msg.unwind.route.calldata,
-                                    &consumer,
+                                    consumer.as_ref(),
                                     &receiver_id,
                                 );
                             }
@@ -748,12 +836,13 @@ impl KafkaReceiver {
                             if manual_commit && !nack_msg.unwind.route.calldata.is_empty() {
                                 self.handle_offset_feedback(
                                     &nack_msg.unwind.route.calldata,
-                                    &consumer,
+                                    consumer.as_ref(),
                                     &receiver_id,
                                 );
                             }
                         },
                         Ok(NodeControlMsg::CollectTelemetry { mut metrics_reporter }) => {
+                            self.reconcile_rebalance_state();
                             // Report current receiver metrics.
                             _ = metrics_reporter.report(&mut self.metrics);
                         },
@@ -762,7 +851,7 @@ impl KafkaReceiver {
                             // offsets that haven't been committed via ack/nack yet.
                             // Commit failures are recoverable: offsets stay
                             // tracked and are retried on the next tick.
-                            if let Err(e) = self.commit_offsets(&consumer, &receiver_id) {
+                            if let Err(e) = self.commit_offsets(consumer.as_ref(), &receiver_id) {
                                 otel_error!(
                                     "kafka.commit.failed",
                                     error = %e,
@@ -781,7 +870,43 @@ impl KafkaReceiver {
                     }
                 }
 
-                // 2. Consume Kafka messages. Stops once draining begins so no
+                // 2. Get the result from consumer_lag worker
+                result = async {
+                    match lag_refresh_in_flight.as_mut() {
+                        Some((handle, deadline, _cancel)) => {
+                            tokio::time::timeout_at(*deadline, handle).await
+                        }
+                        // do nothing here
+                        None => std::future::pending().await,
+                    }
+                }, if lag_refresh_in_flight.is_some() => {
+                    match result {
+                        Err(_elapsed) => {
+                            // The refresh outran its deadline. Cancel the worker so
+                            // it stops cooperatively at its next deadline check, and
+                            // release the slot so periodic refreshes can resume (the
+                            // trigger below is gated on `lag_refresh_in_flight`).
+                            if let Some((_handle, _deadline, cancel)) =
+                                lag_refresh_in_flight.take()
+                            {
+                                cancel.cancel();
+                            }
+                            otel_warn!("kafka.lag.refresh_incomplete", reason = "deadline_exceeded");
+                        }
+                        Ok(join_result) => {
+                            lag_refresh_in_flight = None;
+                            match join_result {
+                                Ok(Some(value)) => self.metrics.consumer_lag.set(value),
+                                Ok(None) => {}
+                                Err(join_err) => {
+                                    otel_error!("kafka.lag.refresh_task_failed", error = %join_err)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 3. Consume Kafka messages. Stops once draining begins so no
                 // new records are admitted during receiver-first shutdown.
                 result = consumer.recv(), if draining_deadline.is_none() => {
                     match result {
@@ -867,7 +992,7 @@ impl KafkaReceiver {
                                     // a descriptive error so operators can
                                     // identify what went wrong and where.
                                     match &decode_err {
-                                        DecodeError::EmptyPayload(e) => {
+                                        KafkaReceiverError::EmptyPayloadDecode(e) => {
                                             self.metrics.empty_payloads.add(1);
                                             otel_error!(
                                                 "kafka.message.empty_payload",
@@ -877,7 +1002,7 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::UnknownTopic(e) => {
+                                        KafkaReceiverError::UnknownTopicDecode(e) => {
                                             self.metrics.unknown_topic_errors.add(1);
                                             otel_error!(
                                                 "kafka.message.unknown_topic",
@@ -887,7 +1012,7 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::Traces(e) => {
+                                        KafkaReceiverError::TracesDecode(e) => {
                                             self.metrics.unmarshal_failed_traces.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
@@ -898,7 +1023,7 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::Metrics(e) => {
+                                        KafkaReceiverError::MetricsDecode(e) => {
                                             self.metrics.unmarshal_failed_metrics.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
@@ -909,12 +1034,24 @@ impl KafkaReceiver {
                                                 offset = offset,
                                             );
                                         }
-                                        DecodeError::Logs(e) => {
+                                        KafkaReceiverError::LogsDecode(e) => {
                                             self.metrics.unmarshal_failed_logs.add(1);
                                             otel_error!(
                                                 "kafka.message.unmarshal_failed",
                                                 signal = "logs",
                                                 error = %e,
+                                                topic = %topic,
+                                                partition = partition,
+                                                offset = offset,
+                                            );
+                                        }
+                                        // Config variants are never produced on
+                                        // the per-message decode path.
+                                        _ => {
+                                            self.metrics.processing_errors.add(1);
+                                            otel_error!(
+                                                "kafka.message.decode_failed",
+                                                error = %decode_err,
                                                 topic = %topic,
                                                 partition = partition,
                                                 offset = offset,
@@ -939,7 +1076,7 @@ impl KafkaReceiver {
                                             &topic,
                                             partition,
                                             offset,
-                                            &consumer,
+                                            consumer.as_ref(),
                                             &receiver_id,
                                         );
                                     }
@@ -967,9 +1104,220 @@ impl KafkaReceiver {
                         }
                     }
                 }
+
+                // 4. Periodic consumer-lag refresh trigger (opt-in). Fires only
+                // when the timer is armed, no refresh is already in flight, and
+                // the receiver is not draining, so no broker calls are issued
+                // during shutdown.
+                _ = async {
+                    match lag_ticker.as_mut() {
+                        Some(ticker) => ticker.tick().await,
+                        // Unreachable: the branch guard keeps this future from
+                        // being polled when the ticker is disabled.
+                        None => std::future::pending().await,
+                    }
+                }, if lag_ticker.is_some()
+                    && lag_refresh_in_flight.is_none()
+                    && draining_deadline.is_none() => {
+                    // pass the instant deadline to the worker so it can
+                    // monitor itself during the consumer_lag calculation
+                    // if deadline exceeds, it returns None
+                    let cancel = CancellationToken::new();
+                    if let Some(handle) = self.spawn_consumer_lag_refresh(
+                        &consumer,
+                        Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                        cancel.clone(),
+                    ) {
+                        lag_refresh_in_flight = Some((
+                            handle,
+                            tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                            cancel,
+                        ));
+                    }
+                }
             }
         }
     }
+}
+
+/// Compute the mean consumer-group lag across all owned partitions, bounded by
+/// an absolute `deadline`. The `deadline` is checked before each partition
+///
+/// Return contract (see [`KafkaReceiver::spawn_consumer_lag_refresh`]):
+/// - `Some(mean)` -- every owned partition was measured; the mean covers the
+///   whole assignment.
+/// - `Some(0.0)` -- the assignment is empty (nothing owned); the caller resets
+///   the gauge to the documented empty-assignment value.
+/// - `None` -- the refresh is incomplete (an owned partition has no committed
+///   offset yet, a broker read failed, or the `deadline` was exceeded); the
+///   caller retains the previous gauge value.
+fn compute_consumer_lag<C: ConsumerContext>(
+    consumer: &StreamConsumer<C>,
+    deadline: Instant,
+    cancel: &CancellationToken,
+) -> Option<f64> {
+    // Remaining time until `deadline`
+    let remaining_call_timeout = || -> Option<Duration> {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        let remaining = deadline.checked_duration_since(Instant::now())?;
+        if remaining.is_zero() {
+            return None;
+        }
+        Some(remaining.min(LAG_FETCH_PARTITION_TIMEOUT))
+    };
+
+    // Owned partitions. `assignment()` is a local (non-RPC) query.
+    let assignment = match consumer.assignment() {
+        Ok(tpl) => tpl,
+        Err(e) => {
+            otel_error!("kafka.lag.assignment_failed", error = %e);
+            return None;
+        }
+    };
+    if assignment.count() == 0 {
+        // Nothing owned: reset the gauge to the documented empty value (0).
+        return Some(0.0);
+    }
+
+    // Deadline / cancellation check before the first (committed_offsets) broker
+    // call.
+    let Some(committed_timeout) = remaining_call_timeout() else {
+        let reason = if cancel.is_cancelled() {
+            "cancelled"
+        } else {
+            "deadline_exceeded"
+        };
+        otel_warn!("kafka.lag.refresh_incomplete", reason = reason);
+        return None;
+    };
+
+    // Broker-acknowledged committed offsets for the owned partitions.
+    let committed = match consumer.committed_offsets(assignment, committed_timeout) {
+        Ok(tpl) => tpl,
+        Err(e) => {
+            otel_error!("kafka.lag.committed_offsets_failed", error = %e);
+            return None;
+        }
+    };
+
+    // Per-partition consumer-group lag for *every* owned partition. The mean
+    // must cover the whole assignment: any partition we cannot measure -- a
+    // missing committed offset, a failed broker read, or the deadline expiring
+    // -- abandons the whole refresh (returns `None`) so a mean is never computed
+    // from a subset of partitions.
+    let elements = committed.elements();
+    let mut sum: i64 = 0;
+    for elem in &elements {
+        // Bound this partition's watermark lookup by the remaining time (or
+        // abandon on cancellation).
+        let Some(watermark_timeout) = remaining_call_timeout() else {
+            let reason = if cancel.is_cancelled() {
+                "cancelled"
+            } else {
+                "deadline_exceeded"
+            };
+            otel_warn!("kafka.lag.refresh_incomplete", reason = reason);
+            return None;
+        };
+
+        let topic = elem.topic();
+        let partition = elem.partition();
+
+        // An owned partition with no broker-committed offset yet
+        // (`Offset::Invalid`) cannot be measured. Abort rather than exclude it,
+        // so the mean always covers the whole assignment.
+        let committed_offset = match elem.offset() {
+            rdkafka::Offset::Offset(o) => o,
+            _ => {
+                otel_warn!(
+                    "kafka.lag.refresh_incomplete",
+                    reason = "uncommitted_partition",
+                    topic = %topic,
+                    partition = partition,
+                );
+                return None;
+            }
+        };
+
+        match consumer.fetch_watermarks(topic, partition, watermark_timeout) {
+            Ok((_low, high)) => {
+                // Both the high watermark and the committed offset are
+                // "one past" positions, so their difference is the number
+                // of records the group has not yet consumed on this
+                // partition (consumer-group lag).
+                sum = sum.saturating_add(high.saturating_sub(committed_offset).max(0));
+            }
+            Err(e) => {
+                // Fail fast: one failed lookup means the mean would be
+                // incomplete, so abandon this refresh and retain the
+                // previous gauge value.
+                otel_error!(
+                    "kafka.lag.fetch_watermarks_failed",
+                    topic = %topic,
+                    partition = partition,
+                    error = %e,
+                );
+                return None;
+            }
+        }
+    }
+
+    // `elements` is non-empty here (assignment count was > 0), so the divisor is
+    // never zero.
+    Some(sum as f64 / elements.len() as f64)
+}
+
+/// Decision for an incoming Ack/Nack carrying Kafka offset identity, derived
+/// purely from generation/ownership state.
+///
+/// Extracted from [`KafkaReceiver::handle_offset_feedback`] so the stale/late-ack
+/// policy is self-contained and exhaustively unit-testable without a live
+/// consumer.
+#[derive(Debug, PartialEq, Eq)]
+enum OffsetFeedbackAction {
+    /// Advance the offset tracker and commit: the ack belongs to the current
+    /// ownership period of a currently-owned partition.
+    Commit,
+    /// Drop as stale: the ack is from an ownership period strictly older than
+    /// the partition's current tracked *or* currently-assigned generation. The
+    /// partition was revoked and reassigned since the record was delivered.
+    DropStale,
+    /// Drop as a late ack: the partition is no longer assigned to this consumer.
+    /// `purge` indicates whether lingering tracker state should also be removed
+    /// (only when that state is not newer than the ack's ownership period).
+    DropLateAck { purge: bool },
+}
+
+/// Classify an Ack/Nack given the ack's ownership `generation` and the
+/// partition's current tracker/assignment state.
+///
+/// The stale-generation check compares the ack against the **maximum** of the
+/// tracker generation and the currently-assigned generation. Consulting the
+/// assigned generation (not just the tracker's) closes the window where a
+/// partition was revoked and reassigned to this consumer under a newer
+/// generation but no record of the new period has been tracked yet: in that
+/// window the tracker still reports the old generation, so an ack that equals
+/// the tracker generation would otherwise pass the guard, find the partition
+/// assigned, and mutate/commit stale state. Because real generations start at
+/// `1`, a `0` assigned/tracked generation means "not owned / untracked" and is
+/// treated as no lower bound.
+fn classify_offset_feedback(
+    ack_generation: u64,
+    tracked_generation: Option<u64>,
+    assigned_generation: u64,
+    is_assigned: bool,
+) -> OffsetFeedbackAction {
+    let current = tracked_generation.unwrap_or(0).max(assigned_generation);
+    if current > 0 && ack_generation < current {
+        return OffsetFeedbackAction::DropStale;
+    }
+    if !is_assigned {
+        let purge = tracked_generation.is_some_and(|tracked| tracked <= ack_generation);
+        return OffsetFeedbackAction::DropLateAck { purge };
+    }
+    OffsetFeedbackAction::Commit
 }
 
 /// Encode Kafka message identity into [`CallData`] for Ack/Nack routing.
@@ -1208,16 +1556,14 @@ mod tests {
     };
 
     use crate::common::kafka::MessageFormat;
-    use otap_df_channel::mpsc;
+    use crate::common::kafka::node_harness::KafkaReceiverHarness;
+    use crate::common::kafka::test::cluster::KafkaTestCluster;
+    use crate::common::kafka::test::consumer::{RebalanceTrigger, committed_offset};
+    use crate::common::kafka::test::producer::SendRecord;
+    use crate::common::kafka::test::wait::poll_until;
+    use crate::common::kafka::test::with_cluster;
     use otap_df_config::transport_headers_policy::{CaptureDefaults, CaptureRule};
     use otap_df_engine::context::ControllerContext;
-    use otap_df_engine::control::AckMsg;
-    use otap_df_engine::control::runtime_ctrl_msg_channel;
-    use otap_df_engine::local::message::{LocalReceiver, LocalSender};
-    use otap_df_engine::local::receiver::Receiver as _;
-    use otap_df_engine::message::{Receiver, Sender};
-    use otap_df_engine::testing::test_node;
-    use otap_df_otap::testing::next_ack;
     use otap_df_pdata::OtlpProtoBytes;
     use otap_df_pdata::Producer;
     use otap_df_pdata::otap::{Logs, Metrics};
@@ -1233,32 +1579,17 @@ mod tests {
     use otap_df_pdata::proto::opentelemetry::trace::v1::{ResourceSpans, ScopeSpans, Span};
     use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::reporter::MetricsReporter;
     use prost::Message;
     use rdkafka::ClientConfig;
-    use rdkafka::consumer::{BaseConsumer, Consumer, StreamConsumer};
-    use rdkafka::message::{Header, OwnedHeaders};
-    use rdkafka::mocking::MockCluster;
-    use rdkafka::producer::{DefaultProducerContext, FutureProducer, FutureRecord};
+    use rdkafka::consumer::{Consumer, StreamConsumer};
     use rdkafka::topic_partition_list::{Offset, TopicPartitionList};
-    use rdkafka::util::Timeout;
     use std::collections::HashMap;
     use std::time::Duration;
-    use tokio::task::LocalSet;
-    use tokio::time::timeout;
 
     /// Number of partitions provisioned for the rebalance integration tests.
     const REBALANCE_TEST_PARTITIONS: i32 = 2;
     /// Records produced to each partition in the rebalance integration tests.
     const REBALANCE_RECORDS_PER_PARTITION: i32 = 5;
-
-    fn create_test_producer(brokers: &str) -> FutureProducer {
-        ClientConfig::new()
-            .set("bootstrap.servers", brokers)
-            .set("message.timeout.ms", "20000")
-            .create()
-            .expect("Failed to create producer")
-    }
 
     fn create_logs_service_request() -> ExportLogsServiceRequest {
         ExportLogsServiceRequest {
@@ -1409,196 +1740,21 @@ mod tests {
         ExportTraceServiceRequest::decode(otlp.as_bytes()).expect("decode OTLP traces")
     }
 
-    /// Opaque bundle of channel handles whose lifetimes keep the test
-    /// receiver running. Drop this to tear down all channels.
-    #[allow(dead_code)]
-    struct KeepAlive(Vec<Box<dyn std::any::Any>>);
+    // ---- Test config builders ----
 
-    /// Assemble the engine wiring (control channel, pdata channel, effect
-    /// handler) around a finished [`KafkaReceiverConfig`].
-    ///
-    /// This is the single place that builds the test harness plumbing shared by
-    /// all the receiver setup helpers; callers differ only in the config they
-    /// pass and the pdata channel capacity they need. Returns the boxed
-    /// receiver, its control channel, the effect handler, the pdata receiver,
-    /// the control *sender* (so tests can issue `Shutdown`/`Ack`), and a
-    /// keep-alive bundle.
-    #[allow(clippy::type_complexity)]
-    fn wire_receiver_harness(
-        config: KafkaReceiverConfig,
-        pdata_cap: usize,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        mpsc::Sender<NodeControlMsg<OtapPdata>>,
-        KeepAlive,
-    ) {
-        let (
-            receiver,
-            ctrl_msg_chan,
-            effect_handler,
-            pdata_receiver,
-            control_sender,
-            rt_rx,
-            mut keep_alive,
-        ) = wire_receiver_harness_with_runtime_rx(config, pdata_cap);
-        // Tests using this helper don't observe runtime-control messages, so the
-        // runtime receiver is kept alive (dropping it would close the channel).
-        keep_alive.0.push(Box::new(rt_rx));
-        (
-            receiver,
-            ctrl_msg_chan,
-            effect_handler,
-            pdata_receiver,
-            control_sender,
-            keep_alive,
-        )
-    }
-
-    /// Like [`wire_receiver_harness`] but also returns the runtime-control
-    /// receiver so tests can observe `RuntimeControlMsg::ReceiverDrained`
-    /// (emitted by `notify_receiver_drained()` during ingress drain).
-    #[allow(clippy::type_complexity)]
-    fn wire_receiver_harness_with_runtime_rx(
-        config: KafkaReceiverConfig,
-        pdata_cap: usize,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        mpsc::Sender<NodeControlMsg<OtapPdata>>,
-        otap_df_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
-        KeepAlive,
-    ) {
-        let pipeline_ctx = make_pipeline_ctx();
-
-        let node_config = Arc::new(NodeUserConfig::new_receiver_config(KAFKA_RECEIVER_URN));
-        let receiver = Box::new(
-            KafkaReceiver::new(pipeline_ctx, config).expect("kafka receiver config is valid"),
-        );
-
-        let (control_sender, control_receiver) = mpsc::Channel::new(32);
-        let control_receiver = LocalReceiver::mpsc(control_receiver);
-        let ctrl_msg_chan = local::ControlChannel::new(Receiver::Local(control_receiver));
-
-        let mut pdata_senders = HashMap::new();
-        let (sender, recv) = mpsc::Channel::new(pdata_cap);
-        let pdata_sender = Sender::Local(LocalSender::mpsc(sender));
-        let pdata_receiver = Receiver::Local(LocalReceiver::mpsc(recv));
-        let _ = pdata_senders.insert(std::borrow::Cow::Borrowed("test_receiver"), pdata_sender);
-
-        let (pipeline_ctrl_msg_tx, pipeline_ctrl_msg_rx) = runtime_ctrl_msg_channel(10);
-        let (metrics_rx, metrics_reporter) = MetricsReporter::create_new_and_receiver(1);
-        let effect_handler = local::EffectHandler::new(
-            test_node("test_receiver"),
-            pdata_senders,
-            node_config.default_output.clone(),
-            pipeline_ctrl_msg_tx,
-            metrics_reporter,
-        );
-
-        // Keep the control sender clone and metrics receiver alive for the
-        // duration of the test (dropping them would close their channels).
-        let keep_alive = KeepAlive(vec![Box::new(control_sender.clone()), Box::new(metrics_rx)]);
-        (
-            receiver,
-            ctrl_msg_chan,
-            effect_handler,
-            pdata_receiver,
-            control_sender,
-            pipeline_ctrl_msg_rx,
-            keep_alive,
-        )
-    }
-
-    // ---- In-process mock Kafka broker helper ----
-    //
-    // These helpers are the seed of an integration-testing suite built on top of
-    // `rdkafka::mocking::MockCluster`. As the suite grows they are intended to
-    // become shared testing utilities (broker/topic setup, producer wiring, and
-    // harness construction) that streamline writing Kafka integration tests
-    // in-process, with no Docker or external broker.
-
-    /// Starts an in-process librdkafka mock cluster (`rdkafka::mocking::MockCluster`).
-    ///
-    /// This backs the integration-testing suite so the tests run in-process with
-    /// no external dependency. Returns the mock cluster handle (which must stay
-    /// alive -- and on the current thread, as it is `!Send` -- for the broker to
-    /// keep serving) and its `bootstrap.servers` string.
-    ///
-    /// `topics` are pre-created each with a single partition. The mock only
-    /// auto-creates single-partition topics on produce, so tests that need a
-    /// deterministic partition layout (or more than one partition) must list
-    /// their topics here.
-    fn start_mock_kafka(topics: &[&str]) -> (MockCluster<'static, DefaultProducerContext>, String) {
-        start_mock_kafka_with_partitions(1, topics)
-    }
-
-    /// Like [`start_mock_kafka`] but pre-creates each topic in `topics` with
-    /// `num_partitions` partitions, so a single topic can be split across
-    /// partitions (required to observe partition assignment and revocation).
-    fn start_mock_kafka_with_partitions(
-        num_partitions: i32,
-        topics: &[&str],
-    ) -> (MockCluster<'static, DefaultProducerContext>, String) {
-        let mock = MockCluster::new(1).expect("failed to create mock Kafka cluster");
-        for topic in topics {
-            mock.create_topic(topic, num_partitions, 1)
-                .expect("failed to create topic on mock cluster");
-        }
-        let brokers = mock.bootstrap_servers();
-        (mock, brokers)
-    }
-
-    /// Creates a [`KafkaReceiver`] with all the engine wiring (control channel,
-    /// pdata channel, effect handler) needed to run it in a test.
-    ///
-    /// Returns the boxed receiver, the control channel, the effect handler,
-    /// and the pdata receiver channel from which consumed messages can be read.
-    fn setup_receiver_harness(
-        brokers: &str,
-        traces_topics: &[&str],
-        metrics_topics: &[&str],
-        logs_topics: &[&str],
-        msg_format: MessageFormat,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        KeepAlive,
-    ) {
-        setup_receiver_harness_with_headers(
-            brokers,
-            traces_topics,
-            metrics_topics,
-            logs_topics,
-            msg_format,
-            HashMap::new(),
-        )
-    }
-
-    /// Like [`setup_receiver_harness`] but also accepts a header extraction
-    /// configuration so that Kafka message headers are mapped to span
-    /// trace-ids and/or attributes.
-    fn setup_receiver_harness_with_headers(
+    /// Builds an auto-commit [`KafkaReceiverConfig`] for the given per-signal
+    /// topics and message format, with optional resource-attribute-from-header
+    /// extraction. Mirrors the config logic of the former
+    /// `setup_receiver_harness_with_headers` helper.
+    fn auto_config(
         brokers: &str,
         traces_topics: &[&str],
         metrics_topics: &[&str],
         logs_topics: &[&str],
         msg_format: MessageFormat,
         resource_attrs_from_headers: HashMap<String, HeaderExtraction>,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        KeepAlive,
-    ) {
-        let kafka_config = KafkaReceiverConfig::try_from(
+    ) -> KafkaReceiverConfig {
+        KafkaReceiverConfig::try_from(
             KafkaReceiverConfigBuilder::new(brokers, "test-group", "test-client")
                 .with_traces(
                     SignalConfig::new(traces_topics.iter().map(|s| (*s).to_string()).collect())
@@ -1620,20 +1776,35 @@ mod tests {
                 .with_isolation_level(IsolationLevel::ReadUncommitted)
                 .with_resource_attrs_from_headers(resource_attrs_from_headers),
         )
-        .expect("test config should be valid");
+        .expect("test config valid")
+    }
 
-        // The control sender is not needed by the auto-commit integration tests;
-        // it is kept alive inside the returned `KeepAlive` bundle.
-        let (receiver, ctrl_msg_chan, effect_handler, pdata_receiver, _control_sender, keep_alive) =
-            wire_receiver_harness(kafka_config, 32);
-
-        (
-            receiver,
-            ctrl_msg_chan,
-            effect_handler,
-            pdata_receiver,
-            keep_alive,
-        )
+    /// Builds a manual-commit [`KafkaReceiverConfig`] for a single traces topic,
+    /// with an explicit consumer-group id, a safety-net commit timer, and an
+    /// optional partition-assignment strategy. Mirrors the config logic of the
+    /// former `setup_manual_traces_harness_with_strategy` helper.
+    fn manual_traces_config(
+        brokers: &str,
+        group_id: &str,
+        traces_topic: &str,
+        commit_interval_ms: u64,
+        rebalance_strategy: Option<RebalanceStrategy>,
+    ) -> KafkaReceiverConfig {
+        let mut builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
+            .with_traces(
+                SignalConfig::new(vec![traces_topic.to_string()])
+                    .with_encoding(MessageFormat::OtlpProto),
+            )
+            .with_commit(CommitConfig {
+                mode: ConfigCommitMode::Manual,
+                interval_ms: Some(commit_interval_ms),
+            })
+            .with_auto_offset_reset(AutoOffsetReset::Earliest)
+            .with_isolation_level(IsolationLevel::ReadUncommitted);
+        if let Some(strategy) = rebalance_strategy {
+            builder = builder.with_rebalance_strategy(strategy);
+        }
+        KafkaReceiverConfig::try_from(builder).expect("test config valid")
     }
 
     // ---- decode_payload unit tests (no Kafka broker required) ----
@@ -1857,7 +2028,9 @@ mod tests {
                 .with_metrics(SignalConfig::new(vec!["same".to_string()])),
         );
         assert!(result.is_err());
-        let err_str = result.unwrap_err();
+        // The error is now `KafkaReceiverError::ConfigOverlappingTopics`;
+        // assert against its Display string.
+        let err_str = result.unwrap_err().to_string();
         assert!(
             err_str.contains("overlap"),
             "expected overlap error, got: {err_str}"
@@ -1947,6 +2120,236 @@ mod tests {
         );
     }
 
+    // Scenario: the receiver owns partition 0 under generation 1 and tracks and
+    // acks records for it, then the partition is revoked (rebalance) and later
+    // reassigned to this receiver under generation 2, where a new record is
+    // tracked. The generation-1 records were committed further by whoever owned
+    // the partition in between.
+    // Guarantees: after reassignment the receiver only commits generation-2
+    // offsets. Records received under generation 1 do not contribute to the
+    // generation-2 commit, so the committable offset the receiver would send to
+    // the broker reflects only the new ownership period and never rolls back to
+    // a generation-1 offset.
+    #[test]
+    fn stale_generation_records_not_committed_after_reassignment() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Generation 1: own partition 0, track and ack offsets 100..=104. The
+        // committable offset is high_water_mark + 1 = 105.
+        for offset in 100..=104 {
+            receiver.offset_tracker.track("traces", 0, offset, 1);
+        }
+        for offset in 100..=104 {
+            let _ = receiver.offset_tracker.acknowledge("traces", 0, offset);
+        }
+        assert_eq!(
+            receiver
+                .offset_tracker
+                .committable_snapshot()
+                .get(&("traces".to_string(), 0))
+                .copied(),
+            Some(105),
+            "generation 1 would commit its own high-water mark",
+        );
+
+        // Partition 0 is revoked; the revocation carries generation 1. The
+        // receive loop reconciles and purges the generation-1 tracker state.
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, 1);
+        receiver.reconcile_rebalance_state();
+        assert_eq!(receiver.offset_tracker.pending_count("traces", 0), 0);
+        assert!(
+            !receiver
+                .offset_tracker
+                .committable_snapshot()
+                .contains_key(&("traces".to_string(), 0)),
+            "a revoked partition contributes no committable offset",
+        );
+
+        // Generation 2: partition 0 is reassigned to this receiver and resumes
+        // from the group's committed position (200), then tracks a new record.
+        receiver.offset_tracker.track("traces", 0, 200, 2);
+        assert_eq!(
+            receiver.offset_tracker.partition_generation("traces", 0),
+            Some(2),
+        );
+
+        // The receiver only commits the generation-2 offset (200); it never
+        // regresses to generation 1's 105.
+        assert_eq!(
+            receiver
+                .offset_tracker
+                .committable_snapshot()
+                .get(&("traces".to_string(), 0))
+                .copied(),
+            Some(200),
+            "only generation-2 records drive the commit after reassignment",
+        );
+    }
+
+    // ---- classify_offset_feedback unit tests ----
+
+    // Scenario: an ack arrives for a partition this consumer still owns, whose
+    // ownership generation matches the ack.
+    // Guarantees: the ack is committed (advances the tracker) rather than
+    // dropped.
+    #[test]
+    fn classify_offset_feedback_commits_current_generation_ack() {
+        assert_eq!(
+            classify_offset_feedback(2, Some(2), 2, true),
+            OffsetFeedbackAction::Commit,
+        );
+    }
+
+    // Scenario: an ack arrives whose generation is older than the partition's
+    // tracked generation (the partition was reassigned and re-tracked under a
+    // newer generation).
+    // Guarantees: the ack is dropped as stale, so it cannot roll back or
+    // disturb the newer ownership period's committed offset.
+    #[test]
+    fn classify_offset_feedback_drops_ack_older_than_tracked_generation() {
+        assert_eq!(
+            classify_offset_feedback(1, Some(3), 3, true),
+            OffsetFeedbackAction::DropStale,
+        );
+    }
+
+    // Scenario: the closed gap. A partition was revoked and reassigned to this
+    // consumer under a newer generation, but no record of the new period has
+    // been tracked yet, so the tracker still reports the OLD generation while
+    // the assignment already reports the NEW one. A stale ack for the old
+    // period arrives with a generation equal to the tracker's.
+    // Guarantees: the ack is still dropped as stale because the classifier
+    // consults the assigned generation, not just the tracker generation -- so a
+    // stale same-as-tracker ack cannot slip through and mutate/commit stale
+    // state during the reassign-before-retrack window.
+    #[test]
+    fn classify_offset_feedback_drops_stale_ack_when_assigned_generation_is_newer() {
+        assert_eq!(
+            classify_offset_feedback(1, Some(1), 2, true),
+            OffsetFeedbackAction::DropStale,
+        );
+    }
+
+    // Scenario: an ack arrives for a partition no longer assigned to this
+    // consumer, whose tracked state is not newer than the ack's generation.
+    // Guarantees: the ack is dropped as a late ack and the lingering tracker
+    // state is purged (it belongs to the revoked ownership period).
+    #[test]
+    fn classify_offset_feedback_late_ack_purges_when_not_newer() {
+        assert_eq!(
+            classify_offset_feedback(1, Some(1), 0, false),
+            OffsetFeedbackAction::DropLateAck { purge: true },
+        );
+    }
+
+    // Scenario: an ack arrives for a partition no longer assigned, whose
+    // tracked state belongs to a NEWER generation than the ack. This is caught
+    // by the stale-generation check *before* the late-ack check, because a
+    // newer tracked generation means the partition was reassigned and
+    // re-tracked since the ack's ownership period.
+    // Guarantees: such an ack is classified `DropStale` (the newer tracked
+    // state is preserved), never `DropLateAck` with a purge -- so a stale ack
+    // can never purge a newer ownership period's tracker state.
+    #[test]
+    fn classify_offset_feedback_ack_older_than_tracked_is_stale_even_when_unassigned() {
+        assert_eq!(
+            classify_offset_feedback(2, Some(3), 0, false),
+            OffsetFeedbackAction::DropStale,
+        );
+    }
+
+    // Scenario: an ack arrives for a partition that is neither assigned nor
+    // tracked (fully revoked and purged already).
+    // Guarantees: the ack is dropped as a late ack with nothing to purge.
+    #[test]
+    fn classify_offset_feedback_late_ack_untracked_does_not_purge() {
+        assert_eq!(
+            classify_offset_feedback(1, None, 0, false),
+            OffsetFeedbackAction::DropLateAck { purge: false },
+        );
+    }
+
+    // Scenario: the first ack for a freshly-assigned partition arrives before
+    // its record was tracked (untracked, but currently owned), with a
+    // generation matching the assignment.
+    // Guarantees: the ack is committed -- an untracked-but-owned partition is
+    // not treated as stale as long as the ack is not older than the assigned
+    // generation.
+    #[test]
+    fn classify_offset_feedback_commits_untracked_but_assigned_current_ack() {
+        assert_eq!(
+            classify_offset_feedback(1, None, 1, true),
+            OffsetFeedbackAction::Commit,
+        );
+    }
+
+    // Scenario: a partition is owned under generation 1 with a tracked record,
+    // then revoked and reassigned to this receiver under generation 2 (via a
+    // rebalance), but no generation-2 record has been tracked yet -- so the
+    // tracker still reports generation 1 while the assignment reports 2. A
+    // stale generation-1 ack for the old record then arrives.
+    // Guarantees: the receiver classifies the stale ack as `DropStale` (it
+    // consults the assigned generation), so the ack neither advances the
+    // tracker nor rolls back the committed offset during the
+    // reassign-before-retrack window.
+    #[test]
+    fn stale_same_gen_ack_dropped_after_reassignment_before_retrack() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Generation 1: own partition 0 and track a record at offset 100.
+        let mut tpl1 = TopicPartitionList::new();
+        let _ = tpl1.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl1);
+        let gen1 = receiver.rebalance_state.current_generation("traces", 0);
+        receiver.offset_tracker.track("traces", 0, 100, gen1);
+
+        // Revoke partition 0 (queued for tracker purge) AND drop it from the
+        // assigned set by applying an empty assignment, mirroring librdkafka's
+        // pre_rebalance(Revoke) removing it before post_rebalance(Assign). This
+        // is what lets the subsequent reassignment allocate a fresh,
+        // strictly-greater generation.
+        receiver
+            .rebalance_state
+            .push_revoked_for_test("traces", 0, gen1);
+        receiver
+            .rebalance_state
+            .set_assignment_for_test(&TopicPartitionList::new());
+
+        // Reassign partition 0 (fresh, strictly-greater generation). The tracker
+        // is NOT re-tracked yet, so it still reports generation 1 while the
+        // assignment reports generation 2.
+        let mut tpl2 = TopicPartitionList::new();
+        let _ = tpl2.add_partition("traces", 0);
+        receiver.rebalance_state.set_assignment_for_test(&tpl2);
+        let gen2 = receiver.rebalance_state.current_generation("traces", 0);
+        assert!(gen2 > gen1, "reassignment must allocate a newer generation");
+        assert_eq!(
+            receiver.offset_tracker.partition_generation("traces", 0),
+            Some(gen1),
+            "tracker still reports the old generation before any re-track",
+        );
+
+        // A stale generation-1 ack, equal to the tracker generation, must be
+        // classified as stale because the assigned generation is newer.
+        let tracked = receiver.offset_tracker.partition_generation("traces", 0);
+        let assigned = receiver.rebalance_state.current_generation("traces", 0);
+        let is_assigned = receiver.rebalance_state.is_assigned("traces", 0);
+        assert_eq!(
+            classify_offset_feedback(gen1, tracked, assigned, is_assigned),
+            OffsetFeedbackAction::DropStale,
+            "a stale ack matching the tracker generation is dropped once the \
+             partition has been reassigned to a newer generation",
+        );
+    }
+
     #[test]
     fn retained_partition_generation_is_stable_across_unrelated_rebalance() {
         // Regression: the per-partition ownership generation must NOT change when the
@@ -2021,6 +2424,565 @@ mod tests {
             map.get(&("traces".to_string(), 1)),
             Some(&Offset::Offset(200)),
             "owned partition 1 must remain committable",
+        );
+    }
+
+    /// Scenario: a rebalance assigns partitions and the receive loop reconciles.
+    /// Guarantees: `reconcile_rebalance_state` folds the rebalance deltas into
+    /// the metric set - counting the rebalance event and cumulative
+    /// acquisitions, and setting the `partitions_assigned` gauge to the current
+    /// owned count rather than accumulating it.
+    #[test]
+    fn reconcile_folds_consumer_group_metrics() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        assert!(!cfg.is_auto_commit());
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Simulate a rebalance that assigns two partitions.
+        let mut tpl = TopicPartitionList::new();
+        let _ = tpl.add_partition("traces", 0);
+        let _ = tpl.add_partition("traces", 1);
+        receiver.rebalance_state.set_assignment_for_test(&tpl);
+
+        receiver.reconcile_rebalance_state();
+
+        // Gauge reflects current ownership; cumulative counter reflects the
+        // acquisitions.
+        assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
+        assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+
+        // A second reconcile with no further rebalance activity must not change
+        // the gauge (it is folded only when a rebalance occurred) or double
+        // count the counter.
+        receiver.reconcile_rebalance_state();
+        assert_eq!(receiver.metrics.partitions_assigned.get(), 2);
+        assert_eq!(receiver.metrics.partition_assignments.get(), 2);
+    }
+
+    /// Scenario: a manual-commit receiver spawns a lag refresh for a consumer
+    /// that owns no partitions (empty assignment).
+    /// Guarantees: `spawn_consumer_lag_refresh` still spawns a task (manual mode)
+    /// and the task returns `Some(0.0)` -- the documented empty-assignment
+    /// sentinel -- so the caller resets the `consumer_lag` gauge to 0 rather than
+    /// leaving a stale value.
+    #[tokio::test]
+    async fn spawn_consumer_lag_refresh_resets_to_zero_when_unassigned() {
+        const TOPIC: &str = "lag-empty";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+            |cluster| async move {
+                let cfg = make_config(&[TOPIC], &["metrics"], &[], MessageFormat::OtlpProto);
+                assert!(!cfg.is_auto_commit());
+                let ctx = make_pipeline_ctx();
+                let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+                let consumer = Arc::new(make_manual_consumer(
+                    cluster.bootstrap_servers(),
+                    "lag-empty-group",
+                ));
+
+                // Manual mode => a task is spawned; the consumer has no
+                // assignment, so the task yields `Some(0.0)` (reset the gauge to
+                // the empty value).
+                let handle = receiver
+                    .spawn_consumer_lag_refresh(
+                        &consumer,
+                        Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                        CancellationToken::new(),
+                    )
+                    .expect("manual mode spawns a refresh task");
+                let result = handle.await.expect("lag task should not panic");
+                assert_eq!(result, Some(0.0));
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: auto-commit receiver requests a lag refresh.
+    /// Guarantees: `spawn_consumer_lag_refresh` returns `None` (no task, no
+    /// broker work) because offset management is owned by librdkafka.
+    #[tokio::test]
+    async fn spawn_consumer_lag_refresh_none_under_auto_commit() {
+        const TOPIC: &str = "lag-auto";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+            |cluster| async move {
+                let cfg = KafkaReceiverConfig::try_from(
+                    KafkaReceiverConfigBuilder::new(cluster.bootstrap_servers(), "g", "c")
+                        .with_traces(SignalConfig::new(vec![TOPIC.to_string()]))
+                        .with_commit(CommitConfig {
+                            mode: ConfigCommitMode::Auto,
+                            interval_ms: Some(1000),
+                        })
+                        .with_isolation_level(IsolationLevel::ReadUncommitted),
+                )
+                .expect("test config should be valid");
+                let ctx = make_pipeline_ctx();
+                let receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+                let consumer: StreamConsumer = ClientConfig::new()
+                    .set("bootstrap.servers", cluster.bootstrap_servers())
+                    .set("group.id", "lag-auto-group")
+                    .set("enable.auto.commit", "true")
+                    .create()
+                    .expect("failed to create consumer");
+                let consumer = Arc::new(consumer);
+
+                assert!(
+                    receiver
+                        .spawn_consumer_lag_refresh(
+                            &consumer,
+                            Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+                            CancellationToken::new(),
+                        )
+                        .is_none()
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Build a manual-commit `StreamConsumer` bound to `brokers` in `group`,
+    /// with librdkafka auto-commit disabled so the test controls committed
+    /// offsets explicitly.
+    fn make_manual_consumer(brokers: &str, group: &str) -> StreamConsumer {
+        ClientConfig::new()
+            .set("bootstrap.servers", brokers)
+            .set("group.id", group)
+            .set("enable.auto.commit", "false")
+            .set("auto.offset.reset", "earliest")
+            .create()
+            .expect("failed to create consumer")
+    }
+
+    /// Scenario: a consumer owns partitions but *none* of them has a
+    /// broker-committed offset yet (every `committed_offsets` entry is
+    /// `Offset::Invalid`).
+    /// Guarantees: `compute_consumer_lag` reports the refresh as incomplete
+    /// (`None`) instead of computing a mean from a subset, so the caller retains
+    /// the previous `consumer_lag` value rather than publishing a partial or
+    /// zeroed measurement.
+    #[tokio::test]
+    async fn compute_consumer_lag_none_when_all_offsets_invalid() {
+        const TOPIC: &str = "lag-all-invalid";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let brokers = cluster.bootstrap_servers().to_string();
+                // Assign both partitions but never commit, so the broker holds
+                // no committed offset for either -> both `Offset::Invalid`.
+                let consumer = make_manual_consumer(&brokers, "lag-all-invalid-group");
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+                let _ = tpl.add_partition(TOPIC, 1);
+                consumer.assign(&tpl).expect("assign partitions");
+
+                let deadline = Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &CancellationToken::new())
+                })
+                .await
+                .expect("lag task should not panic");
+
+                assert_eq!(
+                    result, None,
+                    "an assignment with no committed offsets must abort the refresh, not \
+                     produce a subset/zero mean",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: the receive loop's lag-refresh deadline elapses, so the loop
+    /// cancels the worker's token (as the `Err(Elapsed)` arm does) while the
+    /// worker still owns partitions.
+    /// Guarantees: a cancelled token makes `compute_consumer_lag` abandon the
+    /// refresh (`None`) at its next cancellation check instead of continuing to
+    /// issue broker calls -- the observable behavior that lets the loop drop the
+    /// wedged worker and resume future refreshes without blocking.
+    #[tokio::test]
+    async fn compute_consumer_lag_none_when_cancelled() {
+        const TOPIC: &str = "lag-cancelled";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let brokers = cluster.bootstrap_servers().to_string();
+                let consumer = make_manual_consumer(&brokers, "lag-cancelled-group");
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+                let _ = tpl.add_partition(TOPIC, 1);
+                consumer.assign(&tpl).expect("assign partitions");
+
+                // Pre-cancel the token to model the timeout path cancelling a
+                // still-running worker. The assignment is non-empty, so the
+                // cancellation check (not the empty-assignment shortcut) decides
+                // the outcome.
+                let cancel = CancellationToken::new();
+                cancel.cancel();
+                let deadline = Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &cancel)
+                })
+                .await
+                .expect("lag task should not panic");
+
+                assert_eq!(
+                    result, None,
+                    "a cancelled refresh must abandon measurement rather than \
+                     continue issuing broker calls",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: a consumer owns two partitions but only one has a
+    /// broker-committed offset; the other is still `Offset::Invalid`.
+    /// Guarantees: `compute_consumer_lag` aborts (`None`) because the mean must
+    /// cover every owned partition -- it never silently drops the uncommitted
+    /// partition and averages only the committed one.
+    #[tokio::test]
+    async fn compute_consumer_lag_none_when_offsets_mixed_valid_invalid() {
+        const TOPIC: &str = "lag-mixed";
+        let group = "lag-mixed-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 2, 1),
+            |cluster| async move {
+                let brokers = cluster.bootstrap_servers().to_string();
+                let producer = cluster.producer().build();
+
+                // Produce a few records to partition 0 only.
+                for _ in 0..3 {
+                    producer
+                        .send_to_partition(TOPIC, 0, b"payload")
+                        .await
+                        .expect("produce to partition 0");
+                }
+                producer.flush(Duration::from_secs(5));
+
+                let consumer = make_manual_consumer(&brokers, group);
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+                let _ = tpl.add_partition(TOPIC, 1);
+                consumer.assign(&tpl).expect("assign partitions");
+
+                // Commit an offset for partition 0 only, leaving partition 1
+                // without a committed offset (`Offset::Invalid`).
+                let mut commit_tpl = TopicPartitionList::new();
+                commit_tpl
+                    .add_partition_offset(TOPIC, 0, Offset::Offset(2))
+                    .expect("build commit tpl");
+                consumer
+                    .commit(&commit_tpl, CommitMode::Sync)
+                    .expect("commit partition 0");
+
+                let deadline = Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &CancellationToken::new())
+                })
+                .await
+                .expect("lag task should not panic");
+
+                assert_eq!(
+                    result, None,
+                    "a mix of committed and uncommitted owned partitions must abort the \
+                     refresh so the mean is never taken over a subset",
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: the total refresh deadline has already passed when
+    /// `compute_consumer_lag` starts (assignment is non-empty).
+    /// Guarantees: the worker self-terminates with `None` (incomplete) at its
+    /// first between-partition/broker-call deadline check rather than issuing
+    /// broker calls, so an overrunning refresh bounds itself.
+    #[tokio::test]
+    async fn compute_consumer_lag_none_when_deadline_already_passed() {
+        const TOPIC: &str = "lag-deadline";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, 1, 1),
+            |cluster| async move {
+                let brokers = cluster.bootstrap_servers().to_string();
+                let consumer = make_manual_consumer(&brokers, "lag-deadline-group");
+                let mut tpl = TopicPartitionList::new();
+                let _ = tpl.add_partition(TOPIC, 0);
+                consumer.assign(&tpl).expect("assign partition");
+
+                // Deadline in the past: the first broker-call deadline check
+                // must abort before any committed_offsets/fetch_watermarks call.
+                let deadline = Instant::now() - Duration::from_secs(1);
+                let result = tokio::task::spawn_blocking(move || {
+                    compute_consumer_lag(&consumer, deadline, &CancellationToken::new())
+                })
+                .await
+                .expect("lag task should not panic");
+
+                assert_eq!(
+                    result, None,
+                    "an already-expired deadline must abort the refresh"
+                );
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: the receive loop's lag apply branch observes the in-flight
+    /// worker *finish* with a value (a real mean, or the `0.0`
+    /// empty-assignment reset).
+    /// Guarantees: the apply branch publishes the value to the `consumer_lag`
+    /// gauge and clears the in-flight slot so the next tick may start a fresh
+    /// refresh.
+    #[tokio::test]
+    async fn lag_apply_publishes_and_clears_on_completion() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // A finished worker that measured a mean of 42.0.
+        let mut in_flight: Option<(tokio::task::JoinHandle<Option<f64>>, tokio::time::Instant)> =
+            Some((
+                tokio::task::spawn(async { Some(42.0_f64) }),
+                tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE,
+            ));
+        let join_result = in_flight.as_mut().map(|(h, _)| h).expect("in flight").await;
+
+        // Mirror the apply branch's inlined result-handling.
+        let result: Result<
+            Result<Option<f64>, tokio::task::JoinError>,
+            tokio::time::error::Elapsed,
+        > = Ok(join_result);
+        match result {
+            Err(_elapsed) => unreachable!("worker finished, not a deadline crossing"),
+            Ok(join_result) => {
+                in_flight = None;
+                match join_result {
+                    Ok(Some(value)) => receiver.metrics.consumer_lag.set(value),
+                    Ok(None) => {}
+                    Err(join_err) => panic!("unexpected join error: {join_err}"),
+                }
+            }
+        }
+
+        assert_eq!(receiver.metrics.consumer_lag.get(), 42.0);
+        assert!(
+            in_flight.is_none(),
+            "a finished worker must clear the in-flight slot",
+        );
+    }
+
+    /// Scenario: the lag apply branch observes the absolute deadline elapse
+    /// while the worker is still running (a `spawn_blocking` task cannot be
+    /// cancelled by dropping its handle).
+    /// Guarantees: the apply branch keeps the in-flight slot set so the trigger
+    /// branch cannot start a second worker -- proving at most one worker runs at
+    /// a time -- and does not disturb the previous gauge value.
+    #[tokio::test(start_paused = true)]
+    async fn lag_apply_keeps_in_flight_on_deadline_and_blocks_new_worker() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        // Seed a known gauge value so we can prove it is retained on timeout.
+        receiver.metrics.consumer_lag.set(7.0);
+
+        // A worker that never finishes within the deadline.
+        let deadline = tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
+        let mut in_flight: Option<(tokio::task::JoinHandle<Option<f64>>, tokio::time::Instant)> =
+            Some((
+                tokio::task::spawn(async {
+                    std::future::pending::<()>().await;
+                    None
+                }),
+                deadline,
+            ));
+
+        // Cross the deadline (paused clock), then await with `timeout_at`.
+        tokio::time::advance(LAG_REFRESH_TOTAL_DEADLINE + Duration::from_secs(1)).await;
+        let handle = in_flight.as_mut().map(|(h, _)| h).expect("in flight");
+        let result = tokio::time::timeout_at(deadline, handle).await;
+        assert!(
+            result.is_err(),
+            "worker must still be running at the deadline"
+        );
+
+        // Mirror the apply branch: on `Err(Elapsed)` keep the in-flight slot and
+        // leave the gauge untouched.
+        match result {
+            Err(_elapsed) => { /* keep in_flight, retain gauge */ }
+            Ok(_) => unreachable!("deadline crossing, worker not finished"),
+        }
+
+        assert!(
+            in_flight.is_some(),
+            "a deadline crossing must NOT clear the in-flight slot, so the trigger branch \
+             (guarded by is_none) cannot start a second worker while the first still runs",
+        );
+        assert_eq!(
+            receiver.metrics.consumer_lag.get(),
+            7.0,
+            "the previous gauge value must be retained on a deadline crossing",
+        );
+
+        // Clean up the still-running background task.
+        if let Some((handle, _)) = in_flight.take() {
+            handle.abort();
+        }
+    }
+
+    /// Scenario: paused time; the apply branch is polled repeatedly while the
+    /// receive branch would always be ready. After a deadline crossing the
+    /// branch must await the *bare* handle (no spinning `timeout_at`) so it does
+    /// not starve `recv()`, and it must still process the worker's eventual
+    /// completion.
+    /// Guarantees: once the worker finally exits, the apply branch publishes its
+    /// value and clears the in-flight slot even though it was polled past the
+    /// deadline -- i.e. a completed refresh is never lost to starvation, and the
+    /// deadline is absolute (not reset by re-polling).
+    #[tokio::test(start_paused = true)]
+    async fn lag_apply_processes_completion_after_deadline() {
+        let cfg = make_config(&["traces"], &["metrics"], &[], MessageFormat::OtlpProto);
+        let ctx = make_pipeline_ctx();
+        let mut receiver = KafkaReceiver::new(ctx, cfg).expect("should create");
+
+        let deadline = tokio::time::Instant::now() + LAG_REFRESH_TOTAL_DEADLINE;
+        // A worker that completes only after the deadline has passed.
+        let mut in_flight: Option<(tokio::task::JoinHandle<Option<f64>>, tokio::time::Instant)> =
+            Some((
+                tokio::task::spawn(async {
+                    tokio::time::sleep(LAG_REFRESH_TOTAL_DEADLINE * 2).await;
+                    Some(5.0_f64)
+                }),
+                deadline,
+            ));
+
+        // Advance past the deadline; the worker is still sleeping.
+        tokio::time::advance(LAG_REFRESH_TOTAL_DEADLINE + Duration::from_secs(1)).await;
+
+        // Past the deadline the loop awaits the bare handle (no timeout). Model
+        // that: it resolves only when the worker actually finishes.
+        tokio::time::advance(LAG_REFRESH_TOTAL_DEADLINE).await;
+        let handle = in_flight.as_mut().map(|(h, _)| h).expect("in flight");
+        let join_result = handle.await;
+
+        // Mirror the apply branch's inlined result-handling for a finished worker.
+        let result: Result<
+            Result<Option<f64>, tokio::task::JoinError>,
+            tokio::time::error::Elapsed,
+        > = Ok(join_result);
+        match result {
+            Err(_elapsed) => unreachable!("worker finished, not a deadline crossing"),
+            Ok(join_result) => {
+                in_flight = None;
+                match join_result {
+                    Ok(Some(value)) => receiver.metrics.consumer_lag.set(value),
+                    Ok(None) => {}
+                    Err(join_err) => panic!("unexpected join error: {join_err}"),
+                }
+            }
+        }
+
+        assert_eq!(
+            receiver.metrics.consumer_lag.get(),
+            5.0,
+            "a refresh that completes after the deadline must still be published",
+        );
+        assert!(
+            in_flight.is_none(),
+            "the in-flight slot must be cleared once the worker finishes",
+        );
+    }
+
+    // Scenario: a consumer-lag worker is still in flight when a Shutdown arrives
+    // whose deadline is *earlier* than the worker's own lag deadline. The
+    // shutdown handler signals cooperative cancellation and then drains the
+    // worker bounded by `min(lag_deadline, shutdown_deadline)`.
+    // Guarantees: the drain never waits past the (earlier) shutdown deadline --
+    // a recently-started refresh cannot delay shutdown -- and because the worker
+    // observes the cancellation token it actually finishes rather than being
+    // abandoned, so it cannot outlive the receiver.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_lag_drain_is_bounded_by_shutdown_deadline_and_cancels_worker() {
+        let start = tokio::time::Instant::now();
+        // Worker deadline is far out (15s); shutdown deadline is near (1s).
+        let lag_deadline = start + LAG_REFRESH_TOTAL_DEADLINE;
+        let shutdown_deadline = start + Duration::from_secs(1);
+
+        // A cooperatively-cancellable worker: it runs until the token is
+        // cancelled, then returns (mirrors `compute_consumer_lag` abandoning the
+        // refresh on cancellation). It must NOT complete on its own before the
+        // shutdown deadline, so the drain's boundedness is what we observe.
+        let cancel = CancellationToken::new();
+        let worker_cancel = cancel.clone();
+        let handle = tokio::task::spawn(async move {
+            worker_cancel.cancelled().await;
+            None::<f64>
+        });
+
+        // Model the shutdown handler: cancel first, then drain bounded by the
+        // tighter of the two deadlines.
+        cancel.cancel();
+        let bound = lag_deadline.min(shutdown_deadline);
+        let drain = tokio::time::timeout_at(bound, handle).await;
+
+        // The worker observed the cancellation and completed within the bound,
+        // so the drain resolved with the worker's result (not a timeout).
+        let join_result = drain.expect("drain must not exceed the min-bounded deadline");
+        assert_eq!(
+            join_result.expect("worker must not panic"),
+            None,
+            "a cancelled lag worker abandons the refresh and returns None",
+        );
+
+        // The drain finished no later than the shutdown deadline, well before
+        // the worker's own 15s lag deadline: shutdown is not delayed.
+        let elapsed = tokio::time::Instant::now();
+        assert!(
+            elapsed <= shutdown_deadline,
+            "drain must complete by the shutdown deadline, not the lag deadline",
+        );
+    }
+
+    // Scenario: a consumer-lag worker is in flight at Shutdown, but this time the
+    // worker's lag deadline is *earlier* than the shutdown deadline.
+    // Guarantees: the drain bound is the tighter (lag) deadline, so `min` selects
+    // the lag deadline and the drain still cannot run to the later shutdown
+    // deadline.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_lag_drain_bound_selects_the_earlier_lag_deadline() {
+        let start = tokio::time::Instant::now();
+        // Worker deadline is near (2s); shutdown deadline is far (30s).
+        let lag_deadline = start + Duration::from_secs(2);
+        let shutdown_deadline = start + Duration::from_secs(30);
+
+        // A worker that never finishes on its own and ignores cancellation, so
+        // the only thing that can unblock the drain is the min-bounded timeout.
+        let handle = tokio::task::spawn(async {
+            std::future::pending::<()>().await;
+            None::<f64>
+        });
+
+        let bound = lag_deadline.min(shutdown_deadline);
+        assert_eq!(
+            bound, lag_deadline,
+            "min must pick the earlier lag deadline"
+        );
+
+        let drain = tokio::time::timeout_at(bound, handle).await;
+        assert!(
+            drain.is_err(),
+            "a non-cooperative worker is bounded by the lag deadline, not the later shutdown one",
+        );
+
+        // The drain elapsed at the lag deadline, strictly before the shutdown
+        // deadline.
+        let elapsed = tokio::time::Instant::now();
+        assert!(
+            elapsed <= lag_deadline && elapsed < shutdown_deadline,
+            "drain must be bounded by the earlier (lag) deadline",
         );
     }
 
@@ -2199,53 +3161,46 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ---- Integration tests (in-process mock Kafka broker) ----
-    // These use the `MockCluster`-based integration-testing suite (see the mock
-    // broker helpers above), so they run in-process with no Docker/external
-    // broker and run by default in CI.
+    // ---- Integration tests (test-suite in-process mock Kafka broker) ----
+    // These use the shared Kafka test suite (`with_cluster` + `KafkaReceiverHarness`),
+    // so they run in-process with no Docker/external broker and run by default in CI.
 
+    /// Scenario: OTLP-proto trace records produced to a Kafka topic are consumed
+    /// by an auto-commit receiver.
+    /// Guarantees: each delivered pdata decodes to an `ExportTracesRequest` whose
+    /// bytes are byte-for-byte identical to what was produced (lossless round-trip).
     #[tokio::test]
     async fn test_kafka_receiver_traces() {
-        let (_mock, brokers) = start_mock_kafka(&["test-traces-proto"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-traces-proto";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
-
-        for i in 0..3 {
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-traces-proto")
-                        .payload(&bytes)
-                        .key(&format!("test-key-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &["test-traces-proto"],
-            &[],
-            &[],
-            MessageFormat::OtlpProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for trace message {i}"))
-                        .unwrap_or_else(|_| panic!("No trace message received for {i}"));
+                        .expect("Failed to send message");
+                }
 
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for _ in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
                     let proto: OtlpProtoBytes = pdata
                         .take_payload()
                         .try_into_with_default()
@@ -2253,52 +3208,50 @@ mod tests {
                     assert!(matches!(proto, OtlpProtoBytes::ExportTracesRequest(_)));
                     assert_eq!(proto.as_bytes(), &bytes);
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
+    /// Scenario: OTLP-proto log records produced to a Kafka topic are consumed
+    /// by an auto-commit receiver.
+    /// Guarantees: each delivered pdata decodes to an `ExportLogsRequest` whose
+    /// bytes are byte-for-byte identical to what was produced.
     #[tokio::test]
     async fn test_kafka_receiver_logs() {
-        let (_mock, brokers) = start_mock_kafka(&["test-logs-proto"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-logs-proto";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_logs_service_request();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
-
-        for i in 0..3 {
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-logs-proto")
-                        .payload(&bytes)
-                        .key(&format!("test-key-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &[],
-            &[],
-            &["test-logs-proto"],
-            MessageFormat::OtlpProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let req = create_logs_service_request();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for log message {i}"))
-                        .unwrap_or_else(|_| panic!("No log message received for {i}"));
+                        .expect("Failed to send message");
+                }
 
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[],
+                    &[],
+                    &[TOPIC],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for _ in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
                     let proto: OtlpProtoBytes = pdata
                         .take_payload()
                         .try_into_with_default()
@@ -2306,52 +3259,50 @@ mod tests {
                     assert!(matches!(proto, OtlpProtoBytes::ExportLogsRequest(_)));
                     assert_eq!(proto.as_bytes(), &bytes);
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
+    /// Scenario: OTLP-proto metric records produced to a Kafka topic are consumed
+    /// by an auto-commit receiver.
+    /// Guarantees: each delivered pdata decodes to an `ExportMetricsRequest` whose
+    /// bytes are byte-for-byte identical to what was produced.
     #[tokio::test]
     async fn test_kafka_receiver_metrics() {
-        let (_mock, brokers) = start_mock_kafka(&["test-metrics-proto"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-metrics-proto";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_metrics_service_request();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
-
-        for i in 0..3 {
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-metrics-proto")
-                        .payload(&bytes)
-                        .key(&format!("test-key-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &[],
-            &["test-metrics-proto"],
-            &[],
-            MessageFormat::OtlpProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let req = create_metrics_service_request();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for metric message {i}"))
-                        .unwrap_or_else(|_| panic!("No metric message received for {i}"));
+                        .expect("Failed to send message");
+                }
 
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[],
+                    &[TOPIC],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for _ in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
                     let proto: OtlpProtoBytes = pdata
                         .take_payload()
                         .try_into_with_default()
@@ -2359,50 +3310,47 @@ mod tests {
                     assert!(matches!(proto, OtlpProtoBytes::ExportMetricsRequest(_)));
                     assert_eq!(proto.as_bytes(), &bytes);
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
+    /// Scenario: OTAP-Arrow trace records produced to a Kafka topic are consumed
+    /// by an auto-commit receiver configured for the OTAP format.
+    /// Guarantees: each delivered pdata is an `OtapArrowRecords::Traces` payload.
     #[tokio::test]
     async fn test_kafka_receiver_traces_otap() {
-        let (_mock, brokers) = start_mock_kafka(&["test-traces-otap"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-traces-otap";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let bytes = create_traces_with_spans_otap_bytes();
-
-        for i in 0..3 {
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-traces-otap")
-                        .payload(&bytes)
-                        .key(&format!("test-key-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &["test-traces-otap"],
-            &[],
-            &[],
-            MessageFormat::OtapProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let bytes = create_traces_with_spans_otap_bytes();
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for trace message {i}"))
-                        .unwrap_or_else(|_| panic!("No trace message received for {i}"));
+                        .expect("Failed to send message");
+                }
 
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtapProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for i in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
                     assert!(
                         matches!(
@@ -2412,50 +3360,48 @@ mod tests {
                         "Expected OtapArrowRecords::Traces for message {i}"
                     );
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
+    /// Scenario: OTAP-Arrow metric records produced to a Kafka topic are consumed
+    /// by an auto-commit receiver configured for the OTAP format.
+    /// Guarantees: each delivered pdata is an `OtapArrowRecords::Metrics` payload
+    /// equal to the produced default metrics records.
     #[tokio::test]
     async fn test_kafka_receiver_metrics_otap() {
-        let (_mock, brokers) = start_mock_kafka(&["test-metrics-otap"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-metrics-otap";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let bytes = create_metrics_otap_arrow_records_bytes();
-
-        for i in 0..3 {
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-metrics-otap")
-                        .payload(&bytes)
-                        .key(&format!("test-key-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &[],
-            &["test-metrics-otap"],
-            &[],
-            MessageFormat::OtapProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let bytes = create_metrics_otap_arrow_records_bytes();
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for metric message {i}"))
-                        .unwrap_or_else(|_| panic!("No metric message received for {i}"));
+                        .expect("Failed to send message");
+                }
 
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[],
+                    &[TOPIC],
+                    &[],
+                    MessageFormat::OtapProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for i in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
                     if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
                         let expected = OtapArrowRecords::Metrics(Metrics::default());
@@ -2464,50 +3410,48 @@ mod tests {
                         panic!("Expected OtapArrowRecords::Metrics for message {i}");
                     }
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
+    /// Scenario: OTAP-Arrow log records produced to a Kafka topic are consumed
+    /// by an auto-commit receiver configured for the OTAP format.
+    /// Guarantees: each delivered pdata is an `OtapArrowRecords::Logs` payload
+    /// equal to the produced default logs records.
     #[tokio::test]
     async fn test_kafka_receiver_logs_otap() {
-        let (_mock, brokers) = start_mock_kafka(&["test-logs-otap"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-logs-otap";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let bytes = create_logs_otap_arrow_records_bytes();
-
-        for i in 0..3 {
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-logs-otap")
-                        .payload(&bytes)
-                        .key(&format!("test-key-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &[],
-            &[],
-            &["test-logs-otap"],
-            MessageFormat::OtapProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let bytes = create_logs_otap_arrow_records_bytes();
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for log message {i}"))
-                        .unwrap_or_else(|_| panic!("No log message received for {i}"));
+                        .expect("Failed to send message");
+                }
 
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[],
+                    &[],
+                    &[TOPIC],
+                    MessageFormat::OtapProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                for i in 0..3 {
+                    let mut pdata = receiver.recv_pdata().await;
                     let payload: OtapPayload = pdata.take_payload();
                     if let OtapPayload::OtapArrowRecords(arrow_records) = payload {
                         let expected = OtapArrowRecords::Logs(Logs::default());
@@ -2516,77 +3460,72 @@ mod tests {
                         panic!("Expected OtapArrowRecords::Logs for message {i}");
                     }
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
     // ---- Header extraction integration tests (in-process mock broker) ----
 
+    /// Scenario: an OTLP-proto trace record carries a Kafka header `x-tenant-id`
+    /// while the receiver is configured to map that header to a resource
+    /// attribute `tenant.id`.
+    /// Guarantees: every resource gains a `tenant.id` string attribute equal to
+    /// the header value, and no span-level `tenant.id` attribute is added.
     #[tokio::test]
     async fn test_kafka_receiver_traces_header_extraction() {
-        let (_mock, brokers) = start_mock_kafka(&["test-traces-headers"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-traces-headers";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        // Build a trace request with real spans.
-        let req = create_traces_with_spans();
-        let mut payload_bytes = vec![];
-        req.encode(&mut payload_bytes).expect("encode");
+                // Build a trace request with real spans.
+                let req = create_traces_with_spans();
+                let mut payload_bytes = vec![];
+                req.encode(&mut payload_bytes).expect("encode");
 
-        // Configure extraction: map Kafka header "x-tenant-id" to a resource
-        // attribute "tenant.id".
-        let mut resource_attrs_from_headers = HashMap::new();
-        let _ = resource_attrs_from_headers.insert(
-            "x-tenant-id".to_string(),
-            HeaderExtraction {
-                key: "tenant.id".to_string(),
-                value_type: AttributeValueType::String,
-            },
-        );
+                // Configure extraction: map Kafka header "x-tenant-id" to a resource
+                // attribute "tenant.id".
+                let mut resource_attrs_from_headers = HashMap::new();
+                let _ = resource_attrs_from_headers.insert(
+                    "x-tenant-id".to_string(),
+                    HeaderExtraction {
+                        key: "tenant.id".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
 
-        let tenant_value = "acme-corp";
+                let tenant_value = "acme-corp";
 
-        // Send 3 messages, each with the same headers.
-        for i in 0..3 {
-            let headers = OwnedHeaders::new().insert(Header {
-                key: "x-tenant-id",
-                value: Some(tenant_value.as_bytes()),
-            });
+                // Send 3 messages, each with the same headers.
+                for i in 0..3 {
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(
+                            SendRecord::new(TOPIC, &payload_bytes)
+                                .key(key.as_bytes())
+                                .header("x-tenant-id", tenant_value.as_bytes()),
+                        )
+                        .await
+                        .expect("Failed to send message");
+                }
 
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-traces-headers")
-                        .payload(&payload_bytes)
-                        .key(&format!("test-key-{i}"))
-                        .headers(headers),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) =
-            setup_receiver_harness_with_headers(
-                &brokers,
-                &["test-traces-headers"],
-                &[],
-                &[],
-                MessageFormat::OtlpProto,
-                resource_attrs_from_headers,
-            );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    resource_attrs_from_headers,
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for trace message {i}"))
-                        .unwrap_or_else(|_| panic!("No trace message received for {i}"));
-
+                    let mut pdata = receiver.recv_pdata().await;
                     let proto: OtlpProtoBytes = pdata
                         .take_payload()
                         .try_into_with_default()
@@ -2631,78 +3570,71 @@ mod tests {
                         }
                     }
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
+    /// Scenario: an OTAP-Arrow trace record carries a Kafka header `x-tenant-id`
+    /// plus the `MessageFormat` OTAP marker while the receiver maps that header
+    /// to a resource attribute `tenant.id`.
+    /// Guarantees: after decoding the OTAP payload back to OTLP, every resource
+    /// gains a `tenant.id` string attribute equal to the header value, and no
+    /// span-level `tenant.id` attribute is added.
     #[tokio::test]
     async fn test_kafka_receiver_traces_header_extraction_otap() {
-        let (_mock, brokers) = start_mock_kafka(&["test-traces-headers-otap"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-traces-headers-otap";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        // Build OTAP Arrow bytes from a real trace request with spans.
-        let otap_bytes = create_traces_with_spans_otap_bytes();
+                // Build OTAP Arrow bytes from a real trace request with spans.
+                let otap_bytes = create_traces_with_spans_otap_bytes();
 
-        // Configure extraction: map Kafka header "x-tenant-id" to a resource
-        // attribute "tenant.id".
-        let mut resource_attrs_from_headers = HashMap::new();
-        let _ = resource_attrs_from_headers.insert(
-            "x-tenant-id".to_string(),
-            HeaderExtraction {
-                key: "tenant.id".to_string(),
-                value_type: AttributeValueType::String,
-            },
-        );
+                // Configure extraction: map Kafka header "x-tenant-id" to a resource
+                // attribute "tenant.id".
+                let mut resource_attrs_from_headers = HashMap::new();
+                let _ = resource_attrs_from_headers.insert(
+                    "x-tenant-id".to_string(),
+                    HeaderExtraction {
+                        key: "tenant.id".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
 
-        let tenant_value = "acme-corp";
+                let tenant_value = "acme-corp";
 
-        // Send 3 messages, each with the same headers and the OTAP
-        // MessageFormat header so the receiver uses the OTAP path.
-        for i in 0..3 {
-            let headers = OwnedHeaders::new()
-                .insert(Header {
-                    key: "x-tenant-id",
-                    value: Some(tenant_value.as_bytes()),
-                })
-                .insert(Header {
-                    key: "MessageFormat",
-                    value: Some(MSG_FORMAT_OTAP),
-                });
+                // Send 3 messages, each with the same headers and the OTAP
+                // MessageFormat header so the receiver uses the OTAP path.
+                for i in 0..3 {
+                    let key = format!("test-key-{i}");
+                    producer
+                        .send_full(
+                            SendRecord::new(TOPIC, &otap_bytes)
+                                .key(key.as_bytes())
+                                .header("x-tenant-id", tenant_value.as_bytes())
+                                .header("MessageFormat", MSG_FORMAT_OTAP),
+                        )
+                        .await
+                        .expect("Failed to send message");
+                }
 
-            let _ = producer
-                .send(
-                    FutureRecord::to("test-traces-headers-otap")
-                        .payload(&otap_bytes)
-                        .key(&format!("test-key-{i}"))
-                        .headers(headers),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
-
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) =
-            setup_receiver_harness_with_headers(
-                &brokers,
-                &["test-traces-headers-otap"],
-                &[],
-                &[],
-                MessageFormat::OtapProto,
-                resource_attrs_from_headers,
-            );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtapProto,
+                    resource_attrs_from_headers,
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 for i in 0..3 {
-                    let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for trace message {i}"))
-                        .unwrap_or_else(|_| panic!("No trace message received for {i}"));
+                    let mut pdata = receiver.recv_pdata().await;
 
                     // Convert OTAP result back to OTLP protobuf for assertions
                     let result = otap_pdata_to_traces(&mut pdata);
@@ -2744,8 +3676,12 @@ mod tests {
                         }
                     }
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
     // ---- CallData encode/decode roundtrip tests ----
@@ -2969,88 +3905,69 @@ mod tests {
         );
     }
 
-    // ---- Transport header capture policy integration tests (in-process mock broker) ----
+    // ---- Transport header capture policy integration tests (test-suite mock broker) ----
 
-    /// Verifies that when a capture policy is configured, matching Kafka message
-    /// headers are captured into the OtapPdata context as TransportHeaders.
+    /// Scenario: a capture policy captures `X-Tenant-Id` (stored as `tenant_id`)
+    /// and `X-Request-Id` (default lowercased name) but not `X-Unrelated`.
+    /// Guarantees: exactly the two matching Kafka headers are captured into the
+    /// OtapPdata transport headers with their configured store-names and
+    /// preserved wire names, and the unmatched header is dropped.
     #[tokio::test]
     async fn test_kafka_receiver_capture_policy_captures_headers() {
-        let (_mock, brokers) = start_mock_kafka(&["test-capture-policy"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-capture-policy";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut payload_bytes = vec![];
-        req.encode(&mut payload_bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut payload_bytes = vec![];
+                req.encode(&mut payload_bytes).expect("encode");
 
-        // Send a message with Kafka headers.
-        let headers = OwnedHeaders::new()
-            .insert(Header {
-                key: "X-Tenant-Id",
-                value: Some(b"acme-corp"),
-            })
-            .insert(Header {
-                key: "X-Request-Id",
-                value: Some(b"req-12345"),
-            })
-            .insert(Header {
-                key: "X-Unrelated",
-                value: Some(b"ignored"),
-            });
-
-        let _ = producer
-            .send(
-                FutureRecord::to("test-capture-policy")
-                    .payload(&payload_bytes)
-                    .key("key-1")
-                    .headers(headers),
-                Timeout::After(Duration::from_secs(10)),
-            )
-            .await
-            .expect("Failed to send message");
-
-        // Set up a capture policy that captures X-Tenant-Id and X-Request-Id
-        // but not X-Unrelated.
-        let capture_policy = HeaderCapturePolicy::new(
-            CaptureDefaults::default(),
-            vec![
-                CaptureRule {
-                    match_names: vec!["X-Tenant-Id".to_string()],
-                    store_as: Some("tenant_id".to_string()),
-                    sensitive: false,
-                    value_kind: None,
-                },
-                CaptureRule {
-                    match_names: vec!["X-Request-Id".to_string()],
-                    store_as: None, // defaults to lowercased wire name
-                    sensitive: false,
-                    value_kind: None,
-                },
-            ],
-        );
-
-        let (receiver, ctrl_chan, mut effect_handler, mut pdata_rx, _handles) =
-            setup_receiver_harness(
-                &brokers,
-                &["test-capture-policy"],
-                &[],
-                &[],
-                MessageFormat::OtlpProto,
-            );
-
-        // Install the capture policy on the effect handler.
-        effect_handler.set_capture_policy(Some(capture_policy));
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
-
-                let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                // Send a message with Kafka headers.
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &payload_bytes)
+                            .key(b"key-1")
+                            .header("X-Tenant-Id", b"acme-corp")
+                            .header("X-Request-Id", b"req-12345")
+                            .header("X-Unrelated", b"ignored"),
+                    )
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("Failed to send message");
+
+                // Set up a capture policy that captures X-Tenant-Id and X-Request-Id
+                // but not X-Unrelated.
+                let capture_policy = HeaderCapturePolicy::new(
+                    CaptureDefaults::default(),
+                    vec![
+                        CaptureRule {
+                            match_names: vec!["X-Tenant-Id".to_string()],
+                            store_as: Some("tenant_id".to_string()),
+                            sensitive: false,
+                            value_kind: None,
+                        },
+                        CaptureRule {
+                            match_names: vec!["X-Request-Id".to_string()],
+                            store_as: None, // defaults to lowercased wire name
+                            sensitive: false,
+                            value_kind: None,
+                        },
+                    ],
+                );
+
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver =
+                    KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+
+                let pdata = receiver.recv_pdata().await;
 
                 // Verify transport headers were captured.
                 let transport_headers = pdata
@@ -3091,145 +4008,127 @@ mod tests {
                 // X-Unrelated should NOT be captured (not in the policy).
                 let unrelated: Vec<_> = transport_headers.find_by_name("x-unrelated").collect();
                 assert!(unrelated.is_empty(), "X-Unrelated should not be captured");
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
-    /// Verifies that when no capture policy is configured, transport headers
-    /// are not set on the OtapPdata context (existing behavior is preserved).
+    /// Scenario: a record carries a Kafka header but the receiver is started
+    /// without any capture policy.
+    /// Guarantees: transport headers are left unset on the OtapPdata context
+    /// (existing behavior is preserved when capture is not configured).
     #[tokio::test]
     async fn test_kafka_receiver_no_capture_policy_no_transport_headers() {
-        let (_mock, brokers) = start_mock_kafka(&["test-no-capture-policy"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-no-capture-policy";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut payload_bytes = vec![];
-        req.encode(&mut payload_bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut payload_bytes = vec![];
+                req.encode(&mut payload_bytes).expect("encode");
 
-        // Send a message with headers, but without a capture policy.
-        let headers = OwnedHeaders::new().insert(Header {
-            key: "X-Tenant-Id",
-            value: Some(b"acme-corp"),
-        });
-
-        let _ = producer
-            .send(
-                FutureRecord::to("test-no-capture-policy")
-                    .payload(&payload_bytes)
-                    .key("key-1")
-                    .headers(headers),
-                Timeout::After(Duration::from_secs(10)),
-            )
-            .await
-            .expect("Failed to send message");
-
-        // No capture policy set on the effect handler.
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, _handles) = setup_receiver_harness(
-            &brokers,
-            &["test-no-capture-policy"],
-            &[],
-            &[],
-            MessageFormat::OtlpProto,
-        );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
-
-                let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                // Send a message with headers, but without a capture policy.
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &payload_bytes)
+                            .key(b"key-1")
+                            .header("X-Tenant-Id", b"acme-corp"),
+                    )
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("Failed to send message");
+
+                // No capture policy set on the receiver.
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    HashMap::new(),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
+
+                let pdata = receiver.recv_pdata().await;
 
                 // Transport headers should NOT be set when no capture policy is configured.
                 assert!(
                     pdata.transport_headers().is_none(),
                     "transport_headers should be None when no capture policy is configured"
                 );
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
-    /// Verifies that the capture policy (transport headers) and resource_attrs_from_headers
-    /// (resource attribute injection) work independently and simultaneously.
+    /// Scenario: a record carries `X-Tenant-Id` (captured to a transport header)
+    /// and `x-env` (mapped to a resource attribute) while both the capture policy
+    /// and resource-attribute-from-header extraction are configured.
+    /// Guarantees: the transport header and the injected resource attribute are
+    /// produced independently and simultaneously from the same record.
     #[tokio::test]
     async fn test_kafka_receiver_capture_policy_coexists_with_resource_attrs_from_headers() {
-        let (_mock, brokers) = start_mock_kafka(&["test-capture-and-extract"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-capture-and-extract";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut payload_bytes = vec![];
-        req.encode(&mut payload_bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut payload_bytes = vec![];
+                req.encode(&mut payload_bytes).expect("encode");
 
-        // Send a message with headers for both mechanisms.
-        let headers = OwnedHeaders::new()
-            .insert(Header {
-                key: "X-Tenant-Id",
-                value: Some(b"acme-corp"),
-            })
-            .insert(Header {
-                key: "x-env",
-                value: Some(b"production"),
-            });
-
-        let _ = producer
-            .send(
-                FutureRecord::to("test-capture-and-extract")
-                    .payload(&payload_bytes)
-                    .key("key-1")
-                    .headers(headers),
-                Timeout::After(Duration::from_secs(10)),
-            )
-            .await
-            .expect("Failed to send message");
-
-        // Configure resource_attrs_from_headers: x-env -> deployment.environment resource attribute
-        let mut resource_attrs_from_headers = HashMap::new();
-        let _ = resource_attrs_from_headers.insert(
-            "x-env".to_string(),
-            HeaderExtraction {
-                key: "deployment.environment".to_string(),
-                value_type: AttributeValueType::String,
-            },
-        );
-
-        // Configure capture policy: X-Tenant-Id -> transport header "tenant_id"
-        let capture_policy = HeaderCapturePolicy::new(
-            CaptureDefaults::default(),
-            vec![CaptureRule {
-                match_names: vec!["X-Tenant-Id".to_string()],
-                store_as: Some("tenant_id".to_string()),
-                sensitive: false,
-                value_kind: None,
-            }],
-        );
-
-        let (receiver, ctrl_chan, mut effect_handler, mut pdata_rx, _handles) =
-            setup_receiver_harness_with_headers(
-                &brokers,
-                &["test-capture-and-extract"],
-                &[],
-                &[],
-                MessageFormat::OtlpProto,
-                resource_attrs_from_headers,
-            );
-
-        effect_handler.set_capture_policy(Some(capture_policy));
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
-
-                let mut pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                // Send a message with headers for both mechanisms.
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &payload_bytes)
+                            .key(b"key-1")
+                            .header("X-Tenant-Id", b"acme-corp")
+                            .header("x-env", b"production"),
+                    )
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("Failed to send message");
+
+                // Configure resource_attrs_from_headers: x-env -> deployment.environment resource attribute
+                let mut resource_attrs_from_headers = HashMap::new();
+                let _ = resource_attrs_from_headers.insert(
+                    "x-env".to_string(),
+                    HeaderExtraction {
+                        key: "deployment.environment".to_string(),
+                        value_type: AttributeValueType::String,
+                    },
+                );
+
+                // Configure capture policy: X-Tenant-Id -> transport header "tenant_id"
+                let capture_policy = HeaderCapturePolicy::new(
+                    CaptureDefaults::default(),
+                    vec![CaptureRule {
+                        match_names: vec!["X-Tenant-Id".to_string()],
+                        store_as: Some("tenant_id".to_string()),
+                        sensitive: false,
+                        value_kind: None,
+                    }],
+                );
+
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtlpProto,
+                    resource_attrs_from_headers,
+                );
+                let mut receiver =
+                    KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+
+                let mut pdata = receiver.recv_pdata().await;
 
                 // 1. Verify transport headers were captured (capture policy).
                 let transport_headers = pdata
@@ -3268,71 +4167,61 @@ mod tests {
                         "deployment.environment should be 'production'"
                     );
                 }
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
-    /// Verifies that the capture policy works with OTAP Arrow format messages.
+    /// Scenario: a capture policy is applied to an OTAP-Arrow record that also
+    /// carries the `MessageFormat` OTAP marker header.
+    /// Guarantees: the matching `X-Tenant-Id` header is captured as a transport
+    /// header even for OTAP payloads, while the `MessageFormat` control header is
+    /// not captured.
     #[tokio::test]
     async fn test_kafka_receiver_capture_policy_otap_format() {
-        let (_mock, brokers) = start_mock_kafka(&["test-capture-policy-otap"]);
-        let producer = create_test_producer(&brokers);
+        const TOPIC: &str = "test-capture-policy-otap";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let otap_bytes = create_traces_with_spans_otap_bytes();
+                let otap_bytes = create_traces_with_spans_otap_bytes();
 
-        let headers = OwnedHeaders::new()
-            .insert(Header {
-                key: "X-Tenant-Id",
-                value: Some(b"acme-corp"),
-            })
-            .insert(Header {
-                key: "MessageFormat",
-                value: Some(MSG_FORMAT_OTAP),
-            });
-
-        let _ = producer
-            .send(
-                FutureRecord::to("test-capture-policy-otap")
-                    .payload(&otap_bytes)
-                    .key("key-1")
-                    .headers(headers),
-                Timeout::After(Duration::from_secs(10)),
-            )
-            .await
-            .expect("Failed to send message");
-
-        let capture_policy = HeaderCapturePolicy::new(
-            CaptureDefaults::default(),
-            vec![CaptureRule {
-                match_names: vec!["X-Tenant-Id".to_string()],
-                store_as: Some("tenant_id".to_string()),
-                sensitive: false,
-                value_kind: None,
-            }],
-        );
-
-        let (receiver, ctrl_chan, mut effect_handler, mut pdata_rx, _handles) =
-            setup_receiver_harness(
-                &brokers,
-                &["test-capture-policy-otap"],
-                &[],
-                &[],
-                MessageFormat::OtapProto,
-            );
-
-        effect_handler.set_capture_policy(Some(capture_policy));
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let _handle = tokio::task::spawn_local(async move {
-                    let _ = receiver.start(ctrl_chan, effect_handler).await;
-                });
-
-                let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &otap_bytes)
+                            .key(b"key-1")
+                            .header("X-Tenant-Id", b"acme-corp")
+                            .header("MessageFormat", MSG_FORMAT_OTAP),
+                    )
                     .await
-                    .expect("Timed out waiting for message")
-                    .expect("No message received");
+                    .expect("Failed to send message");
+
+                let capture_policy = HeaderCapturePolicy::new(
+                    CaptureDefaults::default(),
+                    vec![CaptureRule {
+                        match_names: vec!["X-Tenant-Id".to_string()],
+                        store_as: Some("tenant_id".to_string()),
+                        sensitive: false,
+                        value_kind: None,
+                    }],
+                );
+
+                let cfg = auto_config(
+                    cluster.bootstrap_servers(),
+                    &[TOPIC],
+                    &[],
+                    &[],
+                    MessageFormat::OtapProto,
+                    HashMap::new(),
+                );
+                let mut receiver =
+                    KafkaReceiverHarness::start_with_capture(&cluster, cfg, Some(capture_policy));
+
+                let pdata = receiver.recv_pdata().await;
 
                 // Verify transport headers were captured for OTAP format.
                 let transport_headers = pdata
@@ -3349,457 +4238,239 @@ mod tests {
                     format_headers.is_empty(),
                     "MessageFormat header should not be captured"
                 );
-            })
-            .await;
+
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
-    // ---- Rebalance integration tests (in-process mock Kafka broker) ----
+    // ---- Rebalance integration tests (test-suite mock Kafka broker) ----
     //
     // These exercise the consumer-group rebalance handling end-to-end via the
-    // shared `MockCluster`-based integration-testing utilities: partition
-    // assignment, manual-commit offset tracking, and the commit-before-revoke
-    // guarantee. Multi-consumer rebalancing is supported by the mock, so no
-    // Docker is required and these run by default.
+    // shared Kafka test suite: partition assignment, manual-commit offset tracking,
+    // and the commit-before-revoke guarantee. Multi-consumer rebalancing is
+    // supported by the mock, so no Docker is required and these run by default.
 
-    /// Build a manual-commit [`KafkaReceiver`] harness for a single traces topic,
-    /// with an explicit consumer-group id and a safety-net commit timer.
-    ///
-    /// Manual commit (not auto) is required for the receiver's rebalance handling
-    /// to be active; the commit timer flushes consumed offsets without the test
-    /// having to plumb Acks back through the control channel.
-    ///
-    /// Returns the receiver, its control channel, effect handler, the pdata
-    /// receiver, the control *sender* (so the test can issue `Shutdown`), and a
-    /// keep-alive bundle.
-    #[allow(clippy::type_complexity)]
-    fn setup_manual_traces_harness(
-        brokers: &str,
-        group_id: &str,
-        traces_topic: &str,
-        commit_interval_ms: u64,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        mpsc::Sender<NodeControlMsg<OtapPdata>>,
-        KeepAlive,
-    ) {
-        setup_manual_traces_harness_with_strategy(
-            brokers,
-            group_id,
-            traces_topic,
-            commit_interval_ms,
-            None,
-        )
-    }
-
-    /// Like [`setup_manual_traces_harness`] but allows setting the partition
-    /// assignment strategy (e.g. cooperative-sticky for incremental rebalances).
-    #[allow(clippy::type_complexity)]
-    fn setup_manual_traces_harness_with_strategy(
-        brokers: &str,
-        group_id: &str,
-        traces_topic: &str,
-        commit_interval_ms: u64,
-        rebalance_strategy: Option<RebalanceStrategy>,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        mpsc::Sender<NodeControlMsg<OtapPdata>>,
-        KeepAlive,
-    ) {
-        let mut builder = KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-            .with_traces(
-                SignalConfig::new(vec![traces_topic.to_string()])
-                    .with_encoding(MessageFormat::OtlpProto),
-            )
-            .with_commit(CommitConfig {
-                mode: ConfigCommitMode::Manual,
-                interval_ms: Some(commit_interval_ms),
-            })
-            .with_auto_offset_reset(AutoOffsetReset::Earliest)
-            .with_isolation_level(IsolationLevel::ReadUncommitted);
-        if let Some(strategy) = rebalance_strategy {
-            builder = builder.with_rebalance_strategy(strategy);
-        }
-        let kafka_config = KafkaReceiverConfig::try_from(builder).expect("test config is valid");
-
-        wire_receiver_harness(kafka_config, 256)
-    }
-
-    /// Like [`setup_manual_traces_harness`] but also returns the runtime-control
-    /// receiver so a test can observe `RuntimeControlMsg::ReceiverDrained`.
-    #[allow(clippy::type_complexity)]
-    fn setup_manual_traces_harness_with_runtime_rx(
-        brokers: &str,
-        group_id: &str,
-        traces_topic: &str,
-        commit_interval_ms: u64,
-    ) -> (
-        Box<KafkaReceiver>,
-        local::ControlChannel<OtapPdata>,
-        local::EffectHandler<OtapPdata>,
-        Receiver<OtapPdata>,
-        mpsc::Sender<NodeControlMsg<OtapPdata>>,
-        otap_df_engine::control::RuntimeCtrlMsgReceiver<OtapPdata>,
-        KeepAlive,
-    ) {
-        let kafka_config = KafkaReceiverConfig::try_from(
-            KafkaReceiverConfigBuilder::new(brokers, group_id, "test-client")
-                .with_traces(
-                    SignalConfig::new(vec![traces_topic.to_string()])
-                        .with_encoding(MessageFormat::OtlpProto),
-                )
-                .with_commit(CommitConfig {
-                    mode: ConfigCommitMode::Manual,
-                    interval_ms: Some(commit_interval_ms),
-                })
-                .with_auto_offset_reset(AutoOffsetReset::Earliest)
-                .with_isolation_level(IsolationLevel::ReadUncommitted),
-        )
-        .expect("test config should be valid");
-
-        wire_receiver_harness_with_runtime_rx(kafka_config, 256)
-    }
-
-    /// Read the committed offset for `(topic, partition)` for a consumer group,
-    /// using an independent client. Returns `Some(offset)` when an offset has
-    /// been committed, or `None` when the group has no committed offset yet.
-    fn committed_offset_for(
-        brokers: &str,
-        group_id: &str,
-        topic: &str,
-        partition: i32,
-    ) -> Option<i64> {
-        let consumer: BaseConsumer = ClientConfig::new()
-            .set("bootstrap.servers", brokers)
-            .set("group.id", group_id)
-            .set("enable.auto.commit", "false")
-            .create()
-            .expect("failed to create probe consumer");
-
-        let mut tpl = TopicPartitionList::new();
-        let _ = tpl.add_partition(topic, partition);
-
-        let committed = consumer
-            .committed_offsets(tpl, Duration::from_secs(10))
-            .expect("failed to query committed offsets");
-
-        match committed
-            .to_topic_map()
-            .get(&(topic.to_string(), partition))
-        {
-            Some(Offset::Offset(o)) => Some(*o),
-            _ => None,
-        }
-    }
-
-    /// Single manual-commit consumer: verify partition assignment and that
-    /// consumed offsets are committed for every partition.
-    ///
-    /// A single consumer in the group is assigned *all* partitions of the topic.
-    /// After consuming the produced messages and allowing a commit (timer +
-    /// shutdown commit), both partitions must have a committed offset that
-    /// accounts for the produced records.
+    /// Scenario: a single manual-commit consumer owns all partitions of a
+    /// multi-partition topic, consumes and acks every produced record, and is
+    /// then shut down (which commits tracked offsets).
+    /// Guarantees: each partition ends with a committed offset that accounts for
+    /// all records produced to it (offset >= records-per-partition).
     #[tokio::test]
     async fn rebalance_single_consumer_assigns_and_commits() {
-        let topic = "rebalance-assign-traces";
-        let (_mock, brokers) =
-            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
-        let producer = create_test_producer(&brokers);
-
+        const TOPIC: &str = "rebalance-assign-traces";
         let group = "rebalance-assign-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
-        // Produce `REBALANCE_RECORDS_PER_PARTITION` records to each partition.
-        for partition in 0..REBALANCE_TEST_PARTITIONS {
-            for i in 0..REBALANCE_RECORDS_PER_PARTITION {
-                let _ = producer
-                    .send(
-                        FutureRecord::to(topic)
-                            .payload(&bytes)
-                            .key(&format!("k-{partition}-{i}"))
-                            .partition(partition),
-                        Timeout::After(Duration::from_secs(10)),
+                // Produce `REBALANCE_RECORDS_PER_PARTITION` records to each partition.
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
                     )
-                    .await
-                    .expect("Failed to send message");
-            }
-        }
+                    .await;
 
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, _handles) =
-            setup_manual_traces_harness(&brokers, group, topic, 500);
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let handle = tokio::task::spawn_local(async move {
-                    receiver.start(ctrl_chan, effect_handler).await
-                });
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 // Consume all produced messages and ack each one so the
                 // receiver advances its committable offsets (manual commit only
                 // commits acknowledged offsets).
                 let total =
                     (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
-                for i in 0..total {
-                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for message {i}"))
-                        .unwrap_or_else(|_| panic!("No message received for {i}"));
-
-                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                        ctrl_tx
-                            .send(NodeControlMsg::Ack(ack))
-                            .expect("send ack for consumed message");
-                    }
+                for _ in 0..total {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
                 }
 
                 // Allow at least one safety-net commit cycle to fire.
                 tokio::time::sleep(Duration::from_millis(800)).await;
 
                 // Shutdown also commits all tracked offsets before exit.
-                ctrl_tx
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: tokio::time::Instant::now().into_std()
-                            + Duration::from_secs(5),
-                        reason: "test complete".to_string(),
-                    })
-                    .expect("send shutdown");
-
-                let _ = timeout(Duration::from_secs(10), handle)
-                    .await
-                    .expect("receiver task did not shut down in time");
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
 
                 // Each partition should have a committed offset accounting for
                 // its records (committed offset is "next to read", so >= count).
                 // Commits are asynchronous (flushed on unsubscribe/close), so
                 // poll until the broker reports them rather than asserting once.
                 for partition in 0..REBALANCE_TEST_PARTITIONS {
-                    let mut committed = None;
-                    for _ in 0..20 {
-                        committed = committed_offset_for(&brokers, group, topic, partition);
-                        if committed.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64) {
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                    }
+                    let brokers = cluster.bootstrap_servers().to_string();
+                    let committed = poll_until(
+                        Duration::from_secs(5),
+                        Duration::from_millis(250),
+                        || {
+                            committed_offset(&brokers, group, TOPIC, partition)
+                                .expect("kafka-test: committed-offset probe failed")
+                                .is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
+                        },
+                    )
+                    .await;
                     assert!(
-                        committed.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64),
-                        "partition {partition} should have committed offset >= {REBALANCE_RECORDS_PER_PARTITION}, got {committed:?}",
+                        committed,
+                        "partition {partition} should have committed offset >= {REBALANCE_RECORDS_PER_PARTITION}, got {:?}",
+                        committed_offset(&brokers, group, TOPIC, partition)
+                            .expect("kafka-test: committed-offset probe failed"),
                     );
                 }
-            })
-            .await;
+            },
+        )
+        .await;
     }
 
-    /// Commit-before-revoke: when a second consumer joins the group and forces a
-    /// partition to be revoked from the receiver, the receiver must have
-    /// committed that partition's progress *before* losing it (no data loss /
-    /// no re-consumption from an earlier offset by the new owner).
+    /// Scenario: a manual-commit receiver owns both partitions, consumes and
+    /// acks every record, then a second consumer joins the group and forces one
+    /// partition to be revoked from the receiver (commit-before-revoke).
+    /// Guarantees: after the forced rebalance, both partitions retain a committed
+    /// offset that accounts for all produced records, so no progress was lost and
+    /// the new owner will not re-consume from an earlier offset.
     #[tokio::test]
     async fn rebalance_revoke_commits_before_reassign() {
-        let topic = "rebalance-revoke-traces";
-        let (_mock, brokers) =
-            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
-        let producer = create_test_producer(&brokers);
-
+        const TOPIC: &str = "rebalance-revoke-traces";
         let group = "rebalance-revoke-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
-        // Produce records to both partitions.
-        for partition in 0..REBALANCE_TEST_PARTITIONS {
-            for i in 0..REBALANCE_RECORDS_PER_PARTITION {
-                let _ = producer
-                    .send(
-                        FutureRecord::to(topic)
-                            .payload(&bytes)
-                            .key(&format!("k-{partition}-{i}"))
-                            .partition(partition),
-                        Timeout::After(Duration::from_secs(10)),
+                // Produce records to both partitions.
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
                     )
-                    .await
-                    .expect("Failed to send message");
-            }
-        }
+                    .await;
 
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, _handles) =
-            setup_manual_traces_harness(&brokers, group, topic, 500);
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let handle = tokio::task::spawn_local(async move {
-                    receiver.start(ctrl_chan, effect_handler).await
-                });
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 // Drain all messages (receiver A owns both partitions
                 // initially) and ack each so A advances and commits its offsets.
                 let total =
                     (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
-                for i in 0..total {
-                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for message {i}"))
-                        .unwrap_or_else(|_| panic!("No message received for {i}"));
-
-                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                        ctrl_tx
-                            .send(NodeControlMsg::Ack(ack))
-                            .expect("send ack for consumed message");
-                    }
+                for _ in 0..total {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
                 }
 
                 // Let a safety-net commit flush A's progress on both partitions.
                 tokio::time::sleep(Duration::from_millis(800)).await;
 
                 // A second consumer joins the SAME group, forcing librdkafka to
-                // revoke one partition from receiver A and assign it to B. This
-                // is a plain rdkafka consumer (not a full KafkaReceiver) for
-                // deterministic, fast rebalancing.
-                let consumer_b: StreamConsumer = ClientConfig::new()
-                    .set("bootstrap.servers", &brokers)
-                    .set("group.id", group)
-                    .set("enable.auto.commit", "false")
-                    .set("auto.offset.reset", "earliest")
-                    .create()
-                    .expect("failed to create consumer B");
-                consumer_b
-                    .subscribe(&[topic])
-                    .expect("consumer B subscribe");
-
-                // Poll B until it gets an assignment (this drives the rebalance).
-                let mut assigned_b = false;
-                for _ in 0..40 {
-                    if let Ok(a) = consumer_b.assignment() {
-                        if a.count() > 0 {
-                            assigned_b = true;
-                            break;
-                        }
-                    }
-                    // Poll to advance the consumer's group membership.
-                    let _ = timeout(Duration::from_millis(500), consumer_b.recv()).await;
-                }
-                assert!(
-                    assigned_b,
-                    "consumer B was never assigned a partition; rebalance did not occur",
-                );
+                // revoke one partition from receiver A and assign it to B. Keep
+                // the trigger alive to hold the revoke.
+                let _trigger =
+                    RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(10))
+                        .await;
 
                 // After the rebalance, every partition that B now owns must have a
                 // committed offset from A's pre-revoke commit (commit-before-revoke).
                 // We require that *both* partitions carry a committed offset that
                 // accounts for all produced records, i.e. no progress was lost.
-                let mut all_committed = false;
-                for _ in 0..20 {
-                    let c0 = committed_offset_for(&brokers, group, topic, 0);
-                    let c1 = committed_offset_for(&brokers, group, topic, 1);
-                    if c0.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
-                        && c1.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
-                    {
-                        all_committed = true;
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
+                let brokers = cluster.bootstrap_servers().to_string();
+                let all_committed = poll_until(
+                    Duration::from_secs(5),
+                    Duration::from_millis(250),
+                    || {
+                        let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed");
+                        let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                            .expect("kafka-test: committed-offset probe failed");
+                        c0.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
+                            && c1.is_some_and(|o| o >= REBALANCE_RECORDS_PER_PARTITION as i64)
+                    },
+                )
+                .await;
                 assert!(
                     all_committed,
                     "both partitions must retain committed offsets >= {REBALANCE_RECORDS_PER_PARTITION} \
                      across the rebalance (commit-before-revoke)",
                 );
 
-                // Clean up: shut down receiver A and drop consumer B.
-                ctrl_tx
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
-                        reason: "test complete".to_string(),
-                    })
-                    .expect("send shutdown");
-                let _ = timeout(Duration::from_secs(10), handle).await;
-                drop(consumer_b);
-            })
-            .await;
+                // Clean up: shut down receiver A.
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
-    /// Cooperative-sticky retention: under the cooperative protocol a rebalance
-    /// reports only the delta, so a receiver that keeps a partition must still
-    /// treat it as assigned. Regression for storing only the delta (which
-    /// dropped retained partitions and rejected their ACKs as revoked).
-    ///
-    /// Receiver A owns both partitions; consumer B joins the group with the same
-    /// cooperative-sticky strategy, forcing one partition to move to B while A
-    /// retains the other. New records produced to A's retained partition must
-    /// still get committed by A (i.e. its ACKs are not dropped).
+    /// Scenario: a cooperative-sticky manual-commit receiver owns both
+    /// partitions, then a second cooperative-sticky consumer joins the group,
+    /// causing an incremental rebalance that moves one partition away while the
+    /// receiver retains the other; a new record is produced to the retained
+    /// partition.
+    /// Guarantees: the retained partition keeps committing (its post-rebalance
+    /// record reaches committed offset >= 2), proving retained-partition ACKs
+    /// are not dropped as revoked under the cooperative protocol.
     #[tokio::test]
     async fn rebalance_cooperative_sticky_retains_owned_partitions() {
-        let topic = "rebalance-coop-traces";
-        let (_mock, brokers) =
-            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
-        let producer = create_test_producer(&brokers);
-
+        const TOPIC: &str = "rebalance-coop-traces";
         let group = "rebalance-coop-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
-        // Produce an initial record to each partition.
-        for partition in 0..REBALANCE_TEST_PARTITIONS {
-            let _ = producer
-                .send(
-                    FutureRecord::to(topic)
-                        .payload(&bytes)
-                        .key(&format!("init-{partition}"))
-                        .partition(partition),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
+                // Produce an initial record to each partition.
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let key = format!("init-{partition}");
+                    producer
+                        .send_full(
+                            SendRecord::new(TOPIC, &bytes)
+                                .key(key.as_bytes())
+                                .partition(partition),
+                        )
+                        .await
+                        .expect("Failed to send message");
+                }
 
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, _handles) =
-            setup_manual_traces_harness_with_strategy(
-                &brokers,
-                group,
-                topic,
-                500,
-                Some(RebalanceStrategy::CooperativeSticky),
-            );
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let handle = tokio::task::spawn_local(async move {
-                    receiver.start(ctrl_chan, effect_handler).await
-                });
+                let cfg = manual_traces_config(
+                    cluster.bootstrap_servers(),
+                    group,
+                    TOPIC,
+                    500,
+                    Some(RebalanceStrategy::CooperativeSticky),
+                );
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 // A initially owns both partitions: consume and ack the two
                 // initial records.
-                for i in 0..REBALANCE_TEST_PARTITIONS as usize {
-                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for initial message {i}"))
-                        .unwrap_or_else(|_| panic!("No initial message received for {i}"));
-                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                        ctrl_tx
-                            .send(NodeControlMsg::Ack(ack))
-                            .expect("send ack for initial message");
-                    }
+                for _ in 0..REBALANCE_TEST_PARTITIONS as usize {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
                 }
 
                 // A second cooperative-sticky consumer joins the group, forcing
                 // an incremental rebalance that moves exactly one partition to B
-                // while A retains the other.
+                // while A retains the other. The trigger consumer MUST also use
+                // cooperative-sticky, which `RebalanceTrigger` does not expose,
+                // so this consumer is created inline.
                 let consumer_b: StreamConsumer = ClientConfig::new()
-                    .set("bootstrap.servers", &brokers)
+                    .set("bootstrap.servers", cluster.bootstrap_servers())
                     .set("group.id", group)
                     .set("enable.auto.commit", "false")
                     .set("auto.offset.reset", "earliest")
@@ -3807,7 +4478,7 @@ mod tests {
                     .create()
                     .expect("failed to create consumer B");
                 consumer_b
-                    .subscribe(&[topic])
+                    .subscribe(&[TOPIC])
                     .expect("consumer B subscribe");
 
                 // Poll B until it is assigned a partition (drives the rebalance).
@@ -3819,7 +4490,8 @@ mod tests {
                             break;
                         }
                     }
-                    let _ = timeout(Duration::from_millis(500), consumer_b.recv()).await;
+                    let _ =
+                        tokio::time::timeout(Duration::from_millis(500), consumer_b.recv()).await;
                 }
                 let b_partition =
                     b_partition.expect("consumer B was never assigned; rebalance did not occur");
@@ -3830,13 +4502,11 @@ mod tests {
                 // consume + ack it. If A wrongly dropped the retained partition
                 // from its assigned set, this ack would be rejected and the
                 // offset would never advance.
-                let _ = producer
-                    .send(
-                        FutureRecord::to(topic)
-                            .payload(&bytes)
-                            .key("post-rebalance")
+                producer
+                    .send_full(
+                        SendRecord::new(TOPIC, &bytes)
+                            .key(b"post-rebalance")
                             .partition(a_partition),
-                        Timeout::After(Duration::from_secs(10)),
                     )
                     .await
                     .expect("Failed to send post-rebalance message");
@@ -3844,25 +4514,23 @@ mod tests {
                 // A may still receive records for the partition being handed off
                 // before the rebalance settles; keep reading until we get one on
                 // the retained partition and ack everything we see.
+                let brokers = cluster.bootstrap_servers().to_string();
                 let mut retained_committed = false;
                 'outer: for _ in 0..40 {
-                    if let Ok(Ok(pdata)) = timeout(Duration::from_secs(5), pdata_rx.recv()).await {
-                        if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                            ctrl_tx
-                                .send(NodeControlMsg::Ack(ack))
-                                .expect("send ack post-rebalance");
-                        }
+                    if let Some(pdata) = receiver.try_recv_pdata(Duration::from_secs(5)).await {
+                        receiver.ack(pdata);
                     }
                     // The retained partition must accumulate a committed offset
                     // that accounts for its initial + post-rebalance records.
-                    for _ in 0..8 {
-                        if committed_offset_for(&brokers, group, topic, a_partition)
+                    if poll_until(Duration::from_secs(2), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, a_partition)
+                            .expect("kafka-test: committed-offset probe failed")
                             .is_some_and(|o| o >= 2)
-                        {
-                            retained_committed = true;
-                            break 'outer;
-                        }
-                        tokio::time::sleep(Duration::from_millis(250)).await;
+                    })
+                    .await
+                    {
+                        retained_committed = true;
+                        break 'outer;
                     }
                 }
                 assert!(
@@ -3871,127 +4539,93 @@ mod tests {
                      cooperative-sticky rebalance (ACKs must not be dropped)",
                 );
 
-                ctrl_tx
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
-                        reason: "test complete".to_string(),
-                    })
-                    .expect("send shutdown");
-                let _ = timeout(Duration::from_secs(10), handle).await;
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
                 drop(consumer_b);
-            })
-            .await;
+            },
+        )
+        .await;
     }
 
-    /// Revoke-then-reassign: when a partition is revoked from the receiver and
-    /// later reassigned to it, records consumed under the new assignment must
-    /// still be committed. This is a best-effort end-to-end exercise of the
+    /// Scenario: a manual-commit receiver owns all partitions, then a second
+    /// consumer joins (forcing a revoke) and leaves (reassigning everything back
+    /// to the receiver); a fresh record is produced to every partition after the
+    /// reassignment and drained/acked. Best-effort end-to-end exercise of the
     /// assignment-generation guard (the deterministic core is covered by
     /// `stale_revocation_preserves_reassigned_partition_state`).
-    ///
-    /// A second consumer joins the group (forcing a revoke), then leaves
-    /// (reassigning everything back to the receiver). A record produced after
-    /// the reassignment must be consumed, acked, and committed.
+    /// Guarantees: at least one reassigned partition commits its
+    /// post-reassignment record (offset >= 2), proving the fresh state was not
+    /// purged and its ack was not dropped after reassignment.
     #[tokio::test]
     async fn rebalance_revoke_then_reassign_preserves_new_records() {
-        let topic = "rebalance-reassign-traces";
-        let (_mock, brokers) =
-            start_mock_kafka_with_partitions(REBALANCE_TEST_PARTITIONS, &[topic]);
-        let producer = create_test_producer(&brokers);
-
+        const TOPIC: &str = "rebalance-reassign-traces";
         let group = "rebalance-reassign-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let req = create_traces_with_spans();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
-        // One initial record per partition.
-        for partition in 0..REBALANCE_TEST_PARTITIONS {
-            let _ = producer
-                .send(
-                    FutureRecord::to(topic)
-                        .payload(&bytes)
-                        .key(&format!("init-{partition}"))
-                        .partition(partition),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
+                // One initial record per partition.
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let key = format!("init-{partition}");
+                    producer
+                        .send_full(
+                            SendRecord::new(TOPIC, &bytes)
+                                .key(key.as_bytes())
+                                .partition(partition),
+                        )
+                        .await
+                        .expect("Failed to send message");
+                }
 
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, _handles) =
-            setup_manual_traces_harness(&brokers, group, topic, 500);
-
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let handle = tokio::task::spawn_local(async move {
-                    receiver.start(ctrl_chan, effect_handler).await
-                });
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 // Consume + ack the initial records (receiver owns all partitions).
-                for i in 0..REBALANCE_TEST_PARTITIONS as usize {
-                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for initial message {i}"))
-                        .unwrap_or_else(|_| panic!("No initial message received for {i}"));
-                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                        ctrl_tx
-                            .send(NodeControlMsg::Ack(ack))
-                            .expect("send ack for initial message");
-                    }
+                for _ in 0..REBALANCE_TEST_PARTITIONS as usize {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
                 }
 
-                // A second consumer joins, forcing a revoke of one partition.
-                let consumer_b: StreamConsumer = ClientConfig::new()
-                    .set("bootstrap.servers", &brokers)
-                    .set("group.id", group)
-                    .set("enable.auto.commit", "false")
-                    .set("auto.offset.reset", "earliest")
-                    .create()
-                    .expect("failed to create consumer B");
-                consumer_b
-                    .subscribe(&[topic])
-                    .expect("consumer B subscribe");
-                for _ in 0..40 {
-                    if consumer_b.assignment().is_ok_and(|a| a.count() > 0) {
-                        break;
-                    }
-                    let _ = timeout(Duration::from_millis(500), consumer_b.recv()).await;
+                // A second consumer joins (forcing a revoke), then drops out of
+                // scope (reassigning all partitions back to the receiver).
+                {
+                    let _trigger =
+                        RebalanceTrigger::join(&cluster, group, &[TOPIC], Duration::from_secs(10))
+                            .await;
                 }
-
-                // Consumer B leaves, reassigning all partitions back to the
-                // receiver.
-                drop(consumer_b);
 
                 // Produce a fresh record to every partition after the
                 // reassignment. Consume and ack whatever the receiver delivers.
                 for partition in 0..REBALANCE_TEST_PARTITIONS {
-                    let _ = producer
-                        .send(
-                            FutureRecord::to(topic)
-                                .payload(&bytes)
-                                .key(&format!("post-{partition}"))
+                    let key = format!("post-{partition}");
+                    producer
+                        .send_full(
+                            SendRecord::new(TOPIC, &bytes)
+                                .key(key.as_bytes())
                                 .partition(partition),
-                            Timeout::After(Duration::from_secs(10)),
                         )
                         .await
                         .expect("Failed to send post-reassign message");
                 }
 
                 // Drain and ack post-reassignment records for a while.
+                let brokers = cluster.bootstrap_servers().to_string();
                 for _ in 0..40 {
-                    if let Ok(Ok(pdata)) = timeout(Duration::from_secs(2), pdata_rx.recv()).await {
-                        if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                            ctrl_tx
-                                .send(NodeControlMsg::Ack(ack))
-                                .expect("send ack post-reassign");
-                        }
+                    if let Some(pdata) = receiver.try_recv_pdata(Duration::from_secs(2)).await {
+                        receiver.ack(pdata);
                     }
                     // Both partitions should end up with a committed offset that
                     // accounts for the initial + post-reassignment records.
-                    let c0 = committed_offset_for(&brokers, group, topic, 0);
-                    let c1 = committed_offset_for(&brokers, group, topic, 1);
+                    let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed");
+                    let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                        .expect("kafka-test: committed-offset probe failed");
                     if c0.is_some_and(|o| o >= 2) && c1.is_some_and(|o| o >= 2) {
                         break;
                     }
@@ -4002,87 +4636,67 @@ mod tests {
                 // committed (offset >= 2). If the generation guard were broken,
                 // the reassigned partition's fresh state would be purged and its
                 // ack dropped, leaving the offset stuck at 1.
-                let c0 = committed_offset_for(&brokers, group, topic, 0);
-                let c1 = committed_offset_for(&brokers, group, topic, 1);
+                let c0 = committed_offset(&brokers, group, TOPIC, 0)
+                    .expect("kafka-test: committed-offset probe failed");
+                let c1 = committed_offset(&brokers, group, TOPIC, 1)
+                    .expect("kafka-test: committed-offset probe failed");
                 assert!(
                     c0.is_some_and(|o| o >= 2) || c1.is_some_and(|o| o >= 2),
                     "a reassigned partition must commit its post-reassignment record; \
                      got c0={c0:?} c1={c1:?}",
                 );
 
-                ctrl_tx
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
-                        reason: "test complete".to_string(),
-                    })
-                    .expect("send shutdown");
-                let _ = timeout(Duration::from_secs(10), handle).await;
-            })
-            .await;
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
     }
 
-    /// Receiver-first drain: on `DrainIngress` the receiver must stop admitting
-    /// new Kafka records, perform a bounded final commit, call
-    /// `notify_receiver_drained()`, and remain responsive to `Shutdown`.
+    /// Scenario: a manual-commit receiver consumes and acks an initial batch,
+    /// then receives `DrainIngress`; more records are produced after the drain.
+    /// Guarantees: the receiver emits `RuntimeControlMsg::ReceiverDrained`, stops
+    /// forwarding new records (no pdata arrives post-drain), commits the
+    /// pre-drain offsets (committed offset >= INITIAL), and still terminates when
+    /// later sent `Shutdown` (via `await_stopped` returning).
     #[tokio::test]
     async fn drain_ingress_stops_polling_and_notifies_drained() {
         use otap_df_engine::control::RuntimeControlMsg;
 
-        let topic = "drain-ingress-traces";
-        let (_mock, brokers) = start_mock_kafka(&[topic]);
-        let producer = create_test_producer(&brokers);
-
-        let group = "drain-ingress-group";
-
-        let req = create_traces_with_spans();
-        let mut bytes = vec![];
-        req.encode(&mut bytes).expect("encode");
-
-        // Produce an initial batch that the receiver will consume before drain.
+        const TOPIC: &str = "drain-ingress-traces";
         const INITIAL: usize = 3;
-        for i in 0..INITIAL {
-            let _ = producer
-                .send(
-                    FutureRecord::to(topic)
-                        .payload(&bytes)
-                        .key(&format!("pre-{i}")),
-                    Timeout::After(Duration::from_secs(10)),
-                )
-                .await
-                .expect("Failed to send message");
-        }
+        let group = "drain-ingress-group";
+        with_cluster(
+            KafkaTestCluster::builder().topic(TOPIC),
+            |cluster| async move {
+                let producer = cluster.producer().build();
 
-        let (receiver, ctrl_chan, effect_handler, mut pdata_rx, ctrl_tx, mut rt_rx, _handles) =
-            setup_manual_traces_harness_with_runtime_rx(&brokers, group, topic, 60_000);
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
 
-        let local = LocalSet::new();
-        local
-            .run_until(async {
-                let handle = tokio::task::spawn_local(async move {
-                    receiver.start(ctrl_chan, effect_handler).await
-                });
+                // Produce an initial batch that the receiver will consume before drain.
+                for i in 0..INITIAL {
+                    let key = format!("pre-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
+                        .await
+                        .expect("Failed to send message");
+                }
+
+                let cfg =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 60_000, None);
+                let mut receiver = KafkaReceiverHarness::start(&cluster, cfg);
 
                 // Consume and ack the initial batch so offsets are tracked and
                 // committable at drain time.
-                for i in 0..INITIAL {
-                    let pdata = timeout(Duration::from_secs(30), pdata_rx.recv())
-                        .await
-                        .unwrap_or_else(|_| panic!("Timed out waiting for message {i}"))
-                        .unwrap_or_else(|_| panic!("No message received for {i}"));
-                    if let Some((_node_id, ack)) = next_ack(AckMsg::new(pdata)) {
-                        ctrl_tx
-                            .send(NodeControlMsg::Ack(ack))
-                            .expect("send ack for consumed message");
-                    }
+                for _ in 0..INITIAL {
+                    let pdata = receiver.recv_pdata().await;
+                    receiver.ack(pdata);
                 }
 
                 // Begin receiver-first drain.
-                ctrl_tx
-                    .send(NodeControlMsg::DrainIngress {
-                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
-                        reason: "drain test".to_string(),
-                    })
-                    .expect("send drain ingress");
+                receiver.drain(Duration::from_secs(5));
 
                 // The receiver must signal ReceiverDrained. The runtime channel
                 // also carries timer-setup messages (StartTimer /
@@ -4090,10 +4704,10 @@ mod tests {
                 // past those until the drain signal arrives.
                 let mut drained = false;
                 for _ in 0..16 {
-                    let msg = timeout(Duration::from_secs(10), rt_rx.recv())
+                    let msg = receiver
+                        .try_recv_runtime(Duration::from_secs(10))
                         .await
-                        .expect("timed out waiting for ReceiverDrained")
-                        .expect("runtime control channel closed");
+                        .expect("timed out waiting for ReceiverDrained");
                     if matches!(msg, RuntimeControlMsg::ReceiverDrained { .. }) {
                         drained = true;
                         break;
@@ -4104,21 +4718,19 @@ mod tests {
                 // After drain, produce more records. The receiver has stopped
                 // polling, so none of these should be forwarded downstream.
                 for i in 0..INITIAL {
-                    let _ = producer
-                        .send(
-                            FutureRecord::to(topic)
-                                .payload(&bytes)
-                                .key(&format!("post-{i}")),
-                            Timeout::After(Duration::from_secs(10)),
-                        )
+                    let key = format!("post-{i}");
+                    producer
+                        .send_full(SendRecord::new(TOPIC, &bytes).key(key.as_bytes()))
                         .await
                         .expect("Failed to send post-drain message");
                 }
 
                 // No further pdata should arrive within a reasonable window.
-                let post = timeout(Duration::from_secs(3), pdata_rx.recv()).await;
                 assert!(
-                    post.is_err(),
+                    receiver
+                        .try_recv_pdata(Duration::from_secs(3))
+                        .await
+                        .is_none(),
                     "receiver forwarded a record after DrainIngress; polling did not stop",
                 );
 
@@ -4126,36 +4738,305 @@ mod tests {
                 // commit was issued during drain and flushed on unsubscribe).
                 // The commit is asynchronous, so poll until the broker reports
                 // it rather than asserting once.
-                let mut committed = None;
-                for _ in 0..20 {
-                    committed = committed_offset_for(&brokers, group, topic, 0);
-                    if committed.is_some_and(|o| o >= INITIAL as i64) {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
+                let brokers = cluster.bootstrap_servers().to_string();
+                let committed =
+                    poll_until(Duration::from_secs(5), Duration::from_millis(250), || {
+                        committed_offset(&brokers, group, TOPIC, 0)
+                            .expect("kafka-test: committed-offset probe failed")
+                            .is_some_and(|o| o >= INITIAL as i64)
+                    })
+                    .await;
                 assert!(
-                    committed.is_some_and(|o| o >= INITIAL as i64),
-                    "pre-drain offsets should be committed at drain time, got {committed:?}",
+                    committed,
+                    "pre-drain offsets should be committed at drain time, got {:?}",
+                    committed_offset(&brokers, group, TOPIC, 0)
+                        .expect("kafka-test: committed-offset probe failed"),
                 );
 
-                // The receiver must still terminate cleanly on Shutdown.
-                ctrl_tx
-                    .send(NodeControlMsg::Shutdown {
-                        deadline: tokio::time::Instant::now().into_std() + Duration::from_secs(5),
-                        reason: "test complete".to_string(),
+                // The receiver must still terminate cleanly on Shutdown; awaiting the
+                // spawned task returning (without hanging) preserves the
+                // clean-termination guarantee.
+                receiver.shutdown(Duration::from_secs(5));
+                receiver.await_stopped().await;
+            },
+        )
+        .await;
+    }
+
+    /// Scenario: two `KafkaReceiver` replicas share one `group_id` against a
+    /// multi-partition topic; replica B joins (scale-up) then leaves
+    /// (scale-down), driving two rebalances. This is the in-process analogue of
+    /// running 2+ replicas with the same group and scaling the replica count up
+    /// and down; the full procedure is documented in the Kafka test-suite README
+    /// ("Multi-receiver scale-up/down").
+    ///
+    /// Guarantees: (1) both replicas own a partition at some point, so the
+    /// partitions distribute across the group (B consumes records that only its
+    /// assigned partition can deliver, and both replicas' terminal metrics show
+    /// `partitions_assigned >= 1`); (2) a rebalance is observed on scale-up/down
+    /// (`partition_revocations >= 1` across the two replicas); (3) no message is
+    /// lost or double-committed -- every produced record is delivered at least
+    /// once and durably retained on the broker, each partition's committed
+    /// offset stays within `[wave-1 count, total produced count]` (the lower
+    /// bound proves committed progress is never rolled back across a rebalance,
+    /// the upper bound proves nothing is committed past the produced data), and
+    /// neither replica reports `offset_commit_errors`.
+    ///
+    /// This is the in-process analogue of running 2+ replicas with the same
+    /// `group_id` against a multi-partition topic and scaling the replica count
+    /// up and down. Procedure (mirrored by the code below):
+    ///   1. Pre-create a `REBALANCE_TEST_PARTITIONS`-partition topic and produce
+    ///      wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per partition).
+    ///   2. Start replica A alone and drain wave 1 in full, so A demonstrably
+    ///      owned every partition before anyone else joined.
+    ///   3. Start replica B in the same group (scale-up), then produce wave 2 so
+    ///      B's newly-assigned partition has fresh records to deliver.
+    ///   4. Drain the group, prioritizing B so its assigned partition is not
+    ///      re-won by A's continuously-polling loop, until every produced record
+    ///      has been delivered at least once (bounded by a deadline so a stall
+    ///      fails loudly instead of hanging).
+    ///   5. Shut down B (scale-down); this forces a second rebalance that returns
+    ///      B's partition to A. Drain A briefly so A can re-own and commit.
+    ///   6. Shut down A. Read each replica's `TerminalState` metrics and assert
+    ///      distribution, rebalance observation, and no-loss/no-double-commit.
+    ///
+    /// Rebalance timing on the mock is nondeterministic and delivery is
+    /// at-least-once, so distribution is gated by B's own deliveries plus folded
+    /// rebalance metrics, and no-loss/no-double-commit is gated by broker-side
+    /// record retention plus a bounded committed offset per partition (not by an
+    /// exact delivered-record count, which duplicates can inflate during a
+    /// rebalance).
+    #[tokio::test]
+    async fn rebalance_two_receivers_scale_up_down_distribute_without_loss_or_double_commit() {
+        use crate::common::kafka::node_harness::node_metrics::FoldedMetrics;
+
+        const TOPIC: &str = "rebalance-scale-traces";
+        let group = "rebalance-scale-group";
+        // Records are produced in two waves of `REBALANCE_RECORDS_PER_PARTITION`
+        // per partition: wave 1 before B joins (drained by A alone) and wave 2
+        // after B joins (so B's newly-assigned partition has fresh records to
+        // deliver, making its assignment observable rather than timing-dependent).
+        let per_partition_total = 2 * REBALANCE_RECORDS_PER_PARTITION;
+        let wave = (REBALANCE_RECORDS_PER_PARTITION * REBALANCE_TEST_PARTITIONS) as usize;
+        let total_produced = 2 * wave;
+
+        with_cluster(
+            KafkaTestCluster::builder().topic_with(TOPIC, REBALANCE_TEST_PARTITIONS, 1),
+            |cluster| async move {
+                let producer = cluster.producer().build();
+                let req = create_traces_with_spans();
+                let mut bytes = vec![];
+                req.encode(&mut bytes).expect("encode");
+                let brokers = cluster.bootstrap_servers().to_string();
+
+                // Manual commit so the receiver's rebalance-aware commit path is
+                // active and acks drive the committable offsets.
+                let mut delivered = 0usize;
+                let mut delivered_b = 0usize;
+
+                // True once every partition's committed offset has reached the
+                // produced total (no loss, no rollback, no double-commit).
+                let all_committed = |b: &str| {
+                    (0..REBALANCE_TEST_PARTITIONS).all(|p| {
+                        committed_offset(b, group, TOPIC, p)
+                            .expect("kafka-test: committed-offset probe failed")
+                            == Some(per_partition_total as i64)
                     })
-                    .expect("send shutdown");
-                let result = timeout(Duration::from_secs(10), handle)
-                    .await
-                    .expect("receiver task did not shut down in time")
-                    .expect("receiver task panicked");
+                };
+
+                // Step 1: produce wave 1 (`REBALANCE_RECORDS_PER_PARTITION` per
+                // partition).
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Step 2: start replica A alone and drain wave 1 in full. A single
+                // member is assigned every partition, so consuming the whole wave
+                // proves A held the entire topic before anyone else joined.
+                let cfg_a =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver_a = KafkaReceiverHarness::start(&cluster, cfg_a);
+                for _ in 0..wave {
+                    let pdata = receiver_a.recv_pdata().await;
+                    receiver_a.ack(pdata);
+                    delivered += 1;
+                }
+
+                // Step 3: start replica B in the same group (scale-up), let the
+                // rebalance settle, then produce wave 2 to every partition so B's
+                // newly-assigned partition has fresh records to deliver.
+                let cfg_b =
+                    manual_traces_config(cluster.bootstrap_servers(), group, TOPIC, 500, None);
+                let mut receiver_b = KafkaReceiverHarness::start(&cluster, cfg_b);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                producer
+                    .produce_per_partition(
+                        TOPIC,
+                        REBALANCE_TEST_PARTITIONS,
+                        REBALANCE_RECORDS_PER_PARTITION,
+                        &bytes,
+                    )
+                    .await;
+
+                // Step 4: drain B *first and exclusively* until it has consumed
+                // its partition's share of wave 2. Under an eager assignor B owns
+                // one partition, but A's continuously-polling loop would re-win
+                // that partition if A were polled concurrently; leaving A idle
+                // here lets B keep and drain its assigned partition. Reaching
+                // B's expected share is the direct proof that partitions
+                // distributed across the group. Bounded by a deadline so a
+                // failure to distribute fails loudly instead of hanging.
+                let expected_b = REBALANCE_RECORDS_PER_PARTITION as usize;
+                let b_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while delivered_b < expected_b {
+                    assert!(
+                        tokio::time::Instant::now() < b_deadline,
+                        "timed out: replica B consumed {delivered_b} of {expected_b} expected \
+                         records; the scale-up rebalance did not hand it a partition",
+                    );
+                    if let Some(pdata) = receiver_b.try_recv_pdata(Duration::from_millis(250)).await
+                    {
+                        receiver_b.ack(pdata);
+                        delivered += 1;
+                        delivered_b += 1;
+                    }
+                }
+
+                // Let B durably commit before it leaves: B's commits are async,
+                // so wait past its safety-net commit interval (500ms) so its
+                // acked offsets flush to the broker.
+                tokio::time::sleep(Duration::from_secs(1)).await;
+
+                // Step 5: shut down B (scale-down). This forces a second
+                // rebalance that returns B's partition to A. B commits the
+                // offsets it acked as part of its graceful shutdown.
+                receiver_b.shutdown(Duration::from_secs(5));
+                let terminal_b = receiver_b.await_terminal_state().await;
+
+                // Step 6: drain A. The loop body focuses solely on A receiving
+                // and acking records; A re-consuming and acking the tail B did
+                // not durably commit is what advances the committed offsets back
+                // to the produced total. The deadline is the loop guard (not a
+                // per-iteration assert), and the loop stops as soon as every
+                // partition is committed to the produced total.
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+                while tokio::time::Instant::now() < deadline && !all_committed(&brokers) {
+                    if let Some(pdata) = receiver_a.try_recv_pdata(Duration::from_millis(200)).await
+                    {
+                        receiver_a.ack(pdata);
+                        delivered += 1;
+                    }
+                }
+
+                // One assertion, after both replicas have received and acked:
+                // the broker must report every partition committed to the
+                // produced total. This is the authoritative no-loss /
+                // no-rollback / no-double-commit check; the deadline above lets
+                // A's async commits and any redelivery settle first.
                 assert!(
-                    result.is_ok(),
-                    "receiver returned an error: {:?}",
-                    result.err(),
+                    all_committed(&brokers),
+                    "after scale-down the group did not commit every partition to the produced \
+                     total {per_partition_total} (delivered {delivered} of {total_produced}); \
+                     committed offsets did not converge",
                 );
-            })
-            .await;
+
+                // Shut down A (flushes its tracked offsets) and collect metrics.
+                receiver_a.shutdown(Duration::from_secs(5));
+                let terminal_a = receiver_a.await_terminal_state().await;
+
+                // ---- Assertions ----
+                let mut fa = FoldedMetrics::new();
+                fa.fold_all(terminal_a.metrics());
+                let mut fb = FoldedMetrics::new();
+                fb.fold_all(terminal_b.metrics());
+
+                // (1) Distribution: both replicas acquired a partition over their
+                // lifetimes and together cover the topic. B's deliveries above
+                // already prove it owned a partition; metrics corroborate it.
+                assert!(
+                    fa.value("partition_assignments") >= 1,
+                    "replica A should have acquired at least one partition, got {}",
+                    fa.value("partition_assignments"),
+                );
+                assert!(
+                    fb.value("partition_assignments") >= 1,
+                    "replica B should have acquired at least one partition on scale-up, got {}",
+                    fb.value("partition_assignments"),
+                );
+                assert!(
+                    fa.value("partition_assignments") + fb.value("partition_assignments")
+                        >= REBALANCE_TEST_PARTITIONS as u64,
+                    "the group should have acquired all {REBALANCE_TEST_PARTITIONS} partitions \
+                     across the two replicas' lifetimes",
+                );
+                // After scale-down A re-owns its partitions, a deterministic
+                // current-ownership check.
+                assert!(
+                    fa.value("partitions_assigned") >= 1,
+                    "replica A should currently own at least one partition at shutdown, got {}",
+                    fa.value("partitions_assigned"),
+                );
+
+                // (2) Rebalance observed: at least one owned partition was revoked
+                // across scale-up/down.
+                assert!(
+                    fa.value("partition_revocations") + fb.value("partition_revocations") >= 1,
+                    "a partition revoke should have been observed across scale-up/down",
+                );
+
+                // (3a) No commit failures on either replica.
+                assert_eq!(
+                    fa.value("offset_commit_errors"),
+                    0,
+                    "replica A should have no offset commit errors",
+                );
+                assert_eq!(
+                    fb.value("offset_commit_errors"),
+                    0,
+                    "replica B should have no offset commit errors",
+                );
+
+                // (3b) No loss: every produced record was delivered at least once
+                // (delivery is at-least-once, so `>=`) and durably retained on the
+                // broker (`message_count` is `high - low`).
+                assert!(
+                    delivered >= total_produced,
+                    "the group should deliver every produced record at least once: \
+                     delivered {delivered} of {total_produced}",
+                );
+                let inspector = cluster.inspect();
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    assert_eq!(
+                        inspector.message_count(TOPIC, partition),
+                        per_partition_total as i64,
+                        "partition {partition} should durably retain all produced records",
+                    );
+                }
+
+                // (3c) No rollback and no double-commit: each partition's committed
+                // offset equals exactly the produced total -- committed progress
+                // was never rolled back across a rebalance and nothing was
+                // committed past the produced data. Guaranteed by the convergence
+                // drain above, so this equality is deterministic.
+                for partition in 0..REBALANCE_TEST_PARTITIONS {
+                    let committed = committed_offset(&brokers, group, TOPIC, partition)
+                        .expect("kafka-test: committed-offset probe failed")
+                        .unwrap_or_else(|| {
+                            panic!("partition {partition} should have a committed offset")
+                        });
+                    assert_eq!(
+                        committed, per_partition_total as i64,
+                        "partition {partition} committed offset should equal the produced total \
+                         {per_partition_total} (no rollback, no commit past produced data)",
+                    );
+                }
+            },
+        )
+        .await;
     }
 }

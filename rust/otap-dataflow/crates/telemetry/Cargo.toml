@@ -39,6 +39,11 @@ smallvec = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter","registry", "std", "fmt"] }
 
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-resource-detectors = { workspace = true }
+
 [dev-dependencies]
+temp-env = { workspace = true }
 tempfile = { workspace = true }
 otap-df-pdata = { workspace = true, features = ["testing"] }

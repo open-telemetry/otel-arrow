@@ -1,0 +1,11 @@
+change_type: enhancement
+
+component: engine
+
+note: Default self-telemetry `service.name`/`service.version` now come from build info (binary name and version) instead of `unknown_service`, seeded beneath config and the `OTEL_*` env detectors.
+
+issues: [3177]
+
+subtext: |
+  Precedence is config > `OTEL_SERVICE_NAME` > `OTEL_RESOURCE_ATTRIBUTES` > build-info defaults.
+  The `service_name` detector now reads `OTEL_SERVICE_NAME` only, with no `unknown_service` fallback.

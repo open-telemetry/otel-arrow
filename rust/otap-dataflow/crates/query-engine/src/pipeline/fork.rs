@@ -207,6 +207,8 @@ mod test {
         assert_eq!(result.resource_logs.len(), 0);
     }
 
+    /// Scenario: A metrics fork duplicates one metric and updates each branch independently.
+    /// Guarantees: Each branch retains its own resource group and metric description.
     #[tokio::test]
     async fn test_fork_metrics() {
         let metrics = vec![Metric::build().name("my_metric").finish()];
@@ -223,6 +225,7 @@ mod test {
         )
         .await;
 
+        assert_eq!(result.resource_metrics.len(), 2);
         assert_eq!(
             &result.resource_metrics[0].scope_metrics[0].metrics,
             &[Metric::build()
@@ -232,7 +235,7 @@ mod test {
         );
 
         assert_eq!(
-            &result.resource_metrics[0].scope_metrics[1].metrics,
+            &result.resource_metrics[1].scope_metrics[0].metrics,
             &[Metric::build()
                 .name("my_metric")
                 .description("some metric")
