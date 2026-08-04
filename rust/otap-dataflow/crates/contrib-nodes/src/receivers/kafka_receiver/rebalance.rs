@@ -1317,7 +1317,7 @@ mod tests {
         fmt.append("traces", 0);
         fmt.append("traces", 1);
         fmt.append("metrics", 3);
-        assert_eq!(fmt.as_str(), "traces-0,traces-1,metrics-3");
+        assert_eq!(fmt.as_str(), "traces:0,traces:1,metrics:3");
         assert_eq!(fmt.count(), 3);
         assert_eq!(fmt.listed_count(), 3);
         // Nothing was dropped, so no truncation marker is present.
@@ -1353,8 +1353,8 @@ mod tests {
         assert_eq!(commas, MAX_LISTED_PARTITIONS);
         // The last listed token is the one at index `MAX_LISTED_PARTITIONS - 1`;
         // nothing past the cap leaks in.
-        assert!(rendered.contains(&format!("traces-{}", MAX_LISTED_PARTITIONS - 1)));
-        assert!(!rendered.contains(&format!("traces-{MAX_LISTED_PARTITIONS}")));
+        assert!(rendered.contains(&format!("traces:{}", MAX_LISTED_PARTITIONS - 1)));
+        assert!(!rendered.contains(&format!("traces:{MAX_LISTED_PARTITIONS}")));
     }
 
     /// Scenario: exactly the cap number of tokens are appended.
