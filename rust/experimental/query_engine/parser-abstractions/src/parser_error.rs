@@ -77,8 +77,9 @@ mod test {
 
     use super::*;
 
-    /// test to ensure we don't panic when receiving a pest error with an invalid location
-    #[test]
+/// Scenario: Converting a pest error whose line/column does not exist in the provided query.
+/// Guarantees: `ParserError::from_pest_error` does not panic and falls back to a safe content slice.
+#[test]
     fn test_from_pest_error_invalid_location() {
         let pest_error = Error::<()>::new_from_pos(
             ErrorVariant::CustomError {
