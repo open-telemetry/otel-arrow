@@ -11,4 +11,5 @@ var (
 	ErrBuilderAlreadyReleased = errors.New("builder already released")
 	ErrInvalidResourceID      = errors.New("invalid resource ID")
 	ErrInvalidScopeID         = errors.New("invalid scope ID")
+	ErrTooManyRecords         = errors.New("OTel Arrow components do not currently support batch sizes larger than 65535")
 )

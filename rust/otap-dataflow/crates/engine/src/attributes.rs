@@ -47,7 +47,7 @@ pub fn config_map_to_telemetry(
 }
 
 /// Engine attributes (core id, numa node id, ...).
-#[attribute_set(name = "controller.attrs")]
+#[attribute_set(scope, name = "controller.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct EngineAttributeSet {
     /// Core identifier.
@@ -79,7 +79,7 @@ impl AttributeSetHandler for EngineEntityAttributeSet {
 }
 
 /// Pipeline attributes.
-#[attribute_set(name = "pipeline.attrs")]
+#[attribute_set(scope, name = "pipeline.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct PipelineAttributeSet {
     /// Pipeline identifier as defined in the configuration.
@@ -102,14 +102,14 @@ pub struct PipelineAttributeSet {
 /// Fields are private; the type can only be constructed through a scope-kind
 /// constructor (e.g. [`ExtensionScopeAttributeSet::pipeline`]). This enforces
 /// the invariant that every scope value has a populated payload matching its
-/// `scope.kind` discriminator — there is no way to build a "kind-less" or
+/// `scope.kind` discriminator -- there is no way to build a "kind-less" or
 /// inconsistent scope set in the public API.
 ///
 /// When new scope kinds are introduced (e.g. `"engine"`, `"group"`),
 /// add a corresponding `#[compose]` payload field below and a matching
 /// constructor; existing constructors keep new payloads at `Default` so the
 /// descriptor stays stable across scope kinds.
-#[attribute_set(name = "extension.scope.attrs")]
+#[attribute_set(scope, name = "extension.scope.attrs")]
 #[derive(Debug, Clone, Hash)]
 pub struct ExtensionScopeAttributeSet {
     /// Scope kind discriminator. Always paired with the populated payload
@@ -126,7 +126,7 @@ pub struct ExtensionScopeAttributeSet {
 impl Default for ExtensionScopeAttributeSet {
     /// Sentinel default used by the `#[compose]` macro to compute the cached
     /// composed descriptor once at startup. The produced value carries an
-    /// empty `scope.kind` and is **not** a valid scope identity — production
+    /// empty `scope.kind` and is **not** a valid scope identity -- production
     /// telemetry must construct values through a scope-kind constructor
     /// (e.g. [`ExtensionScopeAttributeSet::pipeline`]).
     fn default() -> Self {
@@ -153,7 +153,7 @@ impl ExtensionScopeAttributeSet {
 }
 
 /// Extension attributes, including the host scope.
-#[attribute_set(name = "extension.attrs")]
+#[attribute_set(scope, name = "extension.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionAttributeSet {
     /// Extension unique identifier within its host scope.
@@ -169,7 +169,7 @@ pub struct ExtensionAttributeSet {
 }
 
 /// Node attributes.
-#[attribute_set(name = "node.attrs")]
+#[attribute_set(scope, name = "node.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeAttributeSet {
     /// Node unique identifier (in scope of the pipeline).
@@ -191,7 +191,7 @@ pub struct NodeAttributeSet {
 /// This is used only when a node has non-empty `entity.extend.identity_attributes` in its config.
 /// Nodes without custom attributes use [`NodeAttributeSet`] directly, avoiding
 /// empty `custom={}` noise in telemetry output.
-#[attribute_set(name = "node.custom.attrs")]
+#[attribute_set(scope, name = "node.custom.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeWithCustomAttributeSet {
     /// Base node attributes.
@@ -204,7 +204,7 @@ pub struct NodeWithCustomAttributeSet {
 }
 
 /// Node attributes extended with a topic name.
-#[attribute_set(name = "node.topic.attrs")]
+#[attribute_set(scope, name = "node.topic.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeWithTopicAttributeSet {
     /// Base node attributes.
@@ -215,7 +215,7 @@ pub struct NodeWithTopicAttributeSet {
 }
 
 /// Node attributes (including custom telemetry attributes) extended with a topic name.
-#[attribute_set(name = "node.custom.topic.attrs")]
+#[attribute_set(scope, name = "node.custom.topic.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeWithCustomTopicAttributeSet {
     /// Base node + custom telemetry attributes.
@@ -317,7 +317,7 @@ mod tests {
 }
 
 /// Channel endpoint attributes for a node-hosted channel.
-#[attribute_set(name = "node.channel.attrs")]
+#[attribute_set(scope, name = "node.channel.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct NodeChannelAttributeSet {
     /// Unique channel identifier within the host scope.
@@ -353,7 +353,7 @@ pub struct NodeChannelAttributeSet {
 ///
 /// Extensions only have a single control-channel kind (MPSC), so `channel.kind`
 /// and `channel.type` are intentionally omitted as invariants.
-#[attribute_set(name = "extension.channel.attrs")]
+#[attribute_set(scope, name = "extension.channel.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct ExtensionChannelAttributeSet {
     /// Unique channel identifier within the host scope.

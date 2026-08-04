@@ -1,3 +1,3 @@
 # Crates
 
-![Dependencies](/docs/images/dependencies.svg)
+![Dependencies](../docs/images/dependencies.svg)

@@ -19,26 +19,28 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use otap_df_telemetry::instrument::Mmsc;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::SignalAttributes;
+use otap_df_telemetry::instrument::{Counter, Mmsc};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use otap_df_telemetry_macros::{attribute_set, metric_set};
 
 use crate::attributes::PipelineAttributeSet;
 use crate::context::PipelineContext;
+use otap_df_config::SignalType;
 use otap_df_config::policy::{FlowMetric, TelemetryPolicy};
 
 /// Metric set emitted by the start node of a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowSignalsIncomingMetrics {
+pub struct FlowConsumedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points)
     /// entering the flow range.
-    #[metric(name = "signals.incoming", unit = "{item}")]
-    pub signals_incoming: Mmsc,
+    #[metric(name = "consumed.items", unit = "{item}")]
+    pub consumed_items: Counter<u64>,
 }
 
 /// Duration metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
 pub struct FlowDurationMetrics {
     /// Sum of per-node compute durations (nanoseconds) for messages traversing the flow range.
@@ -47,26 +49,26 @@ pub struct FlowDurationMetrics {
 }
 
 /// Outgoing signal metric set emitted by the end node of a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowSignalsOutgoingMetrics {
+pub struct FlowProducedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) leaving the flow range.
-    #[metric(name = "signals.outgoing", unit = "{item}")]
-    pub signals_outgoing: Mmsc,
+    #[metric(name = "produced.items", unit = "{item}")]
+    pub produced_items: Counter<u64>,
 }
 
 /// Dropped signal metric set emitted by a decision node within a flow range.
-#[metric_set(name = "flow")]
+#[metric_set(name = "flow", measurement_attributes = SignalAttributes)]
 #[derive(Debug, Default, Clone)]
-pub struct FlowSignalsDroppedMetrics {
+pub struct FlowDroppedItemsMetrics {
     /// Number of signal items (log records, spans, or metric data points) a
     /// decision node chose to drop.
-    #[metric(name = "signals.dropped", unit = "{item}")]
-    pub signals_dropped: Mmsc,
+    #[metric(name = "dropped.items", unit = "{item}")]
+    pub dropped_items: Counter<u64>,
 }
 
 /// Entity attributes that scope a flow metric set.
-#[attribute_set(name = "flow.attrs")]
+#[attribute_set(scope, name = "flow.attrs")]
 #[derive(Debug, Clone, Default, Hash)]
 pub struct FlowAttributeSet {
     /// User-given flow identifier.
@@ -85,19 +87,19 @@ pub struct FlowAttributeSet {
     /// `flow` scope.
     #[attribute_key = "flow.purpose"]
     pub purpose: Cow<'static, str>,
-    /// Name of the decision node that recorded `signals.dropped`. Always
+    /// Name of the decision node that recorded `dropped.items`. Always
     /// emitted as the `flow.node.decision` scope attribute; carries an empty
-    /// value for the flow's incoming/outgoing/duration entity (which is not
+    /// value for the flow's consumed/produced/duration entity (which is not
     /// attributed to a specific decision node). Lets a single flow contain
     /// multiple decision nodes without conflation.
     ///
-    /// `signals.dropped` aggregates correctly across this attribute: drops at
+    /// `dropped.items` aggregates correctly across this attribute: drops at
     /// different decision nodes are disjoint (a dropped item never reaches a
     /// later node), so the sum equals the flow's total removed =
-    /// `signals.incoming - signals.outgoing`. There is deliberately no
+    /// `consumed.items - produced.items`. There is deliberately no
     /// per-node "kept" metric: a survivor count is non-additive across series
     /// nodes (nested subsets double-count) and undefined under fan-out, and the
-    /// flow-wide kept count is simply `signals.outgoing`.
+    /// flow-wide kept count is simply `produced.items`.
     #[attribute_key = "flow.node.decision"]
     pub decision: Cow<'static, str>,
     /// Pipeline attributes.
@@ -108,6 +110,22 @@ pub struct FlowAttributeSet {
 /// Index of a flow_metric within the pipeline's flow_metric table.
 pub type FlowMetricId = usize;
 
+pub(crate) const FLOW_SIGNAL_COUNT: usize = 3;
+pub(crate) type FlowItemAccumulator = [u64; FLOW_SIGNAL_COUNT];
+pub(crate) type FlowDurationAccumulator = [Mmsc; FLOW_SIGNAL_COUNT];
+
+#[must_use]
+pub(crate) const fn flow_signal_index(signal: SignalType) -> usize {
+    match signal {
+        SignalType::Traces => 0,
+        SignalType::Metrics => 1,
+        SignalType::Logs => 2,
+    }
+}
+
+pub(crate) const FLOW_SIGNALS: [SignalType; FLOW_SIGNAL_COUNT] =
+    [SignalType::Traces, SignalType::Metrics, SignalType::Logs];
+
 /// Per-pipeline flow_metric state.
 ///
 /// Holds the start/stop node lookup tables used during processor wiring.
@@ -115,25 +133,25 @@ pub type FlowMetricId = usize;
 /// shared) at build time; reporting happens from the processor's own
 /// telemetry path, not from this state.
 pub(crate) struct PipelineFlowMetricState {
-    /// Incoming signal metric sets indexed by internal flow index.
-    pub signals_incoming_metrics: Vec<Option<MetricSet<FlowSignalsIncomingMetrics>>>,
+    /// Consumed item metric sets indexed by internal flow index.
+    pub consumed_items_metrics: Vec<Option<MeasurementMetricSet<FlowConsumedItemsMetrics>>>,
     /// Duration metric sets indexed by internal flow index.
-    pub duration_metrics: Vec<Option<MetricSet<FlowDurationMetrics>>>,
-    /// Outgoing signal metric sets indexed by internal flow index.
-    pub signals_outgoing_metrics: Vec<Option<MetricSet<FlowSignalsOutgoingMetrics>>>,
-    /// Mapping from node index → flow metric index where this node is the end node.
+    pub duration_metrics: Vec<Option<MeasurementMetricSet<FlowDurationMetrics>>>,
+    /// Produced item metric sets indexed by internal flow index.
+    pub produced_items_metrics: Vec<Option<MeasurementMetricSet<FlowProducedItemsMetrics>>>,
+    /// Mapping from node index -> flow metric index where this node is the end node.
     pub end_nodes: HashMap<usize, usize>,
-    /// Mapping from node index → flow metric index where this node is the start node.
+    /// Mapping from node index -> flow metric index where this node is the start node.
     pub start_nodes: HashMap<usize, usize>,
     /// Decision-node candidates keyed by node index. A processor at one of
     /// these indices that declares the drop capability records
-    /// `signals.dropped` attributed to itself via `flow.node.decision`.
+    /// `dropped.items` attributed to itself via `flow.node.decision`.
     /// Populated only for flows that enable the dropped metric, for every
     /// processor node within the flow's active range (start..=end).
     pub decision_candidates: HashMap<usize, DecisionCandidate>,
 }
 
-/// A node that may record `signals.dropped` for a flow.
+/// A node that may record `dropped.items` for a flow.
 ///
 /// Carries the flow's base attribute set (with an empty `flow.node.decision`)
 /// so the runtime can register a per-node decision entity by filling in the
@@ -148,58 +166,70 @@ pub(crate) struct DecisionCandidate {
 /// Start-side measurements for a node that begins a flow_metric range.
 ///
 /// Groups the metric set and its accumulator so that they share the
-/// `Option` on `FlowMetricState` — non-start nodes pay no allocation for
+/// `Option` on `FlowMetricState` -- non-start nodes pay no allocation for
 /// either.
 #[derive(Clone)]
-pub(crate) struct IncomingFlowMetrics<Accumulator> {
-    /// Incoming signal measurement, if enabled for this flow.
-    pub signals_incoming: Option<(MetricSet<FlowSignalsIncomingMetrics>, Accumulator)>,
+pub(crate) struct ConsumedFlowMetrics<ItemAccumulator> {
+    /// Consumed item measurement, if enabled for this flow.
+    pub consumed_items: Option<(
+        MeasurementMetricSet<FlowConsumedItemsMetrics>,
+        ItemAccumulator,
+    )>,
 }
 
 /// Stop-side measurements for a node that terminates a flow_metric range.
 ///
 /// Groups the metric set and its accumulators so that they share the
-/// `Option` on `FlowMetricState` — non-stop nodes pay no allocation for
+/// `Option` on `FlowMetricState` -- non-stop nodes pay no allocation for
 /// either.
 #[derive(Clone)]
-pub(crate) struct EndFlowMetrics<Accumulator> {
+pub(crate) struct EndFlowMetrics<DurationAccumulator, ItemAccumulator> {
     /// Duration measurement, if enabled for this flow.
-    pub duration: Option<(MetricSet<FlowDurationMetrics>, Accumulator)>,
-    /// Outgoing signal measurement, if enabled for this flow.
-    pub signals_outgoing: Option<(MetricSet<FlowSignalsOutgoingMetrics>, Accumulator)>,
+    pub duration: Option<(
+        MeasurementMetricSet<FlowDurationMetrics>,
+        DurationAccumulator,
+    )>,
+    /// Produced item measurement, if enabled for this flow.
+    pub produced_items: Option<(
+        MeasurementMetricSet<FlowProducedItemsMetrics>,
+        ItemAccumulator,
+    )>,
 }
 
 /// Decision-side measurements for a node that records drop decisions
 /// within a flow_metric range.
 ///
 /// Groups the metric sets and their accumulators so that they share the
-/// `Option` on `FlowMetricState` — non-decision nodes pay no allocation for
+/// `Option` on `FlowMetricState` -- non-decision nodes pay no allocation for
 /// either.
 #[derive(Clone)]
-pub(crate) struct DecisionFlowMetrics<Accumulator> {
-    /// Dropped signal measurement, if enabled for this flow and this node is a
+pub(crate) struct DecisionFlowMetrics<ItemAccumulator> {
+    /// Dropped item measurement, if enabled for this flow and this node is a
     /// decision node.
-    pub signals_dropped: Option<(MetricSet<FlowSignalsDroppedMetrics>, Accumulator)>,
+    pub dropped_items: Option<(
+        MeasurementMetricSet<FlowDroppedItemsMetrics>,
+        ItemAccumulator,
+    )>,
 }
 
 /// Per-`EffectHandler` flow_metric state.
 ///
 /// Groups the flow_metric-related fields that every processor
 /// `EffectHandler` carries. Generic over the cell types used to store
-/// the per-message send marker and the periodic-report accumulator —
+/// the per-message send marker and the periodic-report accumulator --
 /// the local (`!Send`) handler instantiates it with `Rc<Cell<_>>` /
 /// `Cell<_>`, the shared (`Send + Sync`) handler with
 /// `Arc<Mutex<_>>` / `Arc<Mutex<_>>`. The plain fields
 /// (`is_start`, `active`) are identical in both instantiations and
 /// live here once. Start- and stop-side state lives in
-/// [`IncomingFlowMetrics`] and [`EndFlowMetrics`] and is `None` for nodes
+/// [`ConsumedFlowMetrics`] and [`EndFlowMetrics`] and is `None` for nodes
 /// that are not the corresponding endpoint of a flow_metric.
 ///
 /// All fields are `pub(crate)` so the local/shared `EffectHandler`
 /// methods can read and write them directly through the
 /// `flow_metric.<field>` access path.
 #[derive(Clone)]
-pub(crate) struct FlowMetricState<Marker, Accumulator> {
+pub(crate) struct FlowMetricState<Marker, DurationAccumulator, ItemAccumulator> {
     /// Marker for the most recent timing point on the current message's
     /// path through `process()`. Armed by `begin_process_timing` before
     /// each PData `process()` call and advanced by
@@ -214,34 +244,41 @@ pub(crate) struct FlowMetricState<Marker, Accumulator> {
     /// Whether this node is a decision node for some flow.
     pub is_decision: bool,
     /// Whether any flow_metric is configured in this pipeline. Gates the
-    /// per-message hook block (incoming counting and periodic reporting).
-    /// True even for count-only flows such as `signals.dropped`.
+    /// per-message hook block (consumed item counting and periodic reporting).
+    /// True even for count-only flows such as `dropped.items`.
     pub active: bool,
     /// Whether any flow in this pipeline tracks `compute.duration`, i.e.
     /// whether per-message send-marker timing is needed. When false,
     /// `begin_process_timing` is a no-op even if `active` is true (e.g. a
-    /// `signals.dropped`-only flow pays no `Instant::now()` cost).
+    /// `dropped.items`-only flow pays no `Instant::now()` cost).
     pub needs_timing: bool,
     /// Start-side measurements (metric set + accumulator).
-    /// `None` when this node is not a flow_metric start node — non-start
+    /// `None` when this node is not a flow_metric start node -- non-start
     /// nodes pay no allocation cost for the metric set or accumulator.
-    pub incoming: IncomingFlowMetrics<Accumulator>,
+    pub consumed: ConsumedFlowMetrics<ItemAccumulator>,
     /// End-side measurements.
-    pub end: EndFlowMetrics<Accumulator>,
+    pub end: EndFlowMetrics<DurationAccumulator, ItemAccumulator>,
     /// Decision-side measurements (dropped).
     /// Leaving this as 'DecisionFlowMetrics' in case
     /// it will be used to represent other decision-related
     /// metrics like routing decisions.
-    pub decision: DecisionFlowMetrics<Accumulator>,
+    pub decision: DecisionFlowMetrics<ItemAccumulator>,
 }
 
 /// Concrete `FlowMetricState` for the local (`!Send`) `EffectHandler`.
-pub(crate) type LocalFlowMetricState = FlowMetricState<Rc<Cell<Option<Instant>>>, Cell<Mmsc>>;
+pub(crate) type LocalFlowMetricState = FlowMetricState<
+    Rc<Cell<Option<Instant>>>,
+    Cell<FlowDurationAccumulator>,
+    Cell<FlowItemAccumulator>,
+>;
 
 /// Concrete `FlowMetricState` for the shared (`Send + Sync`)
 /// `EffectHandler`.
-pub(crate) type SharedFlowMetricState =
-    FlowMetricState<Arc<Mutex<Option<Instant>>>, Arc<Mutex<Mmsc>>>;
+pub(crate) type SharedFlowMetricState = FlowMetricState<
+    Arc<Mutex<Option<Instant>>>,
+    Arc<Mutex<FlowDurationAccumulator>>,
+    Arc<Mutex<FlowItemAccumulator>>,
+>;
 
 impl Default for LocalFlowMetricState {
     fn default() -> Self {
@@ -252,15 +289,15 @@ impl Default for LocalFlowMetricState {
             is_decision: false,
             active: false,
             needs_timing: false,
-            incoming: IncomingFlowMetrics {
-                signals_incoming: None,
+            consumed: ConsumedFlowMetrics {
+                consumed_items: None,
             },
             end: EndFlowMetrics {
                 duration: None,
-                signals_outgoing: None,
+                produced_items: None,
             },
             decision: DecisionFlowMetrics {
-                signals_dropped: None,
+                dropped_items: None,
             },
         }
     }
@@ -275,15 +312,15 @@ impl Default for SharedFlowMetricState {
             is_decision: false,
             active: false,
             needs_timing: false,
-            incoming: IncomingFlowMetrics {
-                signals_incoming: None,
+            consumed: ConsumedFlowMetrics {
+                consumed_items: None,
             },
             end: EndFlowMetrics {
                 duration: None,
-                signals_outgoing: None,
+                produced_items: None,
             },
             decision: DecisionFlowMetrics {
-                signals_dropped: None,
+                dropped_items: None,
             },
         }
     }
@@ -302,7 +339,7 @@ impl Default for SharedFlowMetricState {
 ///
 /// Returns `Err(Error::ConfigError(InvalidUserConfig))` if any flow_metric
 /// references an unknown node, has a non-processor endpoint, or overlaps
-/// with another flow_metric — these are configuration mistakes that should
+/// with another flow_metric -- these are configuration mistakes that should
 /// fail pipeline startup rather than be silently skipped.
 pub(crate) fn build_flow_metric_state(
     telemetry_policy: &TelemetryPolicy,
@@ -311,9 +348,9 @@ pub(crate) fn build_flow_metric_state(
     pipeline_context: &PipelineContext,
     pipeline_connections: &[(usize, usize)],
 ) -> Result<PipelineFlowMetricState, crate::error::Error> {
-    let mut signals_incoming_metrics = Vec::new();
+    let mut consumed_items_metrics = Vec::new();
     let mut duration_metrics = Vec::new();
-    let mut signals_outgoing_metrics = Vec::new();
+    let mut produced_items_metrics = Vec::new();
     let mut end_nodes: HashMap<usize, usize> = HashMap::new();
     let mut start_nodes: HashMap<usize, usize> = HashMap::new();
     let mut decision_candidates: HashMap<usize, DecisionCandidate> = HashMap::new();
@@ -373,32 +410,32 @@ pub(crate) fn build_flow_metric_state(
         let entity_key = pipeline_context
             .metrics_registry()
             .register_entity(attrs.clone());
-        let signals_incoming_metric = flow_config.has(FlowMetric::SignalsIncoming).then(|| {
-            pipeline_context
-                .metrics_registry()
-                .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key)
+        let consumed_items_metric = flow_config.has(FlowMetric::ConsumedItems).then(|| {
+            FlowConsumedItemsMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
         });
         let duration_metric = flow_config.has(FlowMetric::ComputeDuration).then(|| {
-            pipeline_context
-                .metrics_registry()
-                .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key)
+            FlowDurationMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
         });
-        let signals_outgoing_metric = flow_config.has(FlowMetric::SignalsOutgoing).then(|| {
-            pipeline_context
-                .metrics_registry()
-                .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key)
+        let produced_items_metric = flow_config.has(FlowMetric::ProducedItems).then(|| {
+            FlowProducedItemsMetrics::register(
+                &pipeline_context.metric_set_registrar_for_entity(entity_key),
+            )
         });
 
         // Register drop decision candidates for every processor node
         // within this flow's active range (inclusive of start and end). A
         // processor at one of these indices that declares the drop
-        // capability records `signals.dropped` attributed to itself. A decision
-        // node must belong to at most one flow — otherwise its single dropped
+        // capability records `dropped.items` attributed to itself. A decision
+        // node must belong to at most one flow -- otherwise its single dropped
         // count could not be unambiguously attributed to one `flow.id`. The
         // pairwise overlap check below only rejects shared start/end nodes, so
         // we explicitly reject shared interior nodes here (e.g. fan-in/merge
         // topologies where two ranges meet at a node).
-        if flow_config.has(FlowMetric::SignalsDropped) {
+        if flow_config.has(FlowMetric::DroppedItems) {
             let (mut range_nodes, _) = active_range(start_idx, end_idx, &adjacency);
             let _ = range_nodes.insert(start_idx);
             let _ = range_nodes.insert(end_idx);
@@ -426,9 +463,9 @@ pub(crate) fn build_flow_metric_state(
         }
 
         let id = duration_metrics.len();
-        signals_incoming_metrics.push(signals_incoming_metric);
+        consumed_items_metrics.push(consumed_items_metric);
         duration_metrics.push(duration_metric);
-        signals_outgoing_metrics.push(signals_outgoing_metric);
+        produced_items_metrics.push(produced_items_metric);
         let _ = end_nodes.insert(end_idx, id);
         let _ = start_nodes.insert(start_idx, id);
         resolved_ranges.push((start_idx, end_idx, flow_config.id.clone()));
@@ -439,9 +476,9 @@ pub(crate) fn build_flow_metric_state(
     }
 
     Ok(PipelineFlowMetricState {
-        signals_incoming_metrics,
+        consumed_items_metrics,
         duration_metrics,
-        signals_outgoing_metrics,
+        produced_items_metrics,
         end_nodes,
         start_nodes,
         decision_candidates,
@@ -559,9 +596,9 @@ impl PipelineFlowMetricState {
     #[allow(dead_code)]
     pub fn empty() -> Self {
         Self {
-            signals_incoming_metrics: Vec::new(),
+            consumed_items_metrics: Vec::new(),
             duration_metrics: Vec::new(),
-            signals_outgoing_metrics: Vec::new(),
+            produced_items_metrics: Vec::new(),
             end_nodes: HashMap::new(),
             start_nodes: HashMap::new(),
             decision_candidates: HashMap::new(),
@@ -571,9 +608,9 @@ impl PipelineFlowMetricState {
     /// Returns `true` if any flow_metrics are configured.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.signals_incoming_metrics.iter().any(Option::is_some)
+        self.consumed_items_metrics.iter().any(Option::is_some)
             || self.duration_metrics.iter().any(Option::is_some)
-            || self.signals_outgoing_metrics.iter().any(Option::is_some)
+            || self.produced_items_metrics.iter().any(Option::is_some)
             || !self.decision_candidates.is_empty()
     }
 
@@ -581,7 +618,7 @@ impl PipelineFlowMetricState {
     /// per-message send-marker timing (`Instant::now()`) is needed.
     ///
     /// Distinct from [`is_active`](Self::is_active): a count-only flow (e.g.
-    /// `signals.dropped`) is active but needs no timing, so it must not pay
+    /// `dropped.items`) is active but needs no timing, so it must not pay
     /// the per-message `Instant::now()` cost.
     #[must_use]
     pub fn needs_timing(&self) -> bool {
@@ -600,54 +637,64 @@ mod tests {
         let entity_key = ctx
             .metrics_registry()
             .register_entity(FlowAttributeSet::default());
-        let signals_incoming_metric = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsIncomingMetrics>(entity_key);
-        let duration_metric = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowDurationMetrics>(entity_key);
-        let signals_outgoing_metric = ctx
-            .metrics_registry()
-            .register_metric_set_for_entity::<FlowSignalsOutgoingMetrics>(entity_key);
+        let registrar = ctx.metric_set_registrar_for_entity(entity_key);
+        let consumed_items_metric = FlowConsumedItemsMetrics::register(&registrar);
+        let duration_metric = FlowDurationMetrics::register(&registrar);
+        let produced_items_metric = FlowProducedItemsMetrics::register(&registrar);
         PipelineFlowMetricState {
-            signals_incoming_metrics: vec![Some(signals_incoming_metric)],
+            consumed_items_metrics: vec![Some(consumed_items_metric)],
             duration_metrics: vec![Some(duration_metric)],
-            signals_outgoing_metrics: vec![Some(signals_outgoing_metric)],
+            produced_items_metrics: vec![Some(produced_items_metric)],
             end_nodes: HashMap::from([(2, 0)]),
             start_nodes: HashMap::from([(0, 0)]),
             decision_candidates: HashMap::new(),
         }
     }
 
+    /// Scenario: a pipeline has no configured flow metric sets.
+    /// Guarantees: the flow metric state remains inactive.
     #[test]
     fn empty_state_is_inactive() {
         let state = PipelineFlowMetricState::empty();
         assert!(!state.is_active());
     }
 
+    /// Scenario: a pipeline has at least one configured flow metric set.
+    /// Guarantees: the flow metric state is active.
     #[test]
     fn nonempty_state_is_active() {
         let state = one_flow_metric_state();
         assert!(state.is_active());
     }
 
+    /// Scenario: compute-duration observations are recorded for one signal bucket.
+    /// Guarantees: the bucket retains the observation count, range, and sum.
     #[test]
     fn direct_record_increments_mmsc() {
         let mut state = one_flow_metric_state();
         state.duration_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .compute_duration
             .record(100.0);
         state.duration_metrics[0]
             .as_mut()
             .unwrap()
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .compute_duration
             .record(200.0);
 
         let snap = state.duration_metrics[0]
             .as_mut()
             .unwrap()
+            .get(SignalAttributes {
+                signal: SignalType::Logs,
+            })
             .compute_duration
             .get();
         assert_eq!(snap.count, 2);
@@ -656,45 +703,63 @@ mod tests {
         assert!((snap.sum - 300.0).abs() < f64::EPSILON);
     }
 
+    /// Scenario: consumed and produced items are recorded for one signal bucket.
+    /// Guarantees: each counter accumulates its item total independently.
     #[test]
-    fn direct_record_increments_items_mmsc() {
+    fn direct_record_increments_items() {
         let mut state = one_flow_metric_state();
-        state.signals_incoming_metrics[0]
+        state.consumed_items_metrics[0]
             .as_mut()
             .unwrap()
-            .signals_incoming
-            .record(10.0);
-        state.signals_incoming_metrics[0]
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .consumed_items
+            .add(10);
+        state.consumed_items_metrics[0]
             .as_mut()
             .unwrap()
-            .signals_incoming
-            .record(20.0);
-        state.signals_outgoing_metrics[0]
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .consumed_items
+            .add(20);
+        state.produced_items_metrics[0]
             .as_mut()
             .unwrap()
-            .signals_outgoing
-            .record(7.0);
-        state.signals_outgoing_metrics[0]
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .produced_items
+            .add(7);
+        state.produced_items_metrics[0]
             .as_mut()
             .unwrap()
-            .signals_outgoing
-            .record(8.0);
+            .with(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .produced_items
+            .add(8);
 
-        let consumed = state.signals_incoming_metrics[0]
+        let consumed = state.consumed_items_metrics[0]
             .as_mut()
             .unwrap()
-            .signals_incoming
+            .get(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .consumed_items
             .get();
-        assert_eq!(consumed.count, 2);
-        assert!((consumed.sum - 30.0).abs() < f64::EPSILON);
+        assert_eq!(consumed, 30);
 
-        let produced = state.signals_outgoing_metrics[0]
+        let produced = state.produced_items_metrics[0]
             .as_mut()
             .unwrap()
-            .signals_outgoing
+            .get(SignalAttributes {
+                signal: SignalType::Logs,
+            })
+            .produced_items
             .get();
-        assert_eq!(produced.count, 2);
-        assert!((produced.sum - 15.0).abs() < f64::EPSILON);
+        assert_eq!(produced, 15);
     }
 
     // -- build_flow_metric_state validation tests --
@@ -737,7 +802,7 @@ mod tests {
         }
     }
 
-    /// Helper: build name→index and processor_indices for a set of node
+    /// Helper: build name->index and processor_indices for a set of node
     /// names.  All nodes are processors unless listed in `non_processors`.
     fn test_maps(
         all_nodes: &[&str],
@@ -803,8 +868,8 @@ mod tests {
             .expect("duration-only config should build");
 
         assert!(state.duration_metrics[0].is_some());
-        assert!(state.signals_incoming_metrics[0].is_none());
-        assert!(state.signals_outgoing_metrics[0].is_none());
+        assert!(state.consumed_items_metrics[0].is_none());
+        assert!(state.produced_items_metrics[0].is_none());
     }
 
     #[test]
@@ -813,7 +878,7 @@ mod tests {
         let (names, procs) = test_maps(&["a", "b", "c"], &[]);
         let edges = test_edges(&[("a", "b"), ("b", "c")], &names);
         let mut flow = sw("decisions", "a", "c");
-        flow.metrics = Some(vec![FlowMetric::SignalsDropped]);
+        flow.metrics = Some(vec![FlowMetric::DroppedItems]);
         let policy = policy_with(vec![flow]);
 
         let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
@@ -851,7 +916,7 @@ mod tests {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["solo"], &[]);
         let mut flow = sw("single", "solo", "solo");
-        flow.metrics = Some(vec![FlowMetric::SignalsDropped]);
+        flow.metrics = Some(vec![FlowMetric::DroppedItems]);
         let policy = policy_with(vec![flow]);
 
         let state = build_flow_metric_state(&policy, &names, &procs, &ctx, &[])
@@ -866,14 +931,14 @@ mod tests {
         let (ctx, _) = test_pipeline_ctx();
         // Fan-in/merge topology: two ranges meet at interior node `m`.
         // a -> m -> b  and  c -> m -> d. Neither range contains the other's
-        // start node, so the interleave check passes — but both ranges include
+        // start node, so the interleave check passes -- but both ranges include
         // `m`, which would otherwise silently overwrite the decision candidate.
         let (names, procs) = test_maps(&["a", "c", "m", "b", "d"], &[]);
         let edges = test_edges(&[("a", "m"), ("c", "m"), ("m", "b"), ("m", "d")], &names);
         let mut flow1 = sw("flow1", "a", "b");
-        flow1.metrics = Some(vec![FlowMetric::SignalsDropped]);
+        flow1.metrics = Some(vec![FlowMetric::DroppedItems]);
         let mut flow2 = sw("flow2", "c", "d");
-        flow2.metrics = Some(vec![FlowMetric::SignalsDropped]);
+        flow2.metrics = Some(vec![FlowMetric::DroppedItems]);
         let policy = policy_with(vec![flow1, flow2]);
 
         let err = build_flow_metric_state(&policy, &names, &procs, &ctx, &edges)
@@ -966,7 +1031,7 @@ mod tests {
     fn disjoint_flow_metrics_are_both_registered() {
         let (ctx, _) = test_pipeline_ctx();
         let (names, procs) = test_maps(&["a", "b", "c", "d"], &[]);
-        // Non-overlapping: a→b and c→d.
+        // Non-overlapping: a->b and c->d.
         let policy = policy_with(vec![sw("sw1", "a", "b"), sw("sw2", "c", "d")]);
 
         let edges = test_edges(&[("a", "b"), ("b", "c"), ("c", "d")], &names);
@@ -976,8 +1041,8 @@ mod tests {
         assert_eq!(state.duration_metrics.len(), 2);
         assert!(state.start_nodes.contains_key(&0)); // "a"
         assert!(state.start_nodes.contains_key(&2)); // "c"
-        assert_eq!(state.end_nodes.get(&1), Some(&0)); // "b" → sw1
-        assert_eq!(state.end_nodes.get(&3), Some(&1)); // "d" → sw2
+        assert_eq!(state.end_nodes.get(&1), Some(&0)); // "b" -> sw1
+        assert_eq!(state.end_nodes.get(&3), Some(&1)); // "d" -> sw2
     }
 
     // Validation of flow metric interleaving detection.

@@ -53,7 +53,7 @@ pub(super) enum Action {
     },
 
     /// Send pdata with optional ack/nack subscriber interest and an attached
-    /// peer socket address — mirrors what receivers do at request acceptance.
+    /// peer socket address -- mirrors what receivers do at request acceptance.
     SendPdataWithPeer {
         interests: Interests,
         payload: OtapPayload,

@@ -52,11 +52,12 @@ use otap_df_engine::message::{ExporterInbox, Message};
 use otap_df_engine::node::NodeId;
 use otap_df_engine::terminal_state::TerminalState;
 use otap_df_otap::OTAP_EXPORTER_FACTORIES;
-use otap_df_otap::metrics::ExporterPDataMetrics;
+use otap_df_otap::metrics::ExporterPDataExportMetrics;
 use otap_df_otap::pdata::OtapPdata;
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
-use otap_df_telemetry::metrics::{MetricSet, MetricSetHandler};
+use otap_df_telemetry::common_attributes::{Outcome, SignalOutcomeAttributes};
+use otap_df_telemetry::metrics::{MeasurementMetricSet, MetricSet, MetricSetHandler};
 use otap_df_telemetry::otel_warn;
 use std::io::ErrorKind;
 use std::sync::Arc;
@@ -68,7 +69,7 @@ const PARQUET_EXPORTER_URN: &str = "urn:otel:exporter:parquet";
 /// Parquet exporter for OTAP Data
 pub struct ParquetExporter {
     config: config::Config,
-    pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
+    pdata_metrics: Option<MeasurementMetricSet<ExporterPDataExportMetrics>>,
     io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
 }
 
@@ -120,7 +121,7 @@ impl ParquetExporter {
             }
         })?;
 
-        let pdata_metrics = pipeline_ctx.register_metrics::<ExporterPDataMetrics>();
+        let pdata_metrics = ExporterPDataExportMetrics::register(&pipeline_ctx);
         let io_metrics = pipeline_ctx.register_metrics::<metrics::ParquetExporterMetrics>();
 
         Ok(ParquetExporter {
@@ -132,15 +133,13 @@ impl ParquetExporter {
 
     fn terminal_state(
         deadline: Instant,
-        pdata_metrics: Option<MetricSet<ExporterPDataMetrics>>,
+        mut pdata_metrics: Option<MeasurementMetricSet<ExporterPDataExportMetrics>>,
         io_metrics: Option<MetricSet<metrics::ParquetExporterMetrics>>,
     ) -> TerminalState {
         let mut snapshots = Vec::new();
 
-        if let Some(metrics) = &pdata_metrics {
-            if metrics.needs_flush() {
-                snapshots.push(metrics.snapshot());
-            }
+        if let Some(metrics) = &mut pdata_metrics {
+            snapshots.extend(metrics.terminal_snapshots());
         }
 
         if let Some(metrics) = &io_metrics {
@@ -240,7 +239,7 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     mut metrics_reporter,
                 }) => {
                     if let Some(metrics) = self.pdata_metrics.as_mut() {
-                        _ = metrics_reporter.report(metrics);
+                        _ = metrics_reporter.report_measurement(metrics);
                     }
                     if let Some(metrics) = self.io_metrics.as_mut() {
                         _ = metrics_reporter.report(metrics);
@@ -308,15 +307,16 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     // Note: context is not used
                     let (_context, payload) = pdata.into_parts();
 
-                    // Mark as consumed for this signal
-                    if let Some(metrics) = self.pdata_metrics.as_mut() {
-                        metrics.inc_consumed(signal_type);
-                    }
-
                     let mut otap_batch: OtapArrowRecords =
                         payload.try_into_with_default().inspect_err(|_| {
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics.inc_failed(signal_type);
+                                metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .messages
+                                    .inc();
                             }
                         })?;
 
@@ -324,7 +324,13 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     // to unvalidated parquet records
                     otap_batch.decode_transport_optimized_ids().map_err(|e| {
                         if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics.inc_failed(signal_type);
+                            metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                         }
                         let source_detail = format_error_sources(&e);
                         Error::ExporterError {
@@ -343,7 +349,13 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     if let Err(e) = id_gen_result {
                         // mark failure before returning
                         if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics.inc_failed(signal_type);
+                            metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                         }
                         // TODO - this is not the error handling we want long term.
                         // eventually we should have the concept of retryable & non-retryable errors and
@@ -362,7 +374,13 @@ impl Exporter<OtapPdata> for ParquetExporter {
                     transform_to_known_schema(&mut otap_batch).map_err(|e| {
                         // mark failure before returning
                         if let Some(metrics) = self.pdata_metrics.as_mut() {
-                            metrics.inc_failed(signal_type);
+                            metrics
+                                .with(SignalOutcomeAttributes {
+                                    signal: signal_type,
+                                    outcome: Outcome::Failure,
+                                })
+                                .messages
+                                .inc();
                         }
                         // TODO - Ack/Nack instead of returning error
                         let source_detail = format_error_sources(&e);
@@ -399,7 +417,13 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         Ok(stats) => {
                             // successful write
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics.inc_exported(signal_type);
+                                metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Success,
+                                    })
+                                    .messages
+                                    .inc();
                             }
                             if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, stats);
@@ -408,7 +432,13 @@ impl Exporter<OtapPdata> for ParquetExporter {
                         Err(e) => {
                             // mark failure before returning
                             if let Some(metrics) = self.pdata_metrics.as_mut() {
-                                metrics.inc_failed(signal_type);
+                                metrics
+                                    .with(SignalOutcomeAttributes {
+                                        signal: signal_type,
+                                        outcome: Outcome::Failure,
+                                    })
+                                    .messages
+                                    .inc();
                             }
                             if let Some(io) = self.io_metrics.as_mut() {
                                 record_io_metrics(io, e.stats);
@@ -1410,6 +1440,8 @@ mod test {
             });
     }
 
+    /// Scenario: The Parquet exporter successfully writes a PData message.
+    /// Guarantees: The shared terminal export metric set is reported.
     #[test]
     fn test_collect_telemetry_reports_metrics() {
         use otap_df_engine::context::ControllerContext;
@@ -1488,7 +1520,7 @@ mod test {
             pdata_tx: Sender<OtapPdata>,
             reporter: otap_df_telemetry::reporter::MetricsReporter,
         ) {
-            // Send minimal pdata to increment pdata metrics (consumed)
+            // Send minimal pdata to increment export outcome metrics.
             let logs = Consumer::default()
                 .consume_bar(&mut fixtures::create_simple_logs_arrow_record_batches(
                     SimpleDataGenOptions {
@@ -1545,26 +1577,16 @@ mod test {
             )
         }));
 
-        // Inspect registry to ensure exporter.pdata registered counters were reported
-        let mut saw_exporter_pdata = false;
-        let mut any_positive = false;
+        let mut saw_exports = false;
         telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-            if desc.name == "exporter.pdata" {
-                saw_exporter_pdata = true;
-                for (_field, value) in iter {
-                    if value.to_f64() > 0.0 {
-                        any_positive = true;
-                    }
-                }
+            let has_positive_value = iter.into_iter().any(|(_, value)| value.to_f64() > 0.0);
+            if desc.name == "exporter.pdata.exports" && has_positive_value {
+                saw_exports = true;
             }
         });
         assert!(
-            saw_exporter_pdata,
-            "expected exporter.pdata metric set to be registered"
-        );
-        assert!(
-            any_positive,
-            "expected at least one exporter.pdata counter > 0"
+            saw_exports,
+            "expected exporter.pdata.exports metrics to be reported"
         );
     }
 

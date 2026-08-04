@@ -23,6 +23,7 @@ use otap_df_telemetry::metrics::{
 };
 use otap_df_telemetry::registry::{EntityKey, MetricSetKey, TelemetryRegistryHandle};
 use std::any::Any;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
@@ -31,84 +32,10 @@ use std::sync::Arc;
 /// (without index numbers) to their engine-specific pipeline indices.
 pub type NodeNameIndex = Arc<HashMap<ConfigNodeId, EngineNodeId>>;
 
-// Generate a stable, unique identifier per process instance (base32-encoded UUID v7)
-// Choose UUID v7 for better sortability in telemetry signals
-use data_encoding::BASE32_NOPAD;
-use std::borrow::Cow;
-use std::sync::LazyLock;
-use uuid::Uuid;
-
-static PROCESS_INSTANCE_ID: LazyLock<Cow<'static, str>> = LazyLock::new(|| {
-    let uuid = Uuid::now_v7();
-    let encoded = BASE32_NOPAD.encode(uuid.as_bytes());
-    Cow::Owned(encoded)
-});
-
-// Best-effort host id detection
-fn detect_host_id() -> Option<String> {
-    // Priority 1: HOSTNAME env var
-    if let Ok(h) = std::env::var("HOSTNAME") {
-        if !h.is_empty() {
-            return Some(h);
-        }
-    }
-    // Priority 2: /etc/hostname
-    if let Ok(s) = std::fs::read_to_string("/etc/hostname") {
-        let h = s.trim().to_string();
-        if !h.is_empty() {
-            return Some(h);
-        }
-    }
-    None
-}
-
-// Best-effort container id detection (Docker/containerd/k8s) from /proc/self/cgroup
-fn detect_container_id() -> Option<String> {
-    let Ok(cg) = std::fs::read_to_string("/proc/self/cgroup") else {
-        return None;
-    };
-    // Look for 64-hex tokens which commonly represent container IDs
-    for line in cg.lines() {
-        // Format: hierarchy-ID:controller-list:cgroup-path
-        let path = line.split(':').nth(2).unwrap_or("");
-        for part in path.split('/') {
-            let token = part.trim();
-            if token.len() >= 32 && token.len() <= 128 {
-                // Heuristic: mostly hex
-                if token
-                    .chars()
-                    .all(|c| c.is_ascii_hexdigit() || c == '.' || c == '-' || c == '_')
-                {
-                    // Pick the longest plausible hex-ish token
-                    // Further refine: prefer 64-hex
-                    let hex_only: String =
-                        token.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-                    if hex_only.len() >= 32 {
-                        return Some(token.to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
-
-static HOST_ID: LazyLock<Cow<'static, str>> =
-    LazyLock::new(|| detect_host_id().map_or(Cow::Borrowed(""), Cow::Owned));
-
-static CONTAINER_ID: LazyLock<Cow<'static, str>> =
-    LazyLock::new(|| detect_container_id().map_or(Cow::Borrowed(""), Cow::Owned));
-
 /// A lightweight/cloneable controller context.
 #[derive(Clone, Debug)]
 pub struct ControllerContext {
     telemetry_registry_handle: TelemetryRegistryHandle,
-    /// Unique process instance identifier (base32-encoded UUID v7).
-    process_instance_id: Cow<'static, str>,
-    /// Host identifier, when available (e.g. hostname).
-    host_id: Cow<'static, str>,
-    /// Container identifier, when available (e.g. Docker or containerd container ID).
-    container_id: Cow<'static, str>,
     numa_node_id: usize,
     memory_pressure_state: MemoryPressureState,
 }
@@ -154,37 +81,22 @@ pub struct PipelineContext {
     topic_set: Option<Arc<dyn Any + Send + Sync>>,
 }
 
+/// Registrar that binds generated metric-set registration to an existing entity.
+///
+/// Channel-owned metric sets use this when their scope is an input or output
+/// channel rather than the node entity selected by [`PipelineContext`] itself.
+pub struct EntityMetricSetRegistrar<'a> {
+    pipeline_context: &'a PipelineContext,
+    entity_key: EntityKey,
+}
+
 impl ControllerContext {
     /// Creates a new `ControllerContext`.
+    #[must_use]
     pub fn new(telemetry_registry_handle: TelemetryRegistryHandle) -> Self {
         Self {
             telemetry_registry_handle,
-            process_instance_id: PROCESS_INSTANCE_ID.clone(),
-            host_id: HOST_ID.clone(),
-            container_id: CONTAINER_ID.clone(),
             numa_node_id: 0, // ToDo(LQ): Set NUMA node ID if available
-            memory_pressure_state: MemoryPressureState::default(),
-        }
-    }
-
-    /// Creates a `ControllerContext` with explicit auto-detected identity values.
-    ///
-    /// Test-only: the production [`new`](Self::new) constructor derives these
-    /// from the host environment, which is unsuitable for asserting the
-    /// semantic-convention mapping in [`resource_attributes`](Self::resource_attributes).
-    #[cfg(test)]
-    fn new_with_identity(
-        telemetry_registry_handle: TelemetryRegistryHandle,
-        process_instance_id: impl Into<Cow<'static, str>>,
-        host_id: impl Into<Cow<'static, str>>,
-        container_id: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        Self {
-            telemetry_registry_handle,
-            process_instance_id: process_instance_id.into(),
-            host_id: host_id.into(),
-            container_id: container_id.into(),
-            numa_node_id: 0,
             memory_pressure_state: MemoryPressureState::default(),
         }
     }
@@ -242,27 +154,6 @@ impl ControllerContext {
     pub fn register_engine_entity(&self) -> EntityKey {
         self.telemetry_registry_handle
             .register_entity(EngineEntityAttributeSet)
-    }
-
-    /// Returns the auto-detected process/host resource attributes mapped to
-    /// OpenTelemetry semantic-convention keys. Empty values are omitted.
-    /// Keys: `host.id`, `container.id`, `service.instance.id`.
-    #[must_use]
-    pub fn resource_attributes(&self) -> Vec<(String, String)> {
-        let mut out = Vec::new();
-        if !self.host_id.is_empty() {
-            out.push(("host.id".to_string(), self.host_id.to_string()));
-        }
-        if !self.container_id.is_empty() {
-            out.push(("container.id".to_string(), self.container_id.to_string()));
-        }
-        if !self.process_instance_id.is_empty() {
-            out.push((
-                "service.instance.id".to_string(),
-                self.process_instance_id.to_string(),
-            ));
-        }
-        out
     }
 
     /// Returns a handle to the telemetry registry.
@@ -417,10 +308,40 @@ impl PipelineContext {
         metrics
     }
 
+    /// Registers a measurement metric set for the given entity key and tracks it in node telemetry if present.
+    #[must_use]
+    pub fn register_measurement_metric_set_for_entity<
+        T: MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        entity_key: EntityKey,
+    ) -> MeasurementMetricSet<T> {
+        let metrics = self
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_measurement_attributes_for_entity::<T>(entity_key);
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    /// Returns a registrar for metric sets scoped to an existing entity.
+    #[must_use]
+    pub const fn metric_set_registrar_for_entity(
+        &self,
+        entity_key: EntityKey,
+    ) -> EntityMetricSetRegistrar<'_> {
+        EntityMetricSetRegistrar {
+            pipeline_context: self,
+            entity_key,
+        }
+    }
+
     /// Shared entity-resolution skeleton for the `register_*_metrics` family.
     ///
-    /// Resolves the current node's telemetry scope in priority order — active node
-    /// telemetry handle, then ambient node entity key — and registers the metric set
+    /// Resolves the current node's telemetry scope in priority order -- active node
+    /// telemetry handle, then ambient node entity key -- and registers the metric set
     /// via `for_entity`. When registering against an active node handle, the resulting
     /// metric-set key (obtained through `metric_set_key`) is tracked so the set is
     /// unregistered as part of node cleanup.
@@ -446,6 +367,7 @@ impl PipelineContext {
             {
                 with_scope(self, handle)
             }
+
             #[cfg(not(feature = "test-utils"))]
             {
                 let _ = with_scope;
@@ -456,8 +378,12 @@ impl PipelineContext {
         }
     }
 
-    /// Registers a metric set for the current node entity.
+    /// Compatibility registration for metric sets declared before `#[metric_set]`.
+    ///
+    /// New component metrics use their generated `MyMetrics::register(self)`
+    /// method, which chooses the correct registration shape automatically.
     #[must_use]
+    #[doc(hidden)]
     pub fn register_metrics<T: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
     ) -> MetricSet<T> {
@@ -665,6 +591,60 @@ impl PipelineContext {
     }
 }
 
+impl MetricSetRegistrar for EntityMetricSetRegistrar<'_> {
+    fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
+        &self,
+    ) -> MetricSet<M> {
+        self.pipeline_context
+            .register_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_metric_set<M: RegistrationMetricSetHandler + Debug + Send + Sync>(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+
+    fn register_measurement_metric_set<M: MeasurementMetricSetHandler + Debug + Send + Sync>(
+        &self,
+    ) -> MeasurementMetricSet<M> {
+        self.pipeline_context
+            .register_measurement_metric_set_for_entity(self.entity_key)
+    }
+
+    fn register_registration_and_measurement_metric_set<
+        M: RegistrationMetricSetHandler + MeasurementMetricSetHandler + Debug + Send + Sync,
+    >(
+        &self,
+        registration_attrs: &M::RegistrationAttributes,
+    ) -> MeasurementMetricSet<M> {
+        let metrics = self
+            .pipeline_context
+            .controller_context
+            .telemetry_registry_handle
+            .register_metric_set_with_registration_and_measurement_attributes_for_entity::<M>(
+                self.entity_key,
+                registration_attrs,
+            );
+        if let Some(telemetry) = current_node_telemetry_handle() {
+            telemetry.track_metric_set(metrics.metric_set_key());
+        }
+        metrics
+    }
+}
+
 impl MetricSetRegistrar for PipelineContext {
     fn register_metric_set<M: MetricSetHandler + Default + Debug + Send + Sync>(
         &self,
@@ -857,7 +837,7 @@ impl ExtensionContext {
     /// Registers a metric set for the given entity key.
     ///
     /// Unlike [`PipelineContext::register_metric_set_for_entity`], this does
-    /// not hook into any ambient node telemetry — extension entities own their
+    /// not hook into any ambient node telemetry -- extension entities own their
     /// own lifecycle via the per-variant `EntityTelemetryGuard`.
     #[must_use]
     pub fn register_metric_set_for_entity<T: MetricSetHandler + Default + Debug + Send + Sync>(
@@ -867,48 +847,5 @@ impl ExtensionContext {
         self.controller_context
             .telemetry_registry_handle
             .register_metric_set_for_entity::<T>(entity_key)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn resource_attributes_maps_semconv_keys() {
-        let ctx = ControllerContext::new_with_identity(
-            TelemetryRegistryHandle::new(),
-            "proc-123",
-            "machine-abc",
-            "container-xyz",
-        );
-
-        // All three identities present: emitted in a stable order under their
-        // OpenTelemetry semantic-convention keys.
-        assert_eq!(
-            ctx.resource_attributes(),
-            vec![
-                ("host.id".to_string(), "machine-abc".to_string()),
-                ("container.id".to_string(), "container-xyz".to_string()),
-                ("service.instance.id".to_string(), "proc-123".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn resource_attributes_omits_empty_values() {
-        // Empty host/container should be skipped entirely (no empty-valued
-        // attributes), leaving only the populated service.instance.id.
-        let ctx = ControllerContext::new_with_identity(
-            TelemetryRegistryHandle::new(),
-            "proc-123",
-            "",
-            "",
-        );
-
-        assert_eq!(
-            ctx.resource_attributes(),
-            vec![("service.instance.id".to_string(), "proc-123".to_string())]
-        );
     }
 }

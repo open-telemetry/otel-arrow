@@ -1,7 +1,9 @@
 // Copyright The OpenTelemetry Authors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Console exporter that prints OTLP data with hierarchical formatting.
+//! Console exporter that prints OTLP data in human-readable or structured formats.
+
+mod record_json;
 
 use async_trait::async_trait;
 use linkme::distributed_slice;
@@ -34,18 +36,117 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use self::record_json::RecordJsonFormatter;
+
 /// The URN for the console exporter
 pub const CONSOLE_EXPORTER_URN: &str = "urn:otel:exporter:console";
 
+/// Output formats supported by the console exporter.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsoleOutputFormat {
+    /// Human-readable hierarchical output intended for interactive inspection.
+    #[default]
+    Pretty,
+    /// One compact log record JSON object per line.
+    RecordJson,
+}
+
+/// Timestamp encodings supported by `record_json`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordJsonTimestampFormat {
+    /// UTC RFC 3339 with nanosecond precision.
+    #[default]
+    Rfc3339,
+    /// Nanoseconds since the Unix epoch as a decimal string.
+    UnixNano,
+}
+
+/// Field names supported for the `record_json` log body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordJsonBodyField {
+    /// Emit the log body under `body`.
+    #[default]
+    Body,
+    /// Emit the log body under `message`.
+    Message,
+}
+
+/// Int64 encodings supported by `record_json`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordJsonInt64Format {
+    /// Emit int64 values as JSON integers.
+    #[default]
+    Number,
+    /// Emit int64 values as decimal strings.
+    String,
+}
+
+/// Format-specific configuration for `record_json`.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+pub struct RecordJsonConfig {
+    /// Timestamp encoding (default: rfc3339).
+    #[serde(default)]
+    pub timestamp_format: RecordJsonTimestampFormat,
+    /// Log body field name (default: body).
+    #[serde(default)]
+    pub body_field: RecordJsonBodyField,
+    /// Int64 encoding (default: number).
+    #[serde(default)]
+    pub int64_format: RecordJsonInt64Format,
+    /// Include resource attributes in every record (default: false).
+    #[serde(default)]
+    pub resource: bool,
+    /// Include scope context in every record (default: true).
+    #[serde(default = "default_record_json_scope")]
+    pub scope: bool,
+    /// Include OpenTelemetry bookkeeping fields (default: false).
+    #[serde(default)]
+    pub otel: bool,
+}
+
+impl Default for RecordJsonConfig {
+    fn default() -> Self {
+        Self {
+            timestamp_format: RecordJsonTimestampFormat::default(),
+            body_field: RecordJsonBodyField::default(),
+            int64_format: RecordJsonInt64Format::default(),
+            resource: false,
+            scope: default_record_json_scope(),
+            otel: false,
+        }
+    }
+}
+
 /// Configuration for the console exporter
-#[derive(Debug, Clone, Default, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ConsoleExporterConfig {
+    /// Output format (default: pretty).
+    #[serde(default)]
+    pub format: ConsoleOutputFormat,
     /// Whether to use ANSI colors in output (default: true)
     #[serde(default = "default_color")]
     pub color: bool,
     /// Whether to use Unicode box-drawing characters (default: true)
     #[serde(default = "default_unicode")]
     pub unicode: bool,
+    /// Format-specific options for `record_json`.
+    #[serde(default)]
+    pub record_json: RecordJsonConfig,
+}
+
+impl Default for ConsoleExporterConfig {
+    fn default() -> Self {
+        Self {
+            format: ConsoleOutputFormat::default(),
+            color: default_color(),
+            unicode: default_unicode(),
+            record_json: RecordJsonConfig::default(),
+        }
+    }
 }
 
 const fn default_color() -> bool {
@@ -56,18 +157,28 @@ const fn default_unicode() -> bool {
     true
 }
 
-/// Console exporter that prints OTLP data with hierarchical formatting
+const fn default_record_json_scope() -> bool {
+    true
+}
+
+/// Console exporter that prints OTLP data to stdout.
 pub struct ConsoleExporter {
-    formatter: HierarchicalFormatter,
+    formatter: ConsoleFormatter,
 }
 
 impl ConsoleExporter {
     /// Create a new console exporter with the given configuration.
     #[must_use]
     pub const fn new(config: ConsoleExporterConfig) -> Self {
-        Self {
-            formatter: HierarchicalFormatter::new(config.color, config.unicode),
-        }
+        let formatter = match config.format {
+            ConsoleOutputFormat::Pretty => {
+                ConsoleFormatter::Pretty(HierarchicalFormatter::new(config.color, config.unicode))
+            }
+            ConsoleOutputFormat::RecordJson => {
+                ConsoleFormatter::RecordJson(RecordJsonFormatter::new(config.record_json))
+            }
+        };
+        Self { formatter }
     }
 }
 
@@ -167,6 +278,47 @@ impl ConsoleExporter {
     }
 }
 
+/// Runtime-selected console formatter.
+enum ConsoleFormatter {
+    Pretty(HierarchicalFormatter),
+    RecordJson(RecordJsonFormatter),
+}
+
+impl ConsoleFormatter {
+    /// Format logs and write the complete payload to stdout.
+    async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
+        let mut output = Vec::new();
+        let format_result = match self {
+            Self::Pretty(formatter) => {
+                formatter.format_logs_data_to(logs_data, &mut output);
+                Ok(())
+            }
+            Self::RecordJson(formatter) => formatter.format_logs_data_to(logs_data, &mut output),
+        };
+
+        if let Err(err) = format_result {
+            otel_error!(
+                "console.format_failed",
+                error = ?err,
+                message = "Could not format console output"
+            );
+            return;
+        }
+
+        // Note: each per-core exporter currently creates a new Tokio stdout handle for every
+        // payload. Because stdout is a process-global serialized sink, concurrent handles still
+        // contend, and large writes can be reordered or interleaved. A future implementation
+        // could move each core's complete formatted buffers through a bounded channel to one
+        // dedicated process-wide writer thread, preserving backpressure while keeping blocking
+        // I/O off the core threads. A filelog exporter could avoid this serialization by letting
+        // each core write its logs to a separate file in parallel.
+        use tokio::io::AsyncWriteExt;
+        if let Err(err) = tokio::io::stdout().write_all(&output).await {
+            otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
+        }
+    }
+}
+
 /// Tree drawing characters (Unicode or ASCII).
 #[derive(Clone, Copy)]
 struct TreeChars {
@@ -177,9 +329,9 @@ struct TreeChars {
 
 impl TreeChars {
     const UNICODE: Self = Self {
-        vertical: "│",
-        tee: "├─",
-        corner: "└─",
+        vertical: "\u{2502}",
+        tee: "\u{251C}\u{2500}",
+        corner: "\u{2514}\u{2500}",
     };
     const ASCII: Self = Self {
         vertical: "|",
@@ -209,18 +361,6 @@ impl HierarchicalFormatter {
             } else {
                 TreeChars::ASCII
             },
-        }
-    }
-
-    /// Format logs from OTLP bytes to a writer.
-    pub async fn print_logs_data<L: LogsDataView>(&self, logs_data: &L) {
-        let mut output = Vec::new();
-        self.format_logs_data_to(logs_data, &mut output);
-
-        use tokio::io::AsyncWriteExt;
-
-        if let Err(err) = tokio::io::stdout().write_all(&output).await {
-            otel_error!("console.write_failed", error = ?err, message = "Could not write to console");
         }
     }
 
@@ -407,11 +547,56 @@ fn nanos_to_time(nanos: u64) -> SystemTime {
 mod tests {
     use super::*;
     use otap_df_pdata::OtlpProtoBytes;
+    use otap_df_pdata::encode::encode_logs_otap_batch;
+    use otap_df_pdata::proto::opentelemetry::{
+        common::v1::{
+            AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList, any_value,
+        },
+        logs::v1::{LogRecord, LogsData, ResourceLogs, ScopeLogs, SeverityNumber},
+        resource::v1::Resource,
+    };
     use otap_df_pdata::testing::fixtures::logs_with_full_resource_and_scope;
+    use otap_df_pdata::views::otap::OtapLogsView;
     use prost::Message;
+    use serde_json::{Value, json};
 
+    /// Format proto logs through the raw OTLP view and parse the resulting JSON lines.
+    fn format_record_json(logs_data: &LogsData, formatter: &RecordJsonFormatter) -> Vec<Value> {
+        let bytes = OtlpProtoBytes::ExportLogsRequest(logs_data.encode_to_vec().into());
+        let logs_view = RawLogsData::try_from(&bytes).expect("logs");
+        let mut output = Vec::new();
+        formatter
+            .format_logs_data_to(&logs_view, &mut output)
+            .expect("format record JSON");
+        parse_json_lines(&output)
+    }
+
+    /// Parse a complete NDJSON buffer into individual values.
+    fn parse_json_lines(output: &[u8]) -> Vec<Value> {
+        std::str::from_utf8(output)
+            .expect("JSON output is UTF-8")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("line is valid JSON"))
+            .collect()
+    }
+
+    /// Build an AnyValue containing the supplied protobuf oneof value.
+    fn any_value(value: any_value::Value) -> AnyValue {
+        AnyValue { value: Some(value) }
+    }
+
+    /// Build a KeyValue containing the supplied protobuf oneof value.
+    fn attribute(key: &str, value: any_value::Value) -> KeyValue {
+        KeyValue {
+            key: key.to_string(),
+            value: Some(any_value(value)),
+        }
+    }
+
+    /// Scenario: the text formatter receives a fixture with multiple scopes and records.
+    /// Guarantees: the existing hierarchical text output remains byte-for-byte unchanged.
     #[test]
-    fn test_format_logs() {
+    fn text_formatter_preserves_hierarchical_output() {
         let logs_data = logs_with_full_resource_and_scope();
         let bytes = OtlpProtoBytes::ExportLogsRequest(logs_data.encode_to_vec().into());
         let formatter = HierarchicalFormatter::new(false, true);
@@ -427,13 +612,411 @@ mod tests {
         // - scope-beta/2.0.0: ERROR + DEBUG
         let expected = "\
 2025-01-15T10:30:00.000Z  RESOURCE   v1.Resource [res.id=self]
-2025-01-15T10:30:00.000Z  │ SCOPE    scope-alpha/1.0.0 [scopekey=scopeval]
-2025-01-15T10:30:00.000Z  │ ├─ INFO  event_1: first log in alpha
-2025-01-15T10:30:01.000Z  │ ├─ WARN  second log in alpha
-2025-01-15T10:30:02.000Z  │ SCOPE    scope-beta/2.0.0
-2025-01-15T10:30:02.000Z  │ ├─ HOTHOT first log in beta
-2025-01-15T10:30:03.000Z  │ └─ DEBUG event_2: [detail=no body here]
+2025-01-15T10:30:00.000Z  \u{2502} SCOPE    scope-alpha/1.0.0 [scopekey=scopeval]
+2025-01-15T10:30:00.000Z  \u{2502} \u{251C}\u{2500} INFO  event_1: first log in alpha
+2025-01-15T10:30:01.000Z  \u{2502} \u{251C}\u{2500} WARN  second log in alpha
+2025-01-15T10:30:02.000Z  \u{2502} SCOPE    scope-beta/2.0.0
+2025-01-15T10:30:02.000Z  \u{2502} \u{251C}\u{2500} HOTHOT first log in beta
+2025-01-15T10:30:03.000Z  \u{2502} \u{2514}\u{2500} DEBUG event_2: [detail=no body here]
 ";
         assert_eq!(text, expected);
+    }
+
+    /// Scenario: console configuration selects pretty output and every record JSON override.
+    /// Guarantees: pretty and record JSON defaults remain stable and invalid selectors are rejected.
+    #[test]
+    fn console_config_supports_pretty_and_record_json_options() {
+        let config: ConsoleExporterConfig =
+            serde_json::from_value(json!({})).expect("default config");
+        assert_eq!(config.format, ConsoleOutputFormat::Pretty);
+        assert!(config.color);
+        assert!(config.unicode);
+        assert_eq!(
+            config.record_json.timestamp_format,
+            RecordJsonTimestampFormat::Rfc3339
+        );
+        assert_eq!(config.record_json.body_field, RecordJsonBodyField::Body);
+        assert_eq!(
+            config.record_json.int64_format,
+            RecordJsonInt64Format::Number
+        );
+        assert!(!config.record_json.resource);
+        assert!(config.record_json.scope);
+        assert!(!config.record_json.otel);
+
+        let config: ConsoleExporterConfig =
+            serde_json::from_value(json!({"format": "pretty"})).expect("pretty config");
+        assert_eq!(config.format, ConsoleOutputFormat::Pretty);
+
+        let config: ConsoleExporterConfig = serde_json::from_value(json!({
+            "format": "record_json",
+            "color": false,
+            "unicode": false,
+            "record_json": {
+                "timestamp_format": "unix_nano",
+                "body_field": "message",
+                "int64_format": "string",
+                "resource": true,
+                "scope": false,
+                "otel": true
+            }
+        }))
+        .expect("record JSON config");
+        assert_eq!(config.format, ConsoleOutputFormat::RecordJson);
+        assert_eq!(
+            config.record_json.timestamp_format,
+            RecordJsonTimestampFormat::UnixNano
+        );
+        assert_eq!(config.record_json.body_field, RecordJsonBodyField::Message);
+        assert_eq!(
+            config.record_json.int64_format,
+            RecordJsonInt64Format::String
+        );
+        assert!(config.record_json.resource);
+        assert!(!config.record_json.scope);
+        assert!(config.record_json.otel);
+
+        for unsupported in ["text", "json", "otlp_json", "logfmt"] {
+            let result = serde_json::from_value::<ConsoleExporterConfig>(json!({
+                "format": unsupported
+            }));
+            assert!(result.is_err(), "{unsupported} should be rejected");
+        }
+        for (field, unsupported) in [
+            ("timestamp_format", "epoch"),
+            ("body_field", "log"),
+            ("int64_format", "float"),
+        ] {
+            let result = serde_json::from_value::<ConsoleExporterConfig>(json!({
+                "format": "record_json",
+                "record_json": {(field): unsupported}
+            }));
+            assert!(
+                result.is_err(),
+                "{field} value {unsupported} should be rejected"
+            );
+        }
+    }
+
+    /// Scenario: record JSON formats a hierarchy containing four log records.
+    /// Guarantees: each record is one valid line with compact fields and default scope context.
+    #[test]
+    fn record_json_emits_one_line_per_record_with_default_scope() {
+        let logs_data = logs_with_full_resource_and_scope();
+        let formatter = RecordJsonFormatter::new(RecordJsonConfig::default());
+        let values = format_record_json(&logs_data, &formatter);
+
+        assert_eq!(values.len(), 4);
+        assert!(values.iter().all(|value| value.get("resource").is_none()));
+        assert_eq!(
+            values[0],
+            json!({
+                "timestamp": "2025-01-15T10:30:00.000000000Z",
+                "observed_timestamp": "2025-01-15T10:30:00.100000000Z",
+                "severity_number": 9,
+                "body": "first log in alpha",
+                "event_name": "event_1",
+                "attributes": {},
+                "scope": {
+                    "name": "scope-alpha",
+                    "version": "1.0.0",
+                    "attributes": {"scopekey": "scopeval"}
+                }
+            })
+        );
+        assert_eq!(values[2]["severity_text"], "HOTHOT");
+        assert_eq!(values[3]["attributes"], json!({"detail": "no body here"}));
+    }
+
+    /// Scenario: record JSON changes inherited context and receives absent context views.
+    /// Guarantees: enabled context has stable empty objects and disabled context is omitted.
+    #[test]
+    fn record_json_honors_context_controls_and_stable_empty_objects() {
+        let logs_data = logs_with_full_resource_and_scope();
+        let formatter = RecordJsonFormatter::new(RecordJsonConfig {
+            resource: true,
+            scope: false,
+            ..RecordJsonConfig::default()
+        });
+        let values = format_record_json(&logs_data, &formatter);
+
+        assert_eq!(values.len(), 4);
+        for value in values {
+            assert_eq!(value["resource"], json!({"res.id": "self"}));
+            assert!(value.get("scope").is_none());
+        }
+
+        let empty_context = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord::default()],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let formatter = RecordJsonFormatter::new(RecordJsonConfig {
+            resource: true,
+            ..RecordJsonConfig::default()
+        });
+        assert_eq!(
+            format_record_json(&empty_context, &formatter),
+            vec![json!({
+                "attributes": {},
+                "resource": {},
+                "scope": {"attributes": {}}
+            })]
+        );
+    }
+
+    /// Scenario: a log record contains every AnyValue variant and duplicate attributes.
+    /// Guarantees: compact values, null handling, base64 bytes, and last-key-wins remain stable.
+    #[test]
+    fn record_json_uses_compact_value_encodings() {
+        let attributes = vec![
+            attribute("string", any_value::Value::StringValue("value".to_string())),
+            attribute("bool", any_value::Value::BoolValue(true)),
+            attribute("int", any_value::Value::IntValue(-7)),
+            attribute("double", any_value::Value::DoubleValue(1.5)),
+            attribute("nan", any_value::Value::DoubleValue(f64::NAN)),
+            attribute(
+                "positive_infinity",
+                any_value::Value::DoubleValue(f64::INFINITY),
+            ),
+            attribute(
+                "negative_infinity",
+                any_value::Value::DoubleValue(f64::NEG_INFINITY),
+            ),
+            attribute("bytes", any_value::Value::BytesValue(vec![0, 1, 255])),
+            attribute(
+                "array",
+                any_value::Value::ArrayValue(ArrayValue {
+                    values: vec![
+                        any_value(any_value::Value::BoolValue(false)),
+                        any_value(any_value::Value::IntValue(9)),
+                    ],
+                }),
+            ),
+            attribute(
+                "kvlist",
+                any_value::Value::KvlistValue(KeyValueList {
+                    values: vec![
+                        attribute(
+                            "nested",
+                            any_value::Value::StringValue("inside".to_string()),
+                        ),
+                        attribute(
+                            "duplicate",
+                            any_value::Value::StringValue("first".to_string()),
+                        ),
+                        attribute(
+                            "duplicate",
+                            any_value::Value::StringValue("last".to_string()),
+                        ),
+                        attribute(
+                            "removed",
+                            any_value::Value::StringValue("present".to_string()),
+                        ),
+                        KeyValue {
+                            key: "removed".to_string(),
+                            value: None,
+                        },
+                    ],
+                }),
+            ),
+            KeyValue {
+                key: "empty".to_string(),
+                value: Some(AnyValue { value: None }),
+            },
+            KeyValue {
+                key: "missing".to_string(),
+                value: None,
+            },
+            attribute(
+                "duplicate",
+                any_value::Value::StringValue("first".to_string()),
+            ),
+            attribute(
+                "duplicate",
+                any_value::Value::StringValue("last".to_string()),
+            ),
+            attribute(
+                "removed",
+                any_value::Value::StringValue("present".to_string()),
+            ),
+            KeyValue {
+                key: "removed".to_string(),
+                value: None,
+            },
+        ];
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope::default()),
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 42,
+                        observed_time_unix_nano: 43,
+                        severity_number: SeverityNumber::Info as i32,
+                        severity_text: "INFO".to_string(),
+                        body: Some(any_value(any_value::Value::StringValue(
+                            "message\ncontinued".to_string(),
+                        ))),
+                        attributes,
+                        dropped_attributes_count: 2,
+                        flags: 1,
+                        trace_id: (0u8..16).collect(),
+                        span_id: (16u8..24).collect(),
+                        event_name: "event".to_string(),
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let values = format_record_json(
+            &logs_data,
+            &RecordJsonFormatter::new(RecordJsonConfig::default()),
+        );
+        assert_eq!(values.len(), 1);
+        let value = &values[0];
+        assert_eq!(value["timestamp"], "1970-01-01T00:00:00.000000042Z");
+        assert_eq!(
+            value["observed_timestamp"],
+            "1970-01-01T00:00:00.000000043Z"
+        );
+        assert_eq!(value["severity_number"], 9);
+        assert_eq!(value["severity_text"], "INFO");
+        assert_eq!(value["body"], "message\ncontinued");
+        assert_eq!(value["trace_flags"], 1);
+        assert_eq!(value["trace_id"], "000102030405060708090a0b0c0d0e0f");
+        assert_eq!(value["span_id"], "1011121314151617");
+        assert_eq!(value["event_name"], "event");
+        assert!(value.get("otel").is_none());
+        assert_eq!(
+            value["attributes"],
+            json!({
+                "string": "value",
+                "bool": true,
+                "int": -7,
+                "double": 1.5,
+                "nan": null,
+                "positive_infinity": null,
+                "negative_infinity": null,
+                "bytes": "AAH/",
+                "array": [false, 9],
+                "kvlist": {
+                    "nested": "inside",
+                    "duplicate": "last"
+                },
+                "empty": null,
+                "duplicate": "last"
+            })
+        );
+    }
+
+    /// Scenario: record JSON selects Unix timestamps, message, string int64, resource, and OTel.
+    /// Guarantees: every format option changes only its documented field representation.
+    #[test]
+    fn record_json_honors_all_format_options() {
+        let logs_data = LogsData {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope::default()),
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 42,
+                        observed_time_unix_nano: 43,
+                        severity_number: SeverityNumber::Info as i32,
+                        body: Some(any_value(any_value::Value::IntValue(i64::MIN))),
+                        attributes: vec![attribute(
+                            "maximum",
+                            any_value::Value::IntValue(i64::MAX),
+                        )],
+                        dropped_attributes_count: 2,
+                        flags: 1,
+                        ..LogRecord::default()
+                    }],
+                    schema_url: "https://opentelemetry.io/schemas/scope".to_string(),
+                }],
+                schema_url: "https://opentelemetry.io/schemas/resource".to_string(),
+            }],
+        };
+
+        let default_value = &format_record_json(
+            &logs_data,
+            &RecordJsonFormatter::new(RecordJsonConfig::default()),
+        )[0];
+        assert_eq!(default_value["body"], json!(i64::MIN));
+        assert_eq!(default_value["attributes"]["maximum"], json!(i64::MAX));
+        assert!(default_value.get("message").is_none());
+
+        let formatter = RecordJsonFormatter::new(RecordJsonConfig {
+            timestamp_format: RecordJsonTimestampFormat::UnixNano,
+            body_field: RecordJsonBodyField::Message,
+            int64_format: RecordJsonInt64Format::String,
+            resource: true,
+            scope: false,
+            otel: true,
+        });
+        let values = format_record_json(&logs_data, &formatter);
+        assert_eq!(
+            values,
+            vec![json!({
+                "timestamp": "42",
+                "observed_timestamp": "43",
+                "severity_number": 9,
+                "message": i64::MIN.to_string(),
+                "attributes": {"maximum": i64::MAX.to_string()},
+                "resource": {},
+                "trace_flags": 1,
+                "otel": {
+                    "dropped_attributes_count": 2,
+                    "resource_schema_url": "https://opentelemetry.io/schemas/resource",
+                    "scope_schema_url": "https://opentelemetry.io/schemas/scope"
+                }
+            })]
+        );
+        assert!(values[0].get("body").is_none());
+        assert!(values[0].get("scope").is_none());
+    }
+
+    /// Scenario: equivalent logs are viewed from OTLP bytes and OTAP Arrow records.
+    /// Guarantees: record JSON matches for record and attribute data preserved by both backends.
+    #[test]
+    fn record_json_matches_otlp_and_otap_views() {
+        let logs_data = logs_with_full_resource_and_scope();
+        let formatter = RecordJsonFormatter::new(RecordJsonConfig {
+            resource: true,
+            ..RecordJsonConfig::default()
+        });
+        let mut otlp_values = format_record_json(&logs_data, &formatter);
+
+        // OTAP scope views do not currently expose scope name or version.
+        for value in &mut otlp_values {
+            let scope = value["scope"].as_object_mut().expect("scope object");
+            _ = scope.remove("name");
+            _ = scope.remove("version");
+        }
+
+        let otap_records = encode_logs_otap_batch(&logs_data).expect("encode OTAP logs");
+        let otap_view = OtapLogsView::try_from(&otap_records).expect("OTAP logs view");
+        let mut output = Vec::new();
+        formatter
+            .format_logs_data_to(&otap_view, &mut output)
+            .expect("format OTAP record JSON");
+        let mut otap_values = parse_json_lines(&output);
+
+        // OTAP views currently represent an absent body as an empty AnyValue.
+        for value in &mut otap_values {
+            if value.get("body") == Some(&Value::Null) {
+                _ = value.as_object_mut().expect("record object").remove("body");
+            }
+        }
+
+        assert_eq!(otap_values, otlp_values);
     }
 }

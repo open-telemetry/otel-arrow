@@ -3,6 +3,7 @@
 
 use bytes::Bytes;
 
+use otap_df_telemetry::common_attributes::HttpResponse;
 use otap_df_telemetry::otel_debug;
 use rand::{RngExt, SeedableRng, rngs::SmallRng};
 use reqwest::{
@@ -272,7 +273,10 @@ impl LogsIngestionClient {
         let response = match request.body(body).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                self.metrics.borrow_mut().add_network_error();
+                self.metrics.borrow_mut().record_http_attempt(
+                    HttpResponse::NetworkError,
+                    start.elapsed().as_millis() as f64,
+                );
                 return Err(Error::network(e));
             }
         };
@@ -280,15 +284,12 @@ impl LogsIngestionClient {
         let status_code = response.status().as_u16();
         let elapsed = start.elapsed();
 
-        // Record per-attempt status code
-        self.metrics
-            .borrow_mut()
-            .record_laclient_status_code(status_code);
+        self.metrics.borrow_mut().record_http_attempt(
+            http_response_for_status(status_code),
+            elapsed.as_millis() as f64,
+        );
 
         if response.status().is_success() {
-            self.metrics
-                .borrow_mut()
-                .add_client_success_latency(elapsed.as_millis() as f64);
             return Ok(elapsed);
         }
 
@@ -324,13 +325,26 @@ impl LogsIngestionClient {
     }
 }
 
+fn http_response_for_status(status: u16) -> HttpResponse {
+    match status {
+        200..=299 => HttpResponse::Http2xx,
+        400 => HttpResponse::Http400,
+        401 => HttpResponse::Http401,
+        403 => HttpResponse::Http403,
+        404 => HttpResponse::Http404,
+        413 => HttpResponse::Http413,
+        429 => HttpResponse::Http429,
+        500..=599 => HttpResponse::Http5xx,
+        _ => HttpResponse::Other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::metrics::AzureMonitorExporterMetrics;
     use super::super::metrics::AzureMonitorExporterMetricsTracker;
     use super::*;
+    use otap_df_engine::context::{ControllerContext, PipelineContext};
     use otap_df_telemetry::registry::TelemetryRegistryHandle;
-    use otap_df_telemetry::testing::EmptyAttributes;
     use reqwest::header::HeaderValue;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -339,10 +353,11 @@ mod tests {
 
     fn create_test_metrics() -> AzureMonitorExporterMetricsRc {
         let registry = TelemetryRegistryHandle::new();
-        let metric_set =
-            registry.register_metric_set::<AzureMonitorExporterMetrics>(EmptyAttributes());
-        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::new(
-            metric_set,
+        let controller = ControllerContext::new(registry);
+        let pipeline_ctx: PipelineContext =
+            controller.pipeline_context_with("grp".into(), "pipeline".into(), 0, 1, 0);
+        Rc::new(RefCell::new(AzureMonitorExporterMetricsTracker::register(
+            &pipeline_ctx,
         )))
     }
 
@@ -364,6 +379,15 @@ mod tests {
             .timeout(Duration::from_secs(5))
             .build()
             .expect("failed to create HTTP client")
+    }
+
+    /// Scenario: Azure Monitor returns classified client-error and unclassified HTTP statuses.
+    /// Guarantees: 400 and 404 have dedicated metric buckets; other statuses use `Other`.
+    #[test]
+    fn classifies_client_error_and_unexpected_statuses() {
+        assert_eq!(http_response_for_status(400), HttpResponse::Http400);
+        assert_eq!(http_response_for_status(404), HttpResponse::Http404);
+        assert_eq!(http_response_for_status(418), HttpResponse::Other);
     }
 
     // ==================== Construction Tests ====================

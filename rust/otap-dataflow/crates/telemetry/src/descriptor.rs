@@ -19,8 +19,8 @@ pub enum Instrument {
     Histogram,
     /// Pre-aggregated min/max/sum/count summary.
     ///
-    /// Internally tracked as an `Mmsc` instrument; the dispatcher exports the
-    /// aggregated snapshot as a synthetic OTel histogram without bucket counts.
+    /// Internally tracked as an `Mmsc` instrument; the OTLP bridge exports the
+    /// aggregated snapshot as a bucketless OTel histogram.
     Mmsc,
 }
 
@@ -110,10 +110,10 @@ pub struct AttributesDescriptor {
 
 /// Descriptor for a single per-measurement enum attribute.
 ///
-/// Measurement attributes vary per recorded datapoint. Because the value space is a
+/// Measurement attributes vary per recorded item. Because the value space is a
 /// closed `enum`, the ordered string forms of every variant are known at compile
 /// time. The number of variants is the attribute's radix in the mixed-radix
-/// bucket index used to address a metric set's datapoints.
+/// bucket index used to address a metric set's items.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct MeasurementAttributeDescriptor {
     /// Attribute key (e.g. "signal").

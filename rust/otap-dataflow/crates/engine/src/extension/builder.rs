@@ -55,7 +55,7 @@
 //! request. Letting the two execution models diverge would mean
 //! consumers observe different instance-sharing semantics depending on
 //! whether they call `require_local` vs `require_shared` on the same
-//! extension — a debugging hazard with no known legitimate use case.
+//! extension -- a debugging hazard with no known legitimate use case.
 //! Forcing a single strategy across both execution models makes the
 //! extension's behavior predictable and eliminates a combinatorial
 //! footgun.
@@ -63,7 +63,7 @@
 //! **Active + Constructed is unrepresentable.** Active extensions have
 //! a single engine-driven event loop; constructing a new instance per
 //! consumer doesn't compose with that. The `.active()` stage provides
-//! no `.constructed()` method — the invalid combination is a
+//! no `.constructed()` method -- the invalid combination is a
 //! compile-time error.
 
 use super::readiness::{ReadinessProbe, ReadinessSignaller};
@@ -99,7 +99,7 @@ fn emit_readiness_timeout_override(extension: &str, timeout: Duration) {
     }
 }
 
-// ── Decomposed (type-erased) provider outputs ────────────────────────────────
+// -- Decomposed (type-erased) provider outputs --------------------------------
 
 /// Decomposed result of a shared extension provider.
 #[doc(hidden)]
@@ -124,21 +124,21 @@ pub struct LocalDecomposed {
     pub(crate) type_id: TypeId,
 }
 
-// ── Typestate builder stages ─────────────────────────────────────────────────
+// -- Typestate builder stages -------------------------------------------------
 //
 // Each lifecycle/instance-policy axis exposes four stages so the typestate
 // statically prevents duplicate `.shared(...)` / `.local(...)` registration
 // and statically requires at least one variant before `.build()`:
 //
-//   <Axis>Stage          (empty)         → .shared() / .local()
-//   <Axis>SharedStage    (shared set)    → .local() / .build()
-//   <Axis>LocalStage     (local set)     → .shared() / .build()
-//   <Axis>CompleteStage  (both set)      → .build()
+//   <Axis>Stage          (empty)         -> .shared() / .local()
+//   <Axis>SharedStage    (shared set)    -> .local() / .build()
+//   <Axis>LocalStage     (local set)     -> .shared() / .build()
+//   <Axis>CompleteStage  (both set)      -> .build()
 //
 // Shared field-mutation logic lives in private helpers on
 // `ExtensionBundleBuilder` to keep the per-stage methods thin.
 
-// ── Active lifecycle (shared/local stages) ───────────────────────────────────
+// -- Active lifecycle (shared/local stages) -----------------------------------
 
 /// Lifecycle-selected: Active. Must register at least one variant
 /// (shared / local) before `.build()`. Instance policy is Cloned.
@@ -306,7 +306,7 @@ impl ActiveCompleteStage {
     }
 }
 
-// ── Passive lifecycle (instance-policy selection) ────────────────────────────
+// -- Passive lifecycle (instance-policy selection) ----------------------------
 
 /// Lifecycle-selected: Passive (no event loop, capabilities only).
 ///
@@ -338,7 +338,7 @@ impl PassiveStage {
     }
 }
 
-// ── Passive + Cloned (shared/local stages) ───────────────────────────────────
+// -- Passive + Cloned (shared/local stages) -----------------------------------
 
 /// Passive + Cloned (clone-per-consumer) stage. Awaiting first
 /// `.shared(...)` or `.local(...)` registration.
@@ -454,7 +454,7 @@ impl PassiveClonedCompleteStage {
     }
 }
 
-// ── Passive + Constructed (shared/local stages) ──────────────────────────────
+// -- Passive + Constructed (shared/local stages) ------------------------------
 
 /// Passive + Constructed (constructed-per-consumer) stage. Awaiting first
 /// `.shared(...)` or `.local(...)` registration.
@@ -578,13 +578,13 @@ impl PassiveConstructedCompleteStage {
     }
 }
 
-// ── Background lifecycle (engine-driven, no capabilities) ───────────────────
+// -- Background lifecycle (engine-driven, no capabilities) -------------------
 
 /// Lifecycle-selected: Background (engine drives an event loop, no
 /// capabilities exposed to nodes).
 ///
 /// Pick exactly **one** of [`shared()`](Self::shared) or
-/// [`local()`](Self::local) — the bg task instance — then `.build()`. The
+/// [`local()`](Self::local) -- the bg task instance -- then `.build()`. The
 /// flavor (shared vs local) chooses how the engine hosts the instance
 /// (Send+Clone vs !Send), but only one registration is allowed because
 /// a Background extension does not expose capabilities and there is no
@@ -667,7 +667,7 @@ impl BackgroundCompleteStage {
     }
 }
 
-// ── Builder ──────────────────────────────────────────────────────────────────
+// -- Builder ------------------------------------------------------------------
 
 /// Builder for [`ExtensionBundle`].
 ///
@@ -708,7 +708,7 @@ impl ExtensionBundleBuilder {
         }
     }
 
-    // ── Stage helpers (called by typestate stages) ──────────────────────────
+    // -- Stage helpers (called by typestate stages) --------------------------
 
     fn set_shared_active<E>(&mut self, extension: E)
     where
@@ -816,7 +816,7 @@ impl ExtensionBundleBuilder {
     /// The engine will drive an event loop for whichever sides are
     /// registered.
     ///
-    /// Instance policy is implicitly clone-per-consumer —
+    /// Instance policy is implicitly clone-per-consumer --
     /// constructed-per-consumer (factory closure) is Passive-only.
     #[must_use]
     pub fn active(self) -> ActiveStage {
@@ -839,7 +839,7 @@ impl ExtensionBundleBuilder {
     /// Select the **Background** lifecycle for this extension bundle.
     ///
     /// Background extensions are engine-driven services that run a
-    /// `start()` event loop but expose **no** capabilities to nodes —
+    /// `start()` event loop but expose **no** capabilities to nodes --
     /// periodic reporters, schedulers, health monitors, global
     /// coordinators. The engine hosts them exactly like Active
     /// extensions (same control channel, same shutdown sequencing); the
@@ -908,14 +908,14 @@ impl ExtensionBundleBuilder {
                 && local_decomposed
                     .as_ref()
                     .is_none_or(|d| d.extension.is_none())),
-            "local readiness probe registered but no active local extension — typestate broken"
+            "local readiness probe registered but no active local extension \u{2014} typestate broken"
         );
         debug_assert!(
             !(shared_probe.is_some()
                 && shared_decomposed
                     .as_ref()
                     .is_none_or(|d| d.extension.is_none())),
-            "shared readiness probe registered but no active shared extension — typestate broken"
+            "shared readiness probe registered but no active shared extension \u{2014} typestate broken"
         );
 
         let local = local_decomposed.map(|l| {

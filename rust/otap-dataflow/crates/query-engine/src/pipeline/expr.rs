@@ -174,11 +174,11 @@ impl From<&ColumnAccessor> for DataScope {
 ///
 /// Every node supports two execution methods:
 ///
-/// - [`execute_as_value`](Self::execute_as_value) — produces a [`ScopedValue`] containing actual
+/// - [`execute_as_value`](Self::execute_as_value) -- produces a [`ScopedValue`] containing actual
 ///   values. Used when the consumer needs materialized data (assignment, arithmetic, function
 ///   arguments).
 ///
-/// - [`execute_as_id_mask`](Self::execute_as_id_mask) — produces an
+/// - [`execute_as_id_mask`](Self::execute_as_id_mask) -- produces an
 ///   [`IdMask`](crate::pipeline::id_mask::IdMask) bitmap of matching IDs. Used when the consumer
 ///   only needs membership information (filtering, boolean combination).
 ///
@@ -310,7 +310,7 @@ pub(crate) enum LeafEval {
 
         /// When true, absent data (missing columns, missing attribute keys) should be
         /// treated as "passes" rather than "fails". This is set to true for `is_null()`
-        /// expressions, where a missing field means the field IS null — which is a match.
+        /// expressions, where a missing field means the field IS null -- which is a match.
         missing_data_passes: bool,
     },
 
@@ -618,7 +618,7 @@ mod test {
         let session_ctx = Pipeline::create_session_context();
         let mut pool = IdBitmapPool::new();
 
-        // checking for Traces on a Logs batch → false
+        // checking for Traces on a Logs batch -> false
         let mut op = signal_type_eval(SignalType::Traces);
 
         let result = op.execute_as_value(&otap, &session_ctx).unwrap().unwrap();
@@ -642,9 +642,9 @@ mod test {
         // This requires joining root (severity_number) with attributes (code.line.number value).
         //
         // Data:
-        //   row 0: severity_number=13, code.line.number=42  → 13 > 42 → false
-        //   row 1: severity_number=17, code.line.number=100 → 17 > 100 → false
-        //   row 2: severity_number=13, code.line.number=7   → 13 > 7 → true
+        //   row 0: severity_number=13, code.line.number=42  -> 13 > 42 -> false
+        //   row 1: severity_number=17, code.line.number=100 -> 17 > 100 -> false
+        //   row 2: severity_number=13, code.line.number=7   -> 13 > 7 -> true
         //
         // Note: severity_number is Int32 on the root batch, but the AnyValue int column is
         // Int64. We cast the left side to Int64 to match.
@@ -704,9 +704,9 @@ mod test {
         // severity_text == "WARN" AND attributes["code.namespace"] == "main"
         //
         // Data:
-        //   row 0: severity_text="WARN", code.namespace="main" → true AND true → true
-        //   row 1: severity_text="ERROR", code.namespace="test" → false AND false → false
-        //   row 2: severity_text="WARN", code.namespace="main" → true AND true → true
+        //   row 0: severity_text="WARN", code.namespace="main" -> true AND true -> true
+        //   row 1: severity_text="ERROR", code.namespace="test" -> false AND false -> false
+        //   row 2: severity_text="WARN", code.namespace="main" -> true AND true -> true
         //
         // Note: attribute str values are dictionary-encoded, so we need dict downcast enabled.
 
@@ -760,8 +760,8 @@ mod test {
 
         // attributes["nonexistent"] == "x" OR severity_text == "WARN"
         //
-        // Left side: "nonexistent" attribute doesn't exist → IdMask::None
-        // Right side: severity_text == "WARN" → rows 0 and 2 pass
+        // Left side: "nonexistent" attribute doesn't exist -> IdMask::None
+        // Right side: severity_text == "WARN" -> rows 0 and 2 pass
         // OR result: should be rows 0 and 2
 
         let left = attrs_eval(
@@ -839,9 +839,9 @@ mod test {
         //   AND severity_text == "WARN"
         //
         // Data:
-        //   row 0: namespace="main", line=42, severity="WARN" → true
-        //   row 1: namespace="test", line=100, severity="ERROR" → false
-        //   row 2: namespace="main", line=7, severity="WARN" → false (line != 42)
+        //   row 0: namespace="main", line=42, severity="WARN" -> true
+        //   row 1: namespace="test", line=100, severity="ERROR" -> false
+        //   row 2: namespace="main", line=7, severity="WARN" -> false (line != 42)
 
         // Note: attribute str values are dictionary-encoded, so we need dict downcast.
         // Attribute int values are stored in the "int" column (Int64).

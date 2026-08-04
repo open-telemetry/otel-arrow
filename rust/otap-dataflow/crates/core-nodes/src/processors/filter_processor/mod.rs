@@ -29,7 +29,8 @@ use otap_df_otap::{OTAP_PROCESSOR_FACTORIES, pdata::OtapPdata};
 use otap_df_pdata::TryIntoWithOptions;
 use otap_df_pdata::otap::OtapArrowRecords;
 use otap_df_pdata::otap::filter::IdBitmapPool;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::SignalAttributes;
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -41,7 +42,7 @@ pub const FILTER_PROCESSOR_URN: &str = "urn:otel:processor:filter";
 /// processor that outputs all data received to stdout
 pub struct FilterProcessor {
     config: Config,
-    metrics: MetricSet<FilterPdataMetrics>,
+    metrics: MeasurementMetricSet<FilterPdataMetrics>,
     compute_duration: ComputeDuration,
     /// Reusable paged-bitmap pool for filtering metric child batches across
     /// successive `Message::PData` calls. Storing the pool on the processor
@@ -90,7 +91,7 @@ impl FilterProcessor {
     #[must_use]
     #[allow(dead_code)]
     pub fn new(config: Config, pipeline_ctx: PipelineContext) -> Self {
-        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         FilterProcessor {
             config,
@@ -102,7 +103,7 @@ impl FilterProcessor {
 
     /// Creates a new FilterProcessor from a configuration object
     pub fn from_config(pipeline_ctx: PipelineContext, config: &Value) -> Result<Self, ConfigError> {
-        let metrics = pipeline_ctx.register_metrics::<FilterPdataMetrics>();
+        let metrics = FilterPdataMetrics::register(&pipeline_ctx);
         let compute_duration = ComputeDuration::new(&pipeline_ctx);
         let config: Config =
             serde_json::from_value(config.clone()).map_err(|e| ConfigError::InvalidUserConfig {
@@ -121,7 +122,7 @@ impl FilterProcessor {
 impl local::Processor<OtapPdata> for FilterProcessor {
     fn runtime_requirements(&self) -> ProcessorRuntimeRequirements {
         // The filter processor drops signal items, so it records
-        // `signals.dropped` when it lies within a flow that enables it.
+        // `dropped.items` when it lies within a flow that enables it.
         ProcessorRuntimeRequirements::none().with_drop_decisions()
     }
 
@@ -136,7 +137,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                     mut metrics_reporter,
                 } = control
                 {
-                    _ = metrics_reporter.report(&mut self.metrics);
+                    _ = metrics_reporter.report_measurement(&mut self.metrics);
                     self.compute_duration.report(&mut metrics_reporter);
                 }
                 Ok(())
@@ -149,7 +150,7 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                 let mut arrow_records: OtapArrowRecords = payload.try_into_with_default()?;
                 arrow_records.decode_transport_optimized_ids()?;
 
-                let (filtered_arrow_records, signals_consumed, signals_filtered): (
+                let (filtered_arrow_records, _signals_consumed, dropped_items): (
                     OtapArrowRecords,
                     u64,
                     u64,
@@ -205,25 +206,13 @@ impl local::Processor<OtapPdata> for FilterProcessor {
                         }
                     })?;
 
-                match signal {
-                    SignalType::Metrics => {
-                        self.metrics.metric_signals_consumed.add(signals_consumed);
-                        self.metrics.metric_signals_filtered.add(signals_filtered);
-                    }
-                    SignalType::Logs => {
-                        self.metrics.log_signals_consumed.add(signals_consumed);
-                        self.metrics.log_signals_filtered.add(signals_filtered);
-                    }
-                    SignalType::Traces => {
-                        self.metrics.span_signals_consumed.add(signals_consumed);
-                        self.metrics.span_signals_filtered.add(signals_filtered);
-                    }
-                }
+                let metric = self.metrics.with(SignalAttributes { signal });
+                metric.dropped_items.add(dropped_items);
 
                 // Record the drop flow-metric. A no-op unless this node is
-                // a decision node in a flow that enables `signals.dropped`.
-                // `signals_filtered` is the dropped count.
-                effect_handler.record_flow_signals_dropped(signals_filtered);
+                // a decision node in a flow that enables `dropped.items`.
+                // `dropped_items` is the dropped count.
+                effect_handler.record_flow_dropped_items(signal, dropped_items);
 
                 effect_handler
                     .send_message_with_source_node(OtapPdata::new(
