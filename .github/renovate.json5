@@ -82,6 +82,18 @@
       ]
     },
     {
+      // keep Azure SDK dependencies on the same repository revision
+      "groupName": "azure sdk crates",
+      "matchManagers": ["cargo"],
+      "matchDepNames": [
+        "azure_core",
+        "azure_identity"
+      ],
+      "schedule": [
+        "before 8am on Monday"
+      ]
+    },
+    {
       // group together all github action workflow changes
       // it is very rare to have issues with these upgrades
       // fine to take them together
