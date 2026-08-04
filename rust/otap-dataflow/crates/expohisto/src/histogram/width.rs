@@ -74,6 +74,24 @@ impl SlotAddr {
         (word & !sub_mask) | (count << shift)
     }
 
+    /// Adds `incr` to the counter, promised not to overflow its lane.
+    ///
+    /// Because the lane has room, the carry cannot reach the next one, so the
+    /// whole word can be added to at once. That keeps the dependency from the
+    /// loaded word to the stored word down to a single add, where clearing and
+    /// reinserting the lane would put a shift, a mask and an or on it.
+    #[inline]
+    pub(crate) const fn add_counter_in_word(&self, word: u64, incr: u64) -> u64 {
+        // Written as headroom so the assertion cannot itself overflow at U64,
+        // where a counter spans the whole word.
+        debug_assert!(
+            incr <= self.width.counter_max() - self.retrieve_counter(word),
+            "the caller must check the lane has room for incr"
+        );
+
+        word + (incr << self.shift_count())
+    }
+
     /// Physical data index, offset so that `word_base` maps to slot 0.
     ///
     /// `word_base` always sits inside the active window and the window never

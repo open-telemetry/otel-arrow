@@ -598,9 +598,48 @@ impl<const N: usize> HistogramNN<N> {
         base2_exp: i32,
         incr: u64,
     ) -> Result<(), Error> {
+        let index = self.current.scale.map_decomposed(significand, base2_exp);
+        if self.fast_increment(index, incr) {
+            return Ok(());
+        }
         self.retry_increment(incr, |h| {
             h.current.scale.map_decomposed(significand, base2_exp)
         })
+    }
+
+    /// Adds `incr` to the bucket at `index` when doing so needs no change of
+    /// geometry, returning whether it succeeded.
+    ///
+    /// This is the case almost every observation takes, and separating it lets
+    /// it compile to straight-line code: the retry loop below has to reload the
+    /// scale and window on each turn, because widening or downscaling between
+    /// turns invalidates both, and that pessimizes the common path where
+    /// neither happens.
+    ///
+    /// Bailing out is always safe. Every rejection here is a case the retry
+    /// loop handles, and nothing has been written yet.
+    #[inline]
+    fn fast_increment(&mut self, index: i32, incr: u64) -> bool {
+        let width = self.current.width;
+        let addr = width.slot_addr(index);
+        let word_index = addr.word_index();
+
+        // Outside the active window the bucket may need the window to grow,
+        // which can in turn need a downscale.
+        if word_index < self.word_start || word_index > self.word_end {
+            return false;
+        }
+
+        let data_index = addr.data_index(N, self.word_base);
+        let word = self.data[data_index];
+        let count = addr.retrieve_counter(word);
+        // Written as headroom so the check cannot overflow, whatever `incr` is.
+        if incr > width.counter_max() - count {
+            return false;
+        }
+
+        self.data[data_index] = addr.add_counter_in_word(word, incr);
+        true
     }
 
     /// Retries an increment until it succeeds, performing downscale or
