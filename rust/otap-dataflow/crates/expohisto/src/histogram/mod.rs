@@ -303,7 +303,7 @@ impl<const N: usize> HistogramNN<N> {
 
     /// Returns the slot address of a bucket index.
     #[inline]
-    const fn slot_addr(&self, slot: i32) -> SlotAddr<'_> {
+    const fn slot_addr(&self, slot: i32) -> SlotAddr {
         self.current.width.slot_addr(slot)
     }
 
@@ -336,14 +336,28 @@ impl<const N: usize> HistogramNN<N> {
     }
 
     /// Physical data index for a word index under the current mapping.
+    ///
+    /// `word_base` always sits inside the active window and the window never
+    /// exceeds `N` words, so the offset is within one turn of the ring and a
+    /// single correction replaces a modulo.
     #[inline]
     const fn data_idx(&self, widx: i32) -> usize {
-        (widx - self.word_base).rem_euclid(N as i32) as usize
+        let size = N as i32;
+        let offset = widx - self.word_base;
+        debug_assert!(
+            offset > -size && offset < size,
+            "word index is more than one turn from the base"
+        );
+        if offset < 0 {
+            (offset + size) as usize
+        } else {
+            offset as usize
+        }
     }
 
     /// Gets the value at a slot address.
     #[inline]
-    pub(super) const fn bucket_get(&self, addr: &SlotAddr<'_>) -> u64 {
+    pub(super) const fn bucket_get(&self, addr: &SlotAddr) -> u64 {
         let idx = addr.data_index(N, self.word_base);
         let word = self.data[idx];
         addr.retrieve_counter(word)
@@ -351,7 +365,7 @@ impl<const N: usize> HistogramNN<N> {
 
     /// Attempts to add `incr` to a physical slot. Returns false on overflow.
     #[inline]
-    fn bucket_try_increment(&mut self, addr: &SlotAddr<'_>, incr: u64) -> Result<(), u64> {
+    fn bucket_try_increment(&mut self, addr: &SlotAddr, incr: u64) -> Result<(), u64> {
         let idx = addr.data_index(N, self.word_base);
         let word = self.data[idx];
         let count = addr.retrieve_counter(word);
@@ -514,6 +528,7 @@ impl<const N: usize> HistogramNN<N> {
     }
 
     /// Records a value with a specified increment.
+    #[inline]
     pub fn record_incr(&mut self, value: f64, incr: NonZeroU64) -> Result<(), Error> {
         let incr = incr.get();
 
@@ -550,14 +565,26 @@ impl<const N: usize> HistogramNN<N> {
         let base2_exp = unbias_exponent(biased_exp);
 
         if self.stats.count != 0 {
-            self.stats.min = self.stats.min.min(value);
-            self.stats.max = self.stats.max.max(value);
+            // NaN was rejected above, so plain comparisons are safe and avoid
+            // the NaN and signed-zero handling f64::min and f64::max carry.
+            if value < self.stats.min {
+                self.stats.min = value;
+            }
+            if value > self.stats.max {
+                self.stats.max = value;
+            }
         } else {
             self.stats.min = value;
             self.stats.max = value;
         }
         self.update_decomposed(significand, base2_exp, incr)?;
-        self.stats.sum += value * incr as f64;
+        // The recording path always increments by one, and converting that
+        // to a float sits on the dependency chain for the sum.
+        self.stats.sum += if incr == 1 {
+            value
+        } else {
+            value * incr as f64
+        };
         self.stats.count = new_count;
         Ok(())
     }
@@ -686,34 +713,13 @@ impl<const N: usize> HistogramNN<N> {
         let addr = width.slot_addr(slot_index);
         let word_index = addr.word_index();
 
-        if self.buckets_empty() {
-            self.word_start = word_index;
-            self.word_end = self.word_start;
-            self.word_base = self.word_start;
-        } else if word_index < self.word_start {
-            let diff = (self.word_end - word_index) as usize;
-            if diff >= N {
-                return IncrResult::NeedsDownscale(HighLow {
-                    low: word_index,
-                    high: self.word_end,
-                });
+        // The common case is a word already inside the active window, which
+        // moves nothing. Testing that first keeps the emptiness check, and the
+        // load it makes, off the recording path.
+        if word_index < self.word_start || word_index > self.word_end {
+            if let Some(blocked) = self.open_word(word_index) {
+                return blocked;
             }
-            for w in word_index..self.word_start {
-                self.data[self.data_idx(w)] = 0;
-            }
-            self.word_start = word_index;
-        } else if word_index > self.word_end {
-            let diff = (word_index - self.word_start) as usize;
-            if diff >= N {
-                return IncrResult::NeedsDownscale(HighLow {
-                    low: self.word_start,
-                    high: word_index,
-                });
-            }
-            for w in (self.word_end + 1)..=word_index {
-                self.data[self.data_idx(w)] = 0;
-            }
-            self.word_end = word_index;
         }
 
         if let Err(oflow) = self.bucket_try_increment(&addr, incr) {
@@ -721,6 +727,52 @@ impl<const N: usize> HistogramNN<N> {
         }
 
         IncrResult::Ok
+    }
+
+    /// Brings `word_index` into the active window, zeroing whatever it exposes.
+    ///
+    /// Returns the downscale the caller must perform first when the word lies
+    /// further than `N` words from the opposite end of the window.
+    ///
+    /// An empty histogram keeps its one-word window anchored at `word_base`,
+    /// so its physical word is always index 0, which is the word `clear` and
+    /// `new` leave zeroed.
+    #[cold]
+    fn open_word(&mut self, word_index: i32) -> Option<IncrResult> {
+        if self.buckets_empty() {
+            self.word_start = word_index;
+            self.word_end = word_index;
+            self.word_base = word_index;
+            return None;
+        }
+
+        if word_index < self.word_start {
+            let diff = (self.word_end - word_index) as usize;
+            if diff >= N {
+                return Some(IncrResult::NeedsDownscale(HighLow {
+                    low: word_index,
+                    high: self.word_end,
+                }));
+            }
+            for w in word_index..self.word_start {
+                self.data[self.data_idx(w)] = 0;
+            }
+            self.word_start = word_index;
+        } else {
+            let diff = (word_index - self.word_start) as usize;
+            if diff >= N {
+                return Some(IncrResult::NeedsDownscale(HighLow {
+                    low: self.word_start,
+                    high: word_index,
+                }));
+            }
+            for w in (self.word_end + 1)..=word_index {
+                self.data[self.data_idx(w)] = 0;
+            }
+            self.word_end = word_index;
+        }
+
+        None
     }
 
     /// Handles the result of `try_increment`, performing downscale

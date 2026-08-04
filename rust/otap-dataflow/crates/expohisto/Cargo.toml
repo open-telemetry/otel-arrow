@@ -27,5 +27,9 @@ name = "merge"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "hot"
+harness = false
+
 [lints]
 workspace = true

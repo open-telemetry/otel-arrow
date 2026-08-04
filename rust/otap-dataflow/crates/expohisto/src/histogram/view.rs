@@ -371,7 +371,7 @@ impl<'a, const N: usize> IntoIterator for &'a BucketView<'a, N> {
 #[derive(Debug)]
 pub struct BucketsIter<'a, const N: usize> {
     hist: &'a HistogramNN<N>,
-    addr: Option<SlotAddr<'a>>,
+    addr: Option<SlotAddr>,
     remaining: usize,
 }
 

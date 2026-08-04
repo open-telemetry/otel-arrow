@@ -38,13 +38,13 @@ pub(crate) const ALL_WIDTHS: [Width; 7] = [
 
 /// Slot address for a specific width by word- and sub-index.
 #[derive(Debug)]
-pub struct SlotAddr<'a> {
-    width: &'a Width,
+pub struct SlotAddr {
+    width: Width,
     word_index: i32,
     sub_offset: u32,
 }
 
-impl<'a> SlotAddr<'a> {
+impl SlotAddr {
     #[inline]
     pub(crate) const fn word_index(&self) -> i32 {
         self.word_index
@@ -75,9 +75,23 @@ impl<'a> SlotAddr<'a> {
     }
 
     /// Physical data index, offset so that `word_base` maps to slot 0.
+    ///
+    /// `word_base` always sits inside the active window and the window never
+    /// exceeds `data_size` words, so the offset is within one turn of the ring
+    /// and a single correction replaces a modulo.
     #[inline]
     pub(crate) const fn data_index(&self, data_size: usize, word_base: i32) -> usize {
-        (self.word_index - word_base).rem_euclid(data_size as i32) as usize
+        let size = data_size as i32;
+        let offset = self.word_index - word_base;
+        debug_assert!(
+            offset > -size && offset < size,
+            "word index is more than one turn from the base"
+        );
+        if offset < 0 {
+            (offset + size) as usize
+        } else {
+            offset as usize
+        }
     }
 
     /// Returns the next address, if valid.
@@ -146,7 +160,7 @@ impl Width {
     /// Returns the (word_index, bit_shift, mask) for a slot index at this width.
     #[inline]
     #[must_use]
-    pub(crate) const fn slot_addr(&self, index: i32) -> SlotAddr<'_> {
+    pub(crate) const fn slot_addr(self, index: i32) -> SlotAddr {
         SlotAddr {
             width: self,
             word_index: self.slot_to_word_index(index),
