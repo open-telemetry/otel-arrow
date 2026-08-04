@@ -537,6 +537,11 @@ impl Mmsc {
             value >= 0.0,
             "Mmsc::record called with negative value: {value}"
         );
+        // Negative zero is counted as the zero it compares equal to, so it is
+        // normalized here. The histogram tiers already report a plain zero,
+        // and leaving the sign bit set would surface as a negative minimum in
+        // an export from this tier alone.
+        let value = if value == 0.0 { 0.0 } else { value };
         // An empty aggregation has no min/max to compare against -- both are
         // 0.0 -- so the first observation is adopted outright.
         if self.count == 0 {
@@ -1051,6 +1056,11 @@ mod tests {
         assert_eq!(mmsc.count, 1);
         assert_eq!(mmsc.sum, 0.0);
         assert_eq!(mmsc.min, 0.0);
+        // Equality cannot see the sign bit, and an exporter can.
+        assert!(
+            !mmsc.min.is_sign_negative(),
+            "minimum kept the sign of -0.0"
+        );
 
         for summary in [
             {
@@ -1065,6 +1075,10 @@ mod tests {
             },
         ] {
             assert_eq!(summary, (1, 0.0, 0.0, 0.0));
+            assert!(
+                !summary.2.is_sign_negative(),
+                "minimum kept the sign of -0.0"
+            );
         }
     }
 
