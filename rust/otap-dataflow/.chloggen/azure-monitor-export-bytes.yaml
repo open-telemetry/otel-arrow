@@ -1,0 +1,5 @@
+change_type: enhancement
+component: pipeline
+note: Add export byte counter to `azure_monitor_exporter` partitioned by `signal` and `outcome`.
+issues: [3519]
+subtext: Add the `exporter.azure_monitor.exports.bytes` metric, natural follow-up to metric changes in #3519.

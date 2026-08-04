@@ -588,6 +588,8 @@ Telemetry policy notes:
 - `normal` adds message and phase counters
 - `detailed` adds latency/duration summaries and completion unwind-depth
   distribution
+- See [Node and Flow Metrics](node-and-flow-metrics.md) to configure and
+  interpret node item metrics and processor flow metrics.
 
 Resolution semantics:
 

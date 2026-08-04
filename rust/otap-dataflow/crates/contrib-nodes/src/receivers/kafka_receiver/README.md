@@ -49,6 +49,7 @@ config:
 | `logs` | object | `{}` | Per-signal config for logs. |
 | `auto_offset_reset` | string | `latest` | Where to start consuming when no committed offset exists. |
 | `commit` | object | `{mode: manual}` | Commit configuration (see [Commit Configuration](#commit-configuration)). |
+| `lag_refresh_interval_ms` | integer | *none* | Interval between consumer-lag refreshes, in milliseconds. Enables the `consumer_lag` gauge (consumer-group lag against broker-committed offsets; see [Metric Sets](#metric-sets)). Manual commit mode only; runs off the receive loop so it never blocks processing. Off by default; recommended `60000` (60s), higher under large partition fan-out; must be > 0 when set. |
 | `session_timeout_ms` | integer | `10000` | Session timeout in milliseconds. |
 | `heartbeat_interval_ms` | integer | `3000` | Heartbeat interval in milliseconds. |
 | `min_fetch_bytes` | integer | `1` | Minimum number of bytes to fetch. |
@@ -262,9 +263,15 @@ log events. (Header values can still be surfaced via
 ##### Telemetry differences
 
 The Go receiver exposes an opt-in `telemetry.metrics.kafka_receiver_records_delay`
-gauge (consumer lag/delay) and per-metric enable toggles. This receiver emits
-always-on counters only (see [Metric Sets](#metric-sets)) -- there is no
-consumer-lag/delay gauge, no histograms, and no per-metric toggles.
+gauge (consumer lag/delay) and per-metric enable toggles. This receiver exposes
+an opt-in `consumer_lag` gauge -- consumer-group lag measured against
+broker-committed offsets (see [Metric Sets](#metric-sets)) -- enabled via
+`lag_refresh_interval_ms` (manual commit only), plus always-on counters; it has
+no histograms and no per-metric toggles. The consumer-group rebalance metrics
+and the `consumer_lag` gauge are emitted only in manual commit mode
+(`commit.mode: manual`) -- under auto-commit librdkafka owns offset management
+and rebalance handling, so those instruments and the `kafka.rebalance.*` /
+`kafka.assignment.*` events stay silent.
 
 ##### Defaults and required fields
 
@@ -615,6 +622,7 @@ The receiver validates the configuration at startup:
 10. `commit.interval_ms`, when set, must be > 0.
 11. `message_format_header` must be non-empty.
 12. `resource_attrs_from_headers` keys and their `key` fields must be non-empty.
+13. `lag_refresh_interval_ms`, when set, must be > 0.
 
 ## Examples
 
@@ -870,6 +878,12 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 
 #### `receiver.kafka`
 
+> **Note:** The consumer-group rebalance metrics (`rebalances_total`,
+> `partitions_assigned`, `partition_assignments`, `partition_revocations`,
+> `rebalance_commit_errors`) and the `consumer_lag` gauge are emitted only in
+> manual commit mode (`commit.mode: manual`). Under `commit.mode: auto` they
+> stay at zero because librdkafka owns offset management and rebalance handling.
+
 | Metric | Unit | Description |
 | --- | --- | --- |
 | `receiver.kafka.messages_received` | `{msg}` | Total messages received from Kafka across all signal types. |
@@ -890,6 +904,13 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `receiver.kafka.offset_commit_errors` | `{error}` | Number of offset commit failures. |
 | `receiver.kafka.idempotent_skips` | `{msg}` | Messages skipped due to idempotency check (duplicate detection). |
 | `receiver.kafka.topic_id_exhausted` | `{msg}` | Messages dropped because the topic ID space was exhausted (overflow guard). |
+| `receiver.kafka.rebalances_total` | `{rebalance}` | Total consumer-group rebalance (assign) events observed by this consumer. Manual commit mode only. |
+| `receiver.kafka.partitions_assigned` | `{partition}` | Current number of partitions owned by this consumer (point-in-time gauge). Manual commit mode only. |
+| `receiver.kafka.partition_assignments` | `{partition}` | Cumulative partitions newly acquired across rebalances (retained partitions not re-counted). Manual commit mode only. |
+| `receiver.kafka.partition_revocations` | `{partition}` | Cumulative genuinely-owned partitions revoked across rebalances. Manual commit mode only. |
+| `receiver.kafka.consumer_lag` | `{message}` | Mean consumer-group lag across all owned partitions: `max(0, high_watermark - broker_committed_offset)`, using offsets Kafka has acknowledged for this group. Manual commit mode only and opt-in via `lag_refresh_interval_ms`. A refresh that cannot measure every owned partition (a failed broker read, an owned partition with no committed offset yet) is abandoned and the previous value is retained; the gauge is reset to `0` when ownership drops to zero. |
+| `receiver.kafka.rebalance_commit_errors` | `{error}` | Offset commit failures during the pre-rebalance revoke. Manual commit mode only. |
+| `receiver.kafka.acks_for_revoked_partition` | `{ack}` | Acks/nacks skipped because the partition was no longer assigned. |
 
 ### Events
 
@@ -904,6 +925,24 @@ runtime metric sets may also be attached by the pipeline telemetry policy.
 | `kafka.partition_eof` | `info` | Consumer reached end of a partition. |
 | `kafka.transport_error` | `error` | A Kafka transport-level error occurred (non-fatal, consumer continues). |
 | `kafka.topic_id.exhausted` | `error` | The topic ID space was exhausted; the message was dropped to avoid a colliding ID. |
+| `kafka.receiver.drain_ingress` | `info` | Receiver-first drain started; the receiver stops admitting new Kafka records. |
+| `kafka.drain.commit_failed` | `error` | Offset commit during ingress drain failed (non-fatal). |
+| `kafka.commit.async_failed` | `error` | An asynchronous offset commit was rejected by the broker (observed on the commit callback). |
+| `kafka.rebalance.partitions_assigned` | `info` | Partitions newly assigned during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
+| `kafka.rebalance.partitions_revoked` | `info` | Owned partitions revoked during a rebalance (includes `count`, a `partitions` list truncated with a trailing `...` when it exceeds the entry cap, `listed_count`, and `truncated`). |
+| `kafka.rebalance.commit_failed` | `error` | Commit-before-revoke failed during a rebalance. |
+| `kafka.rebalance.assignment_query_failed` | `warn` | Querying the full assignment after a rebalance failed; the receiver fell back to merging the reported delta. |
+| `kafka.rebalance.error` | `warn` | librdkafka reported a rebalance error. |
+| `kafka.assignment.became_non_empty` | `info` | The owned-partition set transitioned from empty to non-empty. This is an assignment-size transition, not a consumer-group membership event: an eager rebalance revokes all partitions before reassigning, so this fires on ordinary rebalances. |
+| `kafka.assignment.became_empty` | `info` | The owned-partition set dropped back to zero partitions. Assignment-size transition only (see `kafka.assignment.became_non_empty`); it does not imply the consumer left the group. |
+| `kafka.lag.assignment_failed` | `error` | Querying the consumer assignment during a consumer-lag refresh failed; the previous `consumer_lag` value is retained. |
+| `kafka.lag.committed_offsets_failed` | `error` | Querying broker-committed offsets during a consumer-lag refresh failed; the previous `consumer_lag` value is retained. |
+| `kafka.lag.fetch_watermarks_failed` | `error` | Broker high-watermark lookup for a partition failed during consumer-lag refresh. |
+| `kafka.lag.refresh_incomplete` | `warn` | A consumer-lag refresh could not measure every owned partition -- either it exceeded its total deadline (`reason=deadline_exceeded`) or an owned partition had no committed offset yet (`reason=uncommitted_partition`); the previous `consumer_lag` value is retained. |
+| `kafka.lag.refresh_task_failed` | `error` | The off-loop consumer-lag refresh task failed to run to completion (e.g. panicked); the previous `consumer_lag` value is retained. |
+| `kafka.header.attribute.parse_bool_failed` | `error` | A Kafka header value could not be parsed as a boolean attribute. |
+| `kafka.header.attribute.parse_float_failed` | `error` | A Kafka header value could not be parsed as a float attribute. |
+| `kafka.header.attribute.parse_int_failed` | `error` | A Kafka header value could not be parsed as an integer attribute. |
 
 ## Limits
 

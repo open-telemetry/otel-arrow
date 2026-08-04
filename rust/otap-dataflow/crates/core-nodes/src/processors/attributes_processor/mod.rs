@@ -60,14 +60,13 @@ use otap_df_pdata::otap::{
     },
 };
 use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType;
-use otap_df_telemetry::metrics::MetricSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use smallvec::SmallVec;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 mod metrics;
-use self::metrics::AttributesProcessorMetrics;
 
 /// URN for the AttributesProcessor
 pub const ATTRIBUTES_PROCESSOR_URN: &str = "urn:otel:processor:attribute";
@@ -184,7 +183,7 @@ pub struct AttributesProcessor {
     has_scope_domain: bool,
     has_signal_domain: bool,
     // Metrics handle
-    metrics: MetricSet<AttributesProcessorMetrics>,
+    metrics: metrics::AttributesProcessorMetrics,
     // Opt-in compute-duration timing
     compute_duration: ComputeDuration,
 }
@@ -310,7 +309,7 @@ impl AttributesProcessor {
             has_resource_domain,
             has_scope_domain,
             has_signal_domain,
-            metrics: pipeline_ctx.register_metrics::<AttributesProcessorMetrics>(),
+            metrics: metrics::AttributesProcessorMetrics::new(&pipeline_ctx),
             compute_duration: ComputeDuration::new(&pipeline_ctx),
         })
     }
@@ -325,86 +324,63 @@ impl AttributesProcessor {
             && self.transform.hash.is_none()
     }
 
-    #[inline]
-    const fn attrs_payloads(&self, signal: SignalType) -> &'static [ArrowPayloadType] {
-        use payload_sets::*;
-
-        match (
-            self.has_resource_domain,
-            self.has_scope_domain,
-            self.has_signal_domain,
-            signal,
-        ) {
-            // Empty cases
-            (false, false, false, _) => EMPTY,
-
-            // Signal only
-            (false, false, true, SignalType::Logs) => LOGS_SIGNAL,
-            (false, false, true, SignalType::Metrics) => METRICS_SIGNAL,
-            (false, false, true, SignalType::Traces) => TRACES_SIGNAL,
-
-            // Resource only
-            (true, false, false, _) => RESOURCE_ONLY,
-
-            // Scope only
-            (false, true, false, _) => SCOPE_ONLY,
-
-            // Resource + Signal
-            (true, false, true, SignalType::Logs) => LOGS_RESOURCE_SIGNAL,
-            (true, false, true, SignalType::Metrics) => METRICS_RESOURCE_SIGNAL,
-            (true, false, true, SignalType::Traces) => TRACES_RESOURCE_SIGNAL,
-
-            // Scope + Signal
-            (false, true, true, SignalType::Logs) => LOGS_SCOPE_SIGNAL,
-            (false, true, true, SignalType::Metrics) => METRICS_SCOPE_SIGNAL,
-            (false, true, true, SignalType::Traces) => TRACES_SCOPE_SIGNAL,
-
-            // Resource + Scope (no signal)
-            (true, true, false, _) => RESOURCE_SCOPE,
-
-            // All three
-            (true, true, true, SignalType::Logs) => LOGS_ALL,
-            (true, true, true, SignalType::Metrics) => METRICS_ALL,
-            (true, true, true, SignalType::Traces) => TRACES_ALL,
-        }
-    }
-
     #[allow(clippy::result_large_err)]
     fn apply_transform_with_stats(
         &self,
         records: &mut OtapArrowRecords,
         signal: SignalType,
-    ) -> Result<(u64, u64, u64, u64, u64, u64), EngineError> {
-        let mut deleted_total: u64 = 0;
-        let mut renamed_total: u64 = 0;
-        let mut inserted_total: u64 = 0;
-        let mut upserted_total: u64 = 0;
-        let mut updated_total: u64 = 0;
-        let mut hashed_total: u64 = 0;
+    ) -> Result<SmallVec<[(metrics::TargetDomain, u64, u64, u64, u64, u64, u64); 3]>, EngineError>
+    {
+        let mut per_domain = SmallVec::new();
 
-        if !self.is_noop() {
-            let payloads = self.attrs_payloads(signal);
-            for &payload_ty in payloads {
-                let stats = apply_attribute_transform(records, payload_ty, &self.transform, true)?
-                    .unwrap_or_default();
-
-                deleted_total += stats.deleted_entries;
-                renamed_total += stats.renamed_entries;
-                inserted_total += stats.inserted_entries;
-                upserted_total += stats.upserted_entries;
-                updated_total += stats.updated_entries;
-                hashed_total += stats.hashed_entries;
-            }
+        if self.is_noop() {
+            return Ok(per_domain);
         }
 
-        Ok((
-            deleted_total,
-            renamed_total,
-            inserted_total,
-            upserted_total,
-            updated_total,
-            hashed_total,
-        ))
+        // Helper closure to aggregate stats across a slice of payload types.
+        let mut apply_domain =
+            |payloads: &[ArrowPayloadType]| -> Result<(u64, u64, u64, u64, u64, u64), EngineError> {
+                let mut deleted = 0u64;
+                let mut renamed = 0u64;
+                let mut inserted = 0u64;
+                let mut upserted = 0u64;
+                let mut updated = 0u64;
+                let mut hashed = 0u64;
+                for &payload_ty in payloads {
+                    let stats =
+                        apply_attribute_transform(records, payload_ty, &self.transform, true)?
+                            .unwrap_or_default();
+                    deleted += stats.deleted_entries;
+                    renamed += stats.renamed_entries;
+                    inserted += stats.inserted_entries;
+                    upserted += stats.upserted_entries;
+                    updated += stats.updated_entries;
+                    hashed += stats.hashed_entries;
+                }
+                Ok((deleted, renamed, inserted, upserted, updated, hashed))
+            };
+
+        if self.has_signal_domain {
+            let payloads = match signal {
+                SignalType::Logs => payload_sets::LOGS_SIGNAL,
+                SignalType::Metrics => payload_sets::METRICS_SIGNAL,
+                SignalType::Traces => payload_sets::TRACES_SIGNAL,
+            };
+            let (d, r, i, u, upd, h) = apply_domain(payloads)?;
+            per_domain.push((metrics::TargetDomain::Signal, d, r, i, u, upd, h));
+        }
+
+        if self.has_resource_domain {
+            let (d, r, i, u, upd, h) = apply_domain(payload_sets::RESOURCE_ONLY)?;
+            per_domain.push((metrics::TargetDomain::Resource, d, r, i, u, upd, h));
+        }
+
+        if self.has_scope_domain {
+            let (d, r, i, u, upd, h) = apply_domain(payload_sets::SCOPE_ONLY)?;
+            per_domain.push((metrics::TargetDomain::Scope, d, r, i, u, upd, h));
+        }
+
+        Ok(per_domain)
     }
 }
 
@@ -420,7 +396,7 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
                 otap_df_engine::control::NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    let _ = metrics_reporter.report(&mut self.metrics);
+                    let _ = self.metrics.report(&mut metrics_reporter);
                     self.compute_duration.report(&mut metrics_reporter);
                     Ok(())
                 }
@@ -441,50 +417,60 @@ impl local::Processor<OtapPdata> for AttributesProcessor {
 
                 let mut records: OtapArrowRecords = payload.try_into_with_default()?;
 
-                // Update domain counters (count once per message when domains are enabled)
-                if self.has_resource_domain {
-                    self.metrics.domains_resource.inc();
-                }
-                if self.has_scope_domain {
-                    self.metrics.domains_scope.inc();
-                }
-                if self.has_signal_domain {
-                    self.metrics.domains_signal.inc();
-                }
-                // Apply transform across selected domains and collect exact stats.
+                // Apply transform across selected domains and record per-(action, domain) stats.
                 let result = effect_handler.timed(&self.compute_duration, || {
                     self.apply_transform_with_stats(&mut records, signal)
                 });
                 match result {
-                    Ok((
-                        deleted_total,
-                        renamed_total,
-                        inserted_total,
-                        upserted_total,
-                        updated_total,
-                        hashed_total,
-                    )) => {
-                        if deleted_total > 0 {
-                            self.metrics.deleted_entries.add(deleted_total);
+                    Ok(domain_stats) => {
+                        for (domain, deleted, renamed, inserted, upserted, updated, hashed) in
+                            domain_stats
+                        {
+                            if deleted > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Deleted, domain)
+                                    .entries
+                                    .add(deleted);
+                            }
+                            if renamed > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Renamed, domain)
+                                    .entries
+                                    .add(renamed);
+                            }
+                            if inserted > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Inserted, domain)
+                                    .entries
+                                    .add(inserted);
+                            }
+                            if upserted > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Upserted, domain)
+                                    .entries
+                                    .add(upserted);
+                            }
+                            if updated > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Updated, domain)
+                                    .entries
+                                    .add(updated);
+                            }
+                            if hashed > 0 {
+                                self.metrics
+                                    .modified_for(metrics::ActionType::Hashed, domain)
+                                    .entries
+                                    .add(hashed);
+                            }
                         }
-                        if renamed_total > 0 {
-                            self.metrics.renamed_entries.add(renamed_total);
-                        }
-                        if inserted_total > 0 {
-                            self.metrics.inserted_entries.add(inserted_total);
-                        }
-                        if upserted_total > 0 {
-                            self.metrics.upserted_entries.add(upserted_total);
-                        }
-                        if updated_total > 0 {
-                            self.metrics.updated_entries.add(updated_total);
-                        }
-                        if hashed_total > 0 {
-                            self.metrics.hashed_entries.add(hashed_total);
-                        }
+                        self.metrics.record_transform_outcome(
+                            otap_df_telemetry::common_attributes::Outcome::Success,
+                        );
                     }
                     Err(e) => {
-                        self.metrics.transform_failed.inc();
+                        self.metrics.record_transform_outcome(
+                            otap_df_telemetry::common_attributes::Outcome::Failure,
+                        );
                         return Err(e);
                     }
                 }
@@ -573,13 +559,11 @@ pub static ATTRIBUTES_PROCESSOR_FACTORY: otap_df_engine::ProcessorFactory<OtapPd
         validate_config: otap_df_config::validation::validate_typed_config::<Config>,
     };
 
-// Pre-computed arrays for all domain combinations
+// Per-domain payload slices used by apply_transform_with_stats.
 mod payload_sets {
     use otap_df_pdata::proto::opentelemetry::arrow::v1::ArrowPayloadType as A;
 
-    pub(super) const EMPTY: &[A] = &[];
-
-    // Signal only
+    // Signal payloads per signal type
     pub(super) const LOGS_SIGNAL: &[A] = &[A::LogAttrs];
     pub(super) const METRICS_SIGNAL: &[A] = &[
         A::MetricAttrs,
@@ -591,70 +575,11 @@ mod payload_sets {
     ];
     pub(super) const TRACES_SIGNAL: &[A] = &[A::SpanAttrs, A::SpanEventAttrs, A::SpanLinkAttrs];
 
-    // Resource only
+    // Resource domain
     pub(super) const RESOURCE_ONLY: &[A] = &[A::ResourceAttrs];
 
-    // Scope only
+    // Scope domain
     pub(super) const SCOPE_ONLY: &[A] = &[A::ScopeAttrs];
-
-    // Resource + Signal
-    pub(super) const LOGS_RESOURCE_SIGNAL: &[A] = &[A::ResourceAttrs, A::LogAttrs];
-    pub(super) const METRICS_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_RESOURCE_SIGNAL: &[A] = &[
-        A::ResourceAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-
-    // Scope + Signal
-    pub(super) const LOGS_SCOPE_SIGNAL: &[A] = &[A::ScopeAttrs, A::LogAttrs];
-    pub(super) const METRICS_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_SCOPE_SIGNAL: &[A] = &[
-        A::ScopeAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
-
-    // Resource + Scope
-    pub(super) const RESOURCE_SCOPE: &[A] = &[A::ResourceAttrs, A::ScopeAttrs];
-
-    // All three: Resource + Scope + Signal
-    pub(super) const LOGS_ALL: &[A] = &[A::ResourceAttrs, A::ScopeAttrs, A::LogAttrs];
-    pub(super) const METRICS_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::MetricAttrs,
-        A::NumberDpAttrs,
-        A::HistogramDpAttrs,
-        A::SummaryDpAttrs,
-        A::NumberDpExemplarAttrs,
-        A::HistogramDpExemplarAttrs,
-    ];
-    pub(super) const TRACES_ALL: &[A] = &[
-        A::ResourceAttrs,
-        A::ScopeAttrs,
-        A::SpanAttrs,
-        A::SpanEventAttrs,
-        A::SpanLinkAttrs,
-    ];
 }
 
 #[cfg(test)]
@@ -2573,6 +2498,8 @@ mod telemetry_tests {
     use prost::Message as _;
     use serde_json::json;
 
+    /// Scenario: A processor with rename, delete, and upsert actions processes logs and collects telemetry.
+    /// Guarantees: The component records correct entries per action and domain in processor.attributes.modified, and transform success in processor.attributes.
     #[test]
     fn test_metrics_collect_telemetry_reports_counters() {
         use std::sync::Arc;
@@ -2676,25 +2603,55 @@ mod telemetry_tests {
                 let mut found_deleted_entries = false;
                 let mut found_upserted_entries = false;
                 let mut found_domain_signal = false;
+                let mut found_transform_success = false;
 
-                telemetry_registry.visit_current_metrics(|desc, _attrs, iter| {
-                    if desc.name == "processor.attributes" {
-                        for (field, v) in iter {
-                            match (field.name, v.to_u64_lossy()) {
-                                ("renamed.entries", x) if x >= 1 => found_renamed_entries = true,
-                                ("deleted.entries", x) if x >= 1 => found_deleted_entries = true,
-                                ("upserted.entries", x) if x >= 1 => found_upserted_entries = true,
-                                ("domains.signal", x) if x >= 1 => found_domain_signal = true,
-                                _ => {}
+                telemetry_registry.visit_current_metrics_with_item_attrs(
+                    |desc, _attrs, dp_attrs, iter| {
+                        let items: Vec<_> = iter.collect();
+                        if desc.name == "processor.attributes.modified" {
+                            let action = dp_attrs
+                                .iter()
+                                .find(|(k, _)| *k == "action")
+                                .map(|(_, v)| &**v);
+                            let domain = dp_attrs
+                                .iter()
+                                .find(|(k, _)| *k == "domain")
+                                .map(|(_, v)| &**v);
+                            for (field, value) in &items {
+                                if field.name == "entries" && value.to_u64_lossy() >= 1 {
+                                    match action {
+                                        Some("renamed") => found_renamed_entries = true,
+                                        Some("deleted") => found_deleted_entries = true,
+                                        Some("upserted") => found_upserted_entries = true,
+                                        _ => {}
+                                    }
+                                    if domain == Some("signal") {
+                                        found_domain_signal = true;
+                                    }
+                                }
                             }
                         }
-                    }
-                });
+                        if desc.name == "processor.attributes" {
+                            let is_success = dp_attrs
+                                .iter()
+                                .any(|(k, v)| *k == "outcome" && &**v == "success");
+                            if is_success {
+                                for (field, value) in &items {
+                                    if field.name == "transforms" && value.to_u64_lossy() >= 1 {
+                                        found_transform_success = true;
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    false,
+                );
 
-                assert!(found_renamed_entries, "renamed.entries should be >= 1");
-                assert!(found_deleted_entries, "deleted.entries should be >= 1");
-                assert!(found_upserted_entries, "upserted.entries should be >= 1");
-                assert!(found_domain_signal, "domains.signal should be >= 1");
+                assert!(found_renamed_entries, "renamed entries should be >= 1");
+                assert!(found_deleted_entries, "deleted entries should be >= 1");
+                assert!(found_upserted_entries, "upserted entries should be >= 1");
+                assert!(found_domain_signal, "domain signal entries should be >= 1");
+                assert!(found_transform_success, "transform success should be >= 1");
             });
     }
 }

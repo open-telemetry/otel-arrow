@@ -178,6 +178,7 @@ fn filter_compact_metric_set(
     Some(telemetry::MetricSet {
         name: metric_set.name.clone(),
         attributes: metric_set.attributes.clone(),
+        data_point_attributes: metric_set.data_point_attributes.clone(),
         metrics,
     })
 }
