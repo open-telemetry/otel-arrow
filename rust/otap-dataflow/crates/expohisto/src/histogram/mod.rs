@@ -16,7 +16,7 @@ pub mod width;
 
 use crate::float64::{NAN_INF_BIASED, get_biased_exponent, get_significand, unbias_exponent};
 use crate::mapping::{Scale, ScaleError, table_scale};
-use std::num::NonZeroU64;
+use core::num::NonZeroU64;
 pub use view::{BucketTotals, BucketView, BucketsIter, HistogramView};
 pub use width::{SlotAddr, Width};
 
