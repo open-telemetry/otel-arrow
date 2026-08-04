@@ -23,7 +23,6 @@ issues: [3505]
 # These lines will be padded with 2 spaces and then inserted directly into the document.
 # Use pipe (|) for multiline entries.
 subtext: |
-  Previously, stale ownership-period state (a carried-over high-water mark, or a
-  stale ack arriving after reassignment but before a record of the new period was
-  tracked) could drive a commit below an offset already committed by another
-  group member, rolling the committed offset backward and re-delivering records.
+  Previously, stale ownership-period state (a stale ack arriving after reassignment
+  could drive a commit below an offset already committed by another group member,
+  rolling the committed offset backward and re-delivering records.
