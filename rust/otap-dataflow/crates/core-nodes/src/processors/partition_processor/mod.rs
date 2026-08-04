@@ -34,7 +34,8 @@ use otap_df_pdata::{OtapArrowRecords, OtapPayload, TryIntoWithOptions};
 use otap_df_query_engine::parser::default_parser_options;
 use otap_df_query_engine::pipeline::partition::{PartitionValue, Partitioner};
 use otap_df_query_engine_languages::opl::parser::OplParser;
-use otap_df_telemetry::metrics::MetricSet;
+use otap_df_telemetry::common_attributes::{Outcome, OutcomeAttributes};
+use otap_df_telemetry::metrics::MeasurementMetricSet;
 use serde_json::Value;
 use slotmap::Key as _;
 
@@ -104,7 +105,7 @@ pub struct PartitionProcessor {
     partitioner: Partitioner,
     header_name: String,
     serialization_strategy: PartitionValueSerializeStrategy,
-    metrics: MetricSet<Metrics>,
+    metrics: MeasurementMetricSet<Metrics>,
 }
 
 impl PartitionProcessor {
@@ -139,7 +140,7 @@ impl PartitionProcessor {
             contexts: Contexts::new(config.inbound_request_limit, config.outbound_request_limit),
             header_name: config.partition_header_name,
             serialization_strategy: config.header_serialization_strategy,
-            metrics: pipeline_ctx.register_metrics(),
+            metrics: Metrics::register(pipeline_ctx),
         })
     }
 
@@ -180,7 +181,7 @@ impl Processor<OtapPdata> for PartitionProcessor {
                 NodeControlMsg::CollectTelemetry {
                     mut metrics_reporter,
                 } => {
-                    if let Err(e) = metrics_reporter.report(&mut self.metrics) {
+                    if let Err(e) = metrics_reporter.report_measurement(&mut self.metrics) {
                         return Err(otap_df_engine::error::Error::InternalError {
                             message: e.to_string(),
                         });
@@ -234,11 +235,21 @@ impl Processor<OtapPdata> for PartitionProcessor {
 
                 let mut partitions = match self.partitioner.partition(otap_batch) {
                     Ok(partitions) => {
-                        self.metrics.partition_operations_succeeded.inc();
+                        self.metrics
+                            .with(OutcomeAttributes {
+                                outcome: Outcome::Success,
+                            })
+                            .operations
+                            .inc();
                         partitions
                     }
                     Err(e) => {
-                        self.metrics.partition_operations_failed.inc();
+                        self.metrics
+                            .with(OutcomeAttributes {
+                                outcome: Outcome::Failure,
+                            })
+                            .operations
+                            .inc();
                         return Err(otap_df_engine::error::Error::ProcessorError {
                             processor: effect_handler.processor_id(),
                             kind: ProcessorErrorKind::Other,
@@ -502,6 +513,7 @@ mod test {
         },
         testing::round_trip::otlp_to_otap,
     };
+    use otap_df_telemetry::registry::TelemetryRegistryHandle;
     use prost::Message as _;
 
     fn create_processor_with_config(
@@ -528,6 +540,30 @@ mod test {
             runtime.config(),
             &Capabilities::empty(),
         )
+    }
+
+    fn partition_operation_counts(
+        telemetry_registry: &TelemetryRegistryHandle,
+    ) -> Vec<(String, u64)> {
+        let mut reported_operations = Vec::new();
+        telemetry_registry.visit_current_metrics_with_item_attrs(
+            |descriptor, _attributes, item_attributes, metrics| {
+                if descriptor.name == "processor.partition" {
+                    let outcome = item_attributes
+                        .iter()
+                        .find(|(key, _)| *key == "outcome")
+                        .map(|(_, value)| *value)
+                        .expect("partition operation outcome");
+                    for (field, value) in metrics {
+                        if field.name == "operations" {
+                            reported_operations.push((outcome.to_string(), value.to_u64_lossy()));
+                        }
+                    }
+                }
+            },
+            false,
+        );
+        reported_operations
     }
 
     /// Helper to send an Ack for a given context
@@ -716,9 +752,13 @@ mod test {
             .validate(|_ctx| async move {});
     }
 
+    /// Scenario: A valid log batch is partitioned into a single output batch.
+    /// Guarantees: The output is preserved and one successful partition operation is exported.
     #[test]
     fn test_single_partition() {
         let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
         let expression = "attributes[\"x\"]";
         let header_name = "partition-header";
         let processor = create_processor_with_config(
@@ -796,9 +836,87 @@ mod test {
                             )]
                         )]
                     }
-                )
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect partition metrics");
             })
-            .validate(|_ctx| async move {});
+            .validate(move |_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush pending partition metrics");
+
+                assert_eq!(
+                    partition_operation_counts(&telemetry_registry),
+                    vec![("success".to_string(), 1)]
+                );
+            });
+    }
+
+    /// Scenario: A partition expression divides by zero while processing a PData message.
+    /// Guarantees: The processor returns an error and reports one failed partition operation.
+    #[test]
+    fn test_partition_error_reports_failure_outcome() {
+        let runtime = TestRuntime::<OtapPdata>::new();
+        let telemetry_registry = runtime.metrics_registry();
+        let metrics_reporter = runtime.metrics_reporter();
+        let processor = create_processor_with_config(
+            serde_json::json!({
+                "partition_by": { "opl_expression": "severity_number / 0" },
+                "partition_header_name": "partition-header",
+            }),
+            &runtime,
+        )
+        .expect("create partition processor");
+
+        runtime
+            .set_processor(processor)
+            .run_test(move |mut ctx| async move {
+                let otap_batch = otlp_to_otap(&OtlpProtoMessage::Logs(LogsData {
+                    resource_logs: vec![ResourceLogs::new(
+                        Resource::default(),
+                        vec![ScopeLogs::new(
+                            InstrumentationScope::default(),
+                            vec![
+                                LogRecord::build()
+                                    .event_name("event0")
+                                    .severity_number(1)
+                                    .finish(),
+                            ],
+                        )],
+                    )],
+                }));
+
+                let error = ctx
+                    .process(Message::PData(OtapPdata::new_default(otap_batch.into())))
+                    .await
+                    .expect_err("partition expression should fail at runtime");
+                assert!(
+                    error.to_string().contains("Error partitioning batch"),
+                    "unexpected partition error: {error}"
+                );
+
+                ctx.process(Message::Control(NodeControlMsg::CollectTelemetry {
+                    metrics_reporter,
+                }))
+                .await
+                .expect("collect partition metrics");
+            })
+            .validate(move |_ctx| async move {
+                telemetry_registry
+                    .flush_pending_metrics()
+                    .await
+                    .expect("flush pending partition metrics");
+
+                assert_eq!(
+                    partition_operation_counts(&telemetry_registry),
+                    vec![("failure".to_string(), 1)]
+                );
+            });
     }
 
     #[test]

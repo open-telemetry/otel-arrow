@@ -741,7 +741,7 @@ fn parse_primitive_expression(
             .into())
         }
         Rule::string_literal => {
-            Ok(ScalarExpression::Static(parse_standard_string_literal(rule)).into())
+            Ok(ScalarExpression::Static(parse_standard_string_literal(rule)?).into())
         }
         Rule::tagged_literal => Ok(parse_tagged_literal(rule, query_location)?.into()),
         Rule::bool_true_token => Ok(ScalarExpression::Static(StaticScalarExpression::Boolean(
@@ -777,7 +777,7 @@ pub(crate) fn parse_tagged_literal(
         .next()
         .ok_or_else(|| no_inner_rule_error(query_location.clone()))?;
 
-    let tagged_str = match parse_standard_string_literal(tagged_string_literal_rule) {
+    let tagged_str = match parse_standard_string_literal(tagged_string_literal_rule)? {
         StaticScalarExpression::String(str) => str,
         invalid_expr => {
             return Err(ParserError::SyntaxError(
