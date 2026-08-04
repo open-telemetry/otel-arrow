@@ -112,7 +112,8 @@ pub fn parse_standard_string_literal<R: RuleType>(
     let mut chars = raw_string.chars();
     let mut s = String::with_capacity(raw_string.len());
     let mut position = 1;
-    let mut last_char = '\0';
+    // let mut last_char = '\0';
+    let mut parsing_escape_sequence = false;
 
     let mut c = chars.next();
     loop {
@@ -123,12 +124,20 @@ pub fn parse_standard_string_literal<R: RuleType>(
         let mut current_char = c.unwrap();
         let mut skip_push = false;
 
-        if position == 1 || current_char == '\\' {
+        if position == 1 {
             skip_push = true;
-        } else if last_char == '\\' {
+            parsing_escape_sequence = false;
+        } else if current_char == '\\' {
+            if !parsing_escape_sequence {
+                skip_push = true;
+                parsing_escape_sequence = true;
+            } else {
+                parsing_escape_sequence = false;
+            }
+        } else if parsing_escape_sequence {
+            parsing_escape_sequence = false;
             match current_char {
                 '"' => current_char = '"',
-                '\\' => current_char = '\\',
                 'n' => current_char = '\n',
                 'r' => current_char = '\r',
                 't' => current_char = '\t',
@@ -141,7 +150,26 @@ pub fn parse_standard_string_literal<R: RuleType>(
             }
         }
 
-        last_char = current_char;
+
+        // if position == 1 || current_char == '\\' {
+        //     skip_push = true;
+        // } else if last_char == '\\' {
+        //     match current_char {
+        //         '"' => current_char = '"',
+        //         '\\' => current_char = '\\',
+        //         'n' => current_char = '\n',
+        //         'r' => current_char = '\r',
+        //         't' => current_char = '\t',
+        //         other => {
+        //             return Err(ParserError::SyntaxError(
+        //                 query_location,
+        //                 format!("Unexpected escape sequence character '{other}'"),
+        //             ));
+        //         }
+        //     }
+        // }
+
+        // last_char = current_char;
         position += 1;
 
         c = chars.next();

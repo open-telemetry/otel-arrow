@@ -144,10 +144,12 @@ pub(crate) fn invalid_child_rule_error(
 mod test {
     use data_engine_expressions::{
         DataExpression, DiscardDataExpression, EqualToLogicalExpression, LogicalExpression,
-        NotLogicalExpression, QueryLocation, ScalarExpression, SourceScalarExpression,
-        StaticScalarExpression, StringScalarExpression, ValueAccessor,
+        MatchesLogicalExpression, NotLogicalExpression, QueryLocation, RegexScalarExpression,
+        ScalarExpression, SourceScalarExpression, StaticScalarExpression, StringScalarExpression,
+        ValueAccessor,
     };
     use data_engine_parser_abstractions::Parser;
+    use regex::Regex;
 
     use super::OplParser;
 
@@ -190,20 +192,47 @@ mod test {
     }
 
     #[test]
-    fn test_parse_unexpected_escape_sequence() {
-        let result = OplParser::parse(r#"logs | where (matches(attributes["code"], regexp"\\d+"))"#);
-        assert!(result.is_err());
-
-        let errors = result.err().unwrap();
-        assert_eq!(errors.len(), 1);
-
-        let error = &errors[0];
-        println!("ERROR={error}");
-        assert!(
-            error
-                .to_string()
-                .contains("Unexpected escape sequence character 'd'")
-        )
+    fn test_parse_escape_sequence_double_backslash() {
+        let result =
+            OplParser::parse(r#"logs | where (matches(attributes["code"], "\\d+"))"#).unwrap();
+        let data_exprs = result.pipeline.get_expressions();
+        assert_eq!(data_exprs.len(), 1);
+        pretty_assertions::assert_eq!(
+            &data_exprs[0],
+            &DataExpression::Discard(
+                DiscardDataExpression::new(QueryLocation::new_fake()).with_predicate(
+                    LogicalExpression::Not(NotLogicalExpression::new(
+                        QueryLocation::new_fake(),
+                        LogicalExpression::Matches(MatchesLogicalExpression::new(
+                            QueryLocation::new_fake(),
+                            ScalarExpression::Source(SourceScalarExpression::new(
+                                QueryLocation::new_fake(),
+                                ValueAccessor::new_with_selectors(vec![
+                                    ScalarExpression::Static(
+                                        StaticScalarExpression::String(StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "attributes",
+                                        )),
+                                    ),
+                                    ScalarExpression::Static(
+                                        StaticScalarExpression::String(StringScalarExpression::new(
+                                            QueryLocation::new_fake(),
+                                            "code",
+                                        )),
+                                    )
+                                ]),
+                            )),
+                            ScalarExpression::Static(StaticScalarExpression::Regex(
+                                RegexScalarExpression::new(
+                                    QueryLocation::new_fake(),
+                                    Regex::new("\\d+").unwrap()
+                                ),
+                            )),
+                        )),
+                    )),
+                ),
+            )
+        );
     }
 
     #[test]
