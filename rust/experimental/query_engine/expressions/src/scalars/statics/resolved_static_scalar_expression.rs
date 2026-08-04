@@ -44,14 +44,8 @@ impl ResolvedStaticScalarExpression<'_> {
                     return Ok(None);
                 }
 
-                let mut result = None;
-
-                value.to_value().convert_to_string(&mut |s| {
-                    result = Some(Regex::new(s));
-                });
-
-                match result {
-                    Some(Ok(r)) => {
+                match Regex::new(value.to_value().convert_to_string().as_ref()) {
+                    Ok(r) => {
                         let r = RegexScalarExpression::new(value.get_query_location().clone(), r);
 
                         *scalar = ScalarExpression::Static(StaticScalarExpression::Regex(r));
@@ -62,15 +56,10 @@ impl ResolvedStaticScalarExpression<'_> {
                             unreachable!()
                         }
                     }
-                    Some(Err(e)) => Err(ExpressionError::ParseError(
+                    Err(e) => Err(ExpressionError::ParseError(
                         value.get_query_location().clone(),
                         format!("Failed to parse Regex from pattern: {e}"),
                     )),
-                    None => {
-                        panic!(
-                            "Encountered a Value which does not correctly implement convert_to_string"
-                        )
-                    }
                 }
             }
             _ => Ok(None),
