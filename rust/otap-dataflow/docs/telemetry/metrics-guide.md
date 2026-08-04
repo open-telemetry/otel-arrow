@@ -73,7 +73,7 @@ consider what you want to observe:
 | Counter              | Rate                                      | 8 bytes       | 0.2 ns      |
 | UpDownCounter        | Total                                     | 8 bytes       | 0.2 ns      |
 | Gauge                | Average                                   | 8 bytes       | 0.2 ns      |
-| MinMaxSumCount       | Total, Rate, Average, Extremes            | 32 bytes      | 0.7 ns      |
+| MinMaxSumCount       | Total, Rate, Average, Extremes            | 32 bytes      | 0.9 ns      |
 | ExponentialHistogram | Total, Rate, Average, Extremes, Quantiles | 128-256 bytes | 5-7 ns      |
 
 To choose between MinMaxSumCount and ExponentialHistogram, ask whether
@@ -85,7 +85,9 @@ All distribution instruments accept the same observations, so a field can
 move between them without changing what a shipped binary records. Values must
 be non-negative and finite. A negative, NaN, or infinite value trips a debug
 assertion; in a release build a non-finite one is dropped, so a stray NaN
-cannot poison a sum for the rest of the reporting interval.
+cannot poison a sum for the rest of the reporting interval. That check is
+most of what MinMaxSumCount costs above a plain counter; the histogram tiers
+get it for free, since they already decompose the value to find its bucket.
 
 The tiers differ on one point, and only in debug builds. Negative zero
 compares equal to zero, and `Mmsc` counts it as one, while the histogram tiers
